@@ -1,0 +1,110 @@
+.collab-story { container-type: inline-size; }
+.collab-preview {
+  --toolbar-midline: 2.174cqw;
+  position: relative;
+  aspect-ratio: 1840 / 1142;
+  overflow: hidden;
+  container-type: inline-size;
+  background: #fff;
+  color: #263145;
+}
+.collab-preview img { display: block; width: 100%; height: auto; }
+.collab-presence {
+  position: absolute;
+  z-index: 2;
+  right: 9.9%;
+  top: var(--toolbar-midline);
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: .85cqw;
+  white-space: nowrap;
+  padding-inline: .55cqw;
+  background: #fff;
+}
+.collab-avatars { display: flex; align-items: center; padding-left: .3cqw; }
+.collab-preview .traffic { top: var(--toolbar-midline); transform: translateY(-50%); }
+.collab-avatar {
+  display: grid;
+  place-items: center;
+  width: 2.65cqw;
+  height: 2.65cqw;
+  margin-left: -.3cqw;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 1.06cqw;
+  font-weight: 680;
+  line-height: 1;
+}
+.collab-avatar.lin { background: #277762; }
+.collab-avatar.chen { background: #6552ac; }
+.collab-share {
+  display: inline-flex;
+  align-items: center;
+  gap: .35cqw;
+  padding: .34cqw .77cqw;
+  border: 1px solid #dce6fc;
+  border-radius: .48cqw;
+  background: #edf3ff;
+  color: #305ac0;
+  font-size: 1.08cqw;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.collab-share svg {
+  width: 1.07cqw;
+  height: 1.07cqw;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.coedit-selection {
+  position: absolute;
+  top: var(--top);
+  left: var(--left);
+  width: var(--width);
+  height: var(--height, 2.6%);
+  border-right: max(1px, .15cqw) solid var(--person);
+  border-radius: .2cqw 0 0 .2cqw;
+  background: var(--selection);
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+.coedit-name {
+  position: absolute;
+  top: var(--top);
+  left: calc(var(--left) + var(--width));
+  transform: translate(-1px, -100%);
+  z-index: 1;
+  padding: .15cqw .56cqw .24cqw;
+  border-radius: .3cqw .3cqw .3cqw 0;
+  color: #fff;
+  background: var(--person);
+  font-size: 1.07cqw;
+  font-weight: 660;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.collab-preview .lin-mark {
+  --left: 53.1%;
+  --width: 9.15%;
+  --top: 35.3%;
+  --person: #277762;
+  --selection: #69ceaa42;
+}
+.collab-preview .chen-mark {
+  --left: 49.2%;
+  --width: 4.75%;
+  --top: 68.35%;
+  --person: #6552ac;
+  --selection: #a58cea48;
+}
+html[lang="en"] .collab-preview .lin-mark { --left: 50.7%; --width: 13%; }
+html[lang="en"] .collab-preview .chen-mark { --left: 49.2%; --width: 7%; }
+@media (max-width: 640px) {
+  .collab-avatar { border-width: 1px; }
+}
