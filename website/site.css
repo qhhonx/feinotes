@@ -67,6 +67,7 @@
 .document-outline a {
   min-height: 32px;
   padding-block: 5px;
+  white-space: normal;
   color: #315b64;
   font-size: 13px;
   line-height: 1.45;
