@@ -296,7 +296,9 @@ lipo -create "${slices[@]}" -output "$binary"
 lipo -create "${bridges[@]}" -output "$bridge"
 arch="${architectures[*]}"
 for file in "$binary" "$bridge"; do
-    lipo -verify_arch "${architectures[@]}" "$file"
+    for architecture in "${architectures[@]}"; do
+        lipo "$file" -verify_arch "$architecture"
+    done
     [[ $(lipo -archs "$file" | wc -w) -eq ${#architectures[@]} ]]
 done
 cp "$profile" "$app/Contents/embedded.provisionprofile"
