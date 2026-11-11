@@ -1,4 +1,7 @@
 {
-  "state": "unavailable",
-  "url": "https://testflight.apple.com/join/NdcXugMy"
+  "state": "review",
+  "url": "https://testflight.apple.com/join/NdcXugMy",
+  "version": "1.0.0",
+  "build": "1006",
+  "updatedAt": "2026-11-11T08:03:32.190739+00:00"
 }
