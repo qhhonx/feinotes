@@ -62,6 +62,8 @@ if [[ "$existing" == new ]]; then
     keychain="$work/fei-signing.keychain-db"
     password=$(/usr/bin/openssl rand -hex 24)
     security create-keychain -p "$password" "$keychain"
+    security set-keychain-settings -lut 21600 "$keychain"
+    security show-keychain-info "$keychain"
     security unlock-keychain -p "$password" "$keychain"
     for name in FEI_APP_CERT_B64 FEI_INSTALLER_CERT_B64; do
         security import "$work/$name" -f pkcs12 -k "$keychain" -P "$FEI_CERT_PASSWORD" \
@@ -72,6 +74,17 @@ if [[ "$existing" == new ]]; then
     security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
     security list-keychains -d user -s "$keychain" "${previous_keychains[@]}"
     changed_keychains=1
+
+    # Fail before compilation if signing would require an interactive prompt.
+    cp /usr/bin/true "$work/signing-probe"
+    python3 - "$FEI_APP_CERT_SHA1" "$keychain" "$work/signing-probe" <<'PYSIGN'
+import subprocess
+import sys
+subprocess.run(["/usr/bin/codesign", "--force", "--sign", sys.argv[1], "--keychain", sys.argv[2],
+                "--timestamp=none", sys.argv[3]], timeout=60, check=True)
+subprocess.run(["/usr/bin/codesign", "--verify", "--strict", sys.argv[3]], timeout=30, check=True)
+print("Noninteractive signing check passed.", flush=True)
+PYSIGN
 
     profile="$work/FEI_STORE_PROFILE_B64"
     uuid=$(security cms -D -i "$profile" | plutil -extract UUID raw -)

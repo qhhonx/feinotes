@@ -99,6 +99,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3, shared with upstream CI
+        with:
+          shared-key: feinotes-checks
+          cache-on-failure: true
       - name: Check the exact release commit
         env:
           MACOSX_DEPLOYMENT_TARGET: '14.0'
@@ -121,6 +125,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3, shared with upstream CI
+        with:
+          shared-key: feinotes-release
+          cache-on-failure: true
       - name: Verify release safety checks
         run: python3 -B packaging/macos/test-apple-release.py
       - name: Build, distribute or advance the exact release
