@@ -1,2 +1,16 @@
-<!-- Nucleo UI Outline 18 v1.5.1: TextStrikethrough. Copyright Nucleo. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" view-box="0 0 18 18" fill="none"><path d="M13.1383 11.9999C13.146 12.0808 13.151 12.1641 13.153 12.25C13.204 14.33 11.336 15.75 9.07898 15.75C6.92198 15.75 5.42397 14.91 4.84497 13.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M12.774 4.63C11.955 2.6899 10.318 2.25 9.07898 2.25C7.92698 2.25 4.90497 2.86001 5.18497 5.76001C5.38097 7.80001 7.30198 8.55999 8.97898 8.85999C9.19998 8.89999 9.43298 8.94 9.67298 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M2 9H16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>
+<!-- Lucide 0.468.0: strikethrough. See LICENSE-lucide. -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="18"
+  height="18"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M16 4H9a3 3 0 0 0-2.83 4" />
+  <path d="M14 12a4 4 0 0 1 0 8H6" />
+  <line x1="4" x2="20" y1="12" y2="12" />
+</svg>

@@ -32,6 +32,8 @@ pub enum Kind {
     Italic,
     /// `border-style`: dotted / solid / dashed.
     LineStyle,
+    /// `list-style-type`: disc / dash.
+    ListMarker,
 }
 
 /// A property's value in a base style.
@@ -123,6 +125,8 @@ pub static PROPS: LazyLock<Vec<Prop>> = LazyLock::new(|| {
         p("pre", "background-color", "pre.bg", Color, Tok("code_bg"), Tok("code_bg")),
         p("pre", "border-color", "pre.border", Color, Tok("code_border"), Tok("code_border")),
         p("pre", "border-radius", "pre.radius", Len, N(6.), Unused),
+        p("pre", "padding-top", "pre.pad-y", Len, N(5.), Unused),
+        p("pre", "padding-left", "pre.pad-x", Len, N(10.), Unused),
         p(".line-numbers", "display", "pre.numbers", Display, B(true), Unused),
         p(".line-numbers", "color", "pre.number-color", Color, Tok("code_line_number"), Tok("code_line_number")),
         p(".line-numbers", "background-color", "pre.gutter", Color, Tok("code_gutter"), Tok("code_gutter")),
@@ -132,6 +136,7 @@ pub static PROPS: LazyLock<Vec<Prop>> = LazyLock::new(|| {
         p("blockquote", "color", "quote.color", Color, Inherit, Unused),
         p("blockquote", "font-style", "quote.italic", Italic, B(false), Unused),
         p("ul", "padding-left", "list.indent", Len, N(25.), Unused),
+        p("ul", "list-style-type", "list.dash", ListMarker, B(false), Unused),
         p("ul li::marker", "color", "bullet.color", Color, Inherit, Unused),
         p("ol li::marker", "color", "number.color", Color, Inherit, Unused),
         p(".task", "width", "task.size", Len, N(17.), Unused),
@@ -144,15 +149,34 @@ pub static PROPS: LazyLock<Vec<Prop>> = LazyLock::new(|| {
         p("hr", "border-top-style", "hr.style", LineStyle, Line(self::LineStyle::Dotted), Unused),
         p("hr", "border-top-width", "hr.width", Len, N(1.5), Unused),
         p("hr", "border-top-color", "hr.color", Color, Tok("separator_dots"), Tok("separator_dots")),
+        p("hr", "height", "hr.height", Len, N(20.), Unused),
         p("table", "font-size", "table.size", Len, N(14.), Unused),
         p("table", "line-height", "table.line-height", Len, N(20.), Unused),
         p("table", "border-color", "table.line", Color, Tok("table_line"), Tok("table_line")),
         p("table", "border-radius", "table.radius", Len, N(0.), Unused),
+        p("table", "padding-top", "table.pad-y", Len, N(9.), Unused),
+        p("table", "padding-left", "table.pad-x", Len, N(10.), Unused),
+        p("table", "margin-top", "table.mt", Len, N(16.), Unused),
         p("th", "background-color", "th.bg", Color, Tok("table_header"), Tok("table_header")),
         p(".callout", "border-radius", "callout.radius", Len, N(4.), Unused),
         p(".callout", "border-width", "callout.border", Len, N(1.), Unused),
         p(".callout", "padding-top", "callout.pad-y", Len, N(12.), Unused),
         p(".callout", "padding-left", "callout.pad-x", Len, N(14.), Unused),
+        p(".attachment", "background-color", "attachment.bg", Color, Inherit, Inherit),
+        p(".attachment", "border-color", "attachment.border", Color, Inherit, Inherit),
+        p(".sidebar", "background-color", "sidebar.bg", Color, Inherit, Inherit),
+        p(".sidebar", "color", "sidebar.text", Color, Inherit, Inherit),
+        p(".sidebar-section", "color", "sidebar.section", Color, Inherit, Inherit),
+        p(".sidebar-folder", "color", "sidebar.folder", Color, Inherit, Inherit),
+        p(".sidebar-row:hover", "background-color", "sidebar.hover", Color, Inherit, Inherit),
+        p(".sidebar-row.is-selected", "background-color", "sidebar.selected", Color, Inherit, Inherit),
+        p(".toolbar", "background-color", "toolbar.bg", Color, Inherit, Inherit),
+        p(".toolbar-button", "background-color", "toolbar.button.bg", Color, Inherit, Inherit),
+        p(".toolbar-button", "border-color", "toolbar.button.border", Color, Inherit, Inherit),
+        p(".toolbar-button", "color", "toolbar.button.color", Color, Inherit, Inherit),
+        p(".toolbar-button", "border-radius", "toolbar.button.radius", Len, Inherit, Inherit),
+        p(".toolbar-button:hover", "background-color", "toolbar.button.hover", Color, Inherit, Inherit),
+        p(".toolbar-button:active", "background-color", "toolbar.button.active", Color, Inherit, Inherit),
     ]);
     // Code highlighting, in Prism's class names.
     for (sel, key, rgb) in [
@@ -198,17 +222,36 @@ fn canon_sel(s: &str) -> String {
 #[derive(Default)]
 pub struct Style {
     pub feishu: bool,
-    pub tokens: Vec<Option<Hsla>>,
+    tokens: Vec<Option<ThemeColor>>,
+    pub compact_code: bool,
+    pub muted_countdown: bool,
+    pub compact_code_gap_after_paragraph: Option<f32>,
+    pub todo_gap: Option<f32>,
+    list_gap: Option<f32>,
     values: HashMap<&'static str, Val>,
     /// Named colours: `color.red`, `background.light-red`, `callout.red`, `highlight.red`, `border.red`.
     palette: HashMap<String, Hsla>,
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Val { N(f32), C(Hsla), F(&'static str), B(bool), Line(LineStyle), Inherit }
+enum Val { N(f32), C(ThemeColor), F(&'static str), B(bool), Line(LineStyle), Inherit }
+
+#[derive(Clone, Copy, Debug)]
+struct ThemeColor { light: Hsla, dark: Option<Hsla> }
+
+impl ThemeColor {
+    fn resolved(self) -> Hsla {
+        match self.dark.filter(|_| crate::theme::dark()) {
+            Some(dark) => dark,
+            None => crate::theme::adapt(self.light),
+        }
+    }
+}
 
 impl Style {
     pub fn plain(feishu: bool) -> Style { Style { feishu, tokens: vec![None; TOKENS.len()], ..Default::default() } }
+    pub fn list_gap(&self) -> f32 { self.list_gap.unwrap_or_else(|| self.num("p.gap")) }
+    pub fn flat_list_lead(&self) -> f32 { self.list_gap.unwrap_or(8.) }
     fn def(&self, key: &str) -> Def {
         BY_KEY.get(key).map(|&i| if self.feishu { PROPS[i].feishu } else { PROPS[i].craft }).unwrap_or(Def::Unused)
     }
@@ -222,10 +265,13 @@ impl Style {
             },
         }
     }
+    pub fn num_override(&self, key: &str) -> Option<f32> {
+        match self.values.get(key) { Some(Val::N(n)) => Some(*n), _ => None }
+    }
     /// A colour property: its own value, its token's, or `None` (inherit).
     pub fn color(&self, key: &str) -> Option<Hsla> {
         match self.values.get(key) {
-            Some(Val::C(c)) => Some(crate::theme::adapt(*c)),
+            Some(Val::C(c)) => Some(c.resolved()),
             Some(Val::Inherit) => None,
             _ => match self.def(key) {
                 Def::Tok(t) => Some(self.token(t)),
@@ -254,7 +300,7 @@ impl Style {
     }
     pub fn token(&self, name: &str) -> Hsla {
         let i = TOKENS.iter().position(|t| *t == name).unwrap_or(0);
-        self.tokens[i].map(crate::theme::adapt).unwrap_or_else(|| crate::editor_theme::base_color(i, self.feishu))
+        self.tokens[i].map(ThemeColor::resolved).unwrap_or_else(|| crate::editor_theme::base_color(i, self.feishu))
     }
     /// A named colour the theme sets (`kind` is color / background / callout / highlight / border).
     pub fn palette(&self, kind: &str, name: &str) -> Option<Hsla> {
@@ -291,11 +337,12 @@ impl Theme {
     pub fn customized(&self) -> bool { self.edited }
 }
 
-pub const BUNDLED: [(&str, &str); 4] = [
+pub const BUNDLED: [(&str, &str); 5] = [
     ("craft", include_str!("../assets/themes/craft.css")),
     ("feishu", include_str!("../assets/themes/feishu.css")),
     ("notion", include_str!("../assets/themes/notion.css")),
     ("obsidian", include_str!("../assets/themes/obsidian.css")),
+    ("notes", include_str!("../assets/themes/notes.css")),
 ];
 
 static THEMES: RwLock<Vec<Theme>> = RwLock::new(Vec::new());
@@ -309,7 +356,7 @@ pub fn active() -> &'static Style {
     let p = ACTIVE.load(Ordering::Relaxed);
     if p.is_null() { &PLAIN } else { unsafe { &*p } }
 }
-pub fn color(i: usize) -> Option<Hsla> { active().tokens.get(i).copied().flatten().map(crate::theme::adapt) }
+pub fn color(i: usize) -> Option<Hsla> { active().tokens.get(i).copied().flatten().map(ThemeColor::resolved) }
 /// Bumped whenever what is drawn may change (the editor re-measures its rows).
 pub fn generation() -> u64 { GENERATION.load(Ordering::Relaxed) }
 /// Something every theme draws changed (light / dark).
@@ -428,6 +475,23 @@ pub fn parse_color(v: &str) -> Option<Hsla> {
     }
 }
 
+fn parse_theme_color(v: &str) -> Option<ThemeColor> {
+    let v = v.trim();
+    if let Some(pair) = v.strip_prefix("light-dark(").and_then(|v| v.strip_suffix(')')) {
+        let mut depth = 0;
+        for (i, ch) in pair.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => return Some(ThemeColor { light: parse_color(&pair[..i])?, dark: Some(parse_color(&pair[i + 1..])?) }),
+                _ => {},
+            }
+        }
+        return None;
+    }
+    Some(ThemeColor { light: parse_color(v)?, dark: None })
+}
+
 /// A length in pt: px / pt as written, `em` of `em`, `rem` of 16, `%` and
 /// unitless numbers of `unitless` (line heights) when given.
 fn parse_len(v: &str, em: f32, unitless: Option<f32>) -> Option<f32> {
@@ -529,7 +593,7 @@ fn parse_with_fonts<'a>(css: &str, fonts: &mut dyn FnMut() -> &'a [String]) -> R
         }
         if let Some(t) = n.strip_prefix("--token-") {
             let t = t.replace('-', "_");
-            match (TOKENS.iter().position(|x| *x == t), parse_color(&v)) {
+            match (TOKENS.iter().position(|x| *x == t), parse_theme_color(&v)) {
                 (Some(i), Some(c)) => st.tokens[i] = Some(c),
                 _ => warn.push(format!("{n}: {v}")),
             }
@@ -585,6 +649,25 @@ fn parse_with_fonts<'a>(css: &str, fonts: &mut dyn FnMut() -> &'a [String]) -> R
     let base = Style::plain(feishu);
     let last = |key: &str| raw.iter().rev().find(|(p, _)| p.key == key).map(|(_, v)| v.clone());
     let body = last("page.size").and_then(|v| parse_len(&v, 16., None)).unwrap_or_else(|| base.num("page.size"));
+    for (key, target) in [("--list-gap", &mut st.list_gap), ("--todo-gap", &mut st.todo_gap)] {
+        if let Some(v) = var(key) {
+            *target = parse_len(&v, body, None).filter(|n| !feishu && (0. ..2000.).contains(n));
+            if target.is_none() { warn.push(format!("{key}: {v}")); }
+        }
+    }
+    for (key, target) in [("--code-compact", &mut st.compact_code), ("--countdown-muted", &mut st.muted_countdown)] {
+        if let Some(v) = var(key) {
+            match (feishu, v.as_str()) {
+                (false, "true") => *target = true,
+                (false, "false") => {},
+                _ => warn.push(format!("{key}: {v}")),
+            }
+        }
+    }
+    if let Some(v) = var("--compact-code-gap-after-paragraph") {
+        st.compact_code_gap_after_paragraph = parse_len(&v, body, None).filter(|n| st.compact_code && (15. ..2000.).contains(n));
+        if st.compact_code_gap_after_paragraph.is_none() { warn.push(format!("--compact-code-gap-after-paragraph: {v}")); }
+    }
     let size_of = |el: &str| -> f32 {
         let key = format!("{el}.size");
         last(&key).and_then(|v| parse_len(&v, body, None)).unwrap_or_else(|| base.num(&key))
@@ -594,16 +677,18 @@ fn parse_with_fonts<'a>(css: &str, fonts: &mut dyn FnMut() -> &'a [String]) -> R
         let em = match el { "page" | "p" | "list" | "quote" | "task" | "code" | "callout" | "hr" | "strong" | "a" | "done" | "bullet" | "number" | "selection" | "th" => body, e => size_of(e) };
         let unitless = (p.prop == "line-height").then_some(em);
         let val = match p.kind {
+            Kind::Len if matches!(p.craft, Def::Inherit) && v.eq_ignore_ascii_case("inherit") => Some(Val::Inherit),
             Kind::Len => parse_len(v, if p.prop == "font-size" { body } else { em }, unitless).filter(|n| (0. ..2000.).contains(n)).map(Val::N),
             Kind::Weight => parse_weight(v).map(Val::N),
             Kind::Color if matches!(v.trim().to_lowercase().as_str(), "inherit" | "currentcolor") => Some(Val::Inherit),
-            Kind::Color => parse_color(v).map(Val::C),
+            Kind::Color => parse_theme_color(v).map(Val::C),
             Kind::Font => parse_font(v, fonts).map(Val::F),
             Kind::Underline => match v.trim() { "underline" => Some(Val::B(true)), "none" => Some(Val::B(false)), _ => None },
             Kind::Strike => match v.trim() { "line-through" => Some(Val::B(true)), "none" => Some(Val::B(false)), _ => None },
             Kind::Display => match v.trim() { "none" => Some(Val::B(false)), "block" | "inline" | "flex" => Some(Val::B(true)), _ => None },
             Kind::Italic => match v.trim() { "italic" | "oblique" => Some(Val::B(true)), "normal" => Some(Val::B(false)), _ => None },
             Kind::LineStyle => match v.trim() { "dotted" => Some(Val::Line(LineStyle::Dotted)), "solid" => Some(Val::Line(LineStyle::Solid)), "dashed" => Some(Val::Line(LineStyle::Dashed)), _ => None },
+            Kind::ListMarker => match v.trim() { "disc" => Some(Val::B(false)), "dash" => Some(Val::B(true)), _ => None },
         };
         let Some(val) = val else { warn.push(format!("{} {{ {}: {v} }}", p.sel, p.prop)); continue };
         let def = if feishu { p.feishu } else { p.craft };
@@ -813,6 +898,7 @@ fn base_css(feishu: bool, name: &str, name_en: &str, description: &str) -> Strin
             sel = p.sel;
         }
         let v = match p.kind {
+            Kind::Len if matches!(def, Def::Inherit) => "inherit".into(),
             Kind::Len => format!("{}px", css_num(st.num(&p.key))),
             Kind::Weight => css_num(st.num(&p.key)),
             Kind::Color => st.color(&p.key).map_or_else(|| "inherit".into(), css_color),
@@ -824,6 +910,7 @@ fn base_css(feishu: bool, name: &str, name_en: &str, description: &str) -> Strin
             Kind::Display => if st.flag(&p.key) { "block" } else { "none" }.into(),
             Kind::Italic => if st.flag(&p.key) { "italic" } else { "normal" }.into(),
             Kind::LineStyle => match st.line(&p.key) { LineStyle::Dotted => "dotted", LineStyle::Solid => "solid", LineStyle::Dashed => "dashed" }.into(),
+            Kind::ListMarker => if st.flag(&p.key) { "dash" } else { "disc" }.into(),
         };
         out += &format!("  {}: {v};\n", p.prop);
     }
@@ -902,6 +989,22 @@ mod tests {
         assert!(st.palette("color", "red").is_some());
         assert!(st.tokens[TOKENS.iter().position(|t| *t == "block_hover").unwrap()].is_some());
         assert_eq!(warn, vec![".made-up { color }".to_string()]);
+    }
+
+    #[test]
+    fn dark_colors_in_rules_and_tokens() {
+        let css = ":root { --ink: light-dark(rgb(69, 69, 69), #ededed); --token-text-caption: light-dark(#757575, #bbbbbb); } .page { color: var(--ink); } .attachment { background-color: light-dark(#fff, #2c2c2e); }";
+        let (st, _, warnings) = parse(css, &[]).unwrap();
+        assert!(warnings.is_empty());
+        let expected = |key: &str, light: &str, dark: &str| {
+            let Val::C(value) = st.values[key] else { panic!("{key} should be a color"); };
+            assert_eq!(value.light, parse_color(light).unwrap());
+            assert_eq!(value.dark, parse_color(dark));
+        };
+        expected("page.color", "#454545", "#ededed");
+        expected("attachment.bg", "#fff", "#2c2c2e");
+        assert_eq!(st.tokens[TOKENS.iter().position(|t| *t == "text_caption").unwrap()].unwrap().dark, parse_color("#bbbbbb"));
+        assert!(parse_theme_color("light-dark(#fff)").is_none());
     }
 
     #[test]

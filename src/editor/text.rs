@@ -214,6 +214,8 @@ pub struct RichTextElement {
     /// Horizontal nudge for the placeholder glyphs only (caret stays put).
     pub placeholder_dx: f32,
     pub selection: Option<Range<usize>>,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub remote: Vec<RemoteMark>,
     pub caret: Option<usize>,
     pub marked: Option<Range<usize>>,
     pub cache: LayoutCache,
@@ -226,6 +228,14 @@ pub struct RichTextElement {
     /// The button whose 按钮设置 panel is open (`.editing`), shown with
     /// the panel's unsaved values.
     pub button_edit: Option<(usize, crate::model::InlineButton)>,
+}
+
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+pub struct RemoteMark {
+    pub range: Option<Range<usize>>,
+    pub caret: Option<usize>,
+    pub color: Hsla,
+    pub name: Option<SharedString>,
 }
 
 pub struct Prepared {
@@ -983,6 +993,16 @@ impl Element for RichTextElement {
             let tops: Vec<Pixels> = layout.rows.iter().filter(|r| r.hard == hi).map(|r| r.y + r.base_dy).collect();
             let _ = line.paint_background_rows(o, lh, &tops, gpui_align, Some(bounds), window, cx);
         }
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        for mark in &self.remote {
+            if let Some(range) = &mark.range {
+                let start = self.text.text.floor_char_boundary(range.start.min(self.text.len()));
+                let end = self.text.text.floor_char_boundary(range.end.min(self.text.len()));
+                for rect in layout.rects_for(start..end) {
+                    window.paint_quad(fill(rect, mark.color.opacity(0.19)));
+                }
+            }
+        }
         if let Some(sel) = &self.selection {
             let rects = if self.text.is_empty() {
                 vec![Bounds::new(bounds.origin, size(px(5.), lh))]
@@ -1074,6 +1094,27 @@ impl Element for RichTextElement {
             for r in layout.rects_for(range.clone()) {
                 let top = r.top() + (lh - box_h) / 2.;
                 window.paint_quad(fill(Bounds::new(point(r.left(), top), size(r.size.width, box_h)), color));
+            }
+        }
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        for mark in &self.remote {
+            if let Some(caret) = mark.caret {
+                let caret = self.text.text.floor_char_boundary(caret.min(self.text.len()));
+                let p = layout.position_for(caret);
+                let font_h = px(self.spec.size * 1.18);
+                let top = p.y + (lh - font_h) / 2.;
+                window.paint_quad(fill(Bounds::new(point(p.x, top), size(px(2.), font_h)), mark.color).corner_radii(px(1.)));
+                if let Some(name) = &mark.name {
+                    let run = TextRun { len: name.len(), font: font(theme::UI_FONT), color: crate::cloud_sync::presence::badge_ink(mark.color),
+                        background_color: None, underline: None, strikethrough: None };
+                    let line = window.text_system().shape_line(name.clone(), px(10.), &[run], None);
+                    let mask = window.content_mask().bounds;
+                    let width = line.width + px(8.);
+                    let x = p.x.min(mask.right() - width).max(mask.left());
+                    let y = (top - px(15.)).max(mask.top());
+                    window.paint_quad(fill(Bounds::new(point(x, y), size(width, px(15.))), mark.color).corner_radii(px(3.)));
+                    let _ = line.paint(point(x + px(4.), y), px(15.), window, cx);
+                }
             }
         }
         if self.show_caret

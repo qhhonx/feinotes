@@ -1,0 +1,24 @@
+// Fei Notes stores these records in private or explicitly shared zones.
+DEFINE SCHEMA
+    RECORD TYPE FeiCloudTrial (
+        version INT64
+    );
+
+    RECORD TYPE QuietNoteEdit (
+        note STRING,
+        digest BYTES,
+        update ASSET
+    );
+
+    RECORD TYPE QuietPresence (
+        name STRING,
+        state BYTES
+    );
+
+    RECORD TYPE QuietRestoreFile (
+        dataFile ASSET
+    );
+
+    RECORD TYPE QuietRestoreLibrary (
+        snapshot BYTES
+    );

@@ -1,3 +1,5 @@
+> This is the preserved upstream Quiet.md Japanese README. Its download links refer to Quiet.md. For Fei Notes, use the maintained [English](README.md) or [Simplified Chinese](README.zh-CN.md) documentation.
+
 <h1 align="center">Quiet.md</h1>
 
 <p align="center">

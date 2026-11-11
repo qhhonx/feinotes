@@ -1,2 +1,18 @@
-<!-- Nucleo: trash-2, outline paths. Copyright Nucleo. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18" width="18" height="18"><g class="nc-icon-wrapper" fill="currentColor"> <path d="M13.605 4.75L13.099 14.355C13.043 15.417 12.165 16.25 11.102 16.25H6.89698C5.83298 16.25 4.95598 15.417 4.89998 14.355L4.39398 4.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none" /> <path d="M2.75 4.75H15.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" data-color="color-2" fill="none" /> <path d="M6.75 4.75V2.75C6.75 2.198 7.198 1.75 7.75 1.75H10.25C10.802 1.75 11.25 2.198 11.25 2.75V4.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" data-color="color-2" fill="none" /> <path d="M7.375 8L7.625 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" data-color="color-2" fill="none" /> <path d="M10.625 8L10.375 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" data-color="color-2" fill="none" /> </g></svg>
+<!-- Lucide 0.468.0: trash-2. See LICENSE-lucide. -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="18"
+  height="18"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M3 6h18" />
+  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+  <line x1="10" x2="10" y1="11" y2="17" />
+  <line x1="14" x2="14" y1="11" y2="17" />
+</svg>

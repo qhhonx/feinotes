@@ -2,10 +2,12 @@
 name = "quiet_md"
 version = "0.1.9"
 edition = "2024"
-description = "A fast, local-first rich text notes app for macOS and Windows, drawn with GPUI and compatible with Feishu DocxXML"
-license = "MIT"
+description = "Native Markdown notes for macOS with optional iCloud sync and collaboration"
+homepage = "https://feinotes.app/"
+repository = "https://github.com/qhhonx/feinotes"
+license = "MIT AND PolyForm-Noncommercial-1.0.0"
 readme = "README.md"
-authors = ["s1dashu"]
+authors = ["Fei Notes contributors", "s1dashu"]
 keywords = ["notes", "markdown", "editor", "gpui", "local-first"]
 categories = ["text-editors"]
 
@@ -13,6 +15,8 @@ categories = ["text-editors"]
 # --features devtools`). Off in release builds: shipped apps cannot be scripted.
 [features]
 devtools = []
+cloudkit-restore = []
+cloudkit-sync = ["cloudkit-restore", "dep:async-channel", "dep:flate2", "dep:loro", "dep:rusqlite", "dep:sha2", "fdl_core/sqlite-store"]
 
 # `fdl_core` is the GPUI-free document engine; plain `cargo test` covers both.
 [workspace]
@@ -46,6 +50,11 @@ sys-locale = "0.3.2"
 core-graphics = "0.24"
 core-foundation = "=0.10.0"
 objc = "0.2"
+async-channel = { version = "2", optional = true }
+flate2 = { version = "1.1", optional = true }
+loro = { version = "1.17.1", default-features = false, optional = true }
+rusqlite = { version = "0.41.1", optional = true }
+sha2 = { version = "0.10.9", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-registry = "0.5"

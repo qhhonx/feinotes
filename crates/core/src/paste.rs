@@ -738,7 +738,7 @@ fn table(n: &Handle, ctx: &Ctx) -> Option<Block> {
     }
     let head = trs.iter().take_while(|(_, h)| *h).count();
     let header_rows = if head > 0 { head } else { usize::from(all_th.first().copied().unwrap_or(false)) };
-    let mut t = Table { col_widths: col_widths(n, &trs, ncols), header_rows, header_col: false, rows };
+    let mut t = Table { col_widths: col_widths(n, &trs, ncols), header_rows, rows, ..Default::default() };
     t.repair();
     Some(Block::new(BlockKind::Table(t), RichText::default()))
 }
@@ -1104,7 +1104,7 @@ fn pipe_table(lines: &[&str]) -> Option<(Block, usize)> {
                 .collect()
         })
         .collect();
-    let mut t = Table { col_widths: vec![200.; ncols], header_rows: 1, header_col: false, rows };
+    let mut t = Table { col_widths: vec![200.; ncols], header_rows: 1, rows, ..Default::default() };
     t.repair();
     Some((Block::new(BlockKind::Table(t), RichText::default()), n))
 }

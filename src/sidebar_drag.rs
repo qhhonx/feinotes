@@ -195,7 +195,7 @@ impl SidebarDrag {
 fn row_face(e: &Entry, open: bool) -> Div {
     div().h(px(crate::sidebar::ROW_H)).w_full().pl(px(6.)).flex().items_center()
         .child(div().size(px(20.)).flex_none().flex().items_center().justify_center().map(|d| match &e.icon {
-            _ if e.meta.folder.is_some() => d.child(icon(if open { "folder-open" } else { "folder" }, crate::sidebar::ROW_ICON, Theme::icon())),
+            _ if e.meta.folder.is_some() => d.child(icon(if open { "folder-open" } else { "folder" }, crate::sidebar::ROW_ICON, crate::sidebar::folder_color())),
             _ if e.meta.markdown => d.child(icon("doc-md", crate::sidebar::ROW_ICON, Theme::icon())),
             Some(em) => d.text_size(px(13.)).line_height(px(20.)).child(em.clone()),
             None => d.child(icon("doc", crate::sidebar::ROW_ICON, Theme::icon())),
@@ -705,11 +705,11 @@ impl Workspace {
         for l in fd.leaving.values() {
             let [x, y, w] = l.pos.p;
             container = container.child(div().absolute().left(px(x)).top(px(y)).w(px(w)).opacity(l.alpha.unit())
-                .text_color(Theme::sidebar_text()).child(row_face(&l.row.entry, false)));
+                .text_color(crate::sidebar::text_color()).child(row_face(&l.row.entry, false)));
         }
         for (r, [x, y, w], band, a) in &closing {
             if band.1 - band.0 < 0.5 { continue; }
-            let el = div().id(SharedString::from(format!("fclose-{}", r.entry.id))).h(row_h).opacity(*a).text_color(Theme::sidebar_text())
+            let el = div().id(SharedString::from(format!("fclose-{}", r.entry.id))).h(row_h).opacity(*a).text_color(crate::sidebar::text_color())
                 .child(row_face(&r.entry, self.expanded.contains(&r.entry.id)));
             container = container.child(clipped(el, *x, *y - 4. * (1. - a), *w, Some(*band)));
         }
@@ -729,7 +729,7 @@ impl Workspace {
             let [x, y, w] = pill.pos.p;
             let i = index.get(pill.id.as_str()).copied();
             let show = fd.fx.get(&pill.id).map_or(1., |f| f.show.unit()) * i.map_or(1., |i| reveal[i]);
-            let el = div().id("sidebar-pill").h(row_h).rounded(radius).bg(Theme::sidebar_selected().opacity(show));
+            let el = div().id("sidebar-pill").h(row_h).rounded(radius).bg(crate::sidebar::selection_fill().opacity(show));
             container = container.child(clipped(el, x, y, w, i.and_then(|i| clip[i]).filter(|_| !pill.travel)));
         }
         if let Some((s, a)) = &fd.slot {
@@ -763,7 +763,7 @@ impl Workspace {
                 .when(lift > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius)
                     .bg(theme::raised(Theme::bg_body()).opacity(lift)).shadow(faded(theme::shadow_panel(), lift))))
                 .when(fx.glow.unit() > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(Theme::sidebar_landed().opacity(fx.glow.unit()))))
-                .when(hover > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(Theme::sidebar_hover().opacity(hover))))
+                .when(hover > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(crate::sidebar::hover().opacity(hover))))
                 .child(self.doc_row(&r.entry, "doc", 0, r.entry.meta.folder.is_some(), cx));
             // Revealed rows settle the last few pixels as they fade in.
             container = container.child(clipped(el, x, y - 4. * (1. - a), w, band));
@@ -832,7 +832,7 @@ impl Workspace {
                 .bg(theme::raised(Theme::bg_body())).shadow(faded(theme::shadow_panel(), l.min(1.))).flex().items_center().text_color(Theme::text())
                 .child(row_face(e, self.expanded.contains(&e.id)).flex_1().min_w_0().pl(px(6. + 3. * l)))
                 .when(inside > 0, |g| g.child(div().flex_none().h(px(18.)).min_w(px(18.)).px(px(5.)).rounded(px(9.)).flex().items_center().justify_center()
-                    .bg(Theme::sidebar_drop_slot()).text_size(px(11.)).text_color(Theme::sidebar_text()).font_weight(FontWeight::MEDIUM)
+                    .bg(Theme::sidebar_drop_slot()).text_size(px(11.)).text_color(crate::sidebar::text_color()).font_weight(FontWeight::MEDIUM)
                     .opacity(d.lift.unit()).child(inside.to_string()))));
         }
         Some(deferred(layer).with_priority(5).into_any_element())

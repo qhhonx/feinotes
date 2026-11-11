@@ -151,6 +151,11 @@ pub(super) struct Env {
 }
 
 const TEXT_PLACEHOLDER: &str = "输入“/”快速插入内容";
+const COMPACT_CODE_TOOLS_H: f32 = 24.;
+
+fn compact_code(b: &Block) -> bool {
+    theme::style().compact_code && matches!(&b.kind, BlockKind::Code { caption, .. } if caption.as_deref().is_none_or(str::is_empty))
+}
 
 pub(super) fn margins(b: &Block, env: Env) -> (f32, f32) {
     if env.cell {
@@ -162,9 +167,13 @@ pub(super) fn margins(b: &Block, env: Env) -> (f32, f32) {
             (m.mt, m.mb)
         }
         // Decorated blocks and code keep a little more air than text.
+        BlockKind::Code { .. } if compact_code(b) => (COMPACT_CODE_TOOLS_H, 16.),
         BlockKind::Code { .. } | BlockKind::Callout { .. } => (16., 16.),
-        // `.table`: 12 above and below.
-        BlockKind::Table(_) => if crate::settings::feishu() { (29.5, 22.) } else { (16., 16.) },
+        BlockKind::Table(_) => if crate::settings::feishu() { (29.5, 22.) } else { (theme::style().num("table.mt"), 16.) },
+        BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => {
+            let gap = theme::style().list_gap();
+            (gap, gap)
+        }
         // `.paragraph` padding: one block every 35pt.
         _ => (theme::block_gap(), theme::block_gap()),
     };
@@ -172,12 +181,30 @@ pub(super) fn margins(b: &Block, env: Env) -> (f32, f32) {
     (mt, if env.column { 0. } else { mb })
 }
 
+pub(super) fn gap_before(b: &Block, env: Env, top: f32, previous: Option<(&Block, f32)>) -> f32 {
+    let Some((prev, bottom)) = previous else { return 0.; };
+    let st = theme::style();
+    if !env.cell && prev.kind.is_list() && b.kind.is_list()
+        && let Some(todo_gap) = st.todo_gap
+    {
+        let todos = matches!(prev.kind, BlockKind::Todo { .. }) as u8 + matches!(b.kind, BlockKind::Todo { .. }) as u8;
+        return match todos { 2 => todo_gap, 1 => st.list_gap().midpoint(todo_gap), _ => bottom.max(top) };
+    }
+    if !env.cell && matches!(prev.kind, BlockKind::Text)
+        && let Some(gap) = st.compact_code_gap_after_paragraph
+        && compact_code(b)
+    {
+        return gap;
+    }
+    bottom.max(top)
+}
+
 /// Indices of the blocks shown in `list` (a folded heading hides what follows
 /// it up to the next heading of the same or a higher level), each with the
 /// collapsed margin above it.
 pub(super) fn visible_with_gaps(list: &[Block], env: Env) -> Vec<(usize, f32)> {
     let mut out = vec![];
-    let mut prev_mb: Option<f32> = None;
+    let mut previous = None;
     let mut hide_below: Option<u8> = None;
     for (i, b) in list.iter().enumerate() {
         if let Some(level) = hide_below {
@@ -192,8 +219,8 @@ pub(super) fn visible_with_gaps(list: &[Block], env: Env) -> Vec<(usize, f32)> {
             hide_below = Some(level);
         }
         let (mt, mb) = margins(b, env);
-        out.push((i, prev_mb.map(|p| p.max(mt)).unwrap_or(0.)));
-        prev_mb = Some(mb);
+        out.push((i, gap_before(b, env, mt, previous)));
+        previous = Some((b, mb));
     }
     out
 }
@@ -250,6 +277,16 @@ impl R<'_> {
             placeholder_color: None,
             placeholder_dx: 0.,
             selection,
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            remote: if self.ghost { vec![] } else {
+                self.ed.remote_selections.iter().filter_map(|device| {
+                    let sel = device.selection;
+                    let range = if sel.is_collapsed() { None } else { core.range_for(sel, id, &self.units) };
+                    let caret = (sel.head.block == id).then_some(sel.head.offset);
+                    if range.is_none() && caret.is_none() { return None; }
+                    Some(super::text::RemoteMark { range, caret, color: device.collaborator.color(), name: device.collaborator.name.clone() })
+                }).collect()
+            },
             caret: caret_here.then_some(sel.head.offset),
             marked: self.ed.marked.as_ref().filter(|(b, _)| *b == id && !self.ghost).map(|(_, r)| r.clone()),
             cache: self.cache.clone(),
@@ -308,12 +345,12 @@ impl R<'_> {
     pub fn blocks(&self, list: &[Block], env: Env, cx: &mut Context<Editor>) -> Div {
         let mut col = div().flex().flex_col().w_full();
         for (i, gap) in visible_with_gaps(list, env) {
-            col = col.child(div().mt(px(gap)).child(self.block(&list[i], list, i, Env { root: false, ..env }, cx)));
+            col = col.child(div().mt(px(gap)).child(self.block(&list[i], list, i, Env { root: false, ..env }, gap, cx)));
         }
         col
     }
 
-    pub(super) fn block(&self, b: &Block, siblings: &[Block], idx: usize, env: Env, cx: &mut Context<Editor>) -> AnyElement {
+    pub(super) fn block(&self, b: &Block, siblings: &[Block], idx: usize, env: Env, gap_above: f32, cx: &mut Context<Editor>) -> AnyElement {
         if crate::settings::feishu() { return self.block_feishu(b, siblings, idx, env, cx); }
 
         if !env.cell && !env.in_callout && !matches!(b.kind, BlockKind::Column { .. }) && !self.ghost {
@@ -322,7 +359,7 @@ impl R<'_> {
         let content: AnyElement = match &b.kind {
             BlockKind::Text | BlockKind::Heading { .. } => self.text_block(b, env, cx),
             BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => self.list_item(b, siblings, idx, env, cx),
-            BlockKind::Code { lang, wrap, .. } => self.code_block(b, lang, *wrap, cx),
+            BlockKind::Code { lang, wrap, .. } => self.code_block(b, lang, *wrap, (idx > 0 && !env.cell && gap_above > 0.).then_some(gap_above), cx),
             // The focus decoration: a 4pt bar at the column edge, the text
             // 12pt after it and unchanged.
             BlockKind::Quote => {
@@ -395,7 +432,7 @@ impl R<'_> {
             // The default separator ('light'): a dotted rule, 1.5pt dots
             // every 5pt at half the text colour.
             BlockKind::Divider => div()
-                .h(px(20.))
+                .h(px(theme::style().num("hr.height").max(theme::style().num("hr.width"))))
                 .w_full()
                 .child(
                     canvas(
@@ -628,7 +665,8 @@ impl R<'_> {
             return div();
         }
         let indent = theme::style().num("list.indent");
-        div().pl(px(indent)).mt(px(theme::block_gap())).child(self.blocks(&b.children, Env { depth: env.depth + 1, width: env.width - indent, ..env }, cx))
+        let gap = if b.kind.is_list() { theme::style().list_gap() } else { theme::block_gap() };
+        div().pl(px(indent)).mt(px(gap)).child(self.blocks(&b.children, Env { depth: env.depth + 1, width: env.width - indent, ..env }, cx))
     }
 
     fn list_item(&self, b: &Block, siblings: &[Block], idx: usize, env: Env, cx: &mut Context<Editor>) -> AnyElement {
@@ -642,14 +680,20 @@ impl R<'_> {
             // on the line don't depend on how the font's bullet glyph renders.
             // Bullets: text-coloured dots (hollow on the second level).
             BlockKind::Bullet => {
-                let c = theme::style().color("bullet.color").unwrap_or_else(Theme::text);
-                let dot = div().size(px(5.)).flex_none();
-                let dot = match env.depth % 3 {
-                    0 => dot.rounded_full().bg(c),
-                    1 => dot.rounded_full().border_1().border_color(c),
-                    _ => dot.size(px(4.5)).rounded(px(1.)).bg(c),
+                let st = theme::style();
+                let c = st.color("bullet.color").unwrap_or_else(Theme::text);
+                let dash = st.flag("list.dash");
+                let marker = if dash {
+                    div().w(px(6.)).h(px(1.)).rounded_full().bg(c)
+                } else {
+                    let dot = div().size(px(5.));
+                    match env.depth % 3 {
+                        0 => dot.rounded_full().bg(c),
+                        1 => dot.rounded_full().border_1().border_color(c),
+                        _ => dot.size(px(4.5)).rounded(px(1.)).bg(c),
+                    }
                 };
-                div().w(px(18.)).pl(px(5.)).mr(px(6.)).flex().child(dot).into_any_element()
+                div().w(px(18.)).pl(px(if dash { 7. } else { 5. })).mr(px(6.)).flex().child(marker.flex_none()).into_any_element()
             }
             BlockKind::Ordered { .. } => div()
                 .id(("ordered-number", id.0))
@@ -732,7 +776,7 @@ impl R<'_> {
             .into_any_element()
     }
 
-    fn code_block(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<Editor>) -> AnyElement {
+    fn code_block(&self, b: &Block, lang: &str, wrap: bool, gap_above: Option<f32>, cx: &mut Context<Editor>) -> AnyElement {
         if crate::settings::feishu() { return self.code_block_feishu(b, lang, wrap, cx); }
 
         let id = b.id;
@@ -777,6 +821,9 @@ impl R<'_> {
         // right-aligned), revealed on hover / while editing.
         let editing = self.focused && self.ed.core.sel.head.block == id;
         let folded = self.ed.code_folded.contains(&id);
+        let compact = !folded && compact_code(b);
+        // Keep the labels above the rim when the paragraph gap is shorter than the tool row.
+        let tools_above = gap_above.map_or(COMPACT_CODE_TOOLS_H, |gap| (gap + 5.5).min(COMPACT_CODE_TOOLS_H));
         // Handle hovered / its menu open (`.hovered`): light blue ring
         // over a clear body so the block tint shows; block-selected: blue
         // border on the gray body.
@@ -838,7 +885,7 @@ impl R<'_> {
                 .id(("code-caption", id.0))
                 .flex_1()
                 .min_w(px(50.))
-                .ml(px(if gutter_w > 0. { gutter_w + 10. } else { 16. }))
+                .ml(px(if compact { 32. } else if gutter_w > 0. { gutter_w + 10. } else { 16. }))
                 .mr(px(16.))
                 .h(px(28.))
                 .flex()
@@ -858,7 +905,7 @@ impl R<'_> {
             .id(("code-fold", id.0))
             .absolute()
             .left(px(6.))
-            .top(px(7.))
+            .top(px(if compact { -tools_above } else { 7. }))
             .size(px(24.))
             .flex()
             .items_center()
@@ -898,9 +945,9 @@ impl R<'_> {
         };
         // The code block: #FBFBFB in a 1pt rim, radius 6, a #F8F8F8 line-number
         // gutter split off by a hairline.
-        div()
+        let pane = div()
             .relative()
-            .group(g.clone())
+            .when(!compact, |d| d.group(g.clone()))
             .rounded(px(radius))
             .border_1()
             .border_color(border)
@@ -927,15 +974,16 @@ impl R<'_> {
             .child(
                 div()
                     .absolute()
-                    .top_0()
+                    .top(px(if compact { -tools_above } else { 0. }))
                     .left_0()
                     .right_0()
-                    .h(px(32.))
-                    .pt(px(6.))
+                    .h(px(if compact { COMPACT_CODE_TOOLS_H } else { 32. }))
+                    .pt(px(if compact { 0. } else { 6. }))
                     .pr(px(6.))
                     .flex()
                     .items_center()
                     .font_family(theme::UI_FONT)
+                    .when(compact && !editing, |d| d.opacity(0.).group_hover(g.clone(), |s| s.opacity(1.)))
                     .children(caption)
                     .child(
                         div()
@@ -985,11 +1033,11 @@ impl R<'_> {
             .when(!folded, |d| {
                 d.child(
                     div()
-                        .pt(px(36.))
-                        .pb(px(12.))
-                        .pr(px(16.))
+                        .pt(px(if compact { st.num("pre.pad-y") } else { 36. }))
+                        .pb(px(if compact { st.num("pre.pad-y") } else { 12. }))
+                        .pr(px(if compact { st.num("pre.pad-x") } else { 16. }))
                         .flex()
-                        .when(gutter_w == 0., |d| d.pl(px(16.)))
+                        .when(gutter_w == 0., |d| d.pl(px(if compact { st.num("pre.pad-x") } else { 16. })))
                         .when(gutter_w > 0., |d| d.child(
                             // Numbers right-aligned in the gutter, code 10pt past its hairline.
                             div()
@@ -1013,8 +1061,15 @@ impl R<'_> {
                         ))
                         .child(div().flex_1().min_w_0().overflow_hidden().child(el)),
                 )
-            })
-            .into_any_element()
+            });
+        if compact {
+            // Include the tools in the hover area without reserving space inside the code panel.
+            div().group(g).pt(px(tools_above))
+                .when(gap_above.is_some(), |d| d.mt(px(-tools_above)))
+                .child(pane).into_any_element()
+        } else {
+            pane.into_any_element()
+        }
     }
 }
 
@@ -1059,7 +1114,6 @@ impl Editor {
         #[allow(clippy::too_many_arguments)]
         fn rows(list: &[Block], orders: &rustc_hash::FxHashMap<BlockId, String>, path: &mut Vec<usize>, lead: f32, seed: u64, items: &mut Vec<Item>, keys: &mut Vec<u64>) {
             for (n, (ix, gap)) in visible_with_gaps(list, TOP).into_iter().enumerate() {
-                // A nested column starts 8px below its parent (`children_of`).
                 let gap = gap + if n == 0 { lead } else { 0. };
                 path.push(ix);
                 let mut h = FxHasher::default();
@@ -1070,7 +1124,8 @@ impl Editor {
                 items.push(Item::Block { path: path.clone(), gap });
                 keys.push(h.finish());
                 if flattens(&list[ix]) {
-                    rows(&list[ix].children, orders, path, 8., seed, items, keys);
+                    let lead = if list[ix].kind.is_list() { theme::style().flat_list_lead() } else { 8. };
+                    rows(&list[ix].children, orders, path, lead, seed, items, keys);
                 }
                 path.pop();
             }
@@ -1208,7 +1263,7 @@ impl Editor {
                             .when(ends(d), |e| e.rounded_b(px(3.)))
                             .bg(fill)
                     }))
-                    .child(r.block(b, list, bi, Env { depth, root: depth == 0, width: self.layout.content - 25. * depth as f32, ..TOP }, cx))
+                    .child(r.block(b, list, bi, Env { depth, root: depth == 0, width: self.layout.content - 25. * depth as f32, ..TOP }, gap, cx))
                     .when_some(sel_depth, |d, sd| {
                         d.child(
                             div()
@@ -1678,7 +1733,7 @@ pub(super) fn block_feishu(&self, b: &Block, siblings: &[Block], idx: usize, env
         let content: AnyElement = match &b.kind {
             BlockKind::Text | BlockKind::Heading { .. } => self.text_block(b, env, cx),
             BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => self.list_item(b, siblings, idx, env, cx),
-            BlockKind::Code { lang, wrap, .. } => self.code_block(b, lang, *wrap, cx),
+            BlockKind::Code { lang, wrap, .. } => self.code_block_feishu(b, lang, *wrap, cx),
             BlockKind::Quote => div()
                 .relative()
                 .pl(px(14.))

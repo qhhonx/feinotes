@@ -284,6 +284,8 @@ pre {
   background-color: var(--notion-surface);
   border-color: transparent;
   border-radius: 4px;
+  padding-top: 5px;
+  padding-left: 10px;
 }
 
 .line-numbers {
@@ -302,6 +304,7 @@ blockquote {
 
 ul {
   padding-left: 24px;
+  list-style-type: disc;
 }
 
 ul li::marker {
@@ -332,6 +335,7 @@ hr {
   border-top-style: solid;
   border-top-width: 1px;
   border-top-color: var(--notion-divider);
+  height: 20px;
 }
 
 table {
@@ -339,6 +343,9 @@ table {
   line-height: 20px;
   border-color: #e9e9e7;
   border-radius: 0px;
+  padding-top: 9px;
+  padding-left: 10px;
+  margin-top: 16px;
 }
 
 th {
@@ -353,6 +360,51 @@ th {
 }
 
 /* 代码高亮：Notion 使用 Prism 的默认浅色配色 */
+.attachment {
+  background-color: inherit;
+  border-color: inherit;
+}
+
+.sidebar {
+  background-color: inherit;
+  color: inherit;
+}
+
+.sidebar-section {
+  color: inherit;
+}
+
+.sidebar-folder {
+  color: inherit;
+}
+
+.sidebar-row:hover {
+  background-color: inherit;
+}
+
+.sidebar-row.is-selected {
+  background-color: inherit;
+}
+
+.toolbar {
+  background-color: inherit;
+}
+
+.toolbar-button {
+  background-color: inherit;
+  border-color: inherit;
+  color: inherit;
+  border-radius: inherit;
+}
+
+.toolbar-button:hover {
+  background-color: inherit;
+}
+
+.toolbar-button:active {
+  background-color: inherit;
+}
+
 .token.comment {
   color: #708090;
 }

@@ -268,6 +268,51 @@ th {
   background-color: #f2f3f5;
 }
 
+.attachment {
+  background-color: inherit;
+  border-color: inherit;
+}
+
+.sidebar {
+  background-color: inherit;
+  color: inherit;
+}
+
+.sidebar-section {
+  color: inherit;
+}
+
+.sidebar-folder {
+  color: inherit;
+}
+
+.sidebar-row:hover {
+  background-color: inherit;
+}
+
+.sidebar-row.is-selected {
+  background-color: inherit;
+}
+
+.toolbar {
+  background-color: inherit;
+}
+
+.toolbar-button {
+  background-color: inherit;
+  border-color: inherit;
+  color: inherit;
+  border-radius: inherit;
+}
+
+.toolbar-button:hover {
+  background-color: inherit;
+}
+
+.toolbar-button:active {
+  background-color: inherit;
+}
+
 .token.comment {
   color: #8d9096;
 }

@@ -613,7 +613,7 @@ mod tests {
         let mut text = RichText::plain("before ");
         text.push("\u{fffc}", Marks { inline: Some(crate::docxml::to_inline(InlineKind::File(file))), ..Default::default() });
         text.push(" after", Marks::default());
-        let mut table = Table { col_widths: vec![], header_rows: 0, header_col: false, rows: vec![vec![TableCell::empty()]] };
+        let mut table = Table { rows: vec![vec![TableCell::empty()]], ..Default::default() };
         table.rows[0][0].blocks = vec![Block::new(BlockKind::Text, text.clone())];
         let doc = Document { blocks: vec![Block::new(BlockKind::Text, text), Block::new(BlockKind::Table(table), RichText::default())], ..Default::default() };
         let out = export(&doc, &Options { assets: Some("out.assets"), library_root: Some(&root), ..Default::default() });
@@ -752,7 +752,7 @@ mod tests {
     #[test]
     fn exports_tables() {
         let cell = |s: &str| TableCell { blocks: vec![Block::text(s)], ..TableCell::empty() };
-        let t = Table { col_widths: vec![], header_rows: 1, header_col: false, rows: vec![vec![cell("a"), cell("b|c")], vec![cell("1")]] };
+        let t = Table { header_rows: 1, rows: vec![vec![cell("a"), cell("b|c")], vec![cell("1")]], ..Default::default() };
         assert_eq!(table(&t, &mut |_| None), "| a | b\\|c |\n| --- | --- |\n| 1 |  |");
     }
 }

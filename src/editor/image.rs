@@ -1956,7 +1956,7 @@ pub(super) fn image_block_from(bytes: &[u8], ext: &str) -> Result<Block, &'stati
 fn image_block_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Block, &'static str> {
     let path = store_image_named(bytes, ext, name)?;
     let mut b = Block::new(
-        BlockKind::Image { src_kind: "src".into(), src: path.to_string_lossy().to_string(), width: None, height: None, caption: None, crop: None },
+        BlockKind::Image { src_kind: "src".into(), src: crate::store::asset_source(&path), width: None, height: None, caption: None, crop: None },
         RichText::default(),
     );
     b.align = Align::Center;

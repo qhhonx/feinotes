@@ -888,9 +888,26 @@ pub fn continuous_surface(radius: f32, color: Hsla) -> Div {
     }).absolute().inset_0())
 }
 
+pub(crate) fn toolbar_color(key: &str) -> Option<Hsla> { crate::themes::active().color(key) }
+
+/// Paint on the existing control without changing its layout or hit area.
+pub(crate) fn toolbar_control(d: Stateful<Div>, base_radius: f32, hover: fn() -> Hsla, active: Option<fn() -> Hsla>) -> Stateful<Div> {
+    let radius = px(crate::themes::active().num_override("toolbar.button.radius").unwrap_or(base_radius));
+    d.rounded(radius)
+        .when_some(toolbar_color("toolbar.button.bg"), |d, c| d.bg(c))
+        .when_some(toolbar_color("toolbar.button.border"), |d, c| d.child(
+            div().absolute().inset_0().rounded(radius).border_1().border_color(c)))
+        .hover(|s| s.bg(toolbar_color("toolbar.button.hover").unwrap_or_else(hover)))
+        .when_some(toolbar_color("toolbar.button.active").or_else(|| active.map(|f| f())), |d, c| d.active(|s| s.bg(c)))
+}
+
+pub(crate) fn toolbar_icon(name: &str, size: f32) -> Svg {
+    icon(name, size, toolbar_color("toolbar.button.color").unwrap_or_else(Theme::icon))
+}
+
 pub fn header_icon(id: &'static str, name: &'static str) -> Stateful<Div> {
-    div().id(id).no_drag().size(px(crate::app::HEADER_ACTIONS_H)).rounded(px(8.)).flex_none().flex().items_center().justify_center().cursor_pointer()
-        .hover(|s| s.bg(Theme::fill_hover())).active(|s| s.bg(Theme::fill_pressed())).child(icon(name, 18., Theme::icon()))
+    toolbar_control(div().id(id).no_drag().size(px(crate::app::HEADER_ACTIONS_H)).flex_none().flex().items_center().justify_center().cursor_pointer(),
+        8., Theme::fill_hover, Some(Theme::fill_pressed)).child(toolbar_icon(name, 18.))
 }
 
 pub(crate) fn checkbox(on: bool) -> Div {

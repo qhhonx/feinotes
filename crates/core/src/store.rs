@@ -8,10 +8,21 @@ use std::io::Write;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use crate::time::now;
 use std::time::UNIX_EPOCH;
 #[path = "file_history.rs"] mod file_history;
 pub use file_history::{FileState, FileDelta, FileChanges};
+
+static SESSION_ROOT: OnceLock<PathBuf> = OnceLock::new();
+#[cfg(feature = "sqlite-store")]
+static SESSION_SQLITE: OnceLock<bool> = OnceLock::new();
+#[cfg(feature = "sqlite-store")]
+mod sqlite;
+#[cfg(feature = "sqlite-store")]
+pub mod blocks;
+#[cfg(feature = "sqlite-store")]
+pub use sqlite::SQLITE_FILE;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Meta {
@@ -210,6 +221,8 @@ pub struct Entry {
 }
 
 pub struct Store {
+    #[cfg(feature = "sqlite-store")]
+    sqlite: Option<sqlite::Library>,
     file_changes: Vec<std::sync::Weak<std::sync::Mutex<Vec<FileDelta>>>>,
     loaded: std::cell::RefCell<HashMap<String, String>>,
     /// Library images and attachments copied beside each 本机文件 this
@@ -238,6 +251,12 @@ struct WriteLock(std::fs::File);
 
 impl Drop for WriteLock {
     fn drop(&mut self) { let _ = self.0.unlock(); }
+}
+
+fn lock_root(root: &std::path::Path) -> Result<WriteLock> {
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(root.join(".lock"))?;
+    file.lock()?;
+    Ok(WriteLock(file))
 }
 
 /// Version of the on-disk layout, kept in `format.json`. Bump it when a
@@ -325,6 +344,21 @@ fn save_json<T: Serialize>(path: &std::path::Path, v: &T) -> Result<()> {
     write_atomic(path, &bytes)
 }
 
+/// Library-owned assets have the same reference on every replica.
+pub fn asset_source(path: &std::path::Path) -> String {
+    #[cfg(not(feature = "sqlite-store"))]
+    return path.to_string_lossy().into_owned();
+    #[cfg(feature = "sqlite-store")]
+    if !Store::sqlite_session() { return path.to_string_lossy().into_owned(); }
+    #[cfg(feature = "sqlite-store")]
+    let root = Store::root_dir();
+    #[cfg(feature = "sqlite-store")]
+    {
+        path.strip_prefix(&root).ok().filter(|path| path.starts_with("assets"))
+            .unwrap_or(path).to_string_lossy().into_owned()
+    }
+}
+
 /// Image path for an image block source (only local files are displayed).
 pub fn image_path(src: &str) -> Option<PathBuf> {
     let p = PathBuf::from(src.strip_prefix("file://").unwrap_or(src));
@@ -361,9 +395,15 @@ pub fn read_bounded(path: &std::path::Path, limit: u64) -> Result<Vec<u8>> {
 }
 
 impl Store {
-    /// `QUIET_MD_HOME`, else a folder of
+    /// Select a library before opening the first store in this process.
+    pub fn set_session_root(root: PathBuf) -> Result<()> {
+        SESSION_ROOT.set(root).map_err(|_| anyhow::anyhow!("Library already selected"))
+    }
+
+    /// Startup-selected library, `QUIET_MD_HOME`, else a folder of
     /// its own in the user's Documents, where they can see and back it up.
     pub fn root_dir() -> PathBuf {
+        if let Some(root) = SESSION_ROOT.get() { return root.clone() }
         std::env::var_os("QUIET_MD_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| dirs::document_dir().or_else(|| dirs::home_dir().map(|h| h.join("Documents"))).unwrap_or_else(|| PathBuf::from(".")).join("Quiet.md"))
@@ -377,6 +417,8 @@ impl Store {
     }
 
     pub fn open() -> Result<Self> {
+        #[cfg(feature = "sqlite-store")]
+        if Self::sqlite_session() { return Self::open_sqlite_at(Self::root_dir()); }
         Self::open_at(Self::root_dir())
     }
 
@@ -391,26 +433,34 @@ impl Store {
         }
         let index = load_json(&root.join("index.json"), "文档索引", &mut warnings);
         let trash = load_json(&root.join("trash").join("index.json"), "回收站索引", &mut warnings);
-        let mut store = Store { file_changes: vec![], root, index, trash, warnings, loaded: Default::default(), copied: Default::default(), parsed: HashMap::new() };
-        if let Ok(entries) = std::fs::read_dir(store.recovery_dir()) {
+        let mut store = Store {
+            #[cfg(feature = "sqlite-store")]
+            sqlite: None,
+            file_changes: vec![], root, index, trash, warnings, loaded: Default::default(), copied: Default::default(), parsed: HashMap::new()
+        };
+        store.restore_recoveries();
+        store.migrate_folders()?;
+        Ok(store)
+    }
+
+    fn restore_recoveries(&mut self) {
+        if let Ok(entries) = std::fs::read_dir(self.recovery_dir()) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().is_none_or(|x| x != "xml") { continue; }
                 let restored = (|| -> Result<()> {
                     let mut doc = docxml::parse(&std::fs::read_to_string(&path)?)?;
                     doc.title = crate::model::RichText::plain(format!("{} (recovered copy)", doc.title.text));
-                    store.create_from(&doc)?;
+                    self.create_from(&doc)?;
                     std::fs::remove_file(&path)?;
                     Ok(())
                 })();
-                store.warnings.push(match restored {
+                self.warnings.push(match restored {
                     Ok(()) => "已恢复上次退出时未保存的文档副本".into(),
                     Err(e) => format!("恢复副本仍保留在 {}：{e}", path.display()),
                 });
             }
         }
-        store.migrate_folders()?;
-        Ok(store)
     }
 
     fn recovery_dir(&self) -> PathBuf {
@@ -433,6 +483,10 @@ impl Store {
             Some(m) if m.markdown => self.root.join("docs").join(format!("{id}.md")),
             _ => self.root.join("docs").join(format!("{id}.xml")),
         }
+    }
+
+    fn read_body(&self, id: &str) -> Result<String> {
+        Ok(std::fs::read_to_string(self.path(id))?)
     }
 
     pub fn is_markdown(&self, id: &str) -> bool { self.index.get(id).is_some_and(|m| m.markdown) }
@@ -478,6 +532,8 @@ impl Store {
     /// Mark the library FORMAT 3 before its first Markdown document or
     /// 本机文件: older builds would drop their `markdown` / `path` / `name`.
     fn require_markdown_format(&self) -> Result<()> {
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() { return Ok(()); }
         let path = self.root.join("format.json");
         let marker: FormatMarker = serde_json::from_slice(&std::fs::read(&path)?)?;
         if marker.format < FORMAT { write_atomic(&path, &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?; }
@@ -488,9 +544,12 @@ impl Store {
     /// this one last looked. Every change is written through, so memory holds
     /// nothing the disk does not. A lock failure must never allow an unguarded write.
     fn begin_write(&mut self) -> Result<WriteLock> {
-        let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(self.root.join(".lock"))?;
-        f.lock()?;
-        let lock = WriteLock(f);
+        let lock = lock_root(&self.root)?;
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() {
+            self.refresh_sqlite()?;
+            return Ok(lock);
+        }
         let marker: FormatMarker = serde_json::from_slice(&std::fs::read(self.root.join("format.json"))?)?;
         anyhow::ensure!(marker.format <= FORMAT, "这个文档库由更新版本的 Quiet.md 创建，请升级后再打开");
         // An unreadable index is not judged here (that is `open`'s job): the
@@ -501,6 +560,8 @@ impl Store {
     }
 
     fn save_index(&self) -> Result<()> {
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() { return self.save_sqlite_index(); }
         save_json(&self.root.join("index.json"), &self.index)
     }
 
@@ -511,6 +572,13 @@ impl Store {
             Ok(lock) => Some(lock),
             Err(e) => { self.warnings.push(format!("无法锁定文档库：{e}")); None }
         };
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() {
+            return self.list_sqlite().unwrap_or_else(|err| {
+                self.warnings.push(format!("无法读取文档索引：{err}"));
+                vec![]
+            });
+        }
         let mut out = vec![];
         let Ok(rd) = std::fs::read_dir(self.root.join("docs")) else { return out };
         let mut dirty = false;
@@ -572,13 +640,17 @@ impl Store {
     }
 
     pub fn load(&self, id: &str) -> Result<Document> {
-        self.parse_doc(id, &std::fs::read_to_string(self.path(id))?)
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite_manages(id) { return self.load_sqlite_doc(id, false); }
+        self.parse_doc(id, &self.read_body(id)?)
     }
 
     /// Only opening an editor establishes a new save baseline; previews must
     /// not hide external changes from an already open editor.
     pub fn load_for_edit(&self, id: &str, shared: bool) -> Result<Document> {
-        let xml = std::fs::read_to_string(self.path(id))?;
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite_manages(id) { return self.load_sqlite_doc(id, !shared); }
+        let xml = self.read_body(id)?;
         let doc = self.parse_doc(id, &xml)?;
         if !shared { self.loaded.borrow_mut().insert(id.to_string(), xml); }
         Ok(doc)
@@ -594,6 +666,8 @@ impl Store {
 
     /// `save` for callers that already hold the write lock.
     fn save_now(&mut self, id: &str, doc: &Document) -> Result<Meta> {
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite_manages(id) { return self.save_sqlite_locked(id, doc, None, None, |_, _| Ok(())).map(|(meta, _)| meta); }
         let disk = if self.is_markdown(id) || self.loaded.borrow().contains_key(id) { std::fs::read_to_string(self.path(id)).ok() } else { None };
         let (xml, copies) = self.serialize_with_copies(id, doc, disk.as_deref());
         if let Some(previous) = self.loaded.borrow().get(id) {
@@ -668,6 +742,13 @@ impl Store {
     pub fn create_markdown(&mut self, doc: &Document, front: &str) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let _lock = self.begin_write()?;
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() {
+            let meta = Meta { created: now(), markdown: true, ..Default::default() };
+            self.save_sqlite_locked(&id, doc, Some(meta), Some(front), |_, _| Ok(()))?;
+            self.record_file_change(&id, None);
+            return Ok(id);
+        }
         self.require_markdown_format()?;
         let t = now();
         self.index.insert(id.clone(), Meta { created: t, modified: t, markdown: true, name: Some(doc.title.text.trim().to_string()), ..Default::default() });
@@ -680,6 +761,8 @@ impl Store {
     /// A Markdown document's front matter, as on disk.
     pub fn front_matter_of(&self, id: &str) -> String {
         if !self.is_markdown(id) { return String::new(); }
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite_manages(id) { return self.sqlite_front(id).unwrap_or_default(); }
         let text = std::fs::read_to_string(self.path(id)).unwrap_or_default();
         crate::markdown::front_matter(text.trim_start_matches('\u{feff}')).0.to_string()
     }
@@ -713,7 +796,11 @@ impl Store {
 
     /// Size of the document on disk, plus the local images and files it references.
     pub fn size_of(&self, id: &str, doc: &Document) -> u64 {
-        let mut n = std::fs::metadata(self.path(id)).map(|m| m.len()).unwrap_or(0);
+        #[cfg(feature = "sqlite-store")]
+        let mut n = if self.sqlite_manages(id) { self.sqlite_size(id).unwrap_or(0) }
+            else { std::fs::metadata(self.path(id)).map_or(0, |m| m.len()) };
+        #[cfg(not(feature = "sqlite-store"))]
+        let mut n = std::fs::metadata(self.path(id)).map_or(0, |m| m.len());
         for src in doc.asset_sources() {
             if let Some(p) = image_path(&src) {
                 n += std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
@@ -732,6 +819,8 @@ impl Store {
             self.loaded.borrow_mut().remove(id);
             return self.save_index();
         }
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() { return self.delete_sqlite(id, root); }
         let before = self.file_state(id);
         let target = self.trash_path(id);
         anyhow::ensure!(!target.try_exists()?, "回收站已存在同名文档，未覆盖：{id}");
@@ -783,6 +872,13 @@ impl Store {
             Ok(lock) => Some(lock),
             Err(e) => { self.warnings.push(format!("无法锁定文档库：{e}")); None }
         };
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() {
+            return self.list_sqlite_trash(_lock.is_some()).unwrap_or_else(|err| {
+                self.warnings.push(format!("无法读取回收站：{err}"));
+                vec![]
+            });
+        }
         let dir = self.trash_dir();
         let mut dirty = false;
         let mut on_disk = std::collections::HashSet::new();
@@ -859,6 +955,8 @@ impl Store {
     /// when its parent page is gone, so it landed at the top of 我的文档库.
     pub fn restore(&mut self, id: &str) -> Result<bool> {
         let _lock = self.begin_write()?;
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() { return self.restore_sqlite(id); }
         let group = self.trash_group(id);
         let mut index = self.index.clone();
         let parent = self.trash.get(id).and_then(|t| t.meta.parent.clone());
@@ -889,12 +987,16 @@ impl Store {
     }
 
     fn index_has(&self, id: &str) -> bool {
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite_manages(id) { return self.index.contains_key(id); }
         self.index.get(id).is_some_and(|m| m.folder.is_some() || self.path(id).exists())
     }
 
     /// 彻底删除 a page from the 回收站, with the pages that went with it.
     pub fn purge(&mut self, id: &str) -> Result<()> {
         let _lock = self.begin_write()?;
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() { return self.purge_sqlite(self.trash_group(id)); }
         for k in self.trash_group(id) {
             match std::fs::remove_file(self.trash_path(&k)) {
                 Ok(()) => {}
@@ -937,6 +1039,8 @@ impl Store {
     }
 
     pub fn settings(&self) -> Settings {
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() { return self.load_sqlite_settings().unwrap_or_default(); }
         std::fs::read(self.root.join("settings.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -944,6 +1048,8 @@ impl Store {
     }
 
     pub fn save_settings(&self, s: &Settings) -> Result<()> {
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() { return self.save_sqlite_settings(s); }
         write_atomic(&self.root.join("settings.json"), &serde_json::to_vec_pretty(s)?)
     }
 
@@ -958,6 +1064,14 @@ impl Store {
             m.modified = now();
             let meta = m.clone();
             if let Err(e) = self.save_index() { self.index = previous; return Err(e); }
+            self.record_file_change(id, before);
+            return Ok(meta);
+        }
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite_manages(id) {
+            let mut doc = self.load(id)?;
+            doc.title = crate::model::RichText::plain(title);
+            let meta = self.save_now(id, &doc)?;
             self.record_file_change(id, before);
             return Ok(meta);
         }
@@ -1453,7 +1567,12 @@ mod tests {
         let index = std::fs::read(trash.join("index.json")).unwrap();
         std::fs::rename(&trash, lib.0.join("trash-away")).unwrap();
         std::fs::write(&trash, b"").unwrap();
-        let mut s = Store { file_changes: vec![], root: lib.0.clone(), index: HashMap::new(), trash: serde_json::from_slice(&index).unwrap(), warnings: vec![], loaded: Default::default(), copied: Default::default(), parsed: HashMap::new() };
+        let mut s = Store {
+            #[cfg(feature = "sqlite-store")]
+            sqlite: None,
+            file_changes: vec![], root: lib.0.clone(), index: HashMap::new(), trash: serde_json::from_slice(&index).unwrap(),
+            warnings: vec![], loaded: Default::default(), copied: Default::default(), parsed: HashMap::new()
+        };
         assert_eq!(s.list_trash().len(), 1);
         assert_eq!(s.trash.len(), 1);
     }

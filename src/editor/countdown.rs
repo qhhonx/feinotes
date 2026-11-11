@@ -222,6 +222,12 @@ impl R<'_> {
         let left = c.remaining(now);
         let parts = [left / 86_400, left / 3600 % 24, left / 60 % 60, left % 60];
         let color = hex(&c.color);
+        let muted = theme::style().muted_countdown;
+        let (tile, digits, label) = if muted {
+            (color.opacity(0.15), Theme::text(), Theme::text_caption())
+        } else {
+            (color, gpui::white(), color)
+        };
         let progress = if c.duration > 0. { (left as f32 / c.duration as f32).clamp(0., 1.) } else { 0. };
         let menu_on = matches!(&ed.menu, Some(Menu::Block { block, .. }) | Some(Menu::Add { block, .. }) if *block == id);
         let selected = !menu_on && self.selected.contains(&id);
@@ -238,13 +244,13 @@ impl R<'_> {
                         .items_center()
                         .justify_center()
                         .rounded(px(RADIUS))
-                        .bg(color)
+                        .bg(tile)
                         .text_size(px(26.))
                         .font_weight(FontWeight::BOLD)
-                        .text_color(gpui::white())
+                        .text_color(digits)
                         .child(format!("{v:02}")),
                 )
-                .child(div().mt(px(4.)).text_size(px(13.)).line_height(px(20.)).text_color(color).child(crate::settings::text(UNITS[i]))),
+                .child(div().mt(px(4.)).text_size(px(13.)).line_height(px(20.)).text_color(label).child(crate::settings::text(UNITS[i]))),
             );
         }
         for r in SEP_RIGHT {
@@ -260,7 +266,7 @@ impl R<'_> {
                     .text_size(px(28.))
                     .line_height(px(46.))
                     .font_weight(FontWeight::BOLD)
-                    .text_color(color)
+                    .text_color(label)
                     .child(":"),
             );
         }

@@ -3,7 +3,7 @@
 //! pointer; an accent line shows where they land.
 
 use super::core::{BlockSel, DropPlace, block_at, siblings_at};
-use super::render::{Env, R, TOP, flattens, margins, visible_with_gaps};
+use super::render::{Env, R, TOP, flattens, gap_before, margins, visible_with_gaps};
 use super::view::Editor;
 use crate::model::*;
 use crate::feishu_theme::{self as theme, Theme};
@@ -469,7 +469,7 @@ impl Editor {
         };
         let core = &self.core;
         let mut col = div().flex().flex_col();
-        let mut prev_mb: Option<f32> = None;
+        let mut previous = None;
         for id in &d.ids {
             let Some(path) = core.path(*id) else { continue };
             let Some((list, ix)) = siblings_at(&core.doc.blocks, &path) else { continue };
@@ -477,8 +477,9 @@ impl Editor {
             let depth = path.len() - 1;
             let env = Env { depth, root: depth == 0, width: w * s - 4., ..TOP };
             let (mt, mb) = margins(b, env);
-            col = col.child(div().pl(px(2.)).mt(px(prev_mb.map_or(0., |p| p.max(mt)))).child(r.block(b, list, ix, env, cx)));
-            prev_mb = Some(mb);
+            let gap = gap_before(b, env, mt, previous);
+            col = col.child(div().pl(px(2.)).mt(px(gap)).child(r.block(b, list, ix, env, gap, cx)));
+            previous = Some((b, mb));
         }
         // A lifted copy of the blocks: white, hairline, crisp radius 5, the panel drop.
         Some(

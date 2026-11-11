@@ -39,10 +39,11 @@ pub(crate) fn page_header_with(ws: &Workspace, title: impl IntoElement, left: f3
         .pl(if ws.sidebar_open { px(left) } else { px(theme::TRAFFIC_LIGHTS_W) })
         .pr(px(crate::ui::header_right_inset()))
         .title_bar()
+        .when_some(crate::ui::toolbar_color("toolbar.bg"), |d, c| d.bg(c))
         .when(!ws.sidebar_open && cfg!(target_os = "windows"), |d| d.child(div().mr(px(12.)).child(ws.header_navigation(cx))))
         .when(!ws.sidebar_open && !cfg!(target_os = "windows"), |d| {
             d.child(
-                div()
+                crate::ui::toolbar_control(div()
                     .id("open-sidebar")
                     .no_drag()
                     .flex_none()
@@ -52,11 +53,9 @@ pub(crate) fn page_header_with(ws: &Workspace, title: impl IntoElement, left: f3
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(Theme::fill_hover_strong()))
+                    .cursor_pointer(), 8., Theme::fill_hover_strong, None)
                     .tip(crate::settings::tr("展开侧栏", "Show sidebar"), Some(crate::shortcuts::hint("workspace::ToggleSidebar", "⌘ + ]")))
-                    .child(icon("panel-left-open", 17., Theme::icon()))
+                    .child(crate::ui::toolbar_icon("panel-left-open", 17.))
                     .on_click(cx.listener(|w, _, _, cx| {
                         w.sidebar_open = true;
                         cx.notify();
@@ -102,7 +101,11 @@ impl Workspace {
                 .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::FocusSearch), cx))),
         );
         let mut page = div().flex_1().min_w_0().h_full().flex().flex_col().child(header);
-        if self.trash.is_empty() {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let recoveries = self.render_offline_recoveries(cx);
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        let recoveries: Option<Div> = None;
+        if self.trash.is_empty() && recoveries.is_none() {
             return page.child(empty_state("illus/empty-trash.svg", crate::settings::text("回收站暂无内容"))).into_any_element();
         }
         // The list: 13pt tertiary headers over a hairline,
@@ -195,8 +198,48 @@ impl Workspace {
                     .child(div().w(px(48.)).flex_none().flex().justify_end().pr(px(12.)).child(more)),
             );
         }
-        page = page.child(table_header).child(list);
+        page = page.when(!self.trash.is_empty(), |page| page.child(table_header)).child(list.children(recoveries));
         page.into_any_element()
+    }
+
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    fn render_offline_recoveries(&self, cx: &mut Context<Self>) -> Option<Div> {
+        use crate::settings::{button, tr};
+        let recoveries = crate::cloud_sync::offline_recoveries(cx).ok()?;
+        if recoveries.is_empty() { return None; }
+        Some(div().mt(px(20.)).px(px(20.)).py(px(12.)).rounded(px(ROW_RADIUS))
+            .border_1().border_color(list_line())
+            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(tr("离线恢复副本", "Offline Recovery Copies")))
+            .child(div().mt(px(4.)).text_size(px(13.)).text_color(Theme::text_caption()).child(ui_para(tr(
+                "原笔记已删除。这台 Mac 保留了删除时未包含的改动。",
+                "The original notes were deleted. This Mac kept changes that were missing at deletion."))))
+            .children(recoveries.into_iter().map(|(id, title)| {
+                let discard = id.clone();
+                div().mt(px(10.)).flex().flex_wrap().items_center().gap(px(8.))
+                    .child(div().flex_1().min_w(px(120.)).max_w_full().text_size(px(14.)).child(ui_para(display_title(&title))))
+                    .child(button(SharedString::from(format!("keep-recovery-{id}")), tr("另存为新笔记", "Save as New Note"))
+                        .on_click(cx.listener(move |w, _, window, cx| {
+                            w.resolve_offline_recovery(&id, true, window, cx);
+                        })))
+                    .child(button(SharedString::from(format!("discard-recovery-{discard}")), tr("删除副本", "Delete Copy"))
+                        .on_click(cx.listener(move |w, _, _, cx| {
+                            w.confirm = Some(Confirm::DiscardOfflineRecovery(discard.clone()));
+                            cx.notify();
+                        })))
+            })))
+    }
+
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    fn resolve_offline_recovery(&mut self, id: &str, keep: bool, window: &mut Window, cx: &mut Context<Self>) {
+        match crate::cloud_sync::resolve_offline_recovery(id, keep, cx) {
+            Ok(Some(new)) => {
+                self.entries = self.store.list();
+                self.sort();
+                self.open(&new, window, cx);
+            }
+            Ok(None) => cx.notify(),
+            Err(error) => self.show_toast_kind(crate::ui::ToastKind::Error, &error.to_string(), cx),
+        }
     }
 
     pub(crate) fn render_trash_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -291,7 +334,7 @@ impl Workspace {
     /// The confirmation dialog: a modal (white, radius 16), a 15pt
     /// semibold title, one line of 13pt body, 取消 and the action button on
     /// the right.
-    pub(crate) fn render_confirm(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn render_confirm(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let c = self.confirm.as_ref()?;
         let title_of = |id: &str| {
             self.entries
@@ -316,6 +359,12 @@ impl Workspace {
                 true,
             ),
             Confirm::Purge(_) => (crate::settings::text("确认彻底删除？").to_string(), crate::settings::text("彻底删除后，该页面及其子页面将无法恢复").to_string(), crate::settings::text("删除"), true),
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            Confirm::DiscardOfflineRecovery(_) => (
+                crate::settings::tr("删除离线恢复副本？", "Delete Offline Recovery Copy?").into(),
+                crate::settings::tr("此副本将从这台 Mac 移除。", "This copy will be removed from this Mac.").into(),
+                crate::settings::text("删除"), true,
+            ),
             Confirm::Refs { show: false, .. } => (
                 crate::settings::text("是否隐藏引用列表？").to_string(),
                 crate::settings::text("选择隐藏后，协作者将无法查看本文的引用列表。如需重新显示，可点击文档右上角的更多按钮“...”，打开“显示引用列表”开关。").to_string(),
@@ -329,21 +378,99 @@ impl Workspace {
                 crate::settings::text("重试"),
                 false,
             ),
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            Confirm::StartCloudTrial => (
+                crate::settings::tr("开始 7 天试用？", "Start a 7-day trial?").into(),
+                crate::settings::tr("确认后开始计时。同一 iCloud 账户的设备共用这 7 天。试用不会自动续费，本机笔记始终免费。",
+                    "The trial starts when you confirm and is shared across devices on this iCloud account. It won’t renew automatically. Local notes stay free.").into(),
+                crate::settings::tr("开始试用", "Start Trial"),
+                false,
+            ),
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            Confirm::SwitchCloudLibrary { cloud: true, .. } => (
+                crate::settings::tr("开启 iCloud 同步？", "Enable iCloud sync?").into(),
+                crate::settings::tr("飞记将自动重启并打开 iCloud 文档库。本机笔记会保留。",
+                    "Fei Notes will restart and open your iCloud library. Your local notes will be kept on this Mac.").into(),
+                crate::settings::tr("开启同步", "Enable Sync"),
+                false,
+            ),
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            Confirm::SwitchCloudLibrary { cloud: false, .. } => (
+                crate::settings::tr("打开本机文档库？", "Open the local library?").into(),
+                crate::settings::tr("飞记将自动重启并打开本机文档库。iCloud 笔记和待上传的改动会保留。",
+                    "Fei Notes will restart and open your local library. Your iCloud notes and pending changes are kept.").into(),
+                crate::settings::tr("切换到本机", "Switch to Local"),
+                false,
+            ),
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            Confirm::RestoreLibraryBackup(prepared) => {
+                let info = &prepared.summary;
+                (crate::settings::tr("恢复已校验的备份？", "Restore this verified backup?").into(),
+                    crate::localized_format!(
+                        "备份包含 {} 篇笔记、{} 个文件夹、回收站 {} 项、共享笔记 {} 篇和 {} 条待上传改动。飞记将自动重启并恢复备份，原文档库会保留。",
+                        "The backup contains {} notes, {} folders, {} items in Trash, {} shared notes and {} pending uploads. Fei Notes will restart to restore the backup and keep your current library.",
+                        info.notes, info.folders, info.trash, info.shared, info.pending),
+                    crate::settings::tr("恢复", "Restore"), false)
+            }
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            Confirm::CloudVersions { .. } => (
+                crate::settings::tr("iCloud 历史版本", "iCloud Version History").into(),
+                crate::settings::tr("选择一个版本，恢复为一篇新的笔记。", "Choose a version to restore as a new note.").into(),
+                crate::settings::tr("恢复副本", "Restore a Copy"),
+                false,
+            ),
         };
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let copy_choice = if let Confirm::SwitchCloudLibrary { cloud: true, copy_local } = c {
+            Some(div().id("confirm-copy-local").mt(px(14.)).flex().items_center().gap(px(8.))
+                .cursor_pointer().text_size(px(13.)).line_height(px(20.))
+                .child(crate::ui::checkbox(*copy_local))
+                .child(ui_para(crate::settings::tr("同时复制本机笔记到 iCloud", "Also copy local notes to iCloud")))
+                .on_click(cx.listener(|w, _, _, cx| {
+                    if let Some(Confirm::SwitchCloudLibrary { copy_local, .. }) = &mut w.confirm { *copy_local = !*copy_local; }
+                    cx.notify();
+                })))
+        } else { None };
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        let copy_choice = None::<Stateful<Div>>;
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let (version_list, ready) = if let Confirm::CloudVersions { versions, selected, .. } = c {
+            let list = div().id("cloud-version-list").mt(px(12.)).max_h(px(220.)).overflow_y_scroll()
+                .children(versions.iter().map(|(sequence, time, preview)| {
+                    let sequence = *sequence;
+                    let active = *selected == Some(sequence);
+                    div().id(SharedString::from(format!("cloud-version-{sequence}"))).flex().items_center().gap(px(8.))
+                        .px(px(8.)).py(px(6.)).rounded(px(8.)).cursor_pointer().hover(row_hover)
+                        .child(crate::transfer::radio(active))
+                        .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(20.))
+                            .child(time.clone())
+                            .child(div().truncate().text_size(px(12.)).text_color(Theme::text_caption()).child(preview.clone())))
+                        .on_click(cx.listener(move |w, _, _, cx| {
+                            if let Some(Confirm::CloudVersions { selected, .. }) = &mut w.confirm { *selected = Some(sequence); cx.notify(); }
+                        }))
+                }));
+            (Some(list), selected.is_some())
+        } else { (None, true) };
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        let (version_list, ready) = (None::<Stateful<Div>>, true);
         let no_ask = match c {
             Confirm::Refs { show: false, no_ask } => Some(*no_ask),
             _ => None,
         };
         let ok = primary_button("confirm-ok", action);
         let ok = if danger { ok.bg(Theme::danger()).hover(|s| s.bg(theme::c(craft::R600))).active(|s| s.bg(theme::c(craft::R700))) } else { ok };
+        let max_width = px(if matches!(c, Confirm::SaveFailed) || version_list.is_some() { 520. } else { 400. });
+        let width = (window.viewport_size().width - px(32.)).min(max_width);
         let dialog = dialog("confirm-dialog")
-            .w(px(if matches!(c, Confirm::SaveFailed) { 520. } else { 400. }))
+            .w(width)
             .px(px(24.))
             .pt(px(20.))
             .pb(px(24.))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).child(ui_para(title)))
             .child(div().mt(px(8.)).text_size(px(13.)).line_height(px(20.)).text_color(Theme::text()).child(ui_para(body)))
+            .children(copy_choice)
+            .children(version_list)
             .child(
                 div()
                     .mt(px(24.))
@@ -381,7 +508,7 @@ impl Workspace {
                             w.resolve_save_failed(false, window, cx);
                         })))
                     })
-                    .child(ok.on_click(cx.listener(|w, _, window, cx| {
+                    .child(ok.when(!ready, |b| b.opacity(0.45).cursor_default()).when(ready, |b| b.on_click(cx.listener(|w, _, window, cx| {
                         let Some(c) = w.confirm.take() else { return };
                         match c {
                             Confirm::Delete { ids, batch } => {
@@ -393,6 +520,8 @@ impl Workspace {
                             Confirm::Restore(id) => w.restore_doc(&id, cx),
                             Confirm::Purge(id) => w.purge_doc(&id, cx),
                             Confirm::EmptyTrash => w.empty_trash(cx),
+                            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                            Confirm::DiscardOfflineRecovery(id) => w.resolve_offline_recovery(&id, false, window, cx),
                             Confirm::Refs { show, no_ask } => {
                                 if no_ask {
                                     let mut s = w.store.settings();
@@ -402,9 +531,23 @@ impl Workspace {
                                 w.set_refs_hidden(!show, cx);
                             }
                             Confirm::SaveFailed => w.resolve_save_failed(true, window, cx),
+                            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                            Confirm::StartCloudTrial => w.trial_action(true, window, cx),
+                            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                            Confirm::SwitchCloudLibrary { cloud, copy_local } => w.select_library(match (cloud, copy_local) {
+                                (true, true) => crate::cloud_restore::LibrarySelection::CopyToCloud,
+                                (true, false) => crate::cloud_restore::LibrarySelection::Cloud,
+                                (false, _) => crate::cloud_restore::LibrarySelection::Local,
+                            }, cx),
+                            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                            Confirm::RestoreLibraryBackup(prepared) => w.restore_library_backup(*prepared, cx),
+                            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                            Confirm::CloudVersions { id, selected, .. } => {
+                                if let Some(sequence) = selected { w.restore_cloud_version(&id, sequence, window, cx); }
+                            }
                         }
                         cx.notify();
-                    }))),
+                    })))),
             );
         Some(
             deferred(

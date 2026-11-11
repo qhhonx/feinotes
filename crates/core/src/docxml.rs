@@ -112,6 +112,17 @@ pub fn parse(xml: &str) -> Result<Document> {
     Ok(doc)
 }
 
+/// The same inline representation used inside a DocxXML paragraph.
+pub fn serialize_inline(text: &RichText) -> String {
+    let mut xml = String::new();
+    write_inline(text, &mut xml);
+    xml
+}
+
+pub fn parse_inline(xml: &str) -> Result<RichText> {
+    Ok(inline_text(&parse_dom(xml)?))
+}
+
 fn is_block_tag(name: &str) -> bool {
     matches!(
         name,
@@ -479,7 +490,7 @@ fn parse_table(e: &Element) -> Table {
             }
         }
     }
-    let mut t = Table { col_widths, header_rows, header_col, rows };
+    let mut t = Table { col_widths, header_rows, header_col, rows, axes: Default::default() };
     t.repair();
     t
 }
@@ -676,6 +687,12 @@ fn trim_rich(t: &mut RichText) {
 // ---------------------------------------------------------------- serialization
 
 pub fn serialize(doc: &Document) -> String {
+    let mut s = serialize_header(doc);
+    write_blocks(&doc.blocks, &mut s, 0);
+    s
+}
+
+pub fn serialize_header(doc: &Document) -> String {
     let mut s = String::new();
     s.push_str("<title");
     if let Some(icon) = &doc.icon {
@@ -693,8 +710,23 @@ pub fn serialize(doc: &Document) -> String {
     s.push('>');
     write_inline(&doc.title, &mut s);
     s.push_str("</title>\n");
-    write_blocks(&doc.blocks, &mut s, 0);
     s
+}
+
+#[cfg(feature = "sqlite-store")]
+pub fn serialize_block(block: &Block) -> String {
+    let mut xml = String::new();
+    write_blocks(std::slice::from_ref(block), &mut xml, 0);
+    xml
+}
+
+#[cfg(feature = "sqlite-store")]
+pub fn parse_single_block(xml: &str) -> Result<Block> {
+    let columns = xml.starts_with("<column ");
+    let mut blocks = if columns { parse(&format!("<grid>{xml}</grid>"))?.blocks.remove(0).children }
+        else { parse(xml)?.blocks };
+    anyhow::ensure!(blocks.len() == 1, "Expected one DocxXML block");
+    Ok(blocks.remove(0))
 }
 
 thread_local! {

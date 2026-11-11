@@ -1,0 +1,151 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Copyright 2026 Fei Notes contributors. See LICENSES.md.
+name: Fei Notes Apple release
+
+on:
+  push:
+    branches: ['product/quiet-sync']
+    tags: ['testflight/v*/build-*', 'public-testflight/v*/build-*', 'store/v*/build-*']
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'rust-toolchain.toml'
+      - 'LICENSE'
+      - 'THIRD_PARTY.md'
+      - 'assets/**'
+      - 'crates/**'
+      - 'packaging/**'
+      - 'scripts/**'
+      - 'src/**'
+      - 'vendor/**'
+      - '.github/workflows/fei-apple-release.yml'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Apple release step
+        required: true
+        type: choice
+        options: [public-testflight, testflight, store, submit, publish]
+      version:
+        description: App version, such as 1.0.0
+        required: true
+        type: string
+      build:
+        description: Exact Apple build number (blank only for publish)
+        required: false
+        type: string
+      confirmation:
+        description: Required for submit (submit:VERSION:BUILD) and publish (publish:VERSION)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fei-notes-apple-release
+  cancel-in-progress: false
+
+jobs:
+  select:
+    if: github.repository_owner == 'qhhonx' && (github.event_name == 'workflow_dispatch' || github.event.deleted == false)
+    runs-on: ubuntu-latest
+    outputs:
+      operation: ${{ steps.release.outputs.operation }}
+      version: ${{ steps.release.outputs.version }}
+      build: ${{ steps.release.outputs.build }}
+    steps:
+      - name: Verify release selection
+        id: release
+        shell: bash
+        env:
+          OPERATION: ${{ inputs.operation }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          TESTFLIGHT_VERSION: ${{ vars.FEI_TESTFLIGHT_VERSION || '1.0.0' }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            if [[ "$GITHUB_REF_TYPE" == branch ]]; then
+              [[ "$GITHUB_REF_NAME" == product/quiet-sync ]]
+              OPERATION=public-testflight
+              VERSION=$TESTFLIGHT_VERSION
+              BUILD=$((1000 + GITHUB_RUN_NUMBER))
+            else
+              [[ "$GITHUB_REF_NAME" =~ ^(public-testflight|testflight|store)/v([0-9]+\.[0-9]+\.[0-9]+)/build-([1-9][0-9]{0,3})$ ]]
+              OPERATION=${BASH_REMATCH[1]}
+              VERSION=${BASH_REMATCH[2]}
+              BUILD=${BASH_REMATCH[3]}
+            fi
+          fi
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$OPERATION" == publish || "$BUILD" =~ ^[1-9][0-9]{0,3}$ ]]
+          case "$OPERATION" in
+            testflight|public-testflight|store) ;;
+            submit) [[ "$CONFIRMATION" == "submit:$VERSION:$BUILD" ]] ;;
+            publish) [[ "$CONFIRMATION" == "publish:$VERSION" ]] ;;
+            *) exit 1 ;;
+          esac
+          printf 'operation=%s\nversion=%s\nbuild=%s\n' "$OPERATION" "$VERSION" "$BUILD" >> "$GITHUB_OUTPUT"
+
+  checks:
+    needs: select
+    if: needs.select.outputs.operation == 'testflight' || needs.select.outputs.operation == 'public-testflight' || needs.select.outputs.operation == 'store'
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Check the exact release commit
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '14.0'
+        run: |
+          xcodebuild -version
+          test "$(uname -m)" = arm64
+          cargo test --locked --release --no-default-features --features cloudkit-sync
+
+  release:
+    needs: [select, checks]
+    if: >-
+      !cancelled() && needs.select.result == 'success' &&
+      (needs.checks.result == 'success' ||
+       (needs.checks.result == 'skipped' &&
+        (needs.select.outputs.operation == 'submit' || needs.select.outputs.operation == 'publish')))
+    runs-on: macos-26
+    timeout-minutes: 95
+    environment: ${{ fromJSON('{"testflight":"feinotes-testflight","public-testflight":"feinotes-testflight","store":"feinotes-store","submit":"feinotes-submit","publish":"feinotes-publish"}')[needs.select.outputs.operation] }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify release safety checks
+        run: python3 -B packaging/macos/test-apple-release.py
+      - name: Build, distribute or advance the exact release
+        env:
+          OPERATION: ${{ needs.select.outputs.operation }}
+          VERSION: ${{ needs.select.outputs.version }}
+          BUILD: ${{ needs.select.outputs.build }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY_B64: ${{ secrets.ASC_PRIVATE_KEY_B64 }}
+          FEI_APP_CERT_B64: ${{ secrets.FEI_APP_CERT_B64 }}
+          FEI_INSTALLER_CERT_B64: ${{ secrets.FEI_INSTALLER_CERT_B64 }}
+          FEI_STORE_PROFILE_B64: ${{ secrets.FEI_STORE_PROFILE_B64 }}
+          FEI_CERT_PASSWORD: ${{ secrets.FEI_CERT_PASSWORD }}
+          FEI_APP_CERT_SHA1: ${{ vars.FEI_APP_CERT_SHA1 }}
+          FEI_INSTALLER_CERT_SHA1: ${{ vars.FEI_INSTALLER_CERT_SHA1 }}
+          FEI_BETA_GROUP_ID: ${{ vars.FEI_BETA_GROUP_ID }}
+          FEI_PUBLIC_BETA_GROUP_ID: ${{ vars.FEI_PUBLIC_BETA_GROUP_ID }}
+          FEI_MAC_ARCHS: arm64 x86_64
+          FEI_EXPORT_EXEMPT: ${{ vars.FEI_EXPORT_EXEMPT }}
+          FEI_SUBSCRIPTION_GROUP_ID: ${{ vars.FEI_SUBSCRIPTION_GROUP_ID }}
+          FEI_STOREKIT_MONTHLY_PRODUCT: ${{ vars.FEI_STOREKIT_MONTHLY_PRODUCT }}
+          FEI_STOREKIT_ANNUAL_PRODUCT: ${{ vars.FEI_STOREKIT_ANNUAL_PRODUCT }}
+          FEI_SUPPORT_URL: ${{ vars.FEI_SUPPORT_URL }}
+          FEI_PRIVACY_URL: ${{ vars.FEI_PRIVACY_URL }}
+          FEI_TERMS_URL: ${{ vars.FEI_TERMS_URL }}
+        run: bash packaging/macos/run-apple-release.sh "$OPERATION" "$VERSION" "$BUILD" "$CONFIRMATION"

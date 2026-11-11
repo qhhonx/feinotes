@@ -37,6 +37,13 @@ pub(crate) const SECTION_TOP: f32 = 6.;
 /// 批量操作 caps at 50 pages.
 pub(crate) const BATCH_LIMIT: usize = 50;
 
+pub(crate) fn surface() -> Option<Hsla> { crate::themes::active().color("sidebar.bg") }
+pub(crate) fn text_color() -> Hsla { crate::themes::active().color("sidebar.text").unwrap_or_else(Theme::sidebar_text) }
+pub(crate) fn section_color() -> Hsla { crate::themes::active().color("sidebar.section").unwrap_or_else(Theme::sidebar_section) }
+pub(crate) fn folder_color() -> Hsla { crate::themes::active().color("sidebar.folder").unwrap_or_else(Theme::icon) }
+pub(crate) fn hover() -> Hsla { crate::themes::active().color("sidebar.hover").unwrap_or_else(Theme::sidebar_hover) }
+pub(crate) fn selection_fill() -> Hsla { crate::themes::active().color("sidebar.selected").unwrap_or_else(Theme::sidebar_selected) }
+
 /// The footer row: like 主页 (same pill, glyph and label columns) under
 /// the footer line, so the bottom corner mirrors the top.
 pub(crate) fn footer_row(id: &'static str, glyph: &'static str, label: &'static str) -> Stateful<Div> {
@@ -51,8 +58,8 @@ pub(crate) fn footer_row(id: &'static str, glyph: &'static str, label: &'static 
         .cursor_pointer()
         .text_size(px(13.))
         .line_height(px(20.))
-        .text_color(Theme::sidebar_text())
-        .hover(|s| s.bg(Theme::sidebar_hover()))
+        .text_color(text_color())
+        .hover(|s| s.bg(hover()))
         .child(div().size(px(20.)).flex_none().flex().items_center().justify_center().mr(px(9.)).child(icon(glyph, ROW_ICON, Theme::icon())))
         .child(label)
 }
@@ -111,7 +118,7 @@ impl Workspace {
             .pr(px(12.))
             .title_bar()
             .child(
-                div()
+                crate::ui::toolbar_control(div()
                     .id("collapse-sidebar")
                     .no_drag()
                     .flex_none()
@@ -120,11 +127,9 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(Theme::sidebar_hover()))
+                    .cursor_pointer(), 8., hover, None)
                     .tip(crate::settings::tr("收起侧栏", "Hide sidebar"), Some(crate::shortcuts::hint("workspace::ToggleSidebar", "⌘ + ]")))
-                    .child(icon("panel-left-close", 17., Theme::icon()))
+                    .child(crate::ui::toolbar_icon("panel-left-close", 17.))
                     .on_click(cx.listener(|w, _, _, cx| {
                         w.sidebar_open = false;
                         cx.notify();
@@ -133,8 +138,7 @@ impl Workspace {
             .child(div().flex_1())
             .children(crate::settings::update_pill(cx));
 
-        // The nav is just 主页: 36px items, a blue tint when selected. Its
-        // icon column (x 17) is shared with 搜索 and the doc rows.
+        // The icon column is shared with 搜索 and the doc rows.
         let home_on = self.view == View::Home;
         let nav = div().flex_none().pt(px(4.)).pb(px(4.)).px(px(SB_X)).child(
             div()
@@ -148,8 +152,8 @@ impl Workspace {
                 .cursor_pointer()
                 .text_size(px(13.))
                 .line_height(px(20.))
-                .when(home_on, |d| d.bg(Theme::sidebar_selected()).text_color(Theme::text()))
-                .when(!home_on, |d| d.text_color(Theme::sidebar_text()).hover(|s| s.bg(Theme::sidebar_hover())))
+                .when(home_on, |d| d.bg(selection_fill()).text_color(Theme::text()))
+                .when(!home_on, |d| d.text_color(text_color()).hover(|s| s.bg(hover())))
                 .child(
                     // Selected or not, the same outline: the row's fill marks the selection.
                     div().size(px(20.)).flex_none().flex().items_center().justify_center().mr(px(9.)).child(icon(
@@ -163,6 +167,10 @@ impl Workspace {
         );
 
         let mut list = div().flex().flex_col().px(px(SB_X)).pb(px(8.));
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if !crate::cloud_restore::local_only() && !crate::in_shared_note() {
+            list = list.child(self.shared_sidebar(cx));
+        }
         // Pinned docs are shortcuts: they stay in 我的文档 too.
         let pinned: Vec<&Entry> = entries.iter().filter(|e| e.meta.pinned).collect();
         if !pinned.is_empty() {
@@ -208,8 +216,8 @@ impl Workspace {
                         .items_center()
                         .justify_center()
                         .rounded(px(8.))
-                        .when(on, |d| d.bg(Theme::sidebar_selected()))
-                        .when(enabled && !on, |d| d.group_hover(group, |s| s.bg(Theme::sidebar_hover())))
+                        .when(on, |d| d.bg(selection_fill()))
+                        .when(enabled && !on, |d| d.group_hover(group, |s| s.bg(hover())))
                         .child(match (on, enabled) {
                             (true, _) => icon(&format!("{name}-filled"), 17., Theme::icon()),
                             (false, true) => icon(name, 17., Theme::icon()),
@@ -245,12 +253,44 @@ impl Workspace {
             .h_full()
             .flex()
             .flex_col()
+            .when_some(surface(), |d, c| d.bg(c))
             .child(header)
             .child(nav)
             .child(div().id("doc-list").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.list_scroll).child(list))
             .children(crate::changelog::card(cx.listener(|_, _, _, cx| cx.notify())))
             .child(footer)
             .into_any_element()
+    }
+
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    fn shared_sidebar(&self, cx: &mut Context<Self>) -> Div {
+        use crate::cloud_sync::activity::ActivityView;
+        let label = crate::settings::tr("共享笔记", "Shared Notes");
+        let rows = cx.try_global::<ActivityView>().into_iter().flat_map(|view| &view.0).map(|row| {
+            let room = row.room.clone();
+            div().id(SharedString::from(format!("shared-note-{}", room.scope.note)))
+                .h(px(ROW_H)).pl(px(9.)).pr(px(8.)).flex().items_center().gap(px(8.))
+                .rounded(px(ROW_R)).cursor_pointer().text_size(px(13.)).text_color(text_color())
+                .hover(|style| style.bg(hover()))
+                .child(icon("doc", ROW_ICON, Theme::icon()))
+                .child(div().flex_1().min_w_0().truncate().child(display_title(&room.title)))
+                .when(row.unread, |row| row.child(div().id("shared-note-unread")
+                    .size(px(7.)).flex_none().rounded_full().bg(Theme::primary())
+                    .tip(crate::settings::tr("有协作者更新", "Updated by a collaborator"), None)))
+                .on_click(cx.listener(move |workspace, _, _, cx| {
+                    workspace.open_shared_note(&room, cx);
+                }))
+        }).collect::<Vec<_>>();
+        div().flex().flex_col().pb(px(GROUP_GAP - SECTION_TOP))
+            .child(div().id("nav-shared-notes").h(px(ROW_H)).pl(px(8.)).pr(px(8.))
+                .flex().items_center().justify_between().rounded(px(ROW_R)).cursor_pointer()
+                .text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(section_color())
+                .hover(|style| style.bg(hover()))
+                .child(label).child(icon("chevron-right", 14., Theme::icon()))
+                .on_click(cx.listener(|workspace, _, _, cx| {
+                    workspace.open_settings(crate::settings::Page::Shared, cx);
+                })))
+            .children(rows)
     }
 
     /// Width handle: a 15px hit strip straddling the sidebar edge (6px inside,
@@ -343,7 +383,7 @@ impl Workspace {
                 .p(px(3.))
                 .rounded(px(6.))
                 .cursor_pointer()
-                .hover(|s| s.bg(Theme::sidebar_hover()))
+                .hover(|s| s.bg(hover()))
                 .child(icon(name, 16., Theme::icon()))
         };
         let row = div().h(px(SECTION_H)).pl(px(4.)).pt(px(SECTION_TOP)).flex().items_center().group(group.clone());
@@ -391,9 +431,9 @@ impl Workspace {
                 .items_center()
                 .rounded(px(6.))
                 .cursor_pointer()
-                .hover(|s| s.bg(Theme::sidebar_hover()))
+                .hover(|s| s.bg(hover()))
                 .tip(if folded { crate::settings::text("点击展开") } else { crate::settings::text("点击折叠") }, None)
-                .child(div().pr(px(4.)).text_size(px(13.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::sidebar_section()).child(crate::settings::label(title)))
+                .child(div().pr(px(4.)).text_size(px(13.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).text_color(section_color()).child(crate::settings::label(title)))
                 .child(
                     div()
                         .when(!folded, |d| d.opacity(0.).group_hover(group, |s| s.opacity(1.)))
@@ -534,8 +574,8 @@ impl Workspace {
             .justify_center()
             .rounded(px(6.))
             .when(!open, |d| match reveal { Some(a) => d.opacity(a), None => d.opacity(0.).group_hover("doc-row", |s| s.opacity(1.)) })
-            .when(open, |d| d.bg(Theme::sidebar_selected()))
-            .hover(|s| s.bg(Theme::sidebar_selected()))
+            .when(open, |d| d.bg(selection_fill()))
+            .hover(|s| s.bg(selection_fill()))
             .child(icon("ellipsis", 15., Theme::icon()))
             .child(canvas(move |b, _, _| record.borrow_mut().insert(slot.clone(), b), |_, _, _, _| {}).absolute().inset_0())
             .on_mouse_down(
@@ -561,7 +601,7 @@ impl Workspace {
             .flex_none()
             .rounded(px(6.))
             .opacity(self.folder_drag.reveal(&e.id))
-            .hover(|s| s.bg(Theme::sidebar_selected()))
+            .hover(|s| s.bg(selection_fill()))
             .child(icon(if folder { "folder-plus" } else { "plus" }, 16., Theme::icon()))
             .tip(crate::settings::tr(if folder { "新建文件夹" } else { "新建文档" }, if folder { "New folder" } else { "New document" }), None)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -609,7 +649,7 @@ impl Workspace {
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .text_color(if drop_target || selected { Theme::text() } else { Theme::sidebar_text() })
+                .text_color(if drop_target || selected { Theme::text() } else { text_color() })
                 .child(ui_text(display_title(&e.title)))
                 .into_any_element(),
         };
@@ -625,8 +665,8 @@ impl Workspace {
             .flex()
             .items_center()
             // In 我的文档 the selection pill and the hover wash are drawn under the row (`sidebar_drag.rs`).
-            .when(checked || (selected && key != "doc"), |d| d.bg(Theme::sidebar_selected()))
-            .when(!selected && !checked && !drop_target && key != "doc", |d| d.hover(|s| s.bg(Theme::sidebar_hover())))
+            .when(checked || (selected && key != "doc"), |d| d.bg(selection_fill()))
+            .when(!selected && !checked && !drop_target && key != "doc", |d| d.hover(|s| s.bg(hover())))
             .pl(px(6. + 18. * depth as f32))
             .when(batch.is_some(), |d| {
                 d.child(
@@ -650,7 +690,7 @@ impl Workspace {
                 let chevron = if toggle { self.folder_drag.reveal(&e.id) } else { 0. };
                 let open = self.expanded.contains(&e.id);
                 div().size(px(20.)).flex_none().flex().items_center().justify_center().relative()
-                    .when(toggle, |d| d.rounded(px(5.)).hover(|s| s.bg(Theme::sidebar_hover()))
+                    .when(toggle, |d| d.rounded(px(5.)).hover(|s| s.bg(hover()))
                         .on_mouse_down(MouseButton::Left, cx.listener(|w, ev: &MouseDownEvent, _, _| {
                             w.folder_drag.icon_press = true;
                             w.folder_drag.icon_alt = ev.modifiers.alt;
@@ -659,7 +699,7 @@ impl Workspace {
                     _ if folder => {
                         let s = if key == "doc" { self.folder_drag.pop(&e.id) } else { 1. };
                         d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(1. - chevron)
-                            .child(icon(if drop_target { "folder-input" } else if open { "folder-open" } else { "folder" }, ROW_ICON, Theme::icon())
+                            .child(icon(if drop_target { "folder-input" } else if open { "folder-open" } else { "folder" }, ROW_ICON, folder_color())
                                 .with_transformation(Transformation::scale(size(s, s)))))
                         .when(chevron > 0.005, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(chevron)
                             .child(icon("disclosure", ROW_ICON, Theme::icon())

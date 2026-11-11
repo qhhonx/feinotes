@@ -204,7 +204,7 @@ impl Editor {
     fn apply_preset(&mut self, name: &str, cx: &mut Context<Self>) {
         let Some(bytes) = preset_bytes(name) else { return };
         match super::image::store_image(bytes, "jpg") {
-            Ok(p) => self.set_cover(Some(Cover { src: p.to_string_lossy().to_string(), x: 0., y: 0. }), cx),
+            Ok(p) => self.set_cover(Some(Cover { src: crate::store::asset_source(&p), x: 0., y: 0. }), cx),
             Err(msg) => self.toast(msg, cx),
         }
     }
@@ -229,7 +229,7 @@ impl Editor {
                     let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default().to_string();
                     let stored = std::fs::read(&p).map_err(|_| super::image::BAD_FORMAT).and_then(|b| super::image::store_image(&b, &ext));
                     match stored {
-                        Ok(p) => e.set_cover(Some(Cover { src: p.to_string_lossy().to_string(), x: 0., y: 0. }), cx),
+                        Ok(p) => e.set_cover(Some(Cover { src: crate::store::asset_source(&p), x: 0., y: 0. }), cx),
                         Err(msg) => e.toast(msg, cx),
                     }
                 });

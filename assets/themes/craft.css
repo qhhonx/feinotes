@@ -273,6 +273,8 @@ pre {
   background-color: #fbfbfb;
   border-color: #eaebeb;
   border-radius: 6px;
+  padding-top: 5px;
+  padding-left: 10px;
 }
 
 .line-numbers {
@@ -291,6 +293,7 @@ blockquote {
 
 ul {
   padding-left: 25px;
+  list-style-type: disc;
 }
 
 ul li::marker {
@@ -321,6 +324,7 @@ hr {
   border-top-style: dotted;
   border-top-width: 1.5px;
   border-top-color: #1f222580;
+  height: 20px;
 }
 
 table {
@@ -328,6 +332,9 @@ table {
   line-height: 20px;
   border-color: #00000017;
   border-radius: 0px;
+  padding-top: 9px;
+  padding-left: 10px;
+  margin-top: 16px;
 }
 
 th {
@@ -339,6 +346,51 @@ th {
   border-width: 1px;
   padding-top: 12px;
   padding-left: 14px;
+}
+
+.attachment {
+  background-color: inherit;
+  border-color: inherit;
+}
+
+.sidebar {
+  background-color: inherit;
+  color: inherit;
+}
+
+.sidebar-section {
+  color: inherit;
+}
+
+.sidebar-folder {
+  color: inherit;
+}
+
+.sidebar-row:hover {
+  background-color: inherit;
+}
+
+.sidebar-row.is-selected {
+  background-color: inherit;
+}
+
+.toolbar {
+  background-color: inherit;
+}
+
+.toolbar-button {
+  background-color: inherit;
+  border-color: inherit;
+  color: inherit;
+  border-radius: inherit;
+}
+
+.toolbar-button:hover {
+  background-color: inherit;
+}
+
+.toolbar-button:active {
+  background-color: inherit;
 }
 
 .token.comment {

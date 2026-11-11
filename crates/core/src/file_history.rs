@@ -70,13 +70,15 @@ impl Store {
 
 impl Store {
     pub fn accept_file_title(&self, id: &str, title: &str) -> Result<()> {
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite_manages(id) { return self.accept_sqlite_title(id, title); }
         let mut loaded = self.loaded.borrow_mut();
         let Some(previous) = loaded.get(id) else { return Ok(()) };
         // A Markdown file's title is not in the file.
         if self.is_markdown(id) { return Ok(()); }
         let mut expected = docxml::parse(previous)?;
         expected.title = crate::model::RichText::plain(title);
-        let disk = std::fs::read_to_string(self.path(id))?;
+        let disk = self.read_body(id)?;
         // Accept only our title change, never unrelated edits from another instance.
         if docxml::serialize(&expected) == docxml::serialize(&docxml::parse(&disk)?) { loaded.insert(id.to_string(), disk); }
         Ok(())
@@ -89,6 +91,12 @@ impl Store {
         let previous_index = self.index.clone();
         let previous_trash = self.trash.clone();
         let mut files: Vec<(PathBuf, Option<Vec<u8>>, Option<Vec<u8>>)> = vec![];
+        #[cfg(feature = "sqlite-store")]
+        let sql = self.sqlite.is_some();
+        #[cfg(not(feature = "sqlite-store"))]
+        let sql = false;
+        let mut moves = vec![];
+        let mut titles = vec![];
         let mut index = self.index.clone();
         let mut trash = self.trash.clone();
         let pairs: Vec<_> = changes.iter().map(|c| (c, if redo { (&c.before, &c.after) } else { (&c.after, &c.before) })).collect();
@@ -109,25 +117,31 @@ impl Store {
             match (from, to) {
                 (Some(_), None) => {
                     anyhow::ensure!(!self.index.iter().any(|(id, m)| m.parent.as_deref() == Some(&c.id) && !deleted.contains(id.as_str())), "文件夹里有后来新增的内容，不能撤销创建");
-                    anyhow::ensure!(!trash.contains_key(&c.id) && !self.trash_path(&c.id).try_exists()?, "回收站存在冲突，未覆盖");
+                    anyhow::ensure!(!trash.contains_key(&c.id) && (sql || !self.trash_path(&c.id).try_exists()?), "回收站存在冲突，未覆盖");
                     let meta = index.remove(&c.id).unwrap();
                     let mut ancestor = meta.parent.as_deref();
                     let mut root = None;
                     while let Some(p) = ancestor.filter(|p| deleted.contains(*p)) { root = Some(p.to_string()); ancestor = self.index.get(p).and_then(|m| m.parent.as_deref()); }
                     if meta.folder.is_none() {
-                        let bytes = std::fs::read(self.path(&c.id))?;
-                        files.push((self.trash_path(&c.id), None, Some(bytes.clone())));
-                        files.push((self.path(&c.id), Some(bytes), None));
+                        if sql { moves.push((c.id.clone(), true)); }
+                        else {
+                            let bytes = std::fs::read(self.path(&c.id))?;
+                            files.push((self.trash_path(&c.id), None, Some(bytes.clone())));
+                            files.push((self.path(&c.id), Some(bytes), None));
+                        }
                     }
                     trash.insert(c.id.clone(), Trashed { meta, deleted: now(), root });
                 }
                 (None, Some(target)) => {
                     let saved = trash.remove(&c.id).ok_or_else(|| anyhow::anyhow!("恢复内容已不在回收站，无法重做或撤销"))?;
                     if !target.folder {
-                        anyhow::ensure!(!self.path(&c.id).try_exists()?, "目标文档已存在，未覆盖");
-                        let bytes = std::fs::read(self.trash_path(&c.id))?;
-                        files.push((self.path(&c.id), None, Some(bytes.clone())));
-                        files.push((self.trash_path(&c.id), Some(bytes), None));
+                        if sql { moves.push((c.id.clone(), false)); }
+                        else {
+                            anyhow::ensure!(!self.path(&c.id).try_exists()?, "目标文档已存在，未覆盖");
+                            let bytes = std::fs::read(self.trash_path(&c.id))?;
+                            files.push((self.path(&c.id), None, Some(bytes.clone())));
+                            files.push((self.trash_path(&c.id), Some(bytes), None));
+                        }
                     }
                     let mut meta = saved.meta;
                     meta.parent = target.parent.clone(); meta.order = target.order; meta.root_order = target.root_order;
@@ -138,6 +152,10 @@ impl Store {
                     if from.place() != to.place() { m.parent = to.parent.clone(); m.order = to.order; m.root_order = to.root_order; }
                     if from.title != to.title {
                         if to.folder { m.folder = Some(to.title.clone()); }
+                        else if sql {
+                            if m.markdown { m.name = Some(to.title.clone()); }
+                            titles.push((c.id.clone(), to.title.clone()));
+                        }
                         else if m.markdown { m.name = Some(to.title.clone()); }
                         else {
                             let path = self.path(&c.id); let bytes = std::fs::read(&path)?;
@@ -163,6 +181,14 @@ impl Store {
                 let m = index.get(p).filter(|m| m.folder.is_some()).ok_or_else(|| anyhow::anyhow!("原文件夹已不存在，未改变层级"))?;
                 parent = m.parent.as_deref();
             }
+        }
+        #[cfg(feature = "sqlite-store")]
+        if sql {
+            self.finish_sqlite_history(&index, &trash, &moves, &titles)?;
+            self.index = index;
+            self.trash = trash;
+            for c in changes { self.loaded.borrow_mut().remove(&c.id); }
+            return Ok(());
         }
         std::fs::create_dir_all(self.trash_dir())?;
         let result = (|| -> Result<()> {

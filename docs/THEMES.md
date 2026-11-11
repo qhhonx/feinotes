@@ -84,3 +84,7 @@ blockquote { border-left: 3px solid var(--accent); }
 - 主题只改**文档本身**：侧栏、菜单、设置等界面不受主题影响。
 - 暂无深色模式：纸面可以设成深色，但界面外壳仍是浅色。
 - 块的整体结构（例如代码块的工具条、表格的行列工具）不由 CSS 决定。
+
+## Fei Notes extensions
+
+The Quiet.md theme reference above is retained from upstream. Fei Notes adds shell styling, the Notes theme and other CSS properties documented separately in [FEINOTES-THEMES.md](FEINOTES-THEMES.md).

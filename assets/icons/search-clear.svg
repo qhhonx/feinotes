@@ -1,2 +1,16 @@
-<!-- Nucleo UI Outline 18 v1.5.1: CircleXmark. Copyright Nucleo. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" view-box="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></circle><line x1="6.25" y1="6.25" x2="11.75" y2="11.75" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><line x1="11.75" y1="6.25" x2="6.25" y2="11.75" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line></svg>
+<!-- Lucide 0.468.0: circle-x. See LICENSE-lucide. -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="18"
+  height="18"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <circle cx="12" cy="12" r="10" />
+  <path d="m15 9-6 6" />
+  <path d="m9 9 6 6" />
+</svg>

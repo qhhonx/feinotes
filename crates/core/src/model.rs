@@ -2,8 +2,10 @@
 //! that load → edit → save round-trips without loss.
 
 use std::ops::Range;
+#[cfg(not(feature = "sqlite-store"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(not(feature = "sqlite-store"))]
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -13,7 +15,13 @@ impl BlockId {
     /// A fresh id; deliberately not `Default`, which would read as a fixed value.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        BlockId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
+        #[cfg(feature = "sqlite-store")]
+        {
+            // Low ids are reserved for deterministic CloudKit fixture seeds.
+            BlockId((uuid::Uuid::new_v4().as_u128() as u64 & 0x3fff_ffff_ffff_ffff) | (1 << 62))
+        }
+        #[cfg(not(feature = "sqlite-store"))]
+        { BlockId(NEXT_ID.fetch_add(1, Ordering::Relaxed)) }
     }
 }
 
@@ -168,7 +176,7 @@ impl InlineButton {
 /// 日期提醒 (`<time>`); times are unix ms. DocxXML 里没有全天标记
 /// （模型里有 `isWholeDay`）：我们写 `is-whole-day`；没有这个属性、
 /// 且到期时间是本地 23:59 的提醒，也按全天处理。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InlineReminder {
     pub expire: i64,
     pub notify: i64,
@@ -419,7 +427,7 @@ impl TableCell {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct Table {
     pub col_widths: Vec<f32>,
     pub header_rows: usize,
@@ -428,6 +436,22 @@ pub struct Table {
     /// A full rows × columns grid; slots hidden under a merged cell hold
     /// [`TableCell::covered`] (DocxXML simply omits them).
     pub rows: Vec<Vec<TableCell>>,
+    /// Internal identities. DocxXML still stores a plain grid.
+    pub axes: TableAxes,
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+pub struct TableAxes {
+    pub rows: Vec<u64>,
+    pub cols: Vec<u64>,
+}
+
+impl PartialEq for Table {
+    // Identity is separate from the document's visible content.
+    fn eq(&self, other: &Self) -> bool {
+        self.col_widths == other.col_widths && self.header_rows == other.header_rows
+            && self.header_col == other.header_col && self.rows == other.rows
+    }
 }
 
 impl Table {
@@ -436,6 +460,12 @@ impl Table {
 
     pub fn ncols(&self) -> usize {
         self.col_widths.len()
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    pub fn init_axes(&mut self) {
+        if self.axes.rows.is_empty() { self.axes.rows = (1..=self.rows.len() as u64).collect(); }
+        if self.axes.cols.is_empty() { self.axes.cols = (1..=self.ncols() as u64).collect(); }
     }
 
     /// The visible cell whose span covers slot `(r, c)`.
@@ -472,6 +502,11 @@ impl Table {
             row.resize_with(n, TableCell::empty);
         }
         let nrows = self.rows.len();
+        #[cfg(feature = "sqlite-store")]
+        if !self.axes.rows.is_empty() || !self.axes.cols.is_empty() {
+            self.axes.rows.resize_with(nrows, || BlockId::new().0);
+            self.axes.cols.resize_with(n, || BlockId::new().0);
+        }
         let mut owned = vec![vec![false; n]; nrows];
         for r in 0..nrows {
             for c in 0..n {
@@ -538,6 +573,12 @@ impl Table {
 
     /// A new empty row before row `at`; cells merged across that boundary grow.
     pub fn insert_row(&mut self, at: usize) {
+        let at = at.min(self.rows.len());
+        #[cfg(feature = "sqlite-store")]
+        {
+            self.init_axes();
+            self.axes.rows.insert(at, BlockId::new().0);
+        }
         let nrows = self.rows.len() + 1;
         let cells = self.take_cells().into_iter().map(|(r, c, rs, cs, cell)| {
             let (top, end) = (r + (r >= at) as usize, r + rs + (r + rs > at) as usize);
@@ -550,6 +591,11 @@ impl Table {
     /// A new empty column before column `at` (default width).
     pub fn insert_col(&mut self, at: usize) {
         let at = at.min(self.col_widths.len());
+        #[cfg(feature = "sqlite-store")]
+        {
+            self.init_axes();
+            self.axes.cols.insert(at, BlockId::new().0);
+        }
         let nrows = self.rows.len();
         let cells = self.take_cells().into_iter().map(|(r, c, rs, cs, cell)| {
             let (left, end) = (c + (c >= at) as usize, c + cs + (c + cs > at) as usize);
@@ -567,6 +613,11 @@ impl Table {
         if a >= b {
             return;
         }
+        #[cfg(feature = "sqlite-store")]
+        {
+            self.init_axes();
+            self.axes.rows.drain(a..b);
+        }
         let f = |x: usize| if x <= a { x } else if x >= b { x - (b - a) } else { a };
         let nrows = self.rows.len() - (b - a);
         let cells = self.take_cells().into_iter().map(|(r, c, rs, cs, cell)| {
@@ -581,6 +632,11 @@ impl Table {
         let (a, b) = (range.start, range.end.min(self.col_widths.len()));
         if a >= b {
             return;
+        }
+        #[cfg(feature = "sqlite-store")]
+        {
+            self.init_axes();
+            self.axes.cols.drain(a..b);
         }
         let f = |x: usize| if x <= a { x } else if x >= b { x - (b - a) } else { a };
         let nrows = self.rows.len();
@@ -598,12 +654,22 @@ impl Table {
     /// the range's edges or boundary `to`.
     pub fn move_rows(&mut self, range: std::ops::Range<usize>, to: usize) {
         let order = reordered(self.rows.len(), range, to);
+        #[cfg(feature = "sqlite-store")]
+        {
+            self.init_axes();
+            self.axes.rows = permute(std::mem::take(&mut self.axes.rows), &order);
+        }
         self.rows = permute(std::mem::take(&mut self.rows), &order);
         self.repair();
     }
 
     pub fn move_cols(&mut self, range: std::ops::Range<usize>, to: usize) {
         let order = reordered(self.col_widths.len(), range, to);
+        #[cfg(feature = "sqlite-store")]
+        {
+            self.init_axes();
+            self.axes.cols = permute(std::mem::take(&mut self.axes.cols), &order);
+        }
         self.col_widths = order.iter().map(|&i| self.col_widths[i]).collect();
         for row in &mut self.rows {
             *row = permute(std::mem::take(row), &order);
@@ -904,6 +970,12 @@ impl Block {
         self
     }
 
+    #[cfg(feature = "sqlite-store")]
+    pub fn without_children(&self) -> Self {
+        Self { id: self.id, kind: self.kind.clone(), text: self.text.clone(), align: self.align,
+            bg: self.bg.clone(), children: vec![], folded: self.folded }
+    }
+
     /// Deep clone with fresh ids (used for paste / duplicate).
     pub fn fresh_ids(&self) -> Block {
         let mut b = self.clone();
@@ -958,7 +1030,7 @@ impl Default for Document {
 /// An @文档 mention: the document it points at, the block holding it, and
 /// that block's text as plain runs (`Some(id)`: a mention, shown with the
 /// target's live title).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DocLink {
     pub target: String,
     pub block: usize,
@@ -998,26 +1070,21 @@ impl Document {
     /// Plain text of the whole document (for search and snippets).
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
-        fn walk(blocks: &[Block], out: &mut String) {
-            for b in blocks {
-                if !b.text.is_empty() {
-                    if !out.is_empty() {
-                        out.push('\n');
-                    }
-                    out.push_str(&b.text.plain_text());
-                }
-                walk(&b.children, out);
-                if let BlockKind::Table(t) = &b.kind {
-                    for row in &t.rows {
-                        for cell in row {
-                            walk(&cell.blocks, out);
-                        }
-                    }
-                }
-            }
-        }
-        walk(&self.blocks, &mut out);
+        self.for_each_search_fragment(|part| out.push_str(&part));
         out
+    }
+
+    pub(crate) fn for_each_search_fragment(&self, mut write: impl FnMut(String)) {
+        let mut started = false;
+        self.for_each_block(|block| {
+            if block.text.is_empty() { return; }
+            let mut part = block.text.plain_text();
+            if started { part.insert(0, '\n'); }
+            if !part.is_empty() {
+                started = true;
+                write(part);
+            }
+        });
     }
 
     /// Visit every block in document order, including table cells.
@@ -1115,7 +1182,7 @@ mod tests {
         let rows = (0..nr)
             .map(|r| (0..nc).map(|c| TableCell { blocks: vec![Block::text(&format!("{r}{c}"))], ..TableCell::empty() }).collect())
             .collect();
-        Table { col_widths: vec![100.; nc], header_rows: 0, header_col: false, rows }
+        Table { col_widths: vec![100.; nc], rows, ..Default::default() }
     }
 
     fn text(t: &Table, r: usize, c: usize) -> String {

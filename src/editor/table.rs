@@ -484,6 +484,14 @@ impl R<'_> {
         let n = widths.len();
         let nrows = t.rows.len();
         let total: f32 = widths.iter().sum();
+        let st = theme::style();
+        let (pad_x, pad_top, pad_bottom) = if st.feishu {
+            (8., 8., 9.)
+        } else {
+            let pad_y = st.num("table.pad-y");
+            (st.num("table.pad-x"), pad_y, pad_y)
+        };
+        let table_r = st.num("table.radius");
         let sel = ed.core.cell_sel.filter(|s| s.table == id);
         let range = sel.map(|s| t.expand(s.raw(t)));
         let bar_sel = sel.map(|s| s.kind).filter(|k| *k != CellSelKind::Range);
@@ -520,6 +528,7 @@ impl R<'_> {
         for (r, c, cell) in t.cells() {
             let (rs, cs) = (cell.rowspan.max(1) as usize, cell.colspan.max(1) as usize);
             let w: f32 = widths[c..(c + cs).min(n)].iter().sum();
+            let pad_x = pad_x.min(((w - 2.) / 2.).max(0.));
             let header = r < t.header_rows || (t.header_col && c == 0);
             let selected = range.is_some_and(|g| g.contains(r, c));
             let bg = if selected && danger {
@@ -527,7 +536,6 @@ impl R<'_> {
             } else {
                 cell.bg.as_ref().and_then(|x| theme::block_bg(&x.0)).or(header.then(Theme::table_header))
             };
-            let table_r = if crate::settings::feishu() { 0. } else { theme::style().num("table.radius") };
             let el = div()
                     .relative()
                     // (`row_span` / `col_span` would reset the start line.)
@@ -543,10 +551,8 @@ impl R<'_> {
                         Some("bottom") => d.justify_end(),
                         _ => d,
                     })
-                    // The table: 14 / 20 text, 9 / 10 padding, hairline grid,
-                    // the outer corners rounded.
-                    .px(px(if crate::settings::feishu() { 8. } else { 10. }))
-                    .pt(px(if crate::settings::feishu() { 8. } else { 9. })).pb(px(9.))
+                    .px(px(pad_x))
+                    .pt(px(pad_top)).pb(px(pad_bottom))
                     .when(r == 0, |d| d.border_t_1())
                     .when(c == 0, |d| d.border_l_1())
                     .border_r_1()
@@ -558,7 +564,7 @@ impl R<'_> {
                     .when(r + rs >= t.rows.len() && c + cs >= n, |d| d.rounded_br(px(table_r)))
                     .when_some(bg, |d, c| d.bg(c))
                     .when(selected && moving.is_some(), |d| d.opacity(0.8))
-                    .child(self.blocks(&cell.blocks, Env { width: w - if crate::settings::feishu() { 17. } else { 21. }, ..env }, cx))
+                    .child(self.blocks(&cell.blocks, Env { width: w - 2. * pad_x - 1., ..env }, cx))
                     .when(selected && !danger, |d| d.child(div().absolute().inset_0().bg(Theme::selection())));
             if sticky && r == 0 {
                 head.push(pin_el(el.into_any_element(), head.is_empty()));

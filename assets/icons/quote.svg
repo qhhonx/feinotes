@@ -1,2 +1,15 @@
-<!-- Nucleo UI Outline 18 v1.5.1: Quote. Copyright Nucleo. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" view-box="0 0 18 18" fill="none"><line x1="2.75" y1="14.25" x2="15.25" y2="14.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><line x1="2.75" y1="10.75" x2="15.25" y2="10.75" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><line x1="12.25" y1="7.25" x2="15.25" y2="7.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><line x1="12.25" y1="3.75" x2="15.25" y2="3.75" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><path d="M2.75,5.75h2v1.5H2.75v-1.5c0-1.793,.598-2.582,1.674-3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></path><path d="M7.25,5.75h2v1.5h-2v-1.5c0-1.793,.598-2.582,1.674-3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></path></svg>
+<!-- Lucide 0.468.0: quote. See LICENSE-lucide. -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="18"
+  height="18"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z" />
+  <path d="M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z" />
+</svg>

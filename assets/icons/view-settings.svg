@@ -1,2 +1,22 @@
-<!-- Nucleo UI Outline 18 v1.5.1: Sliders. Copyright Nucleo. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" view-box="0 0 18 18" fill="none"><line x1="13.25" y1="5.25" x2="16.25" y2="5.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><line x1="1.75" y1="5.25" x2="8.75" y2="5.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><circle cx="11" cy="5.25" r="2.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></circle><line x1="4.75" y1="12.75" x2="1.75" y2="12.75" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><line x1="16.25" y1="12.75" x2="9.25" y2="12.75" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><circle cx="7" cy="12.75" r="2.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></circle></svg>
+<!-- Lucide 0.468.0: sliders-horizontal. See LICENSE-lucide. -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="18"
+  height="18"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <line x1="21" x2="14" y1="4" y2="4" />
+  <line x1="10" x2="3" y1="4" y2="4" />
+  <line x1="21" x2="12" y1="12" y2="12" />
+  <line x1="8" x2="3" y1="12" y2="12" />
+  <line x1="21" x2="16" y1="20" y2="20" />
+  <line x1="12" x2="3" y1="20" y2="20" />
+  <line x1="14" x2="14" y1="2" y2="6" />
+  <line x1="8" x2="8" y1="10" y2="14" />
+  <line x1="16" x2="16" y1="18" y2="22" />
+</svg>

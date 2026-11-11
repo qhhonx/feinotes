@@ -65,3 +65,7 @@ scripts/check.sh        # cargo test --release + clippy --all-targets 零警告
 - `grep` 实际是 ugrep。
 - macOS 的 `sed -i` 要写成 `sed -i ''`。
 - 没有 `timeout` 命令。
+
+## Fei Notes fork supplement
+
+The Quiet.md conventions above are retained from upstream. For Fei Notes work, also read [docs/FEINOTES-AGENTS.md](docs/FEINOTES-AGENTS.md); it defines the product-specific additions and their scope. Original source revision and documentation boundaries are recorded in [docs/UPSTREAM.md](docs/UPSTREAM.md).

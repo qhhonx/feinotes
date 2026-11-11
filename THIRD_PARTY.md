@@ -1,3 +1,7 @@
+# Fei Notes third-party notices
+
+Fei Notes includes MIT-licensed Quiet.md code and the dependencies and assets listed below. The file-level license map for Fei Notes is in [LICENSES.md](LICENSES.md). Upstream notices are retained below. Each packaged build also includes the license texts for its selected Rust dependencies.
+
 # 第三方组件与素材
 
 Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随它一起分发的第三方代码和素材。
@@ -7,6 +11,8 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 由 `cargo metadata` 生成，共 741 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
 
 要重新生成这张表：`scripts/licences.sh`（从 `cargo metadata` 取全部依赖）。
+
+飞记 macOS 发行包的 `Resources/Open Source Licenses.txt` 含「本构建的 Rust 依赖」一节。打包时由 `scripts/fei-release-licenses.py` 按实际目标架构和 `cloudkit-sync` 配置从锁定的 Cargo 普通依赖生成。该节包含版本、许可文本和对应源码链接，其中单列 MPL 2.0 组件的源码获取方式。
 
 | 包 | 版本 | 许可 |
 |---|---|---|
@@ -766,10 +772,10 @@ Windows 安装包随附未修改的 Microsoft Visual C++ Runtime `vcruntime140.d
 
 | 素材 | 许可 |
 |---|---|
-| `assets/editor-icons/`（编辑器与文档里的 195 个图标） | 其中 49 个直接取自 Lucide（ISC，见同目录 `LICENSE-lucide`），其余按同一 24px / 2px 描边规格绘制 |
-| `assets/icons/`（界面外壳的 67 个图标，含一个在 Nucleo 图标上加了 MD 字样的 `doc-md.svg`） | Nucleo UI Outline / Fill 18。本项目持有 Nucleo 商业授权，按授权条款「公开源码项目中最多 100 个图标」使用（<https://nucleoapp.com/license>）。**这些图标不在 MIT 范围内**：fork 时请自行确认授权，或换成自己的图标；不得把它们抽出来做成图标库或图标包。 |
-| `assets/icons/folder.svg`、`assets/icons/disclosure.svg`、`assets/icons/import.svg` | 本项目绘制，MIT；不属于上述 67 个 Nucleo 图标 |
-| `assets/branding/app-icon.png` | 本项目自有 |
+| `assets/editor-icons/`（编辑器与文档里的 172 个图标） | 包括 Lucide 图标（ISC，其中源自 Feather 的部分保留 MIT 许可），其余按同一 24px / 2px 描边规格绘制。见同目录 `LICENSE-lucide`。 |
+| `assets/icons/`（界面外壳的 72 个图标） | 66 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 6 个项目自绘的 MIT 图标。 |
+| `packaging/macos/fei-notes.png` | 飞记的应用图标，随飞记构建嵌入。 |
+| `assets/branding/` | 上游 Quiet.md 品牌资源，未嵌入飞记构建。 |
 
 ## 封面与插画
 
@@ -777,9 +783,8 @@ Windows 安装包随附未修改的 Microsoft Visual C++ Runtime `vcruntime140.d
 
 ## 内置主题的样式数值
 
-`assets/themes/` 里有四套内置主题（Craft、飞书、Notion、Obsidian），各是一份写满全部属性当前值的 CSS。
-颜色、字号、间距这类数值本身不受版权保护，主题文件随本项目以 MIT 分发；这几个名字只用来标称风格，与各自的公司没有关系。
+`assets/themes/` 中的 CSS 主题文件随本项目以 MIT 分发。Craft、飞书、Notion、Obsidian 这些名称用于标识参考风格，与各自的公司没有关系。
 
 ## 内置文档
 
-`shared-mock/library/` 里的「开始指南」是本项目自己写的示例文档，随 MIT 分发。
+`shared-mock/library/` 里的「开始指南」是上游 Quiet.md 的示例文档，随上游按 MIT 分发。飞记的应用构建不嵌入这套指南及其照片和截图。

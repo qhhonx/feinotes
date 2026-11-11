@@ -28,24 +28,23 @@ actions!(workspace, [NewDoc, OpenFile, ImportDoc, ImportFolder, ToggleSidebar, F
 /// The menu bar, in the interface language.
 pub fn set_menus(cx: &mut App) {
     use crate::settings::tr;
+    let name = crate::app_name();
+    let mut app_items = vec![MenuItem::action(format!("{} {name}", tr("关于", "About")), OpenAbout)];
+    if !crate::FEI_NOTES { app_items.push(MenuItem::action(tr("检查更新…", "Check for Updates…"), CheckForUpdates)); }
+    app_items.extend([
+        MenuItem::separator(),
+        MenuItem::action(tr("设置…", "Settings…"), OpenSettings),
+        MenuItem::separator(),
+        MenuItem::os_submenu(tr("服务", "Services"), SystemMenuType::Services),
+        MenuItem::separator(),
+        MenuItem::action(format!("{} {name}", tr("隐藏", "Hide")), HideApp),
+        MenuItem::action(tr("隐藏其他", "Hide Others"), HideOthers),
+        MenuItem::action(tr("全部显示", "Show All"), ShowAll),
+        MenuItem::separator(),
+        MenuItem::action(format!("{} {name}", tr("退出", "Quit")), Quit),
+    ]);
     cx.set_menus(vec![
-        Menu {
-            name: "Quiet.md".into(),
-            items: vec![
-                MenuItem::action(tr("关于 Quiet.md", "About Quiet.md"), OpenAbout),
-                MenuItem::action(tr("检查更新…", "Check for Updates…"), CheckForUpdates),
-                MenuItem::separator(),
-                MenuItem::action(tr("设置…", "Settings…"), OpenSettings),
-                MenuItem::separator(),
-                MenuItem::os_submenu(tr("服务", "Services"), SystemMenuType::Services),
-                MenuItem::separator(),
-                MenuItem::action(tr("隐藏 Quiet.md", "Hide Quiet.md"), HideApp),
-                MenuItem::action(tr("隐藏其他", "Hide Others"), HideOthers),
-                MenuItem::action(tr("全部显示", "Show All"), ShowAll),
-                MenuItem::separator(),
-                MenuItem::action(tr("退出 Quiet.md", "Quit Quiet.md"), Quit),
-            ],
-        },
+        Menu { name: name.into(), items: app_items },
         Menu {
             name: tr("文件", "File").into(),
             items: vec![
@@ -142,15 +141,48 @@ pub fn bind_keys(cx: &mut App) {
 /// (重试 / 放弃修改) and quits afterwards. Call it outside any window update
 /// (`cx.defer`): a window on the update stack cannot be asked to save.
 pub fn quit(cx: &mut App) {
-    let ready = cx
+    if save_windows_before(cx, quit) { cx.quit(); }
+}
+
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+pub(crate) fn restart(cx: &mut App) {
+    use std::os::unix::process::CommandExt;
+    if !save_windows_before(cx, restart) { return; }
+    // Wait for the library lock to be released. A shared note can be open
+    // in a separate instance of this bundle, so request a fresh instance.
+    let result = cx.app_path().and_then(|app| {
+        anyhow::ensure!(app.extension().is_some_and(|ext| ext == "app"), "Missing application bundle");
+        // The offscreen harness needs its test environment after relaunch.
+        let scripted_binary = if cfg!(feature = "devtools") && crate::devtools::scripted() {
+            std::env::current_exe()?
+        } else { std::path::PathBuf::new() };
+        std::process::Command::new("/bin/sh").arg("-c").arg(r#"
+            while kill -0 "$1" 2>/dev/null; do sleep 0.1; done
+            if [ -n "$3" ]; then exec "$3"; fi
+            exec /usr/bin/open -n "$2"
+        "#).arg("sh").arg(std::process::id().to_string()).arg(app).arg(scripted_binary)
+            .process_group(0).spawn()?;
+        Ok(())
+    });
+    if let Err(error) = result {
+        crate::logging::write(&format!("Could not restart after switching libraries: {error:#}"));
+        for window in cx.windows().into_iter().filter_map(|w| w.downcast::<Workspace>()) {
+            let _ = window.update(cx, |w, _, cx| {
+                w.library_switching = false;
+                w.show_toast_kind(ToastKind::Error, crate::settings::tr("无法自动重启。请退出后重新打开飞记。",
+                    "Couldn’t restart automatically. Quit and reopen Fei Notes."), cx);
+            });
+        }
+    } else { cx.quit(); }
+}
+
+pub(crate) fn save_windows_before(cx: &mut App, retry: fn(&mut App)) -> bool {
+    cx
         .windows()
         .into_iter()
         .filter_map(|w| w.downcast::<Workspace>())
-        .map(|w| w.update(cx, |ws, _, cx| ws.save_before(cx, |_, _, cx| cx.defer(quit))).unwrap_or(false))
-        .fold(true, |ready, saved| ready & saved);
-    if ready {
-        cx.quit();
-    }
+        .map(|w| w.update(cx, |ws, _, cx| ws.save_before(cx, move |_, _, cx| cx.defer(retry))).unwrap_or(false))
+        .fold(true, |ready, saved| ready & saved)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -186,7 +218,7 @@ pub enum View {
 }
 
 /// A confirmation dialog and the pages it is about.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum Confirm {
     /// 删除 (to the 回收站); `batch` for the 批量操作 selection.
     Delete { ids: Vec<String>, batch: bool },
@@ -196,11 +228,21 @@ pub enum Confirm {
     Purge(String),
     /// 回收站 → 清空回收站: every trashed page, permanently.
     EmptyTrash,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    DiscardOfflineRecovery(String),
     /// 隐藏引用列表 (with 不再提示) / 显示引用列表.
     Refs { show: bool, no_ask: bool },
     /// The open document could not be written before it was to be replaced
     /// (another document, 新建, 退出): 重试 / 放弃修改, then carry on.
     SaveFailed,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    StartCloudTrial,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    SwitchCloudLibrary { cloud: bool, copy_local: bool },
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    RestoreLibraryBackup(Box<crate::cloud_sync::backup::Prepared>),
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    CloudVersions { id: String, versions: Vec<(i64, String, String)>, selected: Option<i64> },
 }
 
 /// What to do once the open document is safely on disk (or its changes given up).
@@ -226,6 +268,14 @@ pub struct Workspace {
     pub theme_anchor: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     /// 快捷键's filter field.
     pub settings_filter: Entity<TextField>,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub sharing: crate::settings::Sharing,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub library_switching: bool,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub subscription: crate::settings::Subscription,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub sync_issues: Option<Vec<crate::cloud_sync::SyncIssue>>,
     native_sidebar: crate::native_header::NativeSidebar,
     pub store: SharedStore,
     pub entries: Vec<Entry>,
@@ -330,6 +380,38 @@ impl Workspace {
 
     fn build_window(quick: bool, document: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         crate::settings::load();
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        cx.observe_global_in::<crate::cloud_subscription::PurchaseChanged>(window, |ws, window, cx| {
+            ws.subscription_updated(window, cx);
+        }).detach();
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        cx.observe_global::<crate::cloud_sync::SyncStatus>(|ws, cx| {
+            if ws.view == View::Settings {
+                if ws.sync_issues.is_some() {
+                    let status = cx.global::<crate::cloud_sync::SyncStatus>();
+                    if status.held == 0 && status.attachments == 0 { ws.sync_issues = Some(vec![]); }
+                    else if status.uploads == 0 && status.downloads == 0
+                        && let Ok(issues) = crate::cloud_sync::issues(cx) { ws.sync_issues = Some(issues); }
+                }
+                cx.notify();
+            }
+        }).detach();
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        cx.observe_global::<crate::cloud_sync::activity::ActivityView>(|_, cx| cx.notify()).detach();
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        cx.observe_global::<crate::cloud_sync::presence::View>(|ws, cx| {
+            let remote = ws.current.as_ref().and_then(|id| cx.global::<crate::cloud_sync::presence::View>().notes.get(id))
+                .cloned().unwrap_or_default();
+            if let Some(editor) = ws.editor.clone() {
+                editor.update(cx, |editor, cx| {
+                    if editor.remote_selections != remote {
+                        editor.remote_selections = remote;
+                        cx.notify();
+                    }
+                });
+            }
+            if ws.view == View::Settings || crate::in_shared_note() { cx.notify(); }
+        }).detach();
         if !cx.has_global::<SharedStore>() { cx.set_global(SharedStore::open().expect("open document library")); }
         let mut store = cx.global::<SharedStore>().clone();
         let entries = store.list();
@@ -411,6 +493,14 @@ impl Workspace {
             theme_menu: None,
             theme_anchor: Default::default(),
             settings_filter,
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            sharing: crate::settings::Sharing::new(cx),
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            library_switching: false,
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            subscription: Default::default(),
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            sync_issues: None,
             store,
             entries,
             current: None,
@@ -468,7 +558,9 @@ impl Workspace {
         // An empty library opens on 主页's empty state; only a quick note
         // window starts a document of its own.
         match document.or_else(|| (!quick).then(|| ws.entries.first().map(|e| e.id.clone())).flatten()) {
-            Some(id) => ws.open(&id, window, cx),
+            Some(id) => {
+                if !ws.try_open(&id, window, cx) && crate::in_shared_note() { ws.view = View::Home; }
+            }
             None if quick => ws.new_doc(window, cx),
             None => ws.view = View::Home,
         }
@@ -478,6 +570,19 @@ impl Workspace {
             let msg = warnings.iter().map(|s| crate::settings::diagnostic(s)).collect::<Vec<_>>().join(crate::settings::tr("；", "; "));
             ws.show_toast_kind(ToastKind::Error, &msg, cx);
             ws.status = SaveStatus::Failed(msg);
+        }
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if !quick && warnings.is_empty() {
+            use crate::cloud_restore::{BACKUP_RESTORED, BACKUP_RESTORE_ERROR};
+            if let Some(error) = BACKUP_RESTORE_ERROR.get() {
+                ws.show_toast_kind(ToastKind::Error, &crate::localized_format!(
+                    "备份尚未恢复 · {}", "Backup restore incomplete · {}", crate::settings::diagnostic(error)), cx);
+            } else if BACKUP_RESTORED.get().is_some() {
+                ws.show_toast(crate::settings::tr("已恢复备份，之前的文档库已保留。",
+                    "Backup restored. Your previous library was kept."), cx);
+            } else if let Some(reason) = crate::cloud_restore::startup_fallback() {
+                ws.show_toast(reason, cx);
+            }
         }
         ws
     }
@@ -499,6 +604,11 @@ impl Workspace {
     /// Show `id`; false when it could not be opened (or the open document
     /// could not be saved first, see [`Self::save_before`]).
     pub fn try_open(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if let Some(room) = crate::cloud_sync::shared::active()
+            && (id != room.note || !self.entries.iter().any(|entry| entry.id == id)
+                || crate::cloud_sync::shared::access(cx) == Some(crate::cloud_sync::shared::Access::Revoked))
+        { return false; }
         if self.entries.iter().any(|e| e.id == id && e.meta.folder.is_some()) { return self.open_folder(id, window, cx); }
         if self.view != View::Doc {
             self.view = View::Doc;
@@ -530,10 +640,21 @@ impl Workspace {
             let mut e = Editor::new(doc, modified, width, window, cx);
             e.cat_pinned = pinned;
             e.markdown = meta.as_ref().is_some_and(|m| m.markdown);
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            {
+                e.cloud_history = !crate::cloud_restore::local_only() && meta.as_ref().is_some_and(|m| !m.local());
+                e.remote_selections = cx.try_global::<crate::cloud_sync::presence::View>()
+                    .and_then(|view| view.notes.get(id)).cloned().unwrap_or_default();
+            }
             if let Some(m) = &meta {
                 e.created = m.created;
                 e.info = m.info;
                 e.set_read_only(m.reading, cx);
+            }
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            if crate::cloud_sync::shared::editing_paused(cx)
+                || crate::cloud_sync::shared::access(cx).is_some_and(|access| !access.can_write()) {
+                e.set_read_only(true, cx);
             }
             e
         });
@@ -560,6 +681,19 @@ impl Workspace {
             }
             EditorEvent::Save => {
                 this.flush(cx);
+            }
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            EditorEvent::CloudUndo { redo } => {
+                if this.flush(cx)
+                    && let (Some(id), Some(editor)) = (this.current.clone(), this.editor.clone())
+                {
+                    let core = editor.read(cx).core.clone();
+                    match crate::cloud_sync::undo(&mut this.store, &id, &core, *redo, cx) {
+                        Ok(Some(change)) => cx.defer(move |cx| cloud_notes_changed(&[change], false, cx)),
+                        Ok(None) => {}
+                        Err(error) => this.show_toast(&crate::localized_format!("无法更新撤销历史：{}", "Could not update undo history: {}", error), cx),
+                    }
+                }
             }
             EditorEvent::Search(q) => {
                 this.open_search(window, cx);
@@ -608,6 +742,7 @@ impl Workspace {
     }
 
     pub fn new_doc(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::in_shared_note() { return; }
         if !self.save_before(cx, |w, window, cx| w.new_doc(window, cx)) {
             return;
         }
@@ -903,6 +1038,14 @@ impl Workspace {
         }
         self.save_task = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(delay).await;
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            loop {
+                match this.update(cx, |w, cx| w.editor.as_ref().is_some_and(|ed| ed.read(cx).composing())) {
+                    Ok(true) => cx.background_executor().timer(SAVE_DELAY).await,
+                    Ok(false) => break,
+                    Err(_) => return,
+                }
+            }
             let _ = this.update(cx, |w, cx| w.flush(cx));
         }));
         cx.notify();
@@ -936,8 +1079,14 @@ impl Workspace {
         };
         let doc = &ed.read(cx).core.doc;
         let (title, icon, body, reminders, links) = (doc.title.text.clone(), doc.icon.clone(), doc.plain_text(), doc.reminders(), doc.doc_links());
-        match self.store.save(&id, doc) {
-            Ok(meta) => {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let core = ed.read(cx).core.clone();
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let result = crate::cloud_sync::save(&mut self.store, &id, &core, cx);
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        let result = self.store.save(&id, doc).map(|meta| (meta, false));
+        match result {
+            Ok((meta, held)) => {
                 if let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
                     e.title = title;
                     e.icon = icon;
@@ -954,6 +1103,14 @@ impl Workspace {
                 self.status = SaveStatus::Saved;
                 self.unsaved = false;
                 self.sort();
+                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                if cx.windows().len() > 1 {
+                    cx.defer(move |cx| cloud_saved_mirrors(&id, &core.doc, cx));
+                }
+                if held {
+                    self.show_toast(crate::settings::tr("已保存在本机，部分内容无法同步。请查看文档库设置。",
+                        "Saved on this Mac. See Documents settings for items that could not sync."), cx);
+                }
             }
             Err(e) => self.status = SaveStatus::Failed(crate::localized_format!("保存失败：{}", "Could not save: {}", crate::settings::diagnostic(&e.to_string()))),
         }
@@ -1119,18 +1276,18 @@ impl Workspace {
         let half = (main / 2. - left).min(main / 2. - right);
         let width = (main - 320.).min(2. * half).min(360.);
         if width < 120. { return None }
-        Some(div().id("header-search").absolute().left(px((main - width) / 2.)).top(px(8.))
+        Some(crate::ui::toolbar_control(div().id("header-search").absolute().left(px((main - width) / 2.)).top(px(8.))
             .w(px(width)).h(px(32.)).no_drag().flex().items_center().gap(px(8.)).px(px(10.))
-            .rounded(px(9.)).bg(Theme::fill_hover())
-            .cursor_pointer().hover(|s| s.bg(Theme::fill_hover_strong()))
-            .child(icon("search", 15., Theme::icon()))
+            .bg(Theme::fill_hover())
+            .cursor_pointer(), 9., Theme::fill_hover_strong, None)
+            .child(crate::ui::toolbar_icon("search", 15.))
             .child(div().flex_1().min_w_0().truncate().text_size(px(13.)).text_color(Theme::text_caption()).child(crate::settings::tr("搜索文档…", "Search documents…")))
             .when(width >= 200., |d| d.child(div().flex_none().text_size(px(11.)).text_color(Theme::text_placeholder()).child(crate::shortcuts::hint("workspace::FocusSearch", "⌘ + J").replace(" + ", " "))))
             .tip(crate::settings::tr("搜索文档", "Search documents"), Some(crate::shortcuts::hint("workspace::FocusSearch", "⌘ + J")))
             .on_click(cx.listener(|w, _, window, cx| w.open_search(window, cx))))
     }
 
-    fn top_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn top_bar(&self, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self
             .editor
             .as_ref()
@@ -1140,6 +1297,14 @@ impl Workspace {
             SaveStatus::Failed(error) => Some(error.clone()),
             _ => None,
         };
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let collaboration_paused = crate::cloud_sync::shared::editing_paused(cx);
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        let collaboration_paused = false;
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let sharing = self.sharing_toolbar(_window, cx);
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        let sharing = None::<Div>;
         // Independent icon controls, with equal top and right insets.
         let seg = crate::ui::header_icon;
         let divider = || div().flex_none().w(px(1.)).h(px(18.)).bg(Theme::line_divider());
@@ -1201,6 +1366,7 @@ impl Workspace {
         let record_more = self.more_btn_bounds.clone();
         div()
             .id("top-bar").relative()
+            .when_some(crate::ui::toolbar_color("toolbar.bg"), |d, c| d.bg(c))
             .h(px(HEADER_H))
             .flex_none()
             .flex()
@@ -1211,7 +1377,7 @@ impl Workspace {
             .title_bar()
             .when(!self.sidebar_open, |d| {
                 d.child(
-                    div()
+                    crate::ui::toolbar_control(div()
                         .id("open-sidebar")
                         .no_drag()
                         .flex_none()
@@ -1220,23 +1386,20 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(8.))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(Theme::fill_hover_strong()))
+                        .cursor_pointer(), 8., Theme::fill_hover_strong, None)
                         .tip(crate::settings::tr("展开侧栏", "Show sidebar"), Some(crate::shortcuts::hint("workspace::ToggleSidebar", "⌘ + ]")))
-                        .child(icon("panel-left-open", 17., Theme::icon()))
+                        .child(crate::ui::toolbar_icon("panel-left-open", 17.))
                         .on_click(cx.listener(|w, _, _, cx| {
                             w.sidebar_open = true;
                             cx.notify();
                         })),
                 )
                 .child(
-                    div().id("header-home").no_drag().flex_none().ml(px(4.)).size(px(28.))
-                        .flex().items_center().justify_center().rounded(px(8.)).cursor_pointer()
-                        .hover(|s| s.bg(Theme::fill_hover_strong()))
-                        .active(|s| s.bg(Theme::fill_pressed()))
+                    crate::ui::toolbar_control(div().id("header-home").no_drag().flex_none().ml(px(4.)).size(px(28.))
+                        .flex().items_center().justify_center().cursor_pointer(),
+                        8., Theme::fill_hover_strong, Some(Theme::fill_pressed))
                         .tip(crate::settings::text("返回主页"), None)
-                        .child(icon("home", 18., Theme::icon()))
+                        .child(crate::ui::toolbar_icon("home", 18.))
                         .on_click(cx.listener(|w, _, _, cx| w.show_view(View::Home, cx))),
                 )
                 .child(div().mx(px(12.)).child(divider()))
@@ -1273,7 +1436,9 @@ impl Workspace {
                     .when_some(save_error, |d, error| d.child(
                         div().min_w_0().max_w(px(220.)).text_size(px(12.)).line_height(px(18.))
                             .text_color(theme::c(craft::R400)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(error),
-                    )),
+                    ))
+                    .when(collaboration_paused, |d| d.child(div().flex_none().text_size(px(12.))
+                        .text_color(Theme::text_caption()).child(crate::settings::tr("协作已暂停", "Collaboration paused")))),
             )
             .child(div().flex_1().min_w(px(16.)))
             .child(
@@ -1281,13 +1446,14 @@ impl Workspace {
                     .h(px(HEADER_ACTIONS_H)).flex_none()
                     .flex()
                     .items_center()
-                    .when(self.current.is_some(), |d| {
+                    .children(sharing)
+                    .when(!crate::in_shared_note() && self.current.is_some(), |d| {
                         d.child(
                             // No tooltip while its dropdown is open; the menu hangs
                             // from this button's right edge.
                             seg("doc-more", "ellipsis")
                                 .relative()
-                                .when(self.doc_menu, |d| d.bg(Theme::fill_hover()))
+                                .when(self.doc_menu, |d| d.bg(crate::ui::toolbar_color("toolbar.button.hover").unwrap_or_else(Theme::fill_hover)))
                                 .when(!self.doc_menu, |d| d.tip(crate::settings::tr("更多", "More"), None))
                                 .child(canvas(move |b, _, _| record_more.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
                                 .on_click(cx.listener(|w, _, _, cx| {
@@ -1302,11 +1468,172 @@ impl Workspace {
                             .tip_label(crate::shortcuts::keys(crate::settings::text("搜索(⌘ + J)")).into(), TipSide::Below)
                             .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(FocusSearch), cx))),
                     )
-                    .child(
+                    .when(!crate::in_shared_note(), |d| d.child(
                         // Straight to a new document: no 新建 menu, as 导入 is rare.
                         seg("doc-new", "plus").tip(crate::settings::tr("新建文档", "New document"), None).on_click(cx.listener(|w, _, window, cx| w.new_doc(window, cx))),
-                    ).into_any_element()
+                    )).into_any_element()
             )
+    }
+
+    fn render_shared_waiting(&self, cx: &App) -> AnyElement {
+        let revoked = {
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            { crate::cloud_sync::shared::access(cx) == Some(crate::cloud_sync::shared::Access::Revoked) }
+            #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+            { let _ = cx; false }
+        };
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if crate::cloud_sync::shared::editing_paused(cx) && !revoked {
+            return div().size_full().flex().items_center().justify_center().text_color(Theme::text_caption())
+                .child(crate::cloud_trial::access_required()).into_any_element();
+        }
+        let message = if revoked { crate::settings::tr("共享访问已结束", "Access to this shared note has ended") }
+            else { crate::settings::tr("正在接收共享笔记", "Waiting for the shared note") };
+        div().size_full().flex().items_center().justify_center()
+            .text_color(Theme::text_caption()).child(message).into_any_element()
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+pub(crate) fn cloud_open_positions(cx: &mut App) -> Option<HashMap<String, Vec<crate::editor::core::Pos>>> {
+    let mut positions: HashMap<_, Vec<_>> = HashMap::new();
+    for window in cx.windows().into_iter().filter_map(|window| window.downcast::<Workspace>()) {
+        let selection = window.update(cx, |ws, _, cx| {
+            let editor = ws.editor.as_ref().map(|ed| ed.read(cx));
+            if ws.unsaved || editor.is_some_and(Editor::composing) { return None; }
+            Some(ws.current.clone().zip(editor.map(|ed| ed.core.sel)))
+        }).ok()??;
+        if let Some((id, selection)) = selection {
+            let note = positions.entry(id).or_default();
+            note.push(selection.anchor);
+            if !selection.is_collapsed() { note.push(selection.head); }
+        }
+    }
+    Some(positions)
+}
+
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+fn cloud_saved_mirrors(id: &str, doc: &crate::model::Document, cx: &mut App) {
+    for window in cx.windows().into_iter().filter_map(|window| window.downcast::<Workspace>()) {
+        let _ = window.update(cx, |ws, _, cx| {
+            if ws.unsaved && ws.current.as_deref() == Some(id)
+                && ws.editor.as_ref().is_some_and(|editor| editor.read(cx).core.doc == *doc)
+            {
+                ws.unsaved = false;
+                ws.dirty_since = None;
+                ws.save_task = None;
+                ws.status = SaveStatus::Saved;
+                cx.notify();
+            }
+        });
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+pub(crate) fn cloud_active_selection(cx: &mut App) -> crate::cloud_sync::presence::SelectionSource {
+    use crate::cloud_sync::presence::SelectionSource::*;
+    let Some(window) = (if crate::devtools::scripted() {
+        cx.windows().into_iter().find_map(|window| window.downcast::<Workspace>())
+    } else { cx.active_window().and_then(|window| window.downcast::<Workspace>()) }) else { return Idle };
+    window.update(cx, |ws, window, cx| {
+        let (Some(id), Some(editor)) = (&ws.current, &ws.editor) else { return Idle };
+        let editor = editor.read(cx);
+        if ws.view != View::Doc || !editor.cloud_history
+            || (!crate::devtools::scripted() && !editor.focus.is_focused(window)) { return Idle; }
+        if ws.unsaved || editor.composing() { return Waiting; }
+        Editing(id.clone(), editor.core.sel)
+    }).unwrap_or(Idle)
+}
+
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+pub(crate) fn cloud_account_notice(phase: crate::cloud_sync::SyncPhase, cx: &mut App) {
+    let message = if phase == crate::cloud_sync::SyncPhase::SignedOut {
+        crate::settings::tr("iCloud 已退出。请在文档库设置中继续。",
+            "You’re signed out of iCloud. Continue in Documents settings.")
+    } else {
+        crate::settings::tr("iCloud 账户已切换。请在文档库设置中继续。",
+            "The iCloud account changed. Continue in Documents settings.")
+    };
+    for window in cx.windows().into_iter().filter_map(|window| window.downcast::<Workspace>()) {
+        let _ = window.update(cx, |ws, _, cx| ws.show_toast_kind(ToastKind::Info, message, cx));
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+pub(crate) fn cloud_notes_changed(notes: &[crate::cloud_sync::NoteChange], remote: bool, cx: &mut App) {
+    for window in cx.windows().into_iter().filter_map(|window| window.downcast::<Workspace>()) {
+        let _ = window.update(cx, |ws, window, cx| {
+            ws.entries = ws.store.list();
+            ws.sort();
+            let access = crate::cloud_sync::shared::access(cx);
+            let access_paused = crate::cloud_sync::shared::editing_paused(cx);
+            if access.is_some_and(|access| !access.can_write()) && ws.unsaved {
+                if let Some(editor) = &ws.editor {
+                    let _ = ws.store.recover_later(&editor.read(cx).core.doc);
+                }
+                ws.unsaved = false;
+                ws.dirty_since = None;
+                ws.save_task = None;
+                ws.status = SaveStatus::Idle;
+                if let (Some(editor), Some(id)) = (&ws.editor, &ws.current)
+                    && let Ok(doc) = ws.store.load(id)
+                {
+                    editor.update(cx, |editor, cx| editor.receive_document(&crate::editor::core::Core::new(doc), cx));
+                }
+            }
+            if ws.current.as_ref().is_some_and(|id| !ws.entries.iter().any(|e| &e.id == id)) {
+                if let Some(id) = ws.current.take() { ws.store.forget_loaded(&id); }
+                ws.sharing.panel_open = false;
+                ws.editor = None;
+                ws.editor_sub = None;
+                ws.save_task = None;
+                if ws.view == View::Doc { ws.view = View::Home; }
+            }
+            if ws.folder_current.as_ref().is_some_and(|id| !ws.entries.iter().any(|e| &e.id == id)) {
+                ws.folder_current = None;
+                if ws.view == View::Folder { ws.view = View::Home; }
+            }
+            if ws.view == View::Trash { ws.trash = ws.store.list_trash(); }
+            if let Some(room) = crate::cloud_sync::shared::active() {
+                if ws.current.is_none() && ws.entries.iter().any(|entry| entry.id == room.note) {
+                    ws.open(&room.note, window, cx);
+                }
+                let reading = ws.reading();
+                if let Some(editor) = &ws.editor {
+                    editor.update(cx, |editor, cx| {
+                        let locked = access_paused || access.is_some_and(|access| !access.can_write());
+                        if editor.read_only != (reading || locked) { editor.set_read_only(reading || locked, cx); }
+                    });
+                }
+            }
+            if let (Some(current), Some(ed)) = (&ws.current, &ws.editor)
+                && let Some(change) = notes.iter().find(|change| change.id == *current)
+            {
+                let _ = ws.store.load_for_edit(current, false);
+                let modified = ws.entries.iter().find(|entry| entry.id == *current).map(|e| e.meta.modified);
+                ed.update(cx, |editor, cx| {
+                    let mut selection = editor.core.sel;
+                    let resolve = |pos| change.positions.iter().find(|(from, _)| *from == pos)
+                        .map_or(pos, |(_, to)| *to);
+                    selection.anchor = resolve(selection.anchor);
+                    selection.head = resolve(selection.head);
+                    editor.receive_document_at(&crate::editor::core::Core::new(change.document.clone()), selection, cx);
+                    if let Some(modified) = modified { editor.modified = modified; }
+                });
+                if remote {
+                    if !crate::in_shared_note() {
+                        ws.show_toast(crate::settings::tr("已合并 iCloud 上的改动", "Merged changes from iCloud"), cx);
+                    }
+                } else {
+                    ws.unsaved = false;
+                    ws.save_task = None;
+                    ws.dirty_since = None;
+                    ws.status = SaveStatus::Saved;
+                }
+            }
+            ws.sync_links(cx);
+            cx.notify();
+        });
     }
 }
 
@@ -1316,6 +1643,18 @@ pub(crate) const HEADER_ACTIONS_H: f32 = 32.;
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if self.view == View::Doc && crate::in_shared_note() && window.is_window_active()
+            && let Some(editor) = &self.editor
+            && let Ok(displayed) = crate::cloud_sync::displayed_shared_updates(&editor.read(cx).core.doc, cx)
+            && !displayed.is_empty()
+        {
+            window.on_next_frame(move |window, cx| {
+                if window.is_window_active()
+                    && let Err(error) = crate::cloud_sync::mark_shared_updates_read(&displayed, cx)
+                { crate::logging::write(&format!("Shared note read state: {error:#}")); }
+            });
+        }
         // Clicks no longer take focus from the editor (see the root's mouse
         // down), so leaving the document hands it back to the window's keys.
         if self.view != View::Doc && self.editor.as_ref().is_some_and(|e| e.read(cx).focus.is_focused(window)) { window.focus(&self.focus); }
@@ -1333,12 +1672,16 @@ impl Render for Workspace {
         let search = self.render_search(window, cx);
         let doc_menu = self.render_doc_menu(window, cx);
         let doc_info = self.render_doc_info(cx);
-        let confirm = self.render_confirm(cx);
+        let confirm = self.render_confirm(window, cx);
         let trash_menu = self.render_trash_menu(cx);
         let home_menus = self.render_home_menus(cx);
         let theme_menu = self.render_theme_menu(cx);
         let toast = self.render_toast(window);
         let mode_menu = self.render_mode_menu(cx);
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let sharing_panel = self.render_sharing_toolbar_panel(window, cx);
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        let sharing_panel = None::<AnyElement>;
         let main = match self.view {
             View::Doc => div()
                 .flex_1()
@@ -1346,7 +1689,7 @@ impl Render for Workspace {
                 .h_full()
                 .flex()
                 .flex_col()
-                .child(self.top_bar(cx))
+                .child(self.top_bar(window, cx))
                 .child(
                     div()
                         .flex_1()
@@ -1363,10 +1706,11 @@ impl Render for Workspace {
                         .children(self.render_shortcuts(cx)),
                 )
                 .into_any_element(),
+            View::Home if crate::in_shared_note() => self.render_shared_waiting(cx),
             View::Home => self.render_home(window, cx),
             View::Folder => self.render_folder(window, cx),
             View::Trash => self.render_trash(cx),
-            View::Settings => self.render_settings(cx),
+            View::Settings => self.render_settings(window, cx),
         };
         let move_dlg = self.render_move_dialog(cx);
         let export_md = self.render_export_md(cx);
@@ -1378,7 +1722,7 @@ impl Render for Workspace {
         let page = if self.view == View::Doc { crate::editor_theme::Theme::bg_body() } else { Theme::bg_body() };
         let note = div().id("note").relative().flex_1().min_w_0().h_full().flex().bg(page).child(main)
             // Files from the Finder dropped on 主页 or a folder's page are imported there.
-            .when(matches!(self.view, View::Home | View::Folder), |d| d
+            .when(!crate::in_shared_note() && matches!(self.view, View::Home | View::Folder), |d| d
                 .on_drag_move(cx.listener(|w, ev: &DragMoveEvent<ExternalPaths>, _, cx| w.file_drag_move(ev, cx)))
                 .on_drop(cx.listener(|w, paths: &ExternalPaths, window, cx| w.file_dropped(paths, window, cx))))
             .children(file_drop);
@@ -1415,12 +1759,13 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &OpenSettings, _, cx| w.show_view(View::Settings, cx)))
             .on_action(cx.listener(|w, _: &OpenAbout, _, cx| w.open_settings(crate::settings::Page::About, cx)))
             .on_action(cx.listener(|w, _: &CheckForUpdates, _, cx| { w.open_settings(crate::settings::Page::About, cx); crate::update::check(true, cx); }))
-            .on_action(cx.listener(|w, _: &GoHome, _, cx| w.show_view(View::Home, cx)))
+            .on_action(cx.listener(|w, _: &GoHome, _, cx| { if !crate::in_shared_note() { w.show_view(View::Home, cx); } }))
             .on_action(cx.listener(|w, _: &NewDoc, window, cx| w.new_doc(window, cx)))
-            .on_action(cx.listener(|w, _: &ImportDoc, window, cx| w.open_import(window, cx)))
-            .on_action(cx.listener(|w, _: &OpenFile, window, cx| w.open_file_dialog(window, cx)))
-            .on_action(cx.listener(|w, _: &ImportFolder, window, cx| w.open_import_folder(window, cx)))
+            .on_action(cx.listener(|w, _: &ImportDoc, window, cx| { if !crate::in_shared_note() { w.open_import(window, cx); } }))
+            .on_action(cx.listener(|w, _: &OpenFile, window, cx| { if !crate::in_shared_note() { w.open_file_dialog(window, cx); } }))
+            .on_action(cx.listener(|w, _: &ImportFolder, window, cx| { if !crate::in_shared_note() { w.open_import_folder(window, cx); } }))
             .on_action(cx.listener(|w, _: &ToggleSidebar, _, cx| {
+                if crate::in_shared_note() { return; }
                 w.sidebar_open = !w.sidebar_open;
                 cx.notify();
             }))
@@ -1452,6 +1797,12 @@ impl Render for Workspace {
                     w.mode_menu = false;
                     w.doc_menu = false;
                     w.doc_sub = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                if ev.keystroke.key == "escape" && w.sharing.panel_open {
+                    w.sharing.panel_open = false;
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -1496,6 +1847,7 @@ impl Render for Workspace {
             .children(crate::ui::window_controls(window))
             .children(row_menu)
             .children(doc_menu)
+            .children(sharing_panel)
             .children(mode_menu)
             .children(doc_info)
             .children(trash_menu)

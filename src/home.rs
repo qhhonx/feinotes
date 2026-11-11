@@ -75,7 +75,7 @@ fn thumb_blocks(blocks: &[crate::model::Block], budget: &mut usize, depth: usize
                     crate::model::TableCell { blocks: thumb_blocks(&cell.blocks, budget, depth + 1, numbers, eqnos), bg: cell.bg.clone(), valign: cell.valign.clone(),
                         colspan: cell.colspan.min((nc - c) as u32), rowspan: cell.rowspan.min((nr - r) as u32) }
                 }).collect()).collect();
-                BlockKind::Table(crate::model::Table { col_widths: t.col_widths.iter().take(nc).copied().collect(), header_rows: t.header_rows.min(nr), header_col: t.header_col, rows })
+                BlockKind::Table(crate::model::Table { col_widths: t.col_widths.iter().take(nc).copied().collect(), header_rows: t.header_rows.min(nr), header_col: t.header_col, rows, axes: Default::default() })
             }
             BlockKind::Image { src, width, height, .. } => {
                 let mut kind = b.kind.clone();

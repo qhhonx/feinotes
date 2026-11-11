@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="description" content="飞书文档般顺手，iCloud 备忘录般安心。">
+  <link rel="canonical" href="https://feinotes.app/">
+  <title>飞记 · 写得自在，记得安心。</title>
+  <link rel="icon" href="assets/fei-notes.png" type="image/png">
+  <link rel="preload" as="image" href="assets/coastal-canopy-v1.jpg">
+  <link rel="stylesheet" href="landing.css">
+  <link rel="stylesheet" href="sync-preview.css">
+  <link rel="stylesheet" href="collab-preview.css">
+</head>
+<body>
+  <div class="page">
+    <a class="skip" href="#main">跳到正文</a>
+    <header class="top wrap">
+      <a class="brand" href="index.html"><img src="assets/fei-notes.png" width="39" height="39" alt="">飞记<small>Fei Notes</small></a>
+      <nav aria-label="网站导航">
+        <a href="support/index.html">支持</a>
+        <a href="privacy/index.html">隐私</a>
+        <a class="language" href="en/index.html" hreflang="en" lang="en">English</a>
+      </nav>
+    </header>
+    <main id="main" class="wrap">
+      <div class="hero">
+        <p class="release"><span aria-hidden="true"></span>Mac 版 · TestFlight</p>
+        <h1>写得自在，<br><span>记得安心。</span></h1>
+        <p class="lead">飞书文档般顺手，iCloud 备忘录般安心。</p>
+        <div id="testflight" class="beta-access" data-language="zh" data-status="testflight-status.json">
+          <a class="beta-download" data-beta-link href="https://testflight.apple.com/join/NdcXugMy" aria-disabled="true" tabindex="-1">通过 TestFlight 体验</a>
+          <p class="beta-details">Apple 芯片与 Intel Mac · macOS 14 或更高版本<br>测试期间免费使用 iCloud 同步与协作</p>
+          <p class="beta-status" data-beta-status role="status">正在准备 TestFlight 测试版。</p>
+        </div>
+      </div>
+      <div class="theme-switch" role="group" aria-label="查看功能">
+        <button type="button" class="active" data-theme="sync" aria-pressed="true">iCloud 多端同步</button>
+        <button type="button" data-theme="collab" aria-pressed="false">多人实时共编</button>
+      </div>
+      <figure class="shot story sync-story sync-preview" data-scene="sync" aria-label="同一篇海边笔记的两张飞记编辑器实拍：备忘录主题写到半句，飞书文档主题在另一端继续。">
+        <div class="sync-stage">
+          <div class="sync-window sync-window-primary">
+            <img src="assets/sync-before-zh.webp" width="1840" height="1142" alt="飞记备忘录主题实拍。「把周末留给海边」的标题下方写着「如果还早，」，下面是灯塔照片和黄色圆形待办。" fetchpriority="high">
+            <span class="scene-note" aria-hidden="true">备忘录主题</span>
+          </div>
+          <div class="sync-window sync-window-secondary">
+            <img src="assets/sync-feishu-zh.webp" width="1840" height="1142" alt="飞记飞书文档主题实拍。同一篇「把周末留给海边」在标题下方续写为「如果还早，就沿着海走到天黑。」">
+            <span class="scene-note" aria-hidden="true">飞书文档主题</span>
+          </div>
+        </div>
+      </figure>
+      <figure class="shot story collab-story" data-scene="collab" hidden aria-label="多人实时共编 · 界面设计预览">
+        <div class="collab-preview">
+          <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
+          <img src="assets/editor-feishu.webp" width="1840" height="1142" alt="海边小书展 · 开展计划。林夏正在选中本周目标，陈屿正在修改表格进度。" loading="lazy">
+          <div class="collab-presence" aria-hidden="true">
+            <div class="collab-avatars">
+              <span class="collab-avatar lin">林</span>
+              <span class="collab-avatar chen">陈</span>
+            </div>
+            <span class="collab-share"><svg viewBox="0 0 16 16"><path d="M8 10V2m0 0L5 5m3-3 3 3M5 7H3v7h10V7h-2"/></svg>共享</span>
+          </div>
+          <span class="coedit-selection lin-mark" aria-hidden="true"></span>
+          <span class="coedit-name lin-mark" aria-hidden="true">林夏</span>
+          <span class="coedit-selection chen-mark" aria-hidden="true"></span>
+          <span class="coedit-name chen-mark" aria-hidden="true">陈屿</span>
+        </div>
+        <figcaption class="scene-note">飞书文档主题</figcaption>
+      </figure>
+    </main>
+    <footer class="wrap">
+      <span>© 2026 飞记 · Fei Notes</span>
+      <div class="footer-links"><a href="https://t.me/+eKIYrdIFufxmYzJl">Telegram 反馈群 ↗</a><a href="https://github.com/s1dashu/quiet-md">基于 Quiet.md</a></div>
+    </footer>
+  </div>
+  <script src="theme-gallery.js" defer></script>
+  <script src="testflight.js" defer></script>
+</body>
+</html>

@@ -172,6 +172,7 @@ fn info(name: &str) -> Option<(usize, &'static str, &'static str)> {
         "NewDoc" => (0, "新建文档", "New document"),
         "QuickNew" => (0, "新建笔记窗口", "New note window"),
         "CloseWindow" => (0, "关闭窗口", "Close window"),
+        "HideApp" if crate::FEI_NOTES => (0, "隐藏飞记", "Hide Fei Notes"),
         "HideApp" => (0, "隐藏 Quiet.md", "Hide Quiet.md"),
         "Minimize" => (0, "最小化窗口", "Minimize window"),
         "ToggleFullScreen" => (0, "进入 / 退出全屏", "Enter / exit full screen"),

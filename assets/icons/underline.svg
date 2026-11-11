@@ -1,2 +1,15 @@
-<!-- Nucleo UI Outline 18 v1.5.1: TextUnderline. Copyright Nucleo. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" view-box="0 0 18 18" fill="none"><path d="M12.75,2.75v5.75c0,2.071-1.679,3.75-3.75,3.75h0c-2.071,0-3.75-1.679-3.75-3.75V2.75" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></path><line id="color" x1="2.75" y1="15.25" x2="15.25" y2="15.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line></svg>
+<!-- Lucide 0.468.0: underline. See LICENSE-lucide. -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="18"
+  height="18"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M6 4v6a6 6 0 0 0 12 0V4" />
+  <line x1="4" x2="20" y1="20" y2="20" />
+</svg>

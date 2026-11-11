@@ -1,0 +1,449 @@
+/*
+ * Quiet.md 文档主题：备忘录
+ *
+ * 字号与字重参考 macOS 27.0.1 Notes 4.13 的原生文字样式。
+ * 正文墨色、一级标题比例、分隔线和表格内边距取自同份 Markdown 的实拍对照。
+ * 强调色来自 Notes.app 的 Accent 资源。
+ */
+
+:root {
+  --theme-name: "备忘录";
+  --theme-name-en: "Notes";
+  --theme-author: "quiet.md";
+  --theme-description: "Mac 备忘录风格：紧凑的系统字体、圆形核对清单和金色强调。";
+  /* 块的画法：craft 或 feishu */
+  --theme-base: craft;
+
+  --list-gap: 0px;
+  --todo-gap: 5px;
+  --countdown-muted: true;
+  --code-compact: true;
+  --compact-code-gap-after-paragraph: 15.5px;
+  --notes-accent: #fcb827;
+  --notes-paper: light-dark(#ffffff, #1e1e1e);
+  --notes-ink: light-dark(#454545, #dcdcdc);
+  --notes-code-ink: light-dark(#595959, #cfcfcf);
+  /* 深一档金色，保证浅色纸面上的链接可读。 */
+  --notes-link: light-dark(#876215, #f5b840);
+
+  /* 文字颜色 */
+  --color-gray: #868b90;
+  --color-red: #cb0424;
+  --color-orange: #d97c00;
+  --color-yellow: #d4a100;
+  --color-green: #008658;
+  --color-blue: #003fa1;
+  --color-purple: #a22fc0;
+
+  /* 文字高亮 */
+  --highlight-light-gray: #b8c0c559;
+  --highlight-light-red: #ff989859;
+  --highlight-light-orange: #ffb86a59;
+  --highlight-light-yellow: #fff10059;
+  --highlight-light-green: #39ff9159;
+  --highlight-light-blue: #72c2ff59;
+  --highlight-light-purple: #f6dcfb;
+  --highlight-medium-gray: #b8c0c5a6;
+  --highlight-gray: #b8c0c5a6;
+  --highlight-red: #ff9898a6;
+  --highlight-orange: #ffb86aa6;
+  --highlight-yellow: #fff100a6;
+  --highlight-green: #39ff91a6;
+  --highlight-blue: #72c2ffa6;
+  --highlight-purple: #c49bffa6;
+
+  /* 块背景 */
+  --background-light-gray: #f8f8f9;
+  --background-light-red: #feecef;
+  --background-light-orange: #fff7ec;
+  --background-light-yellow: #fffaec;
+  --background-light-green: #ecf8f4;
+  --background-light-blue: #ecf1fa;
+  --background-light-purple: #f2ecff;
+  --background-medium-gray: #f0f1f2;
+  --background-gray: #f0f1f2;
+  --background-medium-red: #fddadf;
+  --background-medium-orange: #ffefd9;
+  --background-medium-yellow: #fef5d9;
+  --background-medium-green: #d9f0e8;
+  --background-medium-blue: #d9e4f5;
+  --background-medium-purple: #e6d9ff;
+
+  /* 高亮块底色 */
+  --callout-light-gray: #f8f8f9;
+  --callout-light-red: #feecef;
+  --callout-light-orange: #fff7ec;
+  --callout-light-yellow: #fffaec;
+  --callout-light-green: #ecf8f4;
+  --callout-light-blue: #ecf1fa;
+  --callout-light-purple: #f2ecff;
+  --callout-medium-gray: #f0f1f2;
+  --callout-gray: #f0f1f2;
+  --callout-medium-red: #fddadf;
+  --callout-medium-orange: #ffefd9;
+  --callout-medium-yellow: #fef5d9;
+  --callout-medium-green: #d9f0e8;
+  --callout-medium-blue: #d9e4f5;
+  --callout-medium-purple: #e6d9ff;
+
+  /* 高亮块边框 */
+  --border-gray: #e0e0e0;
+  --border-red: #ffc9c9;
+  --border-orange: #ffd6a8;
+  --border-yellow: #fff085;
+  --border-green: #a4f4cf;
+  --border-blue: #bedbff;
+  --border-purple: #ddd6ff;
+
+  /* 其它界面细节（文档内的选中、悬停、表格工具等） */
+  --token-text: var(--notes-ink);
+  --token-text-caption: #737477;
+  --token-text-placeholder: #9c9fa0;
+  --token-block-placeholder: #1f222540;
+  --token-text-disabled: #1f22254d;
+  --token-text-code: #303335;
+  --token-primary-500: var(--notes-link);
+  --token-primary-fill-1: #fcb8271a;
+  --token-bg-overlay: #f7f7f7;
+  --token-line-divider: #0000000f;
+  --token-line-border: #00000014;
+  --token-fill-hover: #0000000b;
+  --token-fill-hover-strong: #0000000f;
+  --token-fill-pressed: #00000017;
+  --token-fill-turninto-active: #e3edfd;
+  --token-block-hover: #fcb82714;
+  --token-block-selected: #fcb82724;
+  --token-handle-active: #0000000f;
+  --token-size-cell: #f7f7f7;
+  --token-size-cell-border: #eaebeb;
+  --token-size-cell-active: #9cc0fa;
+  --token-size-cell-disabled: #e3edfd;
+  --token-swatch-border: #00000014;
+  --token-block-bg-area: #00000008;
+  --token-scrollbar-thumb: #00000038;
+  --token-shadow: #00000014;
+  --token-code-hover-ring: #fcb82759;
+  --token-pinned: var(--notes-link);
+  --token-table-bar-hover: #dedfe0;
+  --token-table-bar-selected: #c6dafc;
+  --token-danger-bar: #ff6467;
+  --token-danger-cell: #fef2f2;
+  --token-danger: #e7000b;
+  --token-sidebar-text: #1f2225d9;
+  --token-sidebar-hover: #0000000b;
+  --token-sidebar-selected: #00000012;
+  --token-sidebar-section: #333739;
+  --token-button-border: #00000013;
+  --token-code-gutter-line: #e8e8e8;
+  --token-caption: #7e8287;
+  --token-menu-highlight: #3a85f7;
+  --token-popover-bg: #fafafa;
+}
+
+.page {
+  background-color: var(--notes-paper);
+  color: var(--notes-ink);
+  font-family: system-ui;
+  font-size: 13px;
+  line-height: 17px;
+  max-width: 820px;
+  caret-color: var(--notes-ink);
+}
+
+::selection {
+  background-color: #fcb82745;
+}
+
+p {
+  margin-bottom: 17px;
+}
+
+.title {
+  font-family: system-ui;
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: 700;
+  color: inherit;
+}
+
+h1 {
+  font-family: system-ui;
+  font-size: 19px;
+  line-height: 24px;
+  font-weight: 700;
+  color: inherit;
+  margin-top: 17px;
+  margin-bottom: 17px;
+}
+
+h2 {
+  font-family: system-ui;
+  font-size: 16px;
+  line-height: 20px;
+  font-weight: 700;
+  color: inherit;
+  margin-top: 17px;
+  margin-bottom: 20px;
+}
+
+h3 {
+  font-family: system-ui;
+  font-size: 13px;
+  line-height: 17px;
+  font-weight: 700;
+  color: inherit;
+  margin-top: 4px;
+  margin-bottom: 0px;
+}
+
+h4 {
+  font-family: system-ui;
+  font-size: 13px;
+  line-height: 17px;
+  font-weight: 700;
+  color: inherit;
+  margin-top: 0px;
+  margin-bottom: 0px;
+}
+
+h5 {
+  font-family: system-ui;
+  font-size: 13px;
+  line-height: 17px;
+  font-weight: 700;
+  color: inherit;
+  margin-top: 0px;
+  margin-bottom: 0px;
+}
+
+h6 {
+  font-family: system-ui;
+  font-size: 13px;
+  line-height: 17px;
+  font-weight: 700;
+  color: inherit;
+  margin-top: 0px;
+  margin-bottom: 0px;
+}
+
+h7 {
+  font-family: system-ui;
+  font-size: 13px;
+  line-height: 17px;
+  font-weight: 600;
+  color: inherit;
+  margin-top: 0px;
+  margin-bottom: 0px;
+}
+
+h8 {
+  font-family: system-ui;
+  font-size: 13px;
+  line-height: 17px;
+  font-weight: 600;
+  color: inherit;
+  margin-top: 0px;
+  margin-bottom: 0px;
+}
+
+h9 {
+  font-family: system-ui;
+  font-size: 13px;
+  line-height: 17px;
+  font-weight: 600;
+  color: inherit;
+  margin-top: 0px;
+  margin-bottom: 0px;
+}
+
+strong {
+  font-weight: 700;
+  color: inherit;
+}
+
+a {
+  color: var(--notes-link);
+  text-decoration: underline;
+  text-decoration-color: inherit;
+}
+
+a:hover {
+  color: var(--notes-link);
+}
+
+code {
+  color: light-dark(#a22fc0, #ec68ff);
+  background-color: light-dark(#f6dcfb, #3b253d);
+  border-color: transparent;
+  border-radius: 4px;
+  padding-left: 3px;
+}
+
+pre {
+  font-family: ui-monospace;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--notes-code-ink);
+  background-color: light-dark(#e9e9e9, #414141);
+  border-color: light-dark(#0000000a, #333333);
+  border-radius: 6px;
+  padding-top: 3.5px;
+  padding-left: 8px;
+}
+
+.line-numbers {
+  display: none;
+  color: #c2c2c3;
+  background-color: #f8f8f8;
+}
+
+blockquote {
+  border-left-width: 2px;
+  border-left-color: light-dark(#00000040, #565656);
+  padding-left: 9px;
+  color: inherit;
+  font-style: normal;
+}
+
+ul {
+  padding-left: 25px;
+  list-style-type: dash;
+}
+
+ul li::marker {
+  color: inherit;
+}
+
+ol li::marker {
+  color: inherit;
+}
+
+.task {
+  width: 16px;
+  border-radius: 8px;
+  border-color: light-dark(#bdbdbd, #555555);
+}
+
+.task:checked {
+  background-color: var(--notes-accent);
+  color: white;
+}
+
+.task-done {
+  color: var(--notes-ink);
+  text-decoration: none;
+}
+
+hr {
+  border-top-style: solid;
+  border-top-width: 1px;
+  border-top-color: light-dark(#272727, #dddddd);
+  height: 7px;
+}
+
+table {
+  font-size: 13px;
+  line-height: 17px;
+  border-color: light-dark(#bebec0, #636365);
+  border-radius: 0px;
+  padding-top: 3.5px;
+  padding-left: 4px;
+  margin-top: 6px;
+}
+
+th {
+  background-color: var(--notes-paper);
+}
+
+.callout {
+  border-radius: 4px;
+  border-width: 1px;
+  padding-top: 12px;
+  padding-left: 14px;
+}
+
+.attachment {
+  /* Match the file card and the preview footer in each appearance. */
+  background-color: light-dark(#ececec, #323232);
+  border-color: light-dark(#00000014, #414141);
+}
+
+/* macOS Notes main window, sampled in both appearances.
+ * Folder outlines use a deeper gold on light grey for legibility.
+ * The selected row takes the neutral fill of the native note list.
+ */
+.sidebar {
+  background-color: light-dark(#eeedeb, #2e2926);
+  color: light-dark(#242424, #ececec);
+}
+
+.sidebar-section {
+  color: light-dark(#66635e, #aaa39c);
+}
+
+.sidebar-folder {
+  color: light-dark(#996400, #fdb82a);
+}
+
+.sidebar-row:hover {
+  background-color: light-dark(#0000000b, #ffffff12);
+}
+
+.sidebar-row.is-selected {
+  background-color: light-dark(#dcdcdc, #464646);
+}
+
+.toolbar {
+  background-color: light-dark(#ffffff, #252324);
+}
+
+.toolbar-button {
+  background-color: light-dark(#f9f9f9, #424041);
+  border-color: light-dark(#00000010, #ffffff20);
+  color: light-dark(#191919, #f5f5f5);
+  border-radius: 16px;
+}
+
+.toolbar-button:hover {
+  background-color: light-dark(#eeeeee, #514f50);
+}
+
+.toolbar-button:active {
+  background-color: light-dark(#e3e3e3, #5c595a);
+}
+
+.token.comment {
+  color: var(--notes-code-ink);
+}
+
+.token.keyword {
+  color: var(--notes-code-ink);
+}
+
+.token.tag {
+  color: var(--notes-code-ink);
+}
+
+.token.string {
+  color: var(--notes-code-ink);
+}
+
+.token.number {
+  color: var(--notes-code-ink);
+}
+
+.token.boolean {
+  color: var(--notes-code-ink);
+}
+
+.token.class-name {
+  color: var(--notes-code-ink);
+}
+
+.token.attr-name {
+  color: var(--notes-code-ink);
+}
+
+.token.function {
+  color: var(--notes-code-ink);
+}

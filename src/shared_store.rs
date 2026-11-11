@@ -15,6 +15,10 @@ impl SharedStore {
     pub fn forget_loaded(&self, id: &str) { self.0.borrow().forget_loaded(id); }
     pub fn recover_later(&self, doc: &Document) -> Result<()> { self.0.borrow().recover_later(doc) }
     pub fn save(&mut self, id: &str, doc: &Document) -> Result<Meta> { self.0.borrow_mut().save(id, doc) }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub fn save_sqlite_with<T>(&mut self, id: &str, doc: &Document, sync: impl FnOnce(&rusqlite::Transaction<'_>, i64) -> Result<T>) -> Result<(Meta, T)> {
+        self.0.borrow_mut().save_sqlite_with(id, doc, sync)
+    }
     pub fn create(&mut self) -> Result<(String, Document)> { self.0.borrow_mut().create() }
     pub fn create_from(&mut self, doc: &Document) -> Result<String> { self.0.borrow_mut().create_from(doc) }
     pub fn size_of(&self, id: &str, doc: &Document) -> u64 { self.0.borrow_mut().size_of(id, doc) }

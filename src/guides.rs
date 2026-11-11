@@ -34,6 +34,7 @@ pub fn for_windows(xml: &str) -> String {
 }
 
 pub fn initialize(root: &Path) -> anyhow::Result<()> {
+    if FILES.is_empty() { return Ok(()); }
     fs::create_dir_all(root)?;
     if seeded(root)? { return Ok(()); }
     // Copies of the app may share a library: two started together on a new

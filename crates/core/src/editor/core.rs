@@ -324,6 +324,10 @@ struct Snapshot {
     sel: Selection,
     /// Rough heap size of `doc`, for the undo budget.
     bytes: usize,
+    #[cfg(feature = "sqlite-store")]
+    cloud_group: Option<u64>,
+    #[cfg(feature = "sqlite-store")]
+    cloud_transfer: Option<CloudTransfer>,
 }
 
 /// The undo history keeps at most this many steps …
@@ -347,7 +351,8 @@ fn doc_bytes(doc: &Document) -> usize {
 impl Snapshot {
     fn new(doc: Document, sel: Selection) -> Self {
         let bytes = doc_bytes(&doc);
-        Snapshot { doc, sel, bytes }
+        Snapshot { doc, sel, bytes, #[cfg(feature = "sqlite-store")] cloud_group: None,
+            #[cfg(feature = "sqlite-store")] cloud_transfer: None }
     }
 }
 
@@ -363,10 +368,24 @@ pub enum EditKind {
     Other,
 }
 
+#[cfg(feature = "sqlite-store")]
+#[derive(Clone, Copy)]
+pub enum CloudTransfer {
+    Split { at: Pos, tail: BlockId },
+    Join { head: BlockId, tail: BlockId },
+}
+
+#[cfg(feature = "sqlite-store")]
+pub struct CloudStep<'a> {
+    pub group: Option<u64>,
+    pub body: &'a Document,
+    pub transfer: Option<CloudTransfer>,
+}
+
 /// Block-selection mode: blocks from `anchor` to `head` in visible order.
 /// The icon is file-level meta, and folding is not undoable:
 /// undo and redo keep both as they are now instead of the snapshot's.
-fn keep_outside_history(now: &Document, restored: &mut Document) {
+pub fn keep_outside_history(now: &Document, restored: &mut Document) {
     restored.icon = now.icon.clone();
     let mut folded = HashMap::default();
     now.for_each_block(|b| {
@@ -416,6 +435,10 @@ pub struct Core {
     undo: std::collections::VecDeque<std::sync::Arc<Snapshot>>,
     redo: Vec<std::sync::Arc<Snapshot>>,
     last_edit: Option<(EditKind, Instant, BlockId)>,
+    #[cfg(feature = "sqlite-store")]
+    cloud_group: Option<u64>,
+    #[cfg(feature = "sqlite-store")]
+    cloud_transfer: Option<CloudTransfer>,
     pub dirty: bool,
     /// Bumped by every change to the document, including folding.
     pub generation: u64,
@@ -443,6 +466,10 @@ impl Core {
             undo: Default::default(),
             redo: vec![],
             last_edit: None,
+            #[cfg(feature = "sqlite-store")]
+            cloud_group: None,
+            #[cfg(feature = "sqlite-store")]
+            cloud_transfer: None,
             dirty: false,
             generation: 0,
             paths: Default::default(),
@@ -540,9 +567,12 @@ impl Core {
 
     /// `ordered` with the units already at hand.
     pub fn ordered_in(&self, us: &[Unit]) -> (Pos, Pos) {
-        let s = self.sel;
+        self.order_selection(self.sel, us)
+    }
+
+    fn order_selection(&self, s: Selection, us: &[Unit]) -> (Pos, Pos) {
         if s.anchor.block == s.head.block {
-            return self.ordered();
+            return if s.anchor.offset <= s.head.offset { (s.anchor, s.head) } else { (s.head, s.anchor) };
         }
         let a = self.unit_index(us, s.anchor.block).unwrap_or(0);
         let h = self.unit_index(us, s.head.block).unwrap_or(0);
@@ -551,7 +581,11 @@ impl Core {
 
     /// Selected byte range inside block `id`, if the selection touches it.
     pub fn range_in(&self, id: BlockId, units: &[Unit]) -> Option<Range<usize>> {
-        let (s, e) = self.ordered_in(units);
+        self.range_for(self.sel, id, units)
+    }
+
+    pub fn range_for(&self, selection: Selection, id: BlockId, units: &[Unit]) -> Option<Range<usize>> {
+        let (s, e) = self.order_selection(selection, units);
         if s.block == e.block {
             return (s.block == id).then_some(s.offset..e.offset);
         }
@@ -615,11 +649,33 @@ impl Core {
                 && (kind == EditKind::Equation || now.duration_since(t) < Duration::from_millis(700))
         );
         if !coalesce {
-            self.push_undo(Snapshot::new(self.doc.clone(), self.sel));
+            let snapshot = Snapshot::new(self.doc.clone(), self.sel);
+            #[cfg(feature = "sqlite-store")]
+            let snapshot = Snapshot { cloud_group: self.cloud_group.replace(BlockId::new().0),
+                cloud_transfer: self.cloud_transfer.take(), ..snapshot };
+            self.push_undo(snapshot);
         }
         self.last_edit = Some((kind, now, block));
         self.redo.clear();
         self.dirty = true;
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    pub fn cloud_save_steps(&self, last_saved: Option<u64>) -> Vec<CloudStep<'_>> {
+        // A checkpoint stores the final body of the preceding edit group.
+        // The current group's body can be saved several times during typing.
+        let start = if self.cloud_group == last_saved {
+            self.undo.len()
+        } else if let Some(index) = self.undo.iter().rposition(|step| step.cloud_group == last_saved) {
+            index
+        } else if self.undo.front().is_some_and(|step| step.cloud_group.is_none()) {
+            0 // The editor was reopened or received a new remote body.
+        } else {
+            self.undo.len()
+        };
+        self.undo.iter().skip(start).filter(|step| step.cloud_group.is_some())
+            .map(|step| CloudStep { group: step.cloud_group, body: &step.doc, transfer: step.cloud_transfer })
+            .chain(std::iter::once(CloudStep { group: self.cloud_group, body: &self.doc, transfer: self.cloud_transfer })).collect()
     }
 
     /// Put `doc` back outside the edit history (阅读模式 refusing an edit).
@@ -1144,6 +1200,8 @@ impl Core {
     pub fn enter(&mut self) {
         self.checkpoint(EditKind::Other);
         self.break_coalescing();
+        #[cfg(feature = "sqlite-store")]
+        let collapsed = self.sel.is_collapsed();
         let p = self.delete_selection_inner();
         if p.block == TITLE {
             // Enter in the title moves into the body, splitting the title text.
@@ -1155,6 +1213,8 @@ impl Core {
             } else {
                 let b = Block::new(BlockKind::Text, tail);
                 let id = b.id;
+                #[cfg(feature = "sqlite-store")]
+                if collapsed && !b.text.is_empty() { self.cloud_transfer = Some(CloudTransfer::Split { at: p, tail: id }); }
                 self.doc.blocks.insert(0, b);
                 self.sel = Selection::caret(Pos::new(id, 0));
             }
@@ -1245,6 +1305,10 @@ impl Core {
             nb.bg = block.bg.clone();
         }
         let nid = nb.id;
+        #[cfg(feature = "sqlite-store")]
+        if collapsed && !nb.text.is_empty() && self.cell_of(p.block).is_none() {
+            self.cloud_transfer = Some(CloudTransfer::Split { at: p, tail: nid });
+        }
         let has_kids = !block.children.is_empty() && !block.folded;
         if has_kids {
             // New item becomes the first child, like an outliner.
@@ -1395,6 +1459,10 @@ impl Core {
             return;
         }
         let text = self.text_of(id).cloned().unwrap_or_default();
+        #[cfg(feature = "sqlite-store")]
+        if self.cell_of(id).is_none() && self.cell_of(prev.id).is_none() {
+            self.cloud_transfer = Some(CloudTransfer::Join { head: prev.id, tail: id });
+        }
         let kids = self.block_mut(id).map(|b| std::mem::take(&mut b.children)).unwrap_or_default();
         let at = self.len_of(prev.id);
         self.text_mut(prev.id).unwrap().append(&text);
@@ -3423,7 +3491,7 @@ mod tests {
         assert_eq!(c.undo.len(), UNDO_STEPS);
         // Huge steps: memory wins, down to the minimum.
         for _ in 0..UNDO_MIN_STEPS + 5 {
-            c.push_undo(Snapshot { doc: Document::default(), sel: c.sel, bytes: UNDO_BYTES / 4 });
+            c.push_undo(Snapshot { bytes: UNDO_BYTES / 4, ..Snapshot::new(Document::default(), c.sel) });
         }
         assert_eq!(c.undo.len(), UNDO_MIN_STEPS);
         assert!(c.undo());

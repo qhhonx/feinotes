@@ -20,6 +20,10 @@ uuid = { version = "1.28.0", features = ["v4"] }
 rustc-hash = "2.1"
 html5ever = "0.27"
 markup5ever_rcdom = "0.3"
+rusqlite = { version = "0.41.1", optional = true }
+
+[features]
+sqlite-store = ["dep:rusqlite"]
 
 [lints]
 workspace = true

@@ -20,6 +20,8 @@ use std::time::Duration;
 
 pub enum EditorEvent {
     Changed,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    CloudUndo { redo: bool },
     /// ⌘S: write to disk now instead of waiting for the autosave debounce.
     Save,
     /// Toolbar 更多 → 文档库内搜索: the search dialog with this query.
@@ -136,6 +138,10 @@ pub struct Editor {
     /// Last-frame layout lookups the overlays were positioned from.
     pub probes: RefCell<Vec<(super::overlays::Probe, Option<Bounds<Pixels>>)>>,
     pub marked: Option<(BlockId, Range<usize>)>,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub cloud_history: bool,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub remote_selections: Vec<crate::cloud_sync::presence::RemoteSelection>,
     pub dragging: bool,
     /// A press in the gap between blocks, for `gap_release`.
     pub gap_press: Option<Point<Pixels>>,
@@ -373,6 +379,10 @@ impl Editor {
             content_origin: Rc::new(Cell::new(Point::default())),
             probes: RefCell::new(vec![]),
             marked: None,
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            cloud_history: false,
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            remote_selections: vec![],
             dragging: false,
             gap_press: None,
             hover: None,
@@ -480,7 +490,10 @@ impl Editor {
     /// Call after every command: emits Changed, keeps menus consistent,
     /// scrolls the caret into view and restarts the caret blink.
     pub fn receive_document(&mut self, core: &Core, cx: &mut Context<Self>) {
-        let sel = self.core.sel;
+        self.receive_document_at(core, self.core.sel, cx);
+    }
+
+    pub(crate) fn receive_document_at(&mut self, core: &Core, sel: Selection, cx: &mut Context<Self>) {
         let generation = self.core.generation;
         self.core = core.clone();
         self.core.sel = sel;
@@ -498,6 +511,9 @@ impl Editor {
         self.refresh_find(false, cx);
         cx.notify();
     }
+
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub fn composing(&self) -> bool { self.marked.is_some() }
 
     pub fn changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.core.reveal_caret();
@@ -922,6 +938,7 @@ impl Editor {
             header_rows: 0,
             header_col: false,
             rows: (0..rows).map(|_| (0..cols).map(|_| TableCell::empty()).collect()).collect(),
+            axes: Default::default(),
         };
         let first = t.rows[0][0].blocks[0].id;
         let nid = self.core.insert_block(Block::new(BlockKind::Table(t), RichText::default()));
@@ -1891,6 +1908,11 @@ impl Editor {
         self.cancel_crop(cx);
         self.slash = None;
         self.marked = None;
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if self.cloud_history {
+            cx.emit(EditorEvent::CloudUndo { redo: false });
+            return;
+        }
         self.core.undo();
         self.changed(window, cx);
     }
@@ -1902,6 +1924,11 @@ impl Editor {
         self.cancel_crop(cx);
         self.slash = None;
         self.marked = None;
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if self.cloud_history {
+            cx.emit(EditorEvent::CloudUndo { redo: true });
+            return;
+        }
         self.core.redo();
         self.changed(window, cx);
     }

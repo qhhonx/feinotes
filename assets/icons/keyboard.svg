@@ -1,2 +1,22 @@
-<!-- Nucleo UI Outline 18 v1.5.1: Keyboard. Copyright Nucleo. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" view-box="0 0 18 18" fill="none"><rect x=".75" y="4.75" width="16.5" height="8.5" rx="2" ry="2" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></rect><line x1="11.75" y1="10.25" x2="6.25" y2="10.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><rect x="3" y="7" width="1.5" height="1.5" rx=".5" ry=".5" fill="currentColor"></rect><rect x="3" y="9.5" width="1.5" height="1.5" rx=".5" ry=".5" fill="currentColor"></rect><rect x="5.5" y="7" width="1.5" height="1.5" rx=".5" ry=".5" fill="currentColor"></rect><rect x="8.25" y="7" width="1.5" height="1.5" rx=".5" ry=".5" fill="currentColor"></rect><rect x="13.5" y="7" width="1.5" height="1.5" rx=".5" ry=".5" fill="currentColor"></rect><rect x="13.5" y="9.5" width="1.5" height="1.5" rx=".5" ry=".5" fill="currentColor"></rect><rect x="11" y="7" width="1.5" height="1.5" rx=".5" ry=".5" fill="currentColor"></rect></svg>
+<!-- Lucide 0.468.0: keyboard. See LICENSE-lucide. -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="18"
+  height="18"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M10 8h.01" />
+  <path d="M12 12h.01" />
+  <path d="M14 8h.01" />
+  <path d="M16 12h.01" />
+  <path d="M18 8h.01" />
+  <path d="M6 8h.01" />
+  <path d="M7 16h10" />
+  <path d="M8 12h.01" />
+  <rect width="20" height="16" x="2" y="4" rx="2" />
+</svg>

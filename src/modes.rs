@@ -80,6 +80,9 @@ impl Workspace {
     }
 
     pub fn set_mode(&mut self, reading: bool, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if !reading && (crate::cloud_sync::shared::editing_paused(cx)
+            || crate::cloud_sync::shared::access(cx).is_some_and(|access| !access.can_write())) { return; }
         self.mode_menu = false;
         cx.notify();
         let Some(id) = self.current.clone() else { return };

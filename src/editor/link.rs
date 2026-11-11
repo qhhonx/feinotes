@@ -256,22 +256,7 @@ impl Editor {
             (p.x, bottom)
         };
         self.probed(super::overlays::Probe::Point(Pos::new(block, range.start)));
-        // The input: 30 tall, radius 9, white with a hairline, the
-        // accent rim only while focused.
-        let input = |field: &Entity<TextField>| {
-            let focused = field.read(cx).is_focused(window);
-            div()
-                .w(px(280.))
-                .h(px(30.))
-                .px(px(10.))
-                .flex()
-                .items_center()
-                .rounded(px(9.))
-                .bg(crate::theme::raised(Theme::bg_body()))
-                .border_1()
-                .border_color(if focused { Theme::primary() } else { Theme::line_border() })
-                .child(field.clone())
-        };
+        let input = |field: &Entity<TextField>| TextField::framed(field, px(280.), window, cx);
         let label = |t: &'static str| div().h(px(30.)).mr(px(8.)).flex().items_center().text_size(px(13.)).child(t);
         let ok = self.link_input_ok(cx);
         // The primary button: accent, white 13pt semibold, radius 9.

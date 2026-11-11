@@ -1,0 +1,38 @@
+/* Preserve the shared 1840:1142 stage and its 1px frame; let the coast show through. */
+.sync-preview {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  overflow: visible;
+  color: #f8faee;
+}
+.sync-stage {
+  position: relative;
+  aspect-ratio: 1840 / 1142;
+  container-type: inline-size;
+  background: transparent;
+  overflow: visible;
+}
+.sync-window { position: absolute; }
+.sync-window-primary { z-index: 1; top: 0; left: 0; width: 87.5%; }
+.sync-window-secondary { z-index: 2; right: 0; bottom: 0; width: 43%; }
+.sync-preview .sync-window img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1840 / 1142;
+  border: 1px solid rgb(255 255 255 / 88%);
+  border-radius: 1.05cqw;
+  background: #fff;
+}
+.sync-window-primary img {
+  box-shadow: 0 0 0 1px rgb(24 55 48 / 8%), 0 2.8cqw 5.8cqw -1.7cqw rgb(13 42 38 / 35%), 0 .35cqw 1.4cqw rgb(13 42 38 / 10%);
+}
+.sync-preview .sync-window-secondary img {
+  border-radius: .85cqw;
+  box-shadow: 0 0 0 1px rgb(24 55 48 / 10%), 0 1.7cqw 3.7cqw -.8cqw rgb(13 42 38 / 32%), 0 .25cqw .9cqw rgb(13 42 38 / 13%);
+}
+.sync-window-primary .scene-note {
+  right: auto;
+  left: var(--caption-inset);
+}

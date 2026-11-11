@@ -55,6 +55,7 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 
 - `FDL_SHOTS`：截图目录（`run.py` 已设好）；
 - `FDL_TRACE`：输出事件跟踪；
+- `FDL_IN_WINDOW_PROMPTS`：用窗口内的 GPUI 对话框回放确认按钮。
 - `FDL_NOPARK`：不把窗口挪到屏幕外；
 - `FDL_WINDOW_CAPTURE`：改用窗口服务器截图，截图里带系统画的红绿灯；
 - `FDL_NOBLINK`：光标不闪烁（`compare.py` 已设好）。

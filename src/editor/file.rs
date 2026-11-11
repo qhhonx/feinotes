@@ -271,6 +271,8 @@ pub fn quick_look(p: &Path) {
         eprintln!("quicklook {}", p.display());
         return;
     }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    if crate::cloud_sync::preview(p) { return; }
     let mut cmd = std::process::Command::new("qlmanage");
     cmd.arg("-p").arg(p).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     std::thread::spawn(move || {
@@ -292,7 +294,7 @@ fn file_block_from_path(p: &Path) -> Option<Block> {
         Some(Kind::Pdf | Kind::Word | Kind::Excel | Kind::Ppt) if size < DOC_PREVIEW_MAX => FileView::Preview,
         _ => FileView::Card,
     };
-    let f = FileBlock { src_kind: "path".into(), src: dest.to_string_lossy().to_string(), name, view };
+    let f = FileBlock { src_kind: "path".into(), src: crate::store::asset_source(&dest), name, view };
     Some(Block::new(BlockKind::File(f), RichText::default()))
 }
 
@@ -334,6 +336,8 @@ impl R<'_> {
         let size = path.as_ref().and_then(|p| ed.file.size(p));
         let kind = kind_of(&f.name);
         let preview = (f.view == FileView::Preview && size.is_some()).then(|| preview_of(&f.name)).flatten();
+        let st = theme::style();
+        let attachment_bg = st.color("attachment.bg");
         // The card rim: a hairline, a step darker under the pointer, the
         // accent once selected.
         let border = if selected {
@@ -343,7 +347,7 @@ impl R<'_> {
         } else if hovered {
             theme::c(craft::N400)
         } else {
-            Theme::button_border()
+            st.color("attachment.border").unwrap_or_else(Theme::button_border)
         };
         let ring = || div().absolute().top(px(-2.)).left(px(-2.)).right(px(-2.)).bottom(px(-2.)).border_1().border_color(Theme::code_hover_ring());
         let boxes = ed.file.boxes.clone();
@@ -449,7 +453,7 @@ impl R<'_> {
                             .gap(px(14.))
                             // The player bar: a quiet fill in the card rim.
                             .rounded(px(RADIUS))
-                            .bg(Theme::bg_overlay())
+                            .bg(attachment_bg.unwrap_or_else(Theme::bg_overlay))
                             .border_1()
                             .border_color(border)
                             .child(play)
@@ -506,7 +510,7 @@ impl R<'_> {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .bg(Theme::bg_overlay())
+                        .bg(attachment_bg.unwrap_or_else(Theme::bg_overlay))
                         .child(if *t == Thumb::Pending {
                             super::image::spinning("file-thumb-loading", 32., theme::c(craft::N400), 2.)
                         } else {
@@ -519,7 +523,7 @@ impl R<'_> {
                     .px(px(12.))
                     .flex()
                     .items_center()
-                    .bg(if video { Theme::bg_body() } else { Theme::bg_overlay() })
+                    .bg(attachment_bg.unwrap_or_else(|| if video { Theme::bg_body() } else { Theme::bg_overlay() }))
                     .border_t_1()
                     .border_color(Theme::line_divider())
                     .child(type_icon(kind, 20.))
@@ -572,7 +576,7 @@ impl R<'_> {
                     .rounded(px(RADIUS))
                     .border_1()
                     .border_color(border)
-                    .bg(crate::theme::raised(Theme::bg_body()))
+                    .bg(attachment_bg.unwrap_or_else(|| crate::theme::raised(Theme::bg_body())))
                     .shadow(theme::shadow_button())
                     .cursor_pointer()
                     .when(menu_on, |d| d.child(ring().rounded(px(RADIUS + 2.))))

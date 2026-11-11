@@ -256,6 +256,11 @@ pub fn start(window: &mut Window, cx: &mut App) {
                 cx.update(|cx| crate::app::check_save_safety(rest.trim(), cx)).unwrap();
                 continue;
             }
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            if cmd == "cloudresume" {
+                crate::cloud_sync::simulate_resume(rest.trim()).unwrap();
+                continue;
+            }
             #[cfg(target_os = "macos")]
             let handled = mouse_step(ns_view, cmd, &nums(rest));
             #[cfg(not(target_os = "macos"))]

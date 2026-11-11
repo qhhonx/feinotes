@@ -21,6 +21,7 @@ const SUMMARY_SEP: &str = "\u{a0}\u{a0}\u{a0}";
 /// Text column of a row: 540 − list padding 6 / 6 (the right one holds the
 /// scrollbar) − row padding 12 / 8 − icon 24 + 10.
 const INFO_W: f32 = 474.;
+const DIALOG_W: f32 = 540.;
 
 /// Case-insensitive match position in `hay`, in `hay`'s own byte offsets.
 pub(crate) fn find_ci(hay: &str, needle_lower: &str) -> Option<Range<usize>> {
@@ -159,11 +160,22 @@ fn extra_segment(glyph: Option<&'static str>, text: String) -> Div {
 
 /// A result's extra line: 所有者 and the opened / modified times.
 pub(crate) fn extra_line(e: &Entry) -> Div {
-    let mut extra = vec![extra_segment(None, crate::settings::tr("所有者：我", "Owner: me").into())];
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    let received_share = crate::cloud_sync::shared::active().is_some_and(|scope| scope.owner.is_some());
+    #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+    let received_share = false;
+    let ownership = if received_share { crate::settings::tr("与你共享", "Shared with you") }
+        else { crate::settings::tr("所有者：我", "Owner: me") };
+    let mut extra = vec![extra_segment(None, ownership.into())];
+    let shared = crate::in_shared_note();
     if e.meta.opened > 0 {
-        extra.push(extra_segment(Some("eye"), if crate::settings::english() { format!("Opened {}", format_visit(e.meta.opened)) } else { format!("你在 {}打开过", format_visit(e.meta.opened)) }));
+        let opened = format_visit(e.meta.opened);
+        extra.push(extra_segment(Some("eye"), if crate::settings::english() { format!("Opened {opened}") }
+            else if shared { format!("{opened}打开") } else { format!("你在 {opened}打开过") }));
     }
-    extra.push(extra_segment(Some("pen-line"), if crate::settings::english() { format!("Modified {}", format_visit(e.meta.modified)) } else { format!("我在 {}修改过", format_visit(e.meta.modified)) }));
+    let modified = format_visit(e.meta.modified);
+    extra.push(extra_segment(Some("pen-line"), if crate::settings::english() { format!("Modified {modified}") }
+        else if shared { format!("{modified}修改") } else { format!("我在 {modified}修改过") }));
     let last = extra.len() - 1;
     let extra = extra.into_iter().enumerate().flat_map(|(i, seg)| {
         let seg = if i == last { seg.flex_shrink().min_w_0().overflow_hidden() } else { seg };
@@ -292,7 +304,7 @@ impl Workspace {
         hits.into_iter().map(|(_, e)| e).collect()
     }
 
-    fn search_row(&self, e: &Entry, ix: usize, q: &str, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn search_row(&self, e: &Entry, ix: usize, q: &str, info_w: f32, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let summary = snippet(&e.body, q);
         // Result indices match keyboard selection.
         let row = ix;
@@ -316,7 +328,7 @@ impl Workspace {
             }))
             .on_click(cx.listener(move |w, _, window, cx| w.pick_search(row, window, cx)))
             .child(entry_icon(e))
-            .child(result_info(e, q, summary, INFO_W, window))
+            .child(result_info(e, q, summary, info_w, window))
     }
 
     pub(crate) fn render_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -327,6 +339,8 @@ impl Workspace {
         let has_text = !self.search.read(cx).text.is_empty();
         let results: Vec<Entry> = self.search_results(cx).into_iter().cloned().collect();
         let vh = f32::from(window.viewport_size().height);
+        let width = (window.viewport_size().width - px(32.)).min(px(DIALOG_W));
+        let info_w = f32::from(width) - (DIALOG_W - INFO_W);
 
         let input = div()
             .flex_none()
@@ -397,7 +411,7 @@ impl Workspace {
             );
         }
         for (i, e) in results.iter().enumerate() {
-            list = list.child(self.search_row(e, i, &q, window, cx));
+            list = list.child(self.search_row(e, i, &q, info_w, window, cx));
         }
 
         let footer = div()
@@ -422,7 +436,7 @@ impl Workspace {
         let modal = div()
             .id("search-dialog")
             .occlude()
-            .w(px(540.))
+            .w(width)
             .h(px(630f32.min(vh - 120.).max(200.)))
             .flex()
             .flex_col()

@@ -108,6 +108,15 @@ impl Focusable for TextField {
 }
 
 impl TextField {
+    /// The standard single-line input used alongside buttons.
+    pub(crate) fn framed(field: &Entity<Self>, width: Pixels, window: &Window, cx: &App) -> Div {
+        let focused = field.read(cx).is_focused(window);
+        div().w(width).h(px(30.)).px(px(10.)).flex().items_center().rounded(px(9.))
+            .bg(crate::theme::raised(Theme::bg_body())).border_1()
+            .border_color(if focused { Theme::primary() } else { Theme::line_border() })
+            .child(field.clone())
+    }
+
     pub fn new(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
         TextField {
             focus: cx.focus_handle(),
@@ -506,6 +515,8 @@ impl Render for TextField {
             placeholder_color: Some(self.placeholder_color),
             placeholder_dx: 0.,
             selection: (focused && !self.sel.is_empty()).then(|| self.sel.clone()),
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            remote: vec![],
             caret: Some(self.cursor()),
             marked: self.marked.clone(),
             cache: self.cache.clone(),

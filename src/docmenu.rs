@@ -117,6 +117,56 @@ impl Workspace {
         }
     }
 
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    fn recover_cloud_version(&mut self, id: String, cx: &mut Context<Self>) {
+        self.close_doc_menu(cx);
+        let versions = match crate::cloud_sync::versions(&id, cx) {
+            Ok(versions) if !versions.is_empty() => versions,
+            Ok(_) => {
+                self.show_toast(crate::settings::tr("暂无 iCloud 历史版本", "No iCloud versions yet"), cx);
+                return;
+            }
+            Err(error) => {
+                self.status = crate::app::SaveStatus::Failed(error.to_string());
+                return;
+            }
+        };
+        self.confirm = Some(crate::app::Confirm::CloudVersions { id, versions, selected: None });
+        cx.notify();
+    }
+
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub(crate) fn restore_cloud_version(&mut self, id: &str, sequence: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let made = crate::cloud_sync::version(id, sequence, cx).and_then(|(mut doc, front)| {
+            let title = crate::localized_format!("{} · 恢复副本", "{} · recovered", display_title(&doc.title.text));
+            doc.title = crate::model::RichText::plain(title);
+            if self.store.is_markdown(id) { self.store.create_markdown(&doc, &front) }
+            else { self.store.create_from(&doc) }
+        });
+        match made {
+            Ok(new) => {
+                self.entries = self.store.list();
+                self.sort();
+                self.open(&new, window, cx);
+            }
+            Err(error) => { self.status = crate::app::SaveStatus::Failed(error.to_string()); }
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    fn copy_to_local_library(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_doc_menu(cx);
+        if !self.flush(cx) { return; }
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { crate::cloud_restore::copy_note_to_local(&id) }).await;
+            let _ = this.update_in(cx, |w, _, cx| match result {
+                Ok(_) => w.show_toast(crate::settings::tr("已复制到本机文档库。可在 iCloud 同步设置中切换到本机。",
+                    "Copied to your local library. Switch to it in iCloud Sync settings."), cx),
+                Err(error) => w.show_toast_kind(crate::ui::ToastKind::Error, &crate::settings::diagnostic(&error.to_string()), cx),
+            });
+        }).detach();
+    }
+
     /// 查找和替换 (also ⌘F / ⌘⇧H).
     pub fn find_in_doc(&mut self, replace: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.close_doc_menu(cx);
@@ -131,6 +181,14 @@ impl Workspace {
         }
         let Some(id) = self.current.clone() else { return vec![] };
         let entry = self.entries.iter().find(|e| e.id == id);
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let show_share = !crate::cloud_restore::local_only() && entry.is_some_and(|entry| !entry.meta.local());
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        let show_share = false;
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let show_local_copy = show_share && !crate::in_shared_note() && crate::cloud_trial::available();
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        let show_local_copy = false;
         let pinned = entry.is_some_and(|e| e.meta.pinned);
         let starred = entry.is_some_and(|e| e.meta.starred > 0);
         let width = entry.map(|e| e.meta.width).unwrap_or_default();
@@ -203,6 +261,32 @@ impl Workspace {
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(move |w, _, window, cx| w.duplicate_doc(&dup_id, window, cx))),
             )
+            .children({
+                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                {
+                    let note = id.clone();
+                    show_local_copy.then(|| menu_item("dm-copy-local", "copy", crate::settings::tr("复制到本机文档库", "Copy to Local Library"), false, false)
+                        .on_hover(hover_sub(None)).on_click(cx.listener(move |w, _, window, cx| w.copy_to_local_library(note.clone(), window, cx))))
+                }
+                #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                { None::<Stateful<Div>> }
+            })
+            .children({
+                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                {
+                    let note = id.clone();
+                    show_share.then(|| {
+                        menu_item("dm-create-share", "copy", crate::settings::tr("创建共享副本", "Create shared copy"), false, false)
+                            .on_hover(hover_sub(None))
+                            .on_click(cx.listener(move |w, _, window, cx| {
+                                w.close_doc_menu(cx);
+                                w.create_shared_note(&note, window, cx);
+                            }))
+                    })
+                }
+                #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                { None::<Stateful<Div>> }
+            })
             .child(
                 menu_item("dm-download", "export", crate::settings::text("下载为"), true, sub == Some(DocSub::Download))
                     .on_hover(hover_sub(Some(DocSub::Download))),
@@ -248,6 +332,7 @@ impl Workspace {
         // Submenus open to the left, 4px from the menu, level with their item.
         let sub_at = point(right - px(MENU_W + 4.), px(0.));
         let item_top = |k: usize, d: usize| f32::from(menu_top) + item_top(k, d);
+        let extra_rows = usize::from(show_share) + usize::from(show_local_copy);
         let record = self.doc_sub_bounds.clone();
         record.set(None);
         let recorder = move || {
@@ -258,7 +343,7 @@ impl Workspace {
             Some(DocSub::Width) => Some((item_top(0, 0) - 1. - PAD, self.width_panel(width, cx).child(recorder()).into_any_element())),
             // Level the submenu's first item with 下载为.
             Some(DocSub::Download) => Some((
-                item_top(6, 3) - 1. - PAD,
+                item_top(6 + extra_rows, 3) - 1. - PAD,
                 {
                     let pdf = id.clone();
                     popover()
@@ -274,7 +359,7 @@ impl Workspace {
                 },
             )),
             Some(DocSub::More) => Some((
-                if crate::printing::SUPPORTED { item_top(9, 6) } else { item_top(8, 5) } - 1. - PAD,
+                if crate::printing::SUPPORTED { item_top(9 + extra_rows, 6) } else { item_top(8 + extra_rows, 5) } - 1. - PAD,
                 popover()
                     .id("dm-more-menu")
                     .occlude()
@@ -302,6 +387,13 @@ impl Workspace {
                                 w.ask_refs(!refs_shown, cx);
                             })),
                     )
+                    .children({
+                        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                        { (!crate::cloud_restore::local_only()).then(|| sub_item("dm-sync-history", crate::settings::tr("iCloud 历史版本", "iCloud Version History"))
+                            .on_click(cx.listener(move |w, _, _, cx| w.recover_cloud_version(id.clone(), cx)))) }
+                        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                        { None::<Stateful<Div>> }
+                    })
                     .into_any_element(),
             )),
             None => None,

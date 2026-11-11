@@ -1,2 +1,18 @@
-<!-- Nucleo UI Outline 18 v1.5.1: SortNumDescending. Copyright Nucleo. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" view-box="0 0 18 18" fill="none"><polyline points="16 11.25 13.25 14 10.5 11.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></polyline><line x1="13.25" y1="14" x2="13.25" y2="3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><path d="M5.25,7.5V2s-.63,1.108-1.967,1.364" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></path><circle cx="5.156" cy="11.594" r="1.594" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></circle><path d="M4.5,15.5c.351-.169,.973-.53,1.484-1.226,.82-1.114,.789-2.316,.766-2.681" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></path></svg>
+<!-- Lucide 0.468.0: arrow-down-1-0. See LICENSE-lucide. -->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="18"
+  height="18"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="m3 16 4 4 4-4" />
+  <path d="M7 20V4" />
+  <path d="M17 10V4h-2" />
+  <path d="M15 10h4" />
+  <rect x="15" y="14" width="4" height="6" ry="2" />
+</svg>

@@ -3,7 +3,10 @@ use super::*;
 impl Store {
     /// Independent handle for background tree writes; begin_write reloads under the library lock.
     pub fn tree_writer(&self) -> Self {
-        Self { file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: HashMap::new(),
+        Self {
+            #[cfg(feature = "sqlite-store")]
+            sqlite: self.sqlite.clone(),
+            file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: HashMap::new(),
             loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), warnings: vec![] }
     }
 
