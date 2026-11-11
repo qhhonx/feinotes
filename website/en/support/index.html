@@ -26,57 +26,59 @@
     <main id="main" class="document-main">
       <div class="document-hero">
         <h1 id="en-title">Support</h1>
-        <p><a href="mailto:support@feinotes.app">support@feinotes.app</a> · <a href="https://t.me/+eKIYrdIFufxmYzJl">Join the Telegram feedback group ↗</a></p>
+        <p><a href="mailto:support@feinotes.app">support@feinotes.app</a> · <a href="https://t.me/+eKIYrdIFufxmYzJl">Join us on Telegram ↗</a></p>
       </div>
       <div class="document-sheet">
         <nav class="document-outline" aria-label="On this page">
           <p>On this page</p>
           <div class="document-outline-links">
-            <a href="#en-start">Write locally</a>
-            <a href="#en-import">Import from Quiet.md</a>
-            <a href="#en-icloud">Sync or move to another Mac</a>
-            <a href="#en-errors">If sync pauses or a file is missing</a>
-            <a href="#en-share">Invite someone to a note</a>
-            <a href="#en-backup">Back up or restore</a>
+            <a href="#en-start">Start writing</a>
+            <a href="#en-import">Import your Quiet.md notes</a>
+            <a href="#en-icloud">Continue on another Mac</a>
+            <a href="#en-errors">A note has not synced yet</a>
+            <a href="#en-share">Write together</a>
+            <a href="#en-backup">Back up and restore</a>
             <a href="#en-delete">Delete notes or stop syncing</a>
           </div>
         </nav>
         <article class="document-content" id="en" aria-labelledby="en-title">
           <section aria-labelledby="en-start">
-            <h2 id="en-start">Write locally</h2>
-            <p>Open Fei Notes and create a note. You can edit local notes offline without signing in to an Apple Account, starting a trial, or subscribing.</p>
+            <h2 id="en-start">Start writing</h2>
+            <p>Open Fei Notes and create a note. Local notes work offline and do not require an account.</p>
           </section>
           <section aria-labelledby="en-import">
-            <h2 id="en-import">Import from Quiet.md</h2>
-            <p>Go to Settings → Documents → Import from Quiet.md and choose the Quiet.md library folder. Fei Notes copies the contents into your current library and keeps the original folder intact. Check your folders, notes, and attachments before making changes to the original.</p>
+            <h2 id="en-import">Import your Quiet.md notes</h2>
+            <p>In Settings → Documents, choose Import from Quiet.md and select your existing library folder. Fei Notes copies the notes and attachments into your current library and keeps the original folder.</p>
           </section>
           <section aria-labelledby="en-icloud">
-            <h2 id="en-icloud">Sync or move to another Mac</h2>
-            <p>Sign in to iCloud in macOS System Settings. In Fei Notes, open Settings → Documents → iCloud Sync → Settings and follow the prompts. You can choose whether to copy existing local notes when enabling sync. Quit and reopen as prompted. On a new Mac, use the same iCloud account, open the iCloud library, and wait for it to restore.</p>
-            <p>TestFlight includes iCloud sync and collaboration without a subscription.</p>
-            <p>In the App Store version, start the 7-day cloud trial when you are ready. After it ends, downloaded notes remain accessible, and you can still edit local notes. Open the iCloud Sync settings to see monthly and yearly plans, restore purchases, or manage subscriptions through Apple. Subscriptions automatically renew at the chosen interval and can be canceled in Apple's subscription settings.</p>
+            <h2 id="en-icloud">Continue on another Mac</h2>
+            <p>Sign in to the same iCloud account on both Macs. In Fei Notes, open Settings → Documents, then the iCloud Sync settings, and follow the prompts. When you first enable sync, you can copy your local notes to iCloud.</p>
+            <p>On your other Mac, open the same iCloud library and let your notes download. If Fei Notes asks you to restart, quit and reopen the app.</p>
+            <p>iCloud sync and collaboration are free during TestFlight testing.</p>
           </section>
           <section aria-labelledby="en-errors">
-            <h2 id="en-errors">If sync pauses or a file is missing</h2>
-            <p>Check the upload and download counts in iCloud Sync settings. Your edits are saved on this Mac first. Check the network, iCloud account, and available storage, then choose Sync Now. If the macOS iCloud account changed, reopen Fei Notes as prompted and verify the active library.</p>
-            <p>If you see Items That Couldn’t Sync, follow the message on the original Mac. Re-add a missing file, check its permissions, or replace an attachment larger than 64 MiB with a smaller file before retrying.</p>
+            <h2 id="en-errors">A note has not synced yet</h2>
+            <p>Check the sync status in Settings → Documents. Make sure you are connected to the internet, signed in to iCloud, and have enough storage, then choose Sync Now. Changes waiting to upload stay on this Mac.</p>
+            <p>If you see Items That Couldn’t Sync, follow the message on the original Mac. Check that the attachment is still there and can be read. Replace files larger than 64 MiB with smaller ones. If you changed iCloud accounts, restart Fei Notes when prompted.</p>
           </section>
           <section aria-labelledby="en-share">
-            <h2 id="en-share">Invite someone to a note</h2>
-            <p>Open a note in your iCloud library and choose Create shared copy from its menu. In Shared Notes, invite a specific Apple Account to view or edit the copy, then send the invitation link. The recipient accepts from Shared Notes in Fei Notes. You can change their role or revoke access there.</p>
+            <h2 id="en-share">Write together</h2>
+            <p>Open a note in your iCloud library and choose Create shared copy from the note menu. In Shared Notes, enter the other person’s Apple Account email, choose Invite to view or Invite to edit, and send them the invitation link.</p>
+            <p>They can paste the link into Shared Notes in Fei Notes and accept the invitation. You can change permissions or choose Revoke access there. The original note and the shared copy are saved separately.</p>
           </section>
           <section aria-labelledby="en-backup">
-            <h2 id="en-backup">Back up or restore</h2>
-            <p>In Settings → Documents, choose Back Up Library and save the <code>.feinotesbackup</code> file somewhere safe. To restore, choose the backup, let the app verify it, close any shared note windows, then quit and reopen. Fei Notes keeps the previous library. Check the restored contents before removing old copies. A backup can contain notes, attachments, cached shared notes, and pending changes.</p>
+            <h2 id="en-backup">Back up and restore</h2>
+            <p>In Settings → Documents, find Back Up Library and choose a folder. The <code>.feinotesbackup</code> file includes notes, attachments, Trash, and changes waiting to sync. It may also include local copies of shared notes.</p>
+            <p>To restore, select the file under Restore from Backup, then follow the prompts to close shared-note windows and restart Fei Notes. Your previous library is kept. Check the restored notes before removing old copies.</p>
           </section>
           <section aria-labelledby="en-delete">
             <h2 id="en-delete">Delete notes or stop syncing</h2>
-            <p>To remove a note from your iCloud library, delete it in that library, then choose Delete permanently for the note in Trash. Open Settings → Documents and choose Sync Now. Check that the note has disappeared on your other Macs. Manage exported backups and separately saved copies on their own.</p>
-            <p>If you invited someone to edit or view a note, open its copy in Shared Notes and choose Revoke access for that person. The original and the shared copy are managed separately. To stop using the iCloud library, choose Switch to Local… in Settings → Documents. Your existing iCloud data is kept.</p>
-            <p>If Fei Notes appears in the macOS iCloud storage list with a deletion option, follow <a href="https://support.apple.com/en-ie/guide/mac-help/mh36833/27/mac/27">Apple’s iCloud storage instructions</a>. Save anything you want to keep and stop syncing on each Mac before removing data.</p>
+            <p>Deleted notes stay in Trash for 30 days. To remove one sooner, choose Delete permanently in Trash. After deleting from an iCloud library, choose Sync Now and check the result on your other Macs.</p>
+            <p>To stop syncing, choose Switch to Local… in Settings → Documents. This changes the library you are using and keeps the notes already stored in iCloud.</p>
+            <p>Revoke access to a shared copy separately in Shared Notes. Exported backups and copies saved by other people need to be managed separately too.</p>
           </section>
           <div class="document-end">
-            <p>When reporting a problem, include your Fei Notes version, macOS version, steps to reproduce, and the error message. Remove private paths, note titles, and invitation links from logs before sharing them.</p>
+            <p>Need a hand? Email us or join the Telegram group above. Your Fei Notes version, macOS version, and a short description of what happened will help us look into it. If you share a screenshot or log, remove any private note content and invitation links first.</p>
           </div>
         </article>
       </div>

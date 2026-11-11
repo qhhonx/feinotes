@@ -26,48 +26,52 @@
     <main id="main" class="document-main">
       <div class="document-hero">
         <h1 id="zh-title">隐私政策</h1>
-        <p>飞记在 Mac 上保存你的文档库。你可以选择是否使用 iCloud 同步和共享。</p>
+        <p>笔记保存在你的 Mac 上。你可以开启 iCloud 同步，也可以选择与他人共享。</p>
       </div>
       <div class="document-sheet">
         <nav class="document-outline" aria-label="本页内容">
           <p>本页内容</p>
           <div class="document-outline-links">
-            <a href="#zh-local">本机文档库</a>
-            <a href="#zh-cloud">iCloud 同步、共享与试用</a>
-            <a href="#zh-network">网络图片和外部链接</a>
-            <a href="#zh-diagnostics">诊断与支持</a>
-            <a href="#zh-delete">保留、删除和控制</a>
+            <a href="#zh-local">保存在 Mac 上的内容</a>
+            <a href="#zh-cloud">iCloud 同步与共享</a>
+            <a href="#zh-network">网络图片与外部链接</a>
+            <a href="#zh-diagnostics">诊断与问题反馈</a>
+            <a href="#zh-delete">删除与备份</a>
           </div>
         </nav>
         <article class="document-content" id="zh" aria-labelledby="zh-title">
           <section aria-labelledby="zh-local">
-            <h2 id="zh-local">本机文档库</h2>
-            <p>笔记正文、附件、文件夹、回收站和偏好设置保存在 Mac 上。使用本机文档库无需创建飞记账户。你选定要导入的文件由应用读取。你自行选择导出和整库备份的保存位置，备份里可能包含共享笔记缓存和待上传的改动。</p>
+            <h2 id="zh-local">保存在 Mac 上的内容</h2>
+            <p>笔记、附件、文件夹、回收站和设置保存在你的 Mac 上。使用本机文档库无需创建飞记账户。</p>
+            <p>导入时，飞记会读取你选择的文件。导出和备份的位置由你决定。备份中也可能包含共享笔记的本机副本和待同步改动。</p>
           </section>
           <section aria-labelledby="zh-cloud">
-            <h2 id="zh-cloud">iCloud 同步、共享与试用</h2>
-            <p>启用 iCloud 文档库后，飞记使用 Apple CloudKit 私有数据库处理同步所需的笔记、附件、文件夹、回收站状态和改动记录。飞记使用 iCloud 的账户标识区分库。同步时也可能通过 CloudKit 处理设备名、在线状态以及光标或选区，用于显示协作状态。</p>
-            <p>你发出邀请时，飞记会将你填写的 Apple 账户邮箱交给 CloudKit 查找收件人，并使用 Apple 的共享机制管理共享副本和权限。受邀者能访问获准的副本及其附件，并按权限阅读或编辑。其他个人笔记、文件夹和偏好设置留在各自的库里。</p>
-            <p>TestFlight 测试版无需开启试用或购买订阅即可使用云功能。下述试用及购买状态处理适用于正式商店版本。</p>
-            <p>主动开始试用时，飞记在你的 iCloud 私有数据库记录开始时间，用于在不同 Mac 上判断同一试用期。Apple 处理订阅和付款，飞记通过 StoreKit 读取已验证的购买和到期状态，用于恢复或开通云功能。</p>
+            <h2 id="zh-cloud">iCloud 同步与共享</h2>
+            <p>开启 iCloud 后，笔记、附件、文件夹和改动记录会通过 Apple 的 CloudKit 保存到你的 iCloud 私有数据库。飞记使用 iCloud 账户标识区分不同账户的文档库。设备名称、在线状态，以及协作时的光标和选区，也会通过 CloudKit 同步。</p>
+            <p>邀请他人时，你填写的 Apple 账户邮箱会交给 CloudKit 查找收件人。对方只能按授予的权限访问共享副本及其附件，其他笔记和设置仍留在各自的文档库中。</p>
+            <p>TestFlight 测试期间，云功能无需试用或订阅。正式商店版本会在你主动开始试用时，将开始时间记入 iCloud 私有数据库。订阅付款由 Apple 处理，飞记通过 StoreKit 验证购买和到期状态，用于开通云功能或恢复购买。</p>
           </section>
           <section aria-labelledby="zh-network">
-            <h2 id="zh-network">网络图片和外部链接</h2>
-            <p>打开含网络图片的笔记时，启用自动下载会向图片所在的站点发出请求。站点可能收到 IP 地址和请求信息。你可以在「设置 → 通用」关闭「自动下载网络图片」，需要时再点按图片单独加载。你打开外部链接时，由目标站点按自己的政策处理请求。</p>
+            <h2 id="zh-network">网络图片与外部链接</h2>
+            <p>笔记中的网络图片由图片所在的网站提供。自动下载开启时，该网站会收到加载请求，其中可能包含你的 IP 地址等网络信息。你可以在「设置 → 通用」关闭「自动下载网络图片」，之后按需点按加载。</p>
+            <p>打开外部链接后，相关网站会按其隐私政策处理访问。</p>
+            <p>官网由 GitHub Pages 托管，GitHub 会处理 IP 地址等访问信息。详情见 <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub 隐私声明</a>。</p>
           </section>
           <section aria-labelledby="zh-diagnostics">
-            <h2 id="zh-diagnostics">诊断与支持</h2>
-            <p>飞记在本机保存诊断日志，记录启动、同步状态和错误。日志可能包含文件路径等诊断信息。飞记不会自动把这些日志传给我们。你主动寻求支持时，我们会用你提供的信息处理该请求。</p>
+            <h2 id="zh-diagnostics">诊断与问题反馈</h2>
+            <p>飞记在 Mac 上保存启动、同步和错误日志，日志可能包含文件路径。应用自身不会自动将这些本机日志发送给飞记支持。</p>
+            <p>通过 TestFlight 测试时，Apple 会收集并向开发者提供崩溃报告和使用信息，以及你主动提交的反馈。这些信息用于排查问题和改进飞记。详情见 <a href="https://www.apple.com/legal/privacy/data/en/test-flight/">TestFlight 隐私说明</a>。</p>
+            <p>通过邮件或 Telegram 联系支持时，你发送的消息、截图和日志会由相应平台处理，并用于回复和排查问题。</p>
           </section>
           <section aria-labelledby="zh-delete">
-            <h2 id="zh-delete">保留、删除和控制</h2>
-            <p>删除的笔记通常在应用回收站保留 30 天，也可在其中提前清理。回收站清理不代表所有同步历史、其他副本和你导出的备份立即删除。请单独管理已导出的文件和备份。</p>
-            <p>你可以切换到本机文档库，停止使用当前 iCloud 文档库。切换文档库、退出 iCloud 或取消订阅不会自动删除 iCloud 数据。共享所有者可以撤销访问，已另行保存的副本不受该操作影响。参阅<a href="../support/index.html#zh-delete">删除笔记与停止同步</a>的具体步骤。</p>
+            <h2 id="zh-delete">删除与备份</h2>
+            <p>删除的笔记会在回收站保留 30 天，也可以提前彻底删除。同步记录、共享副本和已导出的备份可能有各自的保留周期，清空回收站不会同时清除这些副本。</p>
+            <p>切换到本机文档库、退出 iCloud 或取消订阅，都会保留已有的 iCloud 数据。共享笔记的所有者可以撤销他人的访问权限；对方已经另存的副本需要由对方处理。具体操作见<a href="../support/index.html#zh-delete">删除笔记或停止同步</a>。</p>
           </section>
           <div class="document-end">
             <p><a href="../support/index.html">飞记支持</a> · <a href="https://www.apple.com/legal/privacy/zh-cn/">Apple 隐私政策</a></p>
             <p>隐私咨询 · <a href="mailto:support@feinotes.app">support@feinotes.app</a></p>
-            <p>飞记由 Qinghua Hong 提供。本政策版本生效日期：2026 年 11 月 11 日。</p>
+            <p>2026 年 11 月 11 日生效</p>
           </div>
         </article>
       </div>

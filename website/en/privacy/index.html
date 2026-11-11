@@ -26,48 +26,52 @@
     <main id="main" class="document-main">
       <div class="document-hero">
         <h1 id="en-title">Privacy Policy</h1>
-        <p>Fei Notes keeps a library on your Mac. You choose whether to use iCloud sync and sharing.</p>
+        <p>Your notes live on your Mac. Turn on iCloud to sync them, and choose which notes to share.</p>
       </div>
       <div class="document-sheet">
         <nav class="document-outline" aria-label="On this page">
           <p>On this page</p>
           <div class="document-outline-links">
-            <a href="#en-local">Your local library</a>
-            <a href="#en-cloud">iCloud sync, sharing, and the trial</a>
-            <a href="#en-network">Remote images and external links</a>
-            <a href="#en-diagnostics">Diagnostics and support</a>
-            <a href="#en-delete">Retention, deletion, and control</a>
+            <a href="#en-local">What stays on your Mac</a>
+            <a href="#en-cloud">iCloud sync and sharing</a>
+            <a href="#en-network">Web images and external links</a>
+            <a href="#en-diagnostics">Diagnostics and feedback</a>
+            <a href="#en-delete">Deletion and backups</a>
           </div>
         </nav>
         <article class="document-content" id="en" aria-labelledby="en-title">
           <section aria-labelledby="en-local">
-            <h2 id="en-local">Your local library</h2>
-            <p>Notes, attachments, folders, Trash, and settings are stored on your Mac. The local library does not require a Fei Notes account. The app reads files you select for import. You choose where exports and library backups are saved. A backup can contain cached shared notes and pending uploads.</p>
+            <h2 id="en-local">What stays on your Mac</h2>
+            <p>Your notes, attachments, folders, Trash, and settings are stored on your Mac. You do not need a Fei Notes account to use a local library.</p>
+            <p>Fei Notes reads the files you select for import. You choose where to save exports and backups. Backups may also include local copies of shared notes and changes waiting to sync.</p>
           </section>
           <section aria-labelledby="en-cloud">
-            <h2 id="en-cloud">iCloud sync, sharing, and the trial</h2>
-            <p>When you enable the iCloud library, Fei Notes uses Apple’s private CloudKit database to process notes, attachments, folders, Trash state, and change records needed for sync. The app uses an iCloud account identifier to separate libraries. It may also process device names, online status, and cursor or selection information through CloudKit to show collaboration state.</p>
-            <p>When you send an invitation, Fei Notes passes the Apple Account email you enter to CloudKit to find the recipient. It uses Apple’s sharing controls to manage the shared copy and permissions. Invitees can view or edit that copy and access its attachments according to their permissions. Other personal notes, folders, and settings remain in their own library.</p>
-            <p>The TestFlight beta includes cloud access without starting a trial or buying a subscription. The trial and purchase-state processing below applies to the Store release.</p>
-            <p>If you start the trial, Fei Notes records the start in your private iCloud database so your Macs can recognize the same trial. Apple handles subscriptions and payment. Fei Notes reads verified purchase and expiration information through StoreKit to enable cloud features and restore access.</p>
+            <h2 id="en-cloud">iCloud sync and sharing</h2>
+            <p>When you turn on iCloud, Fei Notes uses Apple’s CloudKit to store notes, attachments, folders, and change records in your private iCloud database. An iCloud account identifier keeps each account’s library separate. Device names, online status, and collaborators’ cursor and selection information also sync through CloudKit.</p>
+            <p>When you invite someone, the Apple Account email you enter is sent to CloudKit to find the recipient. They can access the shared copy and its attachments with the permissions you grant. Other notes and settings stay in their respective libraries.</p>
+            <p>The TestFlight beta includes cloud features without a trial or subscription. In the App Store version, starting a trial saves its start date in your private iCloud database. Apple handles subscription payments. Fei Notes uses StoreKit to verify purchases and expiration dates so it can enable cloud features or restore purchases.</p>
           </section>
           <section aria-labelledby="en-network">
-            <h2 id="en-network">Remote images and external links</h2>
-            <p>When automatic downloads are enabled, opening a note with a remote image may send a request to the site hosting that image. The site may receive your IP address and request information. Turn off Download web images in Settings → General to load images individually. When you open an external link, the destination handles the request under its own policy.</p>
+            <h2 id="en-network">Web images and external links</h2>
+            <p>Web images in your notes are loaded from the websites that host them. With automatic downloads enabled, those sites receive image requests that may include your IP address and other connection information. You can turn off Download web images in Settings → General and load images individually.</p>
+            <p>When you open an external link, the destination website handles your visit under its own privacy policy.</p>
+            <p>This website is hosted on GitHub Pages. GitHub processes visitor information, including IP addresses. See the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub Privacy Statement</a>.</p>
           </section>
           <section aria-labelledby="en-diagnostics">
-            <h2 id="en-diagnostics">Diagnostics and support</h2>
-            <p>Fei Notes keeps diagnostic logs on your Mac. They record startup, sync status, and errors, and may contain diagnostic details such as file paths. The app does not automatically send these logs to us. If you contact us for support, we use the information you provide to handle your request.</p>
+            <h2 id="en-diagnostics">Diagnostics and feedback</h2>
+            <p>Fei Notes keeps startup, sync, and error logs on your Mac. These may include file paths. The app itself does not automatically send these local logs to Fei Notes support.</p>
+            <p>During TestFlight testing, Apple collects crash reports and usage information and shares them with the developer, along with any feedback you submit. We use this information to investigate problems and improve Fei Notes. See <a href="https://www.apple.com/legal/privacy/data/en/test-flight/">TestFlight &amp; Privacy</a>.</p>
+            <p>If you contact support by email or Telegram, the messages, screenshots, and logs you send are handled by those services and used to respond to your request.</p>
           </section>
           <section aria-labelledby="en-delete">
-            <h2 id="en-delete">Retention, deletion, and control</h2>
-            <p>Deleted notes normally stay in the app’s Trash for 30 days. You can empty Trash earlier. Emptying Trash does not immediately remove every sync history record, other copy, or backup you exported. Manage exported files and backups separately.</p>
-            <p>You can switch to the local library to stop using the current iCloud library. Switching libraries, signing out of iCloud, or canceling a subscription does not automatically delete iCloud data. A share owner can revoke access. Copies already saved separately are unaffected. See how to <a href="../support/index.html#en-delete">delete notes or stop syncing</a>.</p>
+            <h2 id="en-delete">Deletion and backups</h2>
+            <p>Deleted notes stay in Trash for 30 days, unless you delete them permanently sooner. Sync records, shared copies, and exported backups may have their own retention periods. Emptying Trash does not also remove those copies.</p>
+            <p>Switching to a local library, signing out of iCloud, or canceling a subscription keeps your existing iCloud data. A shared note’s owner can revoke access. Copies that someone has already saved separately remain with that person. See how to <a href="../support/index.html#en-delete">delete notes or stop syncing</a>.</p>
           </section>
           <div class="document-end">
             <p><a href="../support/index.html">Fei Notes Support</a> · <a href="https://www.apple.com/legal/privacy/">Apple Privacy Policy</a></p>
             <p>Privacy enquiries · <a href="mailto:support@feinotes.app">support@feinotes.app</a></p>
-            <p>Fei Notes is provided by Qinghua Hong. This policy version is effective November 11, 2026.</p>
+            <p>Effective November 11, 2026</p>
           </div>
         </article>
       </div>

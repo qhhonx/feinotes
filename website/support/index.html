@@ -32,51 +32,53 @@
         <nav class="document-outline" aria-label="本页内容">
           <p>本页内容</p>
           <div class="document-outline-links">
-            <a href="#zh-start">在本机使用</a>
-            <a href="#zh-import">从 Quiet.md 导入</a>
-            <a href="#zh-icloud">开启同步或换一台 Mac</a>
-            <a href="#zh-errors">同步暂停或附件没有到达</a>
-            <a href="#zh-share">邀请他人参与</a>
-            <a href="#zh-backup">备份和恢复</a>
-            <a href="#zh-delete">删除笔记与停止同步</a>
+            <a href="#zh-start">开始写笔记</a>
+            <a href="#zh-import">导入 Quiet.md 笔记</a>
+            <a href="#zh-icloud">在另一台 Mac 上接着写</a>
+            <a href="#zh-errors">笔记还没有同步过来</a>
+            <a href="#zh-share">邀请他人一起写</a>
+            <a href="#zh-backup">备份与恢复</a>
+            <a href="#zh-delete">删除笔记或停止同步</a>
           </div>
         </nav>
         <article class="document-content" id="zh" aria-labelledby="zh-title">
           <section aria-labelledby="zh-start">
-            <h2 id="zh-start">在本机使用</h2>
-            <p>打开飞记即可新建笔记。本机笔记无需登录 Apple 账户、开始试用或订阅，也可以在离线时编辑。</p>
+            <h2 id="zh-start">开始写笔记</h2>
+            <p>打开飞记，就可以新建笔记。本机笔记可以离线编辑，无需登录账户。</p>
           </section>
           <section aria-labelledby="zh-import">
-            <h2 id="zh-import">从 Quiet.md 导入</h2>
-            <p>打开「设置 → 文档库 → 从 Quiet.md 导入」，选择 Quiet.md 的文档库文件夹。飞记把内容复制到当前文档库，并保留源文件夹。导入后核对文件夹、正文和附件，再处理源文件。</p>
+            <h2 id="zh-import">导入 Quiet.md 笔记</h2>
+            <p>在「设置 → 文档库」选择「从 Quiet.md 导入」，选中原来的文档库文件夹。飞记会把笔记和附件复制到当前文档库，原文件夹会保留。</p>
           </section>
           <section aria-labelledby="zh-icloud">
-            <h2 id="zh-icloud">开启同步或换一台 Mac</h2>
-            <p>在 macOS 系统设置里登录 iCloud。打开飞记「设置 → 文档库 → iCloud 同步 → 设置」，按提示开启同步。首次开启时可选择是否复制本机库的笔记。按提示退出并重开飞记。换新 Mac 时用同一 iCloud 账户，进入 iCloud 文档库并等待恢复完成。</p>
-            <p>TestFlight 内测期间，iCloud 同步和协作无需试用或订阅即可使用。</p>
-            <p>正式版使用你主动开启的 7 天云功能试用。试用结束后，已下载的笔记仍可访问，本机笔记仍可编辑。可在 iCloud 同步设置查看月订阅或年订阅、恢复购买，或打开 Apple 的订阅管理。月订阅和年订阅由 Apple 按所选周期自动续订，可在 Apple 的订阅管理中取消。</p>
+            <h2 id="zh-icloud">在另一台 Mac 上接着写</h2>
+            <p>先在两台 Mac 的系统设置中登录同一个 iCloud 账户，再打开飞记的「设置 → 文档库」，进入 iCloud 同步设置，按提示开启同步。首次开启时，可以选择将本机笔记一并复制到 iCloud。</p>
+            <p>在另一台 Mac 上开启同一文档库，等待笔记下载完成。如果飞记提示重启，退出后重新打开即可。</p>
+            <p>TestFlight 测试期间，iCloud 同步和协作均可免费使用。</p>
           </section>
           <section aria-labelledby="zh-errors">
-            <h2 id="zh-errors">同步暂停或附件没有到达</h2>
-            <p>先在 iCloud 同步设置看待上传和待应用的数量。改动会先保存在本机。检查网络、iCloud 账户和剩余空间后，点「立即同步」。如果 macOS 刚切换 iCloud 账户，按提示重开飞记并确认当前文档库。</p>
-            <p>若显示「未同步的内容」，按提示在原 Mac 补回缺失文件、检查读权限，或把超过 64 MiB 的附件换成较小的文件，再重试。</p>
+            <h2 id="zh-errors">笔记还没有同步过来</h2>
+            <p>到「设置 → 文档库」查看同步状态。检查网络、iCloud 登录状态和储存空间，再点「立即同步」。尚未上传的改动会保存在当前 Mac 上。</p>
+            <p>如果出现「未同步的内容」，按提示回到原来的 Mac，检查附件是否还在、是否有读取权限。超过 64 MiB 的附件需要换成较小的文件。切换过 iCloud 账户时，请按提示重启飞记。</p>
           </section>
           <section aria-labelledby="zh-share">
-            <h2 id="zh-share">邀请他人参与</h2>
-            <p>在 iCloud 文档库打开笔记，从笔记菜单创建「共享副本」。在「共享笔记」为指定 Apple 账户发出只读或可编辑邀请，并把邀请链接发给对方。对方在飞记的「共享笔记」接受邀请。你可以在同一处修改权限或撤销访问。</p>
+            <h2 id="zh-share">邀请他人一起写</h2>
+            <p>在 iCloud 文档库中打开一篇笔记，从笔记菜单选择「创建共享副本」。进入「共享笔记」，填写对方的 Apple 账户邮箱，选择「邀请只读」或「邀请编辑」，再把邀请链接发给对方。</p>
+            <p>对方在飞记的「共享笔记」中粘贴链接并接受邀请，即可打开这篇笔记。你也可以在这里调整权限或「撤销访问」。原笔记和共享副本各自保存。</p>
           </section>
           <section aria-labelledby="zh-backup">
-            <h2 id="zh-backup">备份和恢复</h2>
-            <p>在「设置 → 文档库」创建整库备份，选一个安全位置保存 <code>.feinotesbackup</code> 文件。从备份恢复时，选中备份，等待校验，关闭共享窗口，再退出并重开飞记。飞记保留原文档库。请先核对恢复结果，再清理原库或旧备份。备份可能包含笔记正文、附件、共享笔记缓存和待同步改动。</p>
+            <h2 id="zh-backup">备份与恢复</h2>
+            <p>在「设置 → 文档库」找到「创建整库备份」，选择保存文件夹。生成的 <code>.feinotesbackup</code> 文件包含笔记、附件、回收站和待同步改动，也可能包含共享笔记的本机副本。</p>
+            <p>恢复时，在「从备份恢复」中选择备份文件，按提示关闭共享窗口并重启飞记。恢复前的文档库会保留，确认内容完整后再清理旧副本。</p>
           </section>
           <section aria-labelledby="zh-delete">
-            <h2 id="zh-delete">删除笔记与停止同步</h2>
-            <p>要从 iCloud 文档库移除一篇笔记，先在该文档库删除它，再到「回收站」对该笔记选择「彻底删除」。返回「设置 → 文档库」，点「立即同步」，然后在其他 Mac 上确认这篇笔记已移除。已导出的备份和另存副本需要单独处理。</p>
-            <p>如果发过共享邀请，打开「共享笔记」中的共享副本，对相关参与者选择「撤销访问」。原笔记和共享副本分别管理。若只想停止使用云文档库，在「设置 → 文档库」选择「切换到本机…」，现有 iCloud 数据会保留。</p>
-            <p>如果 macOS 的 iCloud 储存空间列表显示飞记，并提供删除选项，可按 <a href="https://support.apple.com/zh-cn/guide/mac-help/mh36833/27/mac/27">Apple 的 iCloud 储存空间说明</a>处理。删除前先保存需要保留的内容，并在各台 Mac 停止同步。</p>
+            <h2 id="zh-delete">删除笔记或停止同步</h2>
+            <p>删除笔记后，它会在回收站保留 30 天。想提前删除，可以在回收站选择「彻底删除」。在 iCloud 文档库中操作后，点「立即同步」，并在其他 Mac 上确认结果。</p>
+            <p>想停止同步，可在「设置 → 文档库」选择「切换到本机…」。这会切换当前使用的文档库，iCloud 中的笔记仍会保留。</p>
+            <p>共享副本的访问权限需要在「共享笔记」中单独撤销。已导出的备份，以及他人另存的副本，也需要分别处理。</p>
           </section>
           <div class="document-end">
-            <p>报告故障时，请准备飞记版本、macOS 版本、复现步骤和错误提示。发送日志前请移除私人路径、笔记标题和邀请链接。</p>
+            <p>还有问题？欢迎发邮件或到上方的 Telegram 群聊聊。带上飞记版本、macOS 版本和遇到问题时的操作，会更方便排查。发送截图或日志前，请先隐去私人笔记内容和邀请链接。</p>
           </div>
         </article>
       </div>

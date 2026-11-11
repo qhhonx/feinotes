@@ -29,6 +29,7 @@ Preserve the existing editor layout, keyboard shortcuts and interaction patterns
 - The default upstream library `~/Documents/Quiet.md` and Fei Notes application containers can contain real notes. Do not modify, delete, stage or upload their contents during development.
 - Stop only processes started for this checkout's test run. Use isolated test accounts and synthetic attachments.
 - Keep Apple keys, signing identities, provisioning profiles, account contact details, tokens and logs containing personal data out of Git. Release credentials belong in the protected GitHub environments.
+- Public website copy, metadata and assets must use the Fei Notes product identity and its support address. Do not publish the maintainer’s personal name, address, phone number, private email or account details on the website. Keep this rule when editing support and privacy pages.
 - Retain pending edits on sync failure, cloud-access changes and account changes. Download progress is a cache and must be recoverable.
 
 ## Checks
