@@ -108,6 +108,4 @@ html[lang="en"] .lead { max-width: 680px; }
 .beta-download { display: inline-flex; align-items: center; justify-content: center; min-height: 46px; padding: 9px 23px; border-radius: 999px; color: #173e43; background: var(--accent); font-size: 15px; font-weight: 650; text-decoration: none; box-shadow: 0 3px 15px rgb(8 35 44 / 12%); }
 .beta-download:hover { filter: brightness(1.05); }
 .beta-download[aria-disabled="true"] { opacity: .72; pointer-events: none; }
-.beta-details, .beta-status { font-size: 12px; line-height: 1.6; text-wrap: balance; }
-.beta-details { opacity: .94; }
-.beta-status { min-height: 19px; opacity: .85; }
+.beta-details { font-size: 12px; line-height: 1.6; opacity: .85; }
