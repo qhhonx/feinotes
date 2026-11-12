@@ -1194,7 +1194,14 @@ impl Editor {
     }
 
     pub fn align(&mut self, a: Align, window: &mut Window, cx: &mut Context<Self>) {
-        if self.markdown { return; }
+        // A Markdown file keeps alignment only as a table column's.
+        if self.markdown {
+            if self.core.cell_sel.is_some() || self.core.cell_of(self.core.sel.head.block).is_some() {
+                self.core.table_align_columns(a);
+                self.changed(window, cx);
+            }
+            return;
+        }
         let ids = self.core.selected_blocks();
         self.core.set_align(&ids, a);
         self.changed(window, cx);
@@ -1805,7 +1812,7 @@ impl Editor {
     }
 
     /// ⌘V. Our own copies paste as DocxXML; other apps' HTML is converted;
-    /// plain text is read as Markdown; otherwise an image.
+    /// images win over their text fallback; plain text is read as Markdown.
     fn on_paste(&mut self, _: &k::Paste, window: &mut Window, cx: &mut Context<Self>) {
         self.paste(false, window, cx);
     }
@@ -1822,7 +1829,7 @@ impl Editor {
         let fake = crate::clipboard::FAKE_CLIPBOARD.lock().unwrap().clone();
         let item = if fake.is_some() { None } else { cx.read_from_clipboard() };
         let (text, meta, image) = match (&fake, &item) {
-            (Some((_, t)), _) => (Some(t.clone()), None, None),
+            (Some(f), _) => (Some(f.text.clone()), None, (!f.images.is_empty()).then(|| f.images.iter().collect::<Vec<_>>())),
             (None, Some(item)) => {
                 let s = item.entries().iter().find_map(|e| match e {
                     ClipboardEntry::String(s) => Some(s),
@@ -1848,7 +1855,7 @@ impl Editor {
         let rich_target = head != TITLE && !self.core.is_code(head);
         let internal = meta.and_then(|xml| docxml::parse(&xml).ok()).filter(|d| !d.blocks.is_empty());
         let html = match &fake {
-            Some((h, _)) => h.clone(),
+            Some(f) => f.html.clone(),
             None if !plain && internal.is_none() && rich_target => crate::clipboard::clipboard_html(),
             None => None,
         };
@@ -1877,22 +1884,22 @@ impl Editor {
             self.core.paste_blocks(d.blocks);
         } else if let Some(b) = html.filter(|b| !b.is_empty() && !restates(b) && !(image.is_some() && b.iter().all(|b| matches!(b.kind, BlockKind::Image { .. })))) {
             self.core.paste_blocks(b);
+        } else if let Some(images) = image.filter(|_| rich_target) {
+            let mut blocks = Vec::new();
+            for img in images {
+                match super::image::clipboard_image_data(img).and_then(|(bytes, ext)| super::image::image_block_from(&bytes, ext)) {
+                    Ok(b) => blocks.push(b),
+                    Err(msg) => self.toast(msg, cx),
+                }
+            }
+            if !blocks.is_empty() {
+                // Split at the caret, replace the selection and keep a typing
+                // position after the images, all in one undo step.
+                blocks.push(Block::text(""));
+                self.core.paste_blocks(blocks);
+            }
         } else if let Some(s) = text.filter(|s| !s.is_empty()) {
             self.core.paste_markdown(&s);
-        } else if let Some(images) = image {
-            // Several copied image files paste one after another.
-            for img in images {
-                let ext = match img.format {
-                    ImageFormat::Jpeg => "jpg",
-                    ImageFormat::Gif => "gif",
-                    ImageFormat::Webp => "webp",
-                    ImageFormat::Svg => "svg",
-                    ImageFormat::Bmp => "bmp",
-                    ImageFormat::Tiff => "tiff",
-                    _ => "png",
-                };
-                self.insert_image_bytes(&img.bytes, ext, window, cx);
-            }
         }
         if let Some(msg) = self.core.notice.take() {
             self.toast(msg, cx);

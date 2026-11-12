@@ -1952,6 +1952,28 @@ fn decode_rotated(path: &Path, crop: [f32; 4], rot: u8) -> Option<Arc<RenderImag
 /// folder (format, size and pixel checks on upload).
 pub(super) fn image_block_from(bytes: &[u8], ext: &str) -> Result<Block, &'static str> { image_block_named(bytes, ext, None) }
 
+/// macOS screenshots may only offer TIFF. Store those as lossless PNG;
+/// other clipboard formats keep their original bytes (including animation).
+pub(super) fn clipboard_image_data(img: &gpui::Image) -> Result<(std::borrow::Cow<'_, [u8]>, &'static str), &'static str> {
+    if img.bytes.len() as u64 > MAX_BYTES { return Err(TOO_BIG); }
+    let ext = match img.format {
+        ImageFormat::Png => "png",
+        ImageFormat::Jpeg => "jpg",
+        ImageFormat::Gif => "gif",
+        ImageFormat::Webp => "webp",
+        ImageFormat::Bmp => "bmp",
+        ImageFormat::Svg => return Err(BAD_FORMAT),
+        ImageFormat::Tiff => {
+            let im = image::ImageReader::with_format(std::io::Cursor::new(&img.bytes), image::ImageFormat::Tiff)
+                .decode().map_err(|_| BAD_DIMS)?;
+            let mut png = std::io::Cursor::new(Vec::new());
+            im.write_to(&mut png, image::ImageFormat::Png).map_err(|_| BAD_DIMS)?;
+            return Ok((std::borrow::Cow::Owned(png.into_inner()), "png"));
+        }
+    };
+    Ok((std::borrow::Cow::Borrowed(&img.bytes), ext))
+}
+
 /// `image_block_from` for a file that has a name of its own, which its copy keeps.
 fn image_block_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Block, &'static str> {
     let path = store_image_named(bytes, ext, name)?;
@@ -2048,4 +2070,36 @@ pub(crate) fn localize_pasted_images(blocks: &mut Vec<Block>) {
             Err(_) => false,
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clipboard_image_data, BAD_DIMS};
+    use gpui::ImageFormat;
+
+    #[test]
+    fn clipboard_tiff_preserves_pixels_as_png() {
+        let pixels = image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 80, 255, 128]).unwrap();
+        let mut tiff = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(pixels.clone()).write_to(&mut tiff, image::ImageFormat::Tiff).unwrap();
+        let img = gpui::Image::from_bytes(ImageFormat::Tiff, tiff.into_inner());
+        let (png, ext) = clipboard_image_data(&img).unwrap();
+        assert_eq!(ext, "png");
+        assert_eq!(image::load_from_memory_with_format(&png, image::ImageFormat::Png).unwrap().into_rgba8(), pixels);
+    }
+
+    #[test]
+    fn clipboard_invalid_tiff_is_rejected() {
+        let img = gpui::Image::from_bytes(ImageFormat::Tiff, b"broken tiff".to_vec());
+        assert_eq!(clipboard_image_data(&img).unwrap_err(), BAD_DIMS);
+    }
+
+    #[test]
+    fn clipboard_gif_keeps_original_bytes() {
+        let img = gpui::Image::from_bytes(ImageFormat::Gif, b"GIF89a".to_vec());
+        let (bytes, ext) = clipboard_image_data(&img).unwrap();
+        assert_eq!(ext, "gif");
+        assert!(matches!(bytes, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(&*bytes, img.bytes);
+    }
 }

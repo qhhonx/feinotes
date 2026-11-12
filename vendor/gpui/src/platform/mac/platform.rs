@@ -1107,37 +1107,37 @@ impl Platform for MacPlatform {
         let state = self.0.lock();
         let pasteboard = state.pasteboard;
 
-        // First, see if it's a string.
+        // quiet.md: screenshot tools can supply both an image and a text
+        // fallback. Keep both so the receiving view can choose the format.
+        let mut entries = Vec::new();
         unsafe {
             let types: id = pasteboard.types();
             let string_type: id = ns_string("public.utf8-plain-text");
 
             if msg_send![types, containsObject: string_type] {
                 let data = pasteboard.dataForType(string_type);
-                if data == nil {
-                    return None;
-                } else if data.bytes().is_null() {
+                if data != nil && data.length() == 0 {
                     // https://developer.apple.com/documentation/foundation/nsdata/1410616-bytes?language=objc
                     // "If the length of the NSData object is 0, this property returns nil."
-                    return Some(self.read_string_from_clipboard(&state, &[]));
-                } else {
+                    entries.extend(self.read_string_from_clipboard(&state, &[]).entries);
+                } else if data != nil && !data.bytes().is_null() {
                     let bytes =
                         slice::from_raw_parts(data.bytes() as *mut u8, data.length() as usize);
 
-                    return Some(self.read_string_from_clipboard(&state, bytes));
+                    entries.extend(self.read_string_from_clipboard(&state, bytes).entries);
                 }
             }
 
-            // If it wasn't a string, try the various supported image types.
+            // Read one image representation, preferring PNG over TIFF.
             for format in ImageFormat::iter() {
                 if let Some(item) = try_clipboard_image(pasteboard, format) {
-                    return Some(item);
+                    entries.extend(item.entries);
+                    break;
                 }
             }
         }
 
-        // If it wasn't a string or a supported image type, give up.
-        None
+        (!entries.is_empty()).then_some(ClipboardItem { entries })
     }
 
     fn write_credentials(&self, url: &str, username: &str, password: &[u8]) -> Task<Result<()>> {
@@ -1337,7 +1337,7 @@ fn try_clipboard_image(pasteboard: id, format: ImageFormat) -> Option<ClipboardI
         let types: id = pasteboard.types();
         if msg_send![types, containsObject: ut_type.inner()] {
             let data = pasteboard.dataForType(ut_type.inner_mut());
-            if data == nil {
+            if data == nil || data.length() == 0 || data.bytes().is_null() {
                 None
             } else {
                 let bytes = Vec::from(slice::from_raw_parts(
@@ -1703,6 +1703,46 @@ mod tests {
             platform.read_from_clipboard(),
             Some(ClipboardItem::new_string(text_from_other_app.to_string()))
         );
+    }
+
+    // quiet.md: use a private pasteboard, never the user's clipboard.
+    #[test]
+    fn test_clipboard_image_with_text_fallback() {
+        let platform = build_platform();
+        let text = ClipboardItem::new_string("screenshot.png".into());
+        platform.write_to_clipboard(text.clone());
+        let image = Image::from_bytes(ImageFormat::Png, vec![1, 2, 3]);
+        add_image(&platform, &image);
+        let mut expected = text.entries;
+        expected.push(ClipboardEntry::Image(image));
+        assert_eq!(platform.read_from_clipboard(), Some(ClipboardItem { entries: expected }));
+    }
+
+    #[test]
+    fn test_clipboard_tiff_and_png_preference() {
+        let platform = build_platform();
+        let tiff = Image::from_bytes(ImageFormat::Tiff, vec![4, 5, 6]);
+        platform.write_to_clipboard(ClipboardItem { entries: vec![ClipboardEntry::Image(tiff.clone())] });
+        assert_eq!(platform.read_from_clipboard(), Some(ClipboardItem { entries: vec![ClipboardEntry::Image(tiff)] }));
+        let png = Image::from_bytes(ImageFormat::Png, vec![1, 2, 3]);
+        add_image(&platform, &png);
+        assert_eq!(platform.read_from_clipboard(), Some(ClipboardItem { entries: vec![ClipboardEntry::Image(png)] }));
+    }
+
+    #[test]
+    fn test_clipboard_empty_image_falls_back_to_text() {
+        let platform = build_platform();
+        let text = ClipboardItem::new_string("text".into());
+        platform.write_to_clipboard(text.clone());
+        add_image(&platform, &Image::empty());
+        assert_eq!(platform.read_from_clipboard(), Some(text));
+    }
+
+    fn add_image(platform: &MacPlatform, image: &Image) {
+        unsafe {
+            let bytes = NSData::dataWithBytes_length_(nil, image.bytes.as_ptr() as *const c_void, image.bytes.len() as u64);
+            platform.0.lock().pasteboard.setData_forType(bytes, Into::<UTType>::into(image.format).inner_mut());
+        }
     }
 
     fn build_platform() -> MacPlatform {

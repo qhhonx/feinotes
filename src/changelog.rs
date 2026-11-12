@@ -15,6 +15,14 @@ const RADIUS: f32 = 12.;
 /// Each version's notes: (version, [(中文, English)]). Only the running
 /// version's are shown; a version without notes shows nothing.
 const NOTES: &[(&str, &[(&str, &str)])] = &[
+    ("0.1.10", &[
+        ("Linux AppImage 支持应用内检查、下载并重启更新", "Check, download, and restart to update the Linux AppImage in the app"),
+        ("新建菜单可选择文档、Markdown 或文件夹，快捷新建支持记住上次类型", "Choose Document, Markdown, or Folder from the New menu; quick creation can remember your last choice"),
+        ("宽表格新增可拖动的横向滚动条", "Drag the horizontal scrollbar to navigate wide tables"),
+        ("Markdown 表格支持按列对齐，并在保存时保留对齐方式", "Align Markdown table columns and preserve alignment when saving"),
+        ("长输入框跟随光标滚动，修复链接等内容超出后看不到光标的问题", "Long input fields scroll with the caret, including link fields"),
+        ("调整文件夹按钮对齐，改善新建文件夹后的命名体验", "Align folder buttons and improve naming newly created folders"),
+    ]),
     ("0.1.9", &[
         ("macOS：修复 ⌘Q 无法退出的问题，保留退出前的保存检查", "macOS: fix Cmd+Q not quitting, while keeping save checks before exit"),
         ("Windows：修复关闭、最大化和最小化按钮无响应的问题", "Windows: fix unresponsive close, maximize, and minimize buttons"),

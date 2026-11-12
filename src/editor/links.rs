@@ -19,6 +19,8 @@ pub struct DocRef {
     pub id: String,
     pub title: String,
     pub icon: Option<String>,
+    /// A folder rather than a document (the library's `meta.folder`).
+    pub folder: bool,
     pub modified: u64,
     pub opened: u64,
 }
@@ -64,6 +66,20 @@ const INIT_RENDER: usize = 10;
 /// hover backgrounds inside it at 4.
 const CARD: f32 = 5.;
 const ROW: f32 = 4.;
+
+/// Folders and documents share the @ panel and the reference list; a folder
+/// gets the outline folder glyph on a blue tile, drawn in the page glyph's line color.
+fn folder_avatar(size: f32) -> Div {
+    div()
+        .flex_none()
+        .size(px(size))
+        .rounded(px(size / 5.))
+        .bg(Theme::primary_500())
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(crate::ui::icon("folder", size * 0.625, Theme::bg_body()))
+}
 
 impl Links {
     fn doc(&self, id: &str) -> Option<&DocRef> {
@@ -242,15 +258,19 @@ impl Editor {
                 .filter(|(r, _)| !r.is_empty())
                 .map(|(r, c)| TextRun { len: r.len(), font: font.clone(), color: c, background_color: None, underline: None, strikethrough: None })
                 .collect();
-            let avatar = match &d.icon {
-                Some(e) => div().size(px(32.)).flex_none().flex().items_center().justify_center().text_size(px(24.)).child(e.clone()).into_any_element(),
-                None => div()
-                    .relative()
-                    .flex_none()
-                    .size(px(32.))
-                    .child(icon("doc-blue", 32., Theme::primary_500()).absolute())
-                    .child(icon("doc-blue-lines", 32., Theme::bg_body()).absolute())
-                    .into_any_element(),
+            let avatar = if d.folder {
+                folder_avatar(32.).into_any_element()
+            } else {
+                match &d.icon {
+                    Some(e) => div().size(px(32.)).flex_none().flex().items_center().justify_center().text_size(px(24.)).child(e.clone()).into_any_element(),
+                    None => div()
+                        .relative()
+                        .flex_none()
+                        .size(px(32.))
+                        .child(icon("doc-blue", 32., Theme::primary_500()).absolute())
+                        .child(icon("doc-blue-lines", 32., Theme::bg_body()).absolute())
+                        .into_any_element(),
+                }
             };
             let pick = d.clone();
             list = list.child(
@@ -387,16 +407,20 @@ impl Editor {
         let title_row = |id: String, row: usize, chevron: Option<bool>, cx: &mut Context<Self>| {
             let d = docs.iter().find(|d| d.id == id);
             let name = d.map(|d| display_title(&d.title).to_string()).unwrap_or_else(|| crate::settings::text("此文档已被删除").into());
-            let glyph = match d.and_then(|d| d.icon.clone()) {
-                Some(e) => div().mr(px(4.)).text_size(px(16.)).child(e).into_any_element(),
-                None => div()
-                    .relative()
-                    .mr(px(4.))
-                    .flex_none()
-                    .size(px(16.))
-                    .child(icon("doc-blue", 16., Theme::primary_500()).absolute())
-                    .child(icon("doc-blue-lines", 16., Theme::bg_body()).absolute())
-                    .into_any_element(),
+            let glyph = if d.is_some_and(|d| d.folder) {
+                folder_avatar(16.).mr(px(4.)).into_any_element()
+            } else {
+                match d.and_then(|d| d.icon.clone()) {
+                    Some(e) => div().mr(px(4.)).text_size(px(16.)).child(e).into_any_element(),
+                    None => div()
+                        .relative()
+                        .mr(px(4.))
+                        .flex_none()
+                        .size(px(16.))
+                        .child(icon("doc-blue", 16., Theme::primary_500()).absolute())
+                        .child(icon("doc-blue-lines", 16., Theme::bg_body()).absolute())
+                        .into_any_element(),
+                }
             };
             let open = id.clone();
             div()

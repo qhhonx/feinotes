@@ -594,17 +594,22 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
                 window.dispatch_keystroke(ks, cx);
             }
         }
-        // `clip html|text <file>`: what the next paste reads instead of the
+        // `clip html|text|image <file>`: what the next paste reads instead of the
         // system clipboard (`clip text` with HTML keeps its plain fallback).
         "clip" => {
             let (kind, path) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
-            let body = std::fs::read_to_string(path.trim()).unwrap_or_default();
             let mut fake = crate::clipboard::FAKE_CLIPBOARD.lock().unwrap();
-            let cur = fake.take().unwrap_or((None, String::new()));
-            *fake = Some(match kind {
-                "html" => (Some(body), cur.1),
-                _ => (cur.0, body),
-            });
+            let cur = fake.get_or_insert_with(Default::default);
+            match kind {
+                "clear" => *cur = Default::default(),
+                "image" => {
+                    let bytes = std::fs::read(path.trim()).expect("clip image file");
+                    let format = image::guess_format(&bytes).ok().and_then(|f| ImageFormat::from_mime_type(f.to_mime_type())).expect("clip image format");
+                    cur.images.push(Image::from_bytes(format, bytes));
+                }
+                "html" => cur.html = Some(std::fs::read_to_string(path.trim()).unwrap_or_default()),
+                _ => cur.text = std::fs::read_to_string(path.trim()).unwrap_or_default(),
+            }
         }
         "pick" => *PICK.lock().unwrap() = Some(rest.trim().split('|').map(std::path::PathBuf::from).collect()),
         // `deskshot name margin`: the window as it sits on screen, with

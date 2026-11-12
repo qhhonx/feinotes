@@ -808,6 +808,7 @@ pub fn continuous_corner_mask(radius: f32, color: Hsla) -> impl IntoElement {
         let x = f32::from(b.left()); let y = f32::from(b.top());
         let w = f32::from(b.size.width); let h = f32::from(b.size.height);
         let r = radius.min(w / 2.).min(h / 2.);
+        let mut pb = PathBuilder::fill();
         for (sx, sy, ux, uy, vx, vy) in [
             (x + w - r, y, 1., 0., 0., 1.),
             (x + w, y + h - r, 0., 1., -1., 0.),
@@ -815,15 +816,14 @@ pub fn continuous_corner_mask(radius: f32, color: Hsla) -> impl IntoElement {
             (x, y + r, 0., -1., 1., 0.),
         ] {
             let q = |u: f32, v: f32| point(px(sx + r * (u * ux + v * vx)), px(sy + r * (u * uy + v * vy)));
-            let mut path = PathBuilder::fill();
-            path.move_to(q(0., 0.));
-            path.line_to(q(1., 0.));
-            path.line_to(q(1., 1.));
-            path.cubic_bezier_to(q(std::f32::consts::FRAC_1_SQRT_2, 0.2928932), q(1., 0.7928932), q(1., 0.5857864));
-            path.cubic_bezier_to(q(0., 0.), q(0.4142136, 0.), q(0.2071068, 0.));
-            path.close();
-            if let Ok(path) = path.build() { window.paint_path(path, color); }
+            pb.move_to(q(0., 0.));
+            pb.line_to(q(1., 0.));
+            pb.line_to(q(1., 1.));
+            pb.cubic_bezier_to(q(std::f32::consts::FRAC_1_SQRT_2, 0.2928932), q(1., 0.7928932), q(1., 0.5857864));
+            pb.cubic_bezier_to(q(0., 0.), q(0.4142136, 0.), q(0.2071068, 0.));
+            pb.close();
         }
+        if let Ok(path) = pb.build() { window.paint_path(path, color); }
     }).absolute().inset_0()
 }
 

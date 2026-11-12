@@ -386,6 +386,7 @@ impl Workspace {
                 .hover(|s| s.bg(hover()))
                 .child(icon(name, 16., Theme::icon()))
         };
+        let create_open = self.create_menu.is_some();
         let row = div().h(px(SECTION_H)).pl(px(4.)).pt(px(SECTION_TOP)).flex().items_center().group(group.clone());
         if let (1, Some(sel)) = (idx, self.batch.as_ref()) {
             let n = sel.len();
@@ -418,8 +419,9 @@ impl Workspace {
                             cx.notify();
                         })),
                 )
-                .child(trigger("section-folder-add", "folder-plus").ml(px(2.)).tip(crate::settings::tr("新建文件夹", "New folder"), None).on_click(cx.listener(|w, _, window, cx| w.new_folder(None, window, cx))))
-            .child(trigger("section-add", "plus").ml(px(2.)).mr(px(4.)).tip(crate::settings::tr("新建文档", "New document"), None).on_click(cx.listener(|w, _, window, cx| w.new_root_doc(window, cx))));
+                .child(trigger("section-add", "plus").ml(px(2.)).mr(px(4.)).child(self.home.track("create-sidebar")).when(create_open, |d| d.bg(selection_fill())).tip(crate::settings::tr("新建", "New"), None)
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(|w, ev: &ClickEvent, _, cx| { let pos = w.home.anchor("create-sidebar").map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.))); w.create_menu = if w.create_menu.is_some() { None } else { Some((None, pos)) }; cx.notify(); })));
         }
         row.child(
             div()
@@ -454,8 +456,9 @@ impl Workspace {
                 w.row_menu = None;
                 cx.notify();
             })))
-            .child(trigger("section-folder-add", "folder-plus").ml(px(2.)).tip(crate::settings::tr("新建文件夹", "New folder"), None).on_click(cx.listener(|w, _, window, cx| w.new_folder(None, window, cx))))
-            .child(trigger("section-add", "plus").ml(px(2.)).mr(px(4.)).tip(crate::settings::tr("新建文档", "New document"), None).on_click(cx.listener(|w, _, window, cx| w.new_root_doc(window, cx))))
+            .child(trigger("section-add", "plus").ml(px(2.)).mr(px(4.)).child(self.home.track("create-sidebar")).when(create_open, |d| d.bg(selection_fill())).tip(crate::settings::tr("新建", "New"), None)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|w, ev: &ClickEvent, _, cx| { let pos = w.home.anchor("create-sidebar").map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.))); w.create_menu = if w.create_menu.is_some() { None } else { Some((None, pos)) }; cx.notify(); })))
         })
     }
 
@@ -592,7 +595,7 @@ impl Workspace {
     }
 
     /// Direct creation actions inside a folder.
-    fn add_button(&self, e: &Entry, key: &str, folder: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn add_button(&self, e: &Entry, key: &str, folder: bool, cx: &mut Context<Self>) -> Stateful<Div> {
         let id = e.id.clone();
         div()
             .id(SharedString::from(format!("add-{key}-{folder}-{}", e.id)))
@@ -619,25 +622,35 @@ impl Workspace {
         let renaming = self.rename.as_ref().filter(|r| r.id == e.id).map(|r| r.field.clone());
         let title = match renaming {
             // The field opens with the text exactly where the name was (2 + 1 + 6 = the
-            // label's 9), a white well with a thin edge and a soft glow, fading in.
+            // label's 9): a white well with a thin edge, wrapped in a soft focus ring.
+            // The ring is its own 3px band, not a box-shadow, so its corner is drawn at
+            // the well's radius + 3 — inner 圆角 + padding = outer 圆角, corners parallel.
+            // Both layers overflow without taking layout space, and fade in together.
             Some(field) => {
                 let a = self.folder_drag.rename_in(&e.id);
+                let r = ROW_R - 2.;
                 div()
                     .ml(px(2.))
                     .mr(px(4.))
                     .flex_1()
                     .min_w_0()
                     .h(px(26.))
-                    .px(px(6.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(ROW_R - 2.))
-                    .bg(crate::theme::raised(Theme::bg_body()).opacity(a))
-                    .border_1()
-                    .border_color(Theme::sidebar_field_edge().opacity(a))
-                    .shadow(vec![BoxShadow { color: Theme::sidebar_field_ring().opacity(a), offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(3.) }])
-                    .text_size(px(13.))
-                    .child(field)
+                    .relative()
+                    .child(div().absolute().inset(px(-3.)).rounded(px(r + 3.)).bg(Theme::sidebar_field_ring().opacity(a)))
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .px(px(6.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(r))
+                            .bg(crate::theme::raised(Theme::bg_body()).opacity(a))
+                            .border_1()
+                            .border_color(Theme::sidebar_field_edge().opacity(a))
+                            .text_size(px(13.))
+                            .child(field),
+                    )
                     .into_any_element()
             }
             None => div()
@@ -711,8 +724,10 @@ impl Workspace {
                 })
             })
             .child(title)
-            .when(!renaming && folder && batch.is_none() && key == "doc", |d| d.child(self.add_button(e, key, true, cx)).child(self.add_button(e, key, false, cx)))
-            .when(!renaming && batch.is_none(), |d| d.child(self.more_button(e, key, cx).when(key == "doc", |d| d.ml(px(2.)))))
+            // A folder's "…", "new folder" and "+" sit in the same columns as the header's
+            // 批量操作, 新建文件夹 and 新建文档.
+            .when(!renaming && folder && batch.is_none() && key == "doc", |d| d.child(self.more_button(e, key, cx).mr(px(0.))).child(self.add_button(e, key, true, cx).ml(px(2.))).child(self.add_button(e, key, false, cx).ml(px(2.)).mr(px(4.))))
+            .when(!renaming && !(folder && key == "doc") && batch.is_none(), |d| d.child(self.more_button(e, key, cx).when(key == "doc", |d| d.ml(px(2.)))))
     }
 
     pub(crate) fn render_row_menu(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {

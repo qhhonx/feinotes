@@ -118,3 +118,89 @@ impl Editor {
         .w(px(HIT_W))
     }
 }
+
+/// A wide table's scrollbar: the page thumb turned sideways, along the top
+/// of its box (`HIT_W` tall), for the scroller that `handle` tracks.
+pub(super) fn table_scrollbar(handle: ScrollHandle, sb: std::rc::Rc<Scrollbar>) -> Canvas<Option<(Pixels, Pixels, Hitbox)>> {
+    let sb2 = sb.clone();
+    let list = handle.clone();
+    canvas(
+        move |bounds, window, _| {
+            let max = list.max_offset().width;
+            if max <= px(1.) {
+                return None;
+            }
+            let view = bounds.size.width;
+            let content = view + max;
+            let w = match sb.grab.get() {
+                Some((_, _, w)) => w,
+                None => (view * (view / content)).max(px(MIN_H)).min(view),
+            };
+            let left = bounds.left() + (view - w) * (-list.offset().x / max).clamp(0., 1.);
+            let zone = Bounds::new(point(left, bounds.top()), size(w, px(HIT_W)));
+            Some((left, w, window.insert_hitbox(zone, HitboxBehavior::BlockMouseExceptScroll)))
+        },
+        move |bounds, state, window, _| {
+            let sb = sb2;
+            let Some((left, w, hitbox)) = state else {
+                sb.grab.set(None);
+                return;
+            };
+            window.set_cursor_style(CursorStyle::Arrow, &hitbox);
+            let hovered = hitbox.is_hovered(window);
+            sb.hot.set(hovered);
+            let dragging = sb.grab.get().is_some();
+            let h = if hovered || dragging { W_HOT } else { W };
+            let color = if dragging {
+                theme::ca(craft::N1000, 0.4)
+            } else if hovered {
+                theme::ca(craft::N1000, 0.32)
+            } else {
+                Theme::scrollbar_thumb()
+            };
+            let thumb = Bounds::new(point(left, bounds.top() + px(INSET)), size(w, px(h)));
+            window.paint_quad(fill(thumb, color).corner_radii(px(h / 2.)));
+
+            window.on_mouse_event({
+                let (sb, hitbox) = (sb.clone(), hitbox.clone());
+                move |ev: &MouseDownEvent, phase, window, cx| {
+                    if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left && hitbox.is_hovered(window) {
+                        sb.grab.set(Some((ev.position.x - left, px(0.), w)));
+                        cx.stop_propagation();
+                        window.refresh();
+                    }
+                }
+            });
+            window.on_mouse_event({
+                let (sb, hitbox, list) = (sb.clone(), hitbox.clone(), handle.clone());
+                move |ev: &MouseMoveEvent, phase, window, _| {
+                    if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    match sb.grab.get() {
+                        Some((dx, _, w)) if ev.pressed_button == Some(MouseButton::Left) => {
+                            let travel = (bounds.size.width - w).max(px(1.));
+                            let f = ((ev.position.x - dx - bounds.left()) / travel).clamp(0., 1.);
+                            list.set_offset(point(-list.max_offset().width * f, list.offset().y));
+                            window.refresh();
+                        }
+                        Some(_) => {
+                            sb.grab.set(None);
+                            window.refresh();
+                        }
+                        None if hitbox.is_hovered(window) != sb.hot.get() => window.refresh(),
+                        None => {}
+                    }
+                }
+            });
+            window.on_mouse_event({
+                let sb = sb.clone();
+                move |ev: &MouseUpEvent, phase, window, _| {
+                    if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left && sb.grab.take().is_some() {
+                        window.refresh();
+                    }
+                }
+            });
+        },
+    )
+}

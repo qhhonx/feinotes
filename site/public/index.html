@@ -33,6 +33,8 @@
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
   }
+  /* Stop child images (screenshot, logo) from inheriting body's pixelated rendering. */
+  img { image-rendering: auto; }
   /* Soft sky wash keeps the headline readable over the photo. */
   body::before {
     content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;

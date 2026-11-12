@@ -7,7 +7,7 @@ use crate::editor::math;
 use crate::model::{Align, BlockId, Marks, RichText};
 use crate::editor_theme::{self as theme, Theme, craft};
 use gpui::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -157,6 +157,21 @@ fn prev_char(s: &str, i: usize) -> usize {
     s[..i].char_indices().next_back().map(|(k, _)| k).unwrap_or(0)
 }
 
+/// A single-line field's horizontal scroll: the caret stays 8pt inside the
+/// visible box, so a long URL opens on its tail and moving the caret reveals
+/// the part of the text around it. `prev` keeps the view steady while typing.
+pub fn hscroll(text_w: Pixels, caret_x: Pixels, view_w: Pixels, prev: Pixels) -> Pixels {
+    let pad = px(8.);
+    let max = (text_w + pad - view_w).max(px(0.));
+    let mut s = prev.min(max);
+    if caret_x - s > view_w - pad {
+        s = caret_x - (view_w - pad);
+    } else if caret_x - s < pad {
+        s = caret_x - pad;
+    }
+    s.max(px(0.)).min(max)
+}
+
 pub type LayoutCache = Rc<RefCell<HashMap<BlockId, TextLayout>>>;
 
 #[derive(Clone)]
@@ -228,6 +243,9 @@ pub struct RichTextElement {
     /// The button whose 按钮设置 panel is open (`.editing`), shown with
     /// the panel's unsaved values.
     pub button_edit: Option<(usize, crate::model::InlineButton)>,
+    /// Single-line fields keep their horizontal scroll here, so a long URL
+    /// can be read and edited instead of being clipped on the right.
+    pub scroll: Option<Rc<Cell<Pixels>>>,
 }
 
 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
@@ -600,6 +618,12 @@ pub struct PlacedEq {
     geom: Rc<EqGeom>,
 }
 
+/// What prepaint resolved: equations and the field's horizontal scroll.
+pub struct Prepaint {
+    placed: Vec<PlacedEq>,
+    sx: Pixels,
+}
+
 thread_local! {
     /// The equation under a pressed mouse button (`:active`).
     static EQ_PRESSED: std::cell::Cell<Option<(BlockId, usize)>> = const { std::cell::Cell::new(None) };
@@ -701,7 +725,7 @@ impl IntoElement for RichTextElement {
 
 impl Element for RichTextElement {
     type RequestLayoutState = Rc<RefCell<Option<Prepared>>>;
-    type PrepaintState = Vec<PlacedEq>;
+    type PrepaintState = Prepaint;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -897,7 +921,25 @@ impl Element for RichTextElement {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        let Some(p) = state.borrow_mut().take() else { return vec![] };
+        let Some(p) = state.borrow_mut().take() else { return Prepaint { placed: vec![], sx: px(0.) } };
+        // Single-line fields scroll horizontally; wrapped ones never do.
+        let sx = match &self.scroll {
+            Some(cell) if !self.spec.wrap && p.lines.len() == 1 => {
+                let (start, line) = &p.lines[0];
+                let caret_x = line.unwrapped_layout.x_for_index(self.caret.unwrap_or(0).saturating_sub(*start));
+                let s = hscroll(line.unwrapped_layout.width, caret_x, bounds.size.width, cell.get());
+                cell.set(s);
+                s
+            }
+            Some(cell) => {
+                cell.set(px(0.));
+                px(0.)
+            }
+            None => px(0.),
+        };
+        // Text coordinates start `sx` to the left of the visible box; the
+        // cached layout then answers hit-testing and IME in window coords.
+        let text_origin = point(bounds.left() - sx, bounds.top());
         let lh = p.line_height;
         let mut rows = vec![];
         let mut y = px(0.);
@@ -926,7 +968,7 @@ impl Element for RichTextElement {
                 y += h;
             }
         }
-        let mut layout = TextLayout { bounds, lines: p.lines, rows, line_height: lh, mono: self.spec.mono, eqs: vec![], buttons: vec![] };
+        let mut layout = TextLayout { bounds: Bounds::new(text_origin, bounds.size), lines: p.lines, rows, line_height: lh, mono: self.spec.mono, eqs: vec![], buttons: vec![] };
         let mut placed = vec![];
         for e in p.eqs {
             let ri = layout.row_for(e.ix);
@@ -936,7 +978,7 @@ impl Element for RichTextElement {
             let x = l.x_for_index(e.ix - start) - r.x0 + r.align_dx;
             let base = (lh - l.ascent - l.descent) / 2. + l.ascent;
             let line_top = bounds.top() + r.y + r.base_dy;
-            let origin = point(bounds.left() + x, if e.ext.is_some() { line_top } else { line_top + base - px(EQ_MIDDLE * self.spec.size) });
+            let origin = point(text_origin.x + x, if e.ext.is_some() { line_top } else { line_top + base - px(EQ_MIDDLE * self.spec.size) });
             let [vx, vy, vw, vh] = e.view;
             let view = Bounds::new(point(origin.x + px(vx), origin.y + px(vy)), size(px(vw), px(vh)));
             if e.ext.is_some() {
@@ -948,7 +990,7 @@ impl Element for RichTextElement {
             placed.push(PlacedEq { origin, view, hitbox, geom: e });
         }
         self.cache.borrow_mut().insert(self.id, layout);
-        placed
+        Prepaint { placed, sx }
     }
 
     fn paint(
@@ -988,7 +1030,8 @@ impl Element for RichTextElement {
         }
         // Text backgrounds sit below selection; glyphs are painted above both.
         let dx = if self.text.is_empty() { px(self.placeholder_dx) } else { px(0.) };
-        let o = point(bounds.left() + dx, bounds.top());
+        let sx = prepaint.sx;
+        let o = point(bounds.left() + dx - sx, bounds.top());
         for (hi, (_, line)) in layout.lines.iter().enumerate() {
             let tops: Vec<Pixels> = layout.rows.iter().filter(|r| r.hard == hi).map(|r| r.y + r.base_dy).collect();
             let _ = line.paint_background_rows(o, lh, &tops, gpui_align, Some(bounds), window, cx);
@@ -1028,7 +1071,7 @@ impl Element for RichTextElement {
                 window.paint_quad(fill(r, Theme::selection()));
             }
         }
-        for eq in prepaint.iter().filter(|e| e.geom.ext.is_none()) {
+        for eq in prepaint.placed.iter().filter(|e| e.geom.ext.is_none()) {
             let ix = eq.geom.ix;
             let selected = self.selection.as_ref().is_some_and(|s| s.start <= ix && ix + 3 <= s.end);
             let pressed = EQ_PRESSED.get() == Some((self.id, ix));
@@ -1053,7 +1096,7 @@ impl Element for RichTextElement {
             let tops: Vec<Pixels> = layout.rows.iter().filter(|r| r.hard == hi).map(|r| r.y + r.base_dy).collect();
             let _ = line.paint_rows(o, lh, &tops, gpui_align, Some(bounds), window, cx);
         }
-        for eq in prepaint.iter() {
+        for eq in prepaint.placed.iter() {
             let o = eq.origin;
             match &eq.geom.body {
                 EqBody::Math { math, at, tag_at } => {
@@ -1082,7 +1125,7 @@ impl Element for RichTextElement {
                 }
             }
         }
-        self.listen_equations(prepaint, window);
+        self.listen_equations(&prepaint.placed, window);
         if !self.text.is_empty() {
             self.paint_strikes(layout, window);
         }
@@ -1464,5 +1507,20 @@ mod tests {
     #[test]
     fn cjk_fallback_glyphs() {
         gpui::check_fallback_glyphs("周末规划一背景本季度目标").unwrap();
+    }
+
+    #[test]
+    fn field_scroll() {
+        use super::hscroll;
+        use gpui::px;
+        let w = px(100.);
+        // Short text never scrolls; a caret at the end shows the tail.
+        assert_eq!(hscroll(px(60.), px(60.), w, px(0.)), px(0.));
+        assert_eq!(hscroll(px(300.), px(300.), w, px(0.)), px(208.));
+        // Moving the caret back reveals the text around it.
+        assert_eq!(hscroll(px(300.), px(0.), w, px(208.)), px(0.));
+        assert_eq!(hscroll(px(300.), px(150.), w, px(0.)), px(58.));
+        // Shorter text clamps the old offset.
+        assert_eq!(hscroll(px(120.), px(120.), w, px(208.)), px(28.));
     }
 }

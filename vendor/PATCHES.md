@@ -40,6 +40,7 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 | 19 | `platform/mac/metal_renderer.rs`、`platform/windows/directx_renderer.rs` | 画路径用的两张整窗纹理（中间纹理和 4× MSAA 纹理）改为某一帧有路径时才创建，后续无路径帧距最后使用超过 1 秒时释放；窗口尺寸变化时丢掉，下次用到再按新尺寸建。Apple GPU 上 MSAA 纹理用 `Memoryless`（采样只在片上 tile 内存里，渲染过程里清空、只存 resolve 结果） | 原来每个窗口常驻这两张纹理，2560×1600 时约 80MB；路径只用于连续圆角、进度波浪和提示箭头，编辑器里平时一条都不画。抗锯齿不变 |
 | 20 | `elements/img.rs`、`elements/image_cache.rs` | 图片缓存增加不触发加载的 `peek`；显式尺寸图片可选择延迟到可见区域绘制时才解码 | 卡片裁剪范围之外的图片不再预先解码；原始像素、尺寸和动图播放保持不变 |
 | 21 | `platform/mac/metal_atlas.rs` | 删除图片时立即移除 tile 索引，再递减所属纹理的引用计数 | 避免共享纹理仍被使用时残留旧索引，导致重复删除或复用失效 tile |
+| 22 | `platform/mac/platform.rs` | 读取剪贴板时同时保留文字和一种图片格式（优先 PNG），跳过空图片数据 | 截图工具同时提供文字和图片时，正文可选择图片，文本输入框仍可读取文字 |
 
 
 ## taffy 0.9.0

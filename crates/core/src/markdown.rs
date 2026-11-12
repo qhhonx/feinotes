@@ -486,13 +486,26 @@ fn table(t: &Table, files: &mut impl FnMut(&FileBlock) -> Option<String>) -> Str
         cells.resize(cols, String::new());
         format!("| {} |", cells.join(" | "))
     };
+    // A column's alignment is its cells' most common one (ties go to the
+    // header's), so a row added since keeps the column as it was.
+    let sep = |c: usize| {
+        let of = |r: &Vec<TableCell>| r.get(c).and_then(|x| x.blocks.first()).map(|b| b.align);
+        let n = |a| t.rows.iter().filter(|r| of(r) == Some(a)).count();
+        let head = t.rows.first().and_then(of).unwrap_or_default();
+        let a = [Align::Left, Align::Center, Align::Right].into_iter().fold(head, |best, a| if n(a) > n(best) { a } else { best });
+        match a {
+            Align::Left => " --- |",
+            Align::Center => " :---: |",
+            Align::Right => " ---: |",
+        }
+    };
     let mut lines = vec![];
     let mut rows = t.rows.iter();
     match rows.next() {
         Some(r) => lines.push(row(r)),
         None => lines.push(row(&vec![])),
     }
-    lines.push(format!("|{}", " --- |".repeat(cols)));
+    lines.push(format!("|{}", (0..cols).map(sep).collect::<String>()));
     lines.extend(rows.map(row));
     lines.join("\n")
 }
@@ -754,5 +767,9 @@ mod tests {
         let cell = |s: &str| TableCell { blocks: vec![Block::text(s)], ..TableCell::empty() };
         let t = Table { header_rows: 1, rows: vec![vec![cell("a"), cell("b|c")], vec![cell("1")]], ..Default::default() };
         assert_eq!(table(&t, &mut |_| None), "| a | b\\|c |\n| --- | --- |\n| 1 |  |");
+        // Column alignment reads back from the delimiter row.
+        let src = "| a | b | c |\n| :--- | :---: | ---: |\n| 1 | 2 | 3 |";
+        let doc = parse_file(src, "t", None);
+        assert_eq!(write_file(&doc, "", None).trim_end(), "| a | b | c |\n| --- | :---: | ---: |\n| 1 | 2 | 3 |");
     }
 }

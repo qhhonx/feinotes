@@ -741,33 +741,12 @@ impl Workspace {
         true
     }
 
+    /// ⌘N / the 文件 menu: create the 快捷新建 type (a fixed one, or the last
+    /// one made from the 新建 menu) in the current place.
     pub fn new_doc(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if crate::in_shared_note() { return; }
-        if !self.save_before(cx, |w, window, cx| w.new_doc(window, cx)) {
-            return;
-        }
-        let file_before = self.store.track_file_changes();
         let parent = self.creation_parent();
-        match self.store.create().and_then(|(id, doc)| {
-            if let Some(parent) = &parent { self.store.set_parent(&id, Some(parent))?; }
-            Ok((id, doc))
-        }) {
-            Ok((id, _)) => {
-                self.search_open = false;
-                self.doc_info = None;
-                self.home.sort_menu = false;
-                self.entries = self.store.list();
-                self.sort();
-                self.search.update(cx, |s, cx| s.set_text("", cx));
-                self.open(&id, window, cx);
-                if let Some(ed) = &self.editor {
-                    ed.read(cx).focus(window);
-                }
-            }
-            Err(e) => self.status = SaveStatus::Failed(crate::localized_format!("新建失败：{}", "Could not create document: {}", crate::settings::diagnostic(&e.to_string()))),
-        }
-        self.remember_files(file_before, crate::settings::tr("新建文档", "New document"));
-        cx.notify();
+        self.create_doc(crate::settings::quick_new_markdown(), parent, window, cx);
     }
 
     /// Ask before 删除: a confirmation, then the 回收站.
@@ -1204,7 +1183,7 @@ impl Workspace {
         let docs = self
             .entries
             .iter()
-            .map(|e| crate::editor::links::DocRef { id: e.id.clone(), title: e.title.clone(), icon: e.icon.clone(), modified: e.meta.modified, opened: e.meta.opened })
+            .map(|e| crate::editor::links::DocRef { id: e.id.clone(), title: e.title.clone(), icon: e.icon.clone(), folder: e.meta.folder.is_some(), modified: e.meta.modified, opened: e.meta.opened })
             .collect();
         let backlinks = self
             .entries

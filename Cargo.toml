@@ -1,6 +1,6 @@
 [package]
 name = "quiet_md"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 description = "Native Markdown notes for macOS with optional iCloud sync and collaboration"
 homepage = "https://feinotes.app/"
@@ -34,7 +34,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 unicode-segmentation = "1.13.3"
 uuid = { version = "1.28.0", features = ["v4"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
 raw-window-handle = "0.6"
 rustc-hash = "2.1"
 katex-rs = { version = "0.3", default-features = false }

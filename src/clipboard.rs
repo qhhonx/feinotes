@@ -1,8 +1,15 @@
 //! The system pasteboard beyond what GPUI reads.
 
-/// Devtools stand-in for the pasteboard, (HTML, plain text): scripted tests
+/// Devtools stand-in for the pasteboard: scripted tests
 /// must not touch the shared system clipboard.
-pub static FAKE_CLIPBOARD: std::sync::Mutex<Option<(Option<String>, String)>> = std::sync::Mutex::new(None);
+#[derive(Clone, Default)]
+pub struct FakeClipboard {
+    pub html: Option<String>,
+    pub text: String,
+    pub images: Vec<gpui::Image>,
+}
+
+pub static FAKE_CLIPBOARD: std::sync::Mutex<Option<FakeClipboard>> = std::sync::Mutex::new(None);
 
 /// The `public.html` flavor of the general pasteboard (gpui reads only
 /// plain text and images).

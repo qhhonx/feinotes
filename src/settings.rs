@@ -66,6 +66,12 @@ pub fn english() -> bool { ENGLISH.load(Ordering::Relaxed) }
 /// 外观 › 动画 is 丰富: folding, the selection and hover animate too (else they answer at once).
 pub fn motion_high() -> bool { MOTION_HIGH.load(Ordering::Relaxed) }
 pub fn tr(zh: &'static str, en: &'static str) -> &'static str { if english() { en } else { zh } }
+/// Whether ⌘N should make a Markdown file: the preferred 快捷新建 type, or the
+/// last one created from the 新建 menu when no fixed type is set.
+pub fn quick_new_markdown() -> bool {
+    let p = prefs();
+    match p.new_default.as_str() { "markdown" => true, "doc" => false, _ => p.last_new == "markdown" }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -87,6 +93,10 @@ pub struct Preferences {
     pub seen_version: String,
     /// 动画: "high" animates folding, the selection and hover; empty keeps them instant.
     pub motion: String,
+    /// 快捷新建 (⌘N) 的默认类型: "doc", "markdown", or empty to repeat the last one.
+    pub new_default: String,
+    /// The type last created from the 新建 menu: "doc" or "markdown" (empty before any).
+    pub last_new: String,
 }
 
 /// Pick the first supported system language; saved preferences still win.
@@ -101,7 +111,7 @@ fn system_english() -> bool {
 }
 
 impl Default for Preferences {
-    fn default() -> Self { Preferences { theme: String::new(), feishu: true, english: system_english(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new() } }
+    fn default() -> Self { Preferences { theme: String::new(), feishu: true, english: system_english(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new() } }
 }
 
 impl Preferences {
@@ -751,6 +761,11 @@ impl Workspace {
                     tr("关闭后，网络图片显示为占位，可点击单独加载。", "When off, web images show a placeholder you can click to load.")
                 } else { tr("关闭后不联网，网络图片显示为占位，点击单独加载。", "When off the app stays offline; web images show a placeholder you can click to load.") }),
                     switch("pref-remote", p.remote_images).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.remote_images = !p.remote_images, cx)))).into_any_element(),
+                row(tr("快捷新建默认类型", "Quick new (⌘N)"), desc(tr("⌘N 新建时创建的类型；「记住上次」沿用你上次从新建菜单选的类型。", "What ⌘N creates; “Last used” repeats the type you last picked from the New menu.")), {
+                    let sel = match p.new_default.as_str() { "doc" => 1, "markdown" => 2, _ => 0 };
+                    segmented("quick-new", &[tr("记住上次", "Last used"), tr("文档", "Document"), "Markdown"], sel,
+                        |w, i, cx| w.set_pref(|p| p.new_default = ["", "doc", "markdown"][i].into(), cx), cx)
+                }).into_any_element(),
         ];
         if !crate::FEI_NOTES {
             rows.push(row(tr("自动检查更新", "Check for updates automatically"), desc(tr("只读取一份版本信息，不发送任何数据；新版本由你决定何时下载安装。", "Reads a version file and sends nothing about you; you decide when to download and install.")),

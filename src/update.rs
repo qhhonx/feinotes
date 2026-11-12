@@ -8,7 +8,7 @@
 //! and on macOS the unpacked app must also carry this copy's code signature
 //! team. 重启以更新 quits through the usual save path; a detached helper waits
 //! for this process to exit, then swaps the bundle (macOS) or runs the Inno
-//! installer silently (Windows), and starts the new version.
+//! installer silently (Windows), or replaces the AppImage (Linux), then restarts.
 //!
 //! `QUIET_MD_UPDATE_URL` points the check at another folder (testing; it also
 //! enables the check in unsigned builds). The public key can be replaced at
@@ -41,7 +41,7 @@ pub enum State {
     Current,
     Available(Manifest),
     Downloading(Manifest),
-    /// Verified and unpacked: the new `.app` (macOS) or the installer (Windows).
+    /// Verified package: the new `.app`, Windows installer, or Linux AppImage.
     Ready(Manifest, PathBuf),
     /// The helper waits for this process to exit (a failed save may have kept it open).
     Installing(Manifest),
@@ -162,11 +162,14 @@ fn platform() -> Option<&'static str> {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) { Some("macos-arm64") }
     else if cfg!(all(target_os = "macos", target_arch = "x86_64")) { Some("macos-x86_64") }
     else if cfg!(all(target_os = "windows", target_arch = "x86_64")) { Some("windows-x64") }
+    else if cfg!(all(target_os = "linux", target_arch = "x86_64")) { Some("linux-x86_64") }
     else { None }
 }
 
 fn package_name(version: &str, platform: &str) -> String {
-    if platform.starts_with("windows") { format!("quiet-md-{version}-{platform}-setup.exe") } else { format!("quiet-md-{version}-{platform}.zip") }
+    if platform.starts_with("windows") { format!("quiet-md-{version}-{platform}-setup.exe") }
+    else if platform == "linux-x86_64" { format!("quiet-md-{version}-x86_64.AppImage") }
+    else { format!("quiet-md-{version}-{platform}.zip") }
 }
 
 fn override_url() -> Option<String> { std::env::var("QUIET_MD_UPDATE_URL").ok().filter(|u| !u.is_empty()) }
@@ -194,7 +197,9 @@ fn supported() -> bool {
     { app_bundle().is_some_and(|app| team(&app).is_some()) }
     #[cfg(target_os = "windows")]
     { std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("unins000.exe").is_file())).unwrap_or(false) }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    { appimage().is_some() }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     { false }
 }
 
@@ -227,7 +232,9 @@ fn signed(bytes: &[u8], signature: &str, name: &str, key: &minisign_verify::Publ
 
 fn updates_dir() -> PathBuf {
     let base = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
-    if cfg!(target_os = "macos") { base.join("com.s1dashu.quietmd").join("updates") } else { base.join("quiet.md").join("updates") }
+    if cfg!(target_os = "macos") { base.join("com.s1dashu.quietmd").join("updates") }
+    else if cfg!(target_os = "linux") { base.join("quiet.md").join("updates").join(std::process::id().to_string()) }
+    else { base.join("quiet.md").join("updates") }
 }
 
 /// Downloads, checks the signature and (macOS) unpacks; the path to install.
@@ -361,7 +368,72 @@ fn start_installer(setup: &Path) -> Result<(), String> {
         .spawn().map(drop).map_err(|e| e.to_string())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// The runtime supplies APPIMAGE and APPDIR; extracted tarballs and distro packages
+/// remain managed by their installer. Never replace the executable inside a mount.
+#[cfg(target_os = "linux")]
+fn appimage() -> Option<PathBuf> {
+    let image = PathBuf::from(std::env::var_os("APPIMAGE")?).canonicalize().ok()?;
+    let appdir = PathBuf::from(std::env::var_os("APPDIR")?).canonicalize().ok()?;
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let payload = appdir.join("usr/bin/quiet_md").canonicalize().ok()?;
+    (image.is_file() && exe == payload && !image.starts_with(&appdir)).then_some(image)
+}
+
+#[cfg(target_os = "linux")]
+const SWAP_APPIMAGE: &str = r#"pid=$1 app=$2 stage=$3 identity=$4
+shift 4
+trap '' HUP
+while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+# Another running copy may have updated the same file while we waited.
+if [ "$(stat -Lc '%d:%i' -- "$app")" != "$identity" ]; then rm -rf -- "$stage"; exit 0; fi
+if ! mv -f -- "$stage/new.AppImage" "$app"; then
+  rm -rf -- "$stage"
+  exec "$app" "$@"
+fi
+"$app" "$@" &
+child=$!
+sleep 2
+if ! kill -0 "$child" 2>/dev/null; then
+  if ! wait "$child"; then
+    # Only restore our own replacement, never overwrite a subsequent update.
+    if [ "$(stat -Lc '%d:%i' -- "$app")" = "$(stat -Lc '%d:%i' -- "$stage/installed.AppImage")" ]; then
+      mv -f -- "$stage/previous.AppImage" "$app" || exit 1
+      "$app" "$@" &
+    fi
+  fi
+fi
+rm -rf -- "$stage""#;
+
+#[cfg(target_os = "linux")]
+fn start_installer(new: &Path) -> Result<(), String> {
+    use std::os::unix::{fs::{MetadataExt, PermissionsExt}, process::CommandExt};
+    let app = appimage().ok_or_else(|| crate::settings::tr("请使用 AppImage 版本更新", "Use the AppImage edition to update in the app").to_string())?;
+    let parent = app.parent().ok_or("parent")?;
+    let metadata = std::fs::metadata(&app).map_err(|e| e.to_string())?;
+    let identity = format!("{}:{}", metadata.dev(), metadata.ino());
+    let stage = parent.join(format!(".quiet-md-update-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&stage).map_err(|e| crate::localized_format!("无法在 {} 准备更新，请确认目录可写：{}", "Could not prepare the update in {}. Check directory permissions: {}", parent.display(), e))?;
+    let result = (|| -> Result<(), String> {
+        std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        // Stage on the destination filesystem for an atomic rename after quitting.
+        let staged = stage.join("new.AppImage");
+        std::fs::copy(new, &staged).map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+        std::fs::File::open(&staged).and_then(|f| f.sync_all()).map_err(|e| e.to_string())?;
+        std::fs::hard_link(&app, stage.join("previous.AppImage")).map_err(|e| e.to_string())?;
+        std::fs::hard_link(&staged, stage.join("installed.AppImage")).map_err(|e| e.to_string())?;
+        Command::new("/bin/sh").arg("-c").arg(SWAP_APPIMAGE).arg("sh")
+            .arg(std::process::id().to_string()).arg(&app).arg(&stage).arg(identity).args(std::env::args_os().skip(1))
+            .env_remove("APPIMAGE").env_remove("APPDIR").env_remove("ARGV0").env_remove("OWD").env_remove("XLOCALEDIR")
+            .current_dir(parent).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .process_group(0).spawn().map(drop).map_err(|e| e.to_string())
+    })();
+    if result.is_err() { let _ = std::fs::remove_dir_all(&stage); }
+    else { let _ = std::fs::remove_dir_all(updates_dir()); }
+    result
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn start_installer(_: &Path) -> Result<(), String> { Err("unsupported".into()) }
 
 #[cfg(test)]
@@ -423,5 +495,69 @@ FuE4L1zQnqL1nA/5xffpEtZyK2ca882Q1joA5X11poZ1xezdAlEMfn/36MJc5C60clQFec4vQf66MoxP
         let windows = manifest("0.2.0", "https://download.quiet.md/v0.2.0/quiet-md-0.2.0-windows-x64-setup.exe", "quiet-md-0.2.0-windows-x64-setup.exe");
         assert_eq!(validate(&windows, "windows-x64", false), Ok(()));
         assert!(validate(&windows, "macos-arm64", false).is_err());
+        let linux = manifest("0.2.0", "https://download.quiet.md/v0.2.0/quiet-md-0.2.0-x86_64.AppImage", "quiet-md-0.2.0-x86_64.AppImage");
+        assert_eq!(validate(&linux, "linux-x86_64", false), Ok(()));
+        assert!(validate(&linux, "windows-x64", false).is_err());
+        let wrong_linux = manifest("0.2.0", "https://download.quiet.md/v0.2.0/quiet-md-0.2.0-linux-x86_64.zip", "quiet-md-0.2.0-linux-x86_64.zip");
+        assert!(validate(&wrong_linux, "linux-x86_64", false).is_err());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::SWAP_APPIMAGE;
+    use std::{path::Path, process::{Command, Stdio}, time::Duration};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    #[test]
+    fn appimage_swap_waits_preserves_arguments_and_recovers() {
+        for case in ["success", "failed-launch", "concurrent", "missing-stage"] {
+            let root = std::env::temp_dir().join(format!("quiet update 中文 {}", uuid::Uuid::new_v4()));
+            let stage = root.join("stage with spaces");
+            std::fs::create_dir_all(&stage).unwrap();
+            let app = root.join("quiet $name.AppImage");
+            let log = root.join("launch.log");
+            let script = |name: &str, code: i32| format!("#!/bin/sh\nprintf '%s\\n' '{name}' \"$1\" >> \"$QUIET_UPDATE_TEST_LOG\"\nexit {code}\n");
+            let write = |path: &Path, text: &str| {
+                std::fs::write(path, text).unwrap();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            };
+            let old = script("old", 0);
+            write(&app, &old);
+            let meta = std::fs::metadata(&app).unwrap();
+            let identity = format!("{}:{}", meta.dev(), meta.ino());
+            let new = script("new", if case == "failed-launch" { 1 } else { 0 });
+            write(&stage.join("new.AppImage"), &new);
+            std::fs::hard_link(&app, stage.join("previous.AppImage")).unwrap();
+            std::fs::hard_link(stage.join("new.AppImage"), stage.join("installed.AppImage")).unwrap();
+            if case == "missing-stage" { std::fs::remove_file(stage.join("new.AppImage")).unwrap(); }
+            let mut running = Command::new("sleep").arg("30").spawn().unwrap();
+            let argument = "notes with spaces $(touch should-not-exist) 中文";
+            let mut helper = Command::new("/bin/sh").arg("-c").arg(SWAP_APPIMAGE).arg("sh")
+                .arg(running.id().to_string()).arg(&app).arg(&stage).arg(identity).arg(argument)
+                .env("QUIET_UPDATE_TEST_LOG", &log).stderr(Stdio::null()).spawn().unwrap();
+            std::thread::sleep(Duration::from_millis(250));
+            assert_eq!(std::fs::read_to_string(&app).unwrap(), old);
+            assert!(!log.exists());
+            if case == "concurrent" {
+                write(&root.join("other.AppImage"), "another updater");
+                std::fs::rename(root.join("other.AppImage"), &app).unwrap();
+            }
+            running.kill().unwrap();
+            running.wait().unwrap();
+            assert!(helper.wait().unwrap().success());
+            // Rollback launches the previous image asynchronously.
+            for _ in 0..100 {
+                if log.exists() && (case != "failed-launch" || std::fs::read_to_string(&log).unwrap().contains("old")) { break; }
+                if case == "concurrent" { break; }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let expected: &str = match case { "success" => &new, "concurrent" => "another updater", _ => &old };
+            assert_eq!(std::fs::read_to_string(&app).unwrap(), expected);
+            if case == "concurrent" { assert!(!log.exists()); }
+            else { assert!(std::fs::read_to_string(&log).unwrap().contains(argument)); }
+            assert!(!stage.exists());
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 }

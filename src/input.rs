@@ -7,17 +7,19 @@ use crate::theme::Theme;
 use gpui::*;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::{cell::Cell, rc::Rc};
 use unicode_segmentation::UnicodeSegmentation;
 
 actions!(
     field,
-    [Backspace, Delete, Left, Right, SelectLeft, SelectRight, Home, End, SelectAll, Copy, Cut, Paste, Submit, ShiftSubmit, Cancel, Up, Down, Swallow, Tab, ShiftTab]
+    [Backspace, DeleteToHome, Delete, Left, Right, SelectLeft, SelectRight, Home, End, SelectAll, Copy, Cut, Paste, Submit, ShiftSubmit, Cancel, Up, Down, Swallow, Tab, ShiftTab]
 );
 
 pub fn bind_keys(cx: &mut App) {
     let c = Some("TextField");
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, c),
+        KeyBinding::new("cmd-backspace", DeleteToHome, c),
         KeyBinding::new("delete", Delete, c),
         KeyBinding::new("left", Left, c),
         KeyBinding::new("right", Right, c),
@@ -97,6 +99,8 @@ pub struct TextField {
     selecting: bool,
     /// Typing hides the mouse pointer until it moves (see the editor's).
     pointer_hidden: bool,
+    /// Horizontal scroll of a single-line field, shared with its text element.
+    scroll: Rc<Cell<Pixels>>,
 }
 
 impl EventEmitter<TextFieldEvent> for TextField {}
@@ -142,6 +146,7 @@ impl TextField {
             hide_caret: false,
             selecting: false,
             pointer_hidden: false,
+            scroll: Rc::new(Cell::new(px(0.))),
         }
     }
 
@@ -225,6 +230,16 @@ impl TextField {
         if self.sel.is_empty() {
             let p = self.prev(self.cursor());
             self.select_to(p, cx);
+        }
+        self.replace(self.sel.clone(), "", cx);
+    }
+
+    /// ⌘Backspace: delete from the caret back to the start of the line, matching
+    /// macOS. Single-line fields (名字、搜索) have one line, so it clears the prefix.
+    fn delete_to_home(&mut self, _: &DeleteToHome, _: &mut Window, cx: &mut Context<Self>) {
+        if self.sel.is_empty() {
+            let start = self.text[..self.cursor()].rfind('\n').map_or(0, |i| i + 1);
+            self.select_to(start, cx);
         }
         self.replace(self.sel.clone(), "", cx);
     }
@@ -525,6 +540,7 @@ impl Render for TextField {
             found: vec![],
             eq_counter: 0,
             button_edit: None,
+            scroll: Some(self.scroll.clone()),
         };
         let entity = cx.entity();
         let focus = self.focus.clone();
@@ -539,6 +555,7 @@ impl Render for TextField {
             .min_w_0()
             .overflow_hidden()
             .on_action(cx.listener(Self::backspace))
+            .on_action(cx.listener(Self::delete_to_home))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))

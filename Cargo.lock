@@ -1868,7 +1868,7 @@ dependencies = [
 
 [[package]]
 name = "fdl_core"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
@@ -4843,7 +4843,7 @@ dependencies = [
 
 [[package]]
 name = "quiet_md"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",

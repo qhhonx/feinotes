@@ -1,8 +1,9 @@
-// quiet.md 官网：public/ 下的静态页面，部署：npx wrangler@4 deploy（在 site/ 目录下）
+// quiet.md 官网已下线：改为跳转到 GitHub 仓库的 Worker。部署：npx wrangler@4 deploy（在 site/ 目录下）
+// 旧的静态站还留在 public/，日后要恢复官网时把 main 换回 assets 即可。
 {
   "name": "quiet-md-site",
   "compatibility_date": "2026-10-01",
-  "assets": { "directory": "./public" },
+  "main": "index.js",
   "workers_dev": false,
   "routes": [{ "pattern": "quiet.md", "custom_domain": true }]
 }

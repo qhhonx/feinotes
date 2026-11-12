@@ -288,6 +288,33 @@ impl Core {
         self.edit_cells(|c| c.valign = v.map(str::to_string));
     }
 
+    /// A Markdown table keeps one alignment per column: every text block in
+    /// the columns of the selected cells (or of the caret's cell) takes `a`.
+    pub fn table_align_columns(&mut self, a: Align) {
+        let (id, left, right) = match self.cell_range() {
+            Some((id, r)) => (id, r.left, r.right),
+            None => match self.cell_of(self.sel.head.block) {
+                Some((id, _, c)) => (id, c, c),
+                None => return,
+            },
+        };
+        fn set(blocks: &mut [Block], a: Align) {
+            for b in blocks {
+                b.align = a;
+                set(&mut b.children, a);
+            }
+        }
+        self.edit_table(id, |t| {
+            for row in &mut t.rows {
+                for (c, cell) in row.iter_mut().enumerate() {
+                    if c <= right && c + cell.colspan.max(1) as usize > left {
+                        set(&mut cell.blocks, a);
+                    }
+                }
+            }
+        });
+    }
+
     /// Empties the selected cells (Backspace, ⌘X); the selection stays.
     pub fn table_clear_cells(&mut self) {
         let Some(s) = self.cell_sel else { return };

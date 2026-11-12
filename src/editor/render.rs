@@ -295,6 +295,7 @@ impl R<'_> {
             found: if self.ghost { vec![] } else { self.ed.find_hits(id) },
             eq_counter: self.eqnos.get(&id).copied().unwrap_or(0),
             button_edit: if self.ghost { None } else { self.ed.button_preview(id) },
+            scroll: None,
         }
     }
 

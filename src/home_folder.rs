@@ -118,9 +118,14 @@ fn seed(id: &str) -> u64 {
 
 /// A rounded rectangle turned by `rot` about its centre (card-local `c`, painted at `o`).
 fn rounded(o: Point<Pixels>, c: (f32, f32), w: f32, h: f32, r: f32, rot: f32) -> Option<Path<Pixels>> {
+    let mut pb = PathBuilder::fill();
+    append_rounded(&mut pb, o, c, w, h, r, rot);
+    pb.build().ok()
+}
+
+fn append_rounded(pb: &mut PathBuilder, o: Point<Pixels>, c: (f32, f32), w: f32, h: f32, r: f32, rot: f32) {
     let (s, k) = rot.sin_cos();
     let r = r.min(w / 2.).min(h / 2.);
-    let mut pb = PathBuilder::fill();
     let mut first = true;
     for (ox, oy, start) in [(w / 2. - r, -h / 2. + r, -90f32), (w / 2. - r, h / 2. - r, 0.), (-w / 2. + r, h / 2. - r, 90.), (-w / 2. + r, -h / 2. + r, 180.)] {
         for i in 0..=6 {
@@ -131,7 +136,6 @@ fn rounded(o: Point<Pixels>, c: (f32, f32), w: f32, h: f32, r: f32, rot: f32) ->
         }
     }
     pb.close();
-    pb.build().ok()
 }
 
 impl Paper {
@@ -159,12 +163,16 @@ impl Paper {
             if let Some(p) = rounded(o, self.at(pad + len / 2., 16.), len, 4., 2., self.rot) { window.paint_path(p, ca(craft::N900, 0.55)); }
             30.
         };
+        let mut pb = PathBuilder::fill();
+        let mut has_lines = false;
         while y < self.h - 14. {
             let full = self.w - 2. * pad;
             let len = if next() < 0.2 { full * (0.3 + 0.3 * next()) } else { full * (0.72 + 0.28 * next()) };
-            if let Some(p) = rounded(o, self.at(pad + len / 2., y), len, 3., 1.5, self.rot) { window.paint_path(p, ca(craft::N1000, 0.10)); }
+            append_rounded(&mut pb, o, self.at(pad + len / 2., y), len, 3., 1.5, self.rot);
+            has_lines = true;
             y += 8.5;
         }
+        if has_lines && let Ok(p) = pb.build() { window.paint_path(p, ca(craft::N1000, 0.10)); }
     }
 }
 

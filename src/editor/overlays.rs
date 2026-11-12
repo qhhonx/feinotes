@@ -1616,7 +1616,10 @@ impl Editor {
             (r.top, s.kind != CellSelKind::Range)
         };
         let (rect, table_top) = self.cell_sel_rect()?;
-        let w = TABLE_TB_W + if whole { 17. + 24. } else { 0. };
+        // A Markdown file keeps only a column's alignment, no colours or
+        // vertical alignment, so those are left out (as on the text toolbar).
+        let md = self.markdown;
+        let w = TABLE_TB_W + if whole { 17. + 24. } else { 0. } - if md { 24. + 17. + 8. + 44. } else { 0. };
         let viewport = self.list.viewport_bounds();
         let pane_left = viewport.left() + px(12.);
         let x = (rect.center().x - px(w / 2.)).max(pane_left);
@@ -1746,15 +1749,14 @@ impl Editor {
             .items_center()
             .gap(px(8.))
             .child(merge_btn)
-            .child(sep())
-            .child(
+            .when(!md, |d| d.child(sep()).child(
                 btn("ttb-bg")
                     .w(px(24.))
                     .when(matches!(dropdown, Some(Menu::CellBg)), |d| d.bg(Theme::fill_hover_strong()))
                     .when(!matches!(dropdown, Some(Menu::CellBg)), |d| d.tip_above(crate::settings::text("单元格背景颜色"), None))
                     .child(icon("palette", 18., Theme::icon()))
                     .on_mouse_down(MouseButton::Left, toggle(Menu::CellBg)),
-            )
+            ))
             .child(sep())
             .child(
                 btn("ttb-turn")
@@ -1783,7 +1785,7 @@ impl Editor {
             .child(mark_btn("ttb-i", "italic", crate::settings::text("斜体"), crate::shortcuts::hint("editor::Italic", "⌘ + I"), Some(crate::settings::text("*文本* 空格")), Mark::Italic, |m| m.italic))
             .child(mark_btn("ttb-u", "underline", crate::settings::text("下划线"), crate::shortcuts::hint("editor::Underline", "⌘ + U"), Some(crate::settings::text("~文本~ 空格")), Mark::Underline, |m| m.underline))
             .child(mark_btn("ttb-code", "code", crate::settings::text("代码"), crate::shortcuts::hint("editor::InlineCode", "⌘ + Control + C"), Some(crate::settings::text("`代码`")), Mark::Code, |m| m.code))
-            .child(self.color_split("ttb-color", matches!(dropdown, Some(Menu::Color)), cx));
+            .when(!md, |d| d.child(self.color_split("ttb-color", matches!(dropdown, Some(Menu::Color)), cx)));
         if whole {
             let label = if s.kind == CellSelKind::Cols { crate::settings::text("删除列") } else { crate::settings::text("删除行") };
             bar = bar.child(sep()).child(
@@ -1811,7 +1813,7 @@ impl Editor {
         }
 
         let x_bg = 8. + 24. + 17.;
-        let x_turn = x_bg + 24. + 17.;
+        let x_turn = if md { x_bg } else { x_bg + 24. + 17. };
         let x_align = x_turn + 44. + 17.;
         let x_color = x_align + 44. + 17. + 5. * 32.;
         let drop_el: Option<AnyElement> = match dropdown {
@@ -1876,10 +1878,11 @@ impl Editor {
                     .child(h("tta-l", "align-left", crate::settings::text("左对齐"), crate::shortcuts::hint("editor::AlignLeft", "⌘ + Shift + L"), Align::Left))
                     .child(h("tta-c", "align-center", crate::settings::text("居中对齐"), crate::shortcuts::hint("editor::AlignCenter", "⌘ + Shift + E"), Align::Center))
                     .child(h("tta-r", "align-right", crate::settings::text("右对齐"), crate::shortcuts::hint("editor::AlignRight", "⌘ + Shift + R"), Align::Right))
-                    .child(separator_h())
-                    .child(v("tta-t", "valign-top", crate::settings::text("顶部对齐"), None))
-                    .child(v("tta-m", "valign-middle", crate::settings::text("垂直居中"), Some("middle")))
-                    .child(v("tta-b", "valign-bottom", crate::settings::text("底部对齐"), Some("bottom")));
+                    .when(!md, |d| d
+                        .child(separator_h())
+                        .child(v("tta-t", "valign-top", crate::settings::text("顶部对齐"), None))
+                        .child(v("tta-m", "valign-middle", crate::settings::text("垂直居中"), Some("middle")))
+                        .child(v("tta-b", "valign-bottom", crate::settings::text("底部对齐"), Some("bottom"))));
                 Some(drop(Menu::Align, x_align).child(list).into_any_element())
             }
             Some(Menu::Color) => Some(drop(Menu::Color, x_color).child(self.color_panel(None, cx)).into_any_element()),

@@ -3801,6 +3801,38 @@ mod tests {
     }
 
     #[test]
+    fn paste_images_at_selection_undo_and_round_trip() {
+        for (body, range, before, after) in [
+            ("前后", 3..3, "前", "后"),
+            ("前删除后", 3..9, "前", "后"),
+            ("", 0..0, "", ""),
+        ] {
+            let mut c = doc(&format!("<title>T</title><p>{body}</p>"));
+            let p = id(&c, 1);
+            c.sel = Selection { anchor: Pos::new(p, range.start), head: Pos::new(p, range.end) };
+            let original = xml(&c);
+            let selection = c.sel;
+            let images = crate::docxml::parse("<title></title><img src=\"a.png\"/><img src=\"b.png\"/><p></p>").unwrap();
+            c.paste_blocks(images.blocks);
+            let blocks = &c.doc.blocks;
+            let first = usize::from(!before.is_empty());
+            assert_eq!(blocks.len(), first + 3);
+            if first > 0 { assert_eq!(blocks[0].text.text, before); }
+            assert!(matches!(&blocks[first].kind, BlockKind::Image { src, .. } if src == "a.png"));
+            assert!(matches!(&blocks[first + 1].kind, BlockKind::Image { src, .. } if src == "b.png"));
+            assert_eq!(blocks[first + 2].text.text, after);
+            assert_eq!(c.sel, Selection::caret(Pos::new(blocks[first + 2].id, 0)));
+            let pasted = xml(&c);
+            assert_eq!(xml(&doc(&pasted)), pasted);
+            assert!(c.undo());
+            assert_eq!(xml(&c), original);
+            assert_eq!(c.sel, selection);
+            assert!(c.redo());
+            assert_eq!(xml(&c), pasted);
+        }
+    }
+
+    #[test]
     fn paste_blocks_into_code_flattens() {
         let mut c = doc("<title>T</title><pre lang=\"python\"><code></code></pre>");
         c.sel = Selection::caret(Pos::new(id(&c, 1), 0));
