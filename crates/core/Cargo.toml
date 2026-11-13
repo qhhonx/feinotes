@@ -11,6 +11,7 @@ authors = ["s1dashu"]
 
 [dependencies]
 anyhow = "1.0.104"
+base64 = "0.22"
 dirs = "7.0.0"
 quick-xml = "0.37"
 serde = { version = "1.0.229", features = ["derive"] }

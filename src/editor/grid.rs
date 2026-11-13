@@ -145,7 +145,7 @@ impl Editor {
         let Some(d) = self.col_drag.take() else { return };
         self.core.set_column_ratios(d.grid, &d.live);
         if self.core.dirty {
-            self.changed(window, cx);
+            self.changed_preserving_viewport(window, cx);
         }
         cx.notify();
     }

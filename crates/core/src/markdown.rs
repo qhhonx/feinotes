@@ -217,9 +217,11 @@ impl Writer<'_> {
     }
 
     /// The link for an image: remote ones stay remote, local files get a
-    /// copy in the assets folder (same name, numbered on clashes).
+    /// copy in the assets folder (same name, numbered on clashes). An inline
+    /// base64 image that couldn't be written out (too big, not a picture)
+    /// stays inline, so saving never drops it (#133).
     fn image(&mut self, src: &str, dir: &str) -> String {
-        if src.starts_with("http://") || src.starts_with("https://") {
+        if src.starts_with("http://") || src.starts_with("https://") || src.starts_with("data:image/") {
             return src.to_string();
         }
         let Some(path) = crate::store::export_path_in(self.opts.library_root.unwrap_or(&crate::store::Store::root_dir()), src) else { self.missing += 1; return String::new() };

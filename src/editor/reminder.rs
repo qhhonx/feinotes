@@ -390,7 +390,7 @@ impl Editor {
         let r = f(&old);
         if r != old {
             self.core.set_reminder(at_, &r);
-            self.changed(window, cx);
+            self.changed_preserving_viewport(window, cx);
         }
         self.sync_reminder_time(&r, cx);
         cx.notify();

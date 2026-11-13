@@ -10,8 +10,12 @@
 //! for this process to exit, then swaps the bundle (macOS) or runs the Inno
 //! installer silently (Windows), or replaces the AppImage (Linux), then restarts.
 //!
+//! The manifest itself is not signed, so what it may say is narrowed (#41): the
+//! package must come from download.quiet.md over HTTPS (redirects included), and
+//! its signature's trusted comment must name that package, version and all.
+//!
 //! `QUIET_MD_UPDATE_URL` points the check at another folder (testing; it also
-//! enables the check in unsigned builds). The public key can be replaced at
+//! enables the check in unsigned builds, and allows http and any host). The public key can be replaced at
 //! build time with `QUIET_MD_UPDATE_PUBKEY`.
 
 use gpui::*;
@@ -21,6 +25,9 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 const BASE: &str = "https://download.quiet.md/latest";
+/// Where every package lives (`v<version>/<name>`); a manifest naming any
+/// other host is refused.
+const PACKAGES: &str = "https://download.quiet.md/";
 const KEY: &str = match option_env!("QUIET_MD_UPDATE_PUBKEY") { Some(k) => k, None => include_str!("../packaging/update-key.pub") };
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -220,7 +227,7 @@ fn validate(m: &Manifest, platform: &str, testing: bool) -> Result<(), String> {
     let name = package_name(&m.version, platform);
     let bad = |what: &str| Err(format!("{}: {what}", crate::settings::tr("更新信息无效", "Invalid update information")));
     if m.version.split('.').any(|p| p.parse::<u64>().is_err()) { return bad("version") }
-    if !(m.url.starts_with("https://") || testing) || !m.url.ends_with(&format!("/{name}")) { return bad("url") }
+    if !(m.url.starts_with(PACKAGES) || testing) || !m.url.ends_with(&format!("/{name}")) { return bad("url") }
     if m.size == 0 || m.size > 1 << 30 { return bad("size") }
     match minisign_verify::Signature::decode(&m.signature) { Ok(sig) if sig.trusted_comment() == name => Ok(()), _ => bad("signature") }
 }
@@ -244,6 +251,9 @@ fn fetch_package(m: &Manifest) -> Result<PathBuf, String> {
     let dir = updates_dir();
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // Only this user may swap the package between its check and its install.
+    #[cfg(unix)]
+    { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)); }
     let file = dir.join(&name);
     let part = dir.join(format!("{name}.part"));
     // curl gets no path: a Windows curl.exe reads its arguments in the ANSI
@@ -277,7 +287,9 @@ fn curl(args: &[&str]) -> Result<Vec<u8>, String> { curl_to(args, Stdio::piped()
 
 /// `stdout`: piped (returned) or a file to download into.
 fn curl_to(args: &[&str], stdout: Stdio) -> Result<Vec<u8>, String> {
-    let out = command("curl").args(["-fsSL", "--proto", "=https,http", "--connect-timeout", "15"]).args(args)
+    // HTTPS only, redirects too; a test server (QUIET_MD_UPDATE_URL) may be plain http.
+    let proto = if override_url().is_some() { "=https,http" } else { "=https" };
+    let out = command("curl").args(["-fsSL", "--proto", proto, "--proto-redir", proto, "--connect-timeout", "15"]).args(args)
         .stdin(Stdio::null()).stdout(stdout).stderr(Stdio::piped()).output()
         .map_err(|e| format!("curl: {e}"))?;
     if out.status.success() { return Ok(out.stdout) }
@@ -492,6 +504,10 @@ FuE4L1zQnqL1nA/5xffpEtZyK2ca882Q1joA5X11poZ1xezdAlEMfn/36MJc5C60clQFec4vQf66MoxP
         let http = manifest("0.2.0", "http://download.quiet.md/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", "quiet-md-0.2.0-macos-arm64.zip");
         assert!(validate(&http, "macos-arm64", false).is_err());
         assert_eq!(validate(&http, "macos-arm64", true), Ok(()));
+        // A genuine signature does not make another host acceptable.
+        for url in ["https://evil.example/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", "https://download.quiet.md.evil.example/quiet-md-0.2.0-macos-arm64.zip", "https://evil.example/download.quiet.md/quiet-md-0.2.0-macos-arm64.zip"] {
+            assert!(validate(&manifest("0.2.0", url, "quiet-md-0.2.0-macos-arm64.zip"), "macos-arm64", false).is_err(), "{url}");
+        }
         let windows = manifest("0.2.0", "https://download.quiet.md/v0.2.0/quiet-md-0.2.0-windows-x64-setup.exe", "quiet-md-0.2.0-windows-x64-setup.exe");
         assert_eq!(validate(&windows, "windows-x64", false), Ok(()));
         assert!(validate(&windows, "macos-arm64", false).is_err());

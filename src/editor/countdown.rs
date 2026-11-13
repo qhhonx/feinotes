@@ -433,7 +433,7 @@ impl Editor {
         if let Some(BlockKind::Countdown(c)) = self.core.block_mut(id).map(|b| &mut b.kind) {
             c.color = color.to_string();
         }
-        self.changed(window, cx);
+        self.changed_preserving_viewport(window, cx);
     }
 
     /// Redraws on-screen countdowns when a digit changes, and shows
@@ -560,7 +560,7 @@ impl Editor {
         }
         self.cd.last.remove(&id);
         self.close_countdown(window, cx);
-        self.changed(window, cx);
+        self.changed_preserving_viewport(window, cx);
     }
 
     fn cd_open_drop(&mut self, drop: Drop, cx: &mut Context<Self>) {

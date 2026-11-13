@@ -7,7 +7,7 @@ Fei Notes is a fork of [Quiet.md](https://github.com/s1dashu/quiet-md). The publ
 - Root AGENTS.md, CLAUDE.md and CONTRIBUTING.md retain the complete upstream text with only an appended Fei Notes reference.
 - docs/THEMES.md retains the complete upstream guide and links to the separate Fei Notes extension reference.
 - README.ja.md retains the complete upstream README with a notice identifying its scope and upstream download links.
-- LICENSE, docs/ARCHITECTURE.md, docs/FORMAT.md and vendor/PATCHES.md remain byte-for-byte unchanged from this baseline.
+- LICENSE and docs/FORMAT.md remain byte-for-byte unchanged from this baseline. docs/ARCHITECTURE.md and vendor/PATCHES.md track the upstream updates recorded below.
 - tools/harness/README.md keeps the upstream guide and adds one implemented test environment variable.
 
 ## Product-specific documentation
@@ -18,6 +18,11 @@ Fei Notes is a fork of [Quiet.md](https://github.com/s1dashu/quiet-md). The publ
 - THIRD_PARTY.md retains the upstream dependency inventory and updates asset notices to describe the actual Fei Notes bundle. Do not restore removed asset attributions as if those assets were still shipped. LICENSES.md maps the applicable file-level licenses.
 
 Keep product additions separate when importing upstream changes. Preserve original notices and documentation unless an implemented source change requires an accurate update. Record those updates and their scope instead of replacing unrelated upstream content.
+
+## Imported upstream updates
+
+- 2026-11-12, through `a6a188bd315076fff83dca8f027fdbc67a72eab6`: imported upstream clipboard, table, creation-menu and rendering changes. `vendor/PATCHES.md` includes upstream's macOS clipboard patch record.
+- 2026-11-13, through `7ead2356ef2c82609bdae9ad084b26dbd877e65d`: imported reading positions, literal paste, interface preferences and pointer/scroll fixes. `docs/ARCHITECTURE.md` now preserves upstream's distinction between caret reveal and viewport preservation. Fei Notes keeps its shared-note access checks, responsive settings rows, cloud/release panels and Notes theme tokens. Incoming cloud documents clear the local wrapped-row caret hint; the new base64-image test initializes the product's table identity extension through `Default`. Inline Markdown images create the assets directory on first use, including in a fresh library.
 
 ## Immutable upstream references
 

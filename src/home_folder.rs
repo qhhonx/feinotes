@@ -250,14 +250,35 @@ fn glass(o: Point<Pixels>, p: &Pose, window: &mut Window) {
 
 impl Workspace {
     fn folder_papers(&self, id: &str, front: Option<&String>) -> (Vec<Entry>, usize) {
-        let mut kids: Vec<Entry> = self.entries.iter().filter(|e| e.meta.parent.as_deref() == Some(id)).cloned().collect();
-        let n = kids.len();
+        let n = self.entries.iter().filter(|e| e.meta.parent.as_deref() == Some(id)).count();
+        // Papers stand for documents. A folder drawn as a paper reads as a note
+        // with the folder's name on it, so only documents are painted — but a
+        // folder usually holds folders for a while before a document appears,
+        // and its documents usually sit deeper, so look all the way down and
+        // paint the newest ones (#123).
+        let mut kids: Vec<Entry> = vec![];
+        self.documents_below(id, &mut kids, 0);
         kids.sort_by(|a, b| {
             let lead = |e: &Entry| front.is_some_and(|f| *f == e.id);
             lead(b).cmp(&lead(a)).then(b.meta.opened.max(b.meta.modified).cmp(&a.meta.opened.max(a.meta.modified)))
         });
         kids.truncate(PAPERS);
         (kids, n)
+    }
+
+    /// Every document anywhere under `id`, newest first once sorted by the caller.
+    fn documents_below(&self, id: &str, out: &mut Vec<Entry>, depth: usize) {
+        // A folder that contains itself would otherwise recurse forever.
+        if depth > 32 {
+            return;
+        }
+        for e in self.entries.iter().filter(|e| e.meta.parent.as_deref() == Some(id)) {
+            if e.meta.folder.is_some() {
+                self.documents_below(&e.id, out, depth + 1);
+            } else {
+                out.push(e.clone());
+            }
+        }
     }
 
     pub(crate) fn render_folder_card(&mut self, e: &Entry, card_h: f32, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

@@ -304,9 +304,7 @@ impl Editor {
         self.tables.scrolled = None;
         match d {
             Drag::Resize { table, col, live, .. } if self.core.table_set_width(table, col, live) => {
-                self.changed(window, cx);
-                // Resizing leaves the caret where it was, possibly off screen.
-                self.autoscroll = false;
+                self.changed_preserving_viewport(window, cx);
             }
             Drag::Move { started: true, drop, .. } => {
                 self.toolbar_hidden = false;

@@ -2,6 +2,7 @@
 //! reading and writing, the editing core with undo, the library on disk,
 //! and Markdown / HTML import plus Markdown export.
 
+pub mod data_images;
 pub mod docxml;
 pub mod editor;
 pub mod emoji;

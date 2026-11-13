@@ -68,11 +68,46 @@ impl TextLayout {
 
     /// Caret position (top-left of the caret) relative to window.
     pub fn position_for(&self, index: usize) -> Point<Pixels> {
-        let ri = self.row_for(index);
+        self.position_in_row(self.row_for(index), index)
+    }
+
+    /// Caret position at a wrap boundary, drawn at the end of the row above
+    /// instead of the start of the row below.
+    pub fn position_at_row_end(&self, index: usize) -> Point<Pixels> {
+        self.position_in_row(self.row_ending_at(index).unwrap_or_else(|| self.row_for(index)), index)
+    }
+
+    fn position_in_row(&self, ri: usize, index: usize) -> Point<Pixels> {
         let Some(r) = self.rows.get(ri) else { return self.bounds.origin };
         let (start, line) = &self.lines[r.hard];
         let x = line.unwrapped_layout.x_for_index(index.saturating_sub(*start)) - r.x0 + r.align_dx;
         point(self.bounds.left() + x, self.bounds.top() + r.y + r.base_dy)
+    }
+
+    /// Row `ri` is followed by another row of the same hard line.
+    pub fn row_wraps(&self, ri: usize) -> bool {
+        matches!((self.rows.get(ri), self.rows.get(ri + 1)), (Some(r), Some(n)) if r.hard == n.hard)
+    }
+
+    /// The row that ends at `index`: a wrap boundary is the end of one row and
+    /// the start of the next, so the caret decides which row it is drawn in.
+    fn row_ending_at(&self, index: usize) -> Option<usize> {
+        (0..self.rows.len()).find(|&ri| self.row_wraps(ri) && self.rows[ri].range.end == index)
+    }
+
+    /// Row the caret is drawn in; `at_row_end` when it was placed at the end
+    /// of a wrapped row.
+    pub fn row_index_for_caret(&self, index: usize, at_row_end: bool) -> usize {
+        match at_row_end.then(|| self.row_ending_at(index)).flatten() {
+            Some(ri) => ri,
+            None => self.row_for(index),
+        }
+    }
+
+    /// `index` starts a wrapped row, so the caret may move to the end of the
+    /// row above instead.
+    pub fn starts_row(&self, index: usize) -> bool {
+        (1..self.rows.len()).any(|ri| self.rows[ri].range.start == index && self.rows[ri - 1].hard == self.rows[ri].hard)
     }
 
     /// The equation whose view contains a window-space point.
@@ -92,14 +127,16 @@ impl TextLayout {
         self.buttons.iter().find(|(i, _)| *i == ix).map(|(_, b)| *b)
     }
 
-    pub fn row_index_for(&self, index: usize) -> usize {
-        self.row_for(index)
-    }
-
     /// Closest text index for a window-space point.
     pub fn index_for(&self, p: Point<Pixels>) -> usize {
+        self.caret_for(p).0
+    }
+
+    /// Closest text index for a window-space point, and whether it is the end
+    /// of the row (the caret is drawn there, not at the next row's start).
+    pub fn caret_for(&self, p: Point<Pixels>) -> (usize, bool) {
         if self.rows.is_empty() {
-            return 0;
+            return (0, false);
         }
         let local_y = p.y - self.bounds.top();
         let ri = if local_y < px(0.) {
@@ -110,21 +147,22 @@ impl TextLayout {
                 .position(|r| local_y < r.y + r.h)
                 .unwrap_or(self.rows.len() - 1)
         };
-        self.index_in_row(ri, p.x)
+        self.caret_in_row(ri, p.x)
     }
 
     pub fn index_in_row(&self, ri: usize, window_x: Pixels) -> usize {
+        self.caret_in_row(ri, window_x).0
+    }
+
+    /// Closest text index in row `ri`, and whether it sits at the row's end.
+    /// Both a CJK character and a space wrap at a glyph boundary, so the end
+    /// of a row is a real caret stop of its own.
+    pub fn caret_in_row(&self, ri: usize, window_x: Pixels) -> (usize, bool) {
         let r = &self.rows[ri];
         let (start, line) = &self.lines[r.hard];
         let x = window_x - self.bounds.left() - r.align_dx + r.x0;
-        let ix = start + line.unwrapped_layout.closest_index_for_x(x.max(px(0.)));
-        let last_of_hard = self.rows.get(ri + 1).is_none_or(|n| n.hard != r.hard);
-        let mut ix = ix.clamp(r.range.start, r.range.end);
-        if !last_of_hard && ix == r.range.end && r.range.end > r.range.start {
-            // The wrap boundary belongs to the next row; stay on this one.
-            ix = prev_char(&line.text, ix - start) + start;
-        }
-        ix
+        let ix = (start + line.unwrapped_layout.closest_index_for_x(x.max(px(0.)))).clamp(r.range.start, r.range.end);
+        (ix, self.row_wraps(ri) && ix == r.range.end)
     }
 
     /// Rectangles covering `range` (window coords), one per row.
@@ -151,10 +189,6 @@ impl TextLayout {
         }
         out
     }
-}
-
-fn prev_char(s: &str, i: usize) -> usize {
-    s[..i].char_indices().next_back().map(|(k, _)| k).unwrap_or(0)
 }
 
 /// A single-line field's horizontal scroll: the caret stays 8pt inside the
@@ -232,6 +266,9 @@ pub struct RichTextElement {
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     pub remote: Vec<RemoteMark>,
     pub caret: Option<usize>,
+    /// The caret sits at the end of a wrapped row: draw it there rather than
+    /// at the start of the row below (both are the same text offset).
+    pub caret_row_end: bool,
     pub marked: Option<Range<usize>>,
     pub cache: LayoutCache,
     pub show_caret: bool,
@@ -246,6 +283,9 @@ pub struct RichTextElement {
     /// Single-line fields keep their horizontal scroll here, so a long URL
     /// can be read and edited instead of being clipped on the right.
     pub scroll: Option<Rc<Cell<Pixels>>>,
+    /// Unwrapped text as wide as its longest line (at least the parent), for
+    /// a scroller around it: a code block that doesn't wrap (#161).
+    pub fit_content: bool,
 }
 
 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
@@ -263,6 +303,8 @@ pub struct Prepared {
     /// (height, base_dy) of every row, in order.
     rows: Vec<(Pixels, Pixels)>,
     height: Pixels,
+    /// The longest line, the width of a `fit_content` element.
+    width: Pixels,
     eqs: Vec<Rc<EqGeom>>,
 }
 
@@ -821,7 +863,8 @@ impl Element for RichTextElement {
         let eq_counter = self.eq_counter;
         let spec = self.spec.clone();
         let mut style = Style::default();
-        style.size.width = relative(1.).into();
+        let fit = self.fit_content && !wrap;
+        if fit { style.min_size.width = relative(1.).into(); style.flex_shrink = 0.; } else { style.size.width = relative(1.).into() }
         let st = state.clone();
         let layout_id = window.request_measured_layout(style, move |known, available, window, _cx| {
             let wrap_width = if wrap {
@@ -835,7 +878,7 @@ impl Element for RichTextElement {
             if let Some(p) = st.borrow().as_ref()
                 && p.wrap_width == wrap_width
             {
-                return size(known.width.unwrap_or(px(0.)), p.height);
+                return size(known.width.unwrap_or(if fit { p.width } else { px(0.) }), p.height);
             }
             let custom = spacing != px(0.) || !eq_src.is_empty();
             let mut lines = window
@@ -906,7 +949,7 @@ impl Element for RichTextElement {
             if out.is_empty() {
                 h = line_height;
             }
-            *st.borrow_mut() = Some(Prepared { lines: out, wrap_width, line_height, rows, height: h, eqs });
+            *st.borrow_mut() = Some(Prepared { lines: out, wrap_width, line_height, rows, height: h, width: w, eqs });
             size(known.width.unwrap_or(w), h)
         });
         (layout_id, state)
@@ -1170,6 +1213,8 @@ impl Element for RichTextElement {
                     Align::Right => bounds.size.width - px(2.),
                 };
                 point(bounds.left() + dx, bounds.top())
+            } else if self.caret_row_end {
+                layout.position_at_row_end(c)
             } else {
                 layout.position_for(c)
             };
@@ -1466,7 +1511,7 @@ pub(crate) fn wrap_spaced(text: &str, layout: &LineLayout, width: Pixels, eqs: &
 }
 
 /// Pos helper for callers that hit-test across blocks.
-pub fn hit_test(cache: &LayoutCache, p: Point<Pixels>, candidates: &[BlockId]) -> Option<Pos> {
+pub fn hit_test(cache: &LayoutCache, p: Point<Pixels>, candidates: &[BlockId]) -> Option<(Pos, bool)> {
     let cache = cache.borrow();
     let mut best: Option<(f32, f32, BlockId)> = None;
     for id in candidates {
@@ -1496,7 +1541,8 @@ pub fn hit_test(cache: &LayoutCache, p: Point<Pixels>, candidates: &[BlockId]) -
     }
     let (_, _, id) = best?;
     let l = cache.get(&id)?;
-    Some(Pos::new(id, l.index_for(p)))
+    let (offset, at_row_end) = l.caret_for(p);
+    Some((Pos::new(id, offset), at_row_end))
 }
 
 #[cfg(all(test, target_os = "macos"))]

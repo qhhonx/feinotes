@@ -56,7 +56,7 @@ pub(crate) fn footer_row(id: &'static str, glyph: &'static str, label: &'static 
         .items_center()
         .rounded(px(ROW_R))
         .cursor_pointer()
-        .text_size(px(13.))
+        .text_size(px(theme::ui_font()))
         .line_height(px(20.))
         .text_color(text_color())
         .hover(|s| s.bg(hover()))
@@ -150,7 +150,7 @@ impl Workspace {
                 .items_center()
                 .rounded(px(ROW_R))
                 .cursor_pointer()
-                .text_size(px(13.))
+                .text_size(px(theme::ui_font()))
                 .line_height(px(20.))
                 .when(home_on, |d| d.bg(selection_fill()).text_color(Theme::text()))
                 .when(!home_on, |d| d.text_color(text_color()).hover(|s| s.bg(hover())))
@@ -270,7 +270,7 @@ impl Workspace {
             let room = row.room.clone();
             div().id(SharedString::from(format!("shared-note-{}", room.scope.note)))
                 .h(px(ROW_H)).pl(px(9.)).pr(px(8.)).flex().items_center().gap(px(8.))
-                .rounded(px(ROW_R)).cursor_pointer().text_size(px(13.)).text_color(text_color())
+                .rounded(px(ROW_R)).cursor_pointer().text_size(px(theme::ui_font())).text_color(text_color())
                 .hover(|style| style.bg(hover()))
                 .child(icon("doc", ROW_ICON, Theme::icon()))
                 .child(div().flex_1().min_w_0().truncate().child(display_title(&room.title)))
@@ -284,7 +284,7 @@ impl Workspace {
         div().flex().flex_col().pb(px(GROUP_GAP - SECTION_TOP))
             .child(div().id("nav-shared-notes").h(px(ROW_H)).pl(px(8.)).pr(px(8.))
                 .flex().items_center().justify_between().rounded(px(ROW_R)).cursor_pointer()
-                .text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(section_color())
+                .text_size(px(theme::ui_font())).font_weight(FontWeight::SEMIBOLD).text_color(section_color())
                 .hover(|style| style.bg(hover()))
                 .child(label).child(icon("chevron-right", 14., Theme::icon()))
                 .on_click(cx.listener(|workspace, _, _, cx| {
@@ -409,7 +409,7 @@ impl Workspace {
                             cx.notify();
                         })),
                 )
-                .child(div().flex_1().min_w_0().ml(px(8.)).text_size(px(13.)).line_height(px(20.)).text_color(Theme::text()).child(crate::localized_format!("已选 {n} 项", "Selected: {n}")))
+                .child(div().flex_1().min_w_0().ml(px(8.)).text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).text_color(Theme::text()).child(crate::localized_format!("已选 {n} 项", "Selected: {n}")))
                 .child(
                     trigger("batch-exit", "x").ml(px(8.))
                         .tip(crate::settings::text("退出批量操作"), None)
@@ -435,7 +435,7 @@ impl Workspace {
                 .cursor_pointer()
                 .hover(|s| s.bg(hover()))
                 .tip(if folded { crate::settings::text("点击展开") } else { crate::settings::text("点击折叠") }, None)
-                .child(div().pr(px(4.)).text_size(px(13.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).text_color(section_color()).child(crate::settings::label(title)))
+                .child(div().pr(px(4.)).text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).font_weight(FontWeight::SEMIBOLD).text_color(section_color()).child(crate::settings::label(title)))
                 .child(
                     div()
                         .when(!folded, |d| d.opacity(0.).group_hover(group, |s| s.opacity(1.)))
@@ -648,7 +648,7 @@ impl Workspace {
                             .bg(crate::theme::raised(Theme::bg_body()).opacity(a))
                             .border_1()
                             .border_color(Theme::sidebar_field_edge().opacity(a))
-                            .text_size(px(13.))
+                            .text_size(px(theme::ui_font()))
                             .child(field),
                     )
                     .into_any_element()
@@ -657,7 +657,7 @@ impl Workspace {
                 .pl(px(9.))
                 .flex_1()
                 .min_w_0()
-                .text_size(px(13.))
+                .text_size(px(theme::ui_font()))
                 .line_height(px(DOC_ROW_H))
                 .overflow_hidden()
                 .whitespace_nowrap()
@@ -719,7 +719,7 @@ impl Workspace {
                                 .with_transformation(Transformation::rotate(radians(if open { std::f32::consts::FRAC_PI_2 } else { 0. }))))))
                     }
                     _ if e.meta.markdown => d.child(icon("doc-md", ROW_ICON, Theme::icon())),
-                    Some(em) => d.text_size(px(13.)).line_height(px(20.)).child(em.clone()),
+                    Some(em) => d.text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).child(em.clone()),
                     None => d.child(icon("doc", ROW_ICON, Theme::icon())),
                 })
             })
@@ -759,7 +759,7 @@ impl Workspace {
                     w.row_menu = None;
                     cx.notify();
                 }))
-                .child(div().h(px(ROW_ITEM)).px(px(8.)).flex().items_center().text_size(px(12.)).text_color(Theme::text_placeholder()).child(crate::localized_format!("已选 {n} 项", "Selected: {n}")))
+                .child(div().h(px(ROW_ITEM)).px(px(8.)).flex().items_center().text_size(px(theme::ui_font_small())).text_color(Theme::text_placeholder()).child(crate::localized_format!("已选 {n} 项", "Selected: {n}")))
                 .child(item("bm-copy", "copy", crate::settings::text("创建副本")).on_click(cx.listener(|w, _, _, cx| w.batch_copy(cx))))
                 .child(item("bm-move", "folder-input", crate::settings::text("移动到")).on_click(cx.listener(|w, _, window, cx| w.batch_move(window, cx))))
                 .child(item("bm-delete", "bin", crate::settings::text("删除")).on_click(cx.listener(|w, _, _, cx| w.ask_batch_delete(cx))));

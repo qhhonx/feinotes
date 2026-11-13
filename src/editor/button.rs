@@ -252,7 +252,7 @@ impl Editor {
             ButtonAction::OpenLink => {
                 let src = b.src.trim();
                 if is_link_input(src) {
-                    cx.open_url(&normalize(src));
+                    crate::editor::link::open(cx, &normalize(src));
                 } else {
                     self.toast_kind(ToastKind::Error, crate::settings::text("超链接不合法，请重新输入"), cx);
                 }

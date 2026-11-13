@@ -35,9 +35,10 @@ main.rs ─ 窗口
 
 1. 视图收到事件，调用 `core.checkpoint(kind)`。它记一个撤销快照，把 `generation` 加一，并置 `dirty`。连续输入（同一 block、相邻两次间隔不到 700ms）合成一步。
 2. 调用 Core 的操作方法修改 `core.doc` / `core.sel`。
-3. 调用 `Editor::changed()`：
-   - 先 `core.reveal_caret()`：如果选区（或块选区）两端被折叠藏起来了，就展开把它藏起来的标题或列表项；
-   - 有改动时发 `EditorEvent::Changed`，同时刷新查找结果、斜杠菜单和 @ 面板。
+3. 按滚动意图通知编辑器：
+   - 输入、导航等以光标为目标的操作调用 `Editor::changed()`，先 `core.reveal_caret()` 展开隐藏选区的标题或列表项，并请求滚动到光标；
+   - 点击任务框、调整列宽等独立目标操作调用 `changed_preserving_viewport()`，保留光标/选区和视口。折叠若把光标移到了标题，仍用 `changed()` 显示迁移后的光标；
+   - 两条路径有改动时都发 `EditorEvent::Changed`，同时刷新查找结果、斜杠菜单和 @ 面板。
 4. `Workspace` 收到 `Changed` 后调用 `schedule_save`，500ms 后 `flush()` 写盘。写盘失败时改动保持未保存，顶栏显示错误，切换文档、新建、退出前会询问。保存失败对话框支持重试、重新载入磁盘内容、另存恢复副本；重新载入同时重置编辑器及同文档窗口的状态。退出检查所有窗口，处理单个冲突后重新检查，仍有冲突时不会退出。系统退出阶段仍保存失败的正文存入本地应用数据目录的 `quiet-md/recovery/<文档库标识>/`，下次打开同一文档库时恢复为新文档，不覆盖磁盘原版。
 
 Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机编辑后检查：

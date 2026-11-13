@@ -32,6 +32,8 @@ impl SharedStore {
     pub fn set_catalogue(&mut self, id: &str, pinned: bool) -> Result<()> { self.0.borrow_mut().set_catalogue(id, pinned) }
     pub fn settings(&self) -> Settings { self.0.borrow_mut().settings() }
     pub fn save_settings(&self, s: &Settings) -> Result<()> { self.0.borrow_mut().save_settings(s) }
+    pub fn scroll_top(&self, id: &str) -> Option<(usize, f32)> { self.0.borrow().scroll_top(id) }
+    pub fn remember_scroll(&self, id: &str, top: Option<(usize, f32)>) -> Result<()> { self.0.borrow().remember_scroll(id, top) }
     pub fn rename(&mut self, id: &str, title: &str) -> Result<Meta> { self.0.borrow_mut().rename(id, title) }
     pub fn touch(&mut self, id: &str) -> Option<Meta> { self.0.borrow_mut().touch(id) }
     pub fn create_folder(&mut self, title: &str, parent: Option<&str>) -> Result<String> { self.0.borrow_mut().create_folder(title, parent) }

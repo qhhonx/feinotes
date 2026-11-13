@@ -609,6 +609,9 @@ impl Workspace {
             && (id != room.note || !self.entries.iter().any(|entry| entry.id == id)
                 || crate::cloud_sync::shared::access(cx) == Some(crate::cloud_sync::shared::Access::Revoked))
         { return false; }
+        // 阅读位置: remember where the document being left was, before the
+        // editor is swapped out.
+        self.remember_scroll(cx);
         if self.entries.iter().any(|e| e.id == id && e.meta.folder.is_some()) { return self.open_folder(id, window, cx); }
         if self.view != View::Doc {
             self.view = View::Doc;
@@ -663,6 +666,9 @@ impl Workspace {
             let core = peer.read(cx).core.clone();
             editor.update(cx, |e, cx| e.receive_document(&core, cx));
         }
+        // 阅读位置: back to where this document was left, on its first frame.
+        let top = self.store.scroll_top(id);
+        editor.update(cx, |e, _| e.restore_top = top);
         self.editor_sub = Some(cx.subscribe_in(&editor, window, |this, _, ev: &EditorEvent, window, cx| match ev {
             EditorEvent::Changed => {
                 this.file_history.prefer_files = false;
@@ -875,6 +881,8 @@ impl Workspace {
     /// Switch the main pane to 主页 or 回收站 (or back to the document).
     pub fn show_view(&mut self, view: View, cx: &mut Context<Self>) {
         self.cancel_shortcut_recording(cx);
+        // 阅读位置: leaving the document with ⌘H or 回收站 also counts.
+        if view != View::Doc { self.remember_scroll(cx) }
         if view == View::Trash {
             self.trash = self.store.list_trash();
         }
@@ -976,6 +984,14 @@ impl Workspace {
             .filter_map(|w| w.update(cx, |ws, _, _| {
                 (ws.current.as_deref() == Some(id)).then(|| ws.editor.clone()).flatten()
             }).ok().flatten()).collect()
+    }
+
+    /// 阅读位置: hand the open document's scroll offset to the library, so
+    /// coming back to it lands where it was left.
+    fn remember_scroll(&mut self, cx: &mut Context<Self>) {
+        let (Some(id), Some(editor)) = (self.current.clone(), self.editor.clone()) else { return };
+        let top = editor.read(cx).scroll_top();
+        let _ = self.store.remember_scroll(&id, top);
     }
 
     fn sync_document(&mut self, window: &Window, cx: &mut Context<Self>) {

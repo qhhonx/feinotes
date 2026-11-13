@@ -266,7 +266,7 @@ impl Workspace {
                     .rounded(px(9.))
                     .bg(Theme::fill_hover_strong())
                     .child(icon("library", 15., Theme::icon()))
-                    .child(div().ml(px(8.)).text_size(px(13.)).line_height(px(20.)).child(crate::settings::tr("我的文档", "My documents"))),
+                    .child(div().ml(px(8.)).text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).child(crate::settings::tr("我的文档", "My documents"))),
             );
 
         let row = |key: String, selected: bool| {
@@ -282,7 +282,7 @@ impl Workspace {
                 .when(selected, |d| d.bg(Theme::fill_hover_strong()))
                 .when(!selected, |d| d.hover(|s| s.bg(Theme::fill_hover())))
         };
-        let title = |t: String| div().ml(px(9.)).flex_1().min_w_0().text_size(px(13.)).line_height(px(20.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(t));
+        let title = |t: String| div().ml(px(9.)).flex_1().min_w_0().text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(t));
         let page_icon = |e: &Entry| match &e.icon {
             _ if e.meta.folder.is_some() => icon("folder", 16., Theme::icon()).into_any_element(),
             Some(em) => div().size(px(16.)).flex_none().flex().items_center().justify_center().text_size(px(14.)).child(em.clone()).into_any_element(),
@@ -346,7 +346,7 @@ impl Workspace {
         } else {
             let hits: Vec<&Entry> = self.entries.iter().filter(|e| e.meta.folder.is_some() && !hidden.contains(&e.id) && display_title(&e.title).to_lowercase().contains(&q)).collect();
             if hits.is_empty() {
-                list = list.child(div().pt(px(80.)).flex().justify_center().text_size(px(13.)).text_color(Theme::text_caption()).child(crate::settings::text("无搜索结果")));
+                list = list.child(div().pt(px(80.)).flex().justify_center().text_size(px(theme::ui_font())).text_color(Theme::text_caption()).child(crate::settings::text("无搜索结果")));
             }
             for e in hits {
                 let pick = e.id.clone();

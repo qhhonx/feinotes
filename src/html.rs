@@ -334,7 +334,7 @@ fn image(uri: &str, width: Option<f32>, height: Option<f32>, crop: Option<[f32; 
 fn data_uri(src: &str) -> Option<String> {
     use base64::Engine;
     if src.starts_with("data:") {
-        let encoded = ["data:image/png;base64,", "data:image/jpeg;base64,", "data:image/gif;base64,", "data:image/webp;base64,"]
+        let encoded = ["data:image/png;base64,", "data:image/jpeg;base64,", "data:image/jpg;base64,", "data:image/gif;base64,", "data:image/webp;base64,", "data:image/bmp;base64,"]
             .iter().find_map(|prefix| src.strip_prefix(prefix))?;
         return (encoded.len() <= 28 * 1024 * 1024 && base64::engine::general_purpose::STANDARD.decode(encoded).is_ok())
             .then(|| src.to_string());

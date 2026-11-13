@@ -1871,6 +1871,7 @@ name = "fdl_core"
 version = "0.1.10"
 dependencies = [
  "anyhow",
+ "base64",
  "dirs 7.0.0",
  "html5ever",
  "markup5ever_rcdom",

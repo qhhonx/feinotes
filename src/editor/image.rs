@@ -1216,7 +1216,7 @@ impl Editor {
                             cx.stop_propagation();
                             window.prevent_default();
                             e.core.set_align(&[id], a);
-                            e.changed(window, cx);
+                            e.changed_preserving_viewport(window, cx);
                         }),
                     ),
             );

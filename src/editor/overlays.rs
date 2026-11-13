@@ -1297,7 +1297,10 @@ impl Editor {
         let viewport = self.list.viewport_bounds();
         let view_top = viewport.top();
         let pane_left = self.rel(point(viewport.left() + px(8.), px(0.))).x;
-        let x = (hp.x - px(TOOLBAR_W / 2.)).max(pane_left);
+        let pane_right = self.rel(point(viewport.right() - px(8.), px(0.))).x;
+        // Keep the bar inside the pane on both sides: a selection near the right
+        // edge used to push it, and its dropdowns, past the window (#95).
+        let x = (hp.x - px(TOOLBAR_W / 2.)).max(pane_left).min((pane_right - px(TOOLBAR_W)).max(pane_left));
         let above = sp.y - px(45.) >= view_top;
         let pos = if above { point(x, sp.y - px(45.)) } else { point(x, ep.y + elh + px(5.)) };
 
@@ -1371,7 +1374,9 @@ impl Editor {
         // x offsets of the dropdown buttons (padding 8, gap 8, separators 1).
         let x_turn = 8.;
         let x_align = x_turn + 44. + 8. + 1. + 8.;
-        let x_color = x_align + 44. + 8. + 1. + 8. + 6. * (24. + 8.);
+        // The colour panel is wider than the bar's right-hand section, so it is
+        // right-aligned inside the bar instead of hanging past its edge (#95).
+        let x_color = f32::min(x_align + 44. + 8. + 1. + 8. + 6. * (24. + 8.), TOOLBAR_W - CALLOUT_PANEL_W - 2.).max(0.);
         let bar = div()
             .h(px(40.))
             .px(px(8.))
@@ -1622,7 +1627,9 @@ impl Editor {
         let w = TABLE_TB_W + if whole { 17. + 24. } else { 0. } - if md { 24. + 17. + 8. + 44. } else { 0. };
         let viewport = self.list.viewport_bounds();
         let pane_left = viewport.left() + px(12.);
-        let x = (rect.center().x - px(w / 2.)).max(pane_left);
+        let pane_right = viewport.right() - px(12.);
+        // Same two-sided clamp as the text toolbar (#95).
+        let x = (rect.center().x - px(w / 2.)).max(pane_left).min((pane_right - px(w)).max(pane_left));
         let bottom = if range_top == 0 { table_top - px(22.) } else { rect.top() - px(15.) };
         let y = if bottom - px(TABLE_TB_H) >= viewport.top() { bottom - px(TABLE_TB_H) } else { rect.bottom() + px(15.) };
 
@@ -1815,7 +1822,7 @@ impl Editor {
         let x_bg = 8. + 24. + 17.;
         let x_turn = if md { x_bg } else { x_bg + 24. + 17. };
         let x_align = x_turn + 44. + 17.;
-        let x_color = x_align + 44. + 17. + 5. * 32.;
+        let x_color = f32::min(x_align + 44. + 17. + 5. * 32., w - CALLOUT_PANEL_W - 2.).max(0.);
         let drop_el: Option<AnyElement> = match dropdown {
             Some(Menu::TurnInto) => {
                 let mut list = menu().id("ttb-turn-menu").occlude().w(px(200.)).py(px(MENU_PAD_Y)).max_h(turn_height).overflow_y_scroll().on_scroll_wheel(|_, _, cx| cx.stop_propagation());
@@ -1866,7 +1873,7 @@ impl Editor {
                             cx.stop_propagation();
                             e.menu = None;
                             e.core.table_set_valign(value);
-                            e.changed(window, cx);
+                            e.changed_preserving_viewport(window, cx);
                         }),
                     )
                 };
@@ -1906,7 +1913,7 @@ impl Editor {
                 cx.stop_propagation();
                 e.menu = None;
                 e.core.table_set_bg(v.clone());
-                e.changed(window, cx);
+                e.changed_preserving_viewport(window, cx);
             })
         };
         let mut grid = div().flex().flex_wrap().justify_between().gap_y(px(4.));

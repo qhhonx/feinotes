@@ -178,6 +178,11 @@ pub struct Settings {
     /// Main window size, remembered like the quick note window's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_size: Option<[f32; 2]>,
+    /// 阅读位置: the list offset each document was left at, so switching back
+    /// returns to the same place. Kept out of `index.json`: it is window
+    /// state, not document metadata.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub scroll_top: HashMap<String, [f32; 2]>,
 }
 
 /// A document in the 回收站, as kept in `trash/index.json`.
@@ -508,7 +513,11 @@ impl Store {
     /// `text` (a file's contents) as a document.
     fn parse_doc(&self, id: &str, text: &str) -> Result<Document> {
         if !self.is_markdown(id) { return docxml::parse(text); }
-        Ok(crate::markdown::parse_file(text, &self.markdown_title(id), self.base(id).as_deref()))
+        let mut doc = crate::markdown::parse_file(text, &self.markdown_title(id), self.base(id).as_deref());
+        // Images a Markdown file carries inline (#133) become assets, so the
+        // page shows them and an export writes them like any other picture.
+        crate::data_images::absorb(&mut doc.blocks, &self.root);
+        Ok(doc)
     }
 
     /// `doc` as `id`'s file contents; a Markdown file keeps the front matter it has on disk.
@@ -1053,6 +1062,28 @@ impl Store {
         write_atomic(&self.root.join("settings.json"), &serde_json::to_vec_pretty(s)?)
     }
 
+    /// 阅读位置: the list offset this document was left at.
+    pub fn scroll_top(&self, id: &str) -> Option<(usize, f32)> {
+        let v = self.settings().scroll_top.get(id).copied()?;
+        Some((v[0] as usize, v[1]))
+    }
+
+    /// Remember — or, with `None`, forget — where a document was left.
+    pub fn remember_scroll(&self, id: &str, top: Option<(usize, f32)>) -> Result<()> {
+        let mut s = self.settings();
+        match top {
+            Some((ix, y)) => {
+                let v = [ix as f32, y];
+                if s.scroll_top.get(id) == Some(&v) { return Ok(()) }
+                s.scroll_top.insert(id.to_string(), v);
+            }
+            None => {
+                if s.scroll_top.remove(id).is_none() { return Ok(()) }
+            }
+        }
+        self.save_settings(&s)
+    }
+
     /// 重命名 a document that isn't open: rewrite its title on disk.
     pub fn rename(&mut self, id: &str, title: &str) -> Result<Meta> {
         let _lock = self.begin_write()?;
@@ -1153,6 +1184,38 @@ mod tests {
 
     fn doc(title: &str) -> Document {
         Document { title: crate::model::RichText::plain(title), ..Default::default() }
+    }
+
+    fn check_reading_position_state(mut store: Store) {
+        let id = store.create_from(&doc("reading state")).unwrap();
+        let before = docxml::serialize(&store.load(&id).unwrap());
+        let journal = store.track_file_changes();
+        let settings = Settings { window_size: Some([900., 700.]), ..Default::default() };
+        store.save_settings(&settings).unwrap();
+        assert_eq!(store.scroll_top(&id), None);
+        store.remember_scroll(&id, Some((12, 18.5))).unwrap();
+        assert_eq!(store.scroll_top(&id), Some((12, 18.5)));
+        assert_eq!(store.settings().window_size, settings.window_size);
+        assert_eq!(docxml::serialize(&store.load(&id).unwrap()), before);
+        assert!(journal.take().is_empty());
+        store.remember_scroll(&id, None).unwrap();
+        assert_eq!(store.scroll_top(&id), None);
+        assert_eq!(store.settings().window_size, settings.window_size);
+    }
+
+    #[test]
+    fn reading_position_preserves_file_document_and_window_settings() {
+        let lib = Lib::new("reading-state");
+        check_reading_position_state(lib.open());
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    #[test]
+    fn reading_position_preserves_sqlite_document_and_window_settings() {
+        let lib = Lib::new("sqlite-reading-state");
+        std::fs::create_dir_all(&lib.0).unwrap();
+        Store::initialize_local_sqlite(&lib.0).unwrap();
+        check_reading_position_state(Store::open_sqlite_at(lib.0.clone()).unwrap());
     }
 
     #[test]

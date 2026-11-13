@@ -828,7 +828,7 @@ impl Editor {
                             cx.stop_propagation();
                             window.prevent_default();
                             e.core.set_file_view(id, v);
-                            e.changed(window, cx);
+                            e.changed_preserving_viewport(window, cx);
                         }),
                     ),
             );

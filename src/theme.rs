@@ -380,7 +380,13 @@ impl Theme {
     // ---- Quiet.md shell
     /// A light gray tint separates the sidebar from the white page while keeping wallpaper colors quiet.
     /// The document pane paints its own opaque white surface.
-    pub fn window() -> Hsla { if crate::native_header::supported() { ca(craft::WINDOW, 0.) } else if crate::theme::glass() { ca(craft::WINDOW, 0.84) } else { ca(craft::WINDOW, 1.) } }
+    pub fn window() -> Hsla {
+        // 外观 › 窗口背景: an opaque window keeps a moving desktop from showing
+        // through the sidebar (which some people find distracting).
+        if crate::settings::prefs().opaque_window { return ca(craft::WINDOW, 1.) }
+        if crate::native_header::supported() { ca(craft::WINDOW, 0.) } else if crate::theme::glass() { ca(craft::WINDOW, 0.84) } else { ca(craft::WINDOW, 1.) }
+    }
+
     /// Sidebar row label: text at 85%.
     pub fn sidebar_text() -> Hsla { ca(craft::N900, 0.85) }
     pub fn sidebar_hover() -> Hsla { ca(craft::N1000, 0.045) }
@@ -426,6 +432,15 @@ impl Theme {
     /// Code text: plain tokens and punctuation in code blocks.
     pub fn code_text() -> Hsla { c(0x4c4d50) }
 }
+
+/// 外观 › 界面字号: the sidebar and the settings page scale together.
+/// Module level on purpose — callers reach it as `theme::ui_font()`.
+pub fn ui_font() -> f32 {
+    match crate::settings::prefs().ui_font.as_str() { "small" => 12., "large" => 15., _ => 13. }
+}
+
+/// The same scale for secondary rows (descriptions, counts).
+pub fn ui_font_small() -> f32 { ui_font() - 1. }
 
 #[allow(unused_imports)]
 pub use crate::palette::{HUES, FONT_COLORS, BG_COLORS, CALLOUT_BG_COLORS, CELL_BG_COLORS, bg_canon};
