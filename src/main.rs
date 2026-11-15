@@ -16,6 +16,11 @@ mod cloud_subscription;
 mod cloud_trial;
 
 mod app;
+#[cfg(unix)]
+mod big_alloc;
+#[cfg(unix)]
+#[global_allocator]
+static ALLOC: big_alloc::Alloc = big_alloc::Alloc;
 mod shared_store;
 mod quick_note;
 mod assets;
@@ -37,11 +42,13 @@ mod docinfo;
 mod docmenu;
 mod editor;
 mod highlight;
+mod history;
 mod home;
 mod html;
 mod input;
 mod logging;
 mod modes;
+mod onboarding;
 #[cfg(target_os = "macos")]
 mod native_header;
 #[cfg(not(target_os = "macos"))]
@@ -52,10 +59,12 @@ mod search;
 mod sidebar;
 mod local_files;
 mod sidebar_drag;
+mod sidebar_drop;
 mod home_folder;
 mod folders;
 mod file_history;
 mod settings;
+mod l10n;
 mod themes;
 mod shortcuts;
 #[allow(dead_code, unused_imports)]
@@ -100,12 +109,22 @@ pub(crate) fn in_shared_note() -> bool {
 fn set_app_icon() {
     use objc::{class, msg_send, sel, sel_impl};
     use objc::runtime::Object;
-    let Ok(Some(png)) = assets::Assets.load("branding/app-icon.png") else { return; };
+    let Some(png) = crate::assets::get("branding/app-icon.png") else { return };
     unsafe {
+        // A bundle with its own icon keeps it (the preview's has a dev ribbon);
+        // only a bare binary (`cargo run`) borrows the app icon.
+        let bundle: *mut Object = msg_send![class!(NSBundle), mainBundle];
+        let key: *mut Object = msg_send![class!(NSString), stringWithUTF8String: c"CFBundleIconFile".as_ptr()];
+        let own: *mut Object = msg_send![bundle, objectForInfoDictionaryKey: key];
+        if !own.is_null() { return }
         let data: *mut Object = msg_send![class!(NSData), dataWithBytes:png.as_ptr() length:png.len()];
         let image: *mut Object = msg_send![class!(NSImage), alloc];
         let image: *mut Object = msg_send![image, initWithData:data];
         if !image.is_null() {
+            // AppKit draws the icon into a bitmap at the image's size in points
+            // and keeps it: the 1024 px PNG reads as 1024 pt, 2048² px (32 MB)
+            // on a Retina screen. The Dock shows at most 256 pt.
+            let _: () = msg_send![image, setSize: core_graphics::geometry::CGSize::new(256., 256.)];
             let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
             let _: () = msg_send![app, setApplicationIconImage:image];
             let _: () = msg_send![image, release];
@@ -113,38 +132,73 @@ fn set_app_icon() {
     }
 }
 
-/// The main window, centred at the remembered size.
-fn open_main_window(scripted: bool, cx: &mut App) {
+/// The main window's options: centred at the remembered size, or at `at`.
+pub(crate) fn main_window_options(scripted: bool, at: Option<Bounds<Pixels>>, cx: &mut App) -> WindowOptions {
     // Scripted dev runs must not steal keyboard focus from whatever the
     // user is typing into.
-    let bounds = Bounds::centered(None, quick_note::main_window_size(cx), cx);
-    cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_background: crate::theme::window_background(),
-            app_id: Some(crate::APP_ID.into()),
-            window_decorations: if cfg!(target_os = "linux") { Some(WindowDecorations::Client) } else { None },
-            titlebar: Some(TitlebarOptions {
-                title: Some(app_window_title(false).into()),
-                appears_transparent: cfg!(any(target_os = "macos", target_os = "windows")),
-                traffic_light_position: Some(point(px(20.), px(app::HEADER_H / 2. - 7.))),
-            }),
-            window_min_size: Some(size(px(480.), px(480.))),
-            focus: !scripted,
-            ..Default::default()
-        },
-        |window, cx| {
-            devtools::start(window, cx);
-            cx.new(|cx| {
-                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-                if let Some(room) = cloud_sync::shared::active() {
-                    return app::Workspace::new_document_window(Some(room.note.clone()), window, cx);
-                }
-                app::Workspace::new(window, cx)
-            })
-        },
-    )
+    let bounds = at.unwrap_or_else(|| Bounds::centered(None, quick_note::main_window_size(cx), cx));
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        window_background: crate::theme::window_background(),
+        app_id: Some(crate::APP_ID.into()),
+        window_decorations: if cfg!(target_os = "linux") { Some(WindowDecorations::Client) } else { None },
+        titlebar: Some(TitlebarOptions {
+            title: Some(app_window_title(false).into()),
+            appears_transparent: cfg!(any(target_os = "macos", target_os = "windows")),
+            traffic_light_position: Some(point(px(20.), px(app::HEADER_H / 2. - 7.))),
+        }),
+        window_min_size: Some(size(px(app::DOC_MIN_W), px(480.))),
+        focus: !scripted,
+        ..Default::default()
+    }
+}
+
+/// The main window, centred at the remembered size, or where first launch's window was.
+pub(crate) fn open_main_window(scripted: bool, at: Option<Bounds<Pixels>>, cx: &mut App) {
+    let options = main_window_options(scripted, at, cx);
+    cx.open_window(options, |window, cx| {
+        devtools::start(window, cx);
+        cx.new(|cx| {
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            if let Some(room) = cloud_sync::shared::active() { return app::Workspace::new_document_window(Some(room.note.clone()), window, cx); }
+            app::Workspace::new(window, cx)
+        })
+    })
     .expect("open window");
+}
+
+/// Everything that needs the library: run once it is chosen (at once for an
+/// existing one, after first launch's pages for a new one). The main view
+/// opens in a new window, or takes over `into` — first launch's own window,
+/// so the pages give way to the notes without a second window.
+pub(crate) fn start(existed: bool, scripted: bool, into: Option<&mut Window>, incoming: local_files::Incoming, cx: &mut App) -> Option<Entity<app::Workspace>> {
+    if !FEI_NOTES { changelog::startup(existed); }
+    shortcuts::init(cx);
+    match shared_store::SharedStore::open() {
+        Ok(s) => cx.set_global(s),
+        Err(err) => logging::fatal("无法打开文档库 / Could not open the library", &err),
+    }
+    if let Some(r) = cx.global::<shared_store::SharedStore>().with(|s| s.migrated.take()) { changelog::migrated(&r); }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    if !cloud_restore::local_only() && let Err(err) = cloud_sync::start(cx) { logging::fatal("无法打开同步测试库 / Could not open the sync test library", &err); }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    cloud_subscription::watch(cx);
+    if !scripted && !in_shared_note() { quick_note::install(cx); }
+    app::set_menus(cx);
+    if !cfg!(all(target_os = "macos", feature = "cloudkit-restore")) { update::init(cx); }
+    let took = into.map(|window| window.replace_root(cx, app::Workspace::new));
+    if took.is_none() { open_main_window(scripted, None, cx); }
+    // A synced library (or one used elsewhere) moves to real folders only once the user agrees.
+    if !cfg!(all(target_os = "macos", feature = "cloudkit-restore")) && let store::MigrationState::NeedsConsent(r) = store::Store::migration_state(&store::Store::root_dir()) && settings::migrate_ask_due() {
+        match &took {
+            Some(ws) => ws.update(cx, |w, cx| { w.confirm = Some(app::Confirm::Migrate(r)); cx.notify(); }),
+            None => if let Some(ws) = cx.windows().into_iter().find_map(|w| w.downcast::<app::Workspace>()) {
+                let _ = ws.update(cx, |w, _, cx| { w.confirm = Some(app::Confirm::Migrate(r)); cx.notify(); });
+            },
+        }
+    }
+    if !in_shared_note() { incoming.deliver(cx); }
+    took
 }
 
 fn main() {
@@ -167,11 +221,16 @@ fn main() {
     // No single-instance guard: copies may share a library (builds tested
     // side by side). `Store` rereads an index another copy rewrote before
     // writing its own, and `guides` seeds a new library only once.
+    // The store asks the system whether a library is in iCloud through this.
+    #[cfg(target_os = "macos")]
+    store::set_ubiquity_probe(onboarding::ubiquitous);
     let root = store::Store::root_dir();
     logging::write(&format!("library {}", root.display()));
     // A library that was here before this launch can show 更新日志.
     let existed = guides::seeded(&root).unwrap_or(false);
-    if !scripted && !in_shared_note() && let Err(err) = guides::initialize(&root) {
+    // A new library is set up after first launch's pages pick where it goes.
+    let onboard = !cfg!(all(target_os = "macos", feature = "cloudkit-restore")) && onboarding::wanted(existed, scripted);
+    if !scripted && !onboard && !in_shared_note() && let Err(err) = guides::initialize(&root) {
         logging::fatal(&format!("无法初始化文档库 / Could not set up the library at {}", root.display()), &err);
     }
     let app = Application::new().with_assets(assets::Assets);
@@ -181,7 +240,7 @@ fn main() {
     if !in_shared_note() { app.on_open_urls(move |u| urls.push_urls(u)); }
     // macOS keeps running after ⌘W closes the last window (quick notes stay
     // available); clicking the Dock icon then brings the main window back.
-    app.on_reopen(|cx| if cx.windows().is_empty() { open_main_window(false, cx); });
+    app.on_reopen(|cx| if cx.windows().is_empty() && !onboarding::pending() { open_main_window(false, None, cx); });
     app.run(move |cx: &mut App| {
         #[cfg(feature = "devtools")]
         if scripted && std::env::var_os("FDL_IN_WINDOW_PROMPTS").is_some() {
@@ -199,26 +258,11 @@ fn main() {
         settings::apply_appearance(&settings::prefs().appearance);
         settings::sync_dark(cx);
         themes::load(&settings::prefs().theme_id(), false, || cx.text_system().all_font_names());
-        if !FEI_NOTES { changelog::startup(existed); }
-        shortcuts::init(cx);
-        match shared_store::SharedStore::open() {
-            Ok(s) => cx.set_global(s),
-            Err(err) => logging::fatal("无法打开文档库 / Could not open the library", &err),
-        }
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        if !cloud_restore::local_only() && let Err(err) = cloud_sync::start(cx) {
-            logging::fatal("无法打开同步测试库 / Could not open the sync test library", &err);
-        }
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        cloud_subscription::watch(cx);
         let quick_enabled = !scripted && !in_shared_note();
-        if quick_enabled { quick_note::install(cx); }
-        app::set_menus(cx);
-        if !cfg!(all(target_os = "macos", feature = "cloudkit-restore")) { update::init(cx); }
-        open_main_window(scripted, cx);
-        if !in_shared_note() { incoming.deliver(cx); }
+        if onboard { onboarding::open(scripted, incoming, cx); } else { start(existed, scripted, None, incoming, cx); }
         cx.on_window_closed(move |cx| {
-            if (!quick_enabled || !cfg!(target_os = "macos")) && cx.windows().is_empty() {
+            // Closing first launch's window before it finished quits: there is no library yet.
+            if (!quick_enabled || !cfg!(target_os = "macos") || onboarding::pending()) && cx.windows().is_empty() {
                 cx.quit();
             }
         })

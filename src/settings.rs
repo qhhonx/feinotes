@@ -1,4 +1,4 @@
-//! 设置: preferences (`preferences.json` in the library root) and the
+//! 设置: preferences (`.quiet/preferences.json` in the library) and the
 //! settings view — a category list in the sidebar, one page per category,
 //! each page a column of grouped rows. Only what a
 //! user really needs to change lives here.
@@ -9,7 +9,7 @@ use crate::sidebar as sb;
 use gpui::{prelude::FluentBuilder, *};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
@@ -56,17 +56,37 @@ impl Sharing {
 // ---- preferences
 
 static FEISHU: AtomicBool = AtomicBool::new(false);
-static ENGLISH: AtomicBool = AtomicBool::new(true);
+static LANG: AtomicU8 = AtomicU8::new(Lang::En as u8);
 static MOTION_HIGH: AtomicBool = AtomicBool::new(false);
 static PREFS: RwLock<Option<Preferences>> = RwLock::new(None);
 
 /// The active document theme draws blocks the 飞书 way (else Craft's).
 pub fn feishu() -> bool { FEISHU.load(Ordering::Relaxed) }
 pub(crate) fn set_base(feishu: bool) { FEISHU.store(feishu, Ordering::Relaxed); }
-pub fn english() -> bool { ENGLISH.load(Ordering::Relaxed) }
+/// 界面语言, in the order Settings lists them. Chinese strings are the keys:
+/// other languages look them up in `l10n` and fall back to English.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lang { Zh, En, Ja, Ko, Fr, Es, Ar }
+
+impl Lang {
+    pub const ALL: [Lang; 7] = [Lang::Zh, Lang::En, Lang::Ja, Lang::Ko, Lang::Fr, Lang::Es, Lang::Ar];
+    /// The `language` preference value.
+    pub fn code(self) -> &'static str { match self { Lang::Zh => "zh", Lang::En => "en", Lang::Ja => "ja", Lang::Ko => "ko", Lang::Fr => "fr", Lang::Es => "es", Lang::Ar => "ar" } }
+    /// The language's own name, as Settings lists it.
+    pub fn name(self) -> &'static str { match self { Lang::Zh => "简体中文", Lang::En => "English", Lang::Ja => "日本語", Lang::Ko => "한국어", Lang::Fr => "Français", Lang::Es => "Español", Lang::Ar => "العربية" } }
+}
+
+pub fn lang() -> Lang { Lang::ALL.get(LANG.load(Ordering::Relaxed) as usize).copied().unwrap_or(Lang::En) }
+/// Not Chinese: English, or a language that shows English where it has no string yet.
+pub fn english() -> bool { lang() != Lang::Zh }
 /// 外观 › 动画 is 丰富: folding, the selection and hover animate too (else they answer at once).
 pub fn motion_high() -> bool { MOTION_HIGH.load(Ordering::Relaxed) }
-pub fn tr(zh: &'static str, en: &'static str) -> &'static str { if english() { en } else { zh } }
+pub fn tr(zh: &'static str, en: &'static str) -> &'static str { match lang() { Lang::Zh => zh, Lang::En => en, l => crate::l10n::get(l, zh).unwrap_or(en) } }
+/// `localized_format!` for a given language: `zh` / `en` build the two
+/// originals; other languages refill their translation of `template`.
+pub fn localized(lang: Lang, template: &str, zh: impl FnOnce() -> String, en: impl FnOnce() -> String) -> String {
+    match lang { Lang::Zh => zh(), Lang::En => en(), l => crate::l10n::refill(l, template, &zh()).unwrap_or_else(en) }
+}
 
 /// Browsers 打开链接 can offer, by the name `open -a` takes. Only the ones
 /// this Mac actually has are listed; anything else is the system default.
@@ -109,7 +129,11 @@ pub struct Preferences {
     pub theme: String,
     /// The old two-way switch, still written so older builds keep the base style.
     pub feishu: bool,
+    /// Still written (true unless Chinese) so older builds show English for a language they lack.
     pub english: bool,
+    /// `Lang::code`; empty in files from before it, where `english` decides.
+    #[serde(default)]
+    pub language: String,
     /// Fetch `http(s)` images referenced by documents.
     pub remote_images: bool,
     /// The system-wide quick note hotkey is registered.
@@ -126,7 +150,7 @@ pub struct Preferences {
     pub new_default: String,
     /// The type last created from the 新建 menu: "doc" or "markdown" (empty before any).
     pub last_new: String,
-    /// 网页搜索 engine: "bing", "google", "duckduckgo"; empty is 百度.
+    /// 网页搜索 engine: "baidu", "bing", "duckduckgo"; empty is Google.
     pub search_engine: String,
     /// 打开链接: the browser a link opens in ("Safari", "Microsoft Edge"…),
     /// empty for the system default.
@@ -136,30 +160,60 @@ pub struct Preferences {
     pub opaque_window: bool,
     /// 外观 › 界面字号: "small" or "large"; empty is the 13pt standard.
     pub ui_font: String,
+    /// When 稍后 put off moving the library to real folders (Unix seconds; 0 never).
+    pub migrate_later: u64,
 }
 
+/// A week between asks to move the library to real folders.
+const MIGRATE_ASK_EVERY: u64 = 7 * 24 * 3600;
+fn unix_now() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
+
+/// 稍后 on the move to real folders: remember when.
+pub fn migrate_later() {
+    let mut p = prefs();
+    p.migrate_later = unix_now();
+    let _ = save(&p);
+}
+
+/// Whether to ask about the move now: never put off, or a week since.
+pub fn migrate_ask_due() -> bool { unix_now().saturating_sub(prefs().migrate_later) >= MIGRATE_ASK_EVERY }
+
 /// Pick the first supported system language; saved preferences still win.
-fn system_english() -> bool {
+fn system_lang() -> Lang {
     sys_locale::get_locales().find_map(|locale| {
-        match locale.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase().as_str() {
-            "zh" => Some(false),
-            "en" => Some(true),
-            _ => None,
-        }
-    }).unwrap_or(true)
+        let code = locale.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+        Lang::ALL.into_iter().find(|l| l.code() == code)
+    }).unwrap_or(Lang::En)
 }
 
 impl Default for Preferences {
-    fn default() -> Self { Preferences { theme: String::new(), feishu: true, english: system_english(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), browser: String::new(), opaque_window: false, ui_font: String::new() } }
+    fn default() -> Self {
+        let lang = system_lang();
+        Preferences { theme: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), browser: String::new(), opaque_window: false, ui_font: String::new(), migrate_later: 0 }
+    }
 }
 
 impl Preferences {
     pub fn theme_id(&self) -> String {
         if !self.theme.is_empty() { self.theme.clone() } else if self.feishu { "feishu".into() } else { "craft".into() }
     }
+    pub fn lang(&self) -> Lang {
+        Lang::ALL.into_iter().find(|l| l.code() == self.language).unwrap_or(if self.english { Lang::En } else { Lang::Zh })
+    }
+    pub fn set_lang(&mut self, lang: Lang) {
+        self.language = lang.code().into();
+        self.english = lang != Lang::Zh;
+    }
 }
 
-fn path() -> std::path::PathBuf { crate::store::Store::root_dir().join("preferences.json") }
+fn path() -> std::path::PathBuf { crate::store::Store::internal_dir().join("preferences.json") }
+
+/// Show the interface in `lang` without saving it (first launch, before the library exists).
+pub(crate) fn show_lang(lang: Lang) {
+    let mut p = prefs();
+    p.set_lang(lang);
+    apply(p);
+}
 
 pub fn load() {
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
@@ -174,7 +228,7 @@ pub fn load() {
 
 fn apply(p: Preferences) {
     FEISHU.store(p.feishu, Ordering::Relaxed);
-    ENGLISH.store(p.english, Ordering::Relaxed);
+    LANG.store(p.lang() as u8, Ordering::Relaxed);
     MOTION_HIGH.store(p.motion == "high", Ordering::Relaxed);
     // Before the themes are read (startup) the base comes from `feishu`.
     themes::select(&p.theme_id());
@@ -226,7 +280,7 @@ pub(crate) fn save(p: &Preferences) -> anyhow::Result<()> {
         return Ok(());
     }
     use std::io::Write;
-    let root = crate::store::Store::root_dir();
+    let root = crate::store::Store::internal_dir();
     std::fs::create_dir_all(&root)?;
     let tmp = root.join("preferences.json.tmp");
     let mut f = std::fs::File::create(&tmp)?;
@@ -401,6 +455,20 @@ pub(crate) fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
         .when(on, |d| d.bg(Theme::primary()).justify_end())
         .when(!on, |d| d.bg(theme::ca(craft::N1000, 0.16)).justify_start())
         .child(div().size(px(15.)).rounded_full().bg(gpui::white()).shadow(theme::shadow_button()))
+}
+
+/// 外观 › 主题 CSS (duplicate, edit, restore a theme's stylesheet): hidden in
+/// this release while editing themes by hand settles.
+const THEME_CSS: bool = false;
+
+/// An open dropdown on 通用 (see `Workspace::select`): its choices, which one
+/// is picked and which is highlighted, and what picking one does.
+pub struct PrefMenu {
+    id: &'static str,
+    labels: Vec<&'static str>,
+    selected: usize,
+    focused: usize,
+    on: std::rc::Rc<dyn Fn(&mut Workspace, usize, &mut Context<Workspace>)>,
 }
 
 /// A segmented control: a grey groove and a white selected pill.
@@ -612,6 +680,106 @@ impl Workspace {
         Some(deferred(anchored().anchor(Corner::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
+    /// A choice as a dropdown button, like 界面语言's: the picked label, a menu of the rest.
+    fn select(&self, id: &'static str, labels: Vec<&'static str>, selected: usize, on: impl Fn(&mut Workspace, usize, &mut Context<Workspace>) + 'static, cx: &mut Context<Self>) -> Stateful<Div> {
+        let open = self.pref_menu.as_ref().is_some_and(|m| m.id == id);
+        let anchors = self.pref_anchors.clone();
+        let on: std::rc::Rc<dyn Fn(&mut Workspace, usize, &mut Context<Workspace>)> = std::rc::Rc::new(on);
+        popup_button(id, labels.get(selected).copied().unwrap_or_default(), open)
+            .child(canvas(move |b, _, _| { anchors.borrow_mut().insert(id, b); }, |_, _, _, _| {}).absolute().inset_0())
+            .relative()
+            .on_click(cx.listener(move |w, _, _, cx| {
+                w.lang_menu = None;
+                w.pref_menu = (!open).then(|| PrefMenu { id, labels: labels.clone(), selected, focused: selected, on: on.clone() });
+                cx.notify();
+            }))
+    }
+
+    pub(crate) fn render_pref_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let m = self.pref_menu.as_ref()?;
+        if self.view != View::Settings || self.settings_page != Page::General { return None }
+        let b = *self.pref_anchors.borrow().get(m.id)?;
+        let rows = m.labels.iter().enumerate().map(|(i, label)| {
+            let g = SharedString::from(format!("{}-opt-{i}", m.id));
+            ui::menu_row(g.clone(), g.clone())
+                .when(i == m.focused, |d| d.bg(Theme::fill_hover()))
+                .child(div().flex_1().min_w_0().overflow_hidden().child(ui::menu_label(*label, g.clone(), gpui::white())))
+                .child(div().flex_none().w(px(14.)).when(i == m.selected, |d| d.child(ui::menu_glyph("check", 14., g.clone()))))
+                .on_hover(cx.listener(move |w, hovered: &bool, _, cx| if *hovered && let Some(m) = &mut w.pref_menu && m.focused != i { m.focused = i; cx.notify(); }))
+                .on_click(cx.listener(move |w, _, _, cx| w.pick_pref(i, cx)))
+        }).collect::<Vec<_>>();
+        let anchors = self.pref_anchors.clone();
+        let id = m.id;
+        let menu = ui::popover().id("pref-menu").occlude().flex()
+            .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
+                if anchors.borrow().get(id).is_some_and(|b| b.contains(&ev.position)) { return }
+                w.pref_menu = None;
+                cx.notify();
+            }))
+            .child(div().min_w(px(160.)).py(px(ui::MENU_PAD_Y)).flex().flex_col().children(rows));
+        Some(deferred(anchored().anchor(Corner::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
+    }
+
+    fn pick_pref(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(m) = self.pref_menu.take() else { return };
+        (m.on)(self, i, cx);
+        cx.notify();
+    }
+
+    /// Keys while a 通用 dropdown is open; true when used.
+    pub(crate) fn pref_menu_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let Some(m) = &mut self.pref_menu else { return false };
+        match key {
+            "escape" => self.pref_menu = None,
+            "up" => m.focused = m.focused.saturating_sub(1),
+            "down" => m.focused = (m.focused + 1).min(m.labels.len().saturating_sub(1)),
+            "enter" | "space" => { let i = m.focused; self.pick_pref(i, cx); return true }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    /// 界面语言's dropdown, each language in its own name.
+    pub(crate) fn render_lang_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let focused = self.lang_menu?;
+        if self.view != View::Settings || self.settings_page != Page::General { return None }
+        let b = self.lang_anchor.get()?;
+        let current = prefs().lang();
+        let rows = Lang::ALL.map(|l| {
+            let g = SharedString::from(format!("lang-opt-{}", l.code()));
+            ui::menu_row(g.clone(), g.clone())
+                .when(l == focused, |d| d.bg(Theme::fill_hover()))
+                .child(div().flex_1().min_w_0().overflow_hidden().child(ui::menu_label(l.name(), g.clone(), gpui::white())))
+                .child(div().flex_none().w(px(14.)).when(l == current, |d| d.child(ui::menu_glyph("check", 14., g.clone()))))
+                .on_hover(cx.listener(move |w, hovered: &bool, _, cx| if *hovered && w.lang_menu != Some(l) { w.lang_menu = Some(l); cx.notify(); }))
+                .on_click(cx.listener(move |w, _, _, cx| { w.lang_menu = None; w.set_pref(|p| p.set_lang(l), cx) }))
+        });
+        let anchor = self.lang_anchor.clone();
+        let menu = ui::popover().id("lang-menu").occlude().flex()
+            .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
+                if anchor.get().is_some_and(|b| b.contains(&ev.position)) { return }
+                w.lang_menu = None;
+                cx.notify();
+            }))
+            .child(div().w(px(160.)).py(px(ui::MENU_PAD_Y)).flex().flex_col().children(rows));
+        Some(deferred(anchored().anchor(Corner::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
+    }
+
+    /// Keys while the language dropdown is open; true when used.
+    pub(crate) fn lang_menu_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let at = self.lang_menu.map_or(0, |l| l as usize);
+        match key {
+            "escape" => self.lang_menu = None,
+            "up" => self.lang_menu = Some(Lang::ALL[at.saturating_sub(1)]),
+            "down" => self.lang_menu = Some(Lang::ALL[(at + 1).min(Lang::ALL.len() - 1)]),
+            "enter" | "space" => { self.lang_menu = None; self.set_pref(|p| p.set_lang(Lang::ALL[at]), cx); return true }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
     /// Keys while the theme dropdown is open; true when used.
     pub(crate) fn theme_menu_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
         let ids: Vec<String> = themes::themes().iter().map(|t| t.id.clone()).collect();
@@ -647,7 +815,7 @@ impl Workspace {
             // the GPUI input update so those callbacks can refresh the windows.
             cx.spawn(async |_, _| apply_appearance(&prefs().appearance)).detach();
         }
-        if p.theme_id() != old.theme_id() || p.english != old.english || sync_dark(cx) {
+        if p.theme_id() != old.theme_id() || p.lang() != old.lang() || sync_dark(cx) {
             refresh_all(self, cx);
         }
         cx.notify();
@@ -693,6 +861,8 @@ impl Workspace {
         self.cancel_shortcut_recording(cx);
         self.settings_page = page;
         self.theme_menu = None;
+        self.lang_menu = None;
+        self.pref_menu = None;
         self.settings_scroll.set_offset(point(px(0.), px(0.)));
         self.shortcut_error = None;
         if self.view != View::Settings { self.show_view(View::Settings, cx); }
@@ -802,31 +972,37 @@ impl Workspace {
         } else {
             let sel = browsers.iter().position(|b| *b == p.browser).map_or(0, |i| i + 1);
             let labels: Vec<&'static str> = std::iter::once(tr("系统默认", "Default")).chain(browsers.iter().copied()).collect();
-            vec![row(tr("打开链接", "Open links"), desc(tr("点击链接时用哪个浏览器打开；网页搜索也用它。", "Which browser a link opens in; 网页搜索 uses it too.")), {
-                segmented("browser", &labels, sel, |w, i, cx| {
+            vec![row(tr("打开链接", "Open links"), desc(tr("点击链接时用哪个浏览器打开；网页搜索也用它。", "Which browser a link opens in; “Web search” uses it too.")), {
+                self.select("browser", labels, sel, |w, i, cx| {
                     let app = crate::settings::browser_at(i);
                     w.set_pref(|p| p.browser = app.clone(), cx)
                 }, cx)
             }).into_any_element()]
         };
         let mut rows = vec![
-                row(tr("界面语言", "Interface language"), None,
-                    segmented("lang", &["简体中文", "English"], p.english as usize, |w, i, cx| w.set_pref(|p| p.english = i == 1, cx), cx)).into_any_element(),
+                row(tr("界面语言", "Interface language"), None, {
+                    let anchor = self.lang_anchor.clone();
+                    let current = p.lang();
+                    popup_button("lang-picker", current.name(), self.lang_menu.is_some())
+                        .child(canvas(move |b, _, _| anchor.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
+                        .relative()
+                        .on_click(cx.listener(move |w, _, _, cx| { w.pref_menu = None; w.lang_menu = if w.lang_menu.is_some() { None } else { Some(current) }; cx.notify(); }))
+                }).into_any_element(),
                 row(tr("自动下载网络图片", "Download web images"), desc(if crate::FEI_NOTES {
                     tr("关闭后，网络图片显示为占位，可点击单独加载。", "When off, web images show a placeholder you can click to load.")
                 } else { tr("关闭后不联网，网络图片显示为占位，点击单独加载。", "When off the app stays offline; web images show a placeholder you can click to load.") }),
                     switch("pref-remote", p.remote_images).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.remote_images = !p.remote_images, cx)))).into_any_element(),
                 row(tr("快捷新建默认类型", "Quick new (⌘N)"), desc(tr("⌘N 新建时创建的类型；「记住上次」沿用你上次从新建菜单选的类型。", "What ⌘N creates; “Last used” repeats the type you last picked from the New menu.")), {
                     let sel = match p.new_default.as_str() { "doc" => 1, "markdown" => 2, _ => 0 };
-                    segmented("quick-new", &[tr("记住上次", "Last used"), tr("文档", "Document"), "Markdown"], sel,
+                    self.select("quick-new", vec![tr("记住上次", "Last used"), tr("文档", "Document"), "Markdown"], sel,
                         |w, i, cx| w.set_pref(|p| p.new_default = ["", "doc", "markdown"][i].into(), cx), cx)
                 }).into_any_element(),
                 // 网页搜索 opens the selection in the browser; which site is the
                 // user's habit, so it is a preference rather than a constant.
-                row(tr("网页搜索", "Web search"), desc(tr("选中文字后「网页搜索」用哪个网站。", "Which site 网页搜索 opens the selected text in.")), {
-                    let sel = match p.search_engine.as_str() { "bing" => 1, "google" => 2, "duckduckgo" => 3, _ => 0 };
-                    segmented("search-engine", &[tr("百度", "Baidu"), "Bing", "Google", "DuckDuckGo"], sel,
-                        |w, i, cx| w.set_pref(|p| p.search_engine = ["", "bing", "google", "duckduckgo"][i].into(), cx), cx)
+                row(tr("网页搜索", "Web search"), desc(tr("选中文字后「网页搜索」用哪个网站。", "Which site “Web search” opens the selected text in.")), {
+                    let sel = match p.search_engine.as_str() { "baidu" => 1, "bing" => 2, "duckduckgo" => 3, _ => 0 };
+                    self.select("search-engine", vec!["Google", tr("百度", "Baidu"), "Bing", "DuckDuckGo"], sel,
+                        |w, i, cx| w.set_pref(|p| p.search_engine = ["", "baidu", "bing", "duckduckgo"][i].into(), cx), cx)
                 }).into_any_element(),
         ];
         if !crate::FEI_NOTES {
@@ -898,16 +1074,35 @@ impl Workspace {
                     }).into_any_element(),
                     row(tr("文档主题", "Document theme"), None, picker).into_any_element(),
                     sample.into_any_element(),
+                ].into_iter().chain(THEME_CSS.then(|| {
                     row(tr("主题 CSS", "Theme CSS"), Some(where_),
                         div().flex().flex_wrap().items_center().gap(px(8.))
                             .when(customized || own, |d| d.child(link_button("theme-remove", if customized { tr("恢复默认", "Restore") } else { tr("删除", "Delete") })
                                 .on_click(cx.listener(move |w, _, _, cx| w.remove_theme(&rm_id, cx)))))
                             .child(button("theme-duplicate", tr("复制为新主题", "Duplicate")).on_click(cx.listener(move |w, _, _, cx| w.duplicate_theme(&dup_id, cx))))
-                            .child(button("theme-edit", tr("编辑 CSS", "Edit CSS")).on_click(cx.listener(move |w, _, _, cx| w.edit_theme(&edit_id, cx))))).into_any_element(),
-                ]))
+                            .child(button("theme-edit", tr("编辑 CSS", "Edit CSS")).on_click(cx.listener(move |w, _, _, cx| w.edit_theme(&edit_id, cx))))).into_any_element()
+                })).collect()))
                 .children(errors.into_iter().chain(warnings.into_iter().take(8).map(|w| format!("{}：{w}", tr("未生效", "Ignored")))).map(|e| div().px(px(4.)).text_size(px(theme::ui_font_small())).line_height(px(theme::ui_font_small() + 6.)).text_color(Theme::danger()).child(e)))
                 )
             .into_any_element()
+    }
+
+    /// 版本历史: the retention count is stored in the library, so every
+    /// window sees it; the cached copy only avoids reading a file per frame.
+    pub(crate) fn change_history_limit(&mut self, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
+        let mut s = self.store.settings();
+        let next = (s.history_limit() as i32 + delta).clamp(1, 30) as u32;
+        s.set_history_limit(next);
+        if self.store.save_settings(&s).is_err() { return }
+        self.history_limit = next;
+        // Other windows cache the number for their settings page; saving
+        // always reads the library, so this is display-only.
+        for handle in cx.windows().into_iter()
+            .filter(|w| w.window_id() != window.window_handle().window_id())
+            .filter_map(|w| w.downcast::<Workspace>()) {
+            let _ = handle.update(cx, |ws, _, cx| { ws.history_limit = next; cx.notify() });
+        }
+        cx.notify();
     }
 
     fn library_page(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -922,9 +1117,11 @@ impl Workspace {
         } else { tr("在文件管理器中显示", "Show in File Manager") };
         div().w_full().flex().flex_col().gap(px(8.))
             .child(group(None, vec![
-                row(tr("文档库文件夹", "Documents folder"), Some(location.into()),
-                    button("reveal-library", reveal).on_click(|_, _, cx| cx.reveal_path(&crate::store::Store::root_dir()))).into_any_element(),
-                row(tr("回收站", "Trash"), Some(if english() { format!("Deleted documents are kept for {} days.", crate::store::TRASH_DAYS) } else { format!("删除的文档保留 {} 天后自动清除。", crate::store::TRASH_DAYS) }.into()),
+                row(tr("文档库文件夹", "Documents folder"), Some(location.into()), div().flex_none().flex().gap(px(8.))
+                    .child(button("reveal-library", reveal).on_click(|_, _, cx| cx.reveal_path(&crate::store::Store::root_dir())))
+                    // A test run's library (`QUIET_MD_HOME`) is fixed: a restart would lose it.
+                    .when(!cfg!(all(target_os = "macos", feature = "cloudkit-restore")) && std::env::var_os("QUIET_MD_HOME").is_none(), |d| d.child(button("change-library", tr("更改…", "Change…")).on_click(cx.listener(|w, _, _, cx| w.pick_library(cx)))))).into_any_element(),
+                row(tr("回收站", "Trash"), Some(crate::localized_format!("删除的文档保留 {} 天后自动清除。", "Deleted documents are kept for {} days.", crate::store::TRASH_DAYS).into()),
                     button("open-trash", tr("打开", "Open")).on_click(cx.listener(|w, _, _, cx| w.show_view(View::Trash, cx)))).into_any_element(),
                 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
                 row(tr("从 Quiet.md 导入", "Import from Quiet.md"),
@@ -948,6 +1145,12 @@ impl Workspace {
                         if cloud_subscription::available() { w.subscription_updated(window, cx); }
                         if !crate::cloud_trial::testflight() && crate::cloud_trial::available() { w.trial_action(false, window, cx); }
                     }))).into_any_element(),
+                row(tr("版本历史", "Version history"),
+                    desc(tr("每篇文档保留的历史版本数（1–30 份）", "Snapshots kept for each document (1–30)")),
+                    div().flex_none().flex().items_center().gap(px(12.))
+                        .child(button("history-minus", "−").on_click(cx.listener(|w, _, window, cx| w.change_history_limit(-1, window, cx))))
+                        .child(div().w(px(40.)).flex().items_center().justify_center().text_size(px(theme::ui_font())).text_color(Theme::text()).child(self.history_limit.to_string()))
+                        .child(button("history-plus", "+").on_click(cx.listener(|w, _, window, cx| w.change_history_limit(1, window, cx))))).into_any_element(),
             ]))
             .children({
                 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
@@ -956,6 +1159,21 @@ impl Workspace {
                 { None::<Div> }
             })
             .into_any_element()
+    }
+
+    /// 更改…: a folder picked as the next library; `library_in` decides
+    /// whether it is used as it is or gets a Quiet.md folder inside.
+    fn pick_library(&mut self, cx: &mut Context<Self>) {
+        if cfg!(all(target_os = "macos", feature = "cloudkit-restore")) { return; }
+        let picked = crate::devtools::take_pick();
+        let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(tr("选择", "Choose").into()), extensions: None }));
+        cx.spawn(async move |this, cx| {
+            let paths = match prompt { Some(p) => p.await.ok().and_then(Result::ok).flatten(), None => picked };
+            let Some(dir) = paths.and_then(|p| p.into_iter().next()) else { return };
+            let root = crate::onboarding::library_in(dir);
+            if root == crate::store::Store::root_dir() { return }
+            let _ = this.update(cx, |w, cx| { w.confirm = Some(crate::app::Confirm::SwitchLibrary(root)); cx.notify(); });
+        }).detach();
     }
 
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
@@ -1803,11 +2021,11 @@ fn update_row(cx: &mut Context<Workspace>) -> Div {
 /// GPUI samples images bilinearly without mipmaps, so the 1024px file shrunk
 /// 5.8× on the GPU skips most of its pixels and the edges come out jagged.
 /// On a 1x screen the 2:1 step is still an exact box filter.
-fn about_icon() -> ImageSource {
+pub(crate) fn about_icon() -> ImageSource {
     const PATH: &str = "branding/app-icon.png";
     static ICON: LazyLock<Option<Arc<RenderImage>>> = LazyLock::new(|| {
-        let bytes = crate::assets::Assets.load(PATH).ok()??;
-        let mut buf = image::imageops::resize(&image::load_from_memory(&bytes).ok()?.into_rgba8(), 176, 176, image::imageops::FilterType::Lanczos3);
+        let bytes = crate::assets::get(PATH)?;
+        let mut buf = image::imageops::resize(&image::load_from_memory(bytes).ok()?.into_rgba8(), 176, 176, image::imageops::FilterType::Lanczos3);
         for px in buf.pixels_mut() {
             px.0.swap(0, 2);
         }
@@ -1816,9 +2034,14 @@ fn about_icon() -> ImageSource {
     match &*ICON { Some(icon) => icon.clone().into(), None => PATH.into() }
 }
 
-pub fn label(text: impl AsRef<str>) -> String { localize(text.as_ref(), english()).to_string() }
+pub fn label(text: impl AsRef<str>) -> String { translate(text.as_ref(), lang()).to_string() }
 
-pub fn text(text: &str) -> &str { localize(text, english()) }
+pub fn text(text: &str) -> &str { translate(text, lang()) }
+
+/// `localize` for any language: its own string, else the English one.
+pub(crate) fn translate(text: &str, lang: Lang) -> &str {
+    match lang { Lang::Zh | Lang::En => localize(text, lang == Lang::En), l => crate::l10n::get(l, text).unwrap_or_else(|| localize(text, true)) }
+}
 
 pub(crate) fn localize(text: &str, english: bool) -> &str {
     if !english { return text; }
@@ -1990,6 +2213,10 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "下载为" => "Download as",
         "打印" => "Print",
         "显示引用列表" => "Show references",
+        "复制为 Markdown" => "Copy as Markdown",
+        "复制文件地址" => "Copy file path",
+        "已复制文件地址" => "File path copied",
+        "已复制为 Markdown" => "Copied as Markdown",
         "为当前窗口选择合适页宽" => "Choose a page width for this window",
         "默认" => "Default",
         "较宽" => "Wide",
@@ -2162,6 +2389,13 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "五" => "Fri",
         "六" => "Sat",
         "日" => "Sun",
+        "周一" => "Mon",
+        "周二" => "Tue",
+        "周三" => "Wed",
+        "周四" => "Thu",
+        "周五" => "Fri",
+        "周六" => "Sat",
+        "周日" => "Sun",
         "事件发生时" => "At time of event",
         "提前 5 分钟" => "5 minutes before",
         "提前 15 分钟" => "15 minutes before",
@@ -2270,7 +2504,8 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
 #[macro_export]
 macro_rules! localized_format {
     ($zh:literal, $en:literal $(, $arg:expr)* $(,)?) => {
-        if $crate::settings::english() { format!($en $(, $arg)*) } else { format!($zh $(, $arg)*) }
+        // Other languages translate the Chinese template; the values are read back out of the Chinese text.
+        $crate::settings::localized($crate::settings::lang(), $zh, || format!($zh $(, $arg)*), || format!($en $(, $arg)*))
     };
 }
 
@@ -2282,7 +2517,12 @@ pub fn display_title(title: &str) -> String {
 
 /// Core diagnostics stay independent of UI language. Only known message templates
 /// are translated here; captured paths, document IDs and OS errors are preserved.
-pub fn diagnostic(message: &str) -> String { diagnostic_for(message, english()) }
+pub fn diagnostic(message: &str) -> String {
+    let l = lang();
+    if l != Lang::Zh && l != Lang::En
+        && let Some(s) = crate::l10n::get(l, message).map(str::to_string).or_else(|| crate::l10n::refill_any(l, message)) { return s; }
+    diagnostic_for(message, english())
+}
 
 fn diagnostic_for(message: &str, english: bool) -> String {
     if !english { return message.to_string(); }
@@ -2390,5 +2630,26 @@ mod preference_tests {
             let round_trip: Preferences = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
             assert_eq!(round_trip.theme_id(), expected);
         }
+    }
+
+    #[test]
+    fn language_comes_from_older_files_english_switch() {
+        use super::Lang;
+        for (json, expected) in [
+            (r#"{"english":false}"#, Lang::Zh),
+            (r#"{"english":true}"#, Lang::En),
+            (r#"{"english":true,"language":"ko"}"#, Lang::Ko),
+            (r#"{"english":true,"language":"ar"}"#, Lang::Ar),
+            (r#"{"english":true,"language":"xx"}"#, Lang::En),
+        ] {
+            let saved: Preferences = serde_json::from_str(json).unwrap();
+            assert_eq!(saved.lang(), expected, "{json}");
+        }
+        let mut p: Preferences = serde_json::from_str(r#"{"english":false}"#).unwrap();
+        p.set_lang(Lang::Ko);
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!((json["language"].as_str(), json["english"].as_bool()), (Some("ko"), Some(true)), "older builds read English");
+        p.set_lang(Lang::Zh);
+        assert!(!p.english);
     }
 }

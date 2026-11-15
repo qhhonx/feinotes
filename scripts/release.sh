@@ -15,12 +15,13 @@ case "$target" in
   x86_64-apple-darwin) arch=x86_64 ;;
   *) echo "Unsupported macOS target: $target" >&2; exit 1 ;;
 esac
-binary="${CARGO_TARGET_DIR:-target}/release/quiet_md"
+# The dist profile (Cargo.toml): LTO, no symbols, line tables in a dSYM.
+binary="${CARGO_TARGET_DIR:-target}/dist/quiet_md"
 if [ -n "${MACOS_TARGET:-}" ]; then
-  cargo build --release --locked --target "$target"
-  binary="${CARGO_TARGET_DIR:-target}/$target/release/quiet_md"
+  cargo build --profile dist --locked --target "$target"
+  binary="${CARGO_TARGET_DIR:-target}/$target/dist/quiet_md"
 else
-  cargo build --release --locked
+  cargo build --profile dist --locked
 fi
 lipo "$binary" -verify_arch "$arch"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -28,6 +29,9 @@ out=$(mktemp -d "$PWD/dist-release.XXXXXX")
 app="$out/quiet.md.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/"
+# Kept beside the package, not in it: resolves the addresses a panic logs
+# (`atos -o <dSYM> -l <base> <addresses>`) and crash reports, matched by UUID.
+ditto -c -k --keepParent "$binary.dSYM/" "$out/dSYM-quiet-md-$version-macos-$arch.zip"
 cp LICENSE THIRD_PARTY.md "$app/Contents/Resources/"
 icons="$out/AppIcon.iconset"
 mkdir -p "$icons"
@@ -89,4 +93,4 @@ fi
 archive="$out/quiet-md-$version-macos-$arch$suffix.zip"
 ditto -c -k --keepParent "$app" "$archive"
 (cd "$out" && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")
-printf 'Release artifact: %s\n' "$archive"
+printf 'Release artifact: %s\nDebug symbols (keep, do not publish): %s\n' "$archive" "$out/dSYM-quiet-md-$version-macos-$arch.zip"

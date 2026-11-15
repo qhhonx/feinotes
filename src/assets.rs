@@ -5,6 +5,9 @@ use std::borrow::Cow;
 
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 
+/// One embedded file by its path under `assets/`.
+pub fn get(path: &str) -> Option<&'static [u8]> { FILES.iter().find(|(p, _)| *p == path).map(|(_, b)| *b) }
+
 pub struct Assets;
 
 impl AssetSource for Assets {
@@ -12,7 +15,7 @@ impl AssetSource for Assets {
         if path.starts_with(crate::editor::math::SVG_PREFIX) {
             return Ok(crate::editor::math::svg_asset(path).map(Cow::Owned));
         }
-        Ok(FILES.iter().find(|(p, _)| *p == path).map(|(_, b)| Cow::Borrowed(*b)))
+        Ok(get(path).map(Cow::Borrowed))
     }
 
     fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {

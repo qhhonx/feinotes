@@ -1041,19 +1041,23 @@ fn handle_gpu_device_lost(
     // If we don't wait, the final drawing result will be blank.
     std::thread::sleep(std::time::Duration::from_millis(350));
 
+    let mut recovered = false;
     try_to_recover_from_device_lost(
         || {
             DirectXDevices::new()
                 .context("Failed to recreate new DirectX devices after device lost")
         },
-        |new_devices| *directx_devices = new_devices,
+        |new_devices| {
+            *directx_devices = new_devices;
+            recovered = true;
+        },
         || {
             log::error!("Failed to recover DirectX devices after multiple attempts.");
-            // Do something here?
-            // At this point, the device loss is considered unrecoverable.
-            // std::process::exit(1);
         },
     );
+    // quiet.md: don't hand the lost devices to the windows as if they were new; the
+    // next vsync finds the device still lost and tries again.
+    if !recovered { return; }
     log::info!("DirectX devices successfully recreated.");
 
     unsafe {

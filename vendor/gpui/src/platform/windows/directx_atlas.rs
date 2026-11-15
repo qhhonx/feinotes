@@ -44,13 +44,18 @@ impl DirectXAtlas {
         }))
     }
 
+    // quiet.md: None for a texture that no longer exists (dropped by device lost)
+    // instead of panicking on the index.
     pub(crate) fn get_texture_view(
         &self,
         id: AtlasTextureId,
-    ) -> [Option<ID3D11ShaderResourceView>; 1] {
+    ) -> Option<[Option<ID3D11ShaderResourceView>; 1]> {
         let lock = self.0.lock();
-        let tex = lock.texture(id);
-        tex.view.clone()
+        let textures = match id.kind {
+            crate::AtlasTextureKind::Monochrome => &lock.monochrome_textures,
+            crate::AtlasTextureKind::Polychrome => &lock.polychrome_textures,
+        };
+        Some(textures.textures.get(id.index as usize)?.as_ref()?.view.clone())
     }
 
     pub(crate) fn handle_device_lost(

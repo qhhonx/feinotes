@@ -1221,3 +1221,43 @@ fn measure_history_growth() -> Result<()> {
     assert_eq!(journal.counts()?, (0, 0, 0, 0));
     Ok(())
 }
+
+
+#[cfg(test)]
+#[test]
+fn local_version_restore_commits_cloud_state_atomically_and_obeys_shared_access() -> Result<()> {
+    let fixture = HistoryFixture::new()?;
+    let mut journal = Journal::open(&fixture.0, None)?;
+    let mut raw = Store::open_sqlite_at(fixture.0.clone())?;
+    let old = crate::docxml::parse("<title>历史恢复</title><p>第一版</p><table><tr><td><p>单元格</p></td></tr></table>")?;
+    let id = raw.create_from(&old)?;
+    let mut store = SharedStore::for_test(raw);
+    journal.merge(&Default::default())?;
+    let mut edited = store.load_for_edit(&id, false)?;
+    edited.blocks[0].text = crate::model::RichText::plain("第二版");
+    journal.save(&mut store, &id, &Core::new(edited.clone()))?;
+    let version = store.versions(&id)[0].name.clone();
+    let restored = store.restore_version(&id, &version)?;
+    assert_eq!(restored.blocks[0].text.text, "第一版");
+    let queue = journal.counts()?.0;
+    let before = store.load(&id)?;
+    journal.db.execute_batch("CREATE TRIGGER reject_test_outbox BEFORE INSERT ON outbox BEGIN SELECT RAISE(ABORT, 'injected durable queue failure'); END;")?;
+    assert!(journal.save(&mut store, &id, &Core::new(restored.clone())).is_err());
+    assert_eq!(store.load(&id)?, before);
+    assert_eq!(journal.counts()?.0, queue);
+    journal.db.execute_batch("DROP TRIGGER reject_test_outbox;")?;
+    journal.save(&mut store, &id, &Core::new(restored.clone()))?;
+    assert!(journal.counts()?.0 > queue);
+    assert_eq!(store.load(&id)?, restored);
+    let state = journal.text_state(&id)?.context("Missing restored CRDT")?;
+    assert_eq!(content::render(&state)?.blocks[0].text.text, "第一版");
+    journal.room = Some(shared::Scope { note: id.clone(), owner: Some("synthetic-owner".into()) });
+    for access in [Access::ReadOnly, Access::Revoked] {
+        journal.access = Some(access);
+        let queue = journal.counts()?.0;
+        assert!(journal.save(&mut store, &id, &Core::new(edited.clone())).is_err());
+        assert_eq!(store.load(&id)?, restored);
+        assert_eq!(journal.counts()?.0, queue);
+    }
+    Ok(())
+}

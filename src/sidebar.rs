@@ -14,10 +14,21 @@ use gpui::{prelude::FluentBuilder, *};
 const ROW_MENU_W: f32 = 180.;
 const ROW_ITEM: f32 = crate::ui::MENU_ROW_H;
 const ROW_DIVIDER: f32 = 11.;
+const ROW_ITEMS: usize = 9;
+const ROW_DIVIDERS: usize = 2;
+const DOWNLOAD_INDEX: usize = 5;
+const DIVIDERS_BEFORE_DOWNLOAD: usize = 1;
 
-fn row_menu_height(items: usize, dividers: usize) -> f32 {
+const fn row_menu_height(items: usize, dividers: usize) -> f32 {
     2. + crate::ui::MENU_PAD_Y * 2. + items as f32 * ROW_ITEM + dividers as f32 * ROW_DIVIDER
 }
+
+const fn row_sub_top(menu_top: f32) -> f32 {
+    menu_top + DOWNLOAD_INDEX as f32 * ROW_ITEM + DIVIDERS_BEFORE_DOWNLOAD as f32 * ROW_DIVIDER
+}
+
+const _: () = assert!(row_menu_height(ROW_ITEMS, ROW_DIVIDERS) == 324.);
+const _: () = assert!(row_sub_top(0.) == 171.);
 
 /// Sidebar geometry (measured from the window edge), shared by the
 /// document sidebar and 设置's: selection pills start 14pt in, every row is
@@ -108,6 +119,7 @@ impl Workspace {
     pub(crate) fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let entries: Vec<Entry> = self.entries.clone();
         self.more_bounds.borrow_mut().clear();
+        self.settle_sidebar_drop(cx);
 
         let header = div()
             .h(px(crate::app::HEADER_H))
@@ -182,7 +194,8 @@ impl Workspace {
             }
             list = list.child(div().h(px(GROUP_GAP - SECTION_TOP)));
         }
-        list = list.child(self.section(1, crate::settings::text("我的文档"), cx));
+        // Dropped from outside with no tree shown to open a slot in: the heading lights.
+        list = list.child(self.section(1, crate::settings::text("我的文档"), cx).rounded(px(ROW_R)).when(self.sidebar_drop_top(), |d| d.bg(Theme::sidebar_selected())));
         if !self.folded[1] {
             list = list.child(self.render_folder_rows(window, cx));
         }
@@ -256,7 +269,7 @@ impl Workspace {
             .when_some(surface(), |d, c| d.bg(c))
             .child(header)
             .child(nav)
-            .child(div().id("doc-list").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.list_scroll).child(list))
+            .child(self.sidebar_drop_zone(div().id("doc-list").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.list_scroll).child(list), cx))
             .children(crate::changelog::card(cx.listener(|_, _, _, cx| cx.notify())))
             .child(footer)
             .into_any_element()
@@ -529,7 +542,7 @@ impl Workspace {
             .cursor_pointer()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |w, ev: &MouseDownEvent, window, cx| {
+                cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
                     if w.rename.as_ref().is_some_and(|r| r.id == id) {
                         return;
                     }
@@ -541,9 +554,14 @@ impl Workspace {
                         return;
                     }
                     if in_lib { w.arm_folder_drag(&id, ev.position, cx); }
-                    else { w.open(&id, window, cx); }
                 }),
             )
+            // A 本机文件 row opens on click, and can be carried up into the tree to import it.
+            .when(key == "local", |d| {
+                let (open, drag) = (e.id.clone(), crate::sidebar_drop::LocalRowDrag { id: e.id.clone(), title: crate::settings::display_title(&e.title) });
+                d.on_click(cx.listener(move |w, _, window, cx| w.open(&open, window, cx)))
+                    .on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()))
+            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
@@ -778,7 +796,7 @@ impl Workspace {
                 }
             })
         };
-        let (dup, mv, pin, star, dl, ren, del) = (m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone());
+        let (dup, mv, path, pin, star, dl, ren, del) = (m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone());
         let pdf = m.id.clone();
         let new_window = m.id.clone();
         let sub_bounds = self.row_sub_bounds.clone();
@@ -817,6 +835,17 @@ impl Workspace {
                     .on_click(cx.listener(move |w, _, window, cx| w.open_move(vec![mv.clone()], window, cx))),
             )
             .child(
+                item("rm-path", "copy", crate::settings::text("复制文件地址"))
+                    .on_hover(set_sub(false))
+                    .on_click(cx.listener(move |w, _, _, cx| {
+                        w.row_menu = None;
+                        if let Some(path) = w.store.file_path(&path) {
+                            cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string()));
+                            w.show_toast(crate::settings::text("已复制文件地址"), cx);
+                        }
+                    })),
+            )
+            .child(
                 item("rm-pin", if pinned { "pin-off" } else { "pin" }, if pinned { crate::settings::text("从“置顶”移除") } else { crate::settings::text("添加到“置顶”") })
                     .on_hover(set_sub(false))
                     .on_click(cx.listener(move |w, _, _, cx| w.toggle_pin(&pin, cx))),
@@ -845,7 +874,7 @@ impl Workspace {
                     .on_click(cx.listener(move |w, _, _, cx| w.ask_delete(&del, cx))),
             );
         let vh = f32::from(window.viewport_size().height);
-        let menu_h = row_menu_height(8, 2);
+        let menu_h = row_menu_height(ROW_ITEMS, ROW_DIVIDERS);
         // From the "…" button: hang 2px below it, or sit 2px above it when
         // there's no room below. From a right-click: at the pointer.
         let (origin, corner) = if m.pos.x < px(0.) {
@@ -870,8 +899,8 @@ impl Workspace {
         if m.sub {
             let record = self.row_sub_bounds.clone();
             record.set(None);
-            // Level the submenu's first item with 下载 (the 5th item, after one divider).
-            let top = menu_top + 4. * ROW_ITEM + ROW_DIVIDER;
+            // Level the submenu's first item with 下载.
+            let top = row_sub_top(menu_top);
             let left = match corner {
                 Corner::TopRight | Corner::BottomRight => origin.x - px(ROW_MENU_W),
                 _ => origin.x,

@@ -60,8 +60,15 @@ def stable(folder, frames=("after",)):
             f"Viewport moved {frame}; see {folder}"
 
 
+def saved_document(folder):
+    library = folder / "lib"
+    files = [p for p in library.rglob("*.xml") if not any(c.startswith(".") for c in p.relative_to(library).parts)]
+    assert len(files) == 1, files
+    return ET.fromstring("<doc>" + files[0].read_text() + "</doc>")
+
+
 def saved_matches(folder, expected):
-    saved = ET.fromstring("<doc>" + (folder / "lib/docs" / f"{doc_id}.xml").read_text() + "</doc>")
+    saved = saved_document(folder)
     canonical = lambda tree: ET.canonicalize(ET.tostring(tree, encoding="unicode"), strip_text=True)
     assert canonical(saved) == canonical(expected), f"Unexpected document/selection change; see {folder}"
 
@@ -128,7 +135,7 @@ def grid_resize(name):
     folder = run_script(name, source, steps)
     stable(folder, ('during', 'after'))
     expected.find('p').text = marker + "CARET_ANCHOR"
-    saved = ET.fromstring("<doc>" + (folder / "lib/docs" / f"{doc_id}.xml").read_text() + "</doc>")
+    saved = saved_document(folder)
     ratios = [float(c.get('width-ratio')) for c in saved.findall('.//column')]
     assert len(ratios) == 2 and ratios[0] > .5 and abs(sum(ratios) - 1) < .001, f"Resize missed; see {folder}"
     for col, ratio in zip(expected.findall('.//column'), saved.findall('.//column')):

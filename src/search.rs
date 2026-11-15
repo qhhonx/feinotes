@@ -170,12 +170,12 @@ pub(crate) fn extra_line(e: &Entry) -> Div {
     let shared = crate::in_shared_note();
     if e.meta.opened > 0 {
         let opened = format_visit(e.meta.opened);
-        extra.push(extra_segment(Some("eye"), if crate::settings::english() { format!("Opened {opened}") }
-            else if shared { format!("{opened}打开") } else { format!("你在 {opened}打开过") }));
+        extra.push(extra_segment(Some("eye"), if shared { crate::localized_format!("{}打开", "Opened {}", opened) }
+            else { crate::localized_format!("你在 {}打开过", "Opened {}", opened) }));
     }
     let modified = format_visit(e.meta.modified);
-    extra.push(extra_segment(Some("pen-line"), if crate::settings::english() { format!("Modified {modified}") }
-        else if shared { format!("{modified}修改") } else { format!("我在 {modified}修改过") }));
+    extra.push(extra_segment(Some("pen-line"), if shared { crate::localized_format!("{}修改", "Modified {}", modified) }
+        else { crate::localized_format!("我在 {}修改过", "Modified {}", modified) }));
     let last = extra.len() - 1;
     let extra = extra.into_iter().enumerate().flat_map(|(i, seg)| {
         let seg = if i == last { seg.flex_shrink().min_w_0().overflow_hidden() } else { seg };

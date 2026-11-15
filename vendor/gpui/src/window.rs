@@ -823,6 +823,8 @@ pub struct Window {
     pub(crate) platform_window: Box<dyn PlatformWindow>,
     display_id: Option<DisplayId>,
     sprite_atlas: Arc<dyn PlatformAtlas>,
+    /// quiet.md: hollow images painted without a tile since the last take.
+    missing_images: Vec<crate::ImageId>,
     text_system: Arc<WindowTextSystem>,
     rem_size: Pixels,
     /// The stack of override values for the window's rem size.
@@ -862,6 +864,7 @@ pub struct Window {
     active: Rc<Cell<bool>>,
     hovered: Rc<Cell<bool>>,
     pub(crate) needs_present: Rc<Cell<bool>>,
+    present_in_transaction: Cell<bool>,
     pub(crate) last_input_timestamp: Rc<Cell<Instant>>,
     pub(crate) refreshing: bool,
     pub(crate) activation_observers: SubscriberSet<(), AnyObserver>,
@@ -1211,6 +1214,7 @@ impl Window {
             platform_window,
             display_id,
             sprite_atlas,
+            missing_images: Vec::new(),
             text_system,
             rem_size: px(16.),
             rem_size_override_stack: SmallVec::new(),
@@ -1245,6 +1249,7 @@ impl Window {
             active,
             hovered,
             needs_present,
+            present_in_transaction: Cell::new(false),
             last_input_timestamp,
             refreshing: false,
             activation_observers: SubscriberSet::new(),
@@ -1347,6 +1352,9 @@ impl Window {
     {
         let view = cx.new(|cx| build_view(self, cx));
         self.root = Some(view.clone().into());
+        // The window's handle says what its root is: `downcast` to the new type must find it.
+        self.handle.state_type = TypeId::of::<E>();
+        cx.window_handles.insert(self.handle.id, self.handle);
         self.refresh();
         view
     }
@@ -1778,6 +1786,19 @@ impl Window {
         self.platform_window.window_controls()
     }
 
+    /// Change the smallest content size the user can resize the window to
+    /// (macOS and Windows; elsewhere the size given at creation stays).
+    pub fn set_window_min_size(&self, size: Size<Pixels>) {
+        self.platform_window.set_min_size(size);
+    }
+
+    /// Show the next frame in the same Core Animation transaction as native
+    /// views changed while rendering it (macOS), so they appear together
+    /// instead of the native change landing a refresh ahead.
+    pub fn present_next_frame_in_transaction(&self) {
+        self.present_in_transaction.set(true);
+    }
+
     /// Updates the window's title at the platform level.
     pub fn set_window_title(&mut self, title: &str) {
         self.platform_window.set_title(title);
@@ -2028,7 +2049,8 @@ impl Window {
 
     #[profiling::function]
     fn present(&self) {
-        self.platform_window.draw(&self.rendered_frame.scene);
+        if self.present_in_transaction.take() { self.platform_window.draw_in_transaction(&self.rendered_frame.scene); }
+        else { self.platform_window.draw(&self.rendered_frame.scene); }
         self.needs_present.set(false);
         profiling::finish_frame!();
     }
@@ -3166,18 +3188,18 @@ impl Window {
             frame_index,
         };
 
-        let tile = self
+        // quiet.md: a hollow image not in this atlas is skipped and listed.
+        let Some(tile) = self
             .sprite_atlas
             .get_or_insert_with(&params.into(), &mut || {
-                Ok(Some((
-                    data.size(frame_index),
-                    Cow::Borrowed(
-                        data.as_bytes(frame_index)
-                            .expect("It's the caller's job to pass a valid frame index"),
-                    ),
-                )))
+                Ok(data.as_bytes(frame_index).map(|bytes| (data.size(frame_index), Cow::Borrowed(bytes))))
             })?
-            .expect("Callback above only returns Some");
+        else {
+            // Ask for one more frame: the owner decodes it again when it next renders.
+            if self.missing_images.is_empty() { self.on_next_frame(|window, _| window.refresh()); }
+            self.missing_images.push(data.id);
+            return Ok(());
+        };
         let content_mask = self.content_mask().scale(scale_factor);
         let corner_radii = corner_radii.scale(scale_factor);
         let opacity = self.element_opacity();
@@ -3215,6 +3237,12 @@ impl Window {
             content_mask,
             image_buffer,
         });
+    }
+
+    /// quiet.md: hollow images (`RenderImage::hollow`) this window could not
+    /// draw since the last call: their owner should decode them again.
+    pub fn take_missing_images(&mut self) -> Vec<crate::ImageId> {
+        std::mem::take(&mut self.missing_images)
     }
 
     /// Removes an image from the sprite atlas.

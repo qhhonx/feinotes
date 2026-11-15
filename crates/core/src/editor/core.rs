@@ -629,7 +629,8 @@ impl Core {
             if !out.is_empty() {
                 out.push('\n');
             }
-            out.push_str(&t.text[a.min(b)..b]);
+            // Equations as their LaTeX source (#69): copied text keeps them.
+            out.push_str(&t.slice(a.min(b)..b).plain_text());
         }
         out
     }
@@ -2901,7 +2902,7 @@ impl Core {
             ("~", |m| m.underline = true, true),
             ("`", |m| m.code = true, false),
         ];
-        let boundary = |c: Option<char>| c.is_none_or(char::is_whitespace);
+        let boundary = |c: Option<char>| c.is_none_or(|c| c.is_whitespace() || "，。；：！？、）】》”’".contains(c));
         // `$x$` and `$$x$$` become an inline equation.
         for delim in ["$$", "$"] {
             if !before.ends_with(delim) || t.slice(0..p.offset).runs.last().is_some_and(|r| r.marks.code) {
@@ -2910,7 +2911,9 @@ impl Core {
             let inner_end = before.len() - delim.len();
             let Some(open) = before[..inner_end].rfind(delim) else { continue };
             let inner = &before[open + delim.len()..inner_end];
-            if inner.trim().is_empty()
+            let src = crate::paste::markdown_equation_source(inner);
+            let money = delim == "$" && inner.starts_with(|c: char| c.is_ascii_digit()) && !crate::paste::is_numeric_math(inner);
+            if money || inner.trim().is_empty()
                 || inner.starts_with('$')
                 || inner.ends_with('$')
                 || inner.contains(EQUATION)
@@ -2922,7 +2925,7 @@ impl Core {
                 continue;
             }
             let mut marks = t.marks_at(open + delim.len());
-            marks.inline = Some(crate::docxml::to_inline(InlineKind::Equation(inner.to_string())));
+            marks.inline = Some(crate::docxml::to_inline(InlineKind::Equation(src)));
             self.checkpoint(EditKind::Other);
             self.break_coalescing();
             let mut ins = RichText::default();
@@ -3704,7 +3707,15 @@ mod tests {
 
     #[test]
     fn markdown_equations() {
-        for (typed_text, src) in [("x $a^2$", Some("a^2")), ("x $$b$$", Some("b")), ("x$a$", None), ("$ $", None)] {
+        for (typed_text, src) in [
+            ("x $a^2$", Some("a^2")),
+            ("x $$b$$", Some("b")),
+            ("x$a$", None),
+            ("$ $", None),
+            ("价格：$5", None),
+            ("QPS：$1000 / 30 = 33$", Some("1000 / 30 = 33")),
+            ("外推：$1 \\\\times 2 = 2$", Some("1 \\times 2 = 2")),
+        ] {
             let mut c = doc("<title>T</title><p></p>");
             let b = id(&c, 1);
             c.sel = Selection::caret(Pos::new(b, 0));
@@ -3712,8 +3723,8 @@ mod tests {
             let t = c.text_of(b).unwrap().text.clone();
             match src {
                 Some(src) => {
-                    assert_eq!(t, format!("x {EQUATION}"), "{typed_text}");
-                    assert_eq!(c.equation_source(Pos::new(b, 2)).as_deref(), Some(src));
+                    let at = t.rfind(EQUATION).unwrap();
+                    assert_eq!(c.equation_source(Pos::new(b, at)).as_deref(), Some(src), "{typed_text}");
                     assert_eq!(c.sel.head.offset, t.len());
                 }
                 None => assert!(!t.contains(EQUATION), "{typed_text}"),
@@ -3798,6 +3809,19 @@ mod tests {
         c.paste_markdown("A\nB");
         assert_eq!(xml(&c), "<title>TA</title>\n<p>B</p>\n<p>body</p>\n");
         assert_eq!(c.sel.head, Pos::new(id(&c, 1), 1));
+    }
+
+    #[test]
+    fn paste_markdown_display_math_into_nonempty_block() {
+        let mut c = doc("<title>T</title><p>x</p>");
+        let b = id(&c, 1);
+        c.sel = Selection::caret(Pos::new(b, 1));
+        c.paste_markdown("$$\nV = I R\n$$\nafter");
+        assert_eq!(c.doc.blocks[0].text.text, "x");
+        assert_eq!(c.doc.blocks[1].text.text, EQUATION);
+        let equation = c.doc.blocks.iter().find(|b| b.text.text == EQUATION).unwrap();
+        assert_eq!(c.equation_source(Pos::new(equation.id, 0)).as_deref(), Some("V = I R"));
+        assert!(c.doc.blocks.iter().any(|b| b.text.text == "after"));
     }
 
     #[test]
@@ -3982,6 +4006,16 @@ mod tests {
     }
 
     #[test]
+    fn selected_text_keeps_equations() {
+        let mut c = doc("<title>T</title><p>ab</p>");
+        let b = id(&c, 1);
+        c.sel = Selection::caret(Pos::new(b, 1));
+        let p = c.insert_equation("X_t").unwrap();
+        c.sel = Selection { anchor: Pos::new(b, 0), head: Pos::new(b, p.offset + EQUATION.len() + 1) };
+        assert_eq!(c.selected_text(), "aX_tb");
+    }
+
+    #[test]
     fn select_all_escalates() {
         let mut c = doc("<title>T</title><p>x</p><callout><p>ab</p></callout>");
         let (x, ab) = (id(&c, 1), id(&c, 2));
@@ -4005,5 +4039,22 @@ mod tests {
         c.select_block(hr);
         c.enter_from_block_sel();
         assert_eq!(c.units().len(), 4);
+    }
+
+    /// ⌥← / ⌥→ in a text field land where the editor's do.
+    #[test]
+    fn words_are_moved_past_whole_words() {
+        let s = "rename this file";
+        assert_eq!(next_word(s, 0), 6);
+        assert_eq!(next_word(s, 6), 11);
+        assert_eq!(prev_word(s, 11), 7);
+        assert_eq!(prev_word(s, 6), 0);
+        // Runs of spaces are skipped, not stopped in.
+        assert_eq!(next_word("rename  this", 6), 12);
+        assert_eq!(prev_word("  this", 6), 2);
+        // Chinese has no spaces between words: a stop per character, as in the
+        // editor.
+        assert_eq!(next_word("中文标题", 0), 3);
+        assert_eq!(prev_word("中文标题", 12), 9);
     }
 }

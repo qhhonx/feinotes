@@ -130,6 +130,17 @@ pub fn dialog(id: &'static str) -> Stateful<Div> {
     div().id(id).occlude().rounded(px(16.)).bg(crate::theme::raised(Theme::bg_body())).shadow(theme::shadow_dialog()).font_family(theme::UI_FONT).text_color(Theme::text())
 }
 
+/// A busy mark for a button: three short bars rising and falling in turn,
+/// for `t` seconds since it started. The caller asks for frames while it shows.
+pub fn spinner(t: f32, color: Hsla) -> Div {
+    let mut bars = div().h(px(14.)).flex().items_center().gap(px(3.));
+    for i in 0..3 {
+        let w = 0.5 + 0.5 * (std::f32::consts::TAU * (t * 1.25 - i as f32 * 0.18)).sin();
+        bars = bars.child(div().w(px(3.)).h(px(5. + 9. * w)).rounded(px(1.5)).bg(color.opacity(0.55 + 0.45 * w)));
+    }
+    bars
+}
+
 /// The primary button: the accent, a white 13pt semibold label, 30 tall, radius 9.
 pub fn primary_button(id: &'static str, label: &'static str) -> Stateful<Div> {
     div()
@@ -479,7 +490,7 @@ pub fn format_time(secs: u64) -> String {
     } else if y == ny {
         crate::localized_format!("{mo}月{d}日", "{mo:02}-{d:02}")
     } else {
-        if crate::settings::english() { format!("{y}-{mo:02}-{d:02}") } else { format!("{y}年{mo}月{d}日") }
+        crate::localized_format!("{y}年{mo}月{d}日", "{y}-{mo:02}-{d:02}")
     }
 }
 
@@ -498,7 +509,7 @@ pub fn format_ago(secs: u64) -> String {
 /// Full date ("2025年12月2日"), as in 文档信息.
 pub fn format_date(secs: u64) -> String {
     let (y, mo, d, _, _) = civil(secs);
-    if crate::settings::english() { format!("{y}-{mo:02}-{d:02}") } else { format!("{y}年{mo}月{d}日") }
+    crate::localized_format!("{y}年{mo}月{d}日", "{y}-{mo:02}-{d:02}")
 }
 
 /// Relative time for 文档信息 ("几秒前", "3 分钟前", "2 小时前", then the date).
@@ -521,20 +532,20 @@ pub fn format_visit(secs: u64) -> String {
         return crate::settings::tr("刚刚", "just now").into();
     }
     if ago < 3600 {
-        return if crate::settings::english() { format!("{} min ago", ago / 60) } else { format!("{} 分钟前", ago / 60) };
+        return crate::localized_format!("{} 分钟前", "{} min ago", ago / 60);
     }
     let (y, mo, d, h, mi) = civil(secs);
     let day = |back: u64| {
         let (y, mo, d, _, _) = civil(now.saturating_sub(back * 86_400));
         (y, mo, d)
     };
-    let names = if crate::settings::english() { ["Today", "Yesterday", "Two days ago"] } else { ["今天", "昨天", "前天"] };
+    let names = [crate::settings::tr("今天", "Today"), crate::settings::tr("昨天", "Yesterday"), crate::settings::tr("前天", "Two days ago")];
     if let Some(name) = (0..3).find(|&b| day(b) == (y, mo, d)).map(|b| names[b as usize]) {
         format!("{name} {h:02}:{mi:02}")
     } else if y == civil(now).0 {
-        if crate::settings::english() { format!("{mo:02}-{d:02} {h:02}:{mi:02}") } else { format!("{mo}月{d}日 {h:02}:{mi:02}") }
+        crate::localized_format!("{mo}月{d}日 {h:02}:{mi:02}", "{mo:02}-{d:02} {h:02}:{mi:02}")
     } else {
-        if crate::settings::english() { format!("{y}-{mo:02}-{d:02}") } else { format!("{y}年{mo}月{d}日") }
+        crate::localized_format!("{y}年{mo}月{d}日", "{y}-{mo:02}-{d:02}")
     }
 }
 
@@ -802,28 +813,46 @@ impl Element for UiPara {
     }
 }
 
-/// Paint the outside of a continuous corner, including over cover images.
-pub fn continuous_corner_mask(radius: f32, color: Hsla) -> impl IntoElement {
-    canvas(|bounds, _, _| bounds, move |_, b, window, _| {
-        let x = f32::from(b.left()); let y = f32::from(b.top());
-        let w = f32::from(b.size.width); let h = f32::from(b.size.height);
-        let r = radius.min(w / 2.).min(h / 2.);
-        let mut pb = PathBuilder::fill();
-        for (sx, sy, ux, uy, vx, vy) in [
-            (x + w - r, y, 1., 0., 0., 1.),
-            (x + w, y + h - r, 0., 1., -1., 0.),
-            (x + r, y + h, -1., 0., 0., -1.),
-            (x, y + r, 0., -1., 1., 0.),
-        ] {
-            let q = |u: f32, v: f32| point(px(sx + r * (u * ux + v * vx)), px(sy + r * (u * uy + v * vy)));
-            pb.move_to(q(0., 0.));
-            pb.line_to(q(1., 0.));
-            pb.line_to(q(1., 1.));
-            pb.cubic_bezier_to(q(std::f32::consts::FRAC_1_SQRT_2, 0.2928932), q(1., 0.7928932), q(1., 0.5857864));
-            pb.cubic_bezier_to(q(0., 0.), q(0.4142136, 0.), q(0.2071068, 0.));
-            pb.close();
+/// CSS `corner-shape: squircle` (superellipse |x|⁴ + |y|⁴ = 1 in each `r`
+/// box): the outline of `b` inset by `i`, clockwise from the top edge.
+fn squircle_points(b: Bounds<Pixels>, radius: f32, i: f32) -> Vec<Point<Pixels>> {
+    let (x, y) = (f32::from(b.left()) + i, f32::from(b.top()) + i);
+    let (w, h) = (f32::from(b.size.width) - 2. * i, f32::from(b.size.height) - 2. * i);
+    let r = (radius - i).max(0.).min(w / 2.).min(h / 2.);
+    const N: usize = 24;
+    let mut out = Vec::with_capacity(4 * (N + 1));
+    // Corner centres with the directions to the corner's start and end edges.
+    for (cx, cy, ax, ay, bx, by) in [(x + w - r, y + r, 0., -1., 1., 0.), (x + w - r, y + h - r, 1., 0., 0., 1.), (x + r, y + h - r, 0., 1., -1., 0.), (x + r, y + r, -1., 0., 0., -1.)] {
+        for k in 0..=N {
+            let t = std::f32::consts::FRAC_PI_2 * k as f32 / N as f32;
+            let (u, v) = (t.cos().max(0.).sqrt() * r, t.sin().max(0.).sqrt() * r);
+            out.push(point(px(cx + u * ax + v * bx), px(cy + u * ay + v * by)));
         }
-        if let Ok(path) = pb.build() { window.paint_path(path, color); }
+    }
+    out
+}
+
+pub(crate) fn squircle_path(b: Bounds<Pixels>, radius: f32, i: f32, mut pb: PathBuilder) -> Option<Path<Pixels>> {
+    // lyon panics on a collapsed outline (a box not laid out yet).
+    if f32::from(b.size.width) <= 2. * i + 1. || f32::from(b.size.height) <= 2. * i + 1. || radius <= i { return None }
+    let pts = squircle_points(b, radius, i);
+    pb.move_to(pts[0]);
+    for p in &pts[1..] { pb.line_to(*p); }
+    pb.close();
+    pb.build().ok()
+}
+
+/// A squircle-cornered fill (see `squircle_points`).
+pub fn squircle_surface(radius: f32, color: Hsla) -> Div {
+    div().relative().child(canvas(|b, _, _| b, move |_, b, window, _| {
+        if let Some(p) = squircle_path(b, radius, 0., PathBuilder::fill()) { window.paint_path(p, color); }
+    }).absolute().inset_0())
+}
+
+/// A `width` line along the inside of the squircle edge.
+pub fn squircle_outline(radius: f32, width: f32, color: Hsla) -> impl IntoElement {
+    canvas(|b, _, _| b, move |_, b, window, _| {
+        if let Some(p) = squircle_path(b, radius, width / 2., PathBuilder::stroke(px(width))) { window.paint_path(p, color); }
     }).absolute().inset_0()
 }
 
@@ -853,8 +882,6 @@ pub fn wave_fill(fraction: f32, color: Hsla) -> impl IntoElement {
         if let Ok(path) = path.build() { window.paint_path(path, color); }
     }).absolute().inset_0()
 }
-
-pub fn continuous_page(radius: f32) -> Div { continuous_surface(radius, Theme::bg_body()) }
 
 pub fn continuous_surface(radius: f32, color: Hsla) -> Div {
     div().relative().child(canvas(|bounds, _, _| bounds, move |_, bounds, window, _| {

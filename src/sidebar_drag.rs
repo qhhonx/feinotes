@@ -288,8 +288,33 @@ impl Workspace {
         d.index = index; d.depth = depth; d.parent = parent;
     }
 
+    /// Where something dragged in from outside the tree lands at `at`: into the
+    /// folder row under it, or a slot between rows (as a row being moved gets),
+    /// beside the row below it. `local`: a 本机文件 row, which lands only on the
+    /// tree, not back in its own section.
+    pub(crate) fn sidebar_target(&self, at: Point<Pixels>, local: bool) -> Option<crate::sidebar_drop::SidebarDropAt> {
+        use crate::sidebar_drop::SidebarDropAt;
+        if !self.list_scroll.bounds().contains(&at) { return None; }
+        let Some(b) = self.folder_drag.bounds.get().filter(|_| !self.folded[1]) else { return (!local).then(SidebarDropAt::top) };
+        let rows = self.drag_rows();
+        let y = f32::from(at.y - b.top());
+        // Below the tree: the end of 我的文档 (a 本机文件 row over its own section: nowhere).
+        if y > (rows.len() + 1) as f32 * PITCH + 6. { return (!local).then_some(SidebarDropAt { parent: None, slot: Some((rows.len(), 0)), before: None }); }
+        // Rows where they stand with the open slot, as for a row being moved: the hit stays put while they make room.
+        let cur = self.sidebar_drop.as_ref().and_then(|t| t.slot).map(|s| s.0);
+        let top_of = |i: usize| (i + usize::from(cur.is_some_and(|c| i >= c))) as f32 * PITCH;
+        if let Some((_, r)) = rows.iter().enumerate().find(|(i, r)| r.entry.meta.folder.is_some() && y > top_of(*i) + 5. && y < top_of(*i) + 26.) {
+            return Some(SidebarDropAt { parent: Some(r.entry.id.clone()), slot: None, before: None });
+        }
+        let index = rows.iter().enumerate().filter(|(i, _)| y > top_of(*i) + 15.).count();
+        Some(match rows.get(index) {
+            Some(r) => SidebarDropAt { parent: r.entry.meta.parent.clone(), slot: Some((index, r.depth)), before: Some(r.entry.id.clone()) },
+            None => SidebarDropAt { parent: None, slot: Some((index, 0)), before: None },
+        })
+    }
+
     pub(crate) fn folder_drop_target(&self, id: &str) -> bool {
-        self.folder_drag.active.as_ref().is_some_and(|d| {
+        self.sidebar_drop.as_ref().is_some_and(|t| t.parent.as_deref() == Some(id)) || self.folder_drag.active.as_ref().is_some_and(|d| {
             let b = self.list_scroll.bounds();
             d.started && d.parent.as_deref() == Some(id)
                 && d.at.x >= b.left() && d.at.x <= b.right() && d.at.y >= b.top() && d.at.y <= b.bottom()
@@ -381,18 +406,19 @@ impl Workspace {
         let task = cx.background_executor().spawn(async move {
             let journal = writer.track_file_changes();
             let result = writer.move_in_tree(&movement.id, movement.parent.as_deref(), movement.before.as_deref());
-            let restored = if result.is_err() { Some(writer.list()) } else { None };
+            let restored = writer.list();
             (result, restored, journal.take())
         });
         cx.spawn(async move |this, cx| {
             let (result, restored, changes) = task.await;
             let _ = this.update(cx, |w, cx| {
+                w.store.adopt_listing(&restored);
                 w.folder_drag.pending.pop_front();
                 w.folder_drag.saving = false;
                 if let Err(ref e) = result {
                     w.forget_file_change(history);
                     // Restore only hierarchy, preserving edits made while the write was pending.
-                    if let Some(restored) = restored {
+                    {
                         for entry in &mut w.entries {
                             if let Some(saved) = restored.iter().find(|e| e.id == entry.id) {
                                 entry.meta.parent = saved.meta.parent.clone();
@@ -428,7 +454,8 @@ impl Workspace {
         let rows = self.drag_rows();
         let width = self.sidebar_w(window) - 2. * crate::sidebar::SB_X;
         let active = self.folder_drag.active.as_ref().filter(|d| d.started);
-        let slot = active.map(|d| (d.index, d.depth));
+        // A row being moved, or something dragged in from outside, opens a slot.
+        let slot = active.map(|d| (d.index, d.depth)).or_else(|| self.sidebar_drop.as_ref().and_then(|t| t.slot));
         let dragged = active.map(|d| d.id.clone());
         let dwell = active.and_then(|d| d.hover.as_ref()).filter(|(id, _)| !self.expanded.contains(id))
             .map(|(id, t)| (id.clone(), (t.elapsed().as_secs_f32() / DWELL).min(1.)));
@@ -442,7 +469,9 @@ impl Workspace {
         self.folder_drag.parents = self.entries.iter().filter_map(|e| e.meta.parent.clone()).collect();
         let high = crate::settings::motion_high();
         // The visible list's bottom edge, in this list's coordinates (last frame's layout).
-        let vis_bottom = self.folder_drag.bounds.get().map_or(f32::MAX, |b| f32::from(self.list_scroll.bounds().bottom() - b.top()));
+        let visible = self.folder_drag.bounds.get();
+        let vis_bottom = visible.map_or(f32::MAX, |b| f32::from(self.list_scroll.bounds().bottom() - b.top()));
+        let vis_top = visible.map_or(f32::MIN, |_| -f32::from(self.list_scroll.offset().y));
         // ---- Step every spring; nothing below this block mutates.
         let fd = &mut self.folder_drag;
         let index: HashMap<&str, usize> = rows.iter().enumerate().map(|(i, r)| (r.entry.id.as_str(), i)).collect();
@@ -637,6 +666,7 @@ impl Workspace {
         let extra: f32 = fd.drawers.iter().map(|d| if d.opening { d.h - d.rows.len() as f32 * PITCH } else { d.h }).sum();
         fd.drawers.retain(|d| !d.done);
         let drawn: Vec<[f32; 3]> = (0..rows.len()).map(|i| { let p = fd.springs[&rows[i].entry.id].p; [p[0], p[1] + shift[i], p[2]] }).collect();
+        let on_screen = |y: f32| y + crate::sidebar::ROW_H >= vis_top && y <= vis_bottom;
         // The receiving folder's wash springs to its subtree's bounds and fades in and out.
         let zone = receiving.zip(receiving_end).map(|(start, end)| {
             let top = drawn[start][1];
@@ -709,6 +739,7 @@ impl Workspace {
         }
         for (r, [x, y, w], band, a) in &closing {
             if band.1 - band.0 < 0.5 { continue; }
+            if !on_screen(*y) { continue; }
             let el = div().id(SharedString::from(format!("fclose-{}", r.entry.id))).h(row_h).opacity(*a).text_color(crate::sidebar::text_color())
                 .child(row_face(&r.entry, self.expanded.contains(&r.entry.id)));
             container = container.child(clipped(el, *x, *y - 4. * (1. - a), *w, Some(*band)));
@@ -727,10 +758,12 @@ impl Workspace {
         }
         if let Some(pill) = &fd.pill {
             let [x, y, w] = pill.pos.p;
+            if on_screen(y) {
             let i = index.get(pill.id.as_str()).copied();
             let show = fd.fx.get(&pill.id).map_or(1., |f| f.show.unit()) * i.map_or(1., |i| reveal[i]);
             let el = div().id("sidebar-pill").h(row_h).rounded(radius).bg(crate::sidebar::selection_fill().opacity(show));
             container = container.child(clipped(el, x, y, w, i.and_then(|i| clip[i]).filter(|_| !pill.travel)));
+            }
         }
         if let Some((s, a)) = &fd.slot {
             let [x, y, w] = s.p;
@@ -751,6 +784,7 @@ impl Workspace {
             // A landing card is never clipped: it is still above the list.
             let band = clip[i].filter(|_| lift < 0.005);
             if band.is_some_and(|(lo, hi)| hi - lo < 0.5 || y >= hi || y + PITCH <= lo) { continue; }
+            if !on_screen(y) { continue; }
             let a = reveal[i];
             let hid = id.clone();
             let el = div().id(SharedString::from(format!("frow-{id}"))).h(row_h)

@@ -12,7 +12,11 @@ pub(crate) struct FileHistory {
 }
 impl Workspace {
     pub(crate) fn remember_files(&mut self, journal: crate::store::FileChanges, label: &'static str) -> u64 {
-        let changes = journal.take();
+        self.remember_file_changes(journal.take(), label)
+    }
+
+    /// `remember_files` for changes written by a background store (导入文件夹).
+    pub(crate) fn remember_file_changes(&mut self, changes: Vec<FileDelta>, label: &'static str) -> u64 {
         let entries = self.file_record_entries(&changes);
         self.push_file_record(changes, entries, label)
     }
@@ -60,6 +64,20 @@ impl Workspace {
         if self.file_history.undo.len() > 100 { self.file_history.undo.remove(0); }
         self.file_history.redo.clear(); self.file_history.prefer_files = true;
         token
+    }
+
+    /// Fold `changes` into the newest record when it made one of `ids`: a
+    /// drop places what it imported, and one undo takes both back.
+    pub(crate) fn amend_file_record(&mut self, ids: &[String], changes: Vec<FileDelta>) {
+        let Some(record) = self.file_history.undo.last_mut().filter(|r| r.changes.iter().any(|c| ids.contains(&c.id))) else { return };
+        let mut merged = std::mem::take(&mut record.changes);
+        for delta in changes {
+            match merged.iter_mut().find(|c| c.id == delta.id) { Some(c) => c.after = delta.after, None => merged.push(delta) }
+        }
+        merged.retain(|c| c.before != c.after);
+        let entries = self.file_record_entries(&merged);
+        let record = self.file_history.undo.last_mut().unwrap();
+        record.changes = merged; record.entries = entries;
     }
 
     pub(crate) fn forget_file_change(&mut self, token: u64) {
@@ -127,6 +145,7 @@ impl Workspace {
             let (result, entries) = task.await;
             let _ = this.update_in(cx, |w, window, cx| {
                 w.file_history.busy = false;
+                w.store.adopt_listing(&entries);
                 match result {
                     Ok(()) => {
                         w.entries = entries;

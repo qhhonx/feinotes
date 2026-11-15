@@ -12,6 +12,9 @@ Every number is a row of `metrics`: `(day, metric, dims, value, source)`, `day` 
 | `cdn.download_requests` | raw GET requests for packages, for comparison | platform, version, channel, status |
 | `update.checks` | distinct IPs that fetched an update manifest | platform, country |
 | `update.check_requests` | raw manifest requests | platform |
+| `daily.downloads` | distinct IPs per package path that got a 200/206, summed per platform family | platform (`Mac`, `Windows`, `Linux`, `Other`), channel |
+| `daily.checks` | distinct IPs that requested an update manifest, whatever the status | platform (`all` or a family) |
+| `daily.coverage` | 1: marks a day that has the `daily.*` metrics | none |
 | `github.downloads_total` | GitHub's download counter when collected | platform, version, asset |
 | `github.downloads` | the counter's increase since the previous day's snapshot | platform, version |
 | `github.stars`, `github.forks`, `github.watchers`, `github.open_issues` | the repository's counts when collected (open issues include PRs) | none |

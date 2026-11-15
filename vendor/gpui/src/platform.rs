@@ -485,6 +485,8 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn is_hovered(&self) -> bool;
     fn set_title(&mut self, title: &str);
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
+    /// Change the smallest content size the user can resize the window to.
+    fn set_min_size(&self, _size: Size<Pixels>) {}
     fn minimize(&self);
     fn zoom(&self);
     fn toggle_fullscreen(&self);
@@ -500,6 +502,9 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_close(&self, callback: Box<dyn FnOnce()>);
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
     fn draw(&self, scene: &Scene);
+    /// Draws `scene` and shows it in the same Core Animation transaction as
+    /// native view changes made during this frame (macOS); elsewhere `draw`.
+    fn draw_in_transaction(&self, scene: &Scene) { self.draw(scene) }
     /// Renders `scene` offscreen as BGRA (width, height, pixels), if supported.
     fn render_to_bgra(&self, _scene: &Scene) -> Option<(usize, usize, Vec<u8>)> {
         None

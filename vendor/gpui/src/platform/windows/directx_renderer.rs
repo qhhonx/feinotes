@@ -45,6 +45,12 @@ pub(crate) struct DirectXRenderer {
     pipelines: DirectXRenderPipelines,
     direct_composition: Option<DirectComposition>,
     font_info: &'static FontInfo,
+    // quiet.md: true while `devices` / `resources` have been dropped by device-lost
+    // handling and not yet recreated; nothing may touch them then. `retry_devices`
+    // holds the new devices when recovery gave up, so a later draw tries again.
+    released: bool,
+    retry_devices: Option<DirectXDevices>,
+    disable_direct_composition: bool,
 }
 
 /// Direct3D objects
@@ -60,7 +66,9 @@ pub(crate) struct DirectXRendererDevices {
 struct DirectXResources {
     // Direct3D rendering objects
     swap_chain: IDXGISwapChain1,
-    render_target: ManuallyDrop<ID3D11Texture2D>,
+    // quiet.md: None after a failed ResizeBuffers (was ManuallyDrop and got
+    // released a second time when the resources were dropped).
+    render_target: Option<ID3D11Texture2D>,
     render_target_view: [Option<ID3D11RenderTargetView>; 1],
 
     // quiet.md: the path textures (window-sized, MSAA 4x) are only made while
@@ -170,6 +178,9 @@ impl DirectXRenderer {
             pipelines,
             direct_composition,
             font_info: Self::get_font_info(),
+            released: false,
+            retry_devices: None,
+            disable_direct_composition,
         })
     }
 
@@ -178,6 +189,9 @@ impl DirectXRenderer {
     }
 
     fn pre_draw(&self) -> Result<()> {
+        let Some(render_target_view) = self.resources.render_target_view[0].as_ref() else {
+            anyhow::bail!("no render target");
+        };
         update_buffer(
             &self.devices.device_context,
             self.globals.global_params_buffer[0].as_ref().unwrap(),
@@ -192,10 +206,7 @@ impl DirectXRenderer {
             }],
         )?;
         unsafe {
-            self.devices.device_context.ClearRenderTargetView(
-                self.resources.render_target_view[0].as_ref().unwrap(),
-                &[0.0; 4],
-            );
+            self.devices.device_context.ClearRenderTargetView(render_target_view, &[0.0; 4]);
             self.devices
                 .device_context
                 .OMSetRenderTargets(Some(&self.resources.render_target_view), None);
@@ -213,26 +224,57 @@ impl DirectXRenderer {
     }
 
     pub(crate) fn handle_device_lost(&mut self, directx_devices: &DirectXDevices) {
+        let mut recovered = false;
         try_to_recover_from_device_lost(
             || {
                 self.handle_device_lost_impl(directx_devices)
                     .context("DirectXRenderer handling device lost")
             },
-            |_| {},
+            |_| recovered = true,
             || {
                 log::error!(
                     "DirectXRenderer failed to recover from device lost after multiple attempts"
                 );
-                // Do something here?
-                // At this point, the device loss is considered unrecoverable.
             },
         );
+        // quiet.md: keep the devices so the next draw tries again instead of
+        // leaving the window blank for good.
+        self.retry_devices = (!recovered).then(|| directx_devices.clone());
+    }
+
+    // quiet.md: Ok when frames can be drawn. Retries a recovery that gave up, and
+    // remakes the render target after a ResizeBuffers that failed while the device
+    // was going away (the device-lost message comes later, from the vsync thread).
+    fn ensure_drawable(&mut self) -> Result<()> {
+        if self.released {
+            let Some(devices) = self.retry_devices.take() else {
+                anyhow::bail!("DirectX device lost, waiting for recovery");
+            };
+            if let Err(err) = self.handle_device_lost_impl(&devices) {
+                self.retry_devices = Some(devices);
+                return Err(err.context("Retrying device lost recovery"));
+            }
+        }
+        if self.resources.render_target_view[0].is_none() {
+            let (width, height) = (self.resources.width, self.resources.height);
+            unsafe {
+                self.resources
+                    .swap_chain
+                    .ResizeBuffers(BUFFER_COUNT as u32, width, height, RENDER_TARGET_FORMAT, DXGI_SWAP_CHAIN_FLAG(0))
+                    .context("Failed to resize swap chain")?;
+            }
+            self.resources.recreate_resources(&self.devices, width, height)?;
+        }
+        Ok(())
     }
 
     fn handle_device_lost_impl(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
-        let disable_direct_composition = self.direct_composition.is_none();
-
-        unsafe {
+        // quiet.md: remembered from `new`; `direct_composition` is already taken when
+        // a failed attempt is retried.
+        let disable_direct_composition = self.disable_direct_composition;
+        // quiet.md: the old objects are dropped once; a retry after a failed attempt
+        // finds them gone (they used to be dropped again, a double release).
+        if !self.released { unsafe {
             #[cfg(debug_assertions)]
             report_live_objects(&self.devices.device)
                 .context("Failed to report live objects after device lost")
@@ -250,14 +292,18 @@ impl DirectXRenderer {
 
             drop(self.direct_composition.take());
             ManuallyDrop::drop(&mut self.devices);
-        }
+        } }
+        self.released = true;
+        // quiet.md: the window may have changed size while the device was gone
+        // (resize skips a released renderer), so size the new swap chain to it.
+        let (width, height) = client_size(self.hwnd).unwrap_or((self.resources.width, self.resources.height));
 
         let devices = DirectXRendererDevices::new(directx_devices, disable_direct_composition)
             .context("Recreating DirectX devices")?;
         let resources = DirectXResources::new(
             &devices,
-            self.resources.width,
-            self.resources.height,
+            width,
+            height,
             self.hwnd,
             disable_direct_composition,
         )?;
@@ -280,6 +326,7 @@ impl DirectXRenderer {
         self.globals = globals;
         self.pipelines = pipelines;
         self.direct_composition = direct_composition;
+        self.released = false;
 
         unsafe {
             self.devices
@@ -290,6 +337,7 @@ impl DirectXRenderer {
     }
 
     pub(crate) fn draw(&mut self, scene: &Scene) -> Result<()> {
+        self.ensure_drawable()?;
         self.pre_draw()?;
         self.prepare_path_textures(scene)?;
         for batch in scene.batches() {
@@ -323,6 +371,8 @@ impl DirectXRenderer {
     }
 
     pub(crate) fn resize(&mut self, new_size: Size<DevicePixels>) -> Result<()> {
+        // quiet.md: recovery sizes the new swap chain from the window itself.
+        if self.released { return Ok(()); }
         let width = new_size.width.0.max(1) as u32;
         let height = new_size.height.0.max(1) as u32;
         if self.resources.width == width && self.resources.height == height {
@@ -333,8 +383,11 @@ impl DirectXRenderer {
 
         // Clear the render target before resizing
         unsafe { self.devices.device_context.OMSetRenderTargets(None, None) };
-        unsafe { ManuallyDrop::drop(&mut self.resources.render_target) };
-        drop(self.resources.render_target_view[0].take().unwrap());
+        self.resources.render_target = None;
+        self.resources.render_target_view = [None];
+        // quiet.md: the path textures are window-sized too; drop them now so a failed
+        // resize doesn't leave them at the old size.
+        self.resources.path_textures = None;
 
         // Resizing the swap chain requires a call to the underlying DXGI adapter, which can return the device removed error.
         // The app might have moved to a monitor that's attached to a different graphics device.
@@ -550,6 +603,9 @@ impl DirectXRenderer {
         texture_id: AtlasTextureId,
         sprites: &[MonochromeSprite],
     ) -> Result<()> {
+        // quiet.md: a scene painted before device lost can name atlas textures that
+        // are gone now; skip them, the next full frame uploads again.
+        let Some(texture_view) = self.atlas.get_texture_view(texture_id) else { return Ok(()) };
         if sprites.is_empty() {
             return Ok(());
         }
@@ -558,7 +614,6 @@ impl DirectXRenderer {
             &self.devices.device_context,
             sprites,
         )?;
-        let texture_view = self.atlas.get_texture_view(texture_id);
         self.pipelines.mono_sprites.draw_with_texture(
             &self.devices.device_context,
             &texture_view,
@@ -574,6 +629,9 @@ impl DirectXRenderer {
         texture_id: AtlasTextureId,
         sprites: &[PolychromeSprite],
     ) -> Result<()> {
+        // quiet.md: a scene painted before device lost can name atlas textures that
+        // are gone now; skip them, the next full frame uploads again.
+        let Some(texture_view) = self.atlas.get_texture_view(texture_id) else { return Ok(()) };
         if sprites.is_empty() {
             return Ok(());
         }
@@ -582,7 +640,6 @@ impl DirectXRenderer {
             &self.devices.device_context,
             sprites,
         )?;
-        let texture_view = self.atlas.get_texture_view(texture_id);
         self.pipelines.poly_sprites.draw_with_texture(
             &self.devices.device_context,
             &texture_view,
@@ -601,6 +658,7 @@ impl DirectXRenderer {
     }
 
     pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
+        if self.released { anyhow::bail!("DirectX device lost"); }
         let desc = unsafe { self.devices.adapter.GetDesc1() }?;
         let is_software_emulated = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0;
         let device_name = String::from_utf16_lossy(&desc.Description)
@@ -700,7 +758,7 @@ impl DirectXResources {
 
         Ok(ManuallyDrop::new(Self {
             swap_chain,
-            render_target,
+            render_target: Some(render_target),
             render_target_view,
             path_textures: None,
             path_last_used: None,
@@ -718,7 +776,7 @@ impl DirectXResources {
         height: u32,
     ) -> Result<()> {
         let (render_target, render_target_view, viewport) = create_resources(devices, &self.swap_chain, width, height)?;
-        self.render_target = render_target;
+        self.render_target = Some(render_target);
         self.render_target_view = render_target_view;
         // Remade at the new size on the next frame that draws paths.
         self.path_textures = None;
@@ -1001,7 +1059,10 @@ struct PathSprite {
 impl Drop for DirectXRenderer {
     fn drop(&mut self) {
         #[cfg(debug_assertions)]
-        report_live_objects(&self.devices.device).ok();
+        if !self.released { report_live_objects(&self.devices.device).ok(); }
+        // quiet.md: a renderer still waiting for device-lost recovery has already
+        // dropped these.
+        if self.released { return; }
         unsafe {
             ManuallyDrop::drop(&mut self.devices);
             ManuallyDrop::drop(&mut self.resources);
@@ -1011,10 +1072,17 @@ impl Drop for DirectXRenderer {
 
 impl Drop for DirectXResources {
     fn drop(&mut self) {
-        unsafe {
-            ManuallyDrop::drop(&mut self.render_target);
-        }
+        // Release the back buffer before the swap chain, as before.
+        self.render_target = None;
     }
+}
+
+// quiet.md: the window's client area in device pixels, for sizing a swap chain
+// recreated after device lost.
+fn client_size(hwnd: HWND) -> Option<(u32, u32)> {
+    let mut rect = windows::Win32::Foundation::RECT::default();
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect) }.ok()?;
+    Some(((rect.right - rect.left).max(1) as u32, (rect.bottom - rect.top).max(1) as u32))
 }
 
 #[inline]
@@ -1086,7 +1154,7 @@ fn create_resources(
     width: u32,
     height: u32,
 ) -> Result<(
-    ManuallyDrop<ID3D11Texture2D>,
+    ID3D11Texture2D,
     [Option<ID3D11RenderTargetView>; 1],
     [D3D11_VIEWPORT; 1],
 )> {
@@ -1107,14 +1175,14 @@ fn create_render_target_and_its_view(
     swap_chain: &IDXGISwapChain1,
     device: &ID3D11Device,
 ) -> Result<(
-    ManuallyDrop<ID3D11Texture2D>,
+    ID3D11Texture2D,
     [Option<ID3D11RenderTargetView>; 1],
 )> {
     let render_target: ID3D11Texture2D = unsafe { swap_chain.GetBuffer(0) }?;
     let mut render_target_view = None;
     unsafe { device.CreateRenderTargetView(&render_target, None, Some(&mut render_target_view))? };
     Ok((
-        ManuallyDrop::new(render_target),
+        render_target,
         [Some(render_target_view.unwrap())],
     ))
 }

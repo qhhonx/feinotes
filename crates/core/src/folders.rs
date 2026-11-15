@@ -6,56 +6,23 @@ impl Store {
         Self {
             #[cfg(feature = "sqlite-store")]
             sqlite: self.sqlite.clone(),
-            file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: HashMap::new(),
-            loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), warnings: vec![] }
+            file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: self.trash.clone(), flat: self.flat,
+            loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), warnings: vec![], migrated: None, batch: Default::default() }
     }
 
-    pub(super) fn migrate_folders(&mut self) -> Result<()> {
-        let _lock = self.begin_write()?;
-        let marker: FormatMarker = serde_json::from_slice(&std::fs::read(self.root.join("format.json"))?)?;
-        if marker.format < BASE_FORMAT {
-            let backup = self.root.join("index.before-folders.json");
-            if !backup.exists() { write_atomic(&backup, &serde_json::to_vec_pretty(&self.index)?)?; }
-        }
-        let legacy: Vec<String> = self.index.values().filter_map(|m| m.parent.clone())
-            .filter(|id| self.index.get(id).is_some_and(|m| m.folder.is_none()) && self.path(id).is_file())
-            .collect::<std::collections::HashSet<_>>().into_iter().collect();
-        if !legacy.is_empty() {
-            let backup = self.root.join("index.before-folders.json");
-            if !backup.exists() { write_atomic(&backup, &serde_json::to_vec_pretty(&self.index)?)?; }
-            let previous = self.index.clone();
-            let mapping: HashMap<String, String> = legacy.iter().map(|id| (id.clone(), uuid::Uuid::new_v4().to_string())).collect();
-            for id in &legacy {
-                let doc = self.load(id)?;
-                let mut meta = self.index[id].clone();
-                meta.folder = Some(doc.title.text.clone());
-                meta.pinned = false;
-                meta.starred = 0;
-                meta.parent = meta.parent.map(|p| mapping.get(&p).cloned().unwrap_or(p));
-                self.index.insert(mapping[id].clone(), meta);
-            }
-            for (id, meta) in &mut self.index {
-                if meta.folder.is_some() { continue; }
-                if let Some(folder) = mapping.get(id) { meta.parent = Some(folder.clone()); meta.order = 1; }
-                else if let Some(folder) = meta.parent.as_ref().and_then(|p| mapping.get(p)) { meta.parent = Some(folder.clone()); }
-            }
-            // Number each new folder's contents in their old order (the page that
-            // became the folder first, then its children oldest first), so the
-            // tree reads as it did before.
-            for (doc, folder) in &mapping {
-                let mut kids: Vec<String> = self.index.iter().filter(|(_, m)| m.parent.as_ref() == Some(folder)).map(|(k, _)| k.clone()).collect();
-                let old = |k: &String| { let m = &self.index[k]; (k != doc, if m.order > 0 { m.order } else { m.created * 1000 }, k.clone()) };
-                kids.sort_by_key(old);
-                for (i, k) in kids.iter().enumerate() { if let Some(m) = self.index.get_mut(k) { m.order = i as u64 + 1; m.root_order = None; } }
-            }
-            if let Err(e) = self.save_index() { self.index = previous; return Err(e); }
-            self.record_tree_changes(&previous);
-        }
-        if marker.format < BASE_FORMAT { write_atomic(&self.root.join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: BASE_FORMAT })?)?; }
-        Ok(())
+    pub fn take_warnings(&mut self) -> Vec<String> { std::mem::take(&mut self.warnings) }
+
+    /// Where `id` would go in folder `parent`: its name there, numbered when taken.
+    pub(super) fn rel_in(&self, id: &str, parent: Option<&str>) -> String {
+        let m = &self.index[id];
+        let dir = parent.and_then(|p| self.index.get(p)).map(|p| p.rel.clone()).unwrap_or_default();
+        let name = base_name(&m.rel);
+        let ext = m.folder.is_none().then(|| ext_of(m));
+        let base = if ext.is_some() { layout::unnumbered(stem_of(name)) } else { layout::unnumbered(name) };
+        join_rel(&dir, &self.free_name(&dir, base, ext, None))
     }
 
-    fn validate_folder(&self, id: Option<&str>, parent: Option<&str>) -> Result<()> {
+    pub(super) fn validate_folder(&self, id: Option<&str>, parent: Option<&str>) -> Result<()> {
         let mut seen = std::collections::HashSet::new();
         let mut p = parent;
         while let Some(key) = p {
@@ -71,8 +38,19 @@ impl Store {
         self.validate_folder(None, parent)?;
         let id = uuid::Uuid::new_v4().to_string();
         let t = now();
-        self.index.insert(id.clone(), Meta { folder: Some(title.to_string()), parent: parent.map(str::to_string), created: t, modified: t, ..Default::default() });
-        if let Err(e) = self.save_index() { self.index.remove(&id); return Err(e); }
+        if self.flat {
+            self.index.insert(id.clone(), Meta { folder: Some(title.to_string()), parent: parent.map(str::to_string), created: t, modified: t, ..Default::default() });
+            if let Err(e) = self.save_index() { self.index.remove(&id); return Err(e); }
+            self.record_file_change(&id, None);
+            return Ok(id);
+        }
+        // A folder is a folder on disk, named after its title.
+        let dir = parent.and_then(|p| self.index.get(p)).map(|m| m.rel.clone()).unwrap_or_default();
+        let rel = join_rel(&dir, &self.free_name(&dir, &file_name_for(title), None, None));
+        std::fs::create_dir_all(self.abs(&rel))?;
+        self.index.insert(id.clone(), Meta { folder: Some(String::new()), rel: rel.clone(), created: t, modified: t, ..Default::default() });
+        derive_tree(&mut self.index);
+        if let Err(e) = self.save_index() { self.index.remove(&id); let _ = std::fs::remove_dir(self.abs(&rel)); return Err(e); }
         self.record_file_change(&id, None);
         Ok(id)
     }
@@ -110,17 +88,22 @@ impl Store {
         anyhow::ensure!(self.index_has(id), "文档或文件夹不存在");
         self.validate_folder(Some(id), parent)?;
         if let Some(anchor) = before {
-            anyhow::ensure!(self.index_has(anchor) && self.index[anchor].parent.as_deref() == parent, "目标位置已改变，请重试");
+            anyhow::ensure!(self.index.get(anchor).is_some_and(|m| m.parent.as_deref() == parent) && self.index_has(anchor), "目标位置已改变，请重试");
             if anchor == id { return Ok(()); }
         }
-        let mut siblings: Vec<String> = self.index.iter().filter(|(k, m)| self.index_has(k) && m.parent.as_deref() == parent).map(|(k, _)| k.clone()).collect();
+        let mut siblings: Vec<String> = self.index.iter().filter(|(k, m)| m.parent.as_deref() == parent && self.index_has(k)).map(|(k, _)| k.clone()).collect();
         // The sidebar's order (`Meta::place`, ties by id), so the numbers written
         // here match the order the drop was made in.
         siblings.sort_by(|ka, kb| (self.index[ka].place(), ka).cmp(&(self.index[kb].place(), kb)));
         siblings.retain(|key| key != id);
         let pos = before.and_then(|key| siblings.iter().position(|x| x == key)).unwrap_or(siblings.len());
         siblings.insert(pos, id.to_string());
-        let previous = self.index.clone();
+        let mut previous = self.index.clone();
+        if self.index[id].parent.as_deref() != parent && !self.index[id].local() && !self.flat {
+            // Into another folder: the file moves there, keeping its name when it is free.
+            self.relocate(&[(id.to_string(), self.rel_in(id, parent))])?;
+            for (k, m) in &self.index { if let Some(p) = previous.get_mut(k) { p.rel = m.rel.clone(); p.folder = m.folder.clone(); p.name = m.name.clone(); } }
+        }
         self.index.get_mut(id).unwrap().parent = parent.map(str::to_string);
         for (i, key) in siblings.iter().enumerate() {
             let m = self.index.get_mut(key).unwrap();

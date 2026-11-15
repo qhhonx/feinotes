@@ -1,6 +1,6 @@
 [package]
 name = "quiet_md"
-version = "0.1.10"
+version = "0.1.12"
 edition = "2024"
 description = "Native Markdown notes for macOS with optional iCloud sync and collaboration"
 homepage = "https://feinotes.app/"
@@ -45,6 +45,8 @@ base64 = "0.22"
 minisign-verify = "0.3.0"
 log = "0.4"
 sys-locale = "0.3.2"
+jpeg-decoder = { version = "0.3", default-features = false }
+png = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.24"
@@ -70,6 +72,20 @@ windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gd
 gpui = { path = "vendor/gpui" }
 taffy = { path = "vendor/taffy" }
 xattr = { path = "vendor/xattr" }
+
+# Shipped packages (scripts/release.sh and the other packaging scripts) build
+# with `--profile dist` into target/dist: whole-program LTO and no symbol table,
+# a third smaller than `release`. `release` stays the quick everyday build that
+# tests, the harness and the preview use. Line tables go to a separate file
+# (quiet_md.dSYM, .pdb, .dwp) that release.sh keeps beside the package, so
+# the raw addresses a panic logs can still be resolved (src/logging.rs).
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+debug = "line-tables-only"
+split-debuginfo = "packed"
 
 # `objc`'s msg_send! checks `feature = "cargo-clippy"`, which rustc no longer
 # knows about.

@@ -37,11 +37,22 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 | 17 | `elements/div.rs` | `paint_scroll_listener`：只在一个方向上可滚动的容器，只接收偏向这个方向的滚动（横向量大于竖向量才横滚，反之才竖滚）。原来竖向滚轮在只能横滚的容器上会被转成横滚，触控板竖滑带的少量横向分量也会照单全收；原有的方向锁只在两个方向都有量时才生效，单向容器另一方向恒为 0，所以从不触发 | 竖着滚动经过宽表格时，表格不再跟着左右滑动；在表格上横向滑动仍然能横滚 |
 
 | 18 | `platform/linux/wayland/client.rs`、`platform/linux/x11/client.rs` | 外观变化时先复制窗口句柄，释放 client 的 RefCell 借用后再触发窗口回调 | 避免回调重新访问平台、更新菜单时触发重复借用 panic |
-| 19 | `platform/mac/metal_renderer.rs`、`platform/windows/directx_renderer.rs` | 画路径用的两张整窗纹理（中间纹理和 4× MSAA 纹理）改为某一帧有路径时才创建，后续无路径帧距最后使用超过 1 秒时释放；窗口尺寸变化时丢掉，下次用到再按新尺寸建。Apple GPU 上 MSAA 纹理用 `Memoryless`（采样只在片上 tile 内存里，渲染过程里清空、只存 resolve 结果） | 原来每个窗口常驻这两张纹理，2560×1600 时约 80MB；路径只用于连续圆角、进度波浪和提示箭头，编辑器里平时一条都不画。抗锯齿不变 |
+| 19 | `platform/mac/metal_renderer.rs`、`platform/mac/shaders.metal`、`platform/windows/directx_renderer.rs` | 画路径用的两张纹理（中间纹理和 4× MSAA 纹理）改为某一帧有路径时才创建，后续无路径帧距最后使用超过 1 秒时释放；窗口尺寸变化时丢掉，下次用到再建。Apple GPU 上 MSAA 纹理用 `Memoryless`（采样只在片上 tile 内存里，渲染过程里清空、只存 resolve 结果）。mac 上纹理不再按整窗建，而是按每批路径覆盖的范围（`fit_path_textures`，按 128 px 增长、不超过窗口）：路径平移到纹理原点光栅化，`path_sprite_vertex` 多收一个 `texture_rect`（批次在屏幕上的原点和纹理尺寸），`path_sprite_fragment` 按像素直接 `read` 纹素 | 原来每个窗口常驻这两张纹理，2560×1600 时约 80MB；路径只用于连续圆角、文件夹图标、进度波浪和提示箭头，编辑器里平时一条都不画。主页和文件夹页一直有路径，整窗中间纹理会常驻约 16MB，按批次范围后只剩一两张卡片大小。抗锯齿不变；渐变填充按平移后的坐标计算，边缘个别像素可能差 1/255 |
 | 20 | `elements/img.rs`、`elements/image_cache.rs` | 图片缓存增加不触发加载的 `peek`；显式尺寸图片可选择延迟到可见区域绘制时才解码 | 卡片裁剪范围之外的图片不再预先解码；原始像素、尺寸和动图播放保持不变 |
 | 21 | `platform/mac/metal_atlas.rs` | 删除图片时立即移除 tile 索引，再递减所属纹理的引用计数 | 避免共享纹理仍被使用时残留旧索引，导致重复删除或复用失效 tile |
 | 22 | `platform/mac/platform.rs` | 读取剪贴板时同时保留文字和一种图片格式（优先 PNG），跳过空图片数据 | 截图工具同时提供文字和图片时，正文可选择图片，文本输入框仍可读取文字 |
+| 23 | `text_system/line_wrapper.rs` | `is_word_char` 把韩文（谚文字母、兼容字母、音节及半角谚文）算作单词字符；上游测试原本断言它不是 | 韩文用空格分词，界面文字按词（어절）换行，不再在词中间断开；超出一行的长词仍按字符断开 |
+| 24 | `assets.rs`、`window.rs` | `RenderImage::with_scale_factor`；`RenderImage::hollow` 生成同 id、同尺寸、不带像素的空壳；`paint_image` 遇到 atlas 里没有的空壳时跳过、记下并请求下一帧，由 `Window::take_missing_images` 取走 | 文档图片按显示尺寸解码后，布局仍按原图尺寸；已上传到 atlas 的图片不再在内存里留一份像素（docs/MEMORY.md） |
+| 25 | `platform/windows/directx_renderer.rs`、`directx_atlas.rs`、`platform.rs`、`events.rs`、`window.rs` | GPU 设备丢失时：resize 失败后 render target 为 `None`，绘制前先重做（原来 `pre_draw` 直接 unwrap 崩溃，旧 back buffer 还会被二次释放）；渲染器恢复失败可重试，已释放的设备和资源只释放一次，期间不绘制、不 resize，恢复时按窗口当前大小建交换链，下一帧再试；atlas 查不到纹理时跳过这批 sprite；重建 DirectX 设备失败时不再把丢失的设备当新设备发给窗口，下一次 vsync 重试；恢复后重新设置窗口的亚克力模糊（驱动重启后会丢，侧栏后面的窗口不再被模糊） | 显卡驱动重启、睡眠唤醒、驱动更新后应用不崩溃，恢复后正常显示 |
+| 26 | `window.rs` | `Window::replace_root` 同时更新窗口句柄记录的根视图类型（`handle.state_type` 和 `App::window_handles` 里那一份） | 首次启动的引导页走完后，在同一个窗口里换成主界面；原来换了根视图后 `downcast::<新类型>()` 仍然失败，按主界面找窗口的地方找不到它 |
 
+| 27 | `platform.rs`、`platform/mac/window.rs`、`platform/windows/window.rs`、`window.rs` | `Window::set_window_min_size`：创建后改窗口最小内容尺寸（macOS `setContentMinSize`，Windows 改 `WM_GETMINMAXINFO` 用的 `min_size`；其他平台不变） | 最小宽度 = 文档区最小宽度 + 侧栏宽度，随侧栏开合和拖宽变化 |
+| 28 | `platform.rs`、`platform/mac/window.rs`、`window.rs` | `Window::present_next_frame_in_transaction`：下一帧走 `PlatformWindow::draw_in_transaction`，macOS 上这一帧 `presentsWithTransaction`，和渲染期间改的原生视图在同一个 Core Animation 事务里上屏；其他平台照常 `draw` | 侧栏玻璃（`NSGlassEffectView`）大小或显隐变化的那一帧和 GPUI 画面同时出现；原来画面异步上屏、晚一个刷新，开关侧栏时玻璃先没（先出来），看着像顿了一下 |
+| 29 | `scene.rs` | `insert_primitive` 判断阴影是否落在裁剪区外时，按着色器实际画到的范围（四周各多 3 倍模糊半径）算，原来只看阴影本身的矩形 | 阴影的模糊部分落进裁剪区、矩形本身在区外时不再被丢掉（主页拖入文件时，按连续圆角逐行裁剪的内侧光晕） |
+| 30 | `text_system/line_layout.rs` | `layout_wrapped_line`：文字含从右到左的字符（希伯来、阿拉伯等）且需要折行时，改走 `wrap_bidi`：按阅读顺序取每个字符的宽度来定折行点，每行单独交给平台排版（行内由平台重排），再把各行首尾相接拼成一个布局，折行点放在每行第一个字形上；每行末尾的空格不参与排版 | 整段一次排版后字形是显示顺序，原来按显示顺序切行，阿拉伯文多行时行序颠倒、从词中间断开；其他文字不走这条路 |
+| 31 | `text_system/line_wrapper.rs` | `is_word_char` 把希伯来、阿拉伯、叙利亚、它拿、N'Ko 字母及阿拉伯/希伯来表现形式算作单词字符，并加了测试 | 这些文字用空格分词，按词换行，不再在词中间断开 |
+| 32 | `text_system/line.rs` | `WrappedLine::paint` / `paint_background`：折成多行、且第一个字母属于从右到左文字的段落，默认的左对齐改成右对齐（`rtl_align`）；单行文字、显式指定的对齐和编辑器用的 `paint_rows` 不变 | 阿拉伯文等的多行说明文字贴右边排，符合这些文字的阅读习惯 |
+| 33 | `platform/mac/metal_renderer.rs` | `CAMetalLayer` 的 `maximumDrawableCount` 从 3 改为 2 | 每张 drawable 是一整窗 BGRA（2560×1600 时 16MB），第三张只在帧堆积时才会建出来并一直留着。我们每帧的 GPU 时间只有一两毫秒，滚动文件夹页时 `nextDrawable` 等待最长 0.17ms，和 3 张时一样 |
 
 ## taffy 0.9.0
 

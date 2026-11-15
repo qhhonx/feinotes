@@ -147,7 +147,10 @@ impl MetalRenderer {
         layer.set_device(&device);
         layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
         layer.set_opaque(false);
-        layer.set_maximum_drawable_count(3);
+        // quiet.md: two drawables instead of three. Each is a whole window of
+        // BGRA (about 15 MB at 2300x1534); our frames take the GPU a millisecond
+        // or two, so the second one is always free by the next vsync.
+        layer.set_maximum_drawable_count(2);
         unsafe {
             let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: NO];
             let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: YES];
@@ -321,18 +324,41 @@ impl MetalRenderer {
         self.path_intermediate_msaa_texture = None;
     }
 
-    /// quiet.md: makes the path textures on the first frame with paths, drops
-    /// them once no frame has drawn any for a second.
+    /// quiet.md: path textures are made by the first batch that needs them
+    /// (`fit_path_textures`) and dropped once no frame has drawn a path for a second.
     fn prepare_path_textures(&mut self, scene: &Scene) {
         let now = std::time::Instant::now();
         if !scene.paths.is_empty() {
             self.path_last_used = Some(now);
-            if self.path_intermediate_texture.is_none() { self.update_path_intermediate_textures(self.path_texture_size); }
         } else if self.path_last_used.is_some_and(|t| now - t > std::time::Duration::from_secs(1)) {
             self.path_last_used = None;
             self.path_intermediate_texture = None;
             self.path_intermediate_msaa_texture = None;
         }
+    }
+
+    /// quiet.md: the device-pixel rect a path batch covers, and path textures at
+    /// least that big (grown in 128 px steps, never past the window). Paths are
+    /// rasterized at the texture's origin, so it only needs one batch's extent
+    /// instead of the whole window. None when the batch draws nothing.
+    fn fit_path_textures(&mut self, paths: &[Path<ScaledPixels>], viewport_size: Size<DevicePixels>) -> Option<Bounds<DevicePixels>> {
+        let mut b = paths.first()?.clipped_bounds();
+        for path in &paths[1..] { b = b.union(&path.clipped_bounds()); }
+        let (vw, vh) = (viewport_size.width.0, viewport_size.height.0);
+        let x0 = (b.origin.x.0.floor() as i32).clamp(0, vw);
+        let y0 = (b.origin.y.0.floor() as i32).clamp(0, vh);
+        let x1 = ((b.origin.x.0 + b.size.width.0).ceil() as i32).clamp(0, vw);
+        let y1 = ((b.origin.y.0 + b.size.height.0).ceil() as i32).clamp(0, vh);
+        if x1 <= x0 || y1 <= y0 { return None; }
+        let (w, h) = (x1 - x0, y1 - y0);
+        let have = self.path_intermediate_texture.as_ref().map_or((0, 0), |t| (t.width() as i32, t.height() as i32));
+        if have.0 < w || have.1 < h {
+            let step = |n: i32, max: i32| ((n + 127) / 128 * 128).min(max.max(n));
+            let size = Size { width: DevicePixels(step(w.max(have.0), vw)), height: DevicePixels(step(h.max(have.1), vh)) };
+            self.update_path_intermediate_textures(size);
+            self.path_intermediate_texture.as_ref()?;
+        }
+        Some(Bounds { origin: point(DevicePixels(x0), DevicePixels(y0)), size: Size { width: DevicePixels(w), height: DevicePixels(h) } })
     }
 
     fn update_path_intermediate_textures(&mut self, size: Size<DevicePixels>) {
@@ -524,13 +550,14 @@ impl MetalRenderer {
                     command_encoder,
                 ),
                 PrimitiveBatch::Paths(paths) => {
+                    let Some(rect) = self.fit_path_textures(paths, viewport_size) else { continue };
                     command_encoder.end_encoding();
 
                     let did_draw = self.draw_paths_to_intermediate(
                         paths,
+                        rect.origin,
                         instance_buffer,
                         &mut instance_offset,
-                        viewport_size,
                         command_buffer,
                     );
 
@@ -546,6 +573,7 @@ impl MetalRenderer {
                     if did_draw {
                         self.draw_paths_from_intermediate(
                             paths,
+                            rect.origin,
                             instance_buffer,
                             &mut instance_offset,
                             viewport_size,
@@ -619,9 +647,9 @@ impl MetalRenderer {
     fn draw_paths_to_intermediate(
         &self,
         paths: &[Path<ScaledPixels>],
+        origin: Point<DevicePixels>,
         instance_buffer: &mut InstanceBuffer,
         instance_offset: &mut usize,
-        viewport_size: Size<DevicePixels>,
         command_buffer: &metal::CommandBufferRef,
     ) -> bool {
         if paths.is_empty() {
@@ -652,13 +680,18 @@ impl MetalRenderer {
         command_encoder.set_render_pipeline_state(&self.paths_rasterization_pipeline_state);
 
         align_offset(instance_offset);
+        // quiet.md: shift the batch so its rect starts at the texture's origin.
+        let (ox, oy) = (ScaledPixels(origin.x.0 as f32), ScaledPixels(origin.y.0 as f32));
+        let viewport_size: Size<DevicePixels> = size((intermediate_texture.width() as i32).into(), (intermediate_texture.height() as i32).into());
         let mut vertices = Vec::new();
         for path in paths {
+            let mut bounds = path.bounds.intersect(&path.content_mask.bounds);
+            bounds.origin = point(bounds.origin.x - ox, bounds.origin.y - oy);
             vertices.extend(path.vertices.iter().map(|v| PathRasterizationVertex {
-                xy_position: v.xy_position,
+                xy_position: point(v.xy_position.x - ox, v.xy_position.y - oy),
                 st_position: v.st_position,
                 color: path.color,
-                bounds: path.bounds.intersect(&path.content_mask.bounds),
+                bounds,
             }));
         }
         let vertices_bytes_len = mem::size_of_val(vertices.as_slice());
@@ -827,6 +860,7 @@ impl MetalRenderer {
     fn draw_paths_from_intermediate(
         &self,
         paths: &[Path<ScaledPixels>],
+        origin: Point<DevicePixels>,
         instance_buffer: &mut InstanceBuffer,
         instance_offset: &mut usize,
         viewport_size: Size<DevicePixels>,
@@ -855,6 +889,13 @@ impl MetalRenderer {
         command_encoder.set_fragment_texture(
             SpriteInputIndex::AtlasTexture as u64,
             Some(intermediate_texture),
+        );
+        // quiet.md: where the batch sits in the texture (origin) and its size.
+        let texture_rect = [origin.x.0 as f32, origin.y.0 as f32, intermediate_texture.width() as f32, intermediate_texture.height() as f32];
+        command_encoder.set_vertex_bytes(
+            SpriteInputIndex::AtlasTextureSize as u64,
+            mem::size_of_val(&texture_rect) as u64,
+            texture_rect.as_ptr() as *const _,
         );
 
         // When copying paths from the intermediate texture to the drawable,

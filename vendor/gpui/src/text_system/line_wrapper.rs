@@ -202,6 +202,12 @@ impl LineWrapper {
         // Cyrillic for Russian, Ukrainian, etc.
         // https://en.wikipedia.org/wiki/Cyrillic_script_in_Unicode
         matches!(c, '\u{0400}'..='\u{04FF}') ||
+        // Hangul: Korean puts spaces between words, so it wraps by word (어절) like Latin.
+        // Jamo, Compatibility Jamo, Jamo Extended-A, Syllables + Jamo Extended-B, halfwidth.
+        matches!(c, '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}' | '\u{A960}'..='\u{A97F}' | '\u{AC00}'..='\u{D7FF}' | '\u{FFA0}'..='\u{FFDC}') ||
+        // quiet.md: right-to-left scripts (Hebrew, Arabic, Syriac, Thaana, N'Ko and their
+        // presentation forms) put spaces between words, so they wrap by word too.
+        matches!(c, '\u{0590}'..='\u{08FF}' | '\u{FB1D}'..='\u{FDFF}' | '\u{FE70}'..='\u{FEFF}') ||
         // Some other known special characters that should be treated as word characters,
         // e.g. `a-b`, `var_name`, `I'm`, '@mention`, `#hashtag`, `100%`, `3.1415`,
         // `2^3`, `a~b`, `a=1`, `Self::new`, etc.
@@ -669,6 +675,10 @@ mod tests {
         assert_word("a=1");
         assert_word("Self::is_word_char");
         assert_word("more⋯");
+        // quiet.md: right-to-left scripts wrap by word.
+        assert_word("الاستيراد");
+        assert_word("שלום");
+        assert_not_word("تحديث البرنامج");
 
         // Space
         assert_not_word("foo bar");
@@ -688,10 +698,14 @@ mod tests {
         assert_word("ƀƁƂƃƄƅƆƇƈƉƊƋƌƍƎƏ");
         // Cyrillic
         assert_word("АБВГДЕЖЗИЙКЛМНОП");
+        // Hangul (this fork wraps Korean by word)
+        assert_word("안녕하세요");
+        assert_word("ㅋㅋㅋ");
+        assert_word("Quiet.md를");
+        assert_not_word("한국어 문서");
 
         // non-word characters
         assert_not_word("你好");
-        assert_not_word("안녕하세요");
         assert_not_word("こんにちは");
         assert_not_word("😀😁😂");
         assert_not_word("()[]{}<>");

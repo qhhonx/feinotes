@@ -289,6 +289,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | itertools | 0.14.0 | MIT OR Apache-2.0 |
 | itoa | 1.0.18 | MIT OR Apache-2.0 |
 | jobserver | 0.1.35 | MIT OR Apache-2.0 |
+| jpeg-decoder | 0.3.2 | MIT OR Apache-2.0 |
 | js-sys | 0.3.106 | MIT OR Apache-2.0 |
 | katex-rs | 0.3.0 | MIT |
 | khronos-egl | 6.0.0 | MIT/Apache-2.0 |
@@ -773,7 +774,7 @@ Windows 安装包随附未修改的 Microsoft Visual C++ Runtime `vcruntime140.d
 | 素材 | 许可 |
 |---|---|
 | `assets/editor-icons/`（编辑器与文档里的 172 个图标） | 包括 Lucide 图标（ISC，其中源自 Feather 的部分保留 MIT 许可），其余按同一 24px / 2px 描边规格绘制。见同目录 `LICENSE-lucide`。 |
-| `assets/icons/`（界面外壳的 72 个图标） | 66 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 6 个项目自绘的 MIT 图标。 |
+| `assets/icons/`（界面外壳的 73 个图标） | 66 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 7 个项目自绘的 MIT 图标（包含本次适配绘制的 `globe.svg`）。 |
 | `packaging/macos/fei-notes.png` | 飞记的应用图标，随飞记构建嵌入。 |
 | `assets/branding/` | 上游 Quiet.md 品牌资源，未嵌入飞记构建。 |
 

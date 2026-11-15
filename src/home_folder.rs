@@ -281,9 +281,10 @@ impl Workspace {
         }
     }
 
-    pub(crate) fn render_folder_card(&mut self, e: &Entry, card_h: f32, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// `w`: the grid's column width, this frame's (the recorded bounds are last
+    /// frame's, stale for a frame after the sidebar opens or closes).
+    pub(crate) fn render_folder_card(&mut self, e: &Entry, w: f32, card_h: f32, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let id = e.id.clone();
-        let w = self.home.folders.bounds.borrow().get(&id).map_or(236., |b| f32::from(b.size.width));
         let h = card_h;
         let hot = self.home.folders.hovered.as_ref() == Some(&id) && self.home.folders.drag.is_none();
         let over = self.home.folders.drag.as_ref().is_some_and(|d| d.started && !d.returning && d.over.as_ref() == Some(&id)) || self.file_drop_over(&id);
@@ -533,8 +534,10 @@ pub(crate) struct FileDrop {
     at: Point<Pixels>,
     /// The folder card under the pointer.
     over: Option<String>,
-    /// The tray's bounds last frame.
+    /// The pane's bounds last frame: anywhere in it takes the drop.
     zone: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    /// Where it was let go, which the ripple spreads from.
+    drop_at: Point<Pixels>,
     inside: bool,
     show: Fade,
     veil: Fade,
@@ -554,7 +557,7 @@ pub(crate) struct FileDrop {
 
 /// Tray illustration: the glass folder's box.
 const ART_W: f32 = 196.;
-const ART_H: f32 = 150.;
+const ART_H: f32 = 168.;
 
 impl FileDrop {
     fn new(paths: Vec<std::path::PathBuf>) -> Self {
@@ -566,7 +569,7 @@ impl FileDrop {
             else { other += 1; }
         }
         Self {
-            paths, md, xml, dirs, other, at: point(px(0.), px(0.)), over: None, zone: Default::default(), inside: false,
+            paths, md, xml, dirs, other, at: point(px(0.), px(0.)), over: None, zone: Default::default(), inside: false, drop_at: point(px(0.), px(0.)),
             show: Fade::new(0., 240., 21.), veil: Fade::new(0., 160., 25.), arm: Fade::new(0., 300., 23.),
             dip: Fade::new(0., 520., 15.), land: Fade::new(0., 150., 21.), shake: Fade::new(0., 700., 9.),
             // Each paper surfaces a little after the one in front.
@@ -576,6 +579,9 @@ impl FileDrop {
     }
 
     fn importable(&self) -> usize { self.md + self.xml + self.dirs }
+
+    /// The pointer went somewhere else that takes the drop (the sidebar).
+    pub(crate) fn leave(&mut self) { if self.landed.is_none() { self.leaving = true; } }
 
     /// "2 个 Markdown 文件 · 1 个文件夹".
     fn summary(&self) -> String {
@@ -597,6 +603,11 @@ impl Workspace {
     /// Files dragged over 主页 or a folder's page (the pointer, the folder
     /// card under it, whether it is over the tray).
     pub(crate) fn file_drag_move(&mut self, ev: &DragMoveEvent<ExternalPaths>, cx: &mut Context<Self>) {
+        // Every listener hears every move: off the page (over the sidebar) it steps back.
+        if !ev.bounds.contains(&ev.event.position) {
+            if let Some(d) = self.home.folders.file_drop.as_mut() { d.leave(); cx.notify(); }
+            return;
+        }
         let paths = ev.drag(cx).paths().to_vec();
         self.file_drag_at(ev.event.position, paths, cx);
     }
@@ -641,6 +652,7 @@ impl Workspace {
         }
         let target = d.over.clone().or(page);
         d.landed = Some(target.clone());
+        d.drop_at = d.at;
         d.land.to = 1.;
         d.dip.v += 5.5;
         if let Some(f) = d.over.as_ref().and_then(|k| self.home.folders.fx.get_mut(k)) { f.dip.v += 5.5; }
@@ -691,7 +703,10 @@ impl Workspace {
         window.request_animation_frame();
 
         // ---- The illustration's pose.
-        let (show, arm, land, dip) = (d.show.unit(), d.arm.p, d.land.p, d.dip.p);
+        // `lit`: the pane's glow, full while the pointer is over it. The glass folder
+        // opens only a little with it, so it keeps its shape.
+        let (show, lit, land, dip) = (d.show.unit(), d.arm.p, d.land.p, d.dip.p);
+        let arm = 0.3 * lit;
         let t = d.born.elapsed().as_secs_f32();
         let breath = 0.5 + 0.5 * (t * std::f32::consts::TAU / 1.8).sin();
         let shake = d.shake.p * (t * 46.).sin() * 0.35;
@@ -722,11 +737,11 @@ impl Workspace {
             .or(d.paths.first()).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let summary = d.summary();
         let record = d.zone.clone();
+        let (at, drop_at, landed, veil_p, shake_x) = (d.at, d.drop_at, d.landed.is_some(), d.veil.p, shake * 18.);
 
         // ---- Elements.
         let accent = Theme::primary();
         let quiet = if reject { 1. } else { 0. };
-        let ring = if reject { ca(craft::N1000, 0.12) } else { accent.opacity(0.22 + 0.16 * breath * (1. - arm) + 0.55 * arm) };
         let (title, sub) = if reject {
             (crate::settings::tr("这些文件不能导入", "These files can't be imported").to_string(), crate::settings::tr("支持 Markdown、DocxXML 文件和文件夹", "Markdown, DocxXML files and folders are supported").to_string())
         } else if d.landed.is_some() {
@@ -751,25 +766,81 @@ impl Workspace {
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(10.)).line_height(px(14.))
                 .font_weight(FontWeight::SEMIBOLD).text_color(Theme::text()).child(ui_text(first.clone()))));
         let front = { let pose = pose.clone(); canvas(|_, _, _| {}, move |b, _, window, _| glass(b.origin, &pose, window)).absolute().inset_0() };
-        let art = div().relative().flex_none().w(px(w)).h(px(h)).ml(px(shake * 18.)).opacity(1. - 0.35 * quiet)
+        let grow = 0.9 + 0.1 * show + 0.05 * lit;
+        let art = div().relative().flex_none().w(px(w)).h(px(h)).ml(px(shake_x)).opacity(1. - 0.35 * quiet)
             .child(back).children(chip).child(front);
-        let grow = 0.9 + 0.1 * show + 0.015 * arm;
-        let tray = div().relative().flex_none().w(px(440. * grow)).h(px(330. * grow)).rounded(px(28.))
-            .border_2().border_color(ring)
-            // An opaque tray (the list stays behind the veil), tinted with the accent as it arms.
-            .bg(theme::raised(Theme::bg_body()))
-            .child(div().absolute().inset_0().rounded(px(26.))
-                .bg(linear_gradient(180., linear_color_stop(accent.opacity(0.025 + 0.05 * arm), 0.), linear_color_stop(accent.opacity(0.06 + 0.07 * arm), 1.)))
-                .when(reject, |d| d.bg(ca(craft::N1000, 0.03))))
-            .shadow(vec![BoxShadow { color: accent.opacity(0.10 * arm), offset: point(px(0.), px(10.)), blur_radius: px(40.), spread_radius: px(0.) }])
-            .opacity(show * (0.08 + 0.92 * ((d.veil.p - 0.12) / 0.88).clamp(0., 1.)).min(show))
-            .flex().flex_col().items_center().justify_center().gap(px(6.))
-            .child(canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
-            .child(art)
-            .child(div().mt(px(14.)).text_size(px(16.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD)
+        // The middle: the glass folder on a halo of the accent, the line under it. No box:
+        // the whole pane is the place to drop.
+        let middle = div().relative().flex().flex_col().items_center().gap(px(6.))
+            .opacity(show * (0.08 + 0.92 * ((veil_p - 0.12) / 0.88).clamp(0., 1.)).min(show))
+            .child(div().relative().flex_none().w(px(w * grow)).h(px(h * grow)).flex().items_center().justify_center()
+                .child(div().absolute().left(px(w * grow / 2. - 40.)).top(px(h * grow / 2. - 30.)).size(px(80.)).rounded_full()
+                    .shadow(vec![BoxShadow { color: if reject { ca(craft::N1000, 0.06) } else { accent.opacity(0.10 + 0.10 * lit + 0.06 * breath) }, offset: point(px(0.), px(0.)), blur_radius: px(90.), spread_radius: px(40. + 24. * lit) }]))
+                .child(art))
+            .child(div().mt(px(14.)).text_size(px(18.)).line_height(px(26.)).font_weight(FontWeight::SEMIBOLD)
                 .text_color(if reject { Theme::text_caption() } else { Theme::text() }).child(ui_text(title)))
             .child(div().text_size(px(13.)).line_height(px(20.)).text_color(Theme::text_caption()).child(ui_text(sub)));
+        // The pane's edge: a glow breathing in from every side, a dashed line settling
+        // onto it, a halo under the pointer, and on a drop a
+        // ripple from where it landed while the edge flares.
+        let flare = if landed { (land * std::f32::consts::PI).sin().max(0.) } else { 0. };
+        let edge = canvas(move |b, _, _| record.set(Some(b)), move |b, _, window, _| window.with_content_mask(Some(ContentMask { bounds: b }), |window| {
+            let tint = if reject { ca(craft::N1000, 1.) } else { accent };
+            let clear = tint.opacity(0.);
+            let (x0, y0, wd, ht) = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height));
+            let rect = |x: f32, y: f32, w: f32, h: f32| Bounds::new(point(px(x), px(y)), size(px(w.max(0.)), px(h.max(0.))));
+            // A dashed edge, set in from the pane: the place to let go. It settles
+            // from further inside onto its place as it shows.
+            let inset = 22. + 30. * (1. - show);
+            let r: f32 = 88.;
+            let ring = rect(x0 + inset + shake_x * 0.4, y0 + inset, wd - 2. * inset, ht - 2. * inset);
+            // The glow starts at the dashed line and fades inward: the blurred shadow of a
+            // frame just outside it, seen only inside. Blur keeps the falloff continuous
+            // and rounds the corners.
+            let depth = (46. + 34. * lit + 30. * flare) * show;
+            let a = if reject { 0.10 } else { (0.16 + 0.06 * breath + 0.16 * lit + 0.2 * flare) * show };
+            let (l, t, rw, rh, big) = (f32::from(ring.left()), f32::from(ring.top()), f32::from(ring.size.width), f32::from(ring.size.height), 400.);
+            let glow = [BoxShadow { color: tint.opacity(a), offset: point(px(0.), px(0.)), blur_radius: px(depth), spread_radius: px(0.) }];
+            // Masks are only rectangles, so the ring's squircle inside (see `ui::squircle_path`)
+            // is cut in 1px rows through the corner bands (the dashed line covers the steps);
+            // one rect between.
+            let rr = r.min(rw / 2.).min(rh / 2.).max(0.);
+            let n = rr.ceil() as usize;
+            let rows = (0..n).flat_map(|i| {
+                let (y, hh) = (i as f32, (rr - i as f32).min(1.));
+                let dx = rr - (rr.powi(4) - (rr - y - hh / 2.).powi(4)).max(0.).powf(0.25);
+                [rect(l + dx, t + y, rw - 2. * dx, hh), rect(l + dx, t + rh - y - hh, rw - 2. * dx, hh)]
+            }).chain([rect(l, t + rr, rw, rh - 2. * rr)]);
+            for clip in rows {
+                window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
+                    // Each strip reaches a point inside, or GPUI culls a shadow wholly outside the clip.
+                    for side in [rect(l - big, t - big, rw + 2. * big, big + 1.), rect(l - big, t + rh - 1., rw + 2. * big, big + 1.), rect(l - big, t, big + 1., rh), rect(l + rw - 1., t, big + 1., rh)] {
+                        window.paint_shadows(side, px(0.).into(), &glow);
+                    }
+                });
+            }
+            // The halo under the pointer.
+            if !reject && !landed {
+                let c = point(at.x.max(b.left()).min(b.right()), at.y.max(b.top()).min(b.bottom()));
+                window.paint_shadows(Bounds::centered_at(c, size(px(40.), px(40.))), px(20.).into(),
+                    &[BoxShadow { color: accent.opacity(0.12 * lit * show), offset: point(px(0.), px(0.)), blur_radius: px(120.), spread_radius: px(70.) }]);
+            }
+            let ring_a = if reject { 0.22 } else { (0.40 + 0.12 * breath + 0.35 * lit + 0.2 * flare).min(1.) } * show;
+            if let Some(p) = crate::ui::squircle_path(ring, r, 1., PathBuilder::stroke(px(2.)).dash_array(&[px(6.), px(5.)])) { window.paint_path(p, tint.opacity(ring_a)); }
+            // The ripple from the drop.
+            if landed {
+                let far = wd.hypot(ht);
+                for (k, delay) in [(0, 0.), (1, 0.18)] {
+                    let q = ((land - delay) / (1. - delay)).clamp(0., 1.);
+                    if q <= 0. { continue; }
+                    let e = 1. - (1. - q).powi(3);
+                    let rad = 30. + e * far * 0.8;
+                    let c = point(drop_at.x, drop_at.y);
+                    window.paint_quad(quad(Bounds::centered_at(c, size(px(2. * rad), px(2. * rad))), px(rad), clear, px(3. - k as f32), accent.opacity(0.5 * (1. - q)), BorderStyle::Solid));
+                }
+            }
+        })).absolute().inset_0();
         let veil = theme::raised(Theme::bg_body()).opacity(0.86 * d.veil.p.clamp(0., 1.));
-        Some(div().absolute().inset_0().bg(veil).flex().items_center().justify_center().child(tray).into_any_element())
+        Some(div().absolute().inset_0().bg(veil).child(edge).flex().items_center().justify_center().child(middle).into_any_element())
     }
 }

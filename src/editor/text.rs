@@ -391,7 +391,9 @@ fn doc_geom(ix: usize, l: &crate::model::InlineDocLink, spec: &TextSpec, row_w: 
         window.text_system().shape_line(e.into(), px(fs), &[run], None)
     });
     let s = fs.round();
-    let text_x = 2. + s + 2.;
+    // An emoji can be wider than the em box (Segoe UI Emoji on Windows): keep the title clear of it.
+    let iw = emoji.as_ref().map_or(s, |e| f32::from(e.width).max(s));
+    let text_x = 2. + iw + 2.;
     let w = (text_x + f32::from(line.width) + 2.).min(row_w.max(text_x + 2.));
     EqGeom {
         ix,
@@ -1448,7 +1450,18 @@ fn adjust_line(line: &mut WrappedLine, ls: Pixels, eqs: &[&EqGeom], start: usize
 }
 
 fn is_cjk(ch: char) -> bool {
-    ('\u{2E80}'..='\u{9FFF}').contains(&ch) || ('\u{AC00}'..='\u{D7AF}').contains(&ch) || ('\u{F900}'..='\u{FFEF}').contains(&ch)
+    (('\u{2E80}'..='\u{9FFF}').contains(&ch) || ('\u{F900}'..='\u{FFEF}').contains(&ch)) && !is_hangul(ch)
+}
+
+/// Korean puts spaces between words, so Hangul wraps by word (어절) like Latin.
+fn is_hangul(ch: char) -> bool {
+    matches!(ch, '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}' | '\u{A960}'..='\u{A97F}' | '\u{AC00}'..='\u{D7FF}' | '\u{FFA0}'..='\u{FFDC}')
+}
+
+/// A line may break before `ch`: after a space, or next to CJK ideographs
+/// and kana, keeping closing punctuation with what precedes it.
+fn can_break(prev: char, ch: char) -> bool {
+    if ch.is_whitespace() { false } else if prev.is_whitespace() { true } else { (is_cjk(ch) || is_cjk(prev)) && !no_break_before(ch) && !no_break_after(prev) }
 }
 
 fn no_break_before(ch: char) -> bool {
@@ -1488,12 +1501,8 @@ pub(crate) fn wrap_spaced(text: &str, layout: &LineLayout, width: Pixels, eqs: &
             }
             let breakable = if eq_here.is_some() || eq_prev.is_some() {
                 !ch.is_whitespace() && !no_break_before(ch)
-            } else if ch.is_whitespace() {
-                false
-            } else if prev.is_whitespace() {
-                true
             } else {
-                (is_cjk(ch) || is_cjk(prev)) && !no_break_before(ch) && !no_break_after(prev)
+                can_break(prev, ch)
             };
             if breakable {
                 last_break = Some(k);
@@ -1543,6 +1552,26 @@ pub fn hit_test(cache: &LayoutCache, p: Point<Pixels>, candidates: &[BlockId]) -
     let l = cache.get(&id)?;
     let (offset, at_row_end) = l.caret_for(p);
     Some((Pos::new(id, offset), at_row_end))
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::can_break;
+
+    fn breaks(text: &str) -> Vec<usize> {
+        let chars: Vec<char> = text.chars().collect();
+        (1..chars.len()).filter(|&i| can_break(chars[i - 1], chars[i])).collect()
+    }
+
+    #[test]
+    fn hangul_wraps_by_word_and_chinese_by_character() {
+        assert_eq!(breaks("한국어 문서를 편집합니다"), [4, 8], "only where a word starts");
+        assert_eq!(breaks("Quiet.md를 써요"), [10], "a particle stays on its word");
+        assert_eq!(breaks("ㅋㅋㅋ 좋아요"), [4]);
+        assert_eq!(breaks("你好世界"), [1, 2, 3]);
+        assert_eq!(breaks("中文。한국어"), [1, 3], "Chinese still breaks, but not before closing punctuation");
+        assert_eq!(breaks("Hello world"), [6]);
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

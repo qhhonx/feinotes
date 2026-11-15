@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Replace the running hand-test build (dist-preview) with target/release. It
-# runs as dist-preview/quiet.md.app (so the menu bar says Quiet.md) on the
+# runs as dist-preview/Quiet.md Preview.app (so it is never mistaken for the installed app) on the
 # saved preview library, or ~/Documents/Quiet.md. The app initializes the
 # bundled 开始指南 on first launch, just like an installed build.
 # Only this checkout's own binaries are stopped:
@@ -11,18 +11,22 @@ preview_library="${QUIET_MD_HOME:-$(cat dist-preview/library-path 2>/dev/null ||
 # An empty path would put the library in the current directory.
 [ -n "$preview_library" ] || { echo "preview.sh: no preview library" >&2; exit 1; }
 export QUIET_MD_HOME="$preview_library"
-app="$PWD/dist-preview/quiet.md.app"
+app="$PWD/dist-preview/Quiet.md Preview.app"
 bin="$app/Contents/MacOS/quiet_md"
 pkill -f "^$bin" || true
+# The bundle's earlier name, from before it said Preview.
+old="$PWD/dist-preview/quiet.md.app"
+pkill -f "^$old/Contents/MacOS/quiet_md" || true
 sleep 1
+rm -rf "$old"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp assets/branding/app-icon.png "$app/Contents/Resources/app-icon.png"
+cp assets/branding/app-icon-dev.png "$app/Contents/Resources/app-icon.png"
 icon_tmp=$(mktemp -d)
 iconset="$icon_tmp/app-icon.iconset"
 mkdir -p "$iconset"
 for s in 16 32 128 256 512; do
-  sips -z $s $s assets/branding/app-icon.png --out "$iconset/icon_${s}x${s}.png" >/dev/null
-  sips -z $((s * 2)) $((s * 2)) assets/branding/app-icon.png --out "$iconset/icon_${s}x${s}@2x.png" >/dev/null
+  sips -z $s $s assets/branding/app-icon-dev.png --out "$iconset/icon_${s}x${s}.png" >/dev/null
+  sips -z $((s * 2)) $((s * 2)) assets/branding/app-icon-dev.png --out "$iconset/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/app-icon.icns"
 rm -rf "$icon_tmp"
@@ -34,8 +38,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleName</key><string>Quiet.md</string>
-  <key>CFBundleDisplayName</key><string>Quiet.md</string>
+  <key>CFBundleName</key><string>Quiet.md Preview</string>
+  <key>CFBundleDisplayName</key><string>Quiet.md Preview</string>
   <key>CFBundleIdentifier</key><string>local.quietmd.preview</string>
   <key>CFBundleExecutable</key><string>quiet_md</string>
   <key>CFBundleIconFile</key><string>app-icon.icns</string>
@@ -54,5 +58,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 codesign --force --sign - "$app" >/dev/null 2>&1 || true
+# The Dock and Finder cache a bundle's icon by path: tell them it changed.
+touch "$app"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" 2>/dev/null || true
 (QUIET_MD_HOME="$QUIET_MD_HOME" nohup "$bin" >/tmp/quiet-md-preview.log 2>&1 &)
 sleep 2; pgrep -fl "^$bin"

@@ -27,11 +27,14 @@ $output = Join-Path $root "dist/windows/$mode"
 $stage = Join-Path $output ([guid]::NewGuid().ToString('N'))
 Push-Location $root
 try {
-    & cargo build --release --locked
+    # The dist profile (Cargo.toml), minus `strip`: MSVC keeps symbols out of
+    # the exe anyway, and stripping would drop the .pdb kept below.
+    $env:CARGO_PROFILE_DIST_STRIP = 'none'
+    & cargo build --profile dist --locked
     if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
     $version = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
     New-Item -ItemType Directory -Force $stage | Out-Null
-    Copy-Item target/release/quiet_md.exe $stage -Force
+    Copy-Item target/dist/quiet_md.exe $stage -Force
     if (!$env:VCToolsRedistDir) { throw 'Run from a Visual Studio developer shell to locate the C++ runtime' }
     $runtime = Get-ChildItem (Join-Path $env:VCToolsRedistDir 'x64/Microsoft.VC*.CRT/vcruntime140.dll') | Select-Object -First 1
     if (!$runtime) { throw 'The redistributable x64 vcruntime140.dll was not found' }
@@ -59,5 +62,7 @@ try {
     $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
     [System.IO.File]::WriteAllText("$installer.sha256", "$hash  $name`n", [System.Text.Encoding]::ASCII)
     Copy-Item $installer, "$installer.sha256" $output -Force
+    # Debug symbols for the logged panic addresses; kept, not published.
+    Copy-Item target/dist/quiet_md.pdb (Join-Path $output "quiet-md-$version-windows-x64.pdb") -Force
     Write-Output "$mode installer: $(Join-Path $output $name)"
 } finally { Pop-Location }

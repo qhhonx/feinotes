@@ -9,7 +9,11 @@ Each src/*.xml is one document (file name order = reading order). Placeholders:
   {{reminder-day:YYYY-MM-DD}}       whole-day reminder, notified 09:00 that day
   {{countdown:YYYY-MM-DD HH:MM}}    countdown block to that moment (blue)
   {{button:Action|url|text|color}}  inline button (OpenLink / DuplicatePage)
-Assets under guides/assets are copied to <out>/assets/guides.
+Assets under guides/assets are copied to <out>/.assets/guides.
+
+The output is a FORMAT 4 library: folders on disk, each document a file named
+after its title (store::file_name_for), links as paths relative to the file,
+and what the files cannot say in .quiet/index.json, keyed by path.
 """
 import datetime as dt, json, re, shutil, sys, time, uuid
 from pathlib import Path
@@ -17,8 +21,7 @@ from pathlib import Path
 here = Path(__file__).resolve().parent
 out = Path(sys.argv[1]).resolve()
 NS = uuid.UUID("6f7c1e9a-9d0b-4a51-8c7e-2a1d3b4c5e6f")
-# Folders in the guide library: key -> title. A folder has no file, only an
-# index entry.
+# Folders in the guide library: key -> title, a folder on disk.
 FOLDERS = {"writing-guides": "Writing and formatting", "examples": "Examples"}
 # The top level, in order; every entry gets its place, so the sidebar and
 # Home's manual order (the default) read the same.
@@ -53,11 +56,31 @@ local = lambda s: dt.datetime.strptime(s, "%Y-%m-%d %H:%M").astimezone()
 ms = lambda d: int(d.timestamp() * 1000)
 now = int(time.time())
 
+ILLEGAL = dict(zip('/\\:*?"<>|', '／＼：＊？＂＜＞｜'))
+def file_name(title):
+    # Same rules as store::file_name_for (asserted for these titles by guides.rs).
+    s = " ".join("".join(ILLEGAL.get(c, " " if ord(c) < 32 else c) for c in title).split())
+    s = s.lstrip(". ").rstrip(". ") or "未命名文档"
+    assert len(s.encode()) <= 120 and s.split(".")[0].upper() not in ("CON", "PRN", "AUX", "NUL"), title
+    return s
+def rel_path(frm, to):
+    a, b = [p for p in frm.split("/") if p], [p for p in to.split("/") if p]
+    n = 0
+    while n < min(len(a), len(b)) and a[n] == b[n]: n += 1
+    return "/".join([".."] * (len(a) - n) + b[n:])
+# Where each guide goes: <folder>/<title>.xml.
+paths = {}
+for k, parent, _ in KEYS.values():
+    d = file_name(FOLDERS[parent]) if parent else ""
+    paths[k] = (d + "/" if d else "") + file_name(titles[k]) + ".xml"
+assert len({p.lower() for p in paths.values()}) == len(paths), "two guides with one name"
+here_dir = ""
+
 def fill(x):
     def doc(m):
         k = m.group(1)
         assert k in ids, f"unknown doc {k}"
-        return f'<cite type="doc" doc-id="{ids[k]}" file-type="docx">{esc(titles[k])}</cite>'
+        return f'<cite type="doc" href="{esc(rel_path(here_dir, paths[k])).replace(chr(34), "&quot;")}" file-type="docx">{esc(titles[k])}</cite>'
     def rem(m):
         d = local(m.group(1))
         return f'<time expire-time="{ms(d)}" notify-time="{ms(d)}" should-notify="true">{d:%Y-%m-%d %H:%M}</time>'
@@ -85,40 +108,45 @@ def fill(x):
     def cover(m):
         name = m.group(1)
         covers.add(name)
-        return f'cover="assets/guides/covers/{name}"'
-    return re.sub(r'cover="covers/([^"]+)"', cover, x)
+        return f'cover=".assets/guides/covers/{name}"'
+    x = re.sub(r'cover="covers/([^"]+)"', cover, x)
+    return re.sub(r'(src|path)="assets/', r'\1=".assets/', x)
 
 covers = set()
 
 if out.exists() and any(out.iterdir()):
     sys.exit(f"{out} is not empty")
-(out / "docs").mkdir(parents=True)
+out.mkdir(parents=True, exist_ok=True)
+(out / ".quiet").mkdir()
 index = {}
 order = list(KEYS.values())
 inside = {}
+for k, title in FOLDERS.items():
+    (out / file_name(title)).mkdir()
+    index[file_name(title) + "/"] = {"id": ids[k], "created": now - 3600, "modified": now}
 for i, (k, parent, pinned) in enumerate(order):
-    (out / "docs" / f"{ids[k]}.xml").write_text(fill(srcs[k]))
+    here_dir = paths[k].rpartition("/")[0]
+    (out / paths[k]).write_text(fill(srcs[k]))
     # Reading order is written out: TOP places the top level, and a folder's
     # pages are numbered in file order.
     t = now - 60 * i
-    meta = {"created": now - 3600 + i, "modified": t, "pinned": pinned, "opened": t}
+    meta = {"id": ids[k], "created": now - 3600 + i, "modified": t}
+    if pinned: meta["pinned"] = True
     if parent:
         assert parent in FOLDERS, f"{k}: pages live in folders, not under {parent}"
         inside[parent] = inside.get(parent, 0) + 1
-        meta["parent"] = ids[parent]
         meta["order"] = inside[parent]
     else:
         assert k in TOP, f"{k} is missing from TOP"
-    index[ids[k]] = meta
-for k, title in FOLDERS.items():
-    index[ids[k]] = {"folder": title, "created": now - 3600, "modified": now, "pinned": False, "opened": 0}
+    index[paths[k]] = meta
 assert set(TOP) == {k for k, p, _ in KEYS.values() if not p} | set(FOLDERS), "TOP must list every top-level entry"
+key_of = {**{k: paths[k] for k in paths}, **{k: file_name(t) + "/" for k, t in FOLDERS.items()}}
 for i, k in enumerate(TOP):
-    index[ids[k]]["root_order"] = i + 1
-(out / "index.json").write_text(json.dumps(index, ensure_ascii=False, indent=2) + "\n")
-(out / "format.json").write_text('{\n  "format": 2\n}')
-shutil.copytree(here / "assets", out / "assets" / "guides")
-(out / "assets" / "guides" / "covers").mkdir()
+    index[key_of[k]]["root_order"] = i + 1
+(out / ".quiet" / "index.json").write_text(json.dumps(dict(sorted(index.items())), ensure_ascii=False, indent=2) + "\n")
+(out / ".quiet" / "format.json").write_text('{\n  "format": 4\n}')
+shutil.copytree(here / "assets", out / ".assets" / "guides")
+(out / ".assets" / "guides" / "covers").mkdir()
 for name in sorted(covers):
-    shutil.copy2(here.parent.parent / "assets" / "covers" / name, out / "assets" / "guides" / "covers" / name)
+    shutil.copy2(here.parent.parent / "assets" / "covers" / name, out / ".assets" / "guides" / "covers" / name)
 print(out)

@@ -23,8 +23,8 @@
 
 const HOST = 'download.quiet.md', SITE = 'quiet.md';
 const CRAWLER = /bot|crawl|spider|slurp|curl|wget|python|go-http|java\/|headless|preview|monitor|scan/i;
-const PLATFORMS = { 'macos-arm64.zip': 'macos-arm64', 'windows-x64-setup.exe': 'windows-x64' };
-const PAGE = 10000; // httpRequestsAdaptiveGroups' largest page
+const PLATFORMS = { 'macos-arm64.zip': 'macos-arm64', 'windows-x64-setup.exe': 'windows-x64', 'macos-x86_64.zip': 'macos-x86_64', 'x86_64.AppImage': 'linux-x86_64' };
+const PAGE = 5000; // Bound each analytics response; split full windows below.
 
 export default {
   async scheduled(_event, env, ctx) {
@@ -63,11 +63,11 @@ async function run(env, source, day, f) {
 
 /// What a request to download.quiet.md is: a manifest, a package, or noise (null).
 export function classify(path, userAgent) {
-  let m = path.match(/^\/latest\/update-(macos-arm64|windows-x64)\.json$/);
+  let m = path.match(/^\/latest\/update-(.+)\.json$/);
   if (m) return { kind: 'check', platform: m[1] };
-  m = path.match(/^\/latest\/quiet-md-(macos-arm64\.zip|windows-x64-setup\.exe)$/);
+  m = path.match(/^\/latest\/quiet-md-(macos-arm64\.zip|macos-x86_64\.zip|windows-x64-setup\.exe|x86_64\.AppImage)$/);
   if (m) return { kind: 'download', platform: PLATFORMS[m[1]], version: 'latest', channel: 'cdn' };
-  m = path.match(/^\/v(\d+\.\d+\.\d+)\/quiet-md-(\d+\.\d+\.\d+)-(macos-arm64\.zip|windows-x64-setup\.exe)$/);
+  m = path.match(/^\/v(\d+\.\d+\.\d+)\/quiet-md-(\d+\.\d+\.\d+)-(macos-arm64\.zip|macos-x86_64\.zip|windows-x64-setup\.exe|x86_64\.AppImage)$/);
   if (m && m[1] === m[2]) return { kind: 'download', platform: PLATFORMS[m[3]], version: m[1], channel: /^curl\//.test(userAgent || '') ? 'update' : 'cdn' };
   return null;
 }
@@ -75,7 +75,7 @@ export function classify(path, userAgent) {
 const QUERY = (filter) => `query($zone: String!, $from: Time!, $to: Time!, $limit: Int!) { viewer { zones(filter: {zoneTag: $zone}) {
   httpRequestsAdaptiveGroups(limit: $limit, filter: {datetime_geq: $from, datetime_lt: $to, clientRequestHTTPMethodName: "GET", ${filter}}) {
     count dimensions { clientIP clientRequestPath userAgent clientCountryName edgeResponseStatus } } } } }`;
-const DOWNLOADS = `clientRequestHTTPHost: "${HOST}", edgeResponseStatus_in: [200, 206, 304]`;
+const DOWNLOADS = `clientRequestHTTPHost: "${HOST}"`;
 const HOME = `clientRequestHTTPHost: "${SITE}", clientRequestPath: "/", edgeResponseStatus: 200`;
 
 async function groups(env, from, to, filter = DOWNLOADS) {
@@ -86,12 +86,12 @@ async function groups(env, from, to, filter = DOWNLOADS) {
   });
   const body = await res.json();
   if (!res.ok || body.errors) {
-    const t = String(env.CF_API_TOKEN || '').trim(); // its shape only, never the token
-    throw new Error(`graphql ${res.status} (token: ${t.length} chars${t ? `, starts ${t.slice(0, 5)}` : ''}): ${JSON.stringify(body.errors || body).slice(0, 500)}`);
+    throw new Error(`graphql ${res.status}: ${JSON.stringify(body.errors || body).slice(0, 500)}`);
   }
   const list = body.data.viewer.zones[0].httpRequestsAdaptiveGroups;
   // A full page may have been cut short: split the window and ask again.
-  if (list.length < PAGE || to - from <= 3600e3) return list;
+  if (list.length < PAGE) return list;
+  if (to - from <= 60000) throw new Error('Cloudflare analytics result truncated');
   const mid = new Date((from.getTime() + to.getTime()) / 2);
   return [...(await groups(env, from, mid, filter)), ...(await groups(env, mid, to, filter))];
 }
@@ -101,24 +101,38 @@ async function cloudflare(env, day) {
   const list = await groups(env, from, new Date(from.getTime() + 86400e3));
   const add = (map, key, n) => map.set(key, (map.get(key) || 0) + n);
   const ips = new Map(), downloadReq = new Map(), checkIps = new Map(), checkReq = new Map();
+  const dailyDownloads = new Map(), dailyChecks = new Map(['all', 'Mac', 'Windows', 'Linux', 'Other'].map((p) => [p, new Set()]));
+  const family = (p) => p.startsWith('macos-') ? 'Mac' : p.startsWith('windows-') ? 'Windows' : p.startsWith('linux-') ? 'Linux' : 'Other';
   for (const { count, dimensions: d } of list) {
     const c = classify(d.clientRequestPath, d.userAgent);
     if (!c) continue;
     const country = d.clientCountryName || 'XX';
     if (c.kind === 'download') {
-      if (d.edgeResponseStatus === 304) continue;
+      if (![200, 206].includes(d.edgeResponseStatus)) continue;
+      const dk = key({ platform: family(c.platform), channel: c.channel, path: d.clientRequestPath });
+      if (!dailyDownloads.has(dk)) dailyDownloads.set(dk, new Set());
+      dailyDownloads.get(dk).add(d.clientIP);
       add(downloadReq, key({ platform: c.platform, version: c.version, channel: c.channel, status: String(d.edgeResponseStatus) }), count);
       const k = key({ platform: c.platform, version: c.version, channel: c.channel, country });
       if (!ips.has(k)) ips.set(k, new Set());
       ips.get(k).add(d.clientIP);
     } else {
+      dailyChecks.get('all').add(d.clientIP);
+      dailyChecks.get(family(c.platform)).add(d.clientIP);
+      if (![200, 206, 304].includes(d.edgeResponseStatus)) continue;
       add(checkReq, key({ platform: c.platform }), count);
       const k = key({ platform: c.platform, country });
       if (!checkIps.has(k)) checkIps.set(k, new Set());
       checkIps.get(k).add(d.clientIP);
     }
   }
-  const rows = [];
+  const rows = [['daily.coverage', '{}', 1]];
+  const daily = new Map();
+  for (const [k, set] of dailyDownloads) { const { platform, channel } = JSON.parse(k); add(daily, key({ platform, channel }), set.size); }
+  for (const platform of ['Mac', 'Windows', 'Linux', 'Other']) for (const channel of ['cdn', 'update']) {
+    const k = key({ platform, channel }); rows.push(['daily.downloads', k, daily.get(k) || 0]);
+  }
+  for (const [platform, set] of dailyChecks) rows.push(['daily.checks', key({ platform }), set.size]);
   for (const [k, s] of ips) rows.push(['cdn.downloads', k, s.size]);
   for (const [k, n] of downloadReq) rows.push(['cdn.download_requests', k, n]);
   for (const [k, s] of checkIps) rows.push(['update.checks', k, s.size]);
@@ -168,13 +182,15 @@ async function github(env, day) {
   // The day's increase, against the latest earlier snapshot of the same asset.
   const prev = await env.DB.prepare(`SELECT dims, value FROM metrics m WHERE metric = 'github.downloads_total'
     AND day = (SELECT max(day) FROM metrics WHERE metric = 'github.downloads_total' AND day < ?)`).bind(day).all();
+  const previousDay = await env.DB.prepare("SELECT max(day) AS d FROM metrics WHERE metric = 'github.downloads_total' AND day < ?").bind(day).first('d');
+  const consecutive = previousDay && next(previousDay) === day;
   const before = new Map(prev.results.map((r) => [r.dims, r.value]));
   const delta = new Map();
   for (const [metric, k, total] of rows) {
     if (metric !== 'github.downloads_total') continue;
     const d = JSON.parse(k);
     // A first snapshot has nothing to compare with; an asset new since then starts at 0.
-    if (before.size === 0) continue;
+    if (!consecutive || before.size === 0) continue;
     const k2 = key({ platform: d.platform, version: d.version });
     delta.set(k2, (delta.get(k2) || 0) + total - (before.get(k) || 0));
   }

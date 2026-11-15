@@ -613,13 +613,13 @@ fn encode_query(s: &str) -> String {
     out
 }
 
-/// 网页搜索: the site is a preference (设置 › 通用), 百度 by default.
+/// 网页搜索: the site is a preference (设置 › 通用), Google by default.
 fn web_search_url(s: &str) -> String {
     let base = match crate::settings::prefs().search_engine.as_str() {
         "bing" => "https://www.bing.com/search?q=",
-        "google" => "https://www.google.com/search?q=",
+        "baidu" => "https://www.baidu.com/s?wd=",
         "duckduckgo" => "https://duckduckgo.com/?q=",
-        _ => "https://www.baidu.com/s?wd=",
+        _ => "https://www.google.com/search?q=",
     };
     format!("{base}{}", encode_query(s))
 }

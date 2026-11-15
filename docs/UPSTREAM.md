@@ -6,9 +6,9 @@ Fei Notes is a fork of [Quiet.md](https://github.com/s1dashu/quiet-md). The publ
 
 - Root AGENTS.md, CLAUDE.md and CONTRIBUTING.md retain the complete upstream text with only an appended Fei Notes reference.
 - docs/THEMES.md retains the complete upstream guide and links to the separate Fei Notes extension reference.
-- README.ja.md retains the complete upstream README with a notice identifying its scope and upstream download links.
-- LICENSE and docs/FORMAT.md remain byte-for-byte unchanged from this baseline. docs/ARCHITECTURE.md and vendor/PATCHES.md track the upstream updates recorded below.
-- tools/harness/README.md keeps the upstream guide and adds one implemented test environment variable.
+- README.ja.md, README.es.md, README.fr.md and README.ko.md retain the complete upstream READMEs with a notice identifying its scope and upstream download links.
+- LICENSE remains byte-for-byte unchanged from this baseline. docs/FORMAT.md, docs/ARCHITECTURE.md and vendor/PATCHES.md track the upstream updates recorded below.
+- tools/harness/README.md keeps the upstream guide and adds the implemented product test notes.
 
 ## Product-specific documentation
 
@@ -23,6 +23,8 @@ Keep product additions separate when importing upstream changes. Preserve origin
 
 - 2026-11-12, through `a6a188bd315076fff83dca8f027fdbc67a72eab6`: imported upstream clipboard, table, creation-menu and rendering changes. `vendor/PATCHES.md` includes upstream's macOS clipboard patch record.
 - 2026-11-13, through `7ead2356ef2c82609bdae9ad084b26dbd877e65d`: imported reading positions, literal paste, interface preferences and pointer/scroll fixes. `docs/ARCHITECTURE.md` now preserves upstream's distinction between caret reveal and viewport preservation. Fei Notes keeps its shared-note access checks, responsive settings rows, cloud/release panels and Notes theme tokens. Incoming cloud documents clear the local wrapped-row caret hint; the new base64-image test initializes the product's table identity extension through `Default`. Inline Markdown images create the assets directory on first use, including in a fresh library.
+
+- 2026-11-15, through `a15b5a7f7432353baef11f73bcd498f359972717`: imported all 127 pending upstream commits, including FORMAT 4 real folders, local version history, onboarding, additional interface languages, Markdown imports/tables and image/GPU memory improvements. `docs/FORMAT.md` describes the upstream file backend; Fei Notes retains the separate SQLite backend, schema 7 and existing CloudKit/Loro protocol. File-library onboarding and migration never run for the account-selected product library. FORMAT 3/4 imports stage a copy, preserve the source and normalize attachments into the cloud `assets/` namespace. History restore uses the normal atomic cloud-save path and enforces shared-note access. Root conventions and non-product READMEs retain upstream text with scope notices; product themes, branding and license boundaries remain in place. See [FEINOTES-STORAGE.md](FEINOTES-STORAGE.md) for backend and history scope.
 
 ## Immutable upstream references
 

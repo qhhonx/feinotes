@@ -1,6 +1,7 @@
 //! Single-line text field used for search, link URLs and the code language
 //! picker. Rendering reuses the editor's rich text element.
 
+use crate::editor::core::{next_word, prev_word};
 use crate::editor::text::{LayoutCache, RichTextElement, TextSpec};
 use crate::model::{Align, BlockId, RichText};
 use crate::theme::Theme;
@@ -12,7 +13,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 actions!(
     field,
-    [Backspace, DeleteToHome, Delete, Left, Right, SelectLeft, SelectRight, Home, End, SelectAll, Copy, Cut, Paste, Submit, ShiftSubmit, Cancel, Up, Down, Swallow, Tab, ShiftTab]
+    [Backspace, DeleteToHome, Delete, Left, Right, SelectLeft, SelectRight, WordLeft, WordRight, SelectWordLeft, SelectWordRight, Home, End, SelectAll, Copy, Cut, Paste, Submit, ShiftSubmit, Cancel, Up, Down, Swallow, Tab, ShiftTab]
 );
 
 pub fn bind_keys(cx: &mut App) {
@@ -25,6 +26,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("right", Right, c),
         KeyBinding::new("shift-left", SelectLeft, c),
         KeyBinding::new("shift-right", SelectRight, c),
+        // ⌥← / ⌥→ move by word, ⌥⇧← / ⌥⇧→ select by word, as in any native field.
+        KeyBinding::new("alt-left", WordLeft, c),
+        KeyBinding::new("alt-right", WordRight, c),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, c),
+        KeyBinding::new("alt-shift-right", SelectWordRight, c),
         KeyBinding::new("cmd-left", Home, c),
         KeyBinding::new("cmd-right", End, c),
         KeyBinding::new("home", Home, c),
@@ -275,6 +281,26 @@ impl TextField {
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
         let n = self.next(self.cursor());
+        self.select_to(n, cx);
+    }
+
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        let o = if self.sel.is_empty() { prev_word(&self.text, self.cursor()) } else { self.sel.start };
+        self.move_to(o, cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        let o = if self.sel.is_empty() { next_word(&self.text, self.cursor()) } else { self.sel.end };
+        self.move_to(o, cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        let p = prev_word(&self.text, self.cursor());
+        self.select_to(p, cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        let n = next_word(&self.text, self.cursor());
         self.select_to(n, cx);
     }
 
@@ -563,6 +589,10 @@ impl Render for TextField {
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
             .on_action(cx.listener(Self::select_all))

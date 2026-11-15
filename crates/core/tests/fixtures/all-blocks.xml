@@ -9,7 +9,7 @@
 <h7>七</h7>
 <h8>八</h8>
 <h9>九</h9>
-<p>普通 <b>加粗</b> <em>斜体</em> <u>下划线</u> <del>删除线</del> <span text-color="red" background-color="light-yellow">彩色</span> <a href="https://a.com/?x=1&amp;y=2">链接</a> <code>code</code><br/>第二行 😀👍🏽 <latex>E=mc^2</latex> <cite type="user" user-id="ou_1"/> 尾随空格 </p>
+<p>普通 <b>加粗</b> <em>斜体</em> <u>下划线</u> <del>删除线</del> <span text-color="red" background-color="light-yellow">彩色</span> <a href="https://a.com/?x=1&amp;y=2">链接</a> <code>code</code><br/>第二行 😀👍🏽 <latex>E=mc^2</latex> <cite type="user" user-id="ou_1"/> <cite type="doc" href="../工作/周报.xml" file-type="docx">周报</cite> 尾随空格 </p>
 <p align="right" background-color="light-blue">右对齐有背景</p>
 <p> </p>
 <p>父段落

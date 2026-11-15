@@ -27,6 +27,8 @@ pub struct Options<'a> {
     /// The file as it is on disk: blocks that did not change are written
     /// back exactly as they are there (with the blank lines between them).
     pub original: Option<&'a str>,
+    /// With `in_place` and no `base`: local sources as absolute paths (复制为 Markdown).
+    pub absolute: bool,
 }
 
 pub struct Export {
@@ -53,6 +55,20 @@ pub fn export(doc: &Document, opts: &Options) -> Export {
     out.truncate(trimmed);
     out.push('\n');
     Export { text: out, files: w.files, missing: w.missing }
+}
+
+/// 复制为 Markdown (#60): `blocks` (and the title, for a whole document) as
+/// Markdown text. Equations stay LaTeX; local images and attachments are
+/// linked by their absolute paths, nothing is copied.
+pub fn clipboard(title: Option<&str>, blocks: &[Block], library_root: &Path) -> String {
+    let opts = Options { in_place: true, absolute: true, library_root: Some(library_root), ..Default::default() };
+    let mut w = Writer { opts: &opts, files: vec![], missing: 0 };
+    let mut out = title.map(str::trim).filter(|t| !t.is_empty()).map(|t| format!("# {}\n\n", escape(t))).unwrap_or_default();
+    out.push_str(&w.blocks(blocks));
+    let trimmed = out.trim_end().len();
+    out.truncate(trimmed);
+    out.push('\n');
+    out
 }
 
 /// One top-level block as written, and the separator before it.
@@ -161,22 +177,23 @@ impl Writer<'_> {
     }
 
     /// A source as the file being written should say it: relative to the
-    /// file's folder when under it; a library asset (`assets/…`) stays
+    /// file's folder when under it; a library asset (`.assets/…`) stays
     /// relative in the library and becomes absolute outside it.
     fn keep(&mut self, src: &str, image: bool) -> String {
         if src.contains("://") && !src.starts_with("file://") || src.starts_with("data:") {
             return src.to_string();
         }
-        let Some(base) = self.opts.base else { return src.to_string() };
+        if self.opts.base.is_none() && !self.opts.absolute { return src.to_string() }
         let raw = Path::new(src.strip_prefix("file://").unwrap_or(src));
         let root = self.opts.library_root.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::root_dir);
-        // Relative sources left after `parse_file` are the library's (`assets/…`).
+        // Relative sources left after `parse_file` are the library's (`.assets/…`).
         let abs = if raw.is_absolute() { raw.to_path_buf() } else { root.join(raw) };
+        let Some(base) = self.opts.base else { return abs.to_string_lossy().into_owned() };
         if let Ok(rel) = abs.strip_prefix(base) {
             return rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
         }
         // The library's own image or attachment: a copy beside the file.
-        let assets = root.join("assets");
+        let assets = crate::store::Store::assets_in(&root);
         match self.opts.name.filter(|_| abs.starts_with(&assets) && abs.is_file()) {
             Some(name) => self.beside(&abs, base, name, image),
             None => abs.to_string_lossy().into_owned(),
@@ -300,6 +317,90 @@ pub fn resolve_images(blocks: &mut [Block], base: &Path) {
         };
         *src = path.to_string_lossy().to_string();
     }
+}
+
+/// The picture formats the editor shows (`src/editor/image.rs`).
+const PICTURES: [&str; 6] = ["jpeg", "jpg", "png", "gif", "webp", "bmp"];
+
+/// On import: a paragraph that is just `![[name.png]]` (or `![[name.png|300]]`)
+/// — how Obsidian and its exports embed a picture — as that picture. Looked up
+/// the way Obsidian does: beside the page, in the vault's attachment folder,
+/// at the vault's top, then anywhere in the vault by a name only one file has.
+/// The vault is the nearest folder above the page holding `.obsidian`, else
+/// `root` (the folder being imported). What can't be found or shown
+/// (`![[page#heading]]`, a missing file, an svg) stays the text it was.
+pub fn wiki_images(blocks: &mut [Block], page_dir: &Path, root: Option<&Path>) {
+    let vault = page_dir.ancestors().find(|d| d.join(".obsidian").is_dir()).or(root);
+    let attachments = vault.and_then(|v| {
+        let app: serde_json::Value = serde_json::from_slice(&std::fs::read(v.join(".obsidian/app.json")).ok()?).ok()?;
+        let f = app.get("attachmentFolderPath")?.as_str()?.trim_end_matches('/');
+        Some(match f.strip_prefix("./") { Some(r) => page_dir.join(r), None if f == "." => page_dir.to_path_buf(), None => v.join(f.trim_start_matches('/')) })
+    });
+    let mut by_name: Option<std::sync::Arc<Names>> = None;
+    wiki_walk(blocks, &mut |name| {
+        let p = Path::new(name);
+        let found = [Some(page_dir), attachments.as_deref(), vault].into_iter().flatten().map(|d| d.join(p)).find(|p| p.is_file());
+        found.or_else(|| {
+            let v = vault?;
+            let names = by_name.get_or_insert_with(|| vault_names(v));
+            let names: &Names = names;
+            match names.get(&p.file_name()?.to_string_lossy().to_lowercase())?.as_slice() { [one] => Some(one.clone()), _ => None }
+        })
+    });
+}
+
+fn wiki_walk(blocks: &mut [Block], find: &mut dyn FnMut(&str) -> Option<PathBuf>) {
+    for b in blocks.iter_mut() {
+        wiki_walk(&mut b.children, find);
+        if let BlockKind::Table(t) = &mut b.kind {
+            for cell in t.rows.iter_mut().flatten() { wiki_walk(&mut cell.blocks, find); }
+        }
+        if !matches!(b.kind, BlockKind::Text) { continue; }
+        let Some(inner) = b.text.text.trim().strip_prefix("![[").and_then(|r| r.strip_suffix("]]")) else { continue };
+        let (name, size) = inner.split_once('|').map_or((inner, None), |(n, s)| (n, Some(s)));
+        // `![[page#heading]]` embeds part of a page, not a file.
+        let name = name.trim();
+        if name.is_empty() || name.contains(['#', '^']) || name.contains("]]") { continue; }
+        let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+        if !PICTURES.contains(&ext.as_str()) { continue; }
+        let Some(path) = find(name) else { continue };
+        // `|300` or `|300x200`: the width.
+        let width = size.and_then(|s| s.trim().split('x').next()?.trim().parse::<f32>().ok()).filter(|w| *w > 0.);
+        b.kind = BlockKind::Image { src_kind: "src".into(), src: path.to_string_lossy().into_owned(), width, height: None, caption: None, crop: None };
+        b.text = RichText::default();
+    }
+}
+
+type Names = std::collections::HashMap<String, Vec<PathBuf>>;
+
+/// Every file in `vault` by lower-case name (folders starting with `.` skipped;
+/// at most 50 000 entries). Kept a minute: a folder import asks once per page.
+fn vault_names(vault: &Path) -> std::sync::Arc<Names> {
+    static LAST: std::sync::Mutex<Option<(PathBuf, std::time::Instant, std::sync::Arc<Names>)>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((v, t, n)) = &*last && v == vault && t.elapsed().as_secs() < 60 { return n.clone(); }
+    let n = std::sync::Arc::new(walk_names(vault));
+    *last = Some((vault.to_path_buf(), std::time::Instant::now(), n.clone()));
+    n
+}
+
+fn walk_names(vault: &Path) -> Names {
+    let (mut out, mut stack, mut seen) = (Names::new(), vec![vault.to_path_buf()], 0);
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > 50_000 { return out; }
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') { continue; }
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(t) if t.is_file() => out.entry(name.to_lowercase()).or_default().push(e.path()),
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 /// A Markdown file as a page: `title` is its name (a Markdown file has no
@@ -538,13 +639,20 @@ struct Md {
     underline: bool,
     code: bool,
     link: Option<String>,
+    /// An equation: its own run, written as it is (escaping would change the LaTeX).
+    math: bool,
 }
 
 fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) -> String {
     // Merge runs that only differ in marks Markdown can't express (colors).
     let mut runs: Vec<(Md, String)> = vec![];
+    let mut display_math = false;
     for (r, m) in t.spans() {
         let s = match m.inline.as_ref().and_then(Inline::equation) {
+            Some(src) if src.contains('\n') => {
+                display_math = true;
+                t.text[r].chars().map(|_| format!("$$\n{src}\n$$")).collect()
+            }
             Some(src) => t.text[r].chars().map(|_| format!("${src}$")).collect(),
             None => match &m.inline {
                 Some(Inline { kind: InlineKind::File(f), .. }) => t.text[r].chars().map(|_| f.name.clone()).collect(),
@@ -568,9 +676,10 @@ fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) ->
             underline: m.underline,
             code: m.code,
             link: file_link.or_else(|| m.link.clone().filter(|url| crate::paste::link_ok(url))),
+            math: m.inline.as_ref().and_then(Inline::equation).is_some(),
         };
         match runs.last_mut() {
-            Some((last, text)) if *last == md => text.push_str(&s),
+            Some((last, text)) if *last == md && !md.math => text.push_str(&s),
             _ => runs.push((md, s)),
         }
     }
@@ -583,6 +692,10 @@ fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) ->
         let body = s.trim();
         let lead = &s[..s.len() - s.trim_start().len()];
         let trail = &s[s.trim_end().len()..];
+        if m.math {
+            out.push_str(&s);
+            continue;
+        }
         if body.is_empty() {
             out.push_str(&s);
             continue;
@@ -612,6 +725,9 @@ fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) ->
         out.push_str(&x);
         out.push_str(trail);
     }
+    if display_math {
+        return out.replace("$$<br>", "$$\n").replace("<br>$$", "\n$$");
+    }
     out.replace('\n', "<br>")
 }
 
@@ -639,6 +755,32 @@ mod tests {
         assert!(plain.files.is_empty());
         assert!(!plain.text.contains("out.assets"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inline_equations_are_not_escaped() {
+        let text = "a $X_t + \\alpha*b*$ z\n";
+        let mut out = text.to_string();
+        for _ in 0..3 { out = write_file(&parse_file(&out, "t", None), "", None); }
+        assert_eq!(out, text);
+    }
+
+    #[test]
+    fn clipboard_keeps_structure_equations_and_local_paths() {
+        let root = std::env::temp_dir().join("quiet-clip-root");
+        let mut eq = RichText::plain("e: ");
+        eq.push("\u{fffc}", Marks { inline: Some(crate::docxml::to_inline(InlineKind::Equation("X_t".into()))), ..Default::default() });
+        let blocks = vec![
+            Block::new(BlockKind::Heading { level: 2, seq_auto: false }, RichText::plain("小节")),
+            Block::new(BlockKind::Todo { done: true }, RichText::plain("done")),
+            Block::new(BlockKind::Text, eq),
+            Block::new(BlockKind::Image { src_kind: "path".into(), src: ".assets/a b.png".into(), width: None, height: None, caption: None, crop: None }, RichText::default()),
+        ];
+        let md = clipboard(Some("T"), &blocks, &root);
+        let img = root.join(".assets/a b.png").to_string_lossy().replace(' ', "%20");
+        assert!(md.starts_with("# T\n\n## 小节\n\n- [x] done\n\ne: $X_t$\n\n![]("), "{md}");
+        assert!(md.contains(&img), "{md}");
+        assert!(!clipboard(None, &blocks[..1], &root).contains("# T"));
     }
 
     #[test]
@@ -680,6 +822,23 @@ mod tests {
         let out = write_file(&doc, front_matter(src).0, Some(base));
         assert_eq!(out, src);
         assert_eq!(write_file(&parse_file(&out, "page", Some(base)), front_matter(&out).0, Some(base)), out);
+    }
+
+    #[test]
+    fn display_math_round_trips() {
+        let src = "---\ntitle: x\n---\n\n$$\nV &= I R \\\\\nQ_c &= 2I - I^2\n$$\n";
+        let base = Path::new(if cfg!(windows) { "C:/notes" } else { "/notes" });
+        let doc = parse_file(src, "page", Some(base));
+        assert_eq!(write_file(&doc, front_matter(src).0, Some(base)), src);
+    }
+
+    #[test]
+    fn display_math_export_keeps_surrounding_text() {
+        let mut text = RichText::plain("before ");
+        text.push(crate::editor::core::EQUATION, Marks { inline: Some(crate::docxml::to_inline(InlineKind::Equation("V = I R\nQ = I^2".into()))), ..Default::default() });
+        text.push(" after", Marks::default());
+        let doc = Document { blocks: vec![Block::new(BlockKind::Text, text)], ..Default::default() };
+        assert_eq!(to_markdown(&doc), "before $$\nV = I R\nQ = I^2\n$$ after\n");
     }
 
     fn preserved(original: &str, edit: impl FnOnce(&mut Document)) -> String {
@@ -773,5 +932,32 @@ mod tests {
         let src = "| a | b | c |\n| :--- | :---: | ---: |\n| 1 | 2 | 3 |";
         let doc = parse_file(src, "t", None);
         assert_eq!(write_file(&doc, "", None).trim_end(), "| a | b | c |\n| --- | :---: | ---: |\n| 1 | 2 | 3 |");
+    }
+
+    /// `![[a.png]]`, as Obsidian and its exports write it: beside the page,
+    /// in the vault's attachment folder, or by a name only one file has.
+    #[test]
+    fn wiki_embeds_become_pictures_when_the_file_is_there() {
+        let root = std::env::temp_dir().join(format!("fdl-embed-{}", uuid::Uuid::new_v4()));
+        let notes = root.join("notes");
+        for d in ["notes", ".obsidian", "files", "deep/er"] { std::fs::create_dir_all(root.join(d)).unwrap(); }
+        std::fs::write(root.join(".obsidian/app.json"), r#"{"attachmentFolderPath":"files"}"#).unwrap();
+        for f in ["notes/p 1.png", "files/att.png", "deep/er/far.png", "drawing.svg", "notes/twice.png", "files/twice.png"] { std::fs::write(root.join(f), b"png").unwrap(); }
+        let src = "4、\n\n![[p 1.png]]\n\n![[p 1.png|300x200]]\n\n![[att.png]]\n\n![[far.png]]\n\n![[missing.png]]\n\n![[page#heading]]\n\n![[drawing.svg]]\n\n![[deep/er/far.png]]\n";
+        let mut doc = parse_file(src, "page", Some(&notes));
+        wiki_images(&mut doc.blocks, &notes, None);
+        let pics: Vec<(PathBuf, Option<f32>)> = doc.blocks.iter().filter_map(|b| match &b.kind {
+            BlockKind::Image { src, width, .. } => Some((PathBuf::from(src), *width)),
+            _ => None,
+        }).collect();
+        let p1 = notes.join("p 1.png");
+        assert_eq!(pics, vec![(p1.clone(), None), (p1, Some(300.)), (root.join("files/att.png"), None), (root.join("deep/er/far.png"), None), (root.join("deep/er/far.png"), None)]);
+        let texts: Vec<&str> = doc.blocks.iter().map(|b| b.text.text.as_str()).filter(|t| !t.is_empty()).collect();
+        assert_eq!(texts, vec!["4、", "![[missing.png]]", "![[page#heading]]", "![[drawing.svg]]"]);
+        // Imported as a DocxXML page (not edited as Markdown) too.
+        let mut blocks = crate::paste::markdown_to_blocks("![[att.png]]\n", crate::paste::Off { file: true, ..Default::default() });
+        wiki_images(&mut blocks, &notes, None);
+        assert!(matches!(&blocks[0].kind, BlockKind::Image { src, .. } if Path::new(src) == root.join("files/att.png")), "{blocks:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

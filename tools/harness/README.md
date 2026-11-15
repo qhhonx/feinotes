@@ -9,7 +9,7 @@ python3 tools/harness/run.py my.txt /path/to/lib /tmp/my-run              # 自�
 FDL_BIN=/other/quiet_md python3 tools/harness/run.py my.txt
 ```
 
-- 截图：`<work_dir>/<name>.png`。
+- 截图：`<work_dir>/<name>.png`。`shot` 是离屏渲染，没有系统玻璃和桌面，透明的侧栏铺在窗口底色（和全屏时一样）上；要拍到真实的玻璃用 `deskshot`。和改动前（侧栏为黑色）的二进制做 `compare.py` 时，侧栏区域会有差异。
 - 日志：`<work_dir>/log`。性能数字用 `grep -a bench log` 查看。
 - `lib_clean/` 是一个审查用的文档库，含一篇「全部 Block 样式审查」和几张示例图片。
 - `winid.swift` 列出屏幕上 quiet_md 窗口的 window id（`swift winid.swift`），用来配合系统截图。
@@ -24,6 +24,7 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 - 只移动代码、不改外观的重构（拆模块、换 token、共用组件），应当每张都是 `identical`。
 - `examples/menus.txt` 依次打开「…」菜单和页宽子菜单、编辑模式菜单、斜杠菜单、块菜单、侧栏右键菜单、帮助菜单。
 - `python3 tools/harness/table_resize.py` 在临时文档库中验证调整表格列宽时页面位置不跳动，覆盖屏幕外光标、单元格内光标、无变化拖拽、保存和撤销重做；需要 Pillow。
+- `python3 tools/harness/table_paste.py` 用模拟剪贴板验证 Markdown 表格按内容分配初始列宽，覆盖中文、粘贴、文件导入、保存重开和撤销重做，并确认已有列宽保留。
 - `python3 tools/harness/checkbox_toggle.py` 在临时文档库中验证点击任务框只切换完成状态，保留光标、选区和滚动位置，覆盖两种主题、嵌套、提示块、表格、保存和撤销重做；需要 Pillow。`CHECKBOX_CASES` 可指定逗号分隔的场景名。
 - `python3 tools/harness/scroll_intent.py` 验证标题折叠/展开保留视口和文字选区、隐藏光标迁到标题后仍可见、输入/方向键仍跟随光标，以及分栏调整与两种主题代码换行的保存和位置保持；需要 Pillow。`SCROLL_CASES` 可指定逗号分隔的场景名。
 - `python3 tools/harness/pointer_properties.py` 逐项验证图片对齐、附件卡片/预览、提示块颜色/图标/默认设置、倒计时、日期提醒和单元格背景/垂直对齐，核对视口、编辑位置、保存及撤销重做；需要 Pillow。`PROPERTY_CASES` 可指定逗号分隔的场景名；单独运行撤销场景时，会先验证对应基础操作确实生效。
@@ -72,10 +73,16 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 - 不用真实的 ⌘C / ⌘V 系统剪贴板；`key cmd-v` 只在 `clip` 之后使用。
 - 不抢焦点：不用 `activate`。窗口默认被挪到屏幕外渲染。
 - 不点：
-  - 设置 › 文档库的「在访达中显示」按钮；
+  - 设置 › 文档库的「在访达中显示」按钮，主页和文件夹页「…」菜单里的「在访达中打开」；
   - 链接、「网页搜索」、打开链接类按钮（会启动浏览器）；
   - 打印（会弹出系统打印面板）；
   - 快速查看 / `qlmanage -p`。
 - 不用 `open` 命令。
 - 需要选文件时，用 `pick a|b` 代替系统对话框。
 - 不要拿用户的真实文档库当 `lib_dir`。确实需要时只读复制一份，产物里也不要提交用户的内容。
+
+## Fei Notes SQLite regression
+
+`python3 tools/harness/sqlite_history.py` checks first-launch creation, synthetic IME marked text (not persisted before commit), read-only history preview, returning to the live document, and restoring a snapshot into SQLite. Build with `cargo build --features cloudkit-sync,devtools`; `FDL_CLOUD_BIN` selects another binary and `FDL_CLOUD_DYLD_PATH` selects the matching Swift bridge directory. The test creates a fresh `/private/tmp/quiet-sync-qa-history-*` local-only library, uses the existing offscreen driver and never selects an iCloud account or uses the system clipboard.
+
+The table-paste and scroll-intent tests locate visible documents in both the old flat library and FORMAT 4, excluding hidden migration backups.

@@ -50,11 +50,36 @@ pub fn init() {
     let _ = log::set_logger(&Logger).map(|()| log::set_max_level(log::LevelFilter::Info));
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        write(&format!("PANIC {info}\n{}", std::backtrace::Backtrace::force_capture()));
+        write(&format!("PANIC {info}\n{}\n{}", std::backtrace::Backtrace::force_capture(), frames()));
         default(info);
     }));
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
     write(&format!("start Quiet.md {} ({exe})", env!("CARGO_PKG_VERSION")));
+}
+
+/// The panicking stack as raw return addresses and the binary's load address:
+/// release builds carry no symbols, so the backtrace above reads as unknown
+/// frames. Resolve with the debug info scripts/release.sh keeps, e.g.
+/// `atos -o quiet_md.dSYM -l <base> <addresses>` on macOS.
+fn frames() -> String {
+    use std::ffi::c_void;
+    let mut ips = [std::ptr::null_mut::<c_void>(); 64];
+    #[cfg(unix)]
+    let (n, base) = {
+        #[repr(C)] struct DlInfo { fname: *const i8, fbase: *mut c_void, sname: *const i8, saddr: *mut c_void }
+        unsafe extern "C" { fn backtrace(buf: *mut *mut c_void, size: i32) -> i32; fn dladdr(addr: *const c_void, info: *mut DlInfo) -> i32; }
+        let mut info = DlInfo { fname: std::ptr::null(), fbase: std::ptr::null_mut(), sname: std::ptr::null(), saddr: std::ptr::null_mut() };
+        unsafe { dladdr(frames as *const c_void, &mut info) };
+        (unsafe { backtrace(ips.as_mut_ptr(), 64) }.max(0) as usize, info.fbase)
+    };
+    #[cfg(windows)]
+    let (n, base) = {
+        #[link(name = "kernel32")]
+        unsafe extern "system" { fn RtlCaptureStackBackTrace(skip: u32, n: u32, buf: *mut *mut c_void, hash: *mut u32) -> u16; fn GetModuleHandleW(name: *const u16) -> *mut c_void; }
+        (unsafe { RtlCaptureStackBackTrace(0, 64, ips.as_mut_ptr(), std::ptr::null_mut()) } as usize, unsafe { GetModuleHandleW(std::ptr::null()) })
+    };
+    let ips: Vec<String> = ips[..n].iter().map(|p| format!("{p:?}")).collect();
+    format!("base {base:?} {} frames: {}", std::env::consts::ARCH, ips.join(" "))
 }
 
 /// One line to the log file and stderr.

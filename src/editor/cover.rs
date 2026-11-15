@@ -10,7 +10,7 @@ use super::view::{Editor, EditorEvent, Menu};
 use crate::model::Cover;
 use crate::editor_theme::{self as theme, Theme, craft};
 use crate::editor_ui::{ROW_RADIUS, TipExt, icon, menu, menu_glyph, menu_row, panel};
-use super::image::PictureExt;
+use super::image::picture;
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -93,8 +93,7 @@ pub fn cover_height(window: &Window) -> f32 {
 }
 
 fn preset_bytes(name: &str) -> Option<&'static [u8]> {
-    let path = format!("covers/{name}.jpg");
-    crate::assets::FILES.iter().find(|(p, _)| *p == path).map(|(_, b)| *b)
+    crate::assets::get(&format!("covers/{name}.jpg"))
 }
 
 /// The header's icon / cover entry: 28 tall, 16px icon with 4px each side, 13pt
@@ -367,7 +366,7 @@ impl Editor {
         self.cover_ui.geo.set(dims.map(|(iw, ih)| (iw, ih, cw, ch)));
         let image = path.zip(dims).map(|(p, (iw, ih))| {
             let g = geometry(iw, ih, cw, ch, rx, ry);
-            img(p).doc_picture().absolute().left(px(g.ml)).top(px(g.mt)).w(px(g.w)).h(px(g.h)).object_fit(ObjectFit::Fill)
+            picture(&p, g.w.max(g.h)).absolute().left(px(g.ml)).top(px(g.mt)).w(px(g.w)).h(px(g.h)).object_fit(ObjectFit::Fill)
         });
         let menu_open = matches!(self.menu, Some(Menu::CoverEdit | Menu::CoverPick { .. }));
         let record = self.cover_ui.edit_bounds.clone();

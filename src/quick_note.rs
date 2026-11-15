@@ -94,10 +94,9 @@ mod hotkey {
         fn GetEventParameter(event: Ref, name: u32, kind: u32, actual: *mut u32, size: usize, actual_size: *mut usize, data: Ref) -> i32;
         fn InstallEventHandler(target: Ref, handler: unsafe extern "C" fn(Ref, Ref, Ref) -> i32, count: u32, types: *const EventType, data: Ref, out: *mut Ref) -> i32;
         fn RegisterEventHotKey(key: u32, modifiers: u32, id: HotkeyId, target: Ref, options: u32, out: *mut Ref) -> i32;
-        fn RemoveEventHandler(handler: Ref) -> i32;
         fn UnregisterEventHotKey(key: Ref) -> i32;
     }
-    thread_local! { static KEY: RefCell<(Ref, String)> = const { RefCell::new((ptr::null_mut(), String::new())) }; static LAST_KEY: RefCell<Ref> = const { RefCell::new(ptr::null_mut()) }; static HELD: RefCell<[bool; 2]> = const { RefCell::new([false; 2]) }; static APP: RefCell<Option<AsyncApp>> = const { RefCell::new(None) }; }
+    thread_local! { static KEY: RefCell<(Ref, String)> = const { RefCell::new((ptr::null_mut(), String::new())) }; static LAST_KEY: RefCell<(Ref, String)> = const { RefCell::new((ptr::null_mut(), String::new())) }; static HELD: RefCell<[bool; 2]> = const { RefCell::new([false; 2]) }; static APP: RefCell<Option<AsyncApp>> = const { RefCell::new(None) }; }
     unsafe extern "C" fn pressed(_: Ref, event: Ref, _: Ref) -> i32 {
         let mut id = HotkeyId { signature: 0, id: 0 };
         if unsafe { GetEventParameter(event, u32::from_be_bytes(*b"----"), u32::from_be_bytes(*b"hkid"), ptr::null_mut(), std::mem::size_of::<HotkeyId>(), ptr::null_mut(), &mut id as *mut _ as Ref) } != 0 || id.signature != u32::from_be_bytes(*b"FlNt") || !(1..=2).contains(&id.id) { return -9874; }
@@ -111,27 +110,29 @@ mod hotkey {
         });
         0
     }
-    pub fn suspend() { HELD.with(|h| *h.borrow_mut() = [false; 2]); LAST_KEY.with(|k| { let mut k = k.borrow_mut(); if !k.is_null() { unsafe { UnregisterEventHotKey(*k); } } *k = ptr::null_mut(); }); KEY.with(|k| { let mut k = k.borrow_mut(); if !k.0.is_null() { unsafe { UnregisterEventHotKey(k.0); } } *k = (ptr::null_mut(), String::new()); }); }
-    pub fn install(cx: &mut App, code: u32, modifiers: u32, combo: &str) -> Result<(), i32> {
-        if KEY.with(|k| k.borrow().1 == combo) { return Ok(()); }
+    pub fn suspend() {
+        HELD.with(|h| *h.borrow_mut() = [false; 2]);
+        for slot in [&KEY, &LAST_KEY] { slot.with(|k| { let mut k = k.borrow_mut(); if !k.0.is_null() { unsafe { UnregisterEventHotKey(k.0); } } *k = (ptr::null_mut(), String::new()); }); }
+    }
+    /// Hotkey `id` (1 快速笔记, 2 打开上次的文档) on `combo`; an empty `combo` turns it off.
+    pub fn install(cx: &mut App, id: u32, code: u32, modifiers: u32, combo: &str) -> Result<(), i32> {
+        let slot = if id == 2 { &LAST_KEY } else { &KEY };
+        if slot.with(|k| k.borrow().1 == combo) { return Ok(()); }
         unsafe {
             let target = GetApplicationEventTarget();
-            let events = [EventType { class: u32::from_be_bytes(*b"keyb"), kind: 5 }, EventType { class: u32::from_be_bytes(*b"keyb"), kind: 6 }];
-            let mut handler = ptr::null_mut();
-            let status = if APP.with(|a| a.borrow().is_none()) { InstallEventHandler(target, pressed, 2, events.as_ptr(), ptr::null_mut(), &mut handler) } else { 0 };
-            if status != 0 { return Err(status); }
+            if APP.with(|a| a.borrow().is_none()) {
+                let events = [EventType { class: u32::from_be_bytes(*b"keyb"), kind: 5 }, EventType { class: u32::from_be_bytes(*b"keyb"), kind: 6 }];
+                let mut handler = ptr::null_mut();
+                let status = InstallEventHandler(target, pressed, 2, events.as_ptr(), ptr::null_mut(), &mut handler);
+                if status != 0 { return Err(status); }
+                APP.with(|app| *app.borrow_mut() = Some(cx.to_async()));
+            }
             let mut key = ptr::null_mut();
-            // Carbon virtual key 49 = Space; optionKey = 1 << 11.
-            let status = RegisterEventHotKey(code, modifiers, HotkeyId { signature: u32::from_be_bytes(*b"FlNt"), id: 1 }, target, 0, &mut key);
-            if status != 0 { if !handler.is_null() { RemoveEventHandler(handler); } return Err(status); }
-            KEY.with(|k| { let mut k = k.borrow_mut(); if !k.0.is_null() { UnregisterEventHotKey(k.0); } *k = (key, combo.into()); });
-            APP.with(|app| *app.borrow_mut() = Some(cx.to_async()));
-            let status = LAST_KEY.with(|k| {
-                let mut k = k.borrow_mut();
-                if !k.is_null() { return 0; }
-                RegisterEventHotKey(49, (1 << 8) | (1 << 11), HotkeyId { signature: u32::from_be_bytes(*b"FlNt"), id: 2 }, target, 0, &mut *k)
-            });
-            if status != 0 { return Err(status); }
+            if !combo.is_empty() {
+                let status = RegisterEventHotKey(code, modifiers, HotkeyId { signature: u32::from_be_bytes(*b"FlNt"), id }, target, 0, &mut key);
+                if status != 0 { return Err(status); }
+            }
+            slot.with(|k| { let mut k = k.borrow_mut(); if !k.0.is_null() { UnregisterEventHotKey(k.0); } *k = (key, combo.into()); });
             Ok(())
         }
     }
@@ -143,13 +144,14 @@ pub fn install(cx: &mut App) -> bool {
     crate::settings::prefs().quick_hotkey && register(cx)
 }
 
-static HOTKEY_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-/// Why the global hotkey isn't registered, if it failed.
-pub fn hotkey_error() -> Option<String> { HOTKEY_ERROR.lock().unwrap().clone() }
-/// Register the global hotkey from the shortcuts file.
+/// Why each global hotkey (快速笔记, 打开上次的文档) isn't registered, if it failed.
+static HOTKEY_ERROR: std::sync::Mutex<[Option<String>; 2]> = std::sync::Mutex::new([None, None]);
+pub fn hotkey_error() -> Option<String> { HOTKEY_ERROR.lock().unwrap().iter().flatten().next().cloned() }
+/// Register the global hotkeys from the shortcuts file.
 pub fn register(cx: &mut App) -> bool {
     let r = set_hotkey(&crate::shortcuts::global_key(), cx);
     if let Err(e) = &r { eprintln!("全局快捷键注册失败：{e}"); }
+    if let Err(e) = set_last_hotkey(&crate::shortcuts::last_key(), cx) { eprintln!("全局快捷键注册失败：{e}"); }
     r.is_ok()
 }
 
@@ -173,30 +175,47 @@ pub fn persist(cx: &mut App) {
     if let Err(e) = store.save_settings(&settings) { eprintln!("无法保存窗口尺寸：{e}"); }
 }
 
-/// The main window's size: last used, or 1280 × 800.
+/// The main window's size: last used, or 1280 × 800 (also before there is a library).
 pub fn main_window_size(cx: &App) -> gpui::Size<Pixels> {
-    let s = cx.global::<crate::shared_store::SharedStore>().settings().window_size.unwrap_or([1280., 800.]);
+    let s = cx.try_global::<crate::shared_store::SharedStore>().and_then(|s| s.settings().window_size).unwrap_or_else(|| first_window_size(cx));
     size(px(s[0].max(480.)), px(s[1].max(480.)))
 }
 
+/// The first window, before the user has sized one: 1280×800. At 16:10 the
+/// first-launch film fills it with little cropped, and the 280pt sidebar
+/// leaves the notes 1000. A screen too small for it gets the same shape,
+/// shrunk to leave room for the menu bar and the Dock.
+/// `QUIET_MD_WINDOW=1280x800` sets it instead, for previews at a given size.
+fn first_window_size(cx: &App) -> [f32; 2] {
+    if let Some((w, h)) = std::env::var("QUIET_MD_WINDOW").ok().and_then(|v| { let (w, h) = v.split_once('x')?; Some((w.parse().ok()?, h.parse().ok()?)) }) { return [w, h] }
+    let Some(d) = cx.primary_display().map(|d| d.bounds().size) else { return [1280., 800.] };
+    let k = ((f32::from(d.width) - 40.) / 1280.).min(f32::from(d.height) * 0.84 / 800.).min(1.);
+    [(1280. * k).round(), (800. * k).round()]
+}
+
+pub fn set_hotkey(combo: &str, cx: &mut App) -> anyhow::Result<()> { set(1, combo, cx) }
+/// 打开上次使用的文档; empty: off.
+pub fn set_last_hotkey(combo: &str, cx: &mut App) -> anyhow::Result<()> { set(2, combo, cx) }
+
 #[cfg(target_os = "macos")]
-pub fn set_hotkey(combo: &str, cx: &mut App) -> anyhow::Result<()> {
+fn set(id: u32, combo: &str, cx: &mut App) -> anyhow::Result<()> {
+    if combo.is_empty() { let _ = hotkey::install(cx, id, 0, 0, ""); HOTKEY_ERROR.lock().unwrap()[id as usize - 1] = None; return Ok(()); }
     let key = Keystroke::parse(combo)?;
     let keys = [("a",0),("s",1),("d",2),("f",3),("h",4),("g",5),("z",6),("x",7),("c",8),("v",9),("b",11),("q",12),("w",13),("e",14),("r",15),("y",16),("t",17),("1",18),("2",19),("3",20),("4",21),("6",22),("5",23),("9",25),("7",26),("8",28),("0",29),("o",31),("u",32),("i",34),("p",35),("l",37),("j",38),("k",40),("n",45),("m",46),("space",49)];
     let code = keys.iter().find(|(k,_)| *k == key.key).map(|(_,v)| *v).ok_or_else(|| anyhow::anyhow!(crate::settings::tr("全局快捷键请使用字母、数字或空格", "Use a letter, digit or Space for the global shortcut")))?;
     let m = key.modifiers;
     let modifiers = (if m.platform { 1 << 8 } else { 0 }) | (if m.shift { 1 << 9 } else { 0 }) | (if m.alt { 1 << 11 } else { 0 }) | (if m.control { 1 << 12 } else { 0 });
     #[cfg(target_os = "macos")]
-    let r = hotkey::install(cx, code, modifiers, combo).map_err(|e| anyhow::anyhow!("{}（{e}）", crate::settings::tr("无法注册这个组合键，可能已被系统或其他应用占用", "This shortcut is taken by macOS or another app")));
-    *HOTKEY_ERROR.lock().unwrap() = r.as_ref().err().map(|e| e.to_string());
+    let r = hotkey::install(cx, id, code, modifiers, combo).map_err(|e| anyhow::anyhow!("{}（{e}）", crate::settings::tr("无法注册这个组合键，可能已被系统或其他应用占用", "This shortcut is taken by macOS or another app")));
+    HOTKEY_ERROR.lock().unwrap()[id as usize - 1] = r.as_ref().err().map(|e| e.to_string());
     r
 }
 
-pub fn suspend_hotkey() { #[cfg(target_os = "macos")] hotkey::suspend(); *HOTKEY_ERROR.lock().unwrap() = None; }
+pub fn suspend_hotkey() { #[cfg(target_os = "macos")] hotkey::suspend(); *HOTKEY_ERROR.lock().unwrap() = [None, None]; }
 
 #[cfg(not(target_os = "macos"))]
-pub fn set_hotkey(_: &str, _: &mut App) -> anyhow::Result<()> {
+fn set(id: u32, _: &str, _: &mut App) -> anyhow::Result<()> {
     let error = crate::settings::tr("当前系统暂不支持全局快捷键", "Global shortcuts are not supported on this platform yet");
-    *HOTKEY_ERROR.lock().unwrap() = Some(error.into());
+    HOTKEY_ERROR.lock().unwrap()[id as usize - 1] = Some(error.into());
     Err(anyhow::anyhow!(error))
 }

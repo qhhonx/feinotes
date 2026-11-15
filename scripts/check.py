@@ -10,9 +10,9 @@ def cargo(*args, env=None):
 
 cargo("test", "--release", "--workspace", "--locked")
 cargo("test", "--release", "--locked", "-p", "fdl_core", "library_round_trips", "--", "--ignored",
-      env={**os.environ, "FDL_ROUNDTRIP_DIR": str(Path("shared-mock/library/docs").resolve())})
+      env={**os.environ, "FDL_ROUNDTRIP_DIR": str(Path("shared-mock/library").resolve())})
 source = Path("shared-mock/guides/assets")
-bundled = Path("shared-mock/library/assets/guides")
+bundled = Path("shared-mock/library/.assets/guides")
 for image in source.rglob("*"):
     if image.is_file():
         target = bundled / image.relative_to(source)

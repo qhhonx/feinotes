@@ -364,7 +364,14 @@ impl R<'_> {
     pub fn blocks(&self, list: &[Block], env: Env, cx: &mut Context<Editor>) -> Div {
         let mut col = div().flex().flex_col().w_full();
         for (i, gap) in visible_with_gaps(list, env) {
-            col = col.child(div().mt(px(gap)).child(self.block(&list[i], list, i, Env { root: false, ..env }, gap, cx)));
+            // Nested rows are drawn here rather than by `render_item`, so the
+            // 版本历史 tint has to be applied on this wrapper.
+            col = col.child(
+                div()
+                    .mt(px(gap))
+                    .when_some(self.ed.mark_fill(list[i].id), |d, fill| d.rounded(px(3.)).bg(fill))
+                    .child(self.block(&list[i], list, i, Env { root: false, ..env }, gap, cx)),
+            );
         }
         col
     }
@@ -1278,6 +1285,8 @@ impl Editor {
                 }
                 let Some(b) = list.get(bi) else { return div().into_any_element() };
                 let depth = outer.len();
+                // 版本历史 显示改动: this block is new or was rewritten here.
+                if let Some(fill) = self.mark_fill(b.id) { bgs.push((depth, fill)) }
                 r.flat = flattens(b).then_some(b.id);
                 let ends = |d: usize| !matches!(self.items.get(ix + 1), Some(Item::Block { path: next, .. }) if next.starts_with(&path[..=d]));
                 let last = sel_depth.is_some_and(ends);
@@ -1712,6 +1721,16 @@ impl Render for Editor {
 }
 
 impl Editor {
+    /// 版本历史 显示改动: the fill behind a block this snapshot added or
+    /// rewrote. None while the toggle is off (the map itself is dropped).
+    pub(super) fn mark_fill(&self, id: BlockId) -> Option<Hsla> {
+        use fdl_core::changes::Change;
+        Some(match self.diff_marks.as_ref()?.get(&id)? {
+            Change::Added => crate::theme::ca(crate::theme::craft::old::G500, 0.10),
+            Change::Changed => crate::theme::ca(crate::theme::craft::old::O500, 0.12),
+        })
+    }
+
     /// "N 字" chip at the bottom right while text is selected (§2).
     fn word_counter(&self) -> Option<AnyElement> {
         let n = if self.core.in_block_mode() {
@@ -1743,7 +1762,7 @@ impl Editor {
                 .text_size(px(12.))
                 .line_height(px(22.))
                 .text_color(Theme::text_caption())
-                .child(if crate::settings::english() { format!("{n} {}", if n == 1 { "word" } else { "words" }) } else { format!("{n} 字") })
+                .child(crate::settings::localized(crate::settings::lang(), "{n} 字", || format!("{n} 字"), || format!("{n} {}", if n == 1 { "word" } else { "words" })))
                 .into_any_element(),
         )
     }

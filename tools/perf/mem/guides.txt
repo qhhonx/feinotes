@@ -1,0 +1,31 @@
+# The built-in guides (shared-mock/guides/build.py): Home, every guide with
+# pictures, then a text-only guide; `idle` is after the image cache's sweep.
+resize 1280 800
+move 700 790
+wait 5000
+shot start
+wait 1500
+click 60 63
+wait 6000
+shot home
+wait 1500
+click 140 135
+wait 3000
+click 160 196
+wait 3000
+click 160 228
+wait 3000
+click 160 259
+wait 3000
+click 160 289
+wait 3000
+click 160 320
+wait 4000
+shot docs
+wait 1500
+click 140 382
+wait 3000
+shot leave
+wait 35000
+shot idle
+wait 1500

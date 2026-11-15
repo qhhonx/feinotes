@@ -14,8 +14,11 @@ pub fn supported() -> bool { Class::get("NSGlassEffectView").is_some() }
 /// scrolling keep their existing renderer and event handling.
 #[derive(Default)]
 pub struct NativeSidebar { view: RefCell<Option<SidebarView>> }
-struct SidebarView { view: *mut Object, frame: CGRect }
+struct SidebarView { view: *mut Object, frame: CGRect, hidden: bool }
 impl NativeSidebar {
+    /// Fit the glass to the sidebar. A change is shown with this frame, not a refresh
+    /// ahead of it: GPUI presents on its own, so the glass would go (or come)
+    /// while the old frame still had the sidebar drawn, a two-step jump.
     pub fn sync(&self, width: f32, window: &Window) {
         if !supported() { return; }
         let Ok(handle) = HasWindowHandle::window_handle(window) else { return; };
@@ -34,14 +37,21 @@ impl NativeSidebar {
                 let view: *mut Object = msg_send![view, initWithFrame:frame];
                 let _: () = msg_send![view, setCornerRadius:0f64];
                 let _: () = msg_send![parent, addSubview:view positioned:-1isize relativeTo:gpui];
-                *slot = Some(SidebarView { view, frame });
+                *slot = Some(SidebarView { view, frame, hidden: false });
+                window.present_next_frame_in_transaction();
             }
             if let Some(sidebar) = slot.as_mut() {
                 if sidebar.frame.origin.x != frame.origin.x || sidebar.frame.origin.y != frame.origin.y || sidebar.frame.size.width != frame.size.width || sidebar.frame.size.height != frame.size.height {
                     let _: () = msg_send![sidebar.view, setFrame:frame];
                     sidebar.frame = frame;
+                    window.present_next_frame_in_transaction();
                 }
-                let _: () = msg_send![sidebar.view, setHidden:if width > 0. { NO } else { YES }];
+                let hidden = width <= 0.;
+                if hidden != sidebar.hidden {
+                    let _: () = msg_send![sidebar.view, setHidden:if hidden { YES } else { NO }];
+                    sidebar.hidden = hidden;
+                    window.present_next_frame_in_transaction();
+                }
             }
         }
     }

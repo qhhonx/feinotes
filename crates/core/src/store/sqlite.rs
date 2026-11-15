@@ -196,7 +196,8 @@ fn front_matter(db: &Connection, id: &str, trashed: bool) -> Result<String> {
 fn portable_legacy_assets(doc: &mut Document, root: &Path, prefix: Option<&Path>) -> Result<()> {
     rewrite_import_references(doc, &mut |src| {
         if let Some(path) = portable_asset_path(root, src)? {
-            *src = prefix.map_or(path.clone(), |prefix| prefix.join(path.strip_prefix("assets").unwrap()))
+            let suffix = path.strip_prefix("assets").or_else(|_| path.strip_prefix(ASSETS))?;
+            *src = prefix.map_or(path.clone(), |prefix| prefix.join(suffix))
                 .to_string_lossy().into_owned();
         }
         Ok(())
@@ -205,11 +206,12 @@ fn portable_legacy_assets(doc: &mut Document, root: &Path, prefix: Option<&Path>
 
 fn portable_asset_path(root: &Path, src: &str) -> Result<Option<PathBuf>> {
     let path = Path::new(src.strip_prefix("file://").unwrap_or(src));
-    if !path.is_absolute() && !path.starts_with("assets") { return Ok(None); }
+    if !path.is_absolute() && !path.starts_with("assets") && !path.starts_with(ASSETS) { return Ok(None); }
     let relative = if path.is_absolute() {
-        path.ancestors().find(|candidate| candidate.file_name().is_some_and(|p| p == "assets"))
-            .and_then(|base| path.strip_prefix(base).ok()).map(|suffix| Path::new("assets").join(suffix))
-    } else { Some(path.to_path_buf()) };
+        path.ancestors().find(|candidate| candidate.file_name().is_some_and(|p| p == "assets" || p == ASSETS))
+            .and_then(|base| path.strip_prefix(base).ok()).map(|suffix| if root.join(ASSETS).is_dir() { Path::new(ASSETS).join(suffix) } else { Path::new("assets").join(suffix) })
+    } else if path.starts_with(ASSETS) && !root.join(ASSETS).is_dir() { Some(Path::new("assets").join(path.strip_prefix(ASSETS)?)) }
+    else { Some(path.to_path_buf()) };
     let path = relative
         .filter(|relative| relative.components().all(|part| matches!(part, std::path::Component::Normal(_))))
         .filter(|relative| export_path_in(root, &relative.to_string_lossy()).is_some())
@@ -221,7 +223,7 @@ fn stage_copy_assets(doc: &mut Document, source: &Path, stage: &Path, prefix: &P
     ids: &HashMap<String, String>) -> Result<()> {
     rewrite_import_references(doc, &mut |src| {
         if let Some(path) = portable_asset_path(source, src)? {
-            let suffix = path.strip_prefix("assets")?;
+            let suffix = path.strip_prefix("assets").or_else(|_| path.strip_prefix(ASSETS))?;
             let staged = stage.join(suffix);
             if !staged.is_file() {
                 let input = export_path_in(source, &path.to_string_lossy()).context("无法读取本机附件")?;
@@ -375,7 +377,7 @@ impl Store {
         else { Self::ensure_sqlite_wal(&db)?; }
         let index = read_map(&db, "library_entries")?;
         let trash = read_map(&db, "library_trash")?;
-        let mut store = Self { sqlite: Some(sqlite), file_changes: vec![], root, index, trash, warnings: vec![],
+        let mut store = Self { sqlite: Some(sqlite), flat: true, migrated: None, batch: Default::default(), file_changes: vec![], root, index, trash, warnings: vec![],
             loaded: Default::default(), copied: Default::default(), parsed: HashMap::new() };
         store.restore_recoveries();
         Ok(store)
@@ -397,7 +399,8 @@ impl Store {
         let source = source.canonicalize()?;
         let root = root.canonicalize()?;
         anyhow::ensure!(!root.starts_with(&source) && !source.starts_with(&root), "请选择单独存放的 Quiet.md 文档库");
-        anyhow::ensure!(source.join("format.json").is_file() && source.join("index.json").is_file(),
+        let format4 = source.join(INTERNAL).join("format.json").is_file();
+        anyhow::ensure!(format4 || (source.join("format.json").is_file() && source.join("index.json").is_file()),
             "所选文件夹不是 Quiet.md 文档库");
         let batch = uuid::Uuid::new_v4().to_string();
         let stage = root.join(format!(".legacy-import-{batch}"));
@@ -405,11 +408,20 @@ impl Store {
         let prefix = Path::new("assets").join(format!("legacy-{batch}"));
         let assets = root.join(&prefix);
         let result = (|| {
-            for name in ["format.json", "index.json", "index.json.bak", "docs", "trash", "assets"] {
-                let path = source.join(name);
-                if std::fs::symlink_metadata(&path).is_ok() { copy_legacy_item(&path, &stage.join(name))?; }
+            if format4 {
+                for e in std::fs::read_dir(&source)? {
+                    let e = e?;
+                    let name = e.file_name();
+                    if name == ".lock" { continue; }
+                    copy_legacy_item(&e.path(), &stage.join(name))?;
+                }
+            } else {
+                for name in ["format.json", "index.json", "index.json.bak", "docs", "trash", "assets"] {
+                    let path = source.join(name);
+                    if std::fs::symlink_metadata(&path).is_ok() { copy_legacy_item(&path, &stage.join(name))?; }
+                }
+                let _: FormatMarker = serde_json::from_slice(&std::fs::read(stage.join("format.json"))?)?;
             }
-            let _: FormatMarker = serde_json::from_slice(&std::fs::read(stage.join("format.json"))?)?;
             let mut snapshot = Self::open_at(stage.clone())?;
             snapshot.index.retain(|_, meta| !meta.local());
             snapshot.save_index()?;
@@ -445,7 +457,8 @@ impl Store {
                 }
                 tx.execute("INSERT INTO library_trash VALUES (?1, ?2)", params![id, serde_json::to_string(trashed)?])?;
             }
-            if stage.join("assets").is_dir() { std::fs::rename(stage.join("assets"), &assets)?; }
+            let source_assets = Self::assets_in(&stage);
+            if source_assets.is_dir() { std::fs::rename(source_assets, &assets)?; }
             if let Err(error) = tx.commit() {
                 let _ = std::fs::remove_dir_all(&assets);
                 return Err(error.into());
@@ -575,16 +588,17 @@ impl Store {
             let mut snapshot = Self::open_at(source.clone())?;
             let entries = snapshot.list();
             let assets = root.join("assets");
-            if source.join("assets").exists() {
+            let source_assets = Self::assets_in(&source);
+            if source_assets.exists() {
                 anyhow::ensure!(!assets.exists(), "恢复目标已有附件目录");
-                std::fs::rename(source.join("assets"), &assets)?;
+                std::fs::rename(source_assets, &assets)?;
             }
             std::fs::create_dir_all(assets)?;
             let tx = db.transaction()?;
             for entry in entries.into_iter().filter(|e| !e.meta.local()) {
                 if entry.meta.folder.is_none() {
                     let mut doc = snapshot.load(&entry.id)?;
-                    portable_legacy_assets(&mut doc, root, None)?;
+                    portable_legacy_assets(&mut doc, root, Some(Path::new("assets")))?;
                     assign_seed_ids(&mut doc);
                     write_document(&tx, &entry.id, false, &doc, &snapshot.front_matter_of(&entry.id))?;
                 }
@@ -593,7 +607,7 @@ impl Store {
             for (id, trashed) in &snapshot.trash {
                 if trashed.meta.folder.is_none() {
                     let (mut doc, front) = legacy_trash_body(&snapshot, id, &trashed.meta)?;
-                    portable_legacy_assets(&mut doc, root, None)?;
+                    portable_legacy_assets(&mut doc, root, Some(Path::new("assets")))?;
                     assign_seed_ids(&mut doc);
                     write_document(&tx, id, true, &doc, &front)?;
                 }
@@ -719,6 +733,7 @@ impl Store {
         if let Some(previous) = self.loaded.borrow().get(id) {
             anyhow::ensure!(previous.parse::<i64>().ok() == Some(revision), "文档已被另一个实例修改，未覆盖内容");
         }
+        let previous = if revision > 0 { Some(document(&tx, id, false)?.0) } else { None };
         let front = match front { Some(value) => value.to_owned(), None => front_matter(&tx, id, false)? };
         let now = now();
         let mut meta = meta.or_else(|| self.index.get(id).cloned()).unwrap_or(Meta { created: now, ..Default::default() });
@@ -730,6 +745,13 @@ impl Store {
         tx.commit()?;
         self.index.insert(id.to_string(), meta.clone());
         self.loaded.borrow_mut().insert(id.to_string(), written.to_string());
+        if written != revision && let Some(previous) = previous {
+            let text = if meta.markdown { crate::markdown::write_file(&previous, &front, None) } else { docxml::serialize(&previous) };
+            let ext = if meta.markdown { "md" } else { "xml" };
+            if let Err(error) = crate::versions::snapshot(&self.history_base(), id, ext, &text, crate::time::now_ms(), self.settings().history_limit(), false) {
+                self.warnings.push(format!("Could not keep a previous version: {error}"));
+            }
+        }
         Ok((meta, result))
     }
 
@@ -746,6 +768,7 @@ impl Store {
         self.trash.insert(id.to_string(), trashed);
         self.index.remove(id);
         self.loaded.borrow_mut().remove(id);
+        crate::versions::move_to_trash(&self.history_base(), id);
         self.record_file_change(id, before);
         Ok(())
     }
@@ -770,6 +793,7 @@ impl Store {
         for (k, meta) in restored {
             self.trash.remove(&k);
             self.index.insert(k.clone(), meta);
+            crate::versions::restore_from_trash(&self.history_base(), &k);
             self.record_file_change(&k, None);
         }
         Ok(moved)
@@ -786,7 +810,7 @@ impl Store {
             tx.execute("DELETE FROM library_trash WHERE id = ?1", [id])?;
         }
         tx.commit()?;
-        for id in ids { self.trash.remove(&id); }
+        for id in ids { self.trash.remove(&id); crate::versions::purge(&self.history_base(), &id); }
         Ok(())
     }
 
@@ -840,6 +864,95 @@ mod tests {
     struct Temp(PathBuf);
     impl Drop for Temp {
         fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+
+    fn isolated_sqlite(label: &str) -> Result<Temp> {
+        let temp = Temp(std::env::temp_dir().join(format!("quiet-{label}-{}", uuid::Uuid::new_v4())));
+        let stage = temp.0.join(".restore-source");
+        std::fs::create_dir_all(&stage)?;
+        std::fs::write(stage.join(".cloud-restore-ready"), "synthetic account\n")?;
+        Store::initialize_sqlite(&temp.0)?;
+        Ok(temp)
+    }
+
+    #[test]
+    fn format4_import_preserves_source_links_tree_trash_and_assets() -> Result<()> {
+        let temp = isolated_sqlite("format4-import")?;
+        let input = Temp(std::env::temp_dir().join(format!("quiet-format4-source-{}", uuid::Uuid::new_v4())));
+        let mut source = Store::open_at(input.0.clone())?;
+        let folder = source.create_folder("目录", None)?;
+        let target = source.create_from(&docxml::parse("<title>目标</title><p>target</p>")?)?;
+        let xml = format!("<title>链接和附件</title><p><cite type=\"doc\" doc-id=\"{target}\">目标</cite></p><figure><source path=\".assets/files/test.txt\" name=\"附件\"/></figure>");
+        let id = source.create_from_in(&docxml::parse(&xml)?, Some(&folder))?;
+        let deleted = source.create_markdown(&docxml::parse("<title>已删</title><p>旧版本</p>")?, "---\nstatus: draft\n---\n")?;
+        source.delete(&deleted, None)?;
+        std::fs::create_dir_all(input.0.join(".assets/files"))?;
+        std::fs::write(input.0.join(".assets/files/test.txt"), "合成附件")?;
+        let index = std::fs::read(input.0.join(".quiet/index.json"))?;
+        let body = std::fs::read(source.file_path(&id).unwrap())?;
+        assert_eq!(Store::import_legacy_copy(&temp.0, &input.0)?, 4);
+        assert!(Store::import_legacy_copy(&temp.0, &input.0).is_err());
+        assert_eq!(std::fs::read(input.0.join(".quiet/index.json"))?, index);
+        assert_eq!(std::fs::read(source.file_path(&id).unwrap())?, body);
+        let mut store = Store::open_sqlite_at(temp.0.clone())?;
+        assert_eq!(store.list().len(), 3);
+        let doc = store.load(&id)?;
+        assert_eq!(doc.doc_links()[0].target, target);
+        assert_eq!(store.index[&id].parent.as_deref(), Some(folder.as_str()));
+        let asset = &doc.asset_sources()[0];
+        assert!(asset.starts_with("assets/legacy-"));
+        assert_eq!(std::fs::read_to_string(temp.0.join(asset))?, "合成附件");
+        store.restore(&deleted)?;
+        assert!(store.front_matter_of(&deleted).contains("status: draft"));
+        assert_eq!(store.load(&deleted)?.plain_text(), "旧版本");
+        assert!(store.file_path(&id).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_versions_and_gestures_keep_transactions_and_revisions() -> Result<()> {
+        let temp = isolated_sqlite("versions")?;
+        let mut store = Store::open_sqlite_at(temp.0.clone())?;
+        let folder = store.create_folder("目录", None)?;
+        let journal = store.track_file_changes();
+        let id = store.create_from_in(&docxml::parse("<title>原题</title><p>原文</p>")?, Some(&folder))?;
+        let delta = journal.take();
+        let before = store.load_for_edit(&id, false)?;
+        let stable = before.blocks[0].id;
+        let mut changed = before.clone(); changed.blocks[0].text = crate::model::RichText::plain("新版");
+        assert!(store.save_sqlite_with(&id, &changed, |_, _| -> Result<()> { anyhow::bail!("injected failure") }).is_err());
+        assert_eq!(store.load(&id)?.blocks[0].text.text, "原文");
+        assert!(store.versions(&id).is_empty());
+        store.save(&id, &changed)?;
+        assert_eq!(store.load(&id)?.blocks[0].id, stable);
+        let versions = store.versions(&id);
+        assert_eq!(versions.len(), 1);
+        assert_eq!(store.version_document(&id, &versions[0].name)?.blocks[0].text.text, "原文");
+        let restore = store.restore_version(&id, &versions[0].name)?;
+        store.save(&id, &restore)?;
+        assert_eq!(store.load(&id)?.blocks[0].text.text, "原文");
+        // Undo creation / redo must move the freshest body, never the original snapshot.
+        store.apply_file_history(&delta, false)?;
+        assert!(!store.index.contains_key(&id));
+        store.apply_file_history(&delta, true)?;
+        assert_eq!(store.load(&id)?.blocks[0].text.text, "原文");
+        let mut other = Store::open_sqlite_at(temp.0.clone())?;
+        let _ = store.load_for_edit(&id, false)?;
+        let mut external = other.load(&id)?; external.title = crate::model::RichText::plain("别处改题");
+        other.save(&id, &external)?;
+        assert!(store.save(&id, &restore).is_err());
+        assert_eq!(store.load(&id)?.title.text, "别处改题");
+        let md = store.create_markdown(&docxml::parse("<title>Markdown</title><p>正文</p>")?, "---\nkind: test\n---\n")?;
+        store.save_version_now(&md)?;
+        assert!(store.version_text(&md, &store.versions(&md)[0].name)?.contains("kind: test"));
+        store.delete(&md, None)?;
+        assert!(store.versions(&md).is_empty());
+        store.restore(&md)?;
+        assert_eq!(store.versions(&md).len(), 1);
+        store.delete(&md, None)?; store.purge(&md)?;
+        assert!(crate::versions::list(&store.history_base(), &md, true).is_empty());
+        Ok(())
     }
 
     #[test]
@@ -941,7 +1054,10 @@ mod tests {
         std::fs::write(stage.join(".cloud-restore-ready"), "test account\n")?;
         Store::initialize_sqlite(&root)?;
 
-        let mut legacy = Store::open_at(temp.0.join("legacy"))?;
+        let legacy_root = temp.0.join("legacy");
+        std::fs::create_dir_all(legacy_root.join("docs"))?;
+        save_json(&legacy_root.join("format.json"), &FormatMarker { format: 3 })?;
+        let mut legacy = Store::open_at(legacy_root)?;
         let folder = legacy.create_folder("旧库目录", None)?;
         let id = legacy.create_from(&docxml::parse("<title>正文</title><p>原来的笔记</p><figure><source path=\"/old/Quiet.md/assets/files/test.txt\" name=\"test.txt\"/></figure>")?)?;
         legacy.set_parent(&id, Some(&folder))?;
@@ -1033,8 +1149,8 @@ mod tests {
         legacy.set_parent(&id, Some(&folder))?;
         legacy.set_starred(&id, true)?;
         std::fs::write(source.join(".cloud-restore-ready"), "test account\n")?;
-        std::fs::create_dir_all(source.join("assets/files"))?;
-        std::fs::write(source.join("assets/files/test.txt"), "本地附件")?;
+        std::fs::create_dir_all(Store::assets_in(&source).join("files"))?;
+        std::fs::write(Store::assets_in(&source).join("files/test.txt"), "本地附件")?;
         drop(legacy);
         Store::initialize_sqlite(&root.0)?;
         Store::initialize_sqlite(&root.0)?;

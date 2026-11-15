@@ -107,7 +107,7 @@ impl WindowsWindowInner {
             WM_SHOWWINDOW => self.handle_window_visibility_changed(handle, wparam),
             WM_GPUI_CURSOR_STYLE_CHANGED => self.handle_cursor_changed(lparam),
             WM_GPUI_FORCE_UPDATE_WINDOW => self.draw_window(handle, true),
-            WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
+            WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(handle, lparam),
             _ => None,
         };
         if let Some(n) = handled {
@@ -1190,11 +1190,17 @@ impl WindowsWindowInner {
         None
     }
 
-    fn handle_device_lost(&self, lparam: LPARAM) -> Option<isize> {
+    fn handle_device_lost(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
         let mut lock = self.state.borrow_mut();
         let devices = lparam.0 as *const DirectXDevices;
         let devices = unsafe { &*devices };
         lock.renderer.handle_device_lost(&devices);
+        // quiet.md: the blur behind the window is gone after the driver restarts.
+        // Switch it off first; setting the same accent again may be ignored.
+        if let Some(appearance) = lock.background_appearance {
+            super::window::apply_background_appearance(handle, WindowBackgroundAppearance::Opaque);
+            super::window::apply_background_appearance(handle, appearance);
+        }
         Some(0)
     }
 

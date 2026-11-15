@@ -158,6 +158,7 @@ impl Workspace {
             .font_weight(FontWeight::SEMIBOLD).text_color(Theme::text()).child(ui_text(title)));
         let doc = id.clone();
         let header = crate::trash::page_header_with(self, crumbs, 26., cx)
+            .child(self.place_button("folder-more", Some(id.clone()), cx))
             .child(self.import_button("folder-import", Some(id.clone()), cx))
             .child(crate::ui::header_icon("folder-new", "plus")
                 .child(self.home.track("create-folder"))

@@ -800,7 +800,7 @@ fragment float4 path_rasterization_fragment(
 
 struct PathSpriteVertexOutput {
   float4 position [[position]];
-  float2 texture_coords;
+  float2 texture_origin [[flat]];
 };
 
 vertex PathSpriteVertexOutput path_sprite_vertex(
@@ -808,7 +808,8 @@ vertex PathSpriteVertexOutput path_sprite_vertex(
   uint sprite_id [[instance_id]],
   constant float2 *unit_vertices [[buffer(SpriteInputIndex_Vertices)]],
   constant PathSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
-  constant Size_DevicePixels *viewport_size [[buffer(SpriteInputIndex_ViewportSize)]]
+  constant Size_DevicePixels *viewport_size [[buffer(SpriteInputIndex_ViewportSize)]],
+  constant float4 *texture_rect [[buffer(SpriteInputIndex_AtlasTextureSize)]]
 ) {
   float2 unit_vertex = unit_vertices[unit_vertex_id];
   PathSprite sprite = sprites[sprite_id];
@@ -817,12 +818,11 @@ vertex PathSpriteVertexOutput path_sprite_vertex(
   float4 device_position =
       to_device_position(unit_vertex, sprite.bounds, viewport_size);
 
-  float2 screen_position = float2(sprite.bounds.origin.x, sprite.bounds.origin.y) + unit_vertex * float2(sprite.bounds.size.width, sprite.bounds.size.height);
-  float2 texture_coords = screen_position / float2(viewport_size->width, viewport_size->height);
-
+  // quiet.md: the batch was rasterized at the texture's origin; texture_rect.xy
+  // is where that origin sits on screen.
   return PathSpriteVertexOutput{
     device_position,
-    texture_coords
+    texture_rect->xy
   };
 }
 
@@ -830,8 +830,8 @@ fragment float4 path_sprite_fragment(
   PathSpriteVertexOutput input [[stage_in]],
   texture2d<float> intermediate_texture [[texture(SpriteInputIndex_AtlasTexture)]]
 ) {
-  constexpr sampler intermediate_texture_sampler(mag_filter::linear, min_filter::linear);
-  return intermediate_texture.sample(intermediate_texture_sampler, input.texture_coords);
+  // quiet.md: one texel per pixel, so read it directly.
+  return intermediate_texture.read(uint2(input.position.xy - input.texture_origin));
 }
 
 struct SurfaceVertexOutput {

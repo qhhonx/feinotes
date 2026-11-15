@@ -40,8 +40,8 @@ scripts/check.sh        # cargo test --release + clippy --all-targets 零警告
 ## 用户数据（绝对不要碰）
 
 - 产品名 Quiet.md，二进制 `quiet_md`，默认文档库 `~/Documents/Quiet.md`。那是使用者的真实数据：不要提交进仓库，不要删改里面的文件。别的应用的进程和数据一律不碰，结束进程只能匹配本仓库自己编译出来的二进制。
-- 本地预览版是 `dist-preview/quiet.md.app`，用 `scripts/preview.sh` 启动或更新，用的也是默认文档库。应用首次启动时，由 `src/guides.rs` 在空文档库中初始化编入二进制的「开始指南」，不覆盖已有文档库。
-- `shared-mock/library` 由 `python3 shared-mock/guides/build.py <空目录>` 从 `shared-mock/guides/src/*.xml` 生成：改了指南就重新生成，并用 `FDL_ROUNDTRIP_DIR=<目录>/docs cargo test --release library_round_trips -- --ignored` 确认能原样往返。指南只写已经实现的功能，标题不带 emoji 图标。
+- 本地预览版是 `dist-preview/Quiet.md Preview.app`（名字带 Preview，免得和装好的应用混淆），用 `scripts/preview.sh` 启动或更新，用的也是默认文档库。应用首次启动时，由 `src/guides.rs` 在空文档库中初始化编入二进制的「开始指南」，不覆盖已有文档库。
+- `shared-mock/library` 由 `python3 shared-mock/guides/build.py <空目录>` 从 `shared-mock/guides/src/*.xml` 生成：改了指南就重新生成，并用 `FDL_ROUNDTRIP_DIR=<目录> cargo test --release library_round_trips -- --ignored` 确认能原样往返。指南只写已经实现的功能，标题不带 emoji 图标。
 - 指南里的截图用 `shared-mock/guides/shots/shots.sh` 重拍（窗口会在屏幕中间浮一分钟左右，不抢焦点）；改了指南里展示的界面后记得重拍。
 - 测试用的文档库一律放在临时目录，用 `QUIET_MD_HOME` 指定。
 
@@ -52,7 +52,7 @@ scripts/check.sh        # cargo test --release + clippy --all-targets 零警告
 - 不用真实系统剪贴板，`key cmd-v` 只在 `clip` 之后用。
 - 不用 `activate` 抢焦点。
 - 不点这些：
-  - 设置 › 文档库的「在访达中显示」；
+  - 设置 › 文档库的「在访达中显示」，主页和文件夹页「…」里的「在访达中打开」；
   - 链接和「网页搜索」；
   - 打印；
   - 快速查看。

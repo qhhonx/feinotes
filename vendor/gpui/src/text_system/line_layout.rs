@@ -505,12 +505,22 @@ impl LineLayoutCache {
         } else {
             drop(current_frame);
             let text = SharedString::from(text);
-            let unwrapped_layout = self.layout_line::<&SharedString>(&text, font_size, runs, None);
-            let wrap_boundaries = if let Some(wrap_width) = wrap_width {
+            let mut unwrapped_layout = self.layout_line::<&SharedString>(&text, font_size, runs, None);
+            let mut wrap_boundaries = if let Some(wrap_width) = wrap_width {
                 unwrapped_layout.compute_wrap_boundaries(text.as_ref(), wrap_width, max_lines)
             } else {
                 SmallVec::new()
             };
+            // quiet.md: right-to-left text is shaped in visual order, so the
+            // boundaries above cut it in the wrong places and order.
+            if let Some(wrap_width) = wrap_width
+                && !wrap_boundaries.is_empty()
+                && text.chars().any(is_rtl)
+                && let Some((layout, boundaries)) = self.wrap_bidi(&text, font_size, runs, &unwrapped_layout, wrap_width, max_lines)
+            {
+                unwrapped_layout = layout;
+                wrap_boundaries = boundaries;
+            }
             let layout = Arc::new(WrappedLineLayout {
                 unwrapped_layout,
                 wrap_boundaries,
@@ -532,6 +542,71 @@ impl LineLayoutCache {
 
             layout
         }
+    }
+
+    /// quiet.md: wrap text that contains right-to-left scripts in logical
+    /// order: break with each character's advance taken in reading order,
+    /// shape every row on its own (so the platform reorders within the row),
+    /// then lay the rows end to end so the usual painting cuts them apart.
+    fn wrap_bidi(
+        &self,
+        text: &str,
+        font_size: Pixels,
+        runs: &[FontRun],
+        visual: &LineLayout,
+        wrap_width: Pixels,
+        max_lines: Option<usize>,
+    ) -> Option<(Arc<LineLayout>, SmallVec<[WrapBoundary; 1]>)> {
+        // Advances in visual order, then the glyphs in logical order.
+        let mut glyphs: Vec<(usize, Pixels)> = visual.runs.iter().flat_map(|r| r.glyphs.iter()).map(|g| (g.index, g.position.x)).collect();
+        glyphs.sort_by(|a, b| f32::from(a.1).total_cmp(&f32::from(b.1)));
+        let mut advances: Vec<(usize, Pixels)> = (0..glyphs.len()).map(|i| (glyphs[i].0, glyphs.get(i + 1).map_or(visual.width, |g| g.1) - glyphs[i].1)).collect();
+        advances.sort_by_key(|a| a.0);
+        let mut x = px(0.);
+        let logical_glyphs = advances.iter().map(|&(index, advance)| {
+            let glyph = ShapedGlyph { id: GlyphId(0), position: point(x, px(0.)), index, is_emoji: false };
+            x += advance;
+            glyph
+        }).collect();
+        let font_id = visual.runs.first()?.font_id;
+        let logical = LineLayout { font_size, width: x, ascent: visual.ascent, descent: visual.descent, runs: vec![ShapedRun { font_id, glyphs: logical_glyphs }], len: visual.len };
+        let breaks: Vec<usize> = logical.compute_wrap_boundaries(text, wrap_width, max_lines).iter().map(|b| logical.runs[0].glyphs[b.glyph_ix].index).collect();
+        let mut rows = Vec::with_capacity(breaks.len() + 1);
+        let mut start = 0;
+        for end in breaks.into_iter().chain([text.len()]) {
+            if end > start { rows.push(start..end); }
+            start = end;
+        }
+        let mut out = LineLayout { font_size, len: text.len(), ..Default::default() };
+        let mut boundaries = SmallVec::new();
+        for row in rows {
+            // This row's slice of the font runs.
+            // A row's trailing spaces would sit at its visual start in a
+            // right-to-left row and push it off the edge it is aligned to.
+            let trimmed = text[row.clone()].trim_end().len();
+            let row = row.start..row.start + if trimmed > 0 { trimmed } else { row.len() };
+            let mut row_runs = Vec::new();
+            let mut at = 0;
+            for run in runs {
+                let (lo, hi) = (at.max(row.start), (at + run.len).min(row.end));
+                if lo < hi { row_runs.push(FontRun { len: hi - lo, font_id: run.font_id }); }
+                at += run.len;
+            }
+            let layout = self.layout_line(text[row.clone()].to_string(), font_size, &row_runs, None);
+            let offset = out.width;
+            if offset > px(0.) {
+                let skip = layout.runs.iter().position(|r| !r.glyphs.is_empty())?;
+                boundaries.push(WrapBoundary { run_ix: out.runs.len() + skip, glyph_ix: 0 });
+            }
+            for run in &layout.runs {
+                let glyphs = run.glyphs.iter().map(|g| ShapedGlyph { position: point(g.position.x + offset, g.position.y), index: g.index + row.start, ..g.clone() }).collect();
+                out.runs.push(ShapedRun { font_id: run.font_id, glyphs });
+            }
+            out.width += layout.width;
+            out.ascent = out.ascent.max(layout.ascent);
+            out.descent = out.descent.max(layout.descent);
+        }
+        Some((Arc::new(out), boundaries))
     }
 
     pub fn layout_line<Text>(
@@ -673,4 +748,10 @@ impl AsCacheKeyRef for CacheKeyRef<'_> {
     fn as_cache_key_ref(&self) -> CacheKeyRef<'_> {
         *self
     }
+}
+
+/// quiet.md: characters of right-to-left scripts (Hebrew, Arabic, Syriac,
+/// Thaana, N'Ko and their presentation forms).
+pub(crate) fn is_rtl(c: char) -> bool {
+    matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF)
 }

@@ -1,0 +1,21 @@
+# Library from gen_photo_library.py: Home with 8 photo cards, one photo
+# document, then a text-only one; `idle` is after the image cache's sweep.
+resize 1280 800
+move 700 790
+wait 5000
+shot start
+wait 1500
+click 60 63
+wait 6000
+shot home
+wait 1500
+click 140 135
+wait 5000
+shot doc
+wait 1500
+click 140 382
+wait 3000
+shot leave
+wait 35000
+shot idle
+wait 1500

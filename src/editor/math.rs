@@ -18,10 +18,10 @@ pub const SVG_PREFIX: &str = "katex-svg/";
 
 const SIZES: [f32; 11] = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2, 1.44, 1.728, 2.074, 2.488];
 
-/// The test for rendering as a block (display) equation:
-/// `/\\begin\n*\{(equation|split|align|gather|alignat|CD)\}|\\tag/`.
+/// The test for rendering as a block (display) equation: multi-line `$$`
+/// imports, or `/\\begin\n*\{(equation|split|align|gather|alignat|CD)\}|\\tag/`.
 pub fn is_block(src: &str) -> bool {
-    if src.contains("\\tag") {
+    if src.contains('\n') || src.contains("\\tag") {
         return true;
     }
     let mut rest = src;
@@ -1090,6 +1090,31 @@ mod tests {
         assert!(is_block("x\\tag{1}"));
         assert!(!is_block("\\begin{align*}a\\end{align*}"));
         assert!(!is_block("\\frac{a}{b}"));
+    }
+
+    #[test]
+    fn multiline_equations_are_display_math() {
+        assert!(is_block("V &= I R \\\nQ_c &= 2I"));
+    }
+
+    /// DirectWrite and fontdb pick faces by these bits, not the face name:
+    /// upstream marks every face Regular, so Windows drew `(` from Main-Italic (#214).
+    #[test]
+    fn katex_faces_carry_their_style_bits() {
+        let be = |d: &[u8], o: usize| u16::from_be_bytes([d[o], d[o + 1]]) as usize;
+        let table = |d: &[u8], tag: &[u8]| {
+            (0..be(d, 4)).map(|i| 12 + 16 * i).find(|&o| &d[o..o + 4] == tag).map(|o| u32::from_be_bytes(d[o + 8..o + 12].try_into().unwrap()) as usize).unwrap()
+        };
+        let mut n = 0;
+        for (p, d) in crate::assets::FILES.iter().filter(|(p, _)| p.starts_with("fonts/katex/") && p.ends_with(".ttf")) {
+            let sub = p.rsplit('-').next().unwrap();
+            let (it, bd) = (sub.contains("Italic"), sub.contains("Bold"));
+            let (fs, ms) = (be(d, table(d, b"OS/2") + 62), be(d, table(d, b"head") + 44));
+            assert_eq!((fs & 1 != 0, fs & 0x20 != 0, fs & 0x40 != 0), (it, bd, !it && !bd), "{p} fsSelection");
+            assert_eq!((ms & 2 != 0, ms & 1 != 0), (it, bd), "{p} macStyle");
+            n += 1;
+        }
+        assert_eq!(n, 20);
     }
 
     #[test]

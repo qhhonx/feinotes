@@ -554,6 +554,19 @@ pub fn to_inline(kind: InlineKind) -> Inline {
     }
 }
 
+/// `<cite type="doc" href>`: a mention written as a path relative to the file.
+pub fn doc_link_href_xml(href: &str, title: &str) -> String {
+    format!("<cite type=\"doc\" href=\"{}\" file-type=\"docx\">{}</cite>", esc_attr(href), esc(title))
+}
+
+/// The `href` of a mention as written in the file (`None`: an id, or not a mention).
+pub fn doc_link_href(xml: &str) -> Option<String> {
+    match parse_dom(xml).ok()?.into_iter().next()? {
+        Node::El(e) if e.name == "cite" && e.attr("doc-id").is_none() => e.attr("href").map(str::to_string),
+        _ => None,
+    }
+}
+
 /// An inline element read from a file: kept verbatim, understood if we can.
 fn inline_of(e: &Element) -> Inline {
     let kind = match e.name.as_str() {
@@ -574,8 +587,10 @@ fn inline_of(e: &Element) -> Inline {
             }))
         }
         "time" => reminder_of(e).map(InlineKind::Reminder),
+        // FORMAT 4 writes the target as a path relative to the file (`href`);
+        // the store turns it into the document's id while it is open.
         "cite" if e.attr("type") == Some("doc") => {
-            e.attr("doc-id").map(|id| InlineKind::DocLink(InlineDocLink { id: id.to_string(), title: code_text(&e.children) }))
+            e.attr("doc-id").or_else(|| e.attr("href")).map(|id| InlineKind::DocLink(InlineDocLink { id: id.to_string(), title: code_text(&e.children) }))
         }
         _ => None,
     };
@@ -1301,6 +1316,12 @@ mod tests {
         assert_eq!(l, InlineDocLink { id: "abc".into(), title: "A & B".into() });
         assert_eq!(reread(&to_inline(InlineKind::DocLink(l.clone()))), InlineKind::DocLink(l));
         assert!(serialize(&doc).contains("<cite type=\"doc\" doc-id=\"abc\" file-type=\"docx\">A &amp; B</cite>"));
+        let x = format!("<title>T</title>\n<p>见 {}</p>\n", doc_link_href_xml("../工作/周 报.xml", "A & B"));
+        let doc = parse(&x).unwrap();
+        let (_, m) = doc.blocks[0].text.spans().find(|(_, m)| m.inline.is_some()).unwrap();
+        assert_eq!(m.inline.as_ref().unwrap().doc_link().unwrap().id, "../工作/周 报.xml");
+        assert_eq!(doc_link_href(&m.inline.as_ref().unwrap().xml).as_deref(), Some("../工作/周 报.xml"));
+        assert_eq!(serialize(&doc), x);
     }
 
     #[test]
@@ -1378,16 +1399,22 @@ mod tests {
         assert!(x.contains("<td><ul><li>a<p>b</p></li></ul><p>c<p>d</p></p></td>"), "{x}");
     }
 
-    /// Round-trips every document of a real library: FDL_ROUNDTRIP_DIR=<library>/docs cargo test -- --ignored
+    /// Round-trips every document of a real library (its folders too): FDL_ROUNDTRIP_DIR=<library> cargo test -- --ignored
     #[test]
     #[ignore]
     fn library_round_trips() {
-        let dir = std::env::var("FDL_ROUNDTRIP_DIR").expect("FDL_ROUNDTRIP_DIR");
-        for e in std::fs::read_dir(dir).unwrap() {
-            let path = e.unwrap().path();
-            if path.extension().is_none_or(|x| x != "xml") {
-                continue;
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let path = e.unwrap().path();
+                if path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) { continue; }
+                if path.is_dir() { walk(&path, out); } else if path.extension().is_some_and(|x| x == "xml") { out.push(path); }
             }
+        }
+        let dir = std::env::var("FDL_ROUNDTRIP_DIR").expect("FDL_ROUNDTRIP_DIR");
+        let mut files = vec![];
+        walk(std::path::Path::new(&dir), &mut files);
+        assert!(!files.is_empty(), "no documents under {dir}");
+        for path in files {
             let src = std::fs::read_to_string(&path).unwrap();
             let doc = parse(&src).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             let x = serialize(&doc);

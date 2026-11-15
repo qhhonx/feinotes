@@ -13,8 +13,23 @@ use crate::editor_ui::ToastKind;
 use gpui::*;
 
 pub const READ_ONLY_HINT: &str = "当前为阅读模式，请切换为编辑模式后重试";
+/// The same refusal while a 版本历史 snapshot is on screen: there is no
+/// "switch to editing" to offer, only 返回当前.
+pub const PREVIEW_HINT: &str = "正在查看历史版本，返回当前版本后才能编辑";
 
 impl Editor {
+    /// 版本历史: the document on screen is a snapshot, not the live one. The
+    /// read-only rules are 阅读模式's; only the hint differs.
+    pub fn set_preview(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.preview == on { return }
+        self.preview = on;
+        cx.notify();
+    }
+
+    fn read_only_hint(&self) -> &'static str {
+        if self.preview { PREVIEW_HINT } else { READ_ONLY_HINT }
+    }
+
     pub fn set_read_only(&mut self, on: bool, cx: &mut Context<Self>) {
         if self.read_only == on {
             return;
@@ -49,7 +64,8 @@ impl Editor {
             return false;
         }
         self.core.restore(doc);
-        self.toast_kind(ToastKind::Info, READ_ONLY_HINT, cx);
+        let hint = self.read_only_hint();
+        self.toast_kind(ToastKind::Info, hint, cx);
         cx.notify();
         true
     }
@@ -75,7 +91,8 @@ impl Editor {
         let m = k.modifiers;
         if m.platform || m.control || m.function {
             if m.platform && !m.control && matches!(k.key.as_str(), "v" | "x" | "z" | "b" | "i" | "u" | "k") {
-                self.toast_kind(ToastKind::Info, READ_ONLY_HINT, cx);
+                let hint = self.read_only_hint();
+                self.toast_kind(ToastKind::Info, hint, cx);
             }
             return;
         }
@@ -87,7 +104,8 @@ impl Editor {
         let typing = k.key_char.as_ref().is_some_and(|c| !c.is_empty()) || matches!(k.key.as_str(), "enter" | "backspace" | "delete" | "tab");
         if typing {
             cx.stop_propagation();
-            self.toast_kind(ToastKind::Info, READ_ONLY_HINT, cx);
+            let hint = self.read_only_hint();
+            self.toast_kind(ToastKind::Info, hint, cx);
         }
     }
 

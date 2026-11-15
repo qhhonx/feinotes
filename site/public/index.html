@@ -137,6 +137,7 @@
       <option value="zh-Hant">繁體中文</option>
       <option value="en">English</option>
       <option value="ja">日本語</option>
+      <option value="fr">Français</option>
     </select>
     <a class="pill-link" href="https://github.com/s1dashu/quiet-md">
       <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -190,6 +191,9 @@ const T = {
   en: { doc: "quiet.md — Fast, quiet, local notes", desc: "A native notes app drawn with Rust + GPUI. Smooth even with million-character documents, your notes stay on your computer, and it reads and writes Feishu (Lark) docs. For macOS, Windows and Linux (experimental).",
     badge: "Open source · macOS · Windows · Linux", title: "Fast, quiet<br><span>local notes</span>", lede: "Drawn natively with Rust + GPUI, smooth even with million-character documents. Your notes stay on your computer, compatible with Feishu (Lark) docs.",
     dlMac: "Download · Apple Silicon", dlWin: "Download · x64", dlIntel: "Intel Mac", dlLinux: "Download · AppImage", dlAll: "All releases & checksums", alt: "The quiet.md home screen: a document tree on the left and all notes in a grid on the right." },
+  fr: { doc: "quiet.md — Des notes locales, rapides et discrètes", desc: "Une application de notes native dessinée avec Rust + GPUI. Fluide même avec des documents d’un million de caractères, vos notes restent sur votre ordinateur, et elle lit et écrit les documents Feishu (Lark). Pour macOS, Windows et Linux (expérimental).",
+    badge: "Open source · macOS · Windows · Linux", title: "Des notes locales<br><span>rapides et discrètes</span>", lede: "Conçue nativement en Rust + GPUI, fluide même avec des documents d'un million de caractères. Vos notes restent sur votre ordinateur, compatibles avec les documents Feishu (Lark).",
+    dlMac: "Télécharger · Apple Silicon", dlWin: "Télécharger · x64", dlIntel: "Mac Intel", dlLinux: "Télécharger · AppImage", dlAll: "Toutes les versions et sommes de contrôle", alt: "L’accueil de quiet.md : l’arborescence des documents à gauche, toutes les notes en grille à droite." },
   ja: { doc: "quiet.md — 速くて静かなローカルノート", desc: "Rust + GPUI でネイティブ描画するノートアプリ。100万字の文書でもなめらかで、ノートはすべてあなたのPCに保存。Feishu（Lark）ドキュメント形式に対応。macOS、Windows、Linux（試験的）に対応。",
     badge: "オープンソース · macOS · Windows · Linux", title: "速くて静かな<br><span>ローカルノート</span>", lede: "Rust + GPUI によるネイティブ描画で、100万字の文書もなめらか。ノートはすべてあなたのPCに保存され、Feishu（Lark）ドキュメント形式に対応します。",
     dlMac: "ダウンロード · Apple Silicon", dlWin: "ダウンロード · x64", dlIntel: "Intel Mac 版", dlLinux: "ダウンロード · AppImage", dlAll: "すべてのリリースとチェックサム", alt: "quiet.md のホーム画面：左にドキュメントツリー、右にすべてのノートをグリッド表示。" },
@@ -203,6 +207,7 @@ function detect() {
     if (/^zh-(tw|hk|mo|hant)/.test(v)) return "zh-Hant";
     if (v.startsWith("zh")) return "zh-Hans";
     if (v.startsWith("ja")) return "ja";
+    if (v.startsWith("fr")) return "fr";
     if (v.startsWith("en")) return "en";
   }
   return "en";

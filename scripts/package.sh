@@ -30,12 +30,12 @@ app="$out/quiet.md.app"
 dmg="$out/quiet.md-$version.dmg"
 
 echo "== 编译 $version"
-cargo build --release --locked
+cargo build --profile dist --locked
 
 echo "== 组装 $app"
 rm -rf "$out"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/quiet_md "$app/Contents/MacOS/quiet_md"
+cp target/dist/quiet_md "$app/Contents/MacOS/quiet_md"
 # .icns：Finder 和 Dock 用图标文件，不是裸 PNG。
 iconset=$(mktemp -d)/icon.iconset
 mkdir -p "$iconset"

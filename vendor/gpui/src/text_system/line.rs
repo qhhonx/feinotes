@@ -120,6 +120,15 @@ pub struct WrappedLine {
 }
 
 impl WrappedLine {
+    /// quiet.md: a paragraph that wraps and opens with a right-to-left
+    /// script sits against the right edge, as those scripts read. Only the
+    /// default (left) alignment changes; single rows and the editor's
+    /// `paint_rows` keep theirs.
+    fn rtl_align(&self, align: TextAlign) -> TextAlign {
+        let rtl = || self.text.chars().find(|c| c.is_alphabetic()).is_some_and(super::line_layout::is_rtl);
+        if matches!(align, TextAlign::Left) && !self.wrap_boundaries.is_empty() && rtl() { TextAlign::Right } else { align }
+    }
+
     /// The length of the underlying, unwrapped layout, in utf-8 bytes.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
@@ -136,6 +145,7 @@ impl WrappedLine {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<()> {
+        let align = self.rtl_align(align);
         let align_width = match bounds {
             Some(bounds) => Some(bounds.size.width),
             None => self.layout.wrap_width,
@@ -220,6 +230,7 @@ impl WrappedLine {
         window: &mut Window,
         cx: &mut App,
     ) -> Result<()> {
+        let align = self.rtl_align(align);
         let align_width = match bounds {
             Some(bounds) => Some(bounds.size.width),
             None => self.layout.wrap_width,

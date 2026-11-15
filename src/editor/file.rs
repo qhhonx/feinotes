@@ -11,7 +11,7 @@ use crate::model::*;
 use crate::store::Store;
 use crate::editor_theme::{self as theme, Theme, craft};
 use crate::editor_ui::{ROW_RADIUS, TipExt, icon, popover};
-use super::image::PictureExt;
+use super::image::picture;
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -473,7 +473,7 @@ impl R<'_> {
                         let (tw, th) = ed.img.dims(t).unwrap_or((16., 9.));
                         let full = iw * th / tw.max(1.);
                         let h = full.clamp(if video { 160. } else { 120. }, 600.);
-                        let pic = img(t.clone()).doc_picture().object_fit(if video { ObjectFit::Contain } else { ObjectFit::Fill }).id(("file-thumb", id.0));
+                        let pic = picture(t, iw.max(full)).object_fit(if video { ObjectFit::Contain } else { ObjectFit::Fill }).id(("file-thumb", id.0));
                         let pic = if video { pic.size_full() } else { pic.absolute().top_0().left_0().w(px(iw)).h(px(full)) };
                         div()
                             .relative()

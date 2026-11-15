@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || { echo 'Build on Linux x86_64.' >&2; exit 1; }
-cargo build --release --locked
+cargo build --profile dist --locked
 version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
 out="$PWD/dist/linux"
 mkdir -p "$out"
@@ -27,7 +27,7 @@ convert assets/branding/app-icon.png -resize 512x512 "$stage/com.s1dashu.quietmd
 export APPIMAGE_EXTRACT_AND_RUN=1
 export OUTPUT="$out/quiet-md-$version-x86_64.AppImage"
 export VERSION="$version"
-"$tool" --appdir "$appdir" --executable "${CARGO_TARGET_DIR:-target}/release/quiet_md" \
+"$tool" --appdir "$appdir" --executable "${CARGO_TARGET_DIR:-target}/dist/quiet_md" \
   --desktop-file packaging/linux/com.s1dashu.quietmd.desktop \
   --icon-file "$stage/com.s1dashu.quietmd.png" --custom-apprun packaging/linux/AppRun --output appimage
 chmod +x "$OUTPUT"

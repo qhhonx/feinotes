@@ -1,7 +1,7 @@
 <title>Blocks: lists, quotes and callouts</title>
 <p>A document is made of blocks. Paragraphs, headings, list items, images and tables are all blocks you can insert, transform or move. Learn these few operations and the rest of the editor will feel familiar.</p>
 <h1>Three ways to work with blocks</h1><h2>The slash menu</h2><p>Type <code>/</code> on an empty line. Keep typing to narrow the list, use the arrow keys to choose an item, and press Enter to insert it.</p>
-<img src="assets/guides/slash.jpg" caption="Type a slash, search for a block, then press Enter" align="center"/>
+<img src=".assets/guides/slash.jpg" caption="Type a slash, search for a block, then press Enter" align="center"/>
 <p>The menu includes text, headings, lists, tasks, code, quotes, callouts, dividers, links, images, files, tables, columns, equations, buttons, reminders and countdowns. Try <code>/table</code>, <code>/code</code>, <code>/callout</code> or <code>/countdown</code>.</p>
 <h2>The block handle</h2><p>Hover to the left of a block to reveal its handle. Click it to open the block menu.</p>
 
@@ -31,8 +31,8 @@
 <ul><li>Click the date to edit it. Add a time or use an all-day event.</li><li>Choose a notification at the event time or in advance. All-day reminders use 9:00 a.m.</li><li>Upcoming dates within a week appear orange, overdue dates red, and later dates blue.</li></ul>
 <callout emoji="🔔" background-color="light-yellow" border-color="yellow"><p>Quiet.md must be running to send a reminder notification. Quitting the app stops reminders until it is running again.</p></callout>
 <h2>Countdowns</h2><p>Insert a countdown, then use its pencil control to set a duration or a date. Use the palette to change its color. This example counts down to New Year's Day:</p>
-<countdown duration="4650108" start-time="1794129493000" notify="true" color="#4E83FD" timing="date" date="2027-01-01" time="00:00"/>
+<countdown duration="4272670" start-time="1794506931000" notify="true" color="#4E83FD" timing="date" date="2027-01-01" time="00:00"/>
 <p>You can enable an in-app notification when the countdown finishes.</p>
 <h2>Buttons</h2><p>A button can open a URL or duplicate the current document. A duplicate button is useful on a reusable meeting or journal template.</p>
 <p><button action="OpenLink" src="https://www.apple.com/macos/" background-color="light-blue">Explore macOS</button> <button action="DuplicatePage" background-color="light-green">Make a copy of this guide</button></p><p>Hover over a button and edit it to change its label, color or action.</p>
-<hr/><p>Next: <cite type="doc" doc-id="7012a014-8f62-5ad2-a811-6a75ddbfce29" file-type="docx">Tables and columns</cite>.</p>
+<hr/><p>Next: <cite type="doc" href="Tables and columns.xml" file-type="docx">Tables and columns</cite>.</p>

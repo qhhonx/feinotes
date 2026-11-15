@@ -45,6 +45,8 @@ Most of these, AGENTS.md included, are written in Chinese for now.
 
 Before a release, `scripts/check.sh` must pass and CI must be green on that commit. After packaging, verify the signatures, notarization (macOS) and the SHA-256 of the downloads. The Windows CI build does not replace installing, uninstalling and editing on a real machine.
 
+Packaging scripts build with `cargo build --profile dist` (Cargo.toml: fat LTO, no symbol table) into `target/dist`, about a third smaller than `--release`, which stays the quick everyday build. A full `dist` build takes about four minutes, and so does relinking after a change. Line tables go to a separate file that is kept but never published: `release.sh` writes `dSYM-quiet-md-<version>-macos-<arch>.zip`, `package-windows.ps1` writes `quiet-md-<version>-windows-x64.pdb`. A panic in the log carries `base … frames: …`; on macOS, resolve them with `atos -o <unzipped dSYM> -arch <arch> -l <base> <frames>`.
+
 The declared macOS minimum is 13, not yet verified on real hardware. Intel packages can be cross-compiled on Apple Silicon; real Intel hardware validation is still needed.
 
 ### macOS
