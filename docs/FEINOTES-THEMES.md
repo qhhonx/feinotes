@@ -4,7 +4,7 @@ Read the preserved upstream [theme reference](THEMES.md) first. This document de
 
 ## Built-in themes and appearance
 
-Fei Notes adds the Notes theme after Feishu, Craft, Notion and Obsidian. Existing selections remain unchanged. Theme CSS can style the document and selected shell controls; menu layout, settings layout and interaction behavior remain controlled by the existing UI.
+Fei Notes offers two themes: Notes and Feishu. Older selections of Craft, Notion, Obsidian or custom themes fall back to Notes; their CSS files remain on disk. Existing Notes and Feishu selections and their CSS overrides remain supported. Theme CSS can style the document and selected shell controls; menu layout, settings layout and interaction behavior remain controlled by the existing UI.
 
 Color properties and `--token-*` accept `light-dark(light-value, dark-value)`. Single colors retain the automatic dark-appearance conversion. `inherit` preserves the original appearance where supported.
 

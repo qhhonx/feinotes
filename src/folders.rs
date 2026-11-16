@@ -9,6 +9,7 @@ impl Workspace {
     /// `markdown` picks the on-disk format; the choice is remembered for ⌘N.
     pub(crate) fn create_doc(&mut self, markdown: bool, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         if crate::in_shared_note() { return; }
+        let markdown = markdown && !crate::FEI_NOTES;
         self.create_menu = None;
         let (m, p) = (markdown, parent.clone());
         if !self.save_before(cx, move |w, window, cx| w.create_doc(m, p.clone(), window, cx)) { return; }
@@ -122,7 +123,7 @@ impl Workspace {
             popover().id("create-items").occlude().w(px(180.)).py(px(crate::ui::MENU_PAD_Y))
                 .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.create_menu = None; cx.notify(); }))
                 .child(row("create-document", "doc", tr("文档", "Document")).on_click(cx.listener(move |w, _, window, cx| w.create_doc(false, doc_parent.clone(), window, cx))))
-                .child(row("create-markdown", "doc-md", "Markdown").on_click(cx.listener(move |w, _, window, cx| w.create_doc(true, md_parent.clone(), window, cx))))
+                .when(!crate::FEI_NOTES, |d| d.child(row("create-markdown", "doc-md", "Markdown").on_click(cx.listener(move |w, _, window, cx| w.create_doc(true, md_parent.clone(), window, cx)))))
                 .child(row("create-folder", "folder", tr("文件夹", "Folder")).on_click(cx.listener(move |w, _, window, cx| w.new_folder(folder_parent.clone(), window, cx))))
         )).with_priority(3).into_any_element())
     }

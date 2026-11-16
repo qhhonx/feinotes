@@ -345,6 +345,11 @@ pub const BUNDLED: [(&str, &str); 5] = [
     ("notes", include_str!("../assets/themes/notes.css")),
 ];
 
+/// Retired product themes fall back to Notes without changing saved CSS files.
+pub fn supported_id(id: &str) -> &str {
+    if crate::FEI_NOTES && !matches!(id, "notes" | "feishu") { "notes" } else { id }
+}
+
 static THEMES: RwLock<Vec<Theme>> = RwLock::new(Vec::new());
 static ERRORS: RwLock<Vec<String>> = RwLock::new(Vec::new());
 static ACTIVE: AtomicPtr<Style> = AtomicPtr::new(std::ptr::null_mut());
@@ -726,11 +731,12 @@ pub fn all_loaded() -> bool { ALL_LOADED.load(Ordering::Relaxed) }
 /// Startup reads only the selected theme. The picker requests the full catalog.
 /// Enumerate installed fonts only if a user stylesheet names a concrete family.
 pub fn load(selected: &str, all: bool, font_source: impl FnOnce() -> Vec<String>) {
+    let selected = supported_id(selected);
     let fonts = std::cell::OnceCell::new();
     let mut source = Some(font_source);
     let mut resolve_fonts = || fonts.get_or_init(|| source.take().unwrap()()).as_slice();
     let mut list: Vec<Theme> = vec![];
-    for (id, css) in BUNDLED.iter().copied().filter(|(id, _)| all || *id == selected) {
+    for (id, css) in BUNDLED.iter().copied().filter(|(id, _)| supported_id(id) == *id && (all || *id == selected)) {
         match parse(css, &[]) {
             Ok(p) => list.push(theme_of(id.into(), css, None, Some(css), p)),
             Err(e) => eprintln!("bundled theme {id}: {e}"),
@@ -746,6 +752,7 @@ pub fn load(selected: &str, all: bool, font_source: impl FnOnce() -> Vec<String>
     for p in files {
         if !all && !p.exists() { continue; }
         let id = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        if supported_id(&id) != id { continue; }
         let file = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| parse_with_fonts(&t, &mut resolve_fonts).map(|parsed| (t, parsed))) {
             Ok((text, parsed)) => {
@@ -757,7 +764,7 @@ pub fn load(selected: &str, all: bool, font_source: impl FnOnce() -> Vec<String>
             Err(e) => errors.push(format!("{file}: {e}")),
         }
     }
-    list.sort_by_key(|t| t.id != "feishu");
+    list.sort_by_key(|t| if crate::FEI_NOTES { t.id != "notes" } else { t.id != "feishu" });
     if list.is_empty() {
         let (id, css) = BUNDLED[0];
         if let Ok(p) = parse(css, &[]) { list.push(theme_of(id.into(), css, None, Some(css), p)); }
@@ -778,6 +785,7 @@ pub fn load(selected: &str, all: bool, font_source: impl FnOnce() -> Vec<String>
 
 /// Draw with theme `id` (Craft when it is gone); returns the id in use.
 pub fn select(id: &str) -> String {
+    let id = supported_id(id);
     let list = THEMES.read().unwrap();
     let Some(t) = list.iter().find(|t| t.id == id).or_else(|| list.first()) else { return "craft".into() };
     ACTIVE.store(t.style as *const Style as *mut Style, Ordering::Relaxed);

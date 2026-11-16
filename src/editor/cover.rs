@@ -314,9 +314,11 @@ impl Editor {
         )
     }
 
-    /// The 40×40 icon before the title, on the title's first baseline.
+    /// Size and center the icon within the active title's first line.
     pub(super) fn doc_icon_el(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let ic = self.core.doc.icon.clone()?;
+        let title = theme::title();
+        let edge = title.line_height.min(40.);
         let record = self.cover_ui.icon_bounds.clone();
         let open = matches!(self.menu, Some(Menu::Emoji { target: EmojiTarget::DocIcon, .. }));
         let ro = self.read_only;
@@ -325,16 +327,15 @@ impl Editor {
                 .id("doc-icon")
                 .relative()
                 .flex_none()
-                .size(px(40.))
-                // (55.25 line − 40) / 2: the glyphs share a baseline.
-                .mt(px(7.625))
+                .size(px(edge))
+                .mt(px((title.line_height - edge) / 2.))
                 .mr(px(6.))
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded(px(6.))
-                .text_size(px(theme::title().size))
-                .line_height(px(40.))
+                .text_size(px(title.size.min(edge)))
+                .line_height(px(edge))
                 .child(ic)
                 .child(canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
                 .when(!ro, |d| {

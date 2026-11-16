@@ -118,6 +118,7 @@ pub fn browser_at(i: usize) -> String {
 /// Whether ⌘N should make a Markdown file: the preferred 快捷新建 type, or the
 /// last one created from the 新建 menu when no fixed type is set.
 pub fn quick_new_markdown() -> bool {
+    if crate::FEI_NOTES { return false; }
     let p = prefs();
     match p.new_default.as_str() { "markdown" => true, "doc" => false, _ => p.last_new == "markdown" }
 }
@@ -195,7 +196,8 @@ impl Default for Preferences {
 
 impl Preferences {
     pub fn theme_id(&self) -> String {
-        if !self.theme.is_empty() { self.theme.clone() } else if self.feishu { "feishu".into() } else { "craft".into() }
+        let id = if !self.theme.is_empty() { self.theme.as_str() } else if self.feishu { "feishu" } else { "craft" };
+        crate::themes::supported_id(id).into()
     }
     pub fn lang(&self) -> Lang {
         Lang::ALL.into_iter().find(|l| l.code() == self.language).unwrap_or(if self.english { Lang::En } else { Lang::Zh })
@@ -987,11 +989,6 @@ impl Workspace {
                     tr("关闭后，网络图片显示为占位，可点击单独加载。", "When off, web images show a placeholder you can click to load.")
                 } else { tr("关闭后不联网，网络图片显示为占位，点击单独加载。", "When off the app stays offline; web images show a placeholder you can click to load.") }),
                     switch("pref-remote", p.remote_images).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.remote_images = !p.remote_images, cx)))).into_any_element(),
-                row(tr("快捷新建默认类型", "Quick new (⌘N)"), desc(tr("⌘N 新建时创建的类型；「记住上次」沿用你上次从新建菜单选的类型。", "What ⌘N creates; “Last used” repeats the type you last picked from the New menu.")), {
-                    let sel = match p.new_default.as_str() { "doc" => 1, "markdown" => 2, _ => 0 };
-                    self.select("quick-new", vec![tr("记住上次", "Last used"), tr("文档", "Document"), "Markdown"], sel,
-                        |w, i, cx| w.set_pref(|p| p.new_default = ["", "doc", "markdown"][i].into(), cx), cx)
-                }).into_any_element(),
                 // 网页搜索 opens the selection in the browser; which site is the
                 // user's habit, so it is a preference rather than a constant.
                 row(tr("网页搜索", "Web search"), desc(tr("选中文字后「网页搜索」用哪个网站。", "Which site “Web search” opens the selected text in.")), {
@@ -1001,6 +998,11 @@ impl Workspace {
                 }).into_any_element(),
         ];
         if !crate::FEI_NOTES {
+            rows.insert(2, row(tr("快捷新建默认类型", "Quick new (⌘N)"), desc(tr("⌘N 新建时创建的类型；「记住上次」沿用你上次从新建菜单选的类型。", "What ⌘N creates; “Last used” repeats the type you last picked from the New menu.")), {
+                    let sel = match p.new_default.as_str() { "doc" => 1, "markdown" => 2, _ => 0 };
+                    self.select("quick-new", vec![tr("记住上次", "Last used"), tr("文档", "Document"), "Markdown"], sel,
+                        |w, i, cx| w.set_pref(|p| p.new_default = ["", "doc", "markdown"][i].into(), cx), cx)
+                }).into_any_element());
             rows.push(row(tr("自动检查更新", "Check for updates automatically"), desc(tr("只读取一份版本信息，不发送任何数据；新版本由你决定何时下载安装。", "Reads a version file and sends nothing about you; you decide when to download and install.")),
                 switch("pref-update", p.auto_update).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.auto_update = !p.auto_update, cx)))).into_any_element());
         }
@@ -1664,6 +1666,23 @@ impl Workspace {
 
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     pub(crate) fn sharing_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> Option<Div> {
+        if !crate::in_shared_note() {
+            let id = self.current.clone()?;
+            if self.store.local_path(&id).is_some() { return None; }
+            let share = ui::toolbar_control(div().id("doc-create-share").no_drag().flex_none()
+                .h(px(crate::app::HEADER_ACTIONS_H)).px(px(9.)).flex().items_center().justify_center()
+                .cursor_pointer().text_size(px(13.)).font_weight(FontWeight::MEDIUM)
+                .text_color(ui::toolbar_color("toolbar.button.color").unwrap_or_else(Theme::icon)),
+                8., Theme::fill_hover, Some(Theme::fill_pressed))
+                .child(tr("共享", "Share")).tip(tr("创建共享副本", "Create shared copy"), None)
+                .on_click(cx.listener(move |w, _, window, cx| {
+                    if crate::cloud_restore::local_only() {
+                        w.open_settings(Page::Library, cx);
+                        w.show_toast_kind(ui::ToastKind::Info, tr("开启 iCloud 同步后，即可创建共享笔记。", "Turn on iCloud sync to create a shared note."), cx);
+                    } else { w.create_shared_note(&id, window, cx); }
+                }));
+            return Some(div().flex_none().child(share));
+        }
         self.sharing_toolbar_access(cx)?;
         let collaborators = self.online_collaborators(cx);
         let cap = if window.viewport_size().width < px(500.) { 0 } else { 3 };
@@ -2604,7 +2623,7 @@ mod preference_tests {
     use super::Preferences;
 
     #[test]
-    fn new_preferences_use_feishu_without_overriding_saved_themes() {
+    fn theme_preferences_preserve_supported_choices_and_retire_product_themes() {
         assert_eq!(Preferences::default().theme_id(), "feishu");
         for (json, expected) in [
             (r#"{}"#, "feishu"),
@@ -2613,7 +2632,10 @@ mod preference_tests {
             (r#"{"theme":"notion","feishu":false}"#, "notion"),
             (r#"{"theme":"craft","feishu":true}"#, "craft"),
             (r#"{"theme":"my-theme"}"#, "my-theme"),
+            (r#"{"theme":"notes"}"#, "notes"),
+            (r#"{"theme":"obsidian"}"#, "obsidian"),
         ] {
+            let expected = if crate::FEI_NOTES && !matches!(expected, "feishu" | "notes") { "notes" } else { expected };
             let saved: Preferences = serde_json::from_str(json).unwrap();
             assert_eq!(saved.theme_id(), expected);
             let round_trip: Preferences = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();

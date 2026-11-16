@@ -1826,11 +1826,7 @@ pub(crate) fn cloud_notes_changed(notes: &[crate::cloud_sync::NoteChange], remot
                     editor.receive_document_at(&crate::editor::core::Core::new(change.document.clone()), selection, cx);
                     if let Some(modified) = modified { editor.modified = modified; }
                 });
-                if remote {
-                    if !crate::in_shared_note() {
-                        ws.show_toast(crate::settings::tr("已合并 iCloud 上的改动", "Merged changes from iCloud"), cx);
-                    }
-                } else {
+                if !remote {
                     ws.unsaved = false;
                     ws.save_task = None;
                     ws.dirty_since = None;
