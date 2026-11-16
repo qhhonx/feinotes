@@ -16,7 +16,8 @@ use std::{
     time::Duration,
 };
 
-const MAGIC: &[u8] = b"Fei Notes Backup\n\x01";
+const LEGACY_MAGIC: &[u8] = b"Fei Notes Backup\n\x01";
+const MAGIC: &[u8] = b"Fei Notes Backup\n\x02";
 const MAX_PATH: usize = 4096;
 const MAX_FILES: usize = 100_000;
 const READY: &str = ".cloud-restore-ready";
@@ -106,12 +107,22 @@ fn valid_path(name: &str) -> bool {
     if name.len() > MAX_PATH || parts.iter().any(|part| part.is_empty() || *part == "." || *part == ".."
         || part.contains([':', '\\', '\0'])) { return false; }
     let valid_room = |id: &str| uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id);
+    let history = |parts: &[&str]| match parts {
+        [".quiet", "history" | "history-trash", id] => valid_room(id),
+        [".quiet", "history" | "history-trash", id, name] => {
+            let snapshot = name.strip_suffix(".name").unwrap_or(name);
+            valid_room(id) && !snapshot.contains("..") && fdl_core::versions::stamp(snapshot).is_some()
+                && (snapshot.ends_with(".xml") || snapshot.ends_with(".md"))
+        }
+        _ => false,
+    };
     match parts.as_slice() {
         [SQLITE_FILE | READY | NAMESPACE_FILE] => true,
         ["assets" | "themes", _, ..] => true,
         ["shared-notes", id, SQLITE_FILE | READY | "shared-note.json" | "seed-published"] => valid_room(id),
         ["shared-notes", id, "assets" | "themes", _, ..] => valid_room(id),
-        _ => false,
+        ["shared-notes", id, rest @ ..] => valid_room(id) && history(rest),
+        _ => history(&parts),
     }
 }
 
@@ -171,6 +182,17 @@ impl<W: Write> Archive<W> {
         }
         Ok(())
     }
+
+    fn history(&mut self, root: &Path, prefix: &str) -> Result<()> {
+        let quiet = format!("{prefix}.quiet");
+        match root.join(&quiet).symlink_metadata() {
+            Ok(meta) => ensure!(meta.is_dir(), "Invalid library history folder: {quiet}"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        self.folder(root, &format!("{quiet}/history"))?;
+        self.folder(root, &format!("{quiet}/history-trash"))
+    }
 }
 
 fn capture(archive: &mut Archive<impl Write>, root: &Path, prefix: &str, snapshot: &Path) -> Result<Summary> {
@@ -209,12 +231,14 @@ pub(crate) fn create(root: &Path, folder: &Path) -> Result<(PathBuf, Summary)> {
     }
     archive.folder(root, "assets")?;
     archive.folder(root, "themes")?;
+    archive.history(root, "")?;
     for room in shared::rooms(root)? {
         let path = shared::room_root(root, &room.scope.note)?;
         let prefix = format!("shared-notes/{}", room.scope.note);
         let info = capture(&mut archive, &path, &format!("{prefix}/"), &snapshot)?;
         archive.folder(root, &format!("{prefix}/assets"))?;
         archive.folder(root, &format!("{prefix}/themes"))?;
+        archive.history(root, &format!("{prefix}/"))?;
         summary.shared += 1;
         summary.pending += info.pending;
     }
@@ -235,7 +259,7 @@ fn read_archive(backup: &Path, stage: &Path) -> Result<()> {
     let mut input = BufReader::new(file);
     let mut magic = vec![0; MAGIC.len()];
     input.read_exact(&mut magic)?;
-    ensure!(magic == MAGIC, "This file is not a supported Fei Notes backup.");
+    ensure!(magic == MAGIC || magic == LEGACY_MAGIC, "This file is not a supported Fei Notes backup.");
     let mut manifest = Sha256::new();
     let mut count = 0;
     loop {
@@ -462,11 +486,16 @@ mod tests {
         store.set_parent(&note, Some(&folder))?;
         let trashed = store.create_from(&Document { title: RichText::plain("已删除"), ..Default::default() })?;
         store.set_parent(&trashed, Some(&folder))?;
+        store.save_version_now(&trashed)?;
+        let trash_versions = store.versions(&trashed);
         store.delete(&trashed, None)?;
         journal.merge(&Default::default())?;
         let mut edited = store.load_for_edit(&note, false)?;
         edited.blocks[0].text = RichText::plain("快照之后还没上传的改动");
         store.save(&note, &edited)?;
+        let version = store.versions(&note)[0].name.clone();
+        store.set_version_label(&note, &version, Some("离线草稿"))?;
+        let versions = store.versions(&note);
         journal.merge(&Default::default())?;
         let source_db = open_db(&source.join(SQLITE_FILE), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         assert_eq!(source_db.query_row("SELECT count(*) FROM note_local_updates WHERE note = ?1", [&note], |r| r.get::<_, i64>(0))?, 1);
@@ -483,6 +512,15 @@ mod tests {
         fs::write(shared_path.join(shared::MARKER), serde_json::to_vec(&descriptor)?)?;
         let mut shared = Journal::open(&shared_path, None)?;
         shared.seed_shared(&shared_doc, "")?;
+        let shared_store = Store::open_sqlite_at(shared_path.clone())?;
+        shared_store.save_version_now(&shared_id)?;
+        shared_store.set_version_label(&shared_id, &shared_store.versions(&shared_id)[0].name, Some("协作初稿"))?;
+        let shared_versions = shared_store.versions(&shared_id);
+        let shared_trash_id = uuid::Uuid::new_v4().to_string();
+        let shared_history = shared_path.join(".quiet");
+        fdl_core::versions::snapshot(&shared_history, &shared_trash_id, "xml", &crate::docxml::serialize(&shared_doc), 1_700_000_000_000, 20, true)?;
+        fdl_core::versions::move_to_trash(&shared_history, &shared_trash_id);
+        let shared_trash_versions = fdl_core::versions::list(&shared_history, &shared_trash_id, true);
         let shared_pending = shared.counts()?.0;
         let shared_peer = shared.identity().2;
         let records = |path: &Path| -> Result<Vec<(String, Vec<u8>)>> {
@@ -542,6 +580,14 @@ mod tests {
         assert_eq!(records(&restored_shared)?, records(&shared_path)?);
         assert_eq!(Store::open_sqlite_at(restored_shared.clone())?.load(&shared_id)?, shared_doc);
         assert_ne!(Journal::open(&restored_shared, None)?.identity().2, shared_peer);
+        assert_eq!(Store::open_sqlite_at(restored_shared.clone())?.versions(&shared_id), shared_versions);
+        assert_eq!(fdl_core::versions::list(&restored_shared.join(".quiet"), &shared_trash_id, true), shared_trash_versions);
+        let mut restored = Store::open_sqlite_at(target.clone())?;
+        assert_eq!(restored.versions(&note), versions);
+        assert_eq!(crate::docxml::serialize(&restored.version_document(&note, &version)?), crate::docxml::serialize(&body));
+        assert_eq!(fdl_core::versions::list(&target.join(".quiet"), &trashed, true), trash_versions);
+        restored.restore(&trashed)?;
+        assert_eq!(restored.versions(&trashed), trash_versions);
         Ok(())
     }
 
@@ -565,6 +611,11 @@ mod tests {
         let original_id = Store::open_sqlite_at(target.clone())?.create_from(&original)?;
         let (file, summary) = create(&source, &fixture.0)?;
         assert_eq!(summary, Summary { notes: 1, ..Default::default() });
+        // A v1 archive without local history has the same entries and framing.
+        let mut legacy = fs::read(&file)?;
+        assert!(legacy.starts_with(MAGIC));
+        legacy[..LEGACY_MAGIC.len()].copy_from_slice(LEGACY_MAGIC);
+        fs::write(&file, legacy)?;
         let interrupted = prepare(&target, &file)?;
         let stage = interrupted.stage.0.clone();
         interrupted.schedule(&target)?;
@@ -584,6 +635,97 @@ mod tests {
         let mut restored = Store::open_sqlite_at(target)?;
         assert_eq!(restored.load(&id)?, store.load(&id)?);
         assert_eq!(&*restored.list()[0].body, "待恢复的正文");
+        Ok(())
+    }
+
+    #[test]
+    fn local_backup_restores_named_markdown_history_trash_and_old_attachments() -> Result<()> {
+        let fixture = Stage::new(std::env::temp_dir().join(format!("fei-history-backup-test-{}", uuid::Uuid::new_v4())))?;
+        let source = fixture.0.join("source");
+        let target = fixture.0.join("target");
+        for path in [&source, &target] { fs::create_dir(path)?; Store::initialize_local_sqlite(path)?; }
+        let mut store = Store::open_sqlite_at(source.clone())?;
+        fs::create_dir_all(source.join("assets/files"))?;
+        fs::write(source.join("assets/files/old.txt"), "Only the old version references this attachment")?;
+        let old = crate::docxml::parse("<title>历史笔记</title><p>旧正文</p><figure><source path=\"assets/files/old.txt\" name=\"old.txt\"/></figure>")?;
+        let id = store.create_markdown(&old, "---\nrevision: before\n---\n")?;
+        store.save_version_now(&id)?;
+        let old_name = store.versions(&id)[0].name.clone();
+        store.set_version_label(&id, &old_name, Some("修改前 · 初稿"))?;
+        let mut current = old.clone();
+        current.blocks = vec![Block::text("最新正文")];
+        store.save(&id, &current)?;
+        store.save_version_now(&id)?;
+        let versions = store.versions(&id);
+        assert_eq!(versions.len(), 2);
+        let texts: Vec<_> = versions.iter().map(|v| store.version_text(&id, &v.name)).collect::<Result<_>>()?;
+        let trashed = store.create_from(&old)?;
+        store.save_version_now(&trashed)?;
+        let trash_name = store.versions(&trashed)[0].name.clone();
+        store.set_version_label(&trashed, &trash_name, Some("回收站初稿"))?;
+        let trash_versions = store.versions(&trashed);
+        store.delete(&trashed, None)?;
+        // Restoration must keep the target's previous history in the rollback library.
+        let mut previous = Store::open_sqlite_at(target.clone())?;
+        let previous_id = previous.create_from(&Document { title: RichText::plain("恢复前"), ..Default::default() })?;
+        previous.save_version_now(&previous_id)?;
+        let previous_versions = previous.versions(&previous_id);
+        let (file, _) = create(&source, &fixture.0)?;
+        assert!(fs::read(&file)?.starts_with(MAGIC));
+        let ready = prepare(&target, &file)?;
+        let rollback = ready.stage.0.clone();
+        ready.schedule(&target)?;
+        let _old_lock = crate::cloud_restore::lock_library(&target)?;
+        let _new_lock = install(&target)?.context("Local history restore did not run")?;
+        let mut restored = Store::open_sqlite_at(target.clone())?;
+        assert_eq!(restored.versions(&id), versions);
+        for (version, text) in versions.iter().zip(texts) { assert_eq!(restored.version_text(&id, &version.name)?, text); }
+        assert_eq!(restored.load(&id)?.plain_text(), "最新正文");
+        assert_eq!(fs::read(target.join("assets/files/old.txt"))?, fs::read(source.join("assets/files/old.txt"))?);
+        let recovered = restored.restore_version(&id, &old_name)?;
+        restored.save(&id, &recovered)?;
+        assert!(restored.load(&id)?.plain_text().contains("旧正文"));
+        assert!(restored.front_matter_of(&id).contains("revision: before"));
+        restored.restore(&trashed)?;
+        assert_eq!(restored.versions(&trashed), trash_versions);
+        assert_eq!(Store::open_sqlite_at(rollback)?.versions(&previous_id), previous_versions);
+        Ok(())
+    }
+
+    #[test]
+    fn history_paths_exclude_traversal_unrelated_metadata_and_symlinks() -> Result<()> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let snapshot = "1700000000000-1234abcd.xml";
+        for root in [String::new(), format!("shared-notes/{id}/")] {
+            for directory in ["history", "history-trash"] {
+                assert!(valid_path(&format!("{root}.quiet/{directory}/{id}/{snapshot}")));
+                assert!(valid_path(&format!("{root}.quiet/{directory}/{id}/{snapshot}.name")));
+            }
+            for suffix in [format!("history/{id}/../index.json"), format!("history/{id}/other.txt"),
+                format!("history/{id}/{snapshot}.tmp"), "preferences.json".into(), "index.json".into()] {
+                assert!(!valid_path(&format!("{root}.quiet/{suffix}")));
+            }
+        }
+        let fixture = Stage::new(std::env::temp_dir().join(format!("fei-history-link-test-{}", uuid::Uuid::new_v4())))?;
+        let source = fixture.0.join("source");
+        fs::create_dir(&source)?;
+        Store::initialize_local_sqlite(&source)?;
+        let directory = source.join(".quiet/history").join(id);
+        fs::create_dir_all(&directory)?;
+        let external = fixture.0.join("outside.xml");
+        fs::write(&external, "external data")?;
+        std::os::unix::fs::symlink(&external, directory.join(snapshot))?;
+        assert!(create(&source, &fixture.0).is_err());
+        fs::remove_file(directory.join(snapshot))?;
+        fs::remove_dir(&directory)?;
+        std::os::unix::fs::symlink(&fixture.0, &directory)?;
+        assert!(create(&source, &fixture.0).is_err());
+        fs::remove_file(&directory)?;
+        fs::remove_dir(source.join(".quiet/history"))?;
+        fs::remove_dir(source.join(".quiet"))?;
+        std::os::unix::fs::symlink(&fixture.0, source.join(".quiet"))?;
+        assert!(create(&source, &fixture.0).is_err());
+        assert!(!fs::read_dir(&fixture.0)?.any(|e| e.unwrap().path().extension().is_some_and(|e| e == "feinotesbackup")));
         Ok(())
     }
 }
