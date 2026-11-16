@@ -140,6 +140,8 @@
 }
 
 .page {
+  padding-left: 66px;
+  padding-top: 52px;
   background-color: #ffffff;
   color: var(--text-normal);
   font-family: system-ui;
@@ -153,11 +155,16 @@
   background-color: hsla(254, 80%, 68%, 0.25);
 }
 
+h2 + p {
+  margin-top: inherit;
+}
+
 p {
   margin-bottom: 16px;
 }
 
 .title {
+  margin-bottom: 24px;
   font-family: system-ui;
   font-size: 1.802em;
   line-height: 1.2;
@@ -385,6 +392,7 @@ th {
 }
 
 .sidebar-row.is-selected {
+  font-weight: inherit;
   background-color: inherit;
 }
 
@@ -441,4 +449,22 @@ th {
 
 .token.function {
   color: rgb(224, 172, 0);
+}
+
+.sidebar-row.is-selected.is-focused {
+  background-color: inherit;
+}
+
+.sidebar-folder.is-selected.is-focused {
+  background-color: inherit;
+  color: inherit;
+}
+
+.toolbar-group {
+  background-color: inherit;
+  border-color: inherit;
+}
+
+.page.is-wide {
+  max-width: inherit;
 }

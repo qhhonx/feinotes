@@ -83,14 +83,19 @@ pub static PROPS: LazyLock<Vec<Prop>> = LazyLock::new(|| {
         p(".page", "font-size", "page.size", Len, N(crate::theme::BODY_SIZE), N(16.)),
         p(".page", "line-height", "page.line", Len, N(22.), N(26.)),
         p(".page", "max-width", "page.width", Len, N(820.), N(820.)),
+        p(".page.is-wide", "max-width", "page.wide", Len, Inherit, Inherit),
+        p(".page", "padding-left", "page.padding", Len, N(66.), N(66.)),
+        p(".page", "padding-top", "page.top", Len, N(52.), N(48.)),
         p(".page", "caret-color", "page.caret", Color, Tok("caret"), Tok("caret")),
         p("::selection", "background-color", "selection", Color, Tok("selection"), Tok("selection")),
         p("p", "margin-bottom", "p.gap", Len, N(crate::theme::BLOCK_GAP), N(8.)),
+        p("h2 + p", "margin-top", "h2.follow", Len, Inherit, Inherit),
         p(".title", "font-family", "title.font", Font, Family(SYSTEM), Family(SYSTEM)),
         p(".title", "font-size", "title.size", Len, N(crate::theme::TITLE.size), N(crate::theme::TITLE.size)),
         p(".title", "line-height", "title.line", Len, N(crate::theme::TITLE.line_height), N(crate::theme::TITLE.line_height)),
         p(".title", "font-weight", "title.weight", Weight, N(700.), N(500.)),
         p(".title", "color", "title.color", Color, Inherit, Inherit),
+        p(".title", "margin-bottom", "title.gap", Len, N(24.), N(22.)),
     ];
     const H: [&str; 9] = ["h1", "h2", "h3", "h4", "h5", "h6", "h7", "h8", "h9"];
     for (i, h) in H.iter().enumerate() {
@@ -170,6 +175,10 @@ pub static PROPS: LazyLock<Vec<Prop>> = LazyLock::new(|| {
         p(".sidebar-folder", "color", "sidebar.folder", Color, Inherit, Inherit),
         p(".sidebar-row:hover", "background-color", "sidebar.hover", Color, Inherit, Inherit),
         p(".sidebar-row.is-selected", "background-color", "sidebar.selected", Color, Inherit, Inherit),
+        p(".sidebar-row.is-selected", "font-weight", "sidebar.selected.weight", Weight, Inherit, Inherit),
+        p(".sidebar-row.is-selected.is-focused", "background-color", "sidebar.focused", Color, Inherit, Inherit),
+        p(".sidebar-folder.is-selected.is-focused", "background-color", "sidebar.folder.focused", Color, Inherit, Inherit),
+        p(".sidebar-folder.is-selected.is-focused", "color", "sidebar.folder.focused.text", Color, Inherit, Inherit),
         p(".toolbar", "background-color", "toolbar.bg", Color, Inherit, Inherit),
         p(".toolbar-button", "background-color", "toolbar.button.bg", Color, Inherit, Inherit),
         p(".toolbar-button", "border-color", "toolbar.button.border", Color, Inherit, Inherit),
@@ -177,6 +186,8 @@ pub static PROPS: LazyLock<Vec<Prop>> = LazyLock::new(|| {
         p(".toolbar-button", "border-radius", "toolbar.button.radius", Len, Inherit, Inherit),
         p(".toolbar-button:hover", "background-color", "toolbar.button.hover", Color, Inherit, Inherit),
         p(".toolbar-button:active", "background-color", "toolbar.button.active", Color, Inherit, Inherit),
+        p(".toolbar-group", "background-color", "toolbar.group.bg", Color, Inherit, Inherit),
+        p(".toolbar-group", "border-color", "toolbar.group.border", Color, Inherit, Inherit),
     ]);
     // Code highlighting, in Prism's class names.
     for (sel, key, rgb) in [
@@ -682,7 +693,7 @@ fn parse_with_fonts<'a>(css: &str, fonts: &mut dyn FnMut() -> &'a [String]) -> R
         let em = match el { "page" | "p" | "list" | "quote" | "task" | "code" | "callout" | "hr" | "strong" | "a" | "done" | "bullet" | "number" | "selection" | "th" => body, e => size_of(e) };
         let unitless = (p.prop == "line-height").then_some(em);
         let val = match p.kind {
-            Kind::Len if matches!(p.craft, Def::Inherit) && v.eq_ignore_ascii_case("inherit") => Some(Val::Inherit),
+            Kind::Len | Kind::Weight if matches!(p.craft, Def::Inherit) && v.eq_ignore_ascii_case("inherit") => Some(Val::Inherit),
             Kind::Len => parse_len(v, if p.prop == "font-size" { body } else { em }, unitless).filter(|n| (0. ..2000.).contains(n)).map(Val::N),
             Kind::Weight => parse_weight(v).map(Val::N),
             Kind::Color if matches!(v.trim().to_lowercase().as_str(), "inherit" | "currentcolor") => Some(Val::Inherit),
@@ -906,7 +917,7 @@ fn base_css(feishu: bool, name: &str, name_en: &str, description: &str) -> Strin
             sel = p.sel;
         }
         let v = match p.kind {
-            Kind::Len if matches!(def, Def::Inherit) => "inherit".into(),
+            Kind::Len | Kind::Weight if matches!(def, Def::Inherit) => "inherit".into(),
             Kind::Len => format!("{}px", css_num(st.num(&p.key))),
             Kind::Weight => css_num(st.num(&p.key)),
             Kind::Color => st.color(&p.key).map_or_else(|| "inherit".into(), css_color),

@@ -108,6 +108,19 @@ pub(crate) fn checkbox(state: Check, disabled: bool, group: &'static str) -> Div
 }
 
 impl Workspace {
+    pub(crate) fn sidebar_selection(&self, folder: bool) -> Hsla {
+        let key = if folder { "sidebar.folder.focused" } else { "sidebar.focused" };
+        if self.sidebar_focused && self.sidebar_window_active {
+            crate::themes::active().color(key).unwrap_or_else(selection_fill)
+        } else { selection_fill() }
+    }
+
+    fn sidebar_selection_text(&self, folder: bool) -> Hsla {
+        if folder && self.sidebar_focused && self.sidebar_window_active {
+            crate::themes::active().color("sidebar.folder.focused.text").unwrap_or_else(Theme::text)
+        } else { Theme::text() }
+    }
+
     /// Sidebar width for the current window: the dragged width, kept between
     /// 268 and min(800, window − 540).
     pub(crate) fn sidebar_w(&self, window: &Window) -> f32 {
@@ -180,7 +193,7 @@ impl Workspace {
 
         let mut list = div().flex().flex_col().px(px(SB_X)).pb(px(8.));
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        if !crate::cloud_restore::local_only() && !crate::in_shared_note() {
+        if !crate::cloud_restore::local_only() && !self.is_shared() {
             list = list.child(self.shared_sidebar(cx));
         }
         // Pinned docs are shortcuts: they stay in 我的文档 too.
@@ -680,7 +693,8 @@ impl Workspace {
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .text_color(if drop_target || selected { Theme::text() } else { text_color() })
+                .text_color(if selected { self.sidebar_selection_text(e.meta.folder.is_some()) } else if drop_target { Theme::text() } else { text_color() })
+                .when(selected, |d| d.when_some(crate::themes::active().num_override("sidebar.selected.weight"), |d, w| d.font_weight(FontWeight(w))))
                 .child(ui_text(display_title(&e.title)))
                 .into_any_element(),
         };
@@ -696,7 +710,7 @@ impl Workspace {
             .flex()
             .items_center()
             // In 我的文档 the selection pill and the hover wash are drawn under the row (`sidebar_drag.rs`).
-            .when(checked || (selected && key != "doc"), |d| d.bg(selection_fill()))
+            .when(checked || (selected && key != "doc"), |d| d.bg(if checked { selection_fill() } else { self.sidebar_selection(folder) }))
             .when(!selected && !checked && !drop_target && key != "doc", |d| d.hover(|s| s.bg(hover())))
             .pl(px(6. + 18. * depth as f32))
             .when(batch.is_some(), |d| {
@@ -730,10 +744,10 @@ impl Workspace {
                     _ if folder => {
                         let s = if key == "doc" { self.folder_drag.pop(&e.id) } else { 1. };
                         d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(1. - chevron)
-                            .child(icon(if drop_target { "folder-input" } else if open { "folder-open" } else { "folder" }, ROW_ICON, folder_color())
+                            .child(icon(if drop_target { "folder-input" } else if open { "folder-open" } else { "folder" }, ROW_ICON, if selected && self.sidebar_focused && self.sidebar_window_active { crate::themes::active().color("sidebar.folder.focused.text").unwrap_or_else(folder_color) } else { folder_color() })
                                 .with_transformation(Transformation::scale(size(s, s)))))
                         .when(chevron > 0.005, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(chevron)
-                            .child(icon("disclosure", ROW_ICON, Theme::icon())
+                            .child(icon("disclosure", ROW_ICON, if selected { self.sidebar_selection_text(true) } else { Theme::icon() })
                                 .with_transformation(Transformation::rotate(radians(if open { std::f32::consts::FRAC_PI_2 } else { 0. }))))))
                     }
                     _ if e.meta.markdown => d.child(icon("doc-md", ROW_ICON, Theme::icon())),

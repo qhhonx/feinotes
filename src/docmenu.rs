@@ -120,7 +120,7 @@ impl Workspace {
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     fn recover_cloud_version(&mut self, id: String, cx: &mut Context<Self>) {
         self.close_doc_menu(cx);
-        let versions = match crate::cloud_sync::versions(&id, cx) {
+        let versions = match crate::cloud_sync::versions(self.store.root(), &id, cx) {
             Ok(versions) if !versions.is_empty() => versions,
             Ok(_) => {
                 self.show_toast(crate::settings::tr("暂无 iCloud 历史版本", "No iCloud versions yet"), cx);
@@ -137,7 +137,7 @@ impl Workspace {
 
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     pub(crate) fn restore_cloud_version(&mut self, id: &str, sequence: i64, window: &mut Window, cx: &mut Context<Self>) {
-        let made = crate::cloud_sync::version(id, sequence, cx).and_then(|(mut doc, front)| {
+        let made = crate::cloud_sync::version(self.store.root(), id, sequence, cx).and_then(|(mut doc, front)| {
             let title = crate::localized_format!("{} · 恢复副本", "{} · recovered", display_title(&doc.title.text));
             doc.title = crate::model::RichText::plain(title);
             if self.store.is_markdown(id) { self.store.create_markdown(&doc, &front) }
@@ -155,6 +155,7 @@ impl Workspace {
 
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     fn copy_to_local_library(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_shared() { return; }
         self.close_doc_menu(cx);
         if !self.flush(cx) { return; }
         cx.spawn_in(window, async move |this, cx| {
@@ -186,7 +187,7 @@ impl Workspace {
         #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
         let show_share = false;
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        let show_local_copy = show_share && !crate::in_shared_note() && crate::cloud_trial::available();
+        let show_local_copy = show_share && !self.is_shared() && crate::cloud_trial::available();
         #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
         let show_local_copy = false;
         let pinned = entry.is_some_and(|e| e.meta.pinned);

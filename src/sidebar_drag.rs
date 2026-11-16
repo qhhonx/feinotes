@@ -463,6 +463,7 @@ impl Workspace {
         let receiving_end = receiving.map(|start| rows.iter().enumerate().skip(start + 1)
             .find(|(_, r)| r.depth <= rows[start].depth).map_or(rows.len(), |(i, _)| i));
         let pick = self.sidebar_pick();
+        let selection = self.sidebar_selection(pick.as_ref().is_some_and(|id| self.entries.iter().any(|e| &e.id == id && e.meta.folder.is_some())));
         let mut moving = false;
 
         let renaming = self.rename.as_ref().map(|r| r.id.clone());
@@ -761,7 +762,7 @@ impl Workspace {
             if on_screen(y) {
             let i = index.get(pill.id.as_str()).copied();
             let show = fd.fx.get(&pill.id).map_or(1., |f| f.show.unit()) * i.map_or(1., |i| reveal[i]);
-            let el = div().id("sidebar-pill").h(row_h).rounded(radius).bg(crate::sidebar::selection_fill().opacity(show));
+            let el = div().id("sidebar-pill").h(row_h).rounded(radius).bg(selection.opacity(show));
             container = container.child(clipped(el, x, y, w, i.and_then(|i| clip[i]).filter(|_| !pill.travel)));
             }
         }

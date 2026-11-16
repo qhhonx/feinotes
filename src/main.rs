@@ -261,6 +261,8 @@ fn main() {
         let quick_enabled = !scripted && !in_shared_note();
         if onboard { onboarding::open(scripted, incoming, cx); } else { start(existed, scripted, None, incoming, cx); }
         cx.on_window_closed(move |cx| {
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            cx.defer(cloud_sync::release_unused);
             // Closing first launch's window before it finished quits: there is no library yet.
             if (!quick_enabled || !cfg!(target_os = "macos") || onboarding::pending()) && cx.windows().is_empty() {
                 cx.quit();

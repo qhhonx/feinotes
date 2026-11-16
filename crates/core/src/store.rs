@@ -499,16 +499,15 @@ fn save_json<T: Serialize>(path: &std::path::Path, v: &T) -> Result<()> {
 }
 
 /// Library-owned assets have the same reference on every replica.
-pub fn asset_source(path: &std::path::Path) -> String {
+pub fn asset_source(path: &std::path::Path) -> String { asset_source_in(&Store::root_dir(), path) }
+
+pub fn asset_source_in(root: &std::path::Path, path: &std::path::Path) -> String {
     #[cfg(not(feature = "sqlite-store"))]
-    return path.to_string_lossy().into_owned();
-    #[cfg(feature = "sqlite-store")]
-    if !Store::sqlite_session() { return path.to_string_lossy().into_owned(); }
-    #[cfg(feature = "sqlite-store")]
-    let root = Store::root_dir();
+    { let _ = root; path.to_string_lossy().into_owned() }
     #[cfg(feature = "sqlite-store")]
     {
-        path.strip_prefix(&root).ok().filter(|path| path.starts_with("assets"))
+        if !root.join(SQLITE_FILE).is_file() { return path.to_string_lossy().into_owned(); }
+        path.strip_prefix(root).ok().filter(|path| path.starts_with("assets"))
             .unwrap_or(path).to_string_lossy().into_owned()
     }
 }
@@ -605,6 +604,8 @@ fn derive_tree(index: &mut HashMap<String, Meta>) {
 fn ext_of(m: &Meta) -> &'static str { if m.markdown { "md" } else { "xml" } }
 
 impl Store {
+    pub fn library_root(&self) -> &std::path::Path { &self.root }
+
     /// Select the account-owned library before opening any Store.
     pub fn set_session_root(root: PathBuf) -> Result<()> {
         SESSION_ROOT.set(root).map_err(|_| anyhow::anyhow!("Library already selected"))

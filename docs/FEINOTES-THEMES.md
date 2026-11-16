@@ -24,9 +24,20 @@ Color properties and `--token-*` accept `light-dark(light-value, dark-value)`. S
 | `.attachment` | `background-color` and `border-color` for attachment cards, preview bars and audio controls |
 | `.sidebar` | `background-color` and ordinary-row text `color` |
 | `.sidebar-section` / `.sidebar-folder` | Section-heading and folder-icon `color` |
-| `.sidebar-row:hover` / `.sidebar-row.is-selected` | Row `background-color` |
+| `.sidebar-row:hover` / `.sidebar-row.is-selected` | Row `background-color`; selected rows also accept `font-weight` |
+| `.sidebar-row.is-selected.is-focused` | Note-row `background-color` while navigation has focus in an active window |
+| `.sidebar-folder.is-selected.is-focused` | Focused folder `background-color` and text/icon `color` |
 | `.toolbar` | Window-toolbar `background-color` |
 | `.toolbar-button` | `background-color`, `border-color`, `color` and `border-radius` for toolbar buttons and search |
 | `.toolbar-button:hover` / `.toolbar-button:active` | Button `background-color` |
+| `.toolbar-group` | Shared capsule `background-color` and `border-color` for adjacent sharing and more actions |
+| `.page.is-wide` | Optional `max-width` for the Wide reading preset; Full remains unbounded |
+| `.page` | Adds `padding-left` (symmetric minimum side inset, clamped to 24–120 pt) and `padding-top` (title inset) |
+| `h2 + p` | Optional `margin-top` after a second-level heading; other block transitions keep their existing spacing |
+| `.title` | Adds `margin-bottom` for the gap before the first body block |
 
 Shell properties are optional. Their borders and corner radii affect painting while preserving control sizes and hit areas. CSS does not change block structure or table editing controls. Consult `src/theme.rs` and the built-in CSS files for the implementation.
+
+Navigation emphasis tracks the last content-region click and subsequent editor keyboard input without moving the existing keyboard focus or caret. Focused colors apply only while the window is active; editing and inactive windows retain the neutral selection. Folder and document rows share the existing tree, not an additional note-list pane. Toolbar groups paint behind existing hit areas and preserve their order and sizes. Themes without group colors retain independent control surfaces.
+
+The Notes insets follow native Notes 4.13 screenshots captured on 2026-11-16: 28 pt minimum side inset, 36 pt above the title, no additional title-to-body gap, and no extra gap after a second-level heading. The Standard column allows up to 1200 pt, Wide up to 1400 pt; explicit full-width settings and pinned outlines still use the existing geometry rules. These measurements include neither the native date label nor a new toolbar row.

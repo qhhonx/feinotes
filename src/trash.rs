@@ -208,7 +208,7 @@ impl Workspace {
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     fn render_offline_recoveries(&self, cx: &mut Context<Self>) -> Option<Div> {
         use crate::settings::{button, tr};
-        let recoveries = crate::cloud_sync::offline_recoveries(cx).ok()?;
+        let recoveries = crate::cloud_sync::offline_recoveries(self.store.root(), cx).ok()?;
         if recoveries.is_empty() { return None; }
         Some(div().mt(px(20.)).px(px(20.)).py(px(12.)).rounded(px(ROW_RADIUS))
             .border_1().border_color(list_line())
@@ -234,7 +234,7 @@ impl Workspace {
 
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     fn resolve_offline_recovery(&mut self, id: &str, keep: bool, window: &mut Window, cx: &mut Context<Self>) {
-        match crate::cloud_sync::resolve_offline_recovery(id, keep, cx) {
+        match crate::cloud_sync::resolve_offline_recovery(self.store.root(), id, keep, cx) {
             Ok(Some(new)) => {
                 self.entries = self.store.list();
                 self.sort();

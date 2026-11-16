@@ -10,6 +10,50 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
     svg().path(SharedString::from(format!("icons/{name}.svg"))).size(px(size)).flex_none().text_color(color)
 }
 
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+pub(crate) fn share_toolbar_icon() -> AnyElement {
+    let color = toolbar_color("toolbar.button.color").unwrap_or_else(Theme::icon);
+    match system_share_symbol(color) {
+        Some(image) => img(image).size(px(20.)).object_fit(ObjectFit::Contain).flex_none().into_any_element(),
+        None => icon("share", 20., color).into_any_element(),
+    }
+}
+
+/// Resolve SF Symbols through AppKit at runtime; no Apple artwork is bundled.
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+fn system_share_symbol(color: Hsla) -> Option<std::sync::Arc<RenderImage>> {
+    use objc::{class, msg_send, sel, sel_impl, runtime::Object};
+    use std::sync::Arc;
+    thread_local! { static CACHE: RefCell<Option<(Hsla, Arc<RenderImage>)>> = const { RefCell::new(None) }; }
+    if let Some(image) = CACHE.with(|cache| cache.borrow().as_ref().filter(|(c, _)| *c == color).map(|(_, im)| im.clone())) {
+        return Some(image);
+    }
+    let bytes = unsafe {
+        let name: *mut Object = msg_send![class!(NSString), stringWithUTF8String: c"square.and.arrow.up".as_ptr()];
+        let symbol: *mut Object = msg_send![class!(NSImage), imageWithSystemSymbolName: name accessibilityDescription: std::ptr::null_mut::<Object>()];
+        if symbol.is_null() { return None; }
+        // Rasterize at 2x for the 20pt toolbar slot, preserving the system outline.
+        let config: *mut Object = msg_send![class!(NSImageSymbolConfiguration), configurationWithPointSize: 40_f64 weight: 0_f64];
+        let symbol: *mut Object = msg_send![symbol, imageWithSymbolConfiguration: config];
+        if symbol.is_null() { return None; }
+        let data: *mut Object = msg_send![symbol, TIFFRepresentation];
+        if data.is_null() { return None; }
+        let len: usize = msg_send![data, length];
+        let ptr: *const u8 = msg_send![data, bytes];
+        if ptr.is_null() || len == 0 { return None; }
+        std::slice::from_raw_parts(ptr, len).to_vec()
+    };
+    let mut mask = image::load_from_memory(&bytes).ok()?.into_rgba8();
+    let ink = Rgba::from(color);
+    for p in mask.pixels_mut() {
+        *p = image::Rgba([(ink.b * 255.).round() as u8, (ink.g * 255.).round() as u8,
+            (ink.r * 255.).round() as u8, (p.0[3] as f32 * ink.a).round() as u8]);
+    }
+    let image = Arc::new(RenderImage::new(vec![image::Frame::new(mask)]).with_scale_factor(2.));
+    CACHE.with(|cache| *cache.borrow_mut() = Some((color, image.clone())));
+    Some(image)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ToastKind {
     Success,
@@ -919,13 +963,33 @@ pub(crate) fn toolbar_color(key: &str) -> Option<Hsla> { crate::themes::active()
 
 /// Paint on the existing control without changing its layout or hit area.
 pub(crate) fn toolbar_control(d: Stateful<Div>, base_radius: f32, hover: fn() -> Hsla, active: Option<fn() -> Hsla>) -> Stateful<Div> {
+    paint_toolbar_control(d, base_radius, hover, active, false)
+}
+
+pub(crate) fn grouped_toolbar_control(d: Stateful<Div>, base_radius: f32, hover: fn() -> Hsla, active: Option<fn() -> Hsla>) -> Stateful<Div> {
+    paint_toolbar_control(d, base_radius, hover, active, toolbar_color("toolbar.group.bg").is_some())
+}
+
+fn paint_toolbar_control(d: Stateful<Div>, base_radius: f32, hover: fn() -> Hsla, active: Option<fn() -> Hsla>, grouped: bool) -> Stateful<Div> {
     let radius = px(crate::themes::active().num_override("toolbar.button.radius").unwrap_or(base_radius));
     d.rounded(radius)
-        .when_some(toolbar_color("toolbar.button.bg"), |d, c| d.bg(c))
-        .when_some(toolbar_color("toolbar.button.border"), |d, c| d.child(
+        .when_some((!grouped).then(|| toolbar_color("toolbar.button.bg")).flatten(), |d, c| d.bg(c))
+        .when_some((!grouped).then(|| toolbar_color("toolbar.button.border")).flatten(), |d, c| d.child(
             div().absolute().inset_0().rounded(radius).border_1().border_color(c)))
         .hover(|s| s.bg(toolbar_color("toolbar.button.hover").unwrap_or_else(hover)))
         .when_some(toolbar_color("toolbar.button.active").or_else(|| active.map(|f| f())), |d, c| d.active(|s| s.bg(c)))
+}
+
+pub(crate) fn toolbar_group(d: Div) -> Div {
+    let radius = px(crate::themes::active().num_override("toolbar.button.radius").unwrap_or(8.));
+    d.relative().rounded(radius)
+        .when_some(toolbar_color("toolbar.group.bg"), |d, c| d.bg(c))
+        .when_some(toolbar_color("toolbar.group.border"), |d, c| d.child(div().absolute().inset_0().rounded(radius).border_1().border_color(c)))
+}
+
+pub(crate) fn grouped_header_icon(id: &'static str, name: &'static str) -> Stateful<Div> {
+    grouped_toolbar_control(div().id(id).no_drag().size(px(crate::app::HEADER_ACTIONS_H)).flex_none().flex().items_center().justify_center().cursor_pointer(),
+        8., Theme::fill_hover, Some(Theme::fill_pressed)).child(toolbar_icon(name, 18.))
 }
 
 pub(crate) fn toolbar_icon(name: &str, size: f32) -> Svg {

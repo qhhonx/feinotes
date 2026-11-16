@@ -74,7 +74,7 @@ pub(crate) fn import_markdown(store: &mut crate::store::Store, path: &Path, root
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().trim().to_string();
     let mut doc = crate::markdown::parse_file(text, &stem, path.parent());
     if let Some(dir) = path.parent() { crate::markdown::wiki_images(&mut doc.blocks, dir, root); }
-    crate::editor::image::localize_pasted_images(&mut doc.blocks);
+    crate::editor::image::localize_pasted_images(store.library_root(), &mut doc.blocks);
     if doc.blocks.is_empty() { doc.blocks.push(Block::text("")); }
     store.create_markdown_in(&doc, crate::markdown::front_matter(text).0, parent)
 }
@@ -226,7 +226,7 @@ pub fn markdown_document(path: &Path) -> std::io::Result<Document> {
         resolve_images(&mut blocks, dir);
         crate::markdown::wiki_images(&mut blocks, dir, None);
     }
-    crate::editor::image::localize_pasted_images(&mut blocks);
+    crate::editor::image::localize_pasted_images(&crate::store::Store::root_dir(), &mut blocks);
     if blocks.is_empty() {
         blocks.push(Block::text(""));
     }
@@ -259,12 +259,13 @@ impl Workspace {
         cx.notify();
         let Some(doc) = self.doc_of(&id, cx) else { return };
         let subs = self.sub_page_titles(&id);
+        let library_root = self.store.root().to_path_buf();
         let path = save_path(&format!("{}.md", file_name(&doc)), cx);
         cx.spawn_in(window, async move |this, cx| {
             let Some(path) = path.await else { return };
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("doc").to_string();
             let assets = format!("{stem}.assets");
-            let out = crate::markdown::export(&doc, &crate::markdown::Options { sub_pages: &subs, assets: all.then_some(assets.as_str()), ..Default::default() });
+            let out = crate::markdown::export(&doc, &crate::markdown::Options { library_root: Some(&library_root), sub_pages: &subs, assets: all.then_some(assets.as_str()), ..Default::default() });
             let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
             let mut missing = out.missing;
             let written = std::fs::write(&path, &out.text).and_then(|_| {
@@ -274,7 +275,7 @@ impl Workspace {
                         std::fs::create_dir_all(p)?;
                     }
                     // A missing image only loses itself, but is reported.
-                    if crate::store::export_path(&src.to_string_lossy()).ok_or_else(|| anyhow::anyhow!("Asset outside library"))
+                    if crate::store::export_path_in(&library_root, &src.to_string_lossy()).ok_or_else(|| anyhow::anyhow!("Asset outside library"))
                         .and_then(|p| crate::store::read_bounded(&p, crate::store::EXPORT_FILE_LIMIT))
                         .and_then(|bytes| Ok(std::fs::write(&to, bytes)?)).is_err() {
                         missing += 1;
@@ -300,6 +301,7 @@ impl Workspace {
         }
         cx.notify();
         let Some(doc) = self.doc_of(id, cx) else { return };
+        let library_root = self.store.root().to_path_buf();
         let subs = self.sub_page_titles(id);
         let name = file_name(&doc);
         let path = save_path(&format!("{name}.pdf"), cx);
@@ -319,7 +321,7 @@ impl Workspace {
                 }
             }
             let _ = this.update(cx, |w, cx| w.show_toast_kind(ToastKind::Info, crate::settings::text("正在导出文档"), cx));
-            let html = crate::html::to_html(&doc, &crate::html::Options { sub_pages: &subs });
+            let html = crate::html::to_html(&doc, &crate::html::Options { library_root: &library_root, sub_pages: &subs });
             let _ = std::fs::remove_file(&path);
             let res = printing::run(html, name, Job::Pdf(path.clone()), view, cx).await;
             let ok = matches!(res, Ok(true)) && path.is_file();
@@ -345,7 +347,7 @@ impl Workspace {
         let Some(doc) = self.doc_of(id, cx) else { return };
         let subs = self.sub_page_titles(id);
         let name = file_name(&doc);
-        let html = crate::html::to_html(&doc, &crate::html::Options { sub_pages: &subs });
+        let html = crate::html::to_html(&doc, &crate::html::Options { library_root: self.store.root(), sub_pages: &subs });
         let view = printing::parent_of(window);
         self.show_toast_kind(ToastKind::Info, crate::settings::text("文档打印中"), cx);
         cx.spawn_in(window, async move |this, cx| {
@@ -697,7 +699,7 @@ impl Workspace {
         let image = crate::docxml::parse(&format!("<img href=\"{}\"/>", outside.display())).unwrap();
         assert!(image.blocks.iter().any(|b| matches!(b.kind, BlockKind::Image { .. })));
         doc.blocks.extend(image.blocks);
-        let html = crate::html::to_html(&doc, &crate::html::Options { sub_pages: &[] });
+        let html = crate::html::to_html(&doc, &crate::html::Options { library_root: self.store.root(), sub_pages: &[] });
         assert!(!html.contains("PRIVATE-MUST-NOT-EXPORT"));
         assert!(!html.contains("UFJJVkFURS1NVVNULU5PVC1FWFBPUlQ="));
         assert!(!html.contains(&*outside.to_string_lossy()));

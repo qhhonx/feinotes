@@ -159,15 +159,10 @@ fn extra_segment(glyph: Option<&'static str>, text: String) -> Div {
 }
 
 /// A result's extra line: 所有者 and the opened / modified times.
-pub(crate) fn extra_line(e: &Entry) -> Div {
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    let received_share = crate::cloud_sync::shared::active().is_some_and(|scope| scope.owner.is_some());
-    #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
-    let received_share = false;
+pub(crate) fn extra_line(e: &Entry, shared: bool, received_share: bool) -> Div {
     let ownership = if received_share { crate::settings::tr("与你共享", "Shared with you") }
         else { crate::settings::tr("所有者：我", "Owner: me") };
     let mut extra = vec![extra_segment(None, ownership.into())];
-    let shared = crate::in_shared_note();
     if e.meta.opened > 0 {
         let opened = format_visit(e.meta.opened);
         extra.push(extra_segment(Some("eye"), if shared { crate::localized_format!("{}打开", "Opened {}", opened) }
@@ -196,7 +191,7 @@ pub(crate) fn extra_line(e: &Entry) -> Div {
 }
 
 /// A result's title (13pt semibold, hits in the link colour), summary and extra line.
-pub(crate) fn result_info(e: &Entry, q: &str, summary: Option<(String, Vec<Range<usize>>)>, width: f32, window: &Window) -> Div {
+pub(crate) fn result_info(e: &Entry, shared: bool, received_share: bool, q: &str, summary: Option<(String, Vec<Range<usize>>)>, width: f32, window: &Window) -> Div {
     let title = display_title(&e.title);
     let title_hit = find_ci(&title, q);
     div()
@@ -217,7 +212,7 @@ pub(crate) fn result_info(e: &Entry, q: &str, summary: Option<(String, Vec<Range
                 .child(ui_text(title).hit(title_hit, Theme::link())),
         )
         .children(summary.map(|(text, hits)| div().text_size(px(12.)).line_height(px(20.)).child(summary_text(text, hits, width, window))))
-        .child(extra_line(e))
+        .child(extra_line(e, shared, received_share))
 }
 
 impl Workspace {
@@ -328,7 +323,12 @@ impl Workspace {
             }))
             .on_click(cx.listener(move |w, _, window, cx| w.pick_search(row, window, cx)))
             .child(entry_icon(e))
-            .child(result_info(e, q, summary, info_w, window))
+            .child(result_info(e, self.is_shared(), {
+                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                { crate::cloud_sync::shared::scope(&self.store, cx).is_some_and(|scope| scope.owner.is_some()) }
+                #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                { false }
+            }, q, summary, info_w, window))
     }
 
     pub(crate) fn render_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {

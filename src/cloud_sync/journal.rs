@@ -284,6 +284,10 @@ impl Journal {
     pub fn open(root: &Path, channel: Option<String>) -> Result<Self> {
         let lock = OpenOptions::new().write(true).create(true).truncate(false).open(root.join("sync.lock"))?;
         lock.try_lock().context("This document library is already open")?;
+        Self::open_locked(root, channel, lock)
+    }
+
+    pub(super) fn open_locked(root: &Path, channel: Option<String>, lock: std::fs::File) -> Result<Self> {
         let marker = std::fs::read_to_string(root.join(".cloud-restore-ready"))?;
         let account = marker.lines().next().filter(|a| a.len() == 64).context("Invalid library account")?.to_string();
         let room = shared::descriptor(root)?.map(|room| room.scope);

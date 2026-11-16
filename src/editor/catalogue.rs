@@ -11,8 +11,8 @@ use gpui::{prelude::FluentBuilder, *};
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// PAGE_MAIN_PADDING: the page's minimum side margin.
-const PAD: f32 = 66.;
+/// The page margin also reserves room for block handles.
+fn padding() -> f32 { crate::editor_theme::style().num("page.padding").clamp(24., 120.) }
 /// CATALOGUE_MAX_UNFOLD_WIDTH.
 const UNFOLD: f32 = 236.5;
 /// EDITOR_MIN_EXTRUDING_WIDTH: the narrowest text column beside a pinned catalogue.
@@ -55,8 +55,9 @@ pub struct PageLayout {
 }
 
 pub fn page_layout(o: f32, max: Option<f32>, has_cat: bool, pinned: bool) -> PageLayout {
+    let pad = padding();
     let centered = |cat| {
-        let m = max.map_or(PAD, |w| ((o - w) / 2.).max(PAD));
+        let m = max.map_or(pad, |w| ((o - w) / 2.).max(pad));
         PageLayout { ml: m, mr: m, content: o - 2. * m, cat }
     };
     if !has_cat {
@@ -65,24 +66,24 @@ pub fn page_layout(o: f32, max: Option<f32>, has_cat: bool, pinned: bool) -> Pag
     if !pinned {
         return centered(CatMode::Unpinned);
     }
-    if o < RESPONSE_MIN + PAD + EDITOR_MIN + PAD {
+    if o < RESPONSE_MIN + pad + EDITOR_MIN + pad {
         return centered(CatMode::Forced);
     }
     let (ml, mr) = match max {
-        None => (UNFOLD + PAD, PAD),
-        Some(w) if o - PAD >= UNFOLD + PAD + EDITOR_MIN => {
-            let a = (o - UNFOLD - PAD).min(w);
+        None => (UNFOLD + pad, pad),
+        Some(w) if o - pad >= UNFOLD + pad + EDITOR_MIN => {
+            let a = (o - UNFOLD - pad).min(w);
             let l = o - a;
-            if l / 2. < UNFOLD + PAD {
+            if l / 2. < UNFOLD + pad {
                 let l = l - UNFOLD;
-                (UNFOLD + (l / 2.).max(PAD), (l / 2.).max(PAD))
+                (UNFOLD + (l / 2.).max(pad), (l / 2.).max(pad))
             } else {
                 (l / 2., l / 2.)
             }
         }
-        Some(_) => (o - EDITOR_MIN - PAD, PAD),
+        Some(_) => (o - EDITOR_MIN - pad, pad),
     };
-    PageLayout { ml, mr, content: o - ml - mr, cat: CatMode::Pinned(ml - PAD) }
+    PageLayout { ml, mr, content: o - ml - mr, cat: CatMode::Pinned(ml - pad) }
 }
 
 /// One catalogue row.
@@ -162,10 +163,11 @@ thread_local! {
 }
 
 impl Editor {
-    /// The text column's max width: a theme sets 标准 (max-width); 较宽 / 全宽 stay.
+    /// Theme widths retain the Standard / Wide / Full reading choices.
     pub(super) fn column_max(&self) -> Option<f32> {
         match self.page_width {
             crate::store::PageWidth::Standard => Some(crate::editor_theme::style().num("page.width")),
+            crate::store::PageWidth::Wide => crate::editor_theme::style().num_override("page.wide").or(self.page_width.max()),
             w => w.max(),
         }
     }
@@ -190,11 +192,12 @@ impl Editor {
     /// each side: to the page's minimum margin, as in Feishu, but not over
     /// a pinned catalogue (nor nearer to it than that margin).
     pub(super) fn bleed(&self) -> (f32, f32) {
+        let pad = padding();
         let l = match self.layout.cat {
-            CatMode::Pinned(u) => self.layout.ml - PAD - u.min(RESPONSE_MAX),
-            _ => self.layout.ml - PAD,
+            CatMode::Pinned(u) => self.layout.ml - pad - u.min(RESPONSE_MAX),
+            _ => self.layout.ml - pad,
         };
-        (l.max(0.), (self.layout.mr - PAD).max(0.))
+        (l.max(0.), (self.layout.mr - pad).max(0.))
     }
 
     /// Recomputes the outline and the page margins for this frame.
@@ -292,10 +295,12 @@ impl Editor {
         }
         let floating = mode == CatMode::Forced;
         let pinned = self.cat_pinned;
+        // The collapsed control must fit inside even a compact theme's page gutter.
+        let compact = !pinned && padding() < 42.;
         let pin = div()
             .id(SharedString::from(format!("cat-pin-{pinned}")))
             .absolute()
-            .left(px(14.))
+            .left(px(if compact { 0. } else { 14. }))
             .top(px(10.))
             .size(px(24.))
             .rounded(px(4.))
@@ -331,11 +336,11 @@ impl Editor {
                 .absolute()
                 .left_0()
                 .top(px(top))
-                .pl(px(4.))
+                .pl(px(if compact { 0. } else { 4. }))
                 .pt(px(PIN_H))
                 .block_mouse_except_scroll()
                 .cursor(CursorStyle::Arrow)
-                .when(list_w.is_none(), |d| d.w(px(42.)).h(px(PIN_H)).pt_0())
+                .when(list_w.is_none(), |d| d.w(px(if compact { padding() } else { 42. })).h(px(PIN_H)).pt_0())
                 .when(floating, |d| d.bg(theme::ta(255, 255, 255, 0.96)).rounded(px(8.)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(pin)

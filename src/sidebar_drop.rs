@@ -67,7 +67,7 @@ impl Workspace {
 
     /// 是否导入: asked before anything from outside comes into the library.
     fn ask_import(&mut self, what: crate::app::DropImport, target: SidebarDropAt, cx: &mut Context<Self>) {
-        if crate::in_shared_note() { return; }
+        if self.is_shared() { return; }
         self.row_menu = None;
         self.confirm = Some(crate::app::Confirm::Import { what, target });
         cx.notify();
@@ -81,7 +81,7 @@ impl Workspace {
 
     /// 导入 confirmed: bring it in where it was dropped.
     pub(crate) fn import_dropped(&mut self, what: crate::app::DropImport, target: SidebarDropAt, window: &mut Window, cx: &mut Context<Self>) {
-        if crate::in_shared_note() { return; }
+        if self.is_shared() { return; }
         match what {
             crate::app::DropImport::Files(paths) => self.import_dropped_files(paths, target, window, cx),
             crate::app::DropImport::Local(id) => self.import_dropped_local(&id, target, cx),

@@ -283,7 +283,7 @@ impl Workspace {
 
     pub fn restore_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        if crate::cloud_sync::shared::editing_paused(cx) || crate::cloud_sync::shared::access(cx).is_some_and(|a| !a.can_write()) { return; }
+        if crate::cloud_sync::shared::editing_paused(&self.store, cx) || crate::cloud_sync::shared::access(&self.store, cx).is_some_and(|a| !a.can_write()) { return; }
         let Some((id, name)) = self.history.as_ref().and_then(|h| h.selected.clone().map(|n| (h.id.clone(), n))) else { return };
         let doc = match self.store.restore_version(&id, &name) {
             Ok(d) => d,
@@ -314,7 +314,7 @@ impl Workspace {
     }
 
     pub fn version_as_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if crate::in_shared_note() { return; }
+        if self.is_shared() { return; }
         let Some((id, name)) = self.history.as_ref().and_then(|h| h.selected.clone().map(|n| (h.id.clone(), n))) else { return };
         let meta = self.history.as_ref().and_then(|h| h.versions.iter().find(|v| v.name == name)).map(|v| (v.label.clone(), v.ms));
         match self.store.version_document(&id, &name) {
@@ -395,7 +395,7 @@ impl Workspace {
         let h = self.history.as_ref()?;
         let p = self.preview.as_ref()?;
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        let writable = !crate::cloud_sync::shared::editing_paused(cx) && crate::cloud_sync::shared::access(cx).is_none_or(|a| a.can_write());
+        let writable = !crate::cloud_sync::shared::editing_paused(&self.store, cx) && crate::cloud_sync::shared::access(&self.store, cx).is_none_or(|a| a.can_write());
         #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
         let writable = true;
         let v = h.versions.iter().find(|v| v.name == p.name);

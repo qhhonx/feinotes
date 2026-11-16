@@ -138,6 +138,8 @@
 }
 
 .page {
+  padding-left: 66px;
+  padding-top: 52px;
   background-color: #ffffff;
   color: var(--notion-text);
   font-family: system-ui;
@@ -151,11 +153,16 @@
   background-color: rgba(35, 131, 226, 0.28);
 }
 
+h2 + p {
+  margin-top: inherit;
+}
+
 p {
   margin-bottom: 8px;
 }
 
 .title {
+  margin-bottom: 24px;
   font-family: system-ui;
   font-size: 40px;
   line-height: 48px;
@@ -383,6 +390,7 @@ th {
 }
 
 .sidebar-row.is-selected {
+  font-weight: inherit;
   background-color: inherit;
 }
 
@@ -439,4 +447,22 @@ th {
 
 .token.function {
   color: #dd4a68;
+}
+
+.sidebar-row.is-selected.is-focused {
+  background-color: inherit;
+}
+
+.sidebar-folder.is-selected.is-focused {
+  background-color: inherit;
+  color: inherit;
+}
+
+.toolbar-group {
+  background-color: inherit;
+  border-color: inherit;
+}
+
+.page.is-wide {
+  max-width: inherit;
 }

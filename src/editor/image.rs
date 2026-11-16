@@ -7,7 +7,7 @@ use super::core::{DropPlace, EditKind, Pos, Selection, TITLE};
 use super::overlays::{Probe, at};
 use super::render::{Env, R};
 use super::view::{Editor, EditorEvent};
-use crate::store::image_path;
+use crate::store::image_path_in;
 use crate::model::*;
 use crate::store::Store;
 use crate::editor_theme::{self as theme, Theme, craft};
@@ -146,6 +146,7 @@ struct Lightbox {
 }
 
 pub struct ImageUi {
+    root: PathBuf,
     dims: RefCell<HashMap<PathBuf, Option<(f32, f32)>>>,
     /// Box of every image drawn this frame (window coordinates).
     pub(super) boxes: Rc<RefCell<HashMap<BlockId, Bounds<Pixels>>>>,
@@ -545,6 +546,7 @@ impl ImageCache for DocImages {
 impl ImageUi {
     pub fn new(cx: &mut App) -> Self {
         ImageUi {
+            root: Store::root_dir(),
             dims: RefCell::default(),
             boxes: Rc::default(),
             containers: RefCell::default(),
@@ -563,6 +565,11 @@ impl ImageUi {
             retried: HashMap::new(),
             file_drop: None,
         }
+    }
+
+    pub(super) fn set_library_root(&mut self, root: PathBuf) {
+        self.remote_dir = Store::assets_in(&root).join("remote");
+        self.root = root;
     }
 
     fn remote_path(&self, url: &str) -> PathBuf {
@@ -586,7 +593,7 @@ impl ImageUi {
             self.remote.borrow_mut().entry(src.to_string()).or_insert(Remote::Queued);
             return Src::Pending;
         }
-        match image_path(src) {
+        match image_path_in(&self.root, src) {
             Some(p) if self.dims.borrow().contains_key(&p) || p.exists() => Src::Local(p),
             Some(_) => Src::Missing,
             None => Src::Failed,
@@ -1071,7 +1078,7 @@ impl Editor {
         }
         self.img.retried.insert(src.to_string(), Instant::now());
         self.img.remote.borrow_mut().remove(src);
-        let p = if src.starts_with("http://") || src.starts_with("https://") { Some(self.img.remote_path(src)) } else { image_path(src) };
+        let p = if src.starts_with("http://") || src.starts_with("https://") { Some(self.img.remote_path(src)) } else { image_path_in(&self.library_root, src) };
         if let Some(p) = p {
             self.img.dims.borrow_mut().remove(&p);
             DocImages::remove(&p, cx);
@@ -2082,7 +2089,7 @@ impl Editor {
         let mut blocks = vec![];
         let mut err = None;
         for p in pics {
-            match image_block_from_file(p) {
+            match image_block_from_file(&self.library_root, p) {
                 Ok(b) => blocks.push(b),
                 Err(e) => err = Some(e),
             }
@@ -2184,7 +2191,7 @@ fn decode_rotated(path: &Path, crop: [f32; 4], rot: u8) -> Option<Arc<RenderImag
 
 /// A new image block for pasted or picked bytes, stored in the assets
 /// folder (format, size and pixel checks on upload).
-pub(super) fn image_block_from(bytes: &[u8], ext: &str) -> Result<Block, &'static str> { image_block_named(bytes, ext, None) }
+pub(super) fn image_block_from(root: &Path, bytes: &[u8], ext: &str) -> Result<Block, &'static str> { image_block_named(root, bytes, ext, None) }
 
 /// macOS screenshots may only offer TIFF. Store those as lossless PNG;
 /// other clipboard formats keep their original bytes (including animation).
@@ -2209,10 +2216,10 @@ pub(super) fn clipboard_image_data(img: &gpui::Image) -> Result<(std::borrow::Co
 }
 
 /// `image_block_from` for a file that has a name of its own, which its copy keeps.
-fn image_block_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Block, &'static str> {
-    let path = store_image_named(bytes, ext, name)?;
+fn image_block_named(root: &Path, bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Block, &'static str> {
+    let path = store_image_named(root, bytes, ext, name)?;
     let mut b = Block::new(
-        BlockKind::Image { src_kind: "src".into(), src: crate::store::asset_source(&path), width: None, height: None, caption: None, crop: None },
+        BlockKind::Image { src_kind: "src".into(), src: crate::store::asset_source_in(root, &path), width: None, height: None, caption: None, crop: None },
         RichText::default(),
     );
     b.align = Align::Center;
@@ -2220,12 +2227,12 @@ fn image_block_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Bloc
 }
 
 /// Checks picked or pasted image bytes and copies them into the assets folder.
-pub(super) fn store_image(bytes: &[u8], ext: &str) -> Result<PathBuf, &'static str> { store_image_named(bytes, ext, None) }
+pub(super) fn store_image(root: &Path, bytes: &[u8], ext: &str) -> Result<PathBuf, &'static str> { store_image_named(root, bytes, ext, None) }
 
 /// `store_image`; an image with a `name` (a picked or dropped file) is kept
 /// as `<8 hex>-<name>.<ext>`, so its name survives in the library and in the
 /// copy beside a Markdown file. A pasted one is just `<uuid>.<ext>`.
-fn store_image_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<PathBuf, &'static str> {
+fn store_image_named(root: &Path, bytes: &[u8], ext: &str, name: Option<&str>) -> Result<PathBuf, &'static str> {
     let ext = ext.to_ascii_lowercase();
     if !FORMATS.contains(&ext.as_str()) {
         return Err(BAD_FORMAT);
@@ -2242,12 +2249,14 @@ fn store_image_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Path
     let name: Option<String> = name.map(|n| n.chars().map(|c| if matches!(c, '/' | '\\' | ':') || c.is_control() { '_' } else { c }).take(80).collect::<String>())
         .map(|n| n.trim().trim_start_matches('.').to_string()).filter(|n| !n.is_empty());
     let file = match name { Some(n) => format!("{}-{n}.{ext}", &id[..8]), None => format!("{id}.{ext}") };
-    let path = Store::assets_dir().join(file);
+    let dir = Store::assets_in(root);
+    std::fs::create_dir_all(&dir).map_err(|_| BAD_DIMS)?;
+    let path = dir.join(file);
     std::fs::write(&path, bytes).map_err(|_| BAD_DIMS)?;
     Ok(path)
 }
 
-fn image_block_from_file(p: &Path) -> Result<Block, &'static str> {
+fn image_block_from_file(root: &Path, p: &Path) -> Result<Block, &'static str> {
     let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
     if !p.is_file() || !FORMATS.contains(&ext.as_str()) {
         return Err(BAD_FORMAT);
@@ -2256,7 +2265,7 @@ fn image_block_from_file(p: &Path) -> Result<Block, &'static str> {
         return Err(TOO_BIG);
     }
     let bytes = std::fs::read(p).map_err(|_| BAD_DIMS)?;
-    image_block_named(&bytes, &ext, p.file_stem().and_then(|s| s.to_str()))
+    image_block_named(root, &bytes, &ext, p.file_stem().and_then(|s| s.to_str()))
 }
 
 /// File name of a remote image's download in `assets/remote`.
@@ -2267,19 +2276,19 @@ fn remote_name(url: &str) -> String {
 }
 
 /// The downloaded copy of a remote image, if it has been fetched.
-pub fn cached_remote(url: &str) -> Option<PathBuf> {
-    Some(Store::assets_dir().join("remote").join(remote_name(url))).filter(|p| p.is_file())
+pub fn cached_remote_in(root: &Path, url: &str) -> Option<PathBuf> {
+    Some(Store::assets_in(root).join("remote").join(remote_name(url))).filter(|p| p.is_file())
 }
 
 /// Pasted HTML images: `data:` URIs and local files become owned assets;
 /// unreadable ones are dropped. Remote images stay remote.
-pub(crate) fn localize_pasted_images(blocks: &mut Vec<Block>) {
+pub(crate) fn localize_pasted_images(root: &Path, blocks: &mut Vec<Block>) {
     use base64::Engine;
     blocks.retain_mut(|b| {
-        localize_pasted_images(&mut b.children);
+        localize_pasted_images(root, &mut b.children);
         if let BlockKind::Table(t) = &mut b.kind {
             for cell in t.rows.iter_mut().flatten() {
-                localize_pasted_images(&mut cell.blocks);
+                localize_pasted_images(root, &mut cell.blocks);
                 if cell.blocks.is_empty() && !cell.is_covered() {
                     cell.blocks.push(Block::text(""));
                 }
@@ -2290,9 +2299,9 @@ pub(crate) fn localize_pasted_images(blocks: &mut Vec<Block>) {
             let Some((head, payload)) = data.split_once(',') else { return false };
             let ext = head.split(';').next().unwrap_or_default().replace("jpeg", "jpg");
             let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(payload.trim()) else { return false };
-            image_block_from(&bytes, &ext)
+            image_block_from(root, &bytes, &ext)
         } else if src.starts_with('/') {
-            image_block_from_file(Path::new(src.as_str()))
+            image_block_from_file(root, Path::new(src.as_str()))
         } else {
             return true;
         };

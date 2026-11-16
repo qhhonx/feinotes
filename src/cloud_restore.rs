@@ -198,6 +198,12 @@ pub(crate) static BACKUP_RESTORED: std::sync::OnceLock<()> = std::sync::OnceLock
 
 #[cfg(feature = "cloudkit-sync")]
 fn sync_startup() -> Result<()> {
+    #[cfg(feature = "devtools")]
+    if std::env::var_os("QUIET_SYNC_QA_SHARED_SESSIONS").is_some() {
+        ensure!(crate::devtools::scripted(), "Shared-session QA requires the offscreen harness");
+        let root = crate::cloud_sync::test_root()?.context("Shared-session QA requires an isolated root")?;
+        return crate::store::Store::set_sqlite_session_root(crate::cloud_sync::shared::session_qa::prepare(&root)?);
+    }
     let test = crate::cloud_sync::test_root()?;
     let scope = migration_scope()?;
     let shared = std::env::args().nth(1).as_deref() == Some("--shared-note-room");

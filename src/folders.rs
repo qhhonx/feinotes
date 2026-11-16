@@ -8,7 +8,7 @@ impl Workspace {
     /// 新建文档/Markdown under `parent` (None = top level), opened and focused.
     /// `markdown` picks the on-disk format; the choice is remembered for ⌘N.
     pub(crate) fn create_doc(&mut self, markdown: bool, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        if crate::in_shared_note() { return; }
+        if self.is_shared() { return; }
         let markdown = markdown && !crate::FEI_NOTES;
         self.create_menu = None;
         let (m, p) = (markdown, parent.clone());

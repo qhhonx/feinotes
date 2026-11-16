@@ -16,9 +16,9 @@ pub mod qa;
 
 use anyhow::{Result, ensure};
 use base64::{Engine, prelude::BASE64_STANDARD};
-use gpui::{App, Global};
+use gpui::{BorrowAppContext, App, Global};
 use serde::{Deserialize, Serialize};
-use std::{ffi::{CStr, CString, c_char}, path::{Path, PathBuf}, time::Duration};
+use std::{collections::HashMap, ffi::{CStr, CString, c_char}, path::{Path, PathBuf}, time::Duration};
 use crate::{app, editor::core::{Core, Pos}, model::Document, shared_store::SharedStore, store::{Meta, Store}};
 use journal::Journal;
 pub(crate) use assets::AssetProblem;
@@ -45,8 +45,8 @@ pub(crate) struct AttachmentIssue {
     pub recovering: bool,
 }
 
-pub(crate) fn issues(cx: &App) -> Result<Vec<SyncIssue>> {
-    cx.try_global::<Sync>().map_or_else(|| Ok(vec![]), |sync| sync.0.issues())
+pub(crate) fn issues(root: &Path, cx: &App) -> Result<Vec<SyncIssue>> {
+    session(root, cx).map_or_else(|| Ok(vec![]), |sync| sync.journal.issues())
 }
 
 unsafe extern "C" {
@@ -150,8 +150,42 @@ pub fn test_root() -> Result<Option<PathBuf>> {
     Ok(root)
 }
 
-struct Sync(Journal);
+#[derive(Default)]
+struct Sync(HashMap<PathBuf, Session>);
 impl Global for Sync {}
+
+struct Session {
+    journal: Journal,
+    store: SharedStore,
+    generation: uuid::Uuid,
+    sender: async_channel::Sender<()>,
+    retry_attachments: bool,
+}
+
+fn session<'a>(root: &Path, cx: &'a App) -> Option<&'a Session> { cx.try_global::<Sync>()?.0.get(root) }
+fn journal<'a>(root: &Path, cx: &'a App) -> &'a Journal { &session(root, cx).expect("open sync session").journal }
+fn journal_mut<'a>(root: &Path, cx: &'a mut App) -> &'a mut Journal { &mut cx.global_mut::<Sync>().0.get_mut(root).expect("open sync session").journal }
+fn current(root: &Path, generation: uuid::Uuid, cx: &App) -> bool { session(root, cx).is_some_and(|s| s.generation == generation) }
+
+#[derive(Default)]
+pub(crate) struct SyncStatuses(HashMap<PathBuf, SyncStatus>);
+impl Global for SyncStatuses {}
+pub(crate) fn status<'a>(root: &Path, cx: &'a App) -> Option<&'a SyncStatus> { cx.try_global::<SyncStatuses>()?.0.get(root) }
+pub(crate) fn scope<'a>(root: &Path, cx: &'a App) -> Option<&'a shared::Scope> { session(root, cx)?.journal.room() }
+
+fn release(root: &Path, cx: &mut App) {
+    cx.global_mut::<Sync>().0.remove(root);
+    cx.update_global::<SyncStatuses, _>(|statuses, _| { statuses.0.remove(root); });
+    presence::remove(root, cx);
+    if let Some(watch) = ACCOUNT_WATCH.get() { watch.lock().unwrap().remove(root); }
+}
+
+pub(crate) fn release_unused(cx: &mut App) {
+    let roots = cx.try_global::<Sync>().into_iter().flat_map(|sync| &sync.0)
+        .filter(|(_, session)| session.store.is_shared() && session.store.only_session_reference())
+        .map(|(root, _)| root.clone()).collect::<Vec<_>>();
+    for root in roots { release(&root, cx); }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum SyncPhase {
@@ -177,16 +211,9 @@ pub(crate) struct SyncStatus {
     pub attachments: u32,
     pub access_paused: bool,
 }
-impl Global for SyncStatus {}
 
-struct Wake {
-    sender: async_channel::Sender<()>,
-    retry_attachments: bool,
-}
-impl Global for Wake {}
 
-static SYNC_RESUME: std::sync::OnceLock<async_channel::Sender<()>> = std::sync::OnceLock::new();
-static ACCOUNT_WATCH: std::sync::OnceLock<(PathBuf, async_channel::Sender<()>)> = std::sync::OnceLock::new();
+static ACCOUNT_WATCH: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, (PathBuf, async_channel::Sender<()>, async_channel::Sender<()>)>>> = std::sync::OnceLock::new();
 
 fn protect_offline_library(marker: &Path) {
     if let Err(error) = std::fs::OpenOptions::new().write(true).create_new(true).open(marker).and_then(|file| file.sync_all())
@@ -202,15 +229,16 @@ fn check_account_revision(revision: u64) -> Result<()> {
     Err(CloudFailure { phase: SyncPhase::AccountChecking, message: "The iCloud account status changed during this request.".into() }.into())
 }
 
-extern "C" fn sync_resumed(_kind: i32) {
-    if _kind == 3 && let Some((marker, sender)) = ACCOUNT_WATCH.get() {
-        protect_offline_library(marker);
-        let _ = sender.try_send(());
+extern "C" fn sync_resumed(kind: i32) {
+    if let Some(watch) = ACCOUNT_WATCH.get() {
+        for (marker, sender, account) in watch.lock().unwrap().values() {
+            if kind == 3 { protect_offline_library(marker); let _ = account.try_send(()); }
+            let _ = sender.try_send(());
+        }
     }
-    if let Some(sender) = SYNC_RESUME.get() { let _ = sender.try_send(()); }
     #[cfg(feature = "devtools")]
     if test_root().is_ok_and(|root| root.is_some()) {
-        crate::logging::write(match _kind {
+        crate::logging::write(match kind {
             1 => "CloudKit sync wake signal", 2 => "CloudKit sync network restored signal", _ => "CloudKit account change signal",
         });
     }
@@ -218,7 +246,7 @@ extern "C" fn sync_resumed(_kind: i32) {
 
 #[cfg(feature = "devtools")]
 pub(crate) fn simulate_resume(kind: &str) -> Result<()> {
-    ensure!(test_root()?.is_some() && SYNC_RESUME.get().is_some(), "Use an isolated iCloud test library");
+    ensure!(test_root()?.is_some() && ACCOUNT_WATCH.get().is_some(), "Use an isolated iCloud test library");
     let kind = match kind { "wake" => 1, "network" => 2, "account" => 3, _ => anyhow::bail!("Unknown sync resume event") };
     unsafe { quiet_cloud_simulate_sync_resume(kind) };
     Ok(())
@@ -232,64 +260,83 @@ impl std::fmt::Display for CloudFailure {
 }
 impl std::error::Error for CloudFailure {}
 
-pub(crate) fn retry(cx: &mut App) {
-    if cx.try_global::<Wake>().is_none() { return; }
-    let wake = cx.global_mut::<Wake>();
-    wake.retry_attachments = true;
-    let _ = wake.sender.try_send(());
-    update_status(cx, SyncPhase::Connecting);
+pub(crate) fn retry(root: &Path, cx: &mut App) {
+    if !cx.has_global::<Sync>() { return; }
+    let Some(session) = cx.global_mut::<Sync>().0.get_mut(root) else { return };
+    session.retry_attachments = true;
+    let _ = session.sender.try_send(());
+    update_status(root, cx, SyncPhase::Connecting);
 }
 
-pub(crate) fn access_changed(cx: &App) {
-    if let Some(wake) = cx.try_global::<Wake>() { let _ = wake.sender.try_send(()); }
-}
+pub(crate) fn access_changed(_cx: &App) { sync_resumed(0); }
 
-fn update_status(cx: &mut App, phase: SyncPhase) { update_status_after_exchange(cx, phase, false); }
+fn update_status(root: &Path, cx: &mut App, phase: SyncPhase) { update_status_after_exchange(root, cx, phase, false); }
 
-fn update_status_after_exchange(cx: &mut App, phase: SyncPhase, authorized: bool) {
-    let ((uploads, downloads, held, attachments), phase) = match cx.global::<Sync>().0.counts() {
+fn update_status_after_exchange(root: &Path, cx: &mut App, phase: SyncPhase, authorized: bool) {
+    let ((uploads, downloads, held, attachments), phase) = match journal(root, cx).counts() {
         Ok(counts) => (counts, phase),
         Err(_) => ((0, 0, 0, 0), SyncPhase::Failed),
     };
-    let before = cx.global::<SyncStatus>();
+    let before = status(root, cx).expect("session status");
     let access_paused = !authorized && (phase == SyncPhase::SubscriptionRequired || before.access_paused);
     let changed = before.access_paused != access_paused;
     let status = SyncStatus { phase, uploads, downloads, held, attachments, access_paused };
-    if before != &status { cx.set_global(status); }
-    if changed && shared::active().is_some() { app::cloud_notes_changed(&[], false, cx); }
+    if before != &status { cx.update_global::<SyncStatuses, _>(|statuses, _| { statuses.0.insert(root.to_path_buf(), status); }); }
+    if scope(root, cx).is_some() && (changed || matches!(phase, SyncPhase::AccountChecking | SyncPhase::AccountChanged | SyncPhase::SignedOut)) { app::cloud_notes_changed(root, &[], false, cx); }
 }
 
 pub fn start(cx: &mut App) -> Result<()> {
-    let channel = if cfg!(feature = "devtools") && shared::active().is_none() { std::env::var("QUIET_SYNC_QA_CHANNEL").ok() } else { None };
+    let store = cx.global::<SharedStore>().clone();
+    start_library(store, cx)
+}
+
+fn start_library(store: SharedStore, cx: &mut App) -> Result<()> {
+    let root = store.root().to_path_buf();
+    if session(&root, cx).is_some() { return Ok(()); }
+    let channel = if cfg!(feature = "devtools") && !store.is_shared() { std::env::var("QUIET_SYNC_QA_CHANNEL").ok() } else { None };
     if let Some(channel) = &channel {
         uuid::Uuid::parse_str(channel)?;
         ensure!(test_root()?.is_some(), "A QA CloudKit channel requires a separate local QA root");
     }
-    let journal = Journal::open(&Store::root_dir(), channel)?;
-    let room = journal.room().is_some();
-    let account = journal.identity().0.to_owned();
-    let marker = journal.account_verification_marker()?;
-    cx.set_global(Sync(journal));
-    cx.set_global(SyncStatus::default());
-    let (retry_tx, retry_rx) = async_channel::bounded(1);
-    let (account_tx, account_rx) = async_channel::bounded(1);
-    ensure!(SYNC_RESUME.set(retry_tx.clone()).is_ok(), "The iCloud sync worker is already running");
-    cx.set_global(Wake { sender: retry_tx, retry_attachments: false });
-    ensure!(ACCOUNT_WATCH.set((marker, account_tx)).is_ok(), "The iCloud account watcher is already running");
-    // GPUI starts the workspace on the main thread, as required by NSWorkspace.
-    unsafe { quiet_cloud_watch_sync_resume(sync_resumed) };
-    update_status(cx, SyncPhase::Connecting);
+    let opened = Journal::open(&root, channel)?;
+    install_session(store, opened, cx)
+}
+
+fn install_session(store: SharedStore, opened: Journal, cx: &mut App) -> Result<()> {
+    let root = store.root().to_path_buf();
     let pause = test_root()?.map(|root| root.join("pause-cloud"));
     #[cfg(feature = "devtools")]
     let upload_fault_fixture = test_root()?.map(|root| root.join("qa-upload-fault"));
-    presence::start(cx, pause.clone())?;
-    if !room { activity::start(cx, Store::root_dir(), account, pause.clone()); }
+    let room = opened.room().is_some();
+    let account = opened.identity().0.to_owned();
+    let marker = opened.account_verification_marker()?;
+    let generation = uuid::Uuid::new_v4();
+    let (retry_tx, retry_rx) = async_channel::bounded(1);
+    let (account_tx, account_rx) = async_channel::bounded(1);
+    if !cx.has_global::<Sync>() { cx.set_global(Sync::default()); }
+    if !cx.has_global::<SyncStatuses>() { cx.set_global(SyncStatuses::default()); }
+    cx.global_mut::<Sync>().0.insert(root.clone(), Session { journal: opened, store, generation, sender: retry_tx.clone(), retry_attachments: false });
+    cx.update_global::<SyncStatuses, _>(|statuses, _| { statuses.0.insert(root.clone(), SyncStatus::default()); });
+    let watch = ACCOUNT_WATCH.get_or_init(Default::default);
+    let first = { let mut watch = watch.lock().unwrap(); let first = watch.is_empty(); watch.insert(root.clone(), (marker, retry_tx, account_tx)); first };
+    let local_session_qa = cfg!(feature = "devtools") && crate::devtools::scripted()
+        && std::env::var_os("QUIET_SYNC_QA_SHARED_SESSIONS").is_some();
+    if first && !local_session_qa { unsafe { quiet_cloud_watch_sync_resume(sync_resumed) }; }
+    update_status(&root, cx, SyncPhase::Connecting);
+    if let Err(error) = presence::start(cx, root.clone(), generation, pause.clone()) { release(&root, cx); return Err(error); }
+    if !room { activity::start(cx, root.clone(), account, pause.clone()); }
+    let account_root = root.clone();
     cx.spawn(async move |cx| {
         while account_rx.recv().await.is_ok() {
-            if cx.update(|cx| update_status(cx, SyncPhase::AccountChecking)).is_err() { break; }
+            if !cx.update(|cx| {
+                if !current(&account_root, generation, cx) { return false; }
+                update_status(&account_root, cx, SyncPhase::AccountChecking);
+                true
+            }).unwrap_or(false) { break; }
         }
     }).detach();
     cx.spawn(async move |cx| {
+        let mut observed_revision = account_revision();
         let mut last_error = None;
         let mut account_notice = None;
         let mut legacy_checked: Option<std::time::Instant> = None;
@@ -303,16 +350,25 @@ pub fn start(cx: &mut App) -> Result<()> {
                 if wake.as_mut().poll(cx).is_ready() || timer.as_mut().poll(cx).is_ready() { Poll::Ready(()) }
                 else { Poll::Pending }
             }).await;
+            if !cx.update(|cx| {
+                if !current(&root, generation, cx) { return false; }
+                if room && session(&root, cx).unwrap().store.only_session_reference() { release(&root, cx); return false; }
+                true
+            }).unwrap_or(false) { break; }
             let result = cx.update(|cx| {
-                if std::mem::take(&mut cx.global_mut::<Wake>().retry_attachments) {
+                if observed_revision != account_revision() {
+                    observed_revision = account_revision();
+                    update_status(&root, cx, SyncPhase::AccountChecking);
+                }
+                if std::mem::take(&mut cx.global_mut::<Sync>().0.get_mut(&root).unwrap().retry_attachments) {
                     upload_retry_at = None;
-                    if cx.global_mut::<Sync>().0.retry_attachments()? { legacy_checked = None; }
+                    if journal_mut(&root, cx).retry_attachments()? { legacy_checked = None; }
                 }
                 let legacy = !room && legacy_checked.is_none_or(|time| time.elapsed() >= Duration::from_secs(60));
-                merge(cx)?;
-                update_status(cx, cx.global::<SyncStatus>().phase);
+                merge(&root, cx)?;
+                update_status(&root, cx, status(&root, cx).unwrap().phase);
                 let allow_upload = !legacy && upload_retry_at.is_none_or(|time| std::time::Instant::now() >= time);
-                let journal = &cx.global::<Sync>().0;
+                let journal = &journal(&root, cx);
                 let request = if legacy { journal.legacy_request()? } else { journal.request_with_uploads(allow_upload)? };
                 #[cfg(feature = "devtools")]
                 let request = {
@@ -336,6 +392,7 @@ pub fn start(cx: &mut App) -> Result<()> {
                 Ok((_, _, request)) => cx.background_executor().spawn(async move { exchange(request) }).await,
                 Err(error) => Err(error),
             };
+            if !cx.update(|cx| current(&root, generation, cx)).unwrap_or(false) { break; }
             let Ok(result) = cx.update(|cx| -> Result<_> {
                 check_account_revision(revision)?;
                 let page = result?;
@@ -343,8 +400,8 @@ pub fn start(cx: &mut App) -> Result<()> {
                 if !page.uploaded.is_empty() || !page.edits.is_empty() {
                     crate::logging::write(&format!("CloudKit sync uploaded={} downloaded={}", page.uploaded.len(), page.edits.len()));
                 }
-                if cx.global_mut::<Sync>().0.receive(page)? { app::cloud_notes_changed(&[], true, cx); }
-                merge(cx)?;
+                if journal_mut(&root, cx).receive(page)? { app::cloud_notes_changed(&root, &[], true, cx); }
+                merge(&root, cx)?;
                 Ok((more, quota_exceeded))
             }) else { break };
             match result {
@@ -354,14 +411,14 @@ pub fn start(cx: &mut App) -> Result<()> {
                     if quota_exceeded { upload_retry_at = Some(std::time::Instant::now() + Duration::from_secs(30)); }
                     else if allow_upload { upload_retry_at = None; }
                     let (pending, collaborating) = cx.update(|cx| {
-                        update_status_after_exchange(cx, if upload_retry_at.is_some() { SyncPhase::Quota }
+                        update_status_after_exchange(&root, cx, if upload_retry_at.is_some() { SyncPhase::Quota }
                             else if more { SyncPhase::Connecting } else { SyncPhase::Ready }, true);
-                        let collaborating = match app::cloud_active_selection(cx) {
-                            presence::SelectionSource::Editing(id, _) => cx.global::<presence::View>().notes.contains_key(&id),
+                        let collaborating = match app::cloud_active_selection(&root, cx) {
+                            presence::SelectionSource::Editing(id, _) => presence::view(&root, cx).expect("presence view").notes.contains_key(&id),
                             _ => false,
                         };
-                        let writable = cx.global::<Sync>().0.access().is_none_or(shared::Access::can_write);
-                        (cx.global::<SyncStatus>().uploads > 0 && writable, collaborating)
+                        let writable = journal(&root, cx).access().is_none_or(shared::Access::can_write);
+                        (status(&root, cx).unwrap().uploads > 0 && writable, collaborating)
                     }).unwrap_or_default();
                     last_error = None;
                     delay = if legacy || more || (pending && upload_retry_at.is_none()) { Duration::ZERO } else if collaborating { Duration::from_secs(1) }
@@ -371,13 +428,13 @@ pub fn start(cx: &mut App) -> Result<()> {
                     let phase = error.downcast_ref::<CloudFailure>().map_or(SyncPhase::Failed, |error| error.phase);
                     let _ = cx.update(|cx| {
                         if matches!(phase, SyncPhase::AccountChanged | SyncPhase::SignedOut) {
-                            if let Some((marker, _)) = ACCOUNT_WATCH.get() { protect_offline_library(marker); }
+                            if let Ok(marker) = journal(&root, cx).account_verification_marker() { protect_offline_library(&marker); }
                             if account_notice != Some(phase) {
-                                app::cloud_account_notice(phase, cx);
+                                app::cloud_account_notice(&root, phase, cx);
                                 account_notice = Some(phase);
                             }
                         }
-                        update_status(cx, phase);
+                        update_status(&root, cx, phase);
                     });
                     let error = format!("{error:#}");
                     if last_error.as_ref() != Some(&error) { crate::logging::write(&format!("CloudKit sync: {error}")); }
@@ -400,59 +457,64 @@ pub(crate) fn copy_local_library(target: &Path, source: &Path, channel: Option<S
     Ok(count)
 }
 
-pub(crate) fn displayed_shared_updates(rendered: &Document, cx: &App) -> Result<Vec<String>> {
-    cx.try_global::<Sync>().map_or_else(|| Ok(vec![]), |sync| sync.0.displayable_updates(rendered))
+pub(crate) fn displayed_shared_updates(root: &Path, rendered: &Document, cx: &App) -> Result<Vec<String>> {
+    session(root, cx).map_or_else(|| Ok(vec![]), |sync| sync.journal.displayable_updates(rendered))
 }
 
-pub(crate) fn mark_shared_updates_read(updates: &[String], cx: &mut App) -> Result<()> {
-    if cx.try_global::<Sync>().is_some() { cx.global_mut::<Sync>().0.mark_updates_read(updates)?; }
+pub(crate) fn mark_shared_updates_read(root: &Path, updates: &[String], cx: &mut App) -> Result<()> {
+    if session(root, cx).is_some() { journal_mut(root, cx).mark_updates_read(updates)?; }
     Ok(())
 }
 
-fn merge(cx: &mut App) -> Result<()> {
-    let Some(positions) = app::cloud_open_positions(cx) else { return Ok(()); };
-    let (library_changed, changed) = cx.global_mut::<Sync>().0.merge(&positions)?;
-    if library_changed || !changed.is_empty() { app::cloud_notes_changed(&changed, true, cx); }
+fn merge(root: &Path, cx: &mut App) -> Result<()> {
+    let Some(positions) = app::cloud_open_positions(root, cx) else { return Ok(()); };
+    let (library_changed, changed) = journal_mut(root, cx).merge(&positions)?;
+    if library_changed || !changed.is_empty() { app::cloud_notes_changed(root, &changed, true, cx); }
     Ok(())
 }
 
-fn wake_after_save(cx: &mut App) {
-    update_status(cx, cx.global::<SyncStatus>().phase);
-    let status = cx.global::<SyncStatus>();
+fn wake_after_save(root: &Path, cx: &mut App) {
+    update_status(root, cx, status(root, cx).unwrap().phase);
+    let status = status(root, cx).unwrap();
     if status.uploads > 0 && matches!(status.phase, SyncPhase::Ready | SyncPhase::Connecting) {
-        let _ = cx.global::<Wake>().sender.try_send(());
+        let _ = session(root, cx).unwrap().sender.try_send(());
     }
 }
 
 pub fn save(store: &mut SharedStore, id: &str, core: &Core, cx: &mut App) -> Result<(Meta, bool)> {
-    if crate::cloud_restore::local_only() { return store.save(id, &core.doc).map(|meta| (meta, false)); }
-    let result = cx.global_mut::<Sync>().0.save(store, id, core)?;
-    wake_after_save(cx);
+    let root = store.root().to_path_buf();
+    if session(&root, cx).is_none() {
+        ensure!(!store.is_shared() && crate::cloud_restore::local_only(), "This library has no active sync session");
+        return store.save(id, &core.doc).map(|meta| (meta, false));
+    }
+    let result = journal_mut(&root, cx).save(store, id, core)?;
+    wake_after_save(&root, cx);
     Ok(result)
 }
 
 pub fn undo(store: &mut SharedStore, id: &str, core: &Core, redo: bool, cx: &mut App) -> Result<Option<NoteChange>> {
-    let result = cx.global_mut::<Sync>().0.undo(store, id, core, redo)?;
-    wake_after_save(cx);
+    let root = store.root().to_path_buf();
+    let result = journal_mut(&root, cx).undo(store, id, core, redo)?;
+    wake_after_save(&root, cx);
     Ok(result)
 }
 
-pub fn versions(id: &str, cx: &App) -> Result<Vec<(i64, String, String)>> {
-    cx.global::<Sync>().0.versions(id)
+pub fn versions(root: &Path, id: &str, cx: &App) -> Result<Vec<(i64, String, String)>> {
+    journal(root, cx).versions(id)
 }
 
-pub(crate) fn offline_recoveries(cx: &App) -> Result<Vec<(String, String)>> {
-    cx.try_global::<Sync>().map_or_else(|| Ok(vec![]), |sync| sync.0.offline_recoveries())
+pub(crate) fn offline_recoveries(root: &Path, cx: &App) -> Result<Vec<(String, String)>> {
+    session(root, cx).map_or_else(|| Ok(vec![]), |sync| sync.journal.offline_recoveries())
 }
 
-pub(crate) fn resolve_offline_recovery(id: &str, keep: bool, cx: &mut App) -> Result<Option<String>> {
-    let copy = cx.global_mut::<Sync>().0.resolve_offline_recovery(id, keep)?;
-    if copy.is_some() && let Some(wake) = cx.try_global::<Wake>() { let _ = wake.sender.try_send(()); }
+pub(crate) fn resolve_offline_recovery(root: &Path, id: &str, keep: bool, cx: &mut App) -> Result<Option<String>> {
+    let copy = journal_mut(root, cx).resolve_offline_recovery(id, keep)?;
+    if copy.is_some() && let Some(session) = session(root, cx) { let _ = session.sender.try_send(()); }
     Ok(copy)
 }
 
-pub fn version(id: &str, sequence: i64, cx: &App) -> Result<(Document, String)> {
-    cx.global::<Sync>().0.version(id, sequence)
+pub fn version(root: &Path, id: &str, sequence: i64, cx: &App) -> Result<(Document, String)> {
+    journal(root, cx).version(id, sequence)
 }
 
 pub fn preview(path: &Path) -> bool {

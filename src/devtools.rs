@@ -77,6 +77,14 @@ async fn park(ns_view: usize, cx: &mut AsyncApp) {
     }
 }
 
+/// Park additional QA windows without transferring the script driver.
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+pub(crate) fn park_window(window: &mut Window, cx: &mut App) {
+    if !scripted() { return; }
+    #[cfg(target_os = "macos")]
+    if let Some(ns_view) = ns_view_of(window) { cx.spawn(async move |cx| park(ns_view, cx).await).detach(); }
+}
+
 pub fn start(window: &mut Window, cx: &mut App) {
     let Ok(path) = std::env::var("FDL_SCRIPT") else { return };
     let Ok(script) = std::fs::read_to_string(&path) else {
@@ -274,6 +282,25 @@ pub fn start(window: &mut Window, cx: &mut App) {
             #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
             if cmd == "cloudresume" {
                 crate::cloud_sync::simulate_resume(rest.trim()).unwrap();
+                continue;
+            }
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            if cmd == "check-shared-sessions" {
+                cx.update(crate::cloud_sync::shared::session_qa::open).unwrap().unwrap();
+                cx.background_executor().timer(Duration::from_millis(1500)).await;
+                cx.update(crate::cloud_sync::shared::session_qa::verify).unwrap().unwrap();
+                cx.background_executor().timer(Duration::from_millis(500)).await;
+                cx.update(crate::cloud_sync::shared::session_qa::reopen).unwrap().unwrap();
+                cx.background_executor().timer(Duration::from_millis(1200)).await;
+                cx.update(crate::cloud_sync::shared::session_qa::request_account_check).unwrap();
+                cx.background_executor().timer(Duration::from_millis(100)).await;
+                cx.update(crate::cloud_sync::shared::session_qa::verify_account_check).unwrap().unwrap();
+                let _ = cx.update(|cx| {
+                    let dir = std::env::var("FDL_SHOTS").unwrap_or_else(|_| "/private/tmp".into());
+                    for (i, handle) in cx.windows().into_iter().enumerate() {
+                        let _ = handle.update(cx, |_, window, cx| capture(window, cx, &format!("{dir}/shared-session-{i}.png")));
+                    }
+                });
                 continue;
             }
             #[cfg(target_os = "macos")]

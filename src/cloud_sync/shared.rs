@@ -4,12 +4,16 @@
 //! history, settings, or unrelated attachments enter its CloudKit zone.
 
 use anyhow::{Context, Result, ensure};
+use gpui::AppContext;
 use serde::{Deserialize, Serialize};
 use std::{ffi::{CStr, CString, c_char}, fs, path::{Path, PathBuf}, sync::OnceLock};
 use crate::{model::Document, store::Store};
 use super::{Journal, assets, content};
 
 static ACTIVE: OnceLock<Scope> = OnceLock::new();
+#[cfg(feature = "devtools")]
+pub(crate) mod session_qa;
+
 pub(super) const MARKER: &str = "shared-note.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,12 +235,9 @@ pub(crate) fn rooms(personal: &Path) -> Result<Vec<Room>> {
 }
 
 pub(crate) fn manage(personal: &Path, room: &Room, action: &str, person: &str, access: Option<Access>) -> Result<Reply> {
-    if let Some(scope) = active() {
-        ensure!(scope == &room.scope && scope.owner.is_none()
-            && descriptor(personal)?.is_some_and(|saved| saved.scope == *scope), "Only the owner can manage this invitation.");
-    } else {
-        ensure_created(personal, room)?;
-    }
+    if let Some(saved) = descriptor(personal)? {
+        ensure!(saved.scope == room.scope && saved.scope.owner.is_none(), "Only the owner can manage this invitation.");
+    } else { ensure_created(personal, room)?; }
     let key = account(personal)?;
     let mut command = Command::new(&key, action, Some(&room.scope))?;
     command.permission = access;
@@ -245,37 +246,66 @@ pub(crate) fn manage(personal: &Path, room: &Room, action: &str, person: &str, a
     command.send()
 }
 
-pub(crate) fn launch(room: &Room, cx: &gpui::App) -> gpui::Task<Result<()>> {
-    let app = cx.app_path();
-    let scope = room.scope.clone();
-    cx.background_executor().spawn(async move {
-        scope.validate()?;
-        // Scripted QA needs its isolated library and offscreen environment.
-        #[cfg(feature = "devtools")]
-        if crate::devtools::scripted() {
-            let mut child = std::process::Command::new(std::env::current_exe()?)
-                .args(["--shared-note-room", &scope.note]).spawn()?;
-            std::thread::spawn(move || { let _ = child.wait(); });
+pub(crate) fn launch(room: &Room, cx: &mut gpui::App) -> gpui::Task<Result<()>> {
+    let room = room.clone();
+    cx.spawn(async move |cx| cx.update(|cx| open_window(&room, cx))?)
+}
+
+fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
+    room.scope.validate()?;
+    let personal = Store::root_dir();
+    ensure!(!crate::cloud_restore::local_only() && !personal.join("require-account-verification").exists(),
+        "{}", crate::settings::tr("请先在文档库设置中重新连接 iCloud。", "Reconnect to iCloud in Documents settings first."));
+    ensure!(super::status(&personal, cx).is_some_and(|s| !s.access_paused && !matches!(s.phase,
+        super::SyncPhase::AccountChecking | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut)),
+        "{}", crate::settings::tr("请先确认 iCloud 账户和云功能状态。", "Check your iCloud account and cloud access first."));
+    let root = room_root(&personal, &room.scope.note)?;
+    ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope) && account(&root)? == account(&personal)?,
+        "Shared note belongs to another library");
+    for window in cx.windows().into_iter().filter_map(|w| w.downcast::<crate::app::Workspace>()) {
+        if window.read(cx).is_ok_and(|ws| ws.store.root() == root) {
+            window.update(cx, |_, window, cx| {
+                if !crate::devtools::scripted() { window.activate_window(); cx.activate(true); }
+            })?;
             return Ok(());
         }
-        let app = app?;
-        ensure!(app.extension().is_some_and(|ext| ext == "app"), "Missing application bundle");
-        // Launch Services must start distributed apps through their bundle.
-        // A fresh instance selects the room's isolated library at startup.
-        let output = std::process::Command::new("/usr/bin/open").arg("-n").arg(app)
-            .args(["--args", "--shared-note-room", &scope.note]).output()?;
-        ensure!(output.status.success(), "{}: {}", crate::settings::tr("无法打开共享笔记", "Could not open the shared note"),
-            String::from_utf8_lossy(&output.stderr).trim());
-        Ok(())
-    })
+    }
+    let store = if let Some(session) = super::session(&root, cx) { session.store.clone() }
+        else {
+            let (store, journal) = open_library(root)?;
+            super::install_session(store.clone(), journal, cx)?;
+            store
+        };
+    let mut options = crate::main_window_options(crate::devtools::scripted(), None, cx);
+    if let Some(bar) = &mut options.titlebar {
+        bar.title = Some(format!("{} · {}", crate::app_name(), crate::settings::tr("共享笔记", "Shared Note")).into());
+    }
+    let note = room.scope.note.clone();
+    cx.open_window(options, |window, cx| {
+        #[cfg(feature = "devtools")]
+        crate::devtools::park_window(window, cx);
+        cx.new(|cx| crate::app::Workspace::new_shared_window(store, note, window, cx))
+    })?;
+    Ok(())
 }
 
-pub(crate) fn access(cx: &gpui::App) -> Option<Access> {
-    cx.try_global::<super::Sync>().and_then(|sync| sync.0.access())
+fn open_library(root: PathBuf) -> Result<(crate::shared_store::SharedStore, Journal)> {
+    // Claim the room before Store can migrate SQLite or recover pending content.
+    let lock = crate::cloud_restore::lock_library(&root)?;
+    let store = crate::shared_store::SharedStore::open_shared(root.clone())?;
+    let journal = Journal::open_locked(&root, None, lock)?;
+    Ok((store, journal))
 }
 
-pub(crate) fn editing_paused(cx: &gpui::App) -> bool {
-    active().is_some() && cx.try_global::<super::SyncStatus>().is_some_and(|status| status.access_paused)
+pub(crate) fn scope<'a>(store: &crate::shared_store::SharedStore, cx: &'a gpui::App) -> Option<&'a Scope> { super::scope(store.root(), cx) }
+
+pub(crate) fn access(store: &crate::shared_store::SharedStore, cx: &gpui::App) -> Option<Access> {
+    super::session(store.root(), cx).and_then(|session| session.journal.access())
+}
+
+pub(crate) fn editing_paused(store: &crate::shared_store::SharedStore, cx: &gpui::App) -> bool {
+    store.is_shared() && super::status(store.root(), cx).is_some_and(|status| status.access_paused
+        || matches!(status.phase, super::SyncPhase::AccountChecking | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut))
 }
 
 #[cfg(any(feature = "devtools", test))]
@@ -434,6 +464,18 @@ mod tests {
     struct Fixture(PathBuf);
     impl Drop for Fixture {
         fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn shared_library_claim_precedes_opening_its_database() -> Result<()> {
+        let temp = Fixture(std::env::temp_dir().join(format!("quiet-share-lock-{}", uuid::Uuid::new_v4())));
+        fs::create_dir_all(&temp.0)?;
+        fs::write(temp.0.join(crate::store::SQLITE_FILE), b"database must not be opened while another process owns the room")?;
+        let _owner = crate::cloud_restore::lock_library(&temp.0)?;
+        let error = match open_library(temp.0.clone()) { Ok(_) => anyhow::bail!("Opened an owned room"), Err(error) => error };
+        ensure!(error.to_string().contains("请先退出正在使用该文档库"), "The database was opened before the room lock was checked: {error:#}");
+        ensure!(fs::read(temp.0.join(crate::store::SQLITE_FILE))? == b"database must not be opened while another process owns the room");
+        Ok(())
     }
 
     #[test]

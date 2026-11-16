@@ -774,7 +774,8 @@ Windows 安装包随附未修改的 Microsoft Visual C++ Runtime `vcruntime140.d
 | 素材 | 许可 |
 |---|---|
 | `assets/editor-icons/`（编辑器与文档里的 172 个图标） | 包括 Lucide 图标（ISC，其中源自 Feather 的部分保留 MIT 许可），其余按同一 24px / 2px 描边规格绘制。见同目录 `LICENSE-lucide`。 |
-| `assets/icons/`（界面外壳的 73 个图标） | 66 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 7 个项目自绘的 MIT 图标（包含本次适配绘制的 `globe.svg`）。 |
+| `assets/icons/`（界面外壳的 74 个图标） | 66 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 8 个项目自绘的 MIT 图标（包含 `globe.svg` 与共享按钮的后备图标 `share.svg`）。 |
+| macOS 共享按钮的 `square.and.arrow.up` | 通过 AppKit 的 [系统符号 API](https://developer.apple.com/documentation/appkit/nsimage/init(systemsymbolname:accessibilitydescription:)) 在运行时获取；不随仓库或发行包分发 Apple 图形素材。 |
 | `packaging/macos/fei-notes.png` | 飞记的应用图标，随飞记构建嵌入。 |
 | `assets/branding/` | 上游 Quiet.md 品牌资源，未嵌入飞记构建。 |
 

@@ -7,6 +7,7 @@ use gpui::Hsla;
 use std::fmt::Write;
 
 pub struct Options<'a> {
+    pub library_root: &'a std::path::Path,
     /// Titles of the document's child pages (what 子页面列表 shows).
     pub sub_pages: &'a [String],
 }
@@ -85,7 +86,7 @@ fn page(doc: &Document, opts: &Options) -> String {
     let mut out = String::new();
     let _ = write!(out, "<!DOCTYPE html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><title>{}</title><style>{CSS}</style></head><body>", esc(&title));
     if let Some(c) = &doc.cover
-        && let Some(uri) = data_uri(&c.src)
+        && let Some(uri) = data_uri(opts.library_root, &c.src)
     {
         let _ = write!(out, "<div class=\"cover\" style=\"background-image:url('{uri}')\"></div>");
     }
@@ -200,7 +201,7 @@ impl Writer<'_> {
             BlockKind::Divider => out.push_str("<hr>"),
             BlockKind::Image { src, width, height, caption, crop, .. } => {
                 let _ = write!(out, "<div class=\"img\"{align}>");
-                match data_uri(src) {
+                match data_uri(self.opts.library_root, src) {
                     Some(uri) => out.push_str(&image(&uri, *width, *height, *crop)),
                     None => {
                         let _ = write!(out, "<div class=\"raw\">{}</div>", esc(crate::settings::tr("图片不可用", "Image unavailable")));
@@ -331,7 +332,7 @@ fn image(uri: &str, width: Option<f32>, height: Option<f32>, crop: Option<[f32; 
 
 /// An image source as a data URI: local files, and remote images already
 /// downloaded for display. Other remote images stay links.
-fn data_uri(src: &str) -> Option<String> {
+fn data_uri(root: &std::path::Path, src: &str) -> Option<String> {
     use base64::Engine;
     if src.starts_with("data:") {
         let encoded = ["data:image/png;base64,", "data:image/jpeg;base64,", "data:image/jpg;base64,", "data:image/gif;base64,", "data:image/webp;base64,", "data:image/bmp;base64,"]
@@ -340,7 +341,7 @@ fn data_uri(src: &str) -> Option<String> {
             .then(|| src.to_string());
     }
     let remote = src.starts_with("http://") || src.starts_with("https://");
-    let path = if remote { crate::editor::image::cached_remote(src) } else { crate::store::export_path(src) };
+    let path = if remote { crate::editor::image::cached_remote_in(root, src) } else { crate::store::export_path_in(root, src) };
     let Some(bytes) = path.and_then(|p| crate::store::read_bounded(&p, 20 * 1024 * 1024).ok()) else {
         return remote.then(|| src.replace('"', "%22"));
     };
@@ -452,10 +453,10 @@ mod tests {
 
     #[test]
     fn exports_reject_active_data_and_unsafe_links() {
-        assert!(data_uri("data:text/html;base64,PHNjcmlwdD4=").is_none());
-        assert!(data_uri("data:image/svg+xml;base64,PHN2Zz4=").is_none());
-        assert!(data_uri("data:image/png;base64,\" onerror=\"alert(1)").is_none());
-        assert!(data_uri("data:image/png;base64,aGVsbG8=").is_some());
+        assert!(data_uri(&crate::store::Store::root_dir(), "data:text/html;base64,PHNjcmlwdD4=").is_none());
+        assert!(data_uri(&crate::store::Store::root_dir(), "data:image/svg+xml;base64,PHN2Zz4=").is_none());
+        assert!(data_uri(&crate::store::Store::root_dir(), "data:image/png;base64,\" onerror=\"alert(1)").is_none());
+        assert!(data_uri(&crate::store::Store::root_dir(), "data:image/png;base64,aGVsbG8=").is_some());
         let mut text = RichText::default();
         text.push("click", Marks { link: Some("javascript:alert(1)".into()), ..Default::default() });
         assert_eq!(inline(&text), "click");
@@ -477,7 +478,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let h = to_html(&doc, &Options { sub_pages: &["子页".into()] });
+        let h = to_html(&doc, &Options { library_root: &crate::store::Store::root_dir(), sub_pages: &["子页".into()] });
         assert!(h.contains("a <b><span style=\"color:#cb0424;\">b</span></b>"));
         assert!(h.contains(">2.</span>"));
         assert!(h.contains("📄 子页"));

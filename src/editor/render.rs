@@ -184,6 +184,11 @@ pub(super) fn margins(b: &Block, env: Env) -> (f32, f32) {
 pub(super) fn gap_before(b: &Block, env: Env, top: f32, previous: Option<(&Block, f32)>) -> f32 {
     let Some((prev, bottom)) = previous else { return 0.; };
     let st = theme::style();
+    if !env.cell && matches!(prev.kind, BlockKind::Heading { level: 2, .. }) && matches!(b.kind, BlockKind::Text)
+        && let Some(gap) = st.num_override("h2.follow")
+    {
+        return bottom.max(gap.max(0.));
+    }
     if !env.cell && prev.kind.is_list() && b.kind.is_list()
         && let Some(todo_gap) = st.todo_gap
     {
@@ -1250,8 +1255,8 @@ impl Editor {
                 div()
                     .relative()
                     .group("doc-header")
-                    .pt(px(if crate::settings::feishu() { 48. } else { 52. }))
-                    .pb(px(if crate::settings::feishu() { 22. } else { 24. }))
+                    .pt(px(theme::style().num("page.top").max(0.)))
+                    .pb(px(theme::style().num("title.gap").max(0.)))
                     .children(self.header_entries(cx))
                     .child(
                         div()

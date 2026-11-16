@@ -112,6 +112,7 @@ pub type BoundsMap = Rc<RefCell<HashMap<BlockId, Bounds<Pixels>>>>;
 enum ScrollIntent { RevealCaret, PreserveViewport }
 
 pub struct Editor {
+    pub(crate) library_root: std::path::PathBuf,
     pub core: Core,
     pub focus: FocusHandle,
     pub cache: LayoutCache,
@@ -300,6 +301,15 @@ fn looks_like_url(q: &str) -> bool {
 }
 
 impl Editor {
+    pub(crate) fn set_library_root(&mut self, root: std::path::PathBuf) {
+        self.img.set_library_root(root.clone());
+        self.file.set_library_root(root.clone());
+        self.library_root = root;
+    }
+    pub(crate) fn asset_source(&self, path: &std::path::Path) -> String {
+        crate::store::asset_source_in(&self.library_root, path)
+    }
+
     pub fn new(doc: Document, modified: u64, page_width: PageWidth, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let link_field = cx.new(|cx| {
             let mut f = TextField::new("粘贴或输入链接", cx);
@@ -388,6 +398,7 @@ impl Editor {
         let (rm, rm_subs) = super::reminder::RmUi::new(window, cx);
         subs.extend(rm_subs);
         let mut e = Editor {
+            library_root: crate::store::Store::root_dir(),
             core: Core::new(doc),
             focus: cx.focus_handle(),
             cache: Default::default(),
@@ -1030,7 +1041,7 @@ impl Editor {
     }
 
     fn insert_image_bytes(&mut self, bytes: &[u8], ext: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let b = match super::image::image_block_from(bytes, ext) {
+        let b = match super::image::image_block_from(&self.library_root, bytes, ext) {
             Ok(b) => b,
             Err(msg) => return self.toast(msg, cx),
         };
@@ -1879,7 +1890,7 @@ impl Editor {
         let blocks = if cells { self.core.selected_cells_content() } else if whole { self.core.doc.blocks.clone() } else { self.core.selected_blocks_content() };
         // A Markdown file's title is its file name, not a line in it.
         let title = (whole && !self.markdown).then(|| self.core.doc.title.plain_text());
-        let text = crate::markdown::clipboard(title.as_deref(), &blocks, &crate::store::Store::root_dir());
+        let text = crate::markdown::clipboard(title.as_deref(), &blocks, &self.library_root);
         cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
@@ -1962,7 +1973,7 @@ impl Editor {
         };
         let html = html.filter(|_| !plain && rich_target).map(|h| {
             let mut b = crate::paste::html_to_blocks(&h);
-            super::image::localize_pasted_images(&mut b);
+            super::image::localize_pasted_images(&self.library_root, &mut b);
             b
         });
         // HTML that only restates the text (a lone link to it, or the text
@@ -1990,7 +2001,7 @@ impl Editor {
         } else if let Some(images) = image.filter(|_| rich_target) {
             let mut blocks = Vec::new();
             for img in images {
-                match super::image::clipboard_image_data(img).and_then(|(bytes, ext)| super::image::image_block_from(&bytes, ext)) {
+                match super::image::clipboard_image_data(img).and_then(|(bytes, ext)| super::image::image_block_from(&self.library_root, &bytes, ext)) {
                     Ok(b) => blocks.push(b),
                     Err(msg) => self.toast(msg, cx),
                 }

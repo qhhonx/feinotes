@@ -133,6 +133,15 @@
   font-size: 15px;
   line-height: 22px;
   max-width: 820px;
+}
+
+.page.is-wide {
+  max-width: inherit;
+}
+
+.page {
+  padding-left: 66px;
+  padding-top: 52px;
   caret-color: #3a85f7;
 }
 
@@ -144,12 +153,17 @@ p {
   margin-bottom: 13px;
 }
 
+h2 + p {
+  margin-top: inherit;
+}
+
 .title {
   font-family: system-ui;
   font-size: 34px;
   line-height: 55.25px;
   font-weight: 700;
   color: inherit;
+  margin-bottom: 24px;
 }
 
 h1 {
@@ -372,6 +386,16 @@ th {
 
 .sidebar-row.is-selected {
   background-color: inherit;
+  font-weight: inherit;
+}
+
+.sidebar-row.is-selected.is-focused {
+  background-color: inherit;
+}
+
+.sidebar-folder.is-selected.is-focused {
+  background-color: inherit;
+  color: inherit;
 }
 
 .toolbar {
@@ -391,6 +415,11 @@ th {
 
 .toolbar-button:active {
   background-color: inherit;
+}
+
+.toolbar-group {
+  background-color: inherit;
+  border-color: inherit;
 }
 
 .token.comment {

@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::{cell::RefCell, rc::Rc, sync::{atomic::{AtomicBool, Ordering}, Arc}};
 
 #[derive(Clone)]
-pub struct SharedStore(Rc<RefCell<Store>>, Arc<AtomicBool>);
+pub struct SharedStore(Rc<RefCell<Store>>, Arc<AtomicBool>, std::path::PathBuf, bool);
 pub struct FileTaskGuard(Arc<AtomicBool>);
 
 impl Drop for FileTaskGuard {
@@ -14,8 +14,18 @@ impl Drop for FileTaskGuard {
 impl gpui::Global for SharedStore {}
 impl SharedStore {
     #[cfg(all(test, target_os = "macos", feature = "cloudkit-sync"))]
-    pub(crate) fn for_test(store: Store) -> Self { Self(Rc::new(RefCell::new(store)), Arc::new(AtomicBool::new(false))) }
-    pub fn open() -> Result<Self> { Ok(Self(Rc::new(RefCell::new(Store::open()?)), Arc::new(AtomicBool::new(false)))) }
+    pub(crate) fn for_test(store: Store) -> Self { Self::from_store(store, false) }
+    pub fn open() -> Result<Self> { Ok(Self::from_store(Store::open()?, crate::in_shared_note())) }
+    fn from_store(store: Store, shared: bool) -> Self {
+        let root = store.library_root().to_path_buf();
+        Self(Rc::new(RefCell::new(store)), Arc::new(AtomicBool::new(false)), root, shared)
+    }
+    pub fn root(&self) -> &std::path::Path { &self.2 }
+    pub fn is_shared(&self) -> bool { self.3 }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub(crate) fn open_shared(root: std::path::PathBuf) -> Result<Self> { Ok(Self::from_store(Store::open_sqlite_at(root)?, true)) }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub(crate) fn only_session_reference(&self) -> bool { Rc::strong_count(&self.0) == 1 }
     pub fn file_task_busy(&self) -> bool { self.1.load(Ordering::Acquire) }
     pub fn begin_file_task(&self) -> Option<FileTaskGuard> {
         self.1.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_ok().then(|| FileTaskGuard(self.1.clone()))

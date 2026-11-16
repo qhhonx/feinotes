@@ -146,7 +146,9 @@
   font-family: system-ui;
   font-size: 13px;
   line-height: 17px;
-  max-width: 820px;
+  max-width: 1200px;
+  padding-left: 28px;
+  padding-top: 36px;
   caret-color: var(--notes-ink);
 }
 
@@ -154,11 +156,20 @@
   background-color: #fcb82745;
 }
 
+.page.is-wide {
+  max-width: 1400px;
+}
+
 p {
   margin-bottom: 17px;
 }
 
+h2 + p {
+  margin-top: 0px;
+}
+
 .title {
+  margin-bottom: 0px;
   font-family: system-ui;
   font-size: 20px;
   line-height: 24px;
@@ -183,7 +194,7 @@ h2 {
   font-weight: 700;
   color: inherit;
   margin-top: 17px;
-  margin-bottom: 20px;
+  margin-bottom: 0px;
 }
 
 h3 {
@@ -370,7 +381,8 @@ th {
 
 /* macOS Notes main window, sampled in both appearances.
  * Folder outlines use a deeper gold on light grey for legibility.
- * The selected row takes the neutral fill of the native note list.
+ * Neutral selection is retained when editing or when the window is inactive.
+ * Focused folder/list fills follow the 2026-11-16 native screenshots.
  */
 .sidebar {
   background-color: light-dark(#eeedeb, #2e2926);
@@ -391,15 +403,30 @@ th {
 
 .sidebar-row.is-selected {
   background-color: light-dark(#dcdcdc, #464646);
+  font-weight: 600;
+}
+
+.sidebar-row.is-selected.is-focused {
+  background-color: light-dark(#ffe491, #a2842a);
+}
+
+.sidebar-folder.is-selected.is-focused {
+  background-color: light-dark(#fdb82a, #fdb82a);
+  color: light-dark(#ffffff, #ffffff);
 }
 
 .toolbar {
   background-color: light-dark(#ffffff, #252324);
 }
 
+.toolbar-group {
+  background-color: light-dark(#fafafa, #424041);
+  border-color: light-dark(#0000000c, #ffffff20);
+}
+
 .toolbar-button {
   background-color: light-dark(#f9f9f9, #424041);
-  border-color: light-dark(#00000010, #ffffff20);
+  border-color: light-dark(#0000000c, #ffffff20);
   color: light-dark(#191919, #f5f5f5);
   border-radius: 16px;
 }

@@ -6,7 +6,7 @@ use super::core::{DropPlace, Pos, Selection, TITLE};
 use super::overlays::{Probe, at};
 use super::render::{Env, R};
 use super::view::{Editor, Menu};
-use crate::store::image_path;
+use crate::store::image_path_in;
 use crate::model::*;
 use crate::store::Store;
 use crate::editor_theme::{self as theme, Theme, craft};
@@ -153,8 +153,8 @@ fn clock(t: f64) -> String {
 }
 
 /// The file behind an attachment (cloud tokens have none).
-pub fn local_path(f: &FileBlock) -> Option<PathBuf> {
-    (f.src_kind != "token").then(|| image_path(&f.src)).flatten()
+pub fn local_path(root: &Path, f: &FileBlock) -> Option<PathBuf> {
+    (f.src_kind != "token").then(|| image_path_in(root, &f.src)).flatten()
 }
 
 #[derive(Clone, PartialEq)]
@@ -165,6 +165,7 @@ enum Thumb {
 }
 
 pub(super) struct FileUi {
+    root: PathBuf,
     thumbs: RefCell<HashMap<PathBuf, Thumb>>,
     queue: RefCell<Vec<PathBuf>>,
     sizes: RefCell<HashMap<PathBuf, Option<u64>>>,
@@ -181,6 +182,7 @@ pub(super) struct FileUi {
 impl FileUi {
     pub fn new() -> Self {
         FileUi {
+            root: Store::root_dir(),
             thumbs: RefCell::default(),
             queue: RefCell::default(),
             sizes: RefCell::default(),
@@ -191,6 +193,8 @@ impl FileUi {
             ticking: false,
         }
     }
+
+    pub(super) fn set_library_root(&mut self, root: PathBuf) { self.root = root; }
 
     fn size(&self, p: &Path) -> Option<u64> {
         if let Some(s) = self.sizes.borrow().get(p) {
@@ -208,7 +212,7 @@ impl FileUi {
         if let Some(t) = self.thumbs.borrow().get(p) {
             return t.clone();
         }
-        let t = match first_png(&thumb_dir(p)) {
+        let t = match first_png(&thumb_dir(&self.root, p)) {
             Some(png) => Thumb::Ready(png),
             None => {
                 self.queue.borrow_mut().push(p.to_path_buf());
@@ -237,22 +241,22 @@ impl FileUi {
 }
 
 /// Where Quick Look's thumbnail of `p` goes (keyed by path, size and time).
-fn thumb_dir(p: &Path) -> PathBuf {
+fn thumb_dir(root: &Path, p: &Path) -> PathBuf {
     let mut h = rustc_hash::FxHasher::default();
     p.hash(&mut h);
     if let Ok(m) = std::fs::metadata(p) {
         m.len().hash(&mut h);
         m.modified().ok().hash(&mut h);
     }
-    Store::assets_dir().join("thumbs").join(format!("{:016x}", h.finish()))
+    Store::assets_in(root).join("thumbs").join(format!("{:016x}", h.finish()))
 }
 
 fn first_png(dir: &Path) -> Option<PathBuf> {
     std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "png"))
 }
 
-fn make_thumb(p: &Path) -> Option<PathBuf> {
-    let dir = thumb_dir(p);
+fn make_thumb(root: &Path, p: &Path) -> Option<PathBuf> {
+    let dir = thumb_dir(root, p);
     let _ = std::fs::create_dir_all(&dir);
     let _ = std::process::Command::new("qlmanage")
         .args(["-t", "-s", "1200", "-o"])
@@ -281,10 +285,10 @@ pub fn quick_look(p: &Path) {
 }
 
 /// A new attachment for `p`, copied into `assets/files/<uuid>/<name>`.
-fn file_block_from_path(p: &Path) -> Option<Block> {
+fn file_block_from_path(root: &Path, p: &Path) -> Option<Block> {
     let name = p.file_name()?.to_string_lossy().to_string();
     let size = std::fs::metadata(p).ok().filter(|m| m.is_file())?.len();
-    let dir = Store::assets_dir().join("files").join(uuid::Uuid::new_v4().to_string());
+    let dir = Store::assets_in(root).join("files").join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(&dir).ok()?;
     let dest = dir.join(&name);
     std::fs::copy(p, &dest).ok()?;
@@ -294,7 +298,7 @@ fn file_block_from_path(p: &Path) -> Option<Block> {
         Some(Kind::Pdf | Kind::Word | Kind::Excel | Kind::Ppt) if size < DOC_PREVIEW_MAX => FileView::Preview,
         _ => FileView::Card,
     };
-    let f = FileBlock { src_kind: "path".into(), src: crate::store::asset_source(&dest), name, view };
+    let f = FileBlock { src_kind: "path".into(), src: crate::store::asset_source_in(root, &dest), name, view };
     Some(Block::new(BlockKind::File(f), RichText::default()))
 }
 
@@ -332,7 +336,7 @@ impl R<'_> {
         // `hovered` covers the pointer over the block and its open handle
         // menu; only the menu gets the accent-tinted ring (as code blocks do).
         let menu_on = hovered && matches!(&ed.menu, Some(Menu::Block { block, .. }) | Some(Menu::Add { block, .. }) if *block == id);
-        let path = local_path(f);
+        let path = local_path(&self.ed.library_root, f);
         let size = path.as_ref().and_then(|p| ed.file.size(p));
         let kind = kind_of(&f.name);
         let preview = (f.view == FileView::Preview && size.is_some()).then(|| preview_of(&f.name)).flatten();
@@ -643,7 +647,7 @@ impl Editor {
 
     /// 下载: a copy where the save panel says (Downloads first).
     pub(super) fn download_file(&mut self, f: &FileBlock, cx: &mut Context<Self>) {
-        let Some(src) = local_path(f).filter(|p| p.is_file()) else { return self.toast(crate::settings::text("文件不存在"), cx) };
+        let Some(src) = local_path(&self.library_root, f).filter(|p| p.is_file()) else { return self.toast(crate::settings::text("文件不存在"), cx) };
         let picked = crate::devtools::take_pick().and_then(|p| p.into_iter().next());
         let dir = dirs::download_dir().or_else(dirs::home_dir).unwrap_or_default();
         let rx = picked.is_none().then(|| cx.prompt_for_new_path(&dir, Some(&f.name)));
@@ -666,7 +670,7 @@ impl Editor {
 
     fn audio_player(&self, id: BlockId) -> Option<Rc<player::Player>> {
         let Some(BlockKind::File(f)) = self.core.kind_of(id) else { return None };
-        self.file.player(&local_path(f)?)
+        self.file.player(&local_path(&self.library_root, f)?)
     }
 
     fn toggle_audio(&mut self, id: BlockId, cx: &mut Context<Self>) {
@@ -735,7 +739,8 @@ impl Editor {
         let queued: Vec<PathBuf> = self.file.queue.borrow_mut().drain(..).collect();
         for p in queued {
             let q = p.clone();
-            let task = cx.background_executor().spawn(async move { make_thumb(&q) });
+            let root = self.library_root.clone();
+            let task = cx.background_executor().spawn(async move { make_thumb(&root, &q) });
             cx.spawn(async move |this, cx| {
                 let t = task.await;
                 let _ = this.update(cx, |e, cx| {
@@ -764,7 +769,7 @@ impl Editor {
         let Some(BlockKind::File(f)) = self.core.kind_of(id) else { return None };
         let preview = preview_of(&f.name);
         let view = f.view;
-        let path = local_path(f);
+        let path = local_path(&self.library_root, f);
         let act = |f: fn(&mut Editor, BlockId, &mut Window, &mut Context<Editor>)| {
             cx.listener(move |e: &mut Editor, _: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
@@ -931,7 +936,8 @@ impl Editor {
     /// Copies `paths` into the library off the main thread, then inserts
     /// them at `target` (or the caret).
     pub(super) fn import_files(&mut self, paths: Vec<PathBuf>, target: Option<(BlockId, DropPlace)>, window: &mut Window, cx: &mut Context<Self>) {
-        let task = cx.background_executor().spawn(async move { paths.iter().map(|p| file_block_from_path(p)).collect::<Vec<_>>() });
+        let root = self.library_root.clone();
+        let task = cx.background_executor().spawn(async move { paths.iter().map(|p| file_block_from_path(&root, p)).collect::<Vec<_>>() });
         cx.spawn_in(window, async move |this, cx| {
             let blocks = task.await;
             let _ = this.update_in(cx, |e, window, cx| {
