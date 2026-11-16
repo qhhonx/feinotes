@@ -260,15 +260,26 @@ def public_beta_status(output):
               if not item["attributes"].get("expired") and item["attributes"].get("processingState") == "VALID"
               and item["attributes"].get("buildAudienceType") == "APP_STORE_ELIGIBLE"]
     status = {"state": "unavailable", "url": group["attributes"].get("publicLink")}
-    if builds:
-        build = max(builds, key=lambda item: item["attributes"]["uploadedDate"])
-        detail = request("GET", f"/v1/builds/{build['id']}/buildBetaDetail")["data"]["attributes"]
-        version = request("GET", f"/v1/builds/{build['id']}/preReleaseVersion")["data"]["attributes"]["version"]
-        state = detail["externalBuildState"]
-        available = state in {"READY_FOR_BETA_TESTING", "IN_BETA_TESTING"}
-        reviewing = state in {"WAITING_FOR_BETA_REVIEW", "IN_BETA_REVIEW", "READY_FOR_BETA_SUBMISSION"}
-        status.update(state="available" if available else "review" if reviewing else "unavailable",
-                      version=version, build=build["attributes"]["version"])
+    if builds and status["url"] and group["attributes"].get("publicLinkEnabled"):
+        builds.sort(key=lambda item: item["attributes"]["uploadedDate"], reverse=True)
+        latest_review = None
+        selected = None
+        for build in builds:
+            state = request("GET", f"/v1/builds/{build['id']}/buildBetaDetail")["data"]["attributes"]["externalBuildState"]
+            if state in {"READY_FOR_BETA_TESTING", "IN_BETA_TESTING"}:
+                selected = build
+                break
+            if latest_review is None and state in {"WAITING_FOR_BETA_REVIEW", "IN_BETA_REVIEW", "READY_FOR_BETA_SUBMISSION"}:
+                latest_review = build
+        def version_info(build):
+            version = request("GET", f"/v1/builds/{build['id']}/preReleaseVersion")["data"]["attributes"]["version"]
+            return {"version": version, "build": build["attributes"]["version"]}
+        if selected:
+            status.update(state="available", **version_info(selected))
+            if latest_review:
+                status["pending"] = {"state": "review", **version_info(latest_review)}
+        else:
+            status.update(state="review" if latest_review else "unavailable", **version_info(latest_review or builds[0]))
     previous = json.loads(output.read_text()) if output.exists() else {}
     if {k: v for k, v in previous.items() if k != "updatedAt"} != status:
         status["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()

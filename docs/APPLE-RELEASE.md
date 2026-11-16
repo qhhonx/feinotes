@@ -51,4 +51,6 @@ The public invitation is https://testflight.apple.com/join/NdcXugMy. Apple's ext
 
 The availability workflow runs after release jobs and every 30 minutes. It queries only the designated public group, publishes `website/testflight-status.json` on state changes, and dispatches the website deployment. The bilingual homepage enables its TestFlight button when Apple reports an available external build. Pending review is shown explicitly. A submission failure or rejection requires checking Apple's returned state and metadata before retrying.
 
+When a newer build is in review, keep the latest externally available build downloadable and show the pending version separately. Review, rejection or an internal-only upload must not hide an older valid public build. Disable the download only when no public build is available or the public invitation is disabled. Website availability changes do not require rebuilding the app; publish them without triggering another Apple release.
+
 The public website and app support link use feinotes.app. The canonical repository is https://github.com/qhhonx/feinotes.

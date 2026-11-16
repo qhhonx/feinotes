@@ -3,6 +3,7 @@
   if (!section) return;
   const english = section.dataset.language === 'en';
   const link = section.querySelector('[data-beta-link]');
+  const review = section.querySelector('[data-beta-review]');
   const pending = english ? 'Beta in review' : '测试版审核中';
   const unavailable = english ? 'Beta coming soon' : '测试版准备中';
   fetch(section.dataset.status, { cache: 'no-store' })
@@ -23,6 +24,12 @@
       link.removeAttribute('aria-disabled');
       link.removeAttribute('tabindex');
       link.textContent = english ? 'Try with TestFlight' : '通过 TestFlight 体验';
+      if (review && status.pending?.state === 'review') {
+        review.textContent = english
+          ? `${status.pending.version} in review · ${status.version} available`
+          : `${status.pending.version} 审核中 · 可体验 ${status.version}`;
+        review.hidden = false;
+      }
     })
     .catch(() => { link.textContent = unavailable; });
 })();

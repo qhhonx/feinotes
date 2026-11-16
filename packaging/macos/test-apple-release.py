@@ -2,7 +2,10 @@
 # Copyright 2026 Fei Notes contributors. See LICENSES.md.
 """Offline checks for the release boundaries. No test calls Apple."""
 import importlib.util
+import json
+import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase, main, mock
 from urllib.error import URLError
 
@@ -17,6 +20,60 @@ def record(kind, identifier, **attributes):
 
 
 class AppleReleaseTest(TestCase):
+    def beta_status(self, builds, states, enabled=True):
+        group = record('betaGroups', 'public-group', publicLink='https://testflight.apple.com/join/example',
+                       publicLinkEnabled=enabled)
+        def get(method, path):
+            identifier = path.split('/')[3]
+            attributes = {'externalBuildState': states[identifier]} if path.endswith('buildBetaDetail') else {
+                'version': {'new': '1.0.1', 'old': '1.0.0'}[identifier]}
+            return {'data': {'attributes': attributes}}
+        with TemporaryDirectory() as directory, mock.patch.dict(os.environ, FEI_PUBLIC_BETA_GROUP_ID='public-group'), \
+             mock.patch.object(release, 'beta_group', return_value=group), \
+             mock.patch.object(release, 'rows', return_value=iter(builds)), \
+             mock.patch.object(release, 'request', side_effect=get) as request:
+            output = Path(directory) / 'status.json'
+            release.public_beta_status(output)
+            return json.loads(output.read_text()), request
+
+    def beta_builds(self):
+        return [record('builds', identifier, version=number, uploadedDate=date, expired=False,
+                       processingState='VALID', buildAudienceType='APP_STORE_ELIGIBLE')
+                for identifier, number, date in [('old', '1006', '2026-11-11'), ('new', '1007', '2026-11-16')]]
+
+    def test_review_preserves_the_available_public_build(self):
+        status, _ = self.beta_status(self.beta_builds(), {'new': 'IN_BETA_REVIEW', 'old': 'IN_BETA_TESTING'})
+        self.assertEqual((status['state'], status['version'], status['build']), ('available', '1.0.0', '1006'))
+        self.assertEqual(status['pending'], {'state': 'review', 'version': '1.0.1', 'build': '1007'})
+
+    def test_approval_selects_the_new_build_and_clears_pending(self):
+        status, request = self.beta_status(self.beta_builds(), {'new': 'IN_BETA_TESTING', 'old': 'IN_BETA_REVIEW'})
+        self.assertEqual((status['state'], status['version'], status['build']), ('available', '1.0.1', '1007'))
+        self.assertNotIn('pending', status)
+        self.assertFalse(any('/old/' in call.args[1] for call in request.call_args_list))
+
+    def test_rejection_does_not_hide_an_older_available_build(self):
+        status, _ = self.beta_status(self.beta_builds(), {'new': 'BETA_REJECTED', 'old': 'READY_FOR_BETA_TESTING'})
+        self.assertEqual((status['state'], status['build']), ('available', '1006'))
+        self.assertNotIn('pending', status)
+
+    def test_review_alone_does_not_claim_a_downloadable_build(self):
+        status, _ = self.beta_status(self.beta_builds()[1:], {'new': 'WAITING_FOR_BETA_REVIEW'})
+        self.assertEqual((status['state'], status['version']), ('review', '1.0.1'))
+
+    def test_expired_and_internal_only_builds_are_not_download_candidates(self):
+        builds = self.beta_builds()
+        builds[0]['attributes']['expired'] = True
+        builds[1]['attributes']['buildAudienceType'] = 'INTERNAL_ONLY'
+        status, request = self.beta_status(builds, {})
+        self.assertEqual(status['state'], 'unavailable')
+        request.assert_not_called()
+
+    def test_disabled_public_invitation_is_not_available(self):
+        status, request = self.beta_status(self.beta_builds(), {}, enabled=False)
+        self.assertEqual(status['state'], 'unavailable')
+        request.assert_not_called()
+
     def test_network_retry_is_limited_to_reads(self):
         response = mock.MagicMock()
         response.__enter__.return_value.status = 204
