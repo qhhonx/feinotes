@@ -1986,7 +1986,11 @@ impl Render for Workspace {
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Zoom, window, _| window.zoom_window())
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
-            .on_action(cx.listener(|w, _: &OpenSettings, _, cx| w.show_view(View::Settings, cx)))
+            .on_action(cx.listener(|w, _: &OpenSettings, _window, cx| {
+                w.show_view(View::Settings, cx);
+                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                w.refresh_library_cloud(_window, cx);
+            }))
             .on_action(cx.listener(|w, _: &ReplayOnboarding, window, cx| w.replay_onboarding(window, cx)))
             .on_action(cx.listener(|w, _: &OpenAbout, _, cx| w.open_settings(crate::settings::Page::About, cx)))
             .on_action(cx.listener(|w, _: &CheckForUpdates, _, cx| { w.open_settings(crate::settings::Page::About, cx); crate::update::check(true, cx); }))

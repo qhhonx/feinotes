@@ -4,6 +4,10 @@ Fei Notes keeps two storage implementations behind `Store`. The upstream-compati
 
 The macOS product (`cloudkit-sync`, including its local-only mode) continues to use the startup-selected SQLite library. Its schema stays at version 7, with stable block/table identities and the existing CloudKit/Loro protocol. No file-layout migration, file-library picker or upstream onboarding may replace this selected root. iCloud is synchronization on top of SQLite, not a third document backend.
 
+## Library settings
+
+Settings > Documents keeps upstream library rows together (location, Trash and local version-history retention). Fei Notes appends separate Import, iCloud Sync, and Backup and Restore groups through `product_library_groups`. Keep future product controls out of the upstream row list. Cloud library selection, sync status, sync issues and cloud-access controls are shown directly on this page; there is no separate iCloud settings page. Entering or reopening Documents refreshes cloud-access status, and purchase changes continue to refresh the visible controls.
+
 ## Import and recovery
 
 FORMAT 3 and FORMAT 4 libraries are imported through an isolated staged copy. The source is never rewritten. Existing document IDs are checked for duplicates; paths and links are resolved by the file backend, then attachments are rebased into an import-specific `assets/legacy-*` directory. Imported live and trashed documents and their metadata commit together in SQLite. Symlinks and unsupported files are rejected.
