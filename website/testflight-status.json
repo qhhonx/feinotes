@@ -1,12 +1,7 @@
 {
   "state": "available",
   "url": "https://testflight.apple.com/join/NdcXugMy",
-  "version": "1.0.1",
-  "build": "1007",
-  "pending": {
-    "state": "review",
-    "version": "1.0.4",
-    "build": "1010"
-  },
-  "updatedAt": "2026-11-16T19:44:45.141201+00:00"
+  "version": "1.0.4",
+  "build": "1010",
+  "updatedAt": "2026-11-16T20:16:25.815835+00:00"
 }
