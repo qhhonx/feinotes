@@ -39,6 +39,16 @@ on:
         description: Required for submit (submit:VERSION:BUILD) and publish (publish:VERSION)
         required: false
         type: string
+      runner:
+        description: Build runner (Intel is a public-TestFlight recovery option)
+        required: false
+        type: choice
+        default: macos-26
+        options: [macos-26, macos-26-intel]
+      source:
+        description: Optional full source commit SHA for public-TestFlight recovery
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -55,6 +65,8 @@ jobs:
       operation: ${{ steps.release.outputs.operation }}
       version: ${{ steps.release.outputs.version }}
       build: ${{ steps.release.outputs.build }}
+      runner: ${{ steps.release.outputs.runner }}
+      source: ${{ steps.release.outputs.source }}
     steps:
       - name: Verify release selection
         id: release
@@ -65,6 +77,9 @@ jobs:
           BUILD: ${{ inputs.build }}
           CONFIRMATION: ${{ inputs.confirmation }}
           TESTFLIGHT_VERSION: ${{ vars.FEI_TESTFLIGHT_VERSION || '1.0.0' }}
+          BUILD_RUNNER: ${{ inputs.runner || 'macos-26' }}
+          RELEASE_SOURCE: ${{ inputs.source || github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then
@@ -88,16 +103,26 @@ jobs:
             publish) [[ "$CONFIRMATION" == "publish:$VERSION" ]] ;;
             *) exit 1 ;;
           esac
-          printf 'operation=%s\nversion=%s\nbuild=%s\n' "$OPERATION" "$VERSION" "$BUILD" >> "$GITHUB_OUTPUT"
+          [[ "$RELEASE_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          case "$BUILD_RUNNER" in macos-26|macos-26-intel) ;; *) exit 1 ;; esac
+          if [[ "$BUILD_RUNNER" != macos-26 || "$RELEASE_SOURCE" != "$GITHUB_SHA" ]]; then
+            [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$OPERATION" == public-testflight ]] || exit 1
+          fi
+          if [[ "$RELEASE_SOURCE" != "$GITHUB_SHA" ]]; then
+            release_relation=$(gh api "repos/$GITHUB_REPOSITORY/compare/$RELEASE_SOURCE...$GITHUB_SHA" --jq .status)
+            [[ "$release_relation" == ahead || "$release_relation" == identical ]] || exit 1
+          fi
+          printf 'operation=%s\nversion=%s\nbuild=%s\nrunner=%s\nsource=%s\n' "$OPERATION" "$VERSION" "$BUILD" "$BUILD_RUNNER" "$RELEASE_SOURCE" >> "$GITHUB_OUTPUT"
 
   checks:
     needs: select
     if: needs.select.outputs.operation == 'testflight' || needs.select.outputs.operation == 'public-testflight' || needs.select.outputs.operation == 'store'
-    runs-on: macos-26
+    runs-on: ${{ needs.select.outputs.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ needs.select.outputs.source }}
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3, shared with upstream CI
         with:
@@ -106,9 +131,16 @@ jobs:
       - name: Check the exact release commit
         env:
           MACOSX_DEPLOYMENT_TARGET: '14.0'
+          RELEASE_SOURCE: ${{ needs.select.outputs.source }}
+          BUILD_RUNNER: ${{ needs.select.outputs.runner }}
         run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SOURCE"
           xcodebuild -version
-          test "$(uname -m)" = arm64
+          case "$BUILD_RUNNER" in
+            macos-26) test "$(uname -m)" = arm64 ;;
+            macos-26-intel) test "$(uname -m)" = x86_64 ;;
+            *) exit 1 ;;
+          esac
           cargo test --locked --release --no-default-features --features cloudkit-sync
 
   release:
@@ -118,19 +150,24 @@ jobs:
       (needs.checks.result == 'success' ||
        (needs.checks.result == 'skipped' &&
         (needs.select.outputs.operation == 'submit' || needs.select.outputs.operation == 'publish')))
-    runs-on: macos-26
+    runs-on: ${{ needs.select.outputs.runner }}
     timeout-minutes: 95
     environment: ${{ fromJSON('{"testflight":"feinotes-testflight","public-testflight":"feinotes-testflight","store":"feinotes-store","submit":"feinotes-submit","publish":"feinotes-publish"}')[needs.select.outputs.operation] }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ needs.select.outputs.source }}
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3, shared with upstream CI
         with:
           shared-key: feinotes-release
           cache-on-failure: true
       - name: Verify release safety checks
-        run: python3 -B packaging/macos/test-apple-release.py
+        env:
+          RELEASE_SOURCE: ${{ needs.select.outputs.source }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SOURCE"
+          python3 -B packaging/macos/test-apple-release.py
       - name: Build, distribute or advance the exact release
         env:
           OPERATION: ${{ needs.select.outputs.operation }}
