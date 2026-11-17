@@ -118,7 +118,8 @@ pub(crate) fn file_glyph(m: &crate::store::Meta) -> &'static str {
 }
 
 /// A result's icon: the page's emoji, or the page glyph.
-pub(crate) fn entry_icon(e: &Entry) -> Div {
+pub(crate) fn entry_icon(e: &Entry, cx: &App) -> Div {
+    if let Some(glyph) = crate::sidebar::folder_glyph(e, false, cx) { return doc_icon_named(glyph); }
     match &e.icon {
         _ if e.meta.named_by_file() => doc_icon_named(file_glyph(&e.meta)),
         Some(em) => div().flex_none().size(px(24.)).mr(px(10.)).flex().items_center().justify_center().text_size(px(20.)).child(em.clone()),
@@ -289,7 +290,12 @@ impl Workspace {
         let q = self.query(cx);
         let mut entries = self.personal_navigation_entries(cx);
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        entries.extend(self.shared_entries(cx));
+        {
+            let shared = self.shared_entries(cx);
+            let shared_ids: std::collections::HashSet<_> = shared.iter().map(|e| &e.id).collect();
+            entries.retain(|e| !shared_ids.contains(&e.id));
+            entries.extend(shared);
+        }
         if q.is_empty() {
             entries.sort_by_key(|e| std::cmp::Reverse(e.meta.opened.max(e.meta.modified)));
             entries.truncate(RECENT); return entries;
@@ -325,7 +331,7 @@ impl Workspace {
                 }
             }))
             .on_click(cx.listener(move |w, _, window, cx| w.pick_search(row, window, cx)))
-            .child(entry_icon(e))
+            .child(entry_icon(e, cx))
             .child(result_info(e, {
                 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
                 { self.shared_list_room(&e.id, cx).is_some() }

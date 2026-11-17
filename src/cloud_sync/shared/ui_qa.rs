@@ -11,6 +11,8 @@ fn root() -> Option<PathBuf> {
     Some(root)
 }
 
+pub(super) fn enabled() -> bool { root().is_some() }
+
 fn reply() -> Reply { Reply { scope: None, title: None, url: None, members: vec![], error: None, error_kind: None } }
 
 pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {

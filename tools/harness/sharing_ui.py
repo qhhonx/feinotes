@@ -119,6 +119,21 @@ sharing-ui done
 sharing-ui personal-delete
 wait 900
 sharing-ui personal-deleted
+sharing-ui collections
+wait 450
+shot shared-private-folders
+sharing-ui folder-invite
+wait 950
+sharing-ui folder-open
+wait 450
+shot collaborative-folder
+click 249 106
+wait 250
+sharing-ui check-shared-add
+shot shared-add-menu
+click 309 169
+wait 250
+sharing-ui check-sidebar-invite
 quit
 ''')
 bridge = os.environ.get('FDL_CLOUD_DYLD_PATH')
@@ -139,5 +154,6 @@ with (root / 'run.log').open('w') as log:
             process.wait()
 text = (root / 'run.log').read_text()
 assert 'SHARING_UI_OK' in text and 'SHARING_INTERACTIONS_OK' in text, text[-3000:]
-assert len(list(root.glob('*.png'))) == 16, 'Expected sixteen UI captures'
+assert len(list(root.glob('*.png'))) == 19, 'Expected nineteen UI captures'
+assert 'SHARED_FOLDERS_UI_OK' in text
 print(next(line for line in text.splitlines() if 'SHARING_UI_OK' in line))

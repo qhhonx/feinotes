@@ -685,6 +685,21 @@ impl Store {
 
     pub fn sqlite_session() -> bool { SESSION_SQLITE.get() == Some(&true) }
 
+    pub(super) fn check_shared_writer(&self, structural_target: Option<&str>) -> Result<()> {
+        if !self.root.join("shared-note.json").is_file() { return Ok(()); }
+        let library = self.sqlite.as_ref().context("Shared database unavailable")?;
+        let db = library.read()?;
+        let descriptor: serde_json::Value = serde_json::from_slice(&std::fs::read(self.root.join("shared-note.json"))?)?;
+        let scope = &descriptor["scope"];
+        let access: Option<Vec<u8>> = db.query_row("SELECT value FROM state WHERE key='shared_access'", [], |r| r.get(0)).optional()?;
+        let writable = match access { Some(value) => matches!(serde_json::from_slice::<String>(&value)?.as_str(), "owner" | "readWrite"), None => scope["owner"].is_null() };
+        anyhow::ensure!(writable && !self.root.join("shared-note-ended").exists(), "共享访问为只读 / This share is read-only");
+        if scope["folder"].as_bool() == Some(true) && structural_target.is_some() {
+            anyhow::ensure!(structural_target != scope["note"].as_str(), "请从共享菜单管理顶层文件夹 / Manage the root from the sharing menu");
+        }
+        Ok(())
+    }
+
     pub fn sqlite_setting(key: &str) -> Result<Option<Vec<u8>>> {
         get_value(&Library::new(Self::root_dir().join(SQLITE_FILE)).connect()?, key)
     }
@@ -787,6 +802,8 @@ impl Store {
         sync: impl FnOnce(&Transaction<'_>, i64) -> Result<T>) -> Result<(Meta, T)> {
         let mut db = self.sqlite.as_ref().unwrap().connect()?;
         let tx = db.transaction()?;
+        let linked: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM library_entries WHERE id=?1 AND json_extract(meta,'$.share_root') IS NOT NULL)", [id], |row| row.get(0))?;
+        anyhow::ensure!(!linked, "请重新打开这篇共享文档以继续编辑 / Reopen this shared document to edit");
         let revision = tx.query_row("SELECT revision FROM library_documents WHERE id = ?1 AND trashed = 0",
             [id], |row| row.get(0)).optional()?.unwrap_or(0);
         if let Some(previous) = self.loaded.borrow().get(id) {

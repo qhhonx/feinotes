@@ -263,7 +263,7 @@ private func exchange(_ request: Exchange, revision: UInt64) async throws -> Cha
     if let room = request.room {
         access = try await shareAccess(db, room, in: syncZone)
         if access == .revoked { return Changes(roomAccess: .revoked) }
-        guard request.edits.allSatisfy({ $0.note == room.note || $0.note == sharedAssetScope }) else {
+        guard request.edits.allSatisfy({ room.permits($0.note) }) else {
             throw SyncError.invalid
         }
     }
@@ -332,7 +332,7 @@ private func exchange(_ request: Exchange, revision: UInt64) async throws -> Cha
                 }
                 let edit = Edit(id: record.recordID.recordName, note: note, data: try Data(contentsOf: file), collaborator: collaborator)
                 try edit.validate()
-                if let room = request.room, note != room.note && note != sharedAssetScope { throw SyncError.invalid }
+                if let room = request.room, !room.permits(note) { throw SyncError.invalid }
                 guard record["digest"] as? Data == edit.digest else { throw SyncError.invalid }
                 edits.append(edit)
             }

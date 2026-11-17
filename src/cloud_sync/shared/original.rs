@@ -1,0 +1,321 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright 2026 Fei Notes contributors. See LICENSES.md.
+//! Keep the personal catalogue position while the shared library owns editing.
+use super::*;
+use crate::store::{Meta, SQLITE_FILE};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use std::collections::{BTreeMap, BTreeSet};
+
+fn connect(root: &Path) -> Result<Connection> {
+    let db = Connection::open_with_flags(root.join(SQLITE_FILE), rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    db.busy_timeout(std::time::Duration::from_secs(5))?;
+    Ok(db)
+}
+
+fn entries(db: &Connection) -> Result<BTreeMap<String, Meta>> {
+    let mut stmt = db.prepare("SELECT id,meta FROM library_entries")?;
+    let mut rows = stmt.query([])?;
+    let mut entries = BTreeMap::new();
+    while let Some(row) = rows.next()? { entries.insert(row.get(0)?, serde_json::from_str(&row.get::<_, String>(1)?)?); }
+    Ok(entries)
+}
+
+fn subtree(all: &BTreeMap<String, Meta>, id: &str) -> Result<Vec<String>> {
+    ensure!(all.contains_key(id), "The selected item no longer exists");
+    let mut ids = vec![id.to_owned()];
+    let mut seen = BTreeSet::from([id.to_owned()]);
+    let mut index = 0;
+    while index < ids.len() {
+        let parent = ids[index].clone();
+        if all[&parent].folder.is_some() {
+            for (child, meta) in all.iter().filter(|(_, m)| m.parent.as_deref() == Some(&parent)) {
+                ensure!(seen.insert(child.clone()), "Invalid folder cycle");
+                ensure!(!meta.local(), "An external file cannot be shared");
+                ids.push(child.clone());
+            }
+        }
+        index += 1;
+    }
+    Ok(ids)
+}
+
+fn store_meta(db: &Connection, id: &str, meta: &Meta) -> Result<()> {
+    db.execute("INSERT OR REPLACE INTO library_entries(id,meta) VALUES (?1,?2)", params![id, serde_json::to_string(meta)?])?;
+    Ok(())
+}
+
+fn copy_entry(source: (&Connection, &Path), dest: (&Connection, &Path), id: &str, meta: &Meta) -> Result<()> {
+    if meta.folder.is_none() {
+        let (doc, _, front) = Store::read_sync_body(source.0, id, false)?;
+        copy_assets(source.1, dest.1, &doc)?;
+        Store::write_sync_body(dest.0, id, false, &doc, &front)?;
+    }
+    store_meta(dest.0, id, meta)
+}
+
+pub(crate) fn prepare(personal: &Path, id: &str, title: String) -> Result<Room> {
+    Command::new(&account(personal)?, "checkAccess", None)?.send()?;
+    prepare_local(personal, id, title)
+}
+
+pub(super) fn prepare_local(personal: &Path, id: &str, title: String) -> Result<Room> {
+    let mut db = connect(personal)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let all = entries(&tx)?;
+    let ids = subtree(&all, id)?;
+    let root_meta = &all[id];
+    ensure!(!root_meta.local(), "External files cannot be shared in place");
+    let room = Room { scope: Scope { note: id.into(), owner: None, folder: root_meta.folder.is_some() }, title };
+    let root = room_root(personal, id)?;
+    if root_meta.share_root.as_deref() == Some(id) {
+        ensure!(descriptor(&root)?.is_some_and(|r| r.scope == room.scope), "Shared library unavailable");
+        return Ok(room);
+    }
+    ensure!(ids.iter().all(|id| all[id].share_root.is_none()), "This selection already contains a shared item");
+    // A crash before the catalogue transaction commits leaves a private, unpublished stage.
+    if root.exists() {
+        ensure!(descriptor(&root)?.is_some_and(|r| r.scope == room.scope) && account(&root)? == account(personal)?
+            && (root.join("shared-note-ended").exists() || root.join("original-stage").exists() && !root.join("seed-published").exists()), "Conflicting share");
+        let retired = personal.join("retired-shared-notes");
+        fs::create_dir_all(&retired)?;
+        fs::rename(&root, retired.join(format!("{id}-{}", uuid::Uuid::new_v4())))?;
+    }
+    stage_with(personal, &room, |staged| {
+        let mut journal = Journal::open(staged, None)?;
+        let mut dest = connect(staged)?;
+        let dest = dest.transaction()?;
+        for key in &ids {
+            let source = &all[key];
+            let meta = Meta { folder: source.folder.clone(), kind: source.kind, markdown: source.markdown, name: source.name.clone(),
+                parent: if key == id { None } else { source.parent.clone() }, order: source.order, created: source.created,
+                modified: source.modified, ..Default::default() };
+            copy_entry((&tx, personal), (&dest, staged), key, &meta)?;
+        }
+        dest.commit()?;
+        journal.merge(&Default::default())?;
+        let (uploads, _, held, warnings) = journal.counts()?;
+        ensure!(uploads > 0 && held == 0 && warnings == 0, "Some selected content or attachments are unavailable");
+        fs::write(staged.join("original-stage"), b"1")?;
+        Ok(())
+    })?;
+    for key in ids {
+        let mut meta = all[&key].clone();
+        meta.share_root = Some(id.into());
+        store_meta(&tx, &key, &meta)?;
+    }
+    tx.commit()?;
+    Ok(room)
+}
+
+pub(crate) fn owner_room(entries: &[crate::store::Entry], id: &str) -> Option<Room> {
+    let root = entries.iter().find(|e| e.id == id)?.meta.share_root.as_deref()?;
+    let entry = entries.iter().find(|e| e.id == root)?;
+    Some(Room { scope: Scope { note: root.into(), owner: None, folder: entry.meta.folder.is_some() }, title: entry.title.clone() })
+}
+
+pub(crate) fn awaiting_publication(personal: &Path, room: &Room) -> bool {
+    room.scope.owner.is_none() && room_root(personal, &room.scope.note).is_ok_and(|root|
+        root.join("original-stage").exists() && !root.join("seed-published").exists() && !root.join("shared-note-ended").exists())
+}
+
+pub(super) fn is_original(personal: &Path, room: &Room) -> Result<bool> {
+    if room.scope.owner.is_some() { return Ok(false); }
+    let id = &room.scope.note;
+    let meta: Option<String> = connect(personal)?.query_row("SELECT meta FROM library_entries WHERE id=?1", [id], |r| r.get(0)).optional()?;
+    Ok(meta.map(|s| serde_json::from_str::<Meta>(&s)).transpose()?.is_some_and(|m| m.share_root.as_ref() == Some(id)))
+}
+
+// Save the latest materialized collaboration before removing anyone's access.
+pub(super) fn restore(personal: &Path, room: &Room, revoke: impl FnOnce() -> Result<()>) -> Result<()> {
+    let root = room_root(personal, &room.scope.note)?;
+    let mut cache = connect(&root)?;
+    let cache = cache.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut db = connect(personal)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let all = entries(&cache)?;
+    let old = entries(&tx)?;
+    let ids = subtree(&all, &room.scope.note)?;
+    for key in &ids {
+        let source = &all[key];
+        let mut meta = old.get(key).cloned().unwrap_or_else(|| source.clone());
+        ensure!(old.get(key).is_none_or(|m| m.share_root.as_ref() == Some(&room.scope.note)), "Conflicting personal item");
+        meta.share_root = None;
+        meta.folder = source.folder.clone();
+        if key != &room.scope.note { meta.parent = source.parent.clone(); meta.order = source.order; }
+        copy_entry((&cache, &root), (&tx, personal), key, &meta)?;
+    }
+    for (key, mut meta) in old {
+        if meta.share_root.as_ref() == Some(&room.scope.note) && !all.contains_key(&key) {
+            meta.share_root = None;
+            let deleted: Option<String> = cache.query_row("SELECT meta FROM library_trash WHERE id=?1", [&key], |row| row.get(0)).optional()?;
+            let mut trash = deleted.map(|raw| serde_json::from_str::<crate::store::Trashed>(&raw)).transpose()?
+                .unwrap_or_else(|| crate::store::Trashed { meta: meta.clone(), deleted: crate::time::now(), root: None });
+            trash.meta = meta;
+            tx.execute("INSERT OR REPLACE INTO library_trash(id,meta) VALUES (?1,?2)", params![key, serde_json::to_string(&trash)?])?;
+            tx.execute("UPDATE library_documents SET trashed=1 WHERE id=?1", [&key])?;
+            tx.execute("DELETE FROM library_entries WHERE id=?1", [&key])?;
+        }
+    }
+    revoke()?;
+    tx.commit()?;
+    Ok(())
+}
+
+// Refresh the owner's private index and recovery body after a shared projection.
+// A linked private body can never be edited by this client.
+pub(crate) fn refresh_owner(cache: &Path, scope: &Scope, document: Option<&str>) -> Result<()> {
+    if scope.owner.is_some() { return Ok(()); }
+    let Some(personal) = cache.parent().and_then(Path::parent) else { return Ok(()); };
+    if !personal.join(SQLITE_FILE).exists() { return Ok(()); }
+    let mut source = connect(cache)?;
+    let source = source.transaction()?;
+    let all = entries(&source)?;
+    if !all.contains_key(&scope.note) { return Ok(()); }
+    let mut dest = connect(personal)?;
+    let dest = dest.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let old = entries(&dest)?;
+    if !old.get(&scope.note).is_some_and(|m| m.share_root.as_ref() == Some(&scope.note)) { return Ok(()); }
+    let has_history: bool = dest.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='sync_history')", [], |r| r.get(0))?;
+    let ids = match document { Some(id) if all.contains_key(id) => vec![id.to_owned()], Some(_) => vec![], None => subtree(&all, &scope.note)? };
+    for id in ids {
+        let src = &all[&id];
+        let mut meta = old.get(&id).cloned().unwrap_or_else(|| src.clone());
+        ensure!(old.get(&id).is_none_or(|m| m.share_root.as_ref() == Some(&scope.note)), "Conflicting personal document");
+        meta.share_root = Some(scope.note.clone());
+        meta.folder = src.folder.clone(); meta.name = src.name.clone();
+        if id != scope.note { meta.parent = src.parent.clone(); meta.order = src.order; }
+        if src.folder.is_none() {
+            let (doc, _, front) = Store::read_sync_body(&source, &id, false)?;
+            if old.contains_key(&id) {
+                let (previous, _, previous_front) = Store::read_sync_body(&dest, &id, false)?;
+                if doc != previous || front != previous_front {
+                    if has_history { super::super::journal::archive(&dest, &id, &previous, &previous_front, true)?; }
+                    copy_assets(cache, personal, &doc)?;
+                    Store::write_sync_body(&dest, &id, false, &doc, &front)?;
+                }
+            } else {
+                copy_assets(cache, personal, &doc)?;
+                Store::write_sync_body(&dest, &id, false, &doc, &front)?;
+            }
+        }
+        meta.modified = meta.modified.max(src.modified);
+        if old.get(&id).map(serde_json::to_string).transpose()? != Some(serde_json::to_string(&meta)?) { store_meta(&dest, &id, &meta)?; }
+    }
+    dest.commit()?;
+    Ok(())
+}
+
+pub(crate) fn move_into(personal: &Path, room: &Room, selection: &[String], destination: &str) -> Result<()> {
+    ensure!(room.scope.folder && room.scope.owner.is_none(), "Invalid destination share");
+    let cache = room_root(personal, &room.scope.note)?;
+    ensure!(!cache.join("shared-note-ended").exists() && descriptor(&cache)?.is_some_and(|saved| saved.scope == room.scope)
+        && account(personal)? == account(&cache)?, "Shared folder unavailable");
+    let mut source = connect(personal)?;
+    let source = source.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut dest = connect(&cache)?;
+    let dest = dest.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let all = entries(&source)?;
+    let shared = entries(&dest)?;
+    ensure!(shared.get(destination).is_some_and(|m| m.folder.is_some()), "Destination folder unavailable");
+    let mut adding = BTreeSet::new();
+    for id in selection { adding.extend(subtree(&all, id)?); }
+    ensure!(!adding.contains(destination) && adding.iter().all(|key| !all[key].local() && all[key].share_root.is_none()), "This selection contains a shared or external item");
+    dest.execute_batch("CREATE TABLE IF NOT EXISTS owner_imports(id TEXT PRIMARY KEY, revision INTEGER, parent TEXT)")?;
+    for key in &adding {
+        let original = &all[key];
+        let parent = original.parent.as_ref().filter(|parent| adding.contains(*parent)).map_or(destination, String::as_str);
+        let revision: i64 = source.query_row("SELECT coalesce((SELECT revision FROM library_documents WHERE id=?1),0)", [key], |r| r.get(0))?;
+        if shared.contains_key(key) {
+            let retry: bool = dest.query_row("SELECT EXISTS(SELECT 1 FROM owner_imports WHERE id=?1 AND revision=?2 AND parent=?3)", params![key, revision, parent], |r| r.get(0))?;
+            ensure!(retry, "The shared folder already contains this document");
+        } else {
+            let meta = Meta { folder: original.folder.clone(), name: original.name.clone(), kind: original.kind, markdown: original.markdown,
+                created: original.created, modified: original.modified, parent: Some(parent.into()), ..Default::default() };
+            copy_entry((&source, personal), (&dest, &cache), key, &meta)?;
+            dest.execute("INSERT OR REPLACE INTO owner_imports VALUES(?1,?2,?3)", params![key, revision, parent])?;
+        }
+        let mut link = original.clone();
+        link.parent = Some(parent.into());
+        link.share_root = Some(room.scope.note.clone());
+        store_meta(&source, key, &link)?;
+    }
+    dest.commit()?;
+    source.commit()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cloud_sync::{Bytes, Changes};
+
+    #[test]
+    fn folder_round_trip_preserves_identity_and_limits_the_invitation_to_its_subtree() -> Result<()> {
+        let temp = std::env::temp_dir().join(format!("fei-folder-share-{}", uuid::Uuid::new_v4()));
+        let personal = temp.join("personal");
+        let guest = temp.join("guest");
+        for (dir, key) in [(&personal, 'a'), (&guest, 'b')] {
+            Store::initialize_local_sqlite(dir)?;
+            fs::write(dir.join(".cloud-restore-ready"), format!("{}\n", key.to_string().repeat(64)))?;
+        }
+        let mut owner_store = Store::open_sqlite_at(personal.clone())?;
+        let outer = owner_store.create_folder("private parent", None)?;
+        let root = owner_store.create_folder("team", Some(&outer))?;
+        let sub = owner_store.create_folder("week one", Some(&root))?;
+        let (private, _) = owner_store.create()?;
+        let mut doc = Document::default();
+        doc.title = crate::model::RichText::plain("Agenda");
+        let child = owner_store.create_from_in(&doc, Some(&sub))?;
+        let room = prepare_local(&personal, &root, "team".into())?;
+        assert_eq!(prepare_local(&personal, &root, "team".into())?, room);
+        let mut remote = room.clone();
+        remote.scope.owner = Some("synthetic-owner".into());
+        let remote_root = stage(&guest, &remote, None)?;
+        let owner_root = room_root(&personal, &root)?;
+        let owner = Journal::open(&owner_root, None)?;
+        let mut reader = Journal::open(&remote_root, None)?;
+        let page = |edits, access| Changes { uploaded: vec![], edits, token: Some(Bytes(vec![1])), more: false, legacy: false,
+            room_access: Some(access), #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false };
+        reader.receive(page(owner.request()?.edits, Access::ReadOnly))?;
+        reader.merge(&Default::default())?;
+        let projected = entries(&connect(&remote_root)?)?;
+        assert_eq!(projected.len(), 3);
+        assert_eq!(projected[&child].parent.as_ref(), Some(&sub));
+        assert!(projected[&root].parent.is_none());
+        assert!(!projected.contains_key(&private));
+        assert!(!projected.contains_key(&outer));
+        let mut guest_store = Store::open_sqlite_at(remote_root)?;
+        assert!(guest_store.create_folder("forbidden", Some(&sub)).is_err());
+        assert!(guest_store.rename(&sub, "forbidden").is_err());
+        assert_eq!(guest_store.load(&child)?, doc);
+        assert!(reader.request()?.edits.is_empty());
+        assert!(owner_store.save(&child, &doc).is_err());
+        let later = owner_store.create_from(&doc)?;
+        move_into(&personal, &room, std::slice::from_ref(&later), &sub)?;
+        let mut owner = owner;
+        owner.merge(&Default::default())?;
+        reader.receive(page(owner.request()?.edits, Access::ReadWrite))?;
+        reader.merge(&Default::default())?;
+        assert!(guest_store.list().iter().any(|entry| entry.id == later && entry.meta.parent.as_ref() == Some(&sub)));
+        let guest_child = guest_store.create_folder("participant subfolder", Some(&sub))?;
+        reader.merge(&Default::default())?;
+        owner.receive(page(reader.request()?.edits, Access::Owner))?;
+        owner.merge(&Default::default())?;
+        let mut shared_store = Store::open_sqlite_at(owner_root)?;
+        assert!(shared_store.list().iter().any(|entry| entry.id == guest_child));
+        let mut edited = shared_store.load(&child)?;
+        edited.title = crate::model::RichText::plain("Latest edits");
+        shared_store.save(&child, &edited)?;
+        shared_store.delete(&later, None)?;
+        restore(&personal, &room, || Ok(()))?;
+        assert!(!entries(&connect(&personal)?)?.contains_key(&later));
+        assert!(connect(&personal)?.query_row("SELECT trashed FROM library_documents WHERE id=?1", [&later], |r| r.get::<_, bool>(0))?);
+        assert_eq!(owner_store.load(&child)?, edited);
+        let restored = entries(&connect(&personal)?)?;
+        assert_eq!(restored[&root].parent.as_ref(), Some(&outer));
+        assert!(restored[&child].share_root.is_none());
+        drop((owner, reader));
+        fs::remove_dir_all(temp)?;
+        Ok(())
+    }
+}

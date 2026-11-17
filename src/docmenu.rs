@@ -287,7 +287,7 @@ impl Workspace {
                 {
                     let note = id.clone();
                     show_share.then(|| {
-                        menu_item("dm-create-share", "copy", crate::settings::tr("创建共享副本", "Create shared copy"), false, false)
+                        menu_item("dm-create-share", "copy", crate::settings::tr("共享原文…", "Share document…"), false, false)
                             .on_hover(hover_sub(None))
                             .on_click(cx.listener(move |w, _, window, cx| {
                                 w.close_doc_menu(cx);

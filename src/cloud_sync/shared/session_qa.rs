@@ -21,7 +21,7 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
         let mut doc = sample(&seed)?;
         doc.title = crate::model::RichText::plain(title);
         if received { fs::write(seed.join("assets/files/shared-fixture.txt"), b"reader-only attachment fixture")?; }
-        let mut room = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(), owner: None }, title: title.into() };
+        let mut room = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(), owner: None, folder: false }, title: title.into() };
         let path = stage(&seed, &room, Some((&doc, "")))?;
         if received {
             let owner = Journal::open(&path, None)?;

@@ -350,7 +350,7 @@ pub struct Workspace {
     /// The window's minimum width as last given to it (`DOC_MIN_W` plus the sidebar).
     min_w: f32,
     pub folder_current: Option<String>,
-    pub create_menu: Option<(Option<String>, Point<Pixels>)>,
+    pub create_menu: Option<(crate::folders::CreateTarget, Point<Pixels>)>,
     /// The header's 导入 menu: the folder it imports into, and where it hangs.
     pub import_menu: Option<(Option<String>, Point<Pixels>)>,
     /// The header's … menu on Home (None) or a folder page: where it hangs.
@@ -758,8 +758,22 @@ impl Workspace {
     /// could not be saved first, see [`Self::save_before`]).
     pub fn try_open(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        { self.sharing.pending_open = None; }
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if !self.is_shared() && let Some(room) = crate::cloud_sync::shared::original::owner_room(&self.entries, id) {
+            let target = id.to_owned();
+            self.sharing.pending_open = Some(target.clone());
+            cx.defer_in(window, move |ws, window, cx| {
+                if ws.sharing.pending_open.as_ref() == Some(&target) {
+                    ws.sharing.pending_open = None;
+                    ws.navigate_shared_item(room, target, None, window, cx);
+                }
+            });
+            return true;
+        }
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         if let Some(room) = crate::cloud_sync::shared::scope(&self.store, cx)
-            && (id != room.note || !self.entries.iter().any(|entry| entry.id == id)
+            && ((!room.folder && id != room.note) || !self.entries.iter().any(|entry| entry.id == id)
                 || crate::cloud_sync::shared::access(&self.store, cx) == Some(crate::cloud_sync::shared::Access::Revoked))
         { return false; }
         // A snapshot is on screen: back to the live document before anything
@@ -994,7 +1008,6 @@ impl Workspace {
     /// ⌘N / the 文件 menu: create the 快捷新建 type (a fixed one, or the last
     /// one made from the 新建 menu) in the current place.
     pub fn new_doc(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_shared() { return; }
         let parent = self.creation_parent();
         self.create_doc(crate::settings::quick_new_markdown(), parent, window, cx);
     }
@@ -1161,6 +1174,8 @@ impl Workspace {
 
     /// Switch the main pane to 主页 or 回收站 (or back to the document).
     pub fn show_view(&mut self, view: View, cx: &mut Context<Self>) {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        { self.sharing.pending_open = None; }
         self.cancel_shortcut_recording(cx);
         self.close_history(cx);
         // 阅读位置: leaving the document with ⌘H or 回收站 also counts.
@@ -1969,6 +1984,7 @@ pub(crate) fn cloud_notes_changed(root: &std::path::Path, notes: &[crate::cloud_
 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
 fn apply_cloud_notes(root: &std::path::Path, notes: &[crate::cloud_sync::NoteChange], remote: bool,
     origin: Option<(EntityId, crate::editor::core::Selection)>, cx: &mut App) {
+    if root == crate::store::Store::root_dir() { crate::sharing::organizer::reload(cx); }
     for window in cx.windows().into_iter().filter_map(|window| window.downcast::<Workspace>()) {
         let _ = window.update(cx, |ws, window, cx| {
             if ws.store.root() != root { return; }
@@ -2007,7 +2023,7 @@ fn apply_cloud_notes(root: &std::path::Path, notes: &[crate::cloud_sync::NoteCha
             }
             if ws.view == View::Trash { ws.trash = ws.store.list_trash(); }
             if let Some(room) = crate::cloud_sync::shared::scope(&ws.store, cx).cloned() {
-                if ws.current.is_none() && ws.entries.iter().any(|entry| entry.id == room.note) {
+                if ws.current.is_none() && ws.view != View::Folder && ws.entries.iter().any(|entry| entry.id == room.note) {
                     ws.open(&room.note, window, cx);
                 }
                 let reading = ws.reading();

@@ -27,6 +27,25 @@ thumbnails, cover imports, pasted assets, clipboard Markdown and HTML/Markdown
 exports use this root explicitly. Personal-library defaults remain available to
 the upstream-compatible editor and application-level preferences.
 
+## Sharing originals and organizing folders
+
+Sharing an existing note keeps its ID and its position in My Documents. Both
+entries open the same room. Stopping sharing copies the latest collaboration
+back into the personal library under the original ID. Existing copy-based shares
+retain their existing removal and recovery behavior.
+
+Personal folders created from Shared Documents organize the current account's
+shortcuts. A private catalogue map syncs folder titles and placements across
+that account's devices. Creating a personal subfolder or filing a shortcut there
+does not grant access.
+
+Choosing Share Folder on a library folder grants access to its subtree, including
+future documents. Each folder invitation has a dedicated zone with the prefix
+`QuietSharedFolder-v1-`. The shared catalogue omits the private parent and
+unrelated siblings. Moving a private document into the folder requires confirming
+the expanded audience. Read-only members can open nested contents and editors
+can add documents and folders.
+
 ## Lifetime and failures
 
 Leaving the last workspace for a shared store releases its session and lock after
@@ -51,8 +70,8 @@ also checks the same window, library, document view and displayed version.
 
 ## Compatibility
 
-There is no database relocation, schema migration or CloudKit protocol change:
-SQLite schema 7, cloud journal protocol 4 and backup format 2 remain unchanged.
+SQLite schema 7, cloud journal protocol 4 and backup format 2 are retained.
+Folder zones are distinct from older single-note zones.
 Existing shared-note descriptors, IDs, attachments and pending edits are reused.
 The old explicit shared-room startup path and devtools-only window helper remain
 for diagnostic commands; user-facing navigation does not use them.
@@ -88,20 +107,20 @@ retain these per-window library and permission guards.
 
 The macOS cloud build exposes Shared Documents as a collapsible sidebar section
 above My Documents and a tab on Home. The section starts collapsed and lists each
-room and its unread state when expanded. Its list button opens the Home tab.
-A mail-check icon accepts invitations; the sidebar and Home header controls share
-the same open state and use the existing anchored popover. Home reuses the My
+room and its unread state when expanded. Both sidebar headers use the same batch
+and plus buttons. The shared plus menu offers New Personal Folder and Accept
+Invitation. The invitation opens the same form as the Home header button. Home reuses the My
 Documents list renderer, including document icons, time columns, row sizing and
 ellipsis controls. Shared sorting is independent and never changes personal
 manual order. The contextual menu provides members, deletion or leaving. Account and synchronization
 controls remain in Documents settings.
 
 Personal note toolbar and More-menu actions open the same creation form. It
-explains that collaboration creates an independent copy; the original remains
-unchanged. Static-copy delivery uses the existing Markdown export path. A
-locally staged room is retained before initial publication, so a failed upload
-retries the same copy. After publication, the current window navigates to the
-shared copy and owns the invitation form. A failed invitation retains its
+shares the selected original while preserving its personal catalogue position.
+Static-copy delivery uses the existing Markdown export path. A locally staged
+room is retained before initial publication, so a failed upload retries the same
+identity. After publication, the current window navigates to the shared room and
+owns the invitation form. A failed invitation retains its
 recipient and permissions there; it never recreates the note. Adding permission
 does not send an email or message: the owner must send the invitation URL.
 

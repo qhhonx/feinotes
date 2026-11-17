@@ -115,7 +115,7 @@ fn read_fields(map: &LoroMap) -> Result<Fields> {
     Ok(result)
 }
 
-pub fn project(db: &Connection, doc: &LoroDoc) -> Result<bool> {
+pub fn project(db: &Connection, doc: &LoroDoc, shared_folder: bool) -> Result<bool> {
     let mut entries = BTreeMap::new();
     for id in doc.get_map("entries").keys() {
         let id = id.to_string();
@@ -127,6 +127,9 @@ pub fn project(db: &Connection, doc: &LoroDoc) -> Result<bool> {
         let (parent, order, root_order) = serde_json::from_value(fields.remove("location").unwrap_or(json!([null, 0, null])))?;
         fields.insert("modified".into(), fields.get("created").cloned().unwrap_or(json!(0)));
         let mut meta: Meta = serde_json::from_value(serde_json::to_value(fields)?)?;
+        if shared_folder {
+            ensure!(meta.path.is_none() && meta.rel.is_empty() && meta.share_root.is_none(), "Invalid private metadata in shared folder");
+        }
         meta.parent = parent;
         meta.order = order;
         meta.root_order = root_order;

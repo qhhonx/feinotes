@@ -436,8 +436,8 @@ fn weight3(mut d: Div) -> Div {
 }
 
 /// A document's icon: its emoji, or the monochrome page glyph.
-fn entry_icon(e: &Entry) -> AnyElement {
-    if e.meta.folder.is_some() { return icon("folder", 22., Theme::icon()).mr(px(13.)).into_any_element(); }
+fn entry_icon(e: &Entry, cx: &App) -> AnyElement {
+    if let Some(glyph) = crate::sidebar::folder_glyph(e, false, cx) { return icon(glyph, 22., Theme::icon()).mr(px(13.)).into_any_element(); }
     match &e.icon {
         _ if e.meta.named_by_file() => crate::search::doc_icon_named(crate::search::file_glyph(&e.meta)).mr(px(12.)).into_any_element(),
         Some(em) => div().size(px(24.)).mr(px(12.)).flex_none().flex().items_center().justify_center().text_size(px(18.)).child(em.clone()).into_any_element(),
@@ -447,8 +447,11 @@ fn entry_icon(e: &Entry) -> AnyElement {
 
 impl Workspace {
     /// In 批量管理 a click checks or unchecks; otherwise it opens.
-    fn home_click(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn home_click(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if id.starts_with("collection-") { self.sharing.collection = Some(id.into()); cx.notify(); return; }
         if self.batch.is_some() { self.toggle_check(id); cx.notify(); return; }
+        if self.is_shared() && self.view == crate::app::View::Folder { self.open(id, window, cx); return; }
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         if let Some(room) = self.shared_list_room(id, cx) { self.open_shared_note(&room, window, cx); return; }
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
@@ -711,7 +714,7 @@ impl Workspace {
                 .when(self.create_menu.as_ref().is_some_and(|(_, pos)| self.home.anchor("create-home").is_some_and(|b| point(b.left(), b.bottom() + px(4.)) == *pos)), |d| d.bg(Theme::fill_hover()))
                 .tip(crate::settings::tr("新建", "New"), Some(crate::shortcuts::hint("workspace::NewDoc", "⌘ + N")))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(|w, ev: &ClickEvent, _, cx| { let pos = w.home.anchor("create-home").map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.))); w.create_menu = if w.create_menu.is_some() { None } else { Some((None, pos)) }; cx.notify(); })).into_any_element()
+                .on_click(cx.listener(|w, ev: &ClickEvent, _, cx| { let pos = w.home.anchor("create-home").map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.))); w.create_menu = if w.create_menu.is_some() { None } else { Some((crate::folders::CreateTarget::Library(None), pos)) }; cx.notify(); })).into_any_element()
         );
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         let shared_tab = self.home.tab == HomeTab::Shared;
@@ -912,7 +915,7 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .when_some(check, |d, c| d.child(c.mr(px(12.))))
-                        .child(entry_icon(e))
+                        .child(entry_icon(e, cx))
                         .child(div().min_w_0().text_size(px(15.)).line_height(px(22.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(display_title(&e.title))))
                         .when(e.meta.pinned, |d| d.child(icon("pin-filled", 14., Theme::pinned()).ml(px(6.))))
                         .children({

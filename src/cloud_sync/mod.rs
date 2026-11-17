@@ -4,6 +4,7 @@ pub(crate) mod activity;
 mod assets;
 pub(crate) mod backup;
 mod catalogue;
+mod organizer;
 mod content;
 mod history;
 mod journal;
@@ -481,7 +482,10 @@ pub(crate) fn mark_shared_updates_read(root: &Path, updates: &[String], cx: &mut
 fn merge(root: &Path, cx: &mut App) -> Result<()> {
     let Some(positions) = app::cloud_open_positions(root, cx) else { return Ok(()); };
     let (library_changed, changed) = journal_mut(root, cx).merge(&positions)?;
-    if library_changed || !changed.is_empty() { app::cloud_notes_changed(root, &changed, true, cx); }
+    if library_changed || !changed.is_empty() {
+        if let Some(scope) = scope(root, cx) { shared::original::refresh_owner(root, scope, None)?; }
+        app::cloud_notes_changed(root, &changed, true, cx);
+    }
     Ok(())
 }
 
@@ -500,6 +504,8 @@ pub fn save(store: &mut SharedStore, id: &str, core: &Core, cx: &mut App) -> Res
         return store.save(id, &core.doc).map(|meta| (meta, false));
     }
     let result = journal_mut(&root, cx).save(store, id, core)?;
+    if let Some(scope) = scope(&root, cx)
+        && let Err(error) = shared::original::refresh_owner(&root, scope, Some(id)) { crate::logging::write(&format!("Private shared index refresh: {error:#}")); }
     wake_after_save(&root, cx);
     Ok(result)
 }
@@ -507,6 +513,8 @@ pub fn save(store: &mut SharedStore, id: &str, core: &Core, cx: &mut App) -> Res
 pub fn undo(store: &mut SharedStore, id: &str, core: &Core, peers: &[Pos], redo: bool, cx: &mut App) -> Result<Option<(NoteChange, Option<crate::editor::core::Selection>)>> {
     let root = store.root().to_path_buf();
     let result = journal_mut(&root, cx).undo(store, id, core, peers, redo)?;
+    if let Some(scope) = scope(&root, cx)
+        && let Err(error) = shared::original::refresh_owner(&root, scope, Some(id)) { crate::logging::write(&format!("Private shared index refresh: {error:#}")); }
     wake_after_save(&root, cx);
     Ok(result)
 }

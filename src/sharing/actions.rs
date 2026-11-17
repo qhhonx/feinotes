@@ -19,7 +19,7 @@ impl Workspace {
         self.navigate_shared(room, None, window, cx);
         cx.defer(move |cx| {
             if let Some(handle) = cx.windows().into_iter().find(|handle| handle.window_id() == window_id).and_then(|handle| handle.downcast::<Workspace>()) {
-                let _ = handle.update(cx, |w, window, cx| { if w.is_shared() && w.current.as_ref() == Some(&id) { action(w, &id, window, cx); } });
+                let _ = handle.update(cx, |w, window, cx| { if w.is_shared() && (w.current.as_ref() == Some(&id) || w.folder_current.as_ref() == Some(&id)) { action(w, &id, window, cx); } });
             }
         });
     }
@@ -95,7 +95,7 @@ impl Workspace {
     pub(crate) fn confirm_shared_batch_removal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rooms = self.batch.as_ref().into_iter().flatten().filter_map(|id| self.shared_list_room(id, cx)).collect::<Vec<_>>();
         let entries = self.personal_navigation_entries(cx);
-        let personal = self.batch.as_ref().into_iter().flatten().filter(|id| entries.iter().any(|entry| &entry.id == *id)).cloned().collect();
+        let personal = self.batch.as_ref().into_iter().flatten().filter(|id| entries.iter().any(|entry| &entry.id == *id) && self.shared_list_room(id, cx).is_none()).cloned().collect();
         if !rooms.is_empty() { self.sharing_sheet(Sheet::EndMany(rooms, personal), window, cx); }
     }
 }

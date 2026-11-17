@@ -13,19 +13,24 @@ mod navigation;
 mod lifecycle;
 mod list;
 mod sidebar;
+pub(crate) mod organizer;
 mod actions;
 pub(crate) mod links;
 
 #[derive(Clone)]
-pub(crate) enum Sheet { Create(String), Accept, Members(Room), Invite(Room), End(Room), EndMany(Vec<Room>, Vec<String>) }
+pub(crate) enum Sheet { MoveInto(Vec<String>, String, Room), Collection(Option<String>), Create(String), Accept, Members(Room), Invite(Room), End(Room), EndMany(Vec<Room>, Vec<String>) }
 
 pub(crate) struct Sharing {
     link: Entity<TextField>,
     email: Entity<TextField>,
+    folder_name: Entity<TextField>,
+    pub(crate) collection: Option<String>,
+    edit_collection: Option<String>,
     pub sheet: Option<Sheet>,
     reply: Option<Reply>,
     prepared: Option<Room>,
     original: Option<String>,
+    pub(crate) pending_open: Option<String>,
     copied_text: Option<String>,
     permission: Access,
     member: Option<String>,
@@ -49,10 +54,12 @@ pub(crate) struct Sharing {
 impl Sharing {
     pub fn new(cx: &mut App) -> Self {
         sidebar::install(cx);
+        if !cx.has_global::<organizer::Organizer>() { cx.set_global(organizer::Organizer::load().unwrap_or_default()); }
         Self { link: cx.new(|cx| TextField::new(tr("粘贴飞记邀请链接", "Paste a Fei Notes invitation link"), cx)),
+            edit_collection: None, collection: None, folder_name: cx.new(|cx| TextField::new(tr("文件夹名称", "Folder name"), cx)),
             email: cx.new(|cx| TextField::new(tr("对方的 Apple 账户邮箱", "Their Apple Account email"), cx)),
             sheet: None, reply: None, prepared: None, permission: Access::ReadOnly, member: None, revoke_confirm: false,
-            busy: false, message: None, epoch: 0, original: None, copied_text: None, focus_before: None, subscriptions: vec![],
+            busy: false, message: None, epoch: 0, original: None, pending_open: None, copied_text: None, focus_before: None, subscriptions: vec![],
             scroll: ScrollHandle::new(), panel_open: false, folded: true, sidebar: Default::default(), batch: false, personal_route: None, accept_at: None, share_bounds: Default::default(), toolbar_bounds: Default::default() }
     }
 }
@@ -112,18 +119,21 @@ fn member_label(name: &str, id: &str, index: usize) -> String {
 }
 
 impl Workspace {
-    pub(crate) fn sharing_busy(&self) -> bool { self.sharing.busy }
-    fn review_original(&mut self, original: String, window: &mut Window, cx: &mut Context<Self>) {
-                                if self.sharing.busy { return; }
-                                let id = original; let window_id = window.window_handle().window_id();
-                                self.close_sharing(window, cx); self.navigate_personal(View::Doc, Some(id.clone()), window, cx);
-                                cx.defer(move |cx| {
-                                    if let Some(handle) = cx.windows().into_iter().find(|handle| handle.window_id() == window_id).and_then(|handle| handle.downcast::<Workspace>()) {
-                                        let _ = handle.update(cx, |ws, _, cx| { if !ws.is_shared() && ws.entries.iter().any(|entry| entry.id == id) { ws.ask_delete(&id, cx); } });
-                                    }
-                                });
+    pub(crate) fn confirm_shared_move(&mut self, ids: &[String], target: Option<&str>, cx: &mut Context<Self>) -> bool {
+        if self.is_shared() { return false; }
+        let Some((target, room)) = target.and_then(|t| shared::original::owner_room(&self.entries, t).map(|r| (t, r))).filter(|(_, r)| r.scope.folder) else { return false; };
+        if !self.sharing.busy {
+            self.sharing.sheet = Some(Sheet::MoveInto(ids.to_vec(), target.into(), room));
+            self.sharing.message = None; self.row_menu = None; cx.notify();
+        }
+        true
     }
 
+    pub(crate) fn stopping_original(&self, room: &Room, cx: &App) -> bool {
+        room.scope.owner.is_none() && self.personal_navigation_entries(cx).iter().any(|e| e.id == room.scope.note && e.meta.share_root.as_ref() == Some(&e.id))
+    }
+
+    pub(crate) fn sharing_busy(&self) -> bool { self.sharing.busy }
     pub(crate) fn refresh_shared_entry(&self, cx: &mut Context<Self>) {
         if shared::access(&self.store, cx) == Some(Access::Revoked) { return; }
         if let Some(scope) = shared::scope(&self.store, cx).cloned()
@@ -161,6 +171,7 @@ impl Workspace {
         self.sharing.accept_at = None;
         self.sharing.panel_open = false;
         self.sharing.prepared = None;
+        self.sharing.edit_collection = None;
         self.sharing.reply = None;
         self.sharing.member = None;
         self.sharing.revoke_confirm = false;
@@ -169,7 +180,7 @@ impl Workspace {
         self.sharing.scroll.set_offset(point(px(0.), px(0.)));
         self.sharing.email.update(cx, |field, cx| field.set_text("", cx));
         self.sharing.link.update(cx, |field, cx| field.set_text("", cx));
-        let input = if matches!(self.sharing.sheet, Some(Sheet::Accept)) { &self.sharing.link } else { &self.sharing.email };
+        let input = if matches!(self.sharing.sheet, Some(Sheet::Collection(_))) { &self.sharing.folder_name } else if matches!(self.sharing.sheet, Some(Sheet::Accept)) { &self.sharing.link } else { &self.sharing.email };
         if matches!(self.sharing.sheet, Some(Sheet::Members(_) | Sheet::End(_) | Sheet::EndMany(..))) { window.focus(&self.focus); }
         else { window.focus(&input.focus_handle(cx)); }
         self.sharing.subscriptions = vec![cx.subscribe_in(input, window, |w, _, event: &TextFieldEvent, window, cx| {
@@ -355,12 +366,10 @@ impl Workspace {
                     .on_click(cx.listener(move |w, _, window, cx| w.open_invitation(invite.clone(), window, cx))))
                 .child(action("collab-members", tr("成员与权限…", "Members and access…"), !self.sharing.busy)
                     .on_click(cx.listener(move |w, _, window, cx| w.open_member_management(members.clone(), window, cx)))));
-        } else {
-            let end_room = room.clone();
-            body = body.child(caption(tr("成员权限由所有者管理。", "The owner manages member access.")))
-                .child(action("collab-end", tr("离开共享…", "Leave share…"), self.sharing_account_ready(cx))
-                    .on_click(cx.listener(move |w, _, window, cx| w.open_end_shared(end_room.clone(), window, cx))));
-        }
+        } else { body = body.child(caption(tr("成员权限由所有者管理。", "The owner manages member access."))); }
+        let end_room = room.clone();
+        body = body.child(action("collab-end", if self.stopping_original(&room, cx) { tr("停止共享…", "Stop sharing…") } else if room.scope.owner.is_none() { tr("删除共享文档…", "Delete shared document…") } else { tr("离开共享…", "Leave share…") }, self.sharing_account_ready(cx))
+            .on_click(cx.listener(move |w, _, window, cx| w.open_end_shared(end_room.clone(), window, cx))));
         if !self.sharing_allowed(cx) {
             body = body.child(action("collab-cloud-settings", tr("查看 iCloud 状态", "View iCloud status"), true)
                 .on_click(cx.listener(|w, _, _, cx| { w.sharing.panel_open = false; w.open_settings(settings::Page::Library, cx); })));
@@ -376,6 +385,15 @@ impl Workspace {
 
     pub(crate) fn create_shared_note(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_shared() || self.store.local_path(id).is_some() || self.sharing.busy || !self.flush(cx) { return; }
+        if let Some(room) = shared::original::owner_room(&self.entries, id) {
+            if shared::original::awaiting_publication(self.store.root(), &room) {
+                self.sharing_sheet(Sheet::Create(room.scope.note.clone()), window, cx);
+                self.sharing.prepared = Some(room);
+                return;
+            }
+            self.open_member_management(room, window, cx);
+            return;
+        }
         self.sharing_sheet(Sheet::Create(id.into()), window, cx);
     }
 
@@ -384,7 +402,7 @@ impl Workspace {
         self.sharing_sheet(Sheet::Invite(room), window, cx);
     }
 
-    fn open_member_management(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_member_management(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
         if room.scope.owner.is_some() { return; }
         self.sharing_sheet(Sheet::Members(room), window, cx);
         self.manage_shared_note("members", String::new(), None, window, cx);
@@ -400,14 +418,21 @@ impl Workspace {
         let invitation = matches!(sheet, Sheet::Create(_) | Sheet::Invite(_));
         let feishu = settings::feishu();
         let accent = invitation_accent();
-        let title = match sheet { Sheet::Create(_) => tr("共享笔记", "Share note"), Sheet::Accept => tr("接受邀请", "Accept invitation"),
+        let title = match sheet { Sheet::MoveInto(..) => tr("移入共享文件夹", "Move into shared folder"), Sheet::Collection(_) if self.sharing.edit_collection.is_some() => tr("重命名个人文件夹", "Rename personal folder"), Sheet::Collection(_) => tr("新建个人文件夹", "New personal folder"), Sheet::Create(id) if self.entries.iter().any(|e| &e.id == id && e.meta.folder.is_some()) => tr("共享文件夹", "Share folder"), Sheet::Create(_) => tr("共享笔记", "Share note"), Sheet::Accept => tr("接受邀请", "Accept invitation"),
             Sheet::Members(_) => tr("成员与权限", "Members and access"), Sheet::Invite(_) if feishu => tr("分享文档", "Share document"),
             Sheet::Invite(_) => tr("共享备忘录", "Share note"),
             Sheet::EndMany(..) => tr("移除共享文档", "Remove shared documents"),
-            Sheet::End(room) => if room.scope.owner.is_none() { tr("删除共享文档", "Delete shared document") } else { tr("离开共享", "Leave share") } };
+            Sheet::End(room) => if self.stopping_original(room, cx) { tr("停止共享", "Stop sharing") } else if room.scope.owner.is_none() { tr("删除共享文档", "Delete shared document") } else { tr("离开共享", "Leave share") } };
         let mut body = div().id("sharing-sheet-body").track_scroll(&self.sharing.scroll).overflow_y_scroll().flex_1().min_h_0()
             .px(px(24.)).pb(px(20.)).flex().flex_col().gap(px(14.));
         match sheet {
+            Sheet::MoveInto(ids, _, room) => {
+                body = body.child(caption(crate::localized_format!("将 {} 项移入「{}」。这个文件夹的所有成员都能访问移入的文档及子文件夹。", "Move {} items into “{}”. Everyone with access to this folder can access the moved documents and subfolders.", ids.len(), room.title)));
+            }
+            Sheet::Collection(_) => {
+                body = body.child(TextField::framed(&self.sharing.folder_name, px(360.), window, cx))
+                    .child(caption(tr("只有你能看到这个分类。", "Only you can see this folder.")));
+            }
             Sheet::EndMany(rooms, personal) => {
                 if !personal.is_empty() { body = body.child(caption(crate::localized_format!("将 {} 篇个人文档移到回收站。", "Move {} personal documents to Trash.", personal.len()))); }
                 let owned = rooms.iter().filter(|room| room.scope.owner.is_none()).count(); let received = rooms.len() - owned;
@@ -418,24 +443,26 @@ impl Workspace {
             }
             Sheet::End(room) => {
                 body = body.child(div().text_size(px(16.)).child(ui::ui_para(display_title(&room.title))))
-                    .child(caption(if room.scope.owner.is_none() {
+                    .child(caption(if self.stopping_original(room, cx) { tr("成员将失去访问权限。最新内容会保留在你的原文件夹中。", "Members will lose access. The latest content stays in your original folder.") } else if room.scope.owner.is_none() {
                         tr("删除后，所有人都将无法访问这篇共享文档。", "After deletion, no one will be able to access this shared document.")
                     } else {
                         tr("离开后，你将无法访问这篇文档，其他人不受影响。", "You will lose access to this document. Other people will keep access.")
                     }))
-                    .child(caption(tr("已下载的内容会保留在你的回收站，可恢复为普通文档。", "Downloaded content stays in your Trash and can be restored as a personal document.")));
+                    .when(!self.stopping_original(room, cx) && !room.scope.folder, |d| d.child(caption(tr("已下载的内容会保留在你的回收站，可恢复为普通文档。", "Downloaded content stays in your Trash and can be restored as a personal document."))));
             }
             Sheet::Create(id) => {
                 let title = self.entries.iter().find(|entry| &entry.id == id).map(|e| display_title(&e.title)).unwrap_or_default();
                 body = body.child(div().truncate().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child(title))
                     .child(div().text_size(px(14.)).child(tr("与他人协作", "Collaborate with others")))
-                    .child(caption(tr("将创建一篇独立的共享笔记。之后请在共享笔记中继续编辑，原笔记保留。", "This creates a separate shared note. Continue editing there; your original note is kept.")))
+                    .child(caption(if self.entries.iter().any(|e| &e.id == id && e.meta.folder.is_some()) {
+                        tr("受邀成员可访问这个文件夹及其子文件夹。今后放入的文档也对成员可见。", "Members can access this folder, its subfolders, and items added later.")
+                    } else { tr("邀请对方协作这篇原文。你可以继续从原文件夹打开它。", "Invite someone to this document. You can still open it from its original folder.") }))
                     .child(self.invitation_fields(window, cx));
                 if crate::cloud_restore::local_only() {
                     body = body.child(action("share-enable-cloud", tr("开启 iCloud 同步…", "Enable iCloud sync…"), !busy)
                         .on_click(cx.listener(|w, _, window, cx| { w.close_sharing(window, cx); w.open_settings(settings::Page::Library, cx); })));
                 }
-                if self.sharing.prepared.is_some() { body = body.child(caption(tr("共享副本已保留。重试会继续使用这一篇。", "The shared copy is kept. Retrying will use the same note."))); }
+                if self.sharing.prepared.is_some() { body = body.child(caption(tr("共享准备已保存，可以继续邀请。", "Sharing is prepared. Retry to continue the invitation."))); }
                 let export = id.clone();
                 body = body.child(div().h(px(1.)).bg(Theme::line_divider()))
                     .child(action("share-send-copy", tr("发送静态副本…", "Send a static copy…"), !busy)
@@ -493,22 +520,15 @@ impl Workspace {
                             })));
                     }
                 }
-                if let Some(original) = self.sharing.original.clone() {
-                    body = body.child(caption(tr("原文档仍在“我的文档”中。之后请在共享文档中继续编辑。", "Your original is still in My documents. Continue editing the shared document.")))
-                        .child(action("review-original", tr("将原文档移到回收站…", "Move original to Trash…"), !busy)
-                            .on_click(cx.listener(move |w, _, window, cx| {
-                                w.review_original(original.clone(), window, cx);
-                            })));
-                }
                 let remove = room.clone();
-                body = body.child(action("members-delete-document", tr("删除共享文档…", "Delete shared document…"), !busy)
+                body = body.child(action("members-delete-document", if self.stopping_original(room, cx) { tr("停止共享…", "Stop sharing…") } else { tr("删除共享文档…", "Delete shared document…") }, !busy)
                     .text_color(Theme::danger()).on_click(cx.listener(move |w, _, window, cx| w.open_end_shared(remove.clone(), window, cx))));
                 body = body.child(caption(tr("仅受邀用户可访问。转发链接不会授予其他人访问权限。", "Only invited people can access this note. Forwarding the link does not grant access.")))
                     .child(action("members-refresh", tr("刷新成员", "Refresh members"), !busy)
                         .on_click(cx.listener(|w, _, window, cx| w.manage_shared_note("members", String::new(), None, window, cx))));
             }
         }
-        if !self.sharing_allowed(cx) {
+        if !matches!(sheet, Sheet::Collection(_)) && !self.sharing_allowed(cx) {
             body = body.child(caption(tr("协作已暂停。请在文档库设置中检查 iCloud 账户和云功能。", "Collaboration is paused. Check your iCloud account and cloud access in Documents settings.")));
         }
         let feedback = div().px(px(24.)).flex_none()
@@ -516,9 +536,9 @@ impl Workspace {
             .when_some(self.sharing.message.as_ref().filter(|(error, _)| *error), |d, (error, message)| d.pb(px(10.)).child(
                 div().id("sharing-message").text_size(px(13.)).line_height(px(20.))
                     .text_color(if *error { Theme::danger() } else { Theme::text_caption() }).child(ui::ui_para(message.clone()))));
-        let submit = match sheet { Sheet::Create(_) => Some(tr("创建并邀请", "Create and invite")), Sheet::Accept => Some(tr("接受并打开", "Accept and open")),
-            Sheet::Invite(_) => Some(tr("邀请", "Invite")), Sheet::EndMany(..) => Some(tr("确认移除", "Remove documents")), Sheet::End(room) => Some(if room.scope.owner.is_none() { tr("删除共享文档", "Delete shared document") } else { tr("离开共享", "Leave share") }), _ => None };
-        let input_ok = if matches!(sheet, Sheet::End(_) | Sheet::EndMany(..)) { true } else if matches!(sheet, Sheet::Accept) { !self.sharing.link.read(cx).text.trim().is_empty() }
+        let submit = match sheet { Sheet::MoveInto(..) => Some(tr("移入并共享", "Move and share")), Sheet::Collection(_) if self.sharing.edit_collection.is_some() => Some(tr("保存", "Save")), Sheet::Collection(_) => Some(tr("创建", "Create")), Sheet::Create(_) => Some(tr("创建并邀请", "Create and invite")), Sheet::Accept => Some(tr("接受并打开", "Accept and open")),
+            Sheet::Invite(_) => Some(tr("邀请", "Invite")), Sheet::EndMany(..) => Some(tr("确认移除", "Remove documents")), Sheet::End(room) => Some(if self.stopping_original(room, cx) { tr("停止共享", "Stop sharing") } else if room.scope.owner.is_none() { tr("删除共享文档", "Delete shared document") } else { tr("离开共享", "Leave share") }), _ => None };
+        let input_ok = if matches!(sheet, Sheet::Collection(_)) { !self.sharing.folder_name.read(cx).text.trim().is_empty() } else if matches!(sheet, Sheet::End(_) | Sheet::EndMany(..) | Sheet::MoveInto(..)) { true } else if matches!(sheet, Sheet::Accept) { !self.sharing.link.read(cx).text.trim().is_empty() }
             else { !self.sharing.email.read(cx).text.trim().is_empty() };
         let footer = div().flex_none().px(px(24.)).py(px(14.)).flex().justify_end().gap(px(8.)).border_t_1().border_color(Theme::line_divider())
             .children(matches!(sheet, Sheet::Invite(_)).then(|| action("invite-back", tr("成员与权限", "Members and access"), !busy)
@@ -531,7 +551,7 @@ impl Workspace {
                         .text_color(cloud_sync::presence::badge_ink(accent)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD)
                         .hover(move |s| s.bg(accent.opacity(0.88))).active(move |s| s.bg(accent.opacity(0.76))).child(label)
                 } else { ui::primary_button("sharing-submit", label) })
-                .when(busy || !input_ok || !(if matches!(sheet, Sheet::End(_) | Sheet::EndMany(..)) { self.sharing_account_ready(cx) } else { self.sharing_allowed(cx) }), |d| d.opacity(0.45).cursor_default())
+                .when(busy || !input_ok || !(if matches!(sheet, Sheet::Collection(_)) { true } else if matches!(sheet, Sheet::End(_) | Sheet::EndMany(..)) { self.sharing_account_ready(cx) } else { self.sharing_allowed(cx) }), |d| d.opacity(0.45).cursor_default())
                 .on_click(cx.listener(|w, _, window, cx| w.submit_sharing(window, cx)))));
         if matches!(sheet, Sheet::Accept) && let Some(bounds) = self.sharing.accept_at.and_then(|key| self.home.anchor(key)) {
             let pos = point(bounds.left(), bounds.bottom() + px(4.));
@@ -563,7 +583,7 @@ impl Workspace {
                     .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| { cx.stop_propagation(); w.close_sharing(window, cx); })))
                 .child(popup)).with_priority(5).into_any_element());
         }
-        let height = match sheet { Sheet::Create(_) => 510., Sheet::Accept => 290., Sheet::Members(_) => 580., Sheet::Invite(_) => 345., Sheet::End(_) => 290., Sheet::EndMany(..) => 380. };
+        let height = match sheet { Sheet::MoveInto(..) => 250., Sheet::Collection(_) => 235., Sheet::Create(_) => 510., Sheet::Accept => 290., Sheet::Members(_) => 580., Sheet::Invite(_) => 345., Sheet::End(_) => 290., Sheet::EndMany(..) => 380. };
         let modal = ui::dialog("sharing-sheet").h((window.viewport_size().height - px(40.)).min(px(height))).w((window.viewport_size().width - px(32.)).min(px(if invitation && !feishu { 440. } else { 520. })))
             .max_h(window.viewport_size().height - px(40.)).flex().flex_col()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -601,6 +621,19 @@ impl Workspace {
 
     fn submit_sharing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.sharing.busy { return; }
+        if let Some(Sheet::MoveInto(ids, target, room)) = self.sharing.sheet.clone() {
+            if !self.sharing_allowed(cx) || !self.flush(cx) { return; }
+            let personal = self.store.root().to_owned();
+            let epoch = self.begin_sharing_request(cx);
+            cx.spawn_in(window, async move |this, cx| {
+                let result = cx.background_executor().spawn(async move { shared::original::move_into(&personal, &room, &ids, &target) }).await;
+                let _ = this.update_in(cx, |ws, window, cx| { if ws.finish_sharing_request(epoch, result.err(), cx) && ws.sharing.message.is_none() {
+                    ws.entries = ws.store.list(); ws.close_sharing(window, cx); cloud_sync::retry(ws.store.root(), cx);
+                } });
+            }).detach();
+            return;
+        }
+        if let Some(Sheet::Collection(parent)) = self.sharing.sheet.clone() { self.save_collection(parent, window, cx); return; }
         if let Some(Sheet::EndMany(rooms, personal)) = self.sharing.sheet.clone() {
             if self.sharing_account_ready(cx) { self.end_shared_documents(rooms, personal, window, cx); }
             return;
@@ -688,7 +721,7 @@ impl Workspace {
     fn publish_shared_copy(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let email = self.sharing.email.read(cx).text.trim().to_owned();
         if email.is_empty() || !self.flush(cx) { return; }
-        let Ok(doc) = self.store.load(id) else { return };
+        let Some(title) = self.entries.iter().find(|entry| entry.id == id).map(|entry| display_title(&entry.title)) else { return };
         let root = crate::store::Store::root_dir();
         let prepared = self.sharing.prepared.clone();
         let permission = self.sharing.permission;
@@ -696,8 +729,9 @@ impl Workspace {
         let epoch = self.begin_sharing_request(cx);
         cx.spawn_in(window, async move |this, cx| {
             let copy_root = root.clone();
+            let source = original.clone();
             let staged = cx.background_executor().spawn(async move {
-                prepared.map_or_else(|| shared::prepare_copy(&copy_root, crate::model::display_title(&doc.title.text), &doc, ""), Ok)
+                prepared.map_or_else(|| shared::original::prepare(&copy_root, &source, title), Ok)
             }).await;
             let room = match staged {
                 Ok(room) => room,
@@ -713,6 +747,7 @@ impl Workspace {
             let _ = this.update_in(cx, |w, window, cx| {
                 if !w.finish_sharing_request(epoch, None, cx) { return; }
                 w.close_sharing(window, cx);
+                w.entries = w.store.list();
                 w.sharing.original = Some(original);
                 w.navigate_shared(room, Some((email, permission)), window, cx);
             });

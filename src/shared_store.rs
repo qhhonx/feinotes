@@ -44,6 +44,7 @@ impl SharedStore {
         self.0.borrow_mut().save_sqlite_with(id, doc, sync)
     }
     pub fn create(&mut self) -> Result<(String, Document)> { self.0.borrow_mut().create() }
+    pub fn create_from_in(&mut self, doc: &Document, parent: Option<&str>) -> Result<String> { self.0.borrow_mut().create_from_in(doc, parent) }
     pub fn create_from(&mut self, doc: &Document) -> Result<String> { self.0.borrow_mut().create_from(doc) }
     pub fn size_of(&self, id: &str, doc: &Document) -> u64 { self.0.borrow_mut().size_of(id, doc) }
     pub fn list_trash(&mut self) -> Vec<TrashEntry> { self.0.borrow_mut().list_trash() }

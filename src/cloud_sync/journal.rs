@@ -120,7 +120,7 @@ fn attachment_warnings(db: &Connection, id: &str, count: usize) -> Result<bool> 
 
 const RECENT_VERSIONS: i64 = 6;
 
-fn archive(db: &Connection, id: &str, doc: &Document, front: &str, recovery: bool) -> Result<i64> {
+pub(super) fn archive(db: &Connection, id: &str, doc: &Document, front: &str, recovery: bool) -> Result<i64> {
     let xml = crate::docxml::serialize(doc);
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
     encoder.write_all(xml.as_bytes())?;
@@ -393,7 +393,7 @@ impl Journal {
 
     fn ensure_writable(&self, id: &str) -> Result<()> {
         if let Some(room) = &self.room {
-            ensure!(id == room.note && self.access.is_some_and(Access::can_write), "This shared note is read-only");
+            ensure!((id == room.note || room.folder && room.permits(id)) && self.access.is_some_and(Access::can_write), "This shared note is read-only");
         }
         Ok(())
     }
@@ -682,7 +682,7 @@ impl Journal {
             activity::remember_access(&tx, access)?;
             if access == Access::Revoked {
                 ensure!(page.edits.is_empty() && page.token.is_none(), "A revoked share returned note content");
-                tx.execute("DELETE FROM library_entries WHERE id = ?1", [&room.note])?;
+                tx.execute("DELETE FROM library_entries", [])?;
             }
         }
         for id in page.uploaded { tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?; }
@@ -715,13 +715,16 @@ impl Journal {
             && !self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox)", [], |row| row.get::<_, bool>(0))?
         { return Ok((false, vec![])); }
         let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let local = if self.room.is_none() { catalogue::local(&tx)? } else { Default::default() };
+        let has_catalogue = self.room.as_ref().is_none_or(|room| room.folder);
+        let writable = self.access.is_none_or(Access::can_write);
+        let local = if has_catalogue { catalogue::local(&tx)? } else { Default::default() };
         let catalogue_doc = LoroDoc::new();
         catalogue_doc.import(&get_state(&tx, "catalogue")?.context("Missing catalogue snapshot")?)?;
         catalogue_doc.set_peer_id(self.peer)?;
         let before = catalogue_doc.oplog_vv();
         let seen = serde_json::from_slice(&get_state(&tx, "catalogue_seen")?.context("Missing catalogue projection")?)?;
-        catalogue::capture(&tx, &catalogue_doc, &seen, &local)?;
+        if self.room.is_none() { super::organizer::capture(&tx, &catalogue_doc)?; }
+        if writable { catalogue::capture(&tx, &catalogue_doc, &seen, &local)?; }
         catalogue_doc.commit();
         if catalogue_doc.oplog_vv() != before {
             enqueue(&tx, catalogue::SCOPE, catalogue_doc.export(ExportMode::updates(&before))?)?;
@@ -731,8 +734,8 @@ impl Journal {
             WHERE n.id IS NULL OR d.revision <> n.seen OR n.held <> 0")?
             .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let local_bodies_changed = !ids.is_empty() && self.room.is_none();
-        for (id, trashed) in ids.into_iter().filter(|(id, _)| local.contains_key(id)
+        let local_bodies_changed = !ids.is_empty() && has_catalogue;
+        for (id, trashed) in ids.into_iter().filter(|(id, _)| writable && local.contains_key(id)
             || self.room.as_ref().is_some_and(|room| room.note == *id && self.access.is_some_and(Access::can_write))) {
             let (doc, seen, front) = Store::read_sync_body(&tx, &id, trashed)?;
             capture_note(&tx, &self.root, self.peer, &id, &doc, seen, &front)?;
@@ -754,7 +757,7 @@ impl Journal {
             .query_map([catalogue::SCOPE, assets::SCOPE], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
         let mut changed = vec![];
         for id in ids {
-            if self.room.is_none() && catalogue::permanently_deleted(&catalogue_doc, &id) {
+            if has_catalogue && catalogue::permanently_deleted(&catalogue_doc, &id) {
                 tx.execute("DELETE FROM inbox WHERE note = ?1", [&id])?;
                 continue;
             }
@@ -811,18 +814,19 @@ impl Journal {
         let before_projection = catalogue_doc.oplog_vv();
         let catalogue_changed = before_projection != before;
         let dirty = tx.execute("DELETE FROM state WHERE key = 'catalogue_dirty'", [])? != 0;
-        let library_changed = if let Some(room) = &self.room {
+        let library_changed = if let Some(room) = self.room.as_ref().filter(|room| !room.folder) {
             let front: Option<String> = tx.query_row("SELECT front FROM library_documents WHERE id = ?1",
                 [&room.note], |row| row.get(0)).optional()?;
             let front = front.unwrap_or_default();
             Store::show_shared_note(&tx, &room.note, &front)?
-        } else if catalogue_changed || local_bodies_changed || dirty || !changed.is_empty() {
-            let changed = catalogue::project(&tx, &catalogue_doc)?;
+        } else if catalogue_changed || local_bodies_changed || dirty || !changed.is_empty() || !writable && local != seen {
+            if self.room.is_none() { super::organizer::project(&tx, &catalogue_doc)?; }
+            let changed = catalogue::project(&tx, &catalogue_doc, self.room.as_ref().is_some_and(|room| room.folder))? || catalogue_changed;
             put_state(&tx, "catalogue_seen", &serde_json::to_vec(&catalogue::local(&tx)?)?)?;
             changed
         } else { false };
         catalogue_doc.commit();
-        if catalogue_doc.oplog_vv() != before_projection {
+        if writable && catalogue_doc.oplog_vv() != before_projection {
             enqueue(&tx, catalogue::SCOPE, catalogue_doc.export(ExportMode::updates(&before_projection))?)?;
         }
         if catalogue_doc.oplog_vv() != before { put_state(&tx, "catalogue", &catalogue_doc.export(ExportMode::Snapshot)?)?; }
@@ -1256,7 +1260,7 @@ fn local_version_restore_commits_cloud_state_atomically_and_obeys_shared_access(
     assert_eq!(store.load(&id)?, restored);
     let state = journal.text_state(&id)?.context("Missing restored CRDT")?;
     assert_eq!(content::render(&state)?.blocks[0].text.text, "第一版");
-    journal.room = Some(shared::Scope { note: id.clone(), owner: Some("synthetic-owner".into()) });
+    journal.room = Some(shared::Scope { note: id.clone(), owner: Some("synthetic-owner".into()), folder: false });
     for access in [Access::ReadOnly, Access::Revoked] {
         journal.access = Some(access);
         let queue = journal.counts()?.0;

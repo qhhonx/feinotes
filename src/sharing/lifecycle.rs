@@ -17,10 +17,13 @@ impl Workspace {
         let bulk = matches!(self.sharing.sheet, Some(Sheet::EndMany(..)));
         let epoch = self.begin_sharing_request(cx);
         let personal = crate::store::Store::root_dir();
+        let rooms: Vec<_> = rooms.into_iter().map(|room| {
+            let lock = shared::prepare_end(&personal, &room, cx); (room, lock)
+        }).collect();
         cx.spawn_in(window, async move |this, cx| {
             let root = personal.clone();
             let results = cx.background_executor().spawn(async move {
-                rooms.into_iter().map(|room| { let result = shared::end(&root, &room); (room, result) }).collect::<Vec<_>>()
+                rooms.into_iter().map(|(room, lock)| { let result = lock.and_then(|lock| shared::end(&root, &room, lock)); (room, result) }).collect::<Vec<_>>()
             }).await;
             let _ = this.update_in(cx, |w, window, cx| {
                 if !w.finish_sharing_request(epoch, None, cx) { return; }
@@ -28,13 +31,13 @@ impl Workspace {
                 for (room, result) in results {
                     match result {
                         Ok(()) => {
-                            removed_current |= w.is_shared() && w.current.as_ref() == Some(&room.scope.note);
+                            removed_current |= shared::room_root(&personal, &room.scope.note).is_ok_and(|root| w.store.root() == root);
                             if let Ok(root) = shared::room_root(&personal, &room.scope.note)
                                 && let Err(error) = cloud_sync::shared_access_ended(&root, &room.scope.note, cx) {
                                 crate::logging::write(&format!("Shared removal local access state: {error:#}"));
                             }
                         }
-                        Err(error) => { failed.push(room.scope.note.clone()); failed_rooms.push(room); errors.push(settings::diagnostic(&error.to_string())); }
+                        Err(error) => { let _ = shared::store_for(&room, cx); failed.push(room.scope.note.clone()); failed_rooms.push(room); errors.push(settings::diagnostic(&error.to_string())); }
                     }
                 }
                 if !errors.is_empty() {

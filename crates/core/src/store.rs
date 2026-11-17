@@ -38,6 +38,9 @@ pub struct Meta {
     /// A folder, by its name on disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
+    /// Owner-side reference to the authoritative shared library.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_order: Option<u64>,
     pub created: u64,
@@ -139,7 +142,7 @@ fn catalogue_closed_default() -> bool { true }
 impl Default for Meta {
     fn default() -> Self {
         Self {
-            folder: None, root_order: None, created: 0, modified: 0, pinned: false, opened: 0,
+            folder: None, share_root: None, root_order: None, created: 0, modified: 0, pinned: false, opened: 0,
             width: PageWidth::default(), catalogue_closed: true,
             parent: None, order: 0, starred: 0, reading: false,
             info: InfoRow::default(), refs_hidden: false,
@@ -1608,6 +1611,8 @@ impl Store {
     /// child; the file is written there, never moved there afterwards.
     pub fn create_from_in(&mut self, doc: &Document, parent: Option<&str>) -> Result<String> {
         #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() { self.check_shared_writer(None)?; }
+        #[cfg(feature = "sqlite-store")]
         if self.sqlite.is_some() {
             let _lock = self.begin_write()?;
             self.validate_folder(None, parent)?;
@@ -1774,6 +1779,8 @@ impl Store {
     /// deletion takes it along (`None`: deleted itself). A folder takes what
     /// is in it along (deleting those afterwards does nothing more).
     pub fn delete(&mut self, id: &str, root: Option<&str>) -> Result<()> {
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() { self.check_shared_writer(Some(id))?; }
         #[cfg(feature = "sqlite-store")]
         if self.sqlite.is_some() && !self.index.get(id).is_some_and(Meta::local) { let _lock = self.begin_write()?; return self.delete_sqlite(id, root); }
 
@@ -2232,6 +2239,8 @@ impl Store {
     /// file name; a folder's name is its folder's.
     pub fn rename(&mut self, id: &str, title: &str) -> Result<Meta> {
         #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() { self.check_shared_writer(None)?; }
+        #[cfg(feature = "sqlite-store")]
         if self.sqlite_manages(id) { let _lock = self.begin_write()?; let before = self.file_state(id); if self.index.get(id).is_some_and(|m| m.folder.is_some()) { self.index.get_mut(id).unwrap().folder = Some(title.to_string()); self.save_index()?; self.record_file_change(id, before); return Ok(self.index[id].clone()); } let mut doc = self.load(id)?; doc.title = crate::model::RichText::plain(title); let meta = self.save_now(id, &doc)?; self.record_file_change(id, before); return Ok(meta); }
 
         let _lock = self.begin_write()?;
@@ -2265,6 +2274,8 @@ impl Store {
 
     /// 移动到: put `id` in folder `parent` (`None` = top level of 我的文档库), as its last child.
     pub fn set_parent(&mut self, id: &str, parent: Option<&str>) -> Result<Meta> {
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() { self.check_shared_writer(Some(id))?; }
         self.move_in_tree(id, parent, None)?;
         Ok(self.index[id].clone())
     }

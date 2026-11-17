@@ -10,12 +10,22 @@ pub(super) struct PersonalRoute {
 
 impl Workspace {
     pub(crate) fn navigate_shared(&mut self, room: Room, invitation: Option<(String, Access)>, window: &mut Window, cx: &mut Context<Self>) {
+        let target = room.scope.note.clone();
+        self.navigate_shared_item(room, target, invitation, window, cx);
+    }
+
+    pub(crate) fn navigate_shared_item(&mut self, room: Room, target: String, invitation: Option<(String, Access)>, window: &mut Window, cx: &mut Context<Self>) {
         if self.sharing.busy { return; }
-        if invitation.is_none() && self.view == View::Doc && self.current.as_deref() == Some(&room.scope.note)
+        if !self.is_shared() && shared::original::awaiting_publication(self.store.root(), &room) {
+            self.create_shared_note(&room.scope.note, window, cx);
+            return;
+        }
+        if invitation.is_none() && self.view == View::Doc && self.current.as_deref() == Some(&target)
             && shared::scope(&self.store, cx) == Some(&room.scope) { return; }
         self.close_history(cx);
         let retry_room = room.clone(); let retry_invitation = invitation.clone();
-        if !self.save_before(cx, move |w, window, cx| w.navigate_shared(retry_room, retry_invitation, window, cx)) { return; }
+        let retry_target = target.clone();
+        if !self.save_before(cx, move |w, window, cx| w.navigate_shared_item(retry_room, retry_target, retry_invitation, window, cx)) { return; }
         let store = match shared::store_for(&room, cx) {
             Ok(store) => store,
             Err(error) => { self.show_toast_kind(ui::ToastKind::Error, &settings::diagnostic(&error.to_string()), cx); return; }
@@ -29,7 +39,7 @@ impl Workspace {
         let expanded = self.expanded.clone();
         let folder_drag = std::mem::take(&mut self.folder_drag); let shared_drag = std::mem::take(&mut self.sharing.sidebar); let scroll = self.list_scroll.clone();
         let original = self.sharing.original.take();
-        let note = room.scope.note.clone();
+        let note = target;
         window.replace_root(cx, |window, cx| {
             let mut ws = Workspace::build_window(false, Some(note), Some(store), window, cx);
             ws.sidebar_open = sidebar; ws.sidebar_width = width; ws.folded = personal_folded;

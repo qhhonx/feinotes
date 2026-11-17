@@ -5,17 +5,24 @@ import CryptoKit
 import Foundation
 
 private let sharePrefix = "QuietSharedNote-v1-"
+private let folderPrefix = "QuietSharedFolder-v1-"
 let sharedAssetScope = "00000000-0000-0000-0000-000000000002"
 
 struct ShareScope: Codable, Equatable {
     let note: String
     let owner: String?
 
+    var folder: Bool? = nil
+
+    func permits(_ id: String) -> Bool {
+        id == note || id == sharedAssetScope || (folder == true && UUID(uuidString: id)?.uuidString.lowercased() == id)
+    }
+
     func zone() throws -> CKRecordZone.ID {
         guard let id = UUID(uuidString: note), id.uuidString.lowercased() == note,
               owner.map({ !$0.isEmpty && $0.utf8.count <= 256 && $0 != CKCurrentUserDefaultName }) ?? true
         else { throw ShareError.invalid }
-        return CKRecordZone.ID(zoneName: sharePrefix + note, ownerName: owner ?? CKCurrentUserDefaultName)
+        return CKRecordZone.ID(zoneName: (folder == true ? folderPrefix : sharePrefix) + note, ownerName: owner ?? CKCurrentUserDefaultName)
     }
 }
 
@@ -135,10 +142,12 @@ private func acceptShare(_ value: String, container: CKContainer, revision: UInt
           url.path.hasPrefix("/share/") else { throw ShareError.invalid }
     let metadata = try await container.shareMetadata(for: url)
     let zone = metadata.share.recordID.zoneID
-    guard metadata.containerIdentifier == containerID, zone.zoneName.hasPrefix(sharePrefix),
+    let folder = zone.zoneName.hasPrefix(folderPrefix)
+    let prefix = folder ? folderPrefix : sharePrefix
+    guard metadata.containerIdentifier == containerID, zone.zoneName.hasPrefix(prefix),
           metadata.share.recordID.recordName == CKRecordNameZoneWideShare else { throw ShareError.invalid }
-    let scope = ShareScope(note: String(zone.zoneName.dropFirst(sharePrefix.count)),
-                           owner: metadata.participantRole == .owner ? nil : zone.ownerName)
+    let scope = ShareScope(note: String(zone.zoneName.dropFirst(prefix.count)),
+                           owner: metadata.participantRole == .owner ? nil : zone.ownerName, folder: folder ? true : nil)
     _ = try scope.zone()
     let title = metadata.share[CKShare.SystemFieldKey.title] as? String
     if metadata.participantRole == .owner || metadata.participantStatus == .accepted {

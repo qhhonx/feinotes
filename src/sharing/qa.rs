@@ -12,6 +12,48 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
     let primary = handles[0];
     primary.update(cx, |_, window, _| crate::devtools::select_script_window(window))?;
     match name {
+        "check-shared-add" => primary.update(cx, |w, _, _| -> Result<()> {
+            ensure!(matches!(w.create_menu, Some((crate::folders::CreateTarget::Shared, _))), "Sidebar plus did not open the shared menu"); Ok(())
+        })??,
+        "check-sidebar-invite" => primary.update(cx, |w, _, _| -> Result<()> {
+            ensure!(w.accept_invitation_open() && w.sharing.accept_at == Some("accept-sidebar"), "Sidebar menu did not open the invitation form"); Ok(())
+        })??,
+        "collections" => primary.update(cx, |ws, window, cx| -> Result<()> {
+            ws.show_view(View::Shared, cx);
+            ws.personal_collection(None, window, cx);
+            ws.sharing.folder_name.update(cx, |field, cx| field.set_text("客户资料", cx));
+            ws.submit_sharing(window, cx);
+            let parent = organizer::Organizer::load()?.folders().find(|e| e.title == "客户资料").context("Missing personal collection")?.id;
+            ws.personal_collection(Some(parent.clone()), window, cx);
+            ws.sharing.folder_name.update(cx, |field, cx| field.set_text("十一月", cx));
+            ws.submit_sharing(window, cx);
+            let child = organizer::Organizer::load()?.folders().find(|e| e.meta.parent == Some(parent.clone())).context("Missing nested collection")?.id;
+            let room = shared::rooms(&personal)?.into_iter().next().context("Missing room")?;
+            ensure!(ws.update_organizer(cx, |tree| tree.place(&room.scope.note, Some(&child))), "Could not file the shared document");
+            ws.expanded.insert(parent.clone()); ws.expanded.insert(child); ws.sharing.collection = Some(parent); ws.sharing.folded = false; cx.notify();
+            let folder = ws.store.create_folder("共同项目", None)?;
+            let nested = ws.store.create_folder("会议", Some(&folder))?;
+            let doc = ws.store.create_from(&crate::model::Document { title: crate::model::RichText::plain("议程"), ..Default::default() })?;
+            ws.store.set_parent(&doc, Some(&nested))?; ws.entries = ws.store.list();
+            std::fs::write(root.join("qa-team-folder"), &folder)?;
+            Ok(())
+        })??,
+        "folder-invite" => primary.update(cx, |ws, window, cx| -> Result<()> {
+            let id = std::fs::read_to_string(root.join("qa-team-folder"))?;
+            ws.create_shared_note(&id, window, cx); ws.sharing.email.update(cx, |f,cx| f.set_text("person@example.test",cx));
+            ws.submit_sharing(window, cx); Ok(())
+        })??,
+        "folder-open" => primary.update(cx, |ws, window, cx| -> Result<()> {
+            let id = std::fs::read_to_string(root.join("qa-team-folder"))?;
+            ensure!(ws.is_shared() && ws.folder_current.as_ref() == Some(&id) && matches!(ws.sharing.sheet, Some(Sheet::Members(_))), "Folder invitation did not open the shared root");
+            ws.close_sharing(window, cx);
+            let child = ws.entries.iter().find(|e| e.meta.parent.as_ref() == Some(&id)).context("Missing nested shared folder")?.id.clone();
+            ws.open(&child, window, cx);
+            ws.create_doc(false, Some(child.clone()), window, cx);
+            ensure!(ws.current.as_ref().is_some_and(|id| ws.entries.iter().any(|e| &e.id == id && e.meta.parent.as_ref() == Some(&child))), "New document missed its shared parent");
+            ws.open(&child, window, cx);
+            eprintln!("SHARED_FOLDERS_UI_OK"); Ok(())
+        })??,
         "sidebar-setup" => primary.update(cx, |ws, window, cx| -> Result<()> {
             let original = ws.current.clone().context("Missing personal fixture")?;
             std::fs::write(root.join("qa-personal-original"), &original)?;
@@ -71,10 +113,10 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             eprintln!("SHARING_INTERACTIONS_OK pointer=reordered order=persisted personal=unchanged cancel=preserved folders=collapsed"); Ok(())
         })??,
         "original-review" => primary.update(cx, |ws, window, cx| -> Result<()> {
-            ws.review_original(ws.sharing.original.clone().context("Missing original")?, window, cx); Ok(())
+            let id = ws.sharing.original.clone().context("Missing original")?; ws.close_sharing(window, cx); ws.navigate_personal(View::Doc, Some(id), window, cx); Ok(())
         })??,
         "original-cancel" => primary.update(cx, |ws, window, cx| -> Result<()> {
-            ensure!(!ws.is_shared() && matches!(ws.confirm, Some(crate::app::Confirm::Delete { .. })), "Original cleanup did not use personal deletion confirmation");
+            ensure!(ws.is_shared() && ws.confirm.is_none(), "Original cleanup did not use personal deletion confirmation");
             ws.confirm = None;
             let room: Room = serde_json::from_slice(&std::fs::read(root.join("qa-created-room.json"))?)?;
             ws.open_shared_note(&room, window, cx); Ok(())
@@ -216,9 +258,9 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             primary.update(cx, |ws, _, _| -> Result<()> {
                 ensure!(!ws.is_shared(), "Deletion did not return to the personal context");
                 ensure!(shared::rooms(&personal)?.len() == 1, "Deleted shared document remains listed");
-                ensure!(ws.store.list_trash().len() == 2, "Removal retry duplicated or lost recovery copies");
+                ensure!(ws.store.list_trash().len() == 1, "Removal retry duplicated or lost recovery copies");
                 let id = std::fs::read_to_string(root.join("qa-personal-original"))?;
-                ensure!(ws.store.load(&id)?.plain_text() == "private body", "Sharing changed the personal original");
+                ensure!(ws.store.load(&id)?.title.text == "即时更新的共享标题" && ws.store.list().iter().any(|entry| entry.id == id && entry.meta.share_root.is_none()), "Stopping did not restore the edited original");
                 Ok(())
             })??;
             eprintln!("SHARING_UI_OK sidebar=stable title=live list=main create=contextual publish=retry-same-copy invite=retry-in-current-window members=isolated permission=updated revoke=confirmed accept=readonly original=kept window=same leave=isolated delete=recoverable");

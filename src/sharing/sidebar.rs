@@ -43,6 +43,11 @@ fn move_before(ids: &mut Vec<String>, id: &str, before: Option<&str>) {
 }
 
 impl Workspace {
+    fn viewing_shared_folder(&self, id: &str, cx: &App) -> bool {
+        matches!(self.view, View::Folder | View::Doc)
+            && shared::scope(&self.store, cx).is_some_and(|scope| scope.folder && scope.note == id)
+    }
+
     pub(crate) fn shared_entries(&self, cx: &App) -> Vec<Entry> {
         let organization = cx.global::<Organization>(); let order = &cx.global::<SharedOrder>().0;
         cx.try_global::<ActivityView>().into_iter().flat_map(|view| &view.0).map(|row| Entry {
@@ -69,7 +74,7 @@ impl Workspace {
             .pl(px(6.)).flex().items_center().gap(px(9.)).rounded(px(crate::sidebar::ROW_R)).cursor_pointer()
             .text_size(px(crate::theme::ui_font())).text_color(crate::sidebar::text_color()).hover(|s| s.bg(crate::sidebar::hover()))
             .when(self.is_shared() && self.current.as_ref() == Some(&id), |d| d.bg(crate::sidebar::selection_fill()))
-            .child(crate::sidebar::entry_icon(entry, false)).child(div().flex_1().min_w_0().truncate().child(display_title(&entry.title)))
+            .child(crate::sidebar::entry_icon(entry, self.viewing_shared_folder(&id, cx), cx)).child(div().flex_1().min_w_0().truncate().child(display_title(&entry.title)))
             .child(self.more_button(entry, "shared-pinned", cx))
             .on_mouse_down(MouseButton::Right, cx.listener({ let id = id.clone(); move |w, event: &MouseDownEvent, _, cx| {
                 w.row_menu = Some(crate::app::RowMenu { id: format!("shared:{id}"), pos: event.position, corner: Corner::TopLeft, sub: false, batch: false }); cx.notify();
@@ -77,8 +82,16 @@ impl Workspace {
             .on_click(cx.listener(move |w, _, window, cx| { if let Some(room) = w.shared_list_room(&id, cx) { w.open_shared_note(&room, window, cx); } }))
     }
 
-    pub(crate) fn render_shared_sidebar_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn organized_shared_entries(&self, cx: &App) -> Vec<Entry> {
         let mut rows = self.shared_entries(cx);
+        let tree = cx.global::<organizer::Organizer>();
+        for row in &mut rows { row.meta.parent = tree.0.get(&row.id).and_then(|p| p.parent.clone()); }
+        rows.extend(tree.folders());
+        rows
+    }
+
+    pub(crate) fn render_shared_sidebar_rows(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let mut rows = self.organized_shared_entries(cx);
         let order = &order(cx).0;
         rows.sort_by_key(|row| order.iter().position(|id| id == &row.id));
         self.sharing.sidebar.shared_rows = Some(rows);
@@ -87,14 +100,45 @@ impl Workspace {
 
     pub(crate) fn shared_sidebar_row(&self, entry: &Entry, cx: &mut Context<Self>) -> Stateful<Div> {
         let id = entry.id.clone();
+        if entry.meta.folder.is_some() {
+            let child = id.clone();
+            let has_children = self.folder_drag.has_children(&id);
+            return div().id(SharedString::from(format!("private-collection-{id}"))).h(px(crate::sidebar::ROW_H)).w_full().group("doc-row")
+                .flex().items_center().gap(px(0.)).pl(px(6.)).pr(px(6.)).rounded(px(crate::sidebar::ROW_R)).cursor_pointer()
+                .hover(|s| s.bg(crate::sidebar::hover()))
+                .child(div().size(px(20.)).flex_none().relative()
+                    .child(crate::sidebar::entry_icon(entry, self.expanded.contains(&id), cx)
+                        .when(has_children, |d| d.group_hover("doc-row", |s| s.opacity(0.))))
+                    .when(has_children, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center()
+                        .opacity(0.).group_hover("doc-row", |s| s.opacity(1.))
+                        .child(ui::icon(if self.expanded.contains(&id) { "chevron-down" } else { "chevron-right" }, 12., Theme::icon())))
+                        .on_mouse_down(MouseButton::Left, cx.listener(|w, ev: &MouseDownEvent, _, _| {
+                            w.sharing.sidebar.icon_press = true; w.sharing.sidebar.icon_alt = ev.modifiers.alt;
+                        }))))
+                .child(self.sidebar_title(entry, self.sharing.collection.as_ref() == Some(&id), false))
+                .child(self.more_button(entry, "collection", cx))
+                .child(div().id(SharedString::from(format!("sub-{id}"))).size(px(22.)).p(px(3.)).rounded(px(6.))
+                    .opacity(0.).group_hover("doc-row", |s| s.opacity(1.)).hover(|s| s.bg(crate::sidebar::selection_fill())).child(ui::icon("folder-plus", 16., Theme::icon()))
+                    .tip(tr("新建个人子文件夹", "New personal subfolder"), None)
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |w, _, window, cx| { cx.stop_propagation(); w.personal_collection(Some(child.clone()), window, cx); })))
+                .on_mouse_down(MouseButton::Right, cx.listener({ let id = id.clone(); move |w, event: &MouseDownEvent, _, cx| {
+                    w.row_menu = Some(crate::app::RowMenu { id: id.clone(), pos: event.position, corner: Corner::TopLeft, sub: false, batch: false });
+                    cx.stop_propagation(); cx.notify();
+                }}))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |w, event: &MouseDownEvent, _, cx| {
+                    w.with_sidebar(true, |w| w.arm_folder_drag(&id, event.position, cx)); cx.stop_propagation();
+                }));
+        }
+        let selected = self.is_shared() && (self.current.as_ref() == Some(&id) || self.folder_current.as_ref() == Some(&id));
         let unread = cx.try_global::<ActivityView>().is_some_and(|view| view.0.iter().any(|row| row.room.scope.note == id && row.unread));
         div().id(SharedString::from(format!("shared-sidebar-{id}"))).h(px(crate::sidebar::ROW_H)).w_full().pl(px(6.)).pr(px(8.))
             .flex().items_center().gap(px(0.)).rounded(px(crate::sidebar::ROW_R)).cursor_pointer()
             .text_size(px(crate::theme::ui_font())).text_color(crate::sidebar::text_color()).group("doc-row")
             .when(self.shared_batch(), |d| d.child(crate::sidebar::checkbox(if self.batch.as_ref().is_some_and(|ids| ids.contains(&id)) { crate::sidebar::Check::On } else { crate::sidebar::Check::Off }, false, "doc-row").mr(px(4.))))
             .when(self.shared_batch() && self.batch.as_ref().is_some_and(|ids| ids.contains(&id)), |d| d.bg(crate::sidebar::selection_fill()))
-            .child(crate::sidebar::entry_icon(entry, false))
-            .child(self.sidebar_title(entry, self.is_shared() && self.current.as_ref() == Some(&id), false))
+            .child(crate::sidebar::entry_icon(entry, self.viewing_shared_folder(&id, cx), cx))
+            .child(self.sidebar_title(entry, selected, false))
             .when(unread, |d| d.child(div().size(px(7.)).rounded_full().bg(Theme::primary())))
             .when(!self.shared_batch() && !self.rename.as_ref().is_some_and(|rename| rename.id == entry.id), |d| d.child(self.more_button(entry, "shared", cx)))
             .on_mouse_down(MouseButton::Right, cx.listener({ let id = id.clone(); move |w, event: &MouseDownEvent, _, cx| {
@@ -111,7 +155,9 @@ impl Workspace {
             }))
     }
 
-    pub(crate) fn reorder_shared_sidebar(&mut self, id: &str, before: Option<&str>, cx: &mut Context<Self>) {
+    pub(crate) fn reorder_shared_sidebar(&mut self, id: &str, parent: Option<&str>, before: Option<&str>, cx: &mut Context<Self>) {
+        if !self.update_organizer(cx, |tree| tree.place(id, parent)) { return; }
+        if let Some(parent) = parent { self.expanded.insert(parent.into()); }
         let Some(rows) = self.folder_drag.shared_rows.as_ref() else { return };
         let mut ids = rows.iter().map(|entry| entry.id.clone()).collect();
         move_before(&mut ids, id, before);

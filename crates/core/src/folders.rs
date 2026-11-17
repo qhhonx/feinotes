@@ -23,6 +23,11 @@ impl Store {
     }
 
     pub(super) fn validate_folder(&self, id: Option<&str>, parent: Option<&str>) -> Result<()> {
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() { self.check_shared_writer(id)?; }
+        if let Some(m) = parent.and_then(|p| self.index.get(p)) {
+            anyhow::ensure!(m.share_root.is_none(), "请通过共享文件夹添加项目 / Open the shared folder to add items");
+        }
         let mut seen = std::collections::HashSet::new();
         let mut p = parent;
         while let Some(key) = p {

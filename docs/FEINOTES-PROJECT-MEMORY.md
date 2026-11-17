@@ -7,5 +7,7 @@ Shared Documents must reuse the My Documents list, controls and menu primitives.
 Discuss and align any proposed new visual style with the user before implementing it.
 
 Shared Documents precedes My Documents in the sidebar and starts collapsed.
-Its Accept Invitation control and the matching Home header control use the same
-icon and open state, following the linked creation controls already in the app.
+Both document sections use the same fold control, batch button and plus menu.
+The Shared Documents plus menu contains New Personal Folder and Accept Invitation.
+Home also offers Accept Invitation. Both entry points open the same invitation
+form. Open the shared overview through the Shared Documents tab on Home.

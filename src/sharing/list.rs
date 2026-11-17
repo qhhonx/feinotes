@@ -8,9 +8,23 @@ impl Workspace {
     }
 
     pub(crate) fn render_shared_documents(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let entries = self.sorted_entries(self.shared_entries(cx));
+        let tree = cx.global::<organizer::Organizer>();
+        let folder = self.sharing.collection.as_deref().filter(|id| tree.0.contains_key(*id));
+        let belongs = |id: &str| tree.0.get(id).and_then(|p| p.parent.as_deref()).filter(|parent| tree.0.contains_key(*parent)) == folder;
+        let entries = self.sorted_entries(self.shared_entries(cx).into_iter().filter(|e| belongs(&e.id))
+            .chain(tree.folders().filter(|e| belongs(&e.id))).collect());
         let error = cx.try_global::<cloud_sync::activity::ActivityView>().and_then(|view| view.1.clone());
         let mut body = div().flex_1().min_h_0().flex().flex_col();
+        let parent = folder.map(str::to_string);
+        let mut tools = div().flex().items_center().gap(px(10.)).px(px(24.)).py(px(6.));
+        if let Some(id) = folder {
+            let placement = &tree.0[id]; let up = placement.parent.clone();
+            tools = tools.child(action("collection-up", tr("上一级", "Up one level"), true)
+                .on_click(cx.listener(move |ws, _, _, cx| { ws.sharing.collection = up.clone(); cx.notify(); })))
+                .child(caption(placement.title.clone().unwrap_or_default()));
+        }
+        body = body.child(tools.child(action("collection-add", tr("新建个人文件夹", "New personal folder"), true)
+            .on_click(cx.listener(move |ws, _, window, cx| ws.personal_collection(parent.clone(), window, cx)))));
         if !self.sharing_allowed(cx) {
             body = body.child(div().px(px(24.)).pt(px(12.)).child(caption(tr("协作已暂停。请在文档库设置中检查 iCloud。", "Collaboration is paused. Check iCloud in Documents settings."))));
         }
@@ -26,6 +40,7 @@ impl Workspace {
         let owner = room.scope.owner.is_none();
         let editable = owner || shared::store_for(&room, cx).ok().is_some_and(|store| shared::access(&store, cx) == Some(Access::ReadWrite));
         let (open, new_window, manage, rename, md, pdf) = (room.clone(), room.clone(), room.clone(), room.clone(), room.clone(), room.clone());
+        let folder_actions = room.clone();
         let (copy, pin, star, link) = (menu.id.clone(), menu.id.clone(), menu.id.clone(), room.clone());
         let item = |id: &'static str, glyph: &'static str, label: &'static str| {
             ui::menu_row(id, SharedString::from(id)).child(ui::icon(glyph, 16., Theme::icon())).child(label)
@@ -44,8 +59,8 @@ impl Workspace {
                     .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.open_shared_note(&open, window, cx); })))
                 .child(item("shared-row-window", "copy", tr("在新窗口中打开", "Open in new window"))
                     .on_click(cx.listener(move |w, _, window, cx| w.open_shared_window(new_window.clone(), window, cx))))
-                .child(item("shared-row-copy", "copy", tr("创建副本", "Create copy"))
-                    .on_click(cx.listener(move |w, _, _, cx| w.copy_shared_documents(vec![copy.clone()], cx))))
+                .when(!room.scope.folder, |d| d.child(item("shared-row-copy", "copy", tr("创建副本", "Create copy"))
+                    .on_click(cx.listener(move |w, _, _, cx| w.copy_shared_documents(vec![copy.clone()], cx)))))
                 .child(item("shared-row-pin", if entry.meta.pinned { "pin-off" } else { "pin" }, if entry.meta.pinned { tr("从“置顶”移除", "Remove from pinned") } else { tr("添加到“置顶”", "Pin document") })
                     .on_click(cx.listener(move |w, _, _, cx| w.toggle_shared_organization(&pin, true, cx))))
                 .child(item("shared-row-star", if entry.meta.starred > 0 { "star-off" } else { "star" }, if entry.meta.starred > 0 { tr("取消收藏", "Remove favorite") } else { tr("收藏", "Add to favorites") })
@@ -53,17 +68,26 @@ impl Workspace {
                 .child(item("shared-row-link", "copy", tr("复制邀请链接", "Copy invitation link"))
                     .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.copy_shared_link(link.clone(), window, cx); })))
                 .child(div().mx(px(8.)).my(px(5.)).h(px(1.)).bg(Theme::line_border()))
-                .child(item("shared-row-markdown", "export", tr("下载为 Markdown…", "Download Markdown…"))
-                    .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.with_shared_document(md.clone(), window, cx, |w, id, _, cx| w.open_export_md(id, cx)); })))
-                .child(item("shared-row-pdf", "export", tr("下载为 PDF…", "Download PDF…"))
-                    .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.with_shared_document(pdf.clone(), window, cx, |w, id, window, cx| w.export_pdf(id, window, cx)); })))
+                .when(!room.scope.folder, |d| d.child(item("shared-row-markdown", "export", tr("下载为 Markdown…", "Download Markdown…"))
+                    .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.with_shared_document(md.clone(), window, cx, |w, id, _, cx| w.open_export_md(id, cx)); }))))
+                .when(!room.scope.folder, |d| d.child(item("shared-row-pdf", "export", tr("下载为 PDF…", "Download PDF…"))
+                    .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.with_shared_document(pdf.clone(), window, cx, |w, id, window, cx| w.export_pdf(id, window, cx)); }))))
                 .child(item("shared-row-rename", "square-pen", tr("重命名", "Rename"))
                     .when(!editable, |d| d.opacity(0.4).cursor_default())
                     .when(editable, |d| d.on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.with_shared_document(rename.clone(), window, cx, |w, id, window, cx| { if matches!(w.sharing_access(cx), Some(Access::Owner | Access::ReadWrite)) { w.start_rename(id, window, cx); } }); }))))
+                .when(room.scope.folder && editable, |d| d.child(item("shared-folder-new", "plus", tr("新建…", "New…"))
+                    .on_click(cx.listener(move |w, event: &ClickEvent, window, cx| {
+                        w.row_menu = None; let pos = event.position();
+                        w.with_shared_document(folder_actions.clone(), window, cx, move |w, id, _, cx| {
+                            if w.sharing_access(cx).is_some_and(|access| access.can_write()) {
+                                w.create_menu = Some((crate::folders::CreateTarget::Library(Some(id.into())), pos)); cx.notify();
+                            }
+                        });
+                    }))))
                 .when(owner, |d| d.child(item("shared-row-manage", "share", tr("成员与权限…", "Members and access…"))
                     .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.open_member_management(manage.clone(), window, cx); }))))
                 .child(div().mx(px(8.)).my(px(5.)).h(px(1.)).bg(Theme::line_border()))
-                .child(item("shared-row-remove", "bin", if owner { tr("删除共享文档…", "Delete shared document…") } else { tr("离开共享…", "Leave share…") })
+                .child(item("shared-row-remove", "bin", if self.stopping_original(&room, cx) { tr("停止共享…", "Stop sharing…") } else if owner { tr("删除共享文档…", "Delete shared document…") } else { tr("离开共享…", "Leave share…") })
                     .text_color(Theme::danger()).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.open_end_shared(room.clone(), window, cx); })));
         }
         let position = if menu.pos.x < px(0.) { point(-menu.pos.x, menu.pos.y + px(22.)) } else { menu.pos };

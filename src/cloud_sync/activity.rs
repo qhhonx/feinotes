@@ -160,6 +160,7 @@ fn row(personal: &Path, mut room: Room) -> Result<Option<SharedRow>> {
     let summary = body.chars().take(160).collect();
     let meta: Option<String> = db.query_row("SELECT meta FROM library_entries WHERE id = ?1", [&room.scope.note], |row| row.get(0)).optional()?;
     let meta = meta.and_then(|meta| serde_json::from_str::<crate::store::Meta>(&meta).ok()).unwrap_or_default();
+    if let Some(title) = meta.folder.as_ref() { room.title = title.clone(); }
     let icon = db.query_row("SELECT icon FROM library_documents WHERE id = ?1", [&room.scope.note], |row| row.get::<_, Option<String>>(0)).optional().ok().flatten().flatten();
     Ok(Some(SharedRow { room, unread, summary, body, modified: meta.modified, created: meta.created, opened: meta.opened, icon }))
 }
@@ -221,7 +222,7 @@ mod tests {
         struct Fixture(PathBuf);
         impl Drop for Fixture { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
         let temp = Fixture(std::env::temp_dir().join(format!("quiet-shared-list-{}", uuid::Uuid::new_v4())));
-        let room = Room { scope: shared::Scope { note: uuid::Uuid::new_v4().to_string(), owner: None }, title: "Old title".into() };
+        let room = Room { scope: shared::Scope { note: uuid::Uuid::new_v4().to_string(), owner: None, folder: false }, title: "Old title".into() };
         let root = shared::room_root(&temp.0, &room.scope.note)?;
         std::fs::create_dir_all(&root)?;
         let db = Connection::open(root.join(crate::store::SQLITE_FILE))?;

@@ -836,7 +836,7 @@ rough.js、hachure-fill、points-on-curve、points-on-path、path-data-parser、
 | 素材 | 许可 |
 |---|---|
 | `assets/editor-icons/`（编辑器与文档里的 173 个图标） | 包括 Lucide 图标（ISC，其中源自 Feather 的部分保留 MIT 许可），其余按同一 24px / 2px 描边规格绘制。见同目录 `LICENSE-lucide`。 |
-| `assets/icons/`（界面外壳的 77 个图标） | 68 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，包含接受邀请入口的 `mail-check.svg` 和画板入口的 `whiteboard.svg`；各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 9 个项目自绘的 MIT 图标（包含 `globe.svg` 与共享按钮的后备图标 `share.svg`）。 |
+| `assets/icons/`（界面外壳的 79 个图标） | 68 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，包含接受邀请入口的 `mail-check.svg` 和画板入口的 `whiteboard.svg`；各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 11 个项目自绘的 MIT 图标（包含共享文件夹 `folder-shared.svg` 和 `folder-shared-open.svg`、`globe.svg` 与共享按钮的后备图标 `share.svg`）。 |
 | macOS 共享按钮的 `square.and.arrow.up` | 通过 AppKit 的 [系统符号 API](https://developer.apple.com/documentation/appkit/nsimage/init(systemsymbolname:accessibilitydescription:)) 在运行时获取；不随仓库或发行包分发 Apple 图形素材。 |
 | `packaging/macos/fei-notes.png` | 飞记的应用图标，随飞记构建嵌入。 |
 | `assets/branding/` | 上游 Quiet.md 品牌资源，未嵌入飞记构建。 |

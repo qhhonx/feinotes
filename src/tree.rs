@@ -145,6 +145,11 @@ impl Workspace {
         let parent = if self.entries.iter().any(|e| e.id == parent && e.meta.folder.is_some()) { parent.to_string() }
             else { return; };
         let parent = parent.as_str();
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if !self.is_shared() && crate::cloud_sync::shared::original::owner_room(&self.entries, parent).is_some() {
+            self.create_doc(false, Some(parent.into()), window, cx); return;
+        }
+        if self.is_shared() { self.create_doc(false, Some(parent.into()), window, cx); return; }
         let p = parent.to_string();
         if !self.save_before(cx, move |w, window, cx| w.new_child(&p, window, cx)) {
             return;
@@ -197,6 +202,8 @@ impl Workspace {
     /// 移动到: hang each page under `target` (`None`: top level), skipping
     /// moves into its own subtree.
     pub(crate) fn move_docs(&mut self, ids: &[String], target: Option<String>, cx: &mut Context<Self>) {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if self.confirm_shared_move(ids, target.as_deref(), cx) { return; }
         let file_before = self.store.track_file_changes();
         let mut failed = false;
         for id in ids {

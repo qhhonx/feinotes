@@ -249,15 +249,15 @@ fn glass(o: Point<Pixels>, p: &Pose, window: &mut Window) {
 }
 
 impl Workspace {
-    fn folder_papers(&self, id: &str, front: Option<&String>) -> (Vec<Entry>, usize) {
-        let n = self.entries.iter().filter(|e| e.meta.parent.as_deref() == Some(id)).count();
+    fn folder_papers(entries: &[Entry], id: &str, front: Option<&String>) -> (Vec<Entry>, usize) {
+        let n = entries.iter().filter(|e| e.meta.parent.as_deref() == Some(id)).count();
         // Papers stand for documents. A folder drawn as a paper reads as a note
         // with the folder's name on it, so only documents are painted — but a
         // folder usually holds folders for a while before a document appears,
         // and its documents usually sit deeper, so look all the way down and
         // paint the newest ones (#123).
         let mut kids: Vec<Entry> = vec![];
-        self.documents_below(id, &mut kids, 0);
+        Self::documents_below(entries, id, &mut kids, 0);
         kids.sort_by(|a, b| {
             let lead = |e: &Entry| front.is_some_and(|f| *f == e.id);
             lead(b).cmp(&lead(a)).then(b.meta.opened.max(b.meta.modified).cmp(&a.meta.opened.max(a.meta.modified)))
@@ -267,14 +267,14 @@ impl Workspace {
     }
 
     /// Every document anywhere under `id`, newest first once sorted by the caller.
-    fn documents_below(&self, id: &str, out: &mut Vec<Entry>, depth: usize) {
+    fn documents_below(entries: &[Entry], id: &str, out: &mut Vec<Entry>, depth: usize) {
         // A folder that contains itself would otherwise recurse forever.
         if depth > 32 {
             return;
         }
-        for e in self.entries.iter().filter(|e| e.meta.parent.as_deref() == Some(id)) {
+        for e in entries.iter().filter(|e| e.meta.parent.as_deref() == Some(id)) {
             if e.meta.folder.is_some() {
-                self.documents_below(&e.id, out, depth + 1);
+                Self::documents_below(entries, &e.id, out, depth + 1);
             } else {
                 out.push(e.clone());
             }
@@ -289,7 +289,12 @@ impl Workspace {
         let hot = self.home.folders.hovered.as_ref() == Some(&id) && self.home.folders.drag.is_none();
         let over = self.home.folders.drag.as_ref().is_some_and(|d| d.started && !d.returning && d.over.as_ref() == Some(&id)) || self.file_drop_over(&id);
         let front = self.home.folders.fx.get(&id).and_then(|f| f.front.clone());
-        let (kids, count) = self.folder_papers(&id, front.as_ref());
+        let entries = self.entries.as_slice();
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let private_tree = id.starts_with("collection-").then(|| self.organized_shared_entries(cx));
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let entries = private_tree.as_deref().unwrap_or(entries);
+        let (kids, count) = Self::folder_papers(entries, &id, front.as_ref());
 
         // ---- Springs.
         let fx = self.home.folders.fx.entry(id.clone()).or_insert_with(FolderFx::new);
@@ -367,10 +372,13 @@ impl Workspace {
                 .child(div().id(SharedString::from(format!("home-fnew-{id}"))).flex_none().size(px(28.)).rounded_full().flex().items_center().justify_center()
                     .bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_button()).opacity(reveal).cursor_pointer()
                     .hover(|s| s.bg(Theme::fill_hover_strong()))
-                    .tip(crate::settings::tr("新建文档", "New document"), None)
+                    .tip(if id.starts_with("collection-") { crate::settings::tr("新建个人子文件夹", "New personal subfolder") } else { crate::settings::tr("新建文档", "New document") }, None)
                     .child(icon("plus", 15., Theme::icon()).with_transformation(Transformation::scale(size(0.7 + 0.3 * reveal, 0.7 + 0.3 * reveal))))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |w, _, window, cx| { cx.stop_propagation(); w.new_child(&new_id, window, cx); })))
+                    .on_click(cx.listener(move |w, _, window, cx| { cx.stop_propagation();
+                        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                        if new_id.starts_with("collection-") { w.personal_collection(Some(new_id.clone()), window, cx); return; }
+                        w.new_child(&new_id, window, cx); })))
                 .child(self.home_more(e, format!("home-fmore-{id}"), cx).size(px(28.)).rounded_full().bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_button()).opacity(reveal)));
         div().id(SharedString::from(format!("home-folder-{id}"))).relative().w_full().min_w_0().h(px(h)).cursor_pointer()
             .when(self.batch.is_some(), |d| d.opacity(0.45))
@@ -385,7 +393,7 @@ impl Workspace {
                 cx.notify();
             }}))
             .when(self.batch.is_none(), |d| d
-                .on_click(cx.listener(move |w, _, window, cx| { w.try_open(&open_id, window, cx); }))
+                .on_click(cx.listener(move |w, _, window, cx| { w.home_click(&open_id, window, cx); }))
                 .on_mouse_down(MouseButton::Right, cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
                     w.row_menu = Some(RowMenu { id: menu_id.clone(), pos: ev.position, corner: Corner::TopLeft, sub: false, batch: false });
                     cx.notify();

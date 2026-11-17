@@ -507,7 +507,7 @@ mod tests {
         fs::create_dir_all(&shared_path)?;
         Store::initialize_shared_sqlite(&shared_path, &"a".repeat(64))?;
         let shared_doc = Document { title: RichText::plain("共享的离线笔记"), ..Default::default() };
-        let descriptor = shared::Room { scope: shared::Scope { note: shared_id.clone(), owner: None },
+        let descriptor = shared::Room { scope: shared::Scope { note: shared_id.clone(), owner: None, folder: false },
             title: shared_doc.title.text.clone() };
         fs::write(shared_path.join(shared::MARKER), serde_json::to_vec(&descriptor)?)?;
         let mut shared = Journal::open(&shared_path, None)?;

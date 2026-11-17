@@ -10,6 +10,8 @@ use std::{ffi::{CStr, CString, c_char}, fs, path::{Path, PathBuf}, sync::OnceLoc
 use crate::{model::Document, store::Store};
 use super::{Journal, assets, content};
 
+pub(crate) mod original;
+
 static ACTIVE: OnceLock<Scope> = OnceLock::new();
 #[cfg(feature = "devtools")]
 pub(crate) mod session_qa;
@@ -22,6 +24,8 @@ pub(super) const MARKER: &str = "shared-note.json";
 pub(crate) struct Scope {
     pub note: String,
     pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub folder: bool,
 }
 
 impl Scope {
@@ -31,7 +35,7 @@ impl Scope {
         Ok(())
     }
 
-    pub fn permits(&self, scope: &str) -> bool { scope == self.note || scope == assets::SCOPE }
+    pub fn permits(&self, scope: &str) -> bool { scope == self.note || scope == assets::SCOPE || self.folder && uuid::Uuid::parse_str(scope).is_ok_and(|id| id.to_string() == scope) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +91,17 @@ pub(crate) fn startup(personal: &Path, note: &str) -> Result<PathBuf> {
 
 fn stage(personal: &Path, room: &Room, seed: Option<(&Document, &str)>) -> Result<PathBuf> {
     room.scope.validate()?;
+    stage_with(personal, room, |staged| {
+        if let Some((doc, front)) = seed {
+            copy_assets(personal, staged, doc)?;
+            Journal::open(staged, None)?.seed_shared(doc, front)?;
+        }
+        Ok(())
+    })
+}
+
+fn stage_with(personal: &Path, room: &Room, seed: impl FnOnce(&Path) -> Result<()>) -> Result<PathBuf> {
+    room.scope.validate()?;
     let root = room_root(personal, &room.scope.note)?;
     if root.exists() {
         ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope)
@@ -101,22 +116,34 @@ fn stage(personal: &Path, room: &Room, seed: Option<(&Document, &str)>) -> Resul
         let account = account(personal)?;
         Store::initialize_shared_sqlite(&staged, &account)?;
         fs::write(staged.join(MARKER), serde_json::to_vec(room)?)?;
-        if let Some((doc, front)) = seed {
-            for source in content::local_assets(doc) {
-                let bytes = crate::store::read_bounded(&assets::path(personal, &source)?, assets::LIMIT as u64)
-                    .with_context(|| format!("Could not copy attachment {source}"))?;
-                let destination = assets::path(&staged, &source)?;
-                fs::create_dir_all(destination.parent().context("Missing attachment folder")?)?;
-                fs::write(destination, bytes)?;
-            }
-            let mut journal = Journal::open(&staged, None)?;
-            journal.seed_shared(doc, front)?;
-        }
+        seed(&staged)?;
         fs::rename(&staged, &root)?;
         Ok(root)
     })();
     if result.is_err() { let _ = fs::remove_dir_all(&staged); }
     result
+}
+
+fn copy_assets(personal: &Path, staged: &Path, doc: &Document) -> Result<()> {
+    for source in content::local_assets(doc) {
+        let bytes = crate::store::read_bounded(&assets::path(personal, &source)?, assets::LIMIT as u64)
+            .with_context(|| format!("Could not copy attachment {source}"))?;
+        let destination = assets::path(staged, &source)?;
+        fs::create_dir_all(destination.parent().context("Missing attachment folder")?)?;
+        if destination.exists() {
+            ensure!(crate::store::read_bounded(&destination, assets::LIMIT as u64)? == bytes, "Conflicting attachment {source}");
+        } else {
+            let temp = destination.with_file_name(format!(".asset-{}", uuid::Uuid::new_v4()));
+            fs::write(&temp, bytes)?;
+            let linked = fs::hard_link(&temp, &destination);
+            fs::remove_file(&temp)?;
+            if let Err(error) = linked {
+                if error.kind() != std::io::ErrorKind::AlreadyExists { return Err(error.into()); }
+                ensure!(fs::read(&destination)? == fs::read(assets::path(personal, &source)?)?, "Conflicting attachment {source}");
+            }
+        }
+    }
+    Ok(())
 }
 
 unsafe extern "C" { fn quiet_cloud_share(json: *const c_char) -> *mut c_char; }
@@ -186,9 +213,10 @@ pub(crate) fn create(personal: &Path, title: String, doc: &Document, front: &str
     Ok(room)
 }
 
+#[cfg(any(test, feature = "devtools"))]
 pub(crate) fn prepare_copy(personal: &Path, title: String, doc: &Document, front: &str) -> Result<Room> {
     Command::new(&account(personal)?, "checkAccess", None)?.send()?;
-    let room = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(), owner: None }, title };
+    let room = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(), owner: None, folder: false }, title };
     stage(personal, &room, Some((doc, front)))?;
     Ok(room)
 }
@@ -254,11 +282,49 @@ pub(crate) fn rooms(personal: &Path) -> Result<Vec<Room>> {
     Ok(rooms)
 }
 
-pub(crate) fn end(personal: &Path, room: &Room) -> Result<()> {
+pub(crate) fn prepare_end(personal: &Path, room: &Room, cx: &mut gpui::App) -> Result<Option<std::fs::File>> {
+    if !original::is_original(personal, room)? { return Ok(None); }
+    let root = room_root(personal, &room.scope.note)?;
+    if super::session(&root, cx).is_some() { super::release(&root, cx); }
+    Ok(Some(crate::cloud_restore::lock_library(&root)?))
+}
+
+pub(crate) fn end(personal: &Path, room: &Room, lock: Option<std::fs::File>) -> Result<()> {
     let root = room_root(personal, &room.scope.note)?;
     ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope) && account(&root)? == account(personal)?, "Shared note belongs to another account");
+    if let Some(lock) = lock {
+        let mut journal = Journal::open_locked(&root, None, lock)?;
+        #[cfg(feature = "devtools")]
+        let simulated = ui_qa::enabled();
+        #[cfg(not(feature = "devtools"))]
+        let simulated = false;
+        if !simulated {
+            journal.merge(&Default::default())?;
+            let start = std::time::Instant::now();
+            loop {
+                ensure!(start.elapsed().as_secs() < 240, "Timed out syncing the shared folder before stopping");
+                let page = super::exchange(journal.request()?)?;
+                ensure!(page.room_access == Some(Access::Owner) && !page.upload_quota_exceeded, "Unable to finish syncing before stopping sharing");
+                let more = page.more;
+                journal.receive(page)?;
+                journal.merge(&Default::default())?;
+                let (uploads, pending, held, warnings) = journal.counts()?;
+                ensure!(warnings == 0 && held == 0, "Resolve attachment errors before stopping sharing");
+                if !more && uploads == 0 {
+                    ensure!(pending == 0, "Some shared content has not downloaded yet");
+                    break;
+                }
+            }
+        }
+        original::restore(personal, room, || {
+            Command::new(&account(personal)?, "delete", Some(&room.scope))?.send()?;
+            Ok(())
+        })?;
+        fs::write(root.join("shared-note-ended"), b"Stopped sharing original")?;
+        return Ok(());
+    }
     let mut cache = Store::open_sqlite_at(root.clone())?;
-    if cache.list().iter().any(|entry| entry.id == room.scope.note) {
+    if !room.scope.folder && cache.list().iter().any(|entry| entry.id == room.scope.note) {
         Store::archive_note_to_trash(personal, &root, &room.scope.note)?;
     }
     let key = account(personal)?;
@@ -288,6 +354,10 @@ pub(crate) fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
         super::SyncPhase::AccountChecking | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut)),
         "{}", crate::settings::tr("请先确认 iCloud 账户和云功能状态。", "Check your iCloud account and cloud access first."));
     let root = room_root(&personal, &room.scope.note)?;
+    if !root.exists() && original::is_original(&personal, room)? {
+        stage(&personal, room, None)?;
+        fs::write(root.join("seed-published"), b"Owner catalogue reference")?;
+    }
     ensure!(!root.join("shared-note-ended").exists(), "This shared document has been removed");
     ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope) && account(&root)? == account(&personal)?,
         "Shared note belongs to another library");
@@ -322,9 +392,14 @@ pub(crate) fn store_for(room: &Room, cx: &mut gpui::App) -> Result<crate::shared
         super::SyncPhase::AccountChecking | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut)),
         "{}", crate::settings::tr("请先确认 iCloud 账户和云功能状态。", "Check your iCloud account and cloud access first."));
     let root = room_root(&personal, &room.scope.note)?;
+    if !root.exists() && original::is_original(&personal, room)? {
+        stage(&personal, room, None)?;
+        fs::write(root.join("seed-published"), b"Owner catalogue reference")?;
+    }
     ensure!(!root.join("shared-note-ended").exists(), "This shared document has been removed");
     ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope) && account(&root)? == account(&personal)?,
         "Shared note belongs to another library");
+    ensure!(!original::awaiting_publication(&personal, room), "{}", crate::settings::tr("请从原位置打开并完成共享邀请。", "Open the original item to finish sharing."));
     let store = if let Some(session) = super::session(&root, cx) { session.store.clone() }
         else {
             let (store, journal) = open_library(root)?;
@@ -535,7 +610,7 @@ mod tests {
         fs::write(guest.join(".cloud-restore-ready"), format!("{}\n", "b".repeat(64)))?;
         let doc = sample(&personal)?;
         let id = uuid::Uuid::new_v4().to_string();
-        let room = Room { scope: Scope { note: id.clone(), owner: None }, title: doc.title.text.clone() };
+        let room = Room { scope: Scope { note: id.clone(), owner: None, folder: false }, title: doc.title.text.clone() };
         let owner_root = stage(&personal, &room, Some((&doc, "")))?;
         let owner = Journal::open(&owner_root, None)?;
         let guest_room = Room { scope: Scope { owner: Some("synthetic-owner".into()), ..room.scope }, title: room.title };
@@ -603,7 +678,7 @@ mod tests {
         fs::write(personal.join(".cloud-restore-ready"), format!("{}\n", "a".repeat(64)))?;
         fs::write(guest.join(".cloud-restore-ready"), format!("{}\n", "b".repeat(64)))?;
         let doc = sample(&personal)?;
-        let room = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(), owner: None }, title: doc.title.text.clone() };
+        let room = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(), owner: None, folder: false }, title: doc.title.text.clone() };
         let owner_root = stage(&personal, &room, Some((&doc, "")))?;
         let owner = Journal::open(&owner_root, None)?;
         let request = owner.request()?;
