@@ -13,7 +13,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 pub const TITLE: BlockId = BlockId(0);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Pos {
     pub block: BlockId,
     pub offset: usize,
@@ -25,7 +25,7 @@ impl Pos {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Selection {
     pub anchor: Pos,
     pub head: Pos,
@@ -37,6 +37,48 @@ impl Selection {
     }
     pub fn is_collapsed(&self) -> bool {
         self.anchor == self.head
+    }
+}
+
+/// A view bookmark, never part of the document or its cloud edit stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReadingSelection {
+    selection: Selection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rows: Option<[(usize, u64); 2]>,
+}
+
+impl ReadingSelection {
+    fn signature(core: &Core, pos: Pos) -> u64 {
+        core.text_of(pos.block).map_or(0, |t| t.text.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3)))
+    }
+
+    pub fn capture(core: &Core, transient_ids: bool) -> Self {
+        let rows = transient_ids.then(|| {
+            let units = core.units();
+            [core.sel.anchor, core.sel.head].map(|p| (units.iter().position(|u| u.id == p.block).unwrap_or(usize::MAX), Self::signature(core, p)))
+        });
+        Self { selection: core.sel, rows }
+    }
+
+    pub fn restore(self, core: &mut Core) {
+        let units = core.units();
+        let resolve = |p: Pos, i: usize| {
+            let mut pos = p;
+            if !units.iter().any(|u| u.id == p.block) {
+                let (index, signature) = self.rows?[i];
+                pos.block = units.get(index)?.id;
+                if Self::signature(core, pos) != signature { return None; }
+            }
+            pos.offset = core.text_of(pos.block).map_or(0, |t| t.text.grapheme_indices(true).map(|(i, _)| i)
+                .chain(std::iter::once(t.len())).take_while(|i| *i <= p.offset).last().unwrap_or(0));
+            Some(pos)
+        };
+        match (resolve(self.selection.anchor, 0), resolve(self.selection.head, 1)) {
+            (Some(anchor), Some(head)) => core.sel = Selection { anchor, head },
+            (Some(p), None) | (None, Some(p)) => core.sel = Selection::caret(p),
+            (None, None) => {}
+        }
     }
 }
 
@@ -379,6 +421,7 @@ pub enum CloudTransfer {
 pub struct CloudStep<'a> {
     pub group: Option<u64>,
     pub body: &'a Document,
+    pub before: Option<Selection>,
     pub transfer: Option<CloudTransfer>,
 }
 
@@ -674,9 +717,11 @@ impl Core {
         } else {
             self.undo.len()
         };
-        self.undo.iter().skip(start).filter(|step| step.cloud_group.is_some())
-            .map(|step| CloudStep { group: step.cloud_group, body: &step.doc, transfer: step.cloud_transfer })
-            .chain(std::iter::once(CloudStep { group: self.cloud_group, body: &self.doc, transfer: self.cloud_transfer })).collect()
+        self.undo.iter().enumerate().skip(start).filter(|(_, step)| step.cloud_group.is_some())
+            .map(|(i, step)| CloudStep { group: step.cloud_group, body: &step.doc, transfer: step.cloud_transfer,
+                before: i.checked_sub(1).and_then(|i| self.undo.get(i)).map(|s| s.sel) })
+            .chain(std::iter::once(CloudStep { group: self.cloud_group, body: &self.doc, transfer: self.cloud_transfer,
+                before: self.undo.back().map(|s| s.sel) })).collect()
     }
 
     /// Put `doc` back outside the edit history (阅读模式 refusing an edit).
@@ -3380,6 +3425,25 @@ mod tests {
 
     fn id(c: &Core, n: usize) -> BlockId {
         c.units()[n].id
+    }
+
+    #[test]
+    fn reading_selection_restores_only_surviving_or_matching_rows() {
+        let note = || Document { blocks: vec![Block::text("旧"), Block::text("a👩🏽‍💻b")], ..Default::default() };
+        let mut c = Core::new(note());
+        c.sel = Selection { anchor: Pos::new(c.doc.blocks[1].id, 5), head: Pos::new(c.doc.blocks[0].id, 3) };
+        let stable = ReadingSelection::capture(&c, false);
+        let file = ReadingSelection::capture(&c, true);
+        let mut reparsed = Core::new(note());
+        file.restore(&mut reparsed);
+        assert_eq!(reparsed.sel.anchor, Pos::new(reparsed.doc.blocks[1].id, 1));
+        assert_eq!(reparsed.sel.head, Pos::new(reparsed.doc.blocks[0].id, 3));
+        let surviving = c.sel.head;
+        let mut shortened = c.doc.clone(); shortened.blocks.pop();
+        let mut updated = Core::new(shortened);
+        stable.restore(&mut updated);
+        assert_eq!(updated.sel, Selection::caret(surviving));
+        assert_eq!(updated.generation, 0);
     }
 
     #[test]

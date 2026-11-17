@@ -53,6 +53,7 @@ unsafe extern "C" {
     fn quiet_cloud_exchange(json: *const c_char) -> *mut c_char;
     fn quiet_cloud_restore_free(reply: *mut c_char);
     fn quiet_cloud_preview(path: *const c_char) -> bool;
+    fn quiet_cloud_thumbnail(path: *const c_char, destination: *const c_char) -> bool;
     fn quiet_cloud_watch_sync_resume(signal: extern "C" fn(i32));
     fn quiet_cloud_account_revision() -> u64;
     #[cfg(feature = "devtools")]
@@ -178,6 +179,17 @@ fn release(root: &Path, cx: &mut App) {
     cx.update_global::<SyncStatuses, _>(|statuses, _| { statuses.0.remove(root); });
     presence::remove(root, cx);
     if let Some(watch) = ACCOUNT_WATCH.get() { watch.lock().unwrap().remove(root); }
+}
+
+pub(crate) fn shared_access_ended(root: &Path, note: &str, cx: &mut App) -> Result<()> {
+    if let Some(session) = cx.global_mut::<Sync>().0.get_mut(root) {
+        session.journal.receive(Changes { uploaded: vec![], edits: vec![], token: None, more: false, legacy: false,
+            room_access: Some(shared::Access::Revoked), upload_quota_exceeded: false,
+            #[cfg(feature = "devtools")] cursor_replayed: false })?;
+    }
+    cx.update_global::<activity::ActivityView, _>(|view, _| view.0.retain(|row| row.room.scope.note != note));
+    app::cloud_notes_changed(root, &[], false, cx);
+    Ok(())
 }
 
 pub(crate) fn release_unused(cx: &mut App) {
@@ -492,9 +504,9 @@ pub fn save(store: &mut SharedStore, id: &str, core: &Core, cx: &mut App) -> Res
     Ok(result)
 }
 
-pub fn undo(store: &mut SharedStore, id: &str, core: &Core, redo: bool, cx: &mut App) -> Result<Option<NoteChange>> {
+pub fn undo(store: &mut SharedStore, id: &str, core: &Core, peers: &[Pos], redo: bool, cx: &mut App) -> Result<Option<(NoteChange, Option<crate::editor::core::Selection>)>> {
     let root = store.root().to_path_buf();
-    let result = journal_mut(&root, cx).undo(store, id, core, redo)?;
+    let result = journal_mut(&root, cx).undo(store, id, core, peers, redo)?;
     wake_after_save(&root, cx);
     Ok(result)
 }
@@ -519,4 +531,12 @@ pub fn version(root: &Path, id: &str, sequence: i64, cx: &App) -> Result<(Docume
 
 pub fn preview(path: &Path) -> bool {
     CString::new(path.as_os_str().as_encoded_bytes()).is_ok_and(|path| unsafe { quiet_cloud_preview(path.as_ptr()) })
+}
+
+/// Generate an attachment preview with the sandbox-aware native service.
+/// This blocks and must only run on a background executor.
+pub fn thumbnail(path: &Path, destination: &Path) -> bool {
+    let Ok(path) = CString::new(path.as_os_str().as_encoded_bytes()) else { return false };
+    let Ok(destination) = CString::new(destination.as_os_str().as_encoded_bytes()) else { return false };
+    unsafe { quiet_cloud_thumbnail(path.as_ptr(), destination.as_ptr()) }
 }

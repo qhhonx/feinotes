@@ -143,6 +143,10 @@ unsafe fn build_classes() {
                 sel!(application:openURLs:),
                 open_urls as extern "C" fn(&mut Object, Sel, id, id),
             );
+            decl.add_method(
+                sel!(application:continueUserActivity:restorationHandler:),
+                continue_user_activity as extern "C" fn(&mut Object, Sel, id, id, id) -> bool,
+            );
 
             decl.add_method(
                 sel!(onKeyboardLayoutChange:),
@@ -1445,6 +1449,19 @@ extern "C" fn on_keyboard_layout_change(this: &mut Object, _: Sel, _: id) {
             .lock()
             .on_keyboard_layout_change
             .get_or_insert(callback);
+    }
+}
+
+extern "C" fn continue_user_activity(this: &mut Object, _: Sel, app: id, activity: id, _: id) -> bool {
+    unsafe {
+        let kind: id = msg_send![activity, activityType];
+        let kind = CStr::from_ptr(kind.UTF8String());
+        if kind.to_bytes() != b"NSUserActivityTypeBrowsingWeb" { return false; }
+        let url: id = msg_send![activity, webpageURL];
+        if url == nil { return false; }
+        let urls: id = msg_send![class!(NSArray), arrayWithObject: url];
+        open_urls(this, sel!(application:openURLs:), app, urls);
+        true
     }
 }
 

@@ -12,6 +12,8 @@ Fei Notes is a native macOS Markdown notes app maintained by the Fei Notes contr
 
 Preserve the existing editor layout, keyboard shortcuts and interaction patterns. Use the existing Theme tokens, popover containers and controls. The Notes theme changes appearance through the theme system. Chinese and English are supported UI languages. Write new developer documentation and comments in English.
 
+Read [project decisions](FEINOTES-PROJECT-MEMORY.md). Prefer reusing existing interface styles and interactions; discuss and align any new visual style with the user before implementing it.
+
 ## Architecture and editing
 
 - Keep the document engine in `crates/core` (`fdl_core`), independent of GPUI. Put application UI in the root crate.

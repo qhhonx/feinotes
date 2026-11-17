@@ -13,6 +13,8 @@ use super::{Journal, assets, content};
 static ACTIVE: OnceLock<Scope> = OnceLock::new();
 #[cfg(feature = "devtools")]
 pub(crate) mod session_qa;
+#[cfg(feature = "devtools")]
+mod ui_qa;
 
 pub(super) const MARKER: &str = "shared-note.json";
 
@@ -65,7 +67,7 @@ pub(super) fn descriptor(root: &Path) -> Result<Option<Room>> {
     Ok(Some(room))
 }
 
-pub(super) fn room_root(personal: &Path, note: &str) -> Result<PathBuf> {
+pub(crate) fn room_root(personal: &Path, note: &str) -> Result<PathBuf> {
     ensure!(uuid::Uuid::parse_str(note)?.to_string() == note, "Invalid shared note identifier");
     let parent = personal.join("shared-notes");
     let root = parent.join(note);
@@ -142,19 +144,23 @@ impl<'a> Command<'a> {
     }
 
     fn send(&self) -> Result<Reply> {
+        #[cfg(feature = "devtools")]
+        if let Some(result) = ui_qa::command(self) { return result; }
+        let revision = super::account_revision();
         let json = CString::new(serde_json::to_vec(self)?)?;
         let ptr = unsafe { quiet_cloud_share(json.as_ptr()) };
         ensure!(!ptr.is_null(), "CloudKit sharing returned no response");
         let reply = unsafe { serde_json::from_slice::<Reply>(CStr::from_ptr(ptr).to_bytes()) };
         unsafe { super::quiet_cloud_restore_free(ptr) };
         let reply = reply?;
+        super::check_account_revision(revision)?;
         ensure!(reply.error_kind.as_deref() != Some("subscriptionRequired"), "{}", crate::cloud_trial::access_required());
         ensure!(reply.error.is_none(), "{}", reply.error.as_deref().unwrap_or_default());
         Ok(reply)
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct Member {
     pub id: String,
     pub name: String,
@@ -162,7 +168,7 @@ pub(crate) struct Member {
     pub accepted: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct Reply {
     scope: Option<Scope>,
     title: Option<String>,
@@ -173,15 +179,23 @@ pub(crate) struct Reply {
     error_kind: Option<String>,
 }
 
+#[cfg(feature = "devtools")]
 pub(crate) fn create(personal: &Path, title: String, doc: &Document, front: &str) -> Result<Room> {
-    Command::new(&account(personal)?, "checkAccess", None)?.send()?;
-    let room = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(), owner: None }, title };
-    stage(personal, &room, Some((doc, front)))?;
+    let room = prepare_copy(personal, title, doc, front)?;
     ensure_created(personal, &room)?;
     Ok(room)
 }
 
+pub(crate) fn prepare_copy(personal: &Path, title: String, doc: &Document, front: &str) -> Result<Room> {
+    Command::new(&account(personal)?, "checkAccess", None)?.send()?;
+    let room = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(), owner: None }, title };
+    stage(personal, &room, Some((doc, front)))?;
+    Ok(room)
+}
+
 pub(crate) fn ensure_created(personal: &Path, room: &Room) -> Result<()> {
+    #[cfg(feature = "devtools")]
+    if let Some(result) = ui_qa::publish(personal, room) { return result; }
     let root = room_root(personal, &room.scope.note)?;
     if root.join("seed-published").is_file() { return Ok(()); }
     let key = account(personal)?;
@@ -206,10 +220,16 @@ pub(crate) fn ensure_created(personal: &Path, room: &Room) -> Result<()> {
 pub(crate) fn accept(personal: &Path, url: &str) -> Result<Room> {
     let key = account(personal)?;
     let mut command = Command::new(&key, "accept", None)?;
-    command.url = Some(url.trim());
+    let url = crate::sharing::links::cloud(url)?;
+    command.url = Some(&url);
     let reply = command.send()?;
     let scope = reply.scope.context("Missing accepted shared note")?;
     let root = room_root(personal, &scope.note)?;
+    if root.join("shared-note-ended").exists() {
+        let _lock = crate::cloud_restore::lock_library(&root)?;
+        let retired = personal.join("retired-shared-notes"); fs::create_dir_all(&retired)?;
+        fs::rename(&root, retired.join(format!("{}-{}", scope.note, uuid::Uuid::new_v4())))?;
+    }
     let room = descriptor(&root)?.unwrap_or_else(|| Room { scope: scope.clone(), title: reply.title.unwrap_or_default() });
     ensure!(room.scope == scope, "Conflicting shared note");
     stage(personal, &room, None)?;
@@ -228,10 +248,23 @@ pub(crate) fn rooms(personal: &Path) -> Result<Vec<Room>> {
         let entry = entry?;
         let name = entry.file_name();
         if !entry.file_type()?.is_dir() || uuid::Uuid::parse_str(&name.to_string_lossy()).is_err() { continue; }
-        if let Some(room) = descriptor(&entry.path())? { rooms.push(room); }
+        if !entry.path().join("shared-note-ended").exists() && let Some(room) = descriptor(&entry.path())? { rooms.push(room); }
     }
     rooms.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.scope.note.cmp(&b.scope.note)));
     Ok(rooms)
+}
+
+pub(crate) fn end(personal: &Path, room: &Room) -> Result<()> {
+    let root = room_root(personal, &room.scope.note)?;
+    ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope) && account(&root)? == account(personal)?, "Shared note belongs to another account");
+    let mut cache = Store::open_sqlite_at(root.clone())?;
+    if cache.list().iter().any(|entry| entry.id == room.scope.note) {
+        Store::archive_note_to_trash(personal, &root, &room.scope.note)?;
+    }
+    let key = account(personal)?;
+    Command::new(&key, if room.scope.owner.is_none() { "delete" } else { "leave" }, Some(&room.scope))?.send()?;
+    fs::write(root.join("shared-note-ended"), b"Access ended; local cache retained for recovery")?;
+    Ok(())
 }
 
 pub(crate) fn manage(personal: &Path, room: &Room, action: &str, person: &str, access: Option<Access>) -> Result<Reply> {
@@ -246,12 +279,7 @@ pub(crate) fn manage(personal: &Path, room: &Room, action: &str, person: &str, a
     command.send()
 }
 
-pub(crate) fn launch(room: &Room, cx: &mut gpui::App) -> gpui::Task<Result<()>> {
-    let room = room.clone();
-    cx.spawn(async move |cx| cx.update(|cx| open_window(&room, cx))?)
-}
-
-fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
+pub(crate) fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
     room.scope.validate()?;
     let personal = Store::root_dir();
     ensure!(!crate::cloud_restore::local_only() && !personal.join("require-account-verification").exists(),
@@ -260,6 +288,7 @@ fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
         super::SyncPhase::AccountChecking | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut)),
         "{}", crate::settings::tr("请先确认 iCloud 账户和云功能状态。", "Check your iCloud account and cloud access first."));
     let root = room_root(&personal, &room.scope.note)?;
+    ensure!(!root.join("shared-note-ended").exists(), "This shared document has been removed");
     ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope) && account(&root)? == account(&personal)?,
         "Shared note belongs to another library");
     for window in cx.windows().into_iter().filter_map(|w| w.downcast::<crate::app::Workspace>()) {
@@ -270,12 +299,7 @@ fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
             return Ok(());
         }
     }
-    let store = if let Some(session) = super::session(&root, cx) { session.store.clone() }
-        else {
-            let (store, journal) = open_library(root)?;
-            super::install_session(store.clone(), journal, cx)?;
-            store
-        };
+    let store = store_for(room, cx)?;
     let mut options = crate::main_window_options(crate::devtools::scripted(), None, cx);
     if let Some(bar) = &mut options.titlebar {
         bar.title = Some(format!("{} · {}", crate::app_name(), crate::settings::tr("共享笔记", "Shared Note")).into());
@@ -287,6 +311,27 @@ fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
         cx.new(|cx| crate::app::Workspace::new_shared_window(store, note, window, cx))
     })?;
     Ok(())
+}
+
+pub(crate) fn store_for(room: &Room, cx: &mut gpui::App) -> Result<crate::shared_store::SharedStore> {
+    room.scope.validate()?;
+    let personal = Store::root_dir();
+    ensure!(!crate::cloud_restore::local_only() && !personal.join("require-account-verification").exists(),
+        "{}", crate::settings::tr("请先在文档库设置中重新连接 iCloud。", "Reconnect to iCloud in Documents settings first."));
+    ensure!(super::status(&personal, cx).is_some_and(|s| !s.access_paused && !matches!(s.phase,
+        super::SyncPhase::AccountChecking | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut)),
+        "{}", crate::settings::tr("请先确认 iCloud 账户和云功能状态。", "Check your iCloud account and cloud access first."));
+    let root = room_root(&personal, &room.scope.note)?;
+    ensure!(!root.join("shared-note-ended").exists(), "This shared document has been removed");
+    ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope) && account(&root)? == account(&personal)?,
+        "Shared note belongs to another library");
+    let store = if let Some(session) = super::session(&root, cx) { session.store.clone() }
+        else {
+            let (store, journal) = open_library(root)?;
+            super::install_session(store.clone(), journal, cx)?;
+            store
+        };
+    Ok(store)
 }
 
 fn open_library(root: PathBuf) -> Result<(crate::shared_store::SharedStore, Journal)> {

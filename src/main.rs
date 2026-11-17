@@ -64,6 +64,8 @@ mod home_folder;
 mod folders;
 mod file_history;
 mod settings;
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+mod sharing;
 mod l10n;
 mod themes;
 mod shortcuts;

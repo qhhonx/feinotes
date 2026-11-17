@@ -445,15 +445,16 @@ impl Journal {
         result.map(|(meta, (warning, _))| (meta, warning))
     }
 
-    pub fn undo(&mut self, store: &mut SharedStore, id: &str, core: &Core, redo: bool) -> Result<Option<NoteChange>> {
+    pub fn undo(&mut self, store: &mut SharedStore, id: &str, core: &Core, peers: &[Pos], redo: bool) -> Result<Option<(NoteChange, Option<crate::editor::core::Selection>)>> {
         self.ensure_writable(id)?;
         let root = self.root.clone();
         let peer = self.peer;
         let Some((old, history)) = self.history(id)? else { return Ok(None) };
         let before = history.doc.oplog_vv();
-        let anchors = [core.sel.anchor, core.sel.head].into_iter()
+        let anchors = [core.sel.anchor, core.sel.head].into_iter().chain(peers.iter().copied())
             .filter_map(|pos| content::anchor(&history.doc, pos).map(|cursor| (pos, cursor))).collect::<Vec<_>>();
         let result = (|| {
+            history.checkpoint_selection(Some(core.sel))?;
             if !history.apply(redo)? { return Ok(None); }
             let mut document = content::render(&history.doc)?;
             keep_outside_history(&core.doc, &mut document);
@@ -465,7 +466,7 @@ impl Journal {
                 let (seen, front) = revision(tx, id)?;
                 finish_capture(tx, &root, id, &document, (seen, &front), Capture { old, loro: &history.doc, before })
             })?;
-            Ok(Some((NoteChange { id: id.into(), document, positions }, held)))
+            Ok(Some(((NoteChange { id: id.into(), document, positions }, history.restored_selection()), held)))
         })();
         if matches!(&result, Ok(Some((_, true))) | Err(_)) { self.history.remove(id); }
         result.map(|change| change.map(|(note, _)| note))

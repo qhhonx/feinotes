@@ -186,7 +186,10 @@ pub fn spinner(t: f32, color: Hsla) -> Div {
 }
 
 /// The primary button: the accent, a white 13pt semibold label, 30 tall, radius 9.
-pub fn primary_button(id: &'static str, label: &'static str) -> Stateful<Div> {
+pub fn primary_button(id: &'static str, label: &'static str) -> Stateful<Div> { colored_button(id, label, false) }
+pub(crate) fn danger_button(id: &'static str, label: &'static str) -> Stateful<Div> { colored_button(id, label, true) }
+
+fn colored_button(id: &'static str, label: &'static str, danger: bool) -> Stateful<Div> {
     div()
         .id(id)
         .flex_none()
@@ -197,10 +200,10 @@ pub fn primary_button(id: &'static str, label: &'static str) -> Stateful<Div> {
         .justify_center()
         .rounded(px(9.))
         .cursor_pointer()
-        .bg(Theme::primary())
+        .bg(if danger { Theme::danger() } else { Theme::primary() })
         .shadow(theme::shadow_button())
-        .hover(|s| s.bg(theme::c(craft::B600)))
-        .active(|s| s.bg(theme::c(craft::B700)))
+        .hover(move |s| s.bg(theme::c(if danger { craft::R600 } else { craft::B600 })))
+        .active(move |s| s.bg(theme::c(if danger { craft::R700 } else { craft::B700 })))
         .text_size(px(13.))
         .line_height(px(20.))
         .font_weight(FontWeight::SEMIBOLD)

@@ -253,7 +253,9 @@ impl Workspace {
     pub(crate) fn pick_search(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.search_results(cx).get(row).map(|e| e.id.clone()) else { return };
         self.close_search(window, cx);
-        self.open(&id, window, cx);
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if let Some(room) = self.shared_list_room(&id, cx) { self.open_shared_note(&room, window, cx); return; }
+        self.personal_action(window, cx, move |w, window, cx| w.open(&id, window, cx));
         if let Some(ed) = &self.editor {
             ed.read(cx).focus(window);
         }
@@ -274,27 +276,19 @@ impl Workspace {
     }
 
     /// Title hits first, then body hits; with no query, 最近浏览.
-    pub fn search_results(&self, cx: &App) -> Vec<&Entry> {
+    pub fn search_results(&self, cx: &App) -> Vec<Entry> {
         let q = self.query(cx);
+        let mut entries = self.personal_navigation_entries(cx);
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        entries.extend(self.shared_entries(cx));
         if q.is_empty() {
-            let mut recent: Vec<&Entry> = self.entries.iter().collect();
-            recent.sort_by_key(|e| std::cmp::Reverse(e.meta.opened.max(e.meta.modified)));
-            recent.truncate(RECENT);
-            return recent;
+            entries.sort_by_key(|e| std::cmp::Reverse(e.meta.opened.max(e.meta.modified)));
+            entries.truncate(RECENT); return entries;
         }
-        let mut hits: Vec<(u8, &Entry)> = self
-            .entries
-            .iter()
-            .filter_map(|e| {
-                if e.title.to_lowercase().contains(&q) {
-                    Some((0, e))
-                } else if e.body.to_lowercase().contains(&q) {
-                    Some((1, e))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut hits: Vec<(u8, Entry)> = entries.into_iter().filter_map(|e| {
+            if e.title.to_lowercase().contains(&q) { Some((0, e)) }
+            else if e.body.to_lowercase().contains(&q) { Some((1, e)) } else { None }
+        }).collect();
         hits.sort_by_key(|(rank, _)| *rank);
         hits.into_iter().map(|(_, e)| e).collect()
     }
@@ -323,9 +317,14 @@ impl Workspace {
             }))
             .on_click(cx.listener(move |w, _, window, cx| w.pick_search(row, window, cx)))
             .child(entry_icon(e))
-            .child(result_info(e, self.is_shared(), {
+            .child(result_info(e, {
                 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-                { crate::cloud_sync::shared::scope(&self.store, cx).is_some_and(|scope| scope.owner.is_some()) }
+                { self.shared_list_room(&e.id, cx).is_some() }
+                #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                { false }
+            }, {
+                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                { self.shared_list_room(&e.id, cx).is_some_and(|room| room.scope.owner.is_some()) }
                 #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
                 { false }
             }, q, summary, info_w, window))
@@ -337,7 +336,7 @@ impl Workspace {
         }
         let q = self.query(cx);
         let has_text = !self.search.read(cx).text.is_empty();
-        let results: Vec<Entry> = self.search_results(cx).into_iter().cloned().collect();
+        let results: Vec<Entry> = self.search_results(cx);
         let vh = f32::from(window.viewport_size().height);
         let width = (window.viewport_size().width - px(32.)).min(px(DIALOG_W));
         let info_w = f32::from(width) - (DIALOG_W - INFO_W);

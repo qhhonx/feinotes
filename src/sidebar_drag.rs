@@ -146,6 +146,8 @@ struct PendingMove { id: String, parent: Option<String>, before: Option<String>,
 #[derive(Default)]
 pub(crate) struct SidebarDrag {
     pub active: Option<Drag>,
+    pub(crate) shared_rows: Option<Vec<Entry>>,
+    pub(crate) personal_rows: Option<Vec<Entry>>,
     bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     springs: HashMap<String, Spring>,
     last_frame: Option<Instant>,
@@ -209,8 +211,20 @@ fn faded(shadows: Vec<BoxShadow>, a: f32) -> Vec<BoxShadow> {
 }
 
 impl Workspace {
+    pub(crate) fn with_sidebar<R>(&mut self, shared: bool, f: impl FnOnce(&mut Self) -> R) -> R {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if shared { std::mem::swap(&mut self.folder_drag, &mut self.sharing.sidebar); }
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        let _ = shared;
+        let result = f(self);
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if shared { std::mem::swap(&mut self.folder_drag, &mut self.sharing.sidebar); }
+        result
+    }
+
     fn drag_rows(&self) -> Vec<Row> {
-        crate::tree::Tree::new(&self.entries).rows(|id| self.expanded.contains(id)).into_iter()
+        if let Some(rows) = &self.folder_drag.shared_rows { return rows.iter().filter(|e| self.folder_drag.active.as_ref().is_none_or(|d| !d.started || d.id != e.id)).map(|e| Row { entry: e.clone(), depth: 0 }).collect(); }
+        crate::tree::Tree::new(self.folder_drag.personal_rows.as_ref().unwrap_or(&self.entries)).rows(|id| self.expanded.contains(id)).into_iter()
             .filter(|(e, _)| self.folder_drag.active.as_ref().is_none_or(|d| !d.started || !d.excluded.contains(&e.id)))
             .map(|(e, depth)| Row { entry: e.clone(), depth }).collect()
     }
@@ -223,7 +237,7 @@ impl Workspace {
         let origin = bounds.origin + point(px(s.p[0]), px(s.p[1]));
         self.folder_drag.active = Some(Drag {
             id: id.to_string(), start: at, at, offset: at - origin, started: false,
-            excluded: crate::tree::Tree::new(&self.entries).subtree(id).into_iter().collect(),
+            excluded: if self.folder_drag.shared_rows.is_some() { [id.to_string()].into_iter().collect() } else { crate::tree::Tree::new(&self.entries).subtree(id).into_iter().collect() },
             index, depth: rows[index].depth, initial_depth: rows[index].depth, parent: rows[index].entry.meta.parent.clone(),
             original_index: index, original_depth: rows[index].depth, hover: None,
             ghost: Spring::new([f32::from(origin.x), f32::from(origin.y), s.p[2]]), lift: Fade::new(0., 520., 24.),
@@ -250,6 +264,10 @@ impl Workspace {
         let rows = self.drag_rows();
         let Some(d) = self.folder_drag.active.as_mut().filter(|d| d.started) else { return };
         let y = f32::from(d.at.y - d.offset.y - bounds.top()) + 15.;
+        if self.folder_drag.shared_rows.is_some() {
+            d.index = rows.iter().enumerate().filter(|(i, _)| y > (*i + usize::from(*i >= d.index)) as f32 * PITCH + 15.).count();
+            d.depth = 0; d.parent = None; return;
+        }
         let desired = (d.initial_depth as i32 + (f32::from(d.at.x - d.start.x) / INDENT).round() as i32).max(0) as usize;
         // Hit the visible folder row with the pointer, including collapsed folders.
         // Accept immediately; the dwell timer only controls automatic expansion.
@@ -349,6 +367,11 @@ impl Workspace {
         self.folder_drag.active = None;
         // The card covers the slot as it lands; the slot goes at once instead of stacking under it.
         self.folder_drag.slot = None;
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if self.folder_drag.shared_rows.is_some() {
+            if !cancel { self.reorder_shared_sidebar(&movement.id, movement.before.as_deref(), cx); }
+            cx.notify(); return;
+        }
         // A folder carried open comes back open: its rows open out under it.
         if self.expanded.contains(&movement.id) { self.folder_drag.reopen = Some(movement.id.clone()); }
         if !cancel {
@@ -440,6 +463,9 @@ impl Workspace {
 
     /// The row the selection pill sits on: the open doc, or the open folder.
     fn sidebar_pick(&self) -> Option<String> {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if self.folder_drag.shared_rows.is_some() { return self.is_shared().then(|| self.current.clone()).flatten(); }
+        if self.folder_drag.personal_rows.is_some() { return None; }
         match self.view {
             crate::app::View::Doc => self.current.clone(),
             crate::app::View::Folder => self.folder_current.clone(),
@@ -455,19 +481,20 @@ impl Workspace {
         let width = self.sidebar_w(window) - 2. * crate::sidebar::SB_X;
         let active = self.folder_drag.active.as_ref().filter(|d| d.started);
         // A row being moved, or something dragged in from outside, opens a slot.
-        let slot = active.map(|d| (d.index, d.depth)).or_else(|| self.sidebar_drop.as_ref().and_then(|t| t.slot));
+        let shared = self.folder_drag.shared_rows.is_some();
+        let slot = active.map(|d| (d.index, d.depth)).or_else(|| (!shared).then(|| self.sidebar_drop.as_ref().and_then(|t| t.slot)).flatten());
         let dragged = active.map(|d| d.id.clone());
         let dwell = active.and_then(|d| d.hover.as_ref()).filter(|(id, _)| !self.expanded.contains(id))
             .map(|(id, t)| (id.clone(), (t.elapsed().as_secs_f32() / DWELL).min(1.)));
-        let receiving = rows.iter().position(|r| self.folder_drop_target(&r.entry.id));
+        let receiving = rows.iter().position(|r| !shared && self.folder_drop_target(&r.entry.id));
         let receiving_end = receiving.map(|start| rows.iter().enumerate().skip(start + 1)
             .find(|(_, r)| r.depth <= rows[start].depth).map_or(rows.len(), |(i, _)| i));
         let pick = self.sidebar_pick();
         let selection = self.sidebar_selection(pick.as_ref().is_some_and(|id| self.entries.iter().any(|e| &e.id == id && e.meta.folder.is_some())));
         let mut moving = false;
 
-        let renaming = self.rename.as_ref().map(|r| r.id.clone());
-        self.folder_drag.parents = self.entries.iter().filter_map(|e| e.meta.parent.clone()).collect();
+        let renaming = self.rename.as_ref().filter(|rename| rows.iter().any(|row| row.entry.id == rename.id)).map(|r| r.id.clone());
+        self.folder_drag.parents = self.folder_drag.personal_rows.as_ref().unwrap_or(&self.entries).iter().filter_map(|e| e.meta.parent.clone()).collect();
         let high = crate::settings::motion_high();
         // The visible list's bottom edge, in this list's coordinates (last frame's layout).
         let visible = self.folder_drag.bounds.get();
@@ -487,7 +514,7 @@ impl Workspace {
             rows[i + 1..].iter().take_while(|r| r.depth > rows[i].depth).cloned().collect()
         };
         let primed = std::mem::replace(&mut fd.primed, true);
-        let open_now: HashSet<String> = self.expanded.clone();
+        let open_now: HashSet<String> = if shared { HashSet::new() } else { self.expanded.clone() };
         let mut started = false;
         // Rows that appear at once, without fading in (folding is instant).
         let mut instant: HashSet<String> = HashSet::new();
@@ -731,7 +758,7 @@ impl Workspace {
                     .child(el.absolute().left_0().top(px(y - lo)).w(px(w))).into_any_element(),
             }
         };
-        let mut container = div().relative().w_full().h(px(((rows.len() + usize::from(slot.is_some())) as f32 * PITCH + extra).max(0.)))
+        let mut container = div().id(if shared { "shared-sidebar-rows" } else { "personal-sidebar-rows" }).relative().w_full().h(px(((rows.len() + usize::from(slot.is_some())) as f32 * PITCH + extra).max(0.)))
             .child({ let b = fd.bounds.clone(); canvas(move |bounds, _, _| b.set(Some(bounds)), |_, _, _, _| {}).absolute().inset_0() });
         for l in fd.leaving.values() {
             let [x, y, w] = l.pos.p;
@@ -791,15 +818,22 @@ impl Workspace {
             let el = div().id(SharedString::from(format!("frow-{id}"))).h(row_h)
                 .opacity(fx.show.unit() * a)
                 .on_hover(cx.listener(move |w, on: &bool, _, cx| {
-                    if *on { w.folder_drag.hovered = Some(hid.clone()); }
-                    else if w.folder_drag.hovered.as_ref() == Some(&hid) { w.folder_drag.hovered = None; }
+                    w.with_sidebar(shared, |w| {
+                        if *on { w.folder_drag.hovered = Some(hid.clone()); }
+                        else if w.folder_drag.hovered.as_ref() == Some(&hid) { w.folder_drag.hovered = None; }
+                    });
                     cx.notify();
                 }))
                 .when(lift > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius)
                     .bg(theme::raised(Theme::bg_body()).opacity(lift)).shadow(faded(theme::shadow_panel(), lift))))
                 .when(fx.glow.unit() > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(Theme::sidebar_landed().opacity(fx.glow.unit()))))
                 .when(hover > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(crate::sidebar::hover().opacity(hover))))
-                .child(self.doc_row(&r.entry, "doc", 0, r.entry.meta.folder.is_some(), cx));
+                .child({
+                    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                    if shared { self.shared_sidebar_row(&r.entry, cx).into_any_element() } else { self.doc_row(&r.entry, "doc", 0, r.entry.meta.folder.is_some(), cx).into_any_element() }
+                    #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                    self.doc_row(&r.entry, "doc", 0, r.entry.meta.folder.is_some(), cx).into_any_element()
+                });
             // Revealed rows settle the last few pixels as they fade in.
             container = container.child(clipped(el, x, y - 4. * (1. - a), w, band));
         }
@@ -836,29 +870,31 @@ impl Workspace {
     }
 
     pub(crate) fn track_sidebar_press(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.folder_drag.active.as_ref().is_some_and(|d| !d.started) { return; }
+        if self.folder_drag.active.is_none() { return; }
         if ev.pressed_button == Some(MouseButton::Left) { self.move_folder_drag(ev.position, window, cx); }
         else { self.folder_drag.active = None; }
     }
 
     pub(crate) fn finish_sidebar_click(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.folder_drag.active.as_ref().is_some_and(|d| d.started) { self.end_folder_drag(false, cx); return; }
         let click = self.folder_drag.active.as_ref().filter(|d| !d.started).map(|d| d.id.clone());
-        if let Some(id) = click { self.folder_drag.active = None; self.sidebar_click(&id, window, cx); }
+        if let Some(id) = click { self.folder_drag.active = None;
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            if self.folder_drag.shared_rows.is_some() { if let Some(room) = self.shared_list_room(&id, cx) { self.open_shared_note(&room, window, cx); } return; }
+            self.sidebar_click(&id, window, cx); }
     }
 
     pub(crate) fn render_folder_drag_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let d = self.folder_drag.active.as_ref().filter(|d| d.started)?;
-        let mut layer = div().id("folder-drag-overlay").absolute().inset_0().occlude()
-            .on_mouse_move(cx.listener(|w, ev: &MouseMoveEvent, window, cx| {
+        let shared = self.folder_drag.shared_rows.is_some();
+        let mut layer = div().id(if shared { "shared-drag-overlay" } else { "folder-drag-overlay" }).absolute().inset_0().occlude()
+            .on_mouse_move(cx.listener(move |w, ev: &MouseMoveEvent, window, cx| w.with_sidebar(shared, |w| {
                 if ev.pressed_button != Some(MouseButton::Left) { w.end_folder_drag(true, cx); return; }
                 w.move_folder_drag(ev.position, window, cx);
-            }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|w, _, window, cx| {
-                let click = w.folder_drag.active.as_ref().filter(|d| !d.started).map(|d| d.id.clone());
-                if let Some(id) = click { w.folder_drag.active = None; w.sidebar_click(&id, window, cx); }
-                else { w.end_folder_drag(false, cx); }
-            }));
-        if d.started && let Some(e) = self.entries.iter().find(|e| e.id == d.id) {
+            })))
+            .on_mouse_up(MouseButton::Left, cx.listener(move |w, _, _, cx| w.with_sidebar(shared, |w| { w.end_folder_drag(false, cx); })));
+
+        if d.started && let Some(e) = self.folder_drag.shared_rows.as_ref().unwrap_or(&self.entries).iter().find(|e| e.id == d.id) {
             // Lifted: a touch wider and higher than the row, with a shadow that grows in.
             let [x, y, width] = d.ghost.p;
             let l = d.lift.p.max(0.);
@@ -871,5 +907,29 @@ impl Workspace {
                     .opacity(d.lift.unit()).child(inside.to_string()))));
         }
         Some(deferred(layer).with_priority(5).into_any_element())
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync", feature = "devtools"))]
+impl Workspace {
+    pub(crate) fn qa_shared_reorder(&mut self, window: &mut Window, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        self.with_sidebar(true, |w| -> anyhow::Result<()> {
+            let rows = w.folder_drag.shared_rows.clone().ok_or_else(|| anyhow::anyhow!("Shared rows not drawn"))?;
+            anyhow::ensure!(rows.len() >= 2, "Need two shared rows");
+            let bounds = w.folder_drag.bounds.get().ok_or_else(|| anyhow::anyhow!("Shared bounds missing"))?;
+            let start = bounds.origin + point(px(60.), px(15.));
+            w.arm_folder_drag(&rows[0].id, start, cx);
+            w.move_folder_drag(start + point(px(0.), px((rows.len() - 1) as f32 * PITCH + 8.)), window, cx);
+            w.end_folder_drag(false, cx);
+            let ids: Vec<String> = serde_json::from_slice(&crate::store::Store::sqlite_setting("shared-sidebar-order")?.unwrap())?;
+            anyhow::ensure!(ids.last() == Some(&rows[0].id) && ids.len() == rows.len(), "Shared drag did not save its order");
+            // Cancellation must not write a new order or enter the personal tree writer.
+            w.arm_folder_drag(&rows[1].id, start, cx);
+            w.move_folder_drag(start + point(px(0.), px(PITCH)), window, cx);
+            w.end_folder_drag(true, cx);
+            let saved: Vec<String> = serde_json::from_slice(&crate::store::Store::sqlite_setting("shared-sidebar-order")?.unwrap())?;
+            anyhow::ensure!(saved == ids && w.folder_drag.pending.is_empty() && !w.folder_drag.saving, "Shared reorder crossed into personal tree persistence");
+            Ok(())
+        })
     }
 }

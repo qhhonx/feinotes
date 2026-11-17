@@ -169,6 +169,23 @@ impl PageWidth {
     }
 }
 
+/// A new, private editor session. Existing documents never enter this lifecycle.
+pub struct NewNoteDraft {
+    pub seed: Document,
+    pub parent: Option<String>,
+}
+
+impl NewNoteDraft {
+    pub fn new(parent: Option<String>) -> Self { Self { seed: Document::default(), parent } }
+    pub fn untouched(&self, core: &crate::editor::core::Core) -> bool {
+        core.generation == 0 && core.doc == self.seed
+    }
+    /// Seed the normal store with the same block IDs so its first autosave retains undo history.
+    pub fn materialize(&self, store: &mut Store) -> Result<String> {
+        store.create_from_in(&self.seed, self.parent.as_deref())
+    }
+}
+
 /// Window-level UI state: `.quiet/settings.json`, except the window sizes,
 /// which belong to this computer.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -198,6 +215,8 @@ pub struct Settings {
     /// state, not document metadata.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub scroll_top: HashMap<String, [f32; 2]>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub selections: HashMap<String, crate::editor::core::ReadingSelection>,
     /// 版本历史: snapshots kept per document (1–30). None is the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_limit: Option<u32>,
@@ -2107,15 +2126,24 @@ impl Store {
 
     /// Remember — or, with `None`, forget — where a document was left.
     pub fn remember_scroll(&self, id: &str, top: Option<(usize, f32)>) -> Result<()> {
+        self.update_position(id, None, top)
+    }
+
+    pub fn remember_position(&self, id: &str, selection: crate::editor::core::ReadingSelection, top: Option<(usize, f32)>) -> Result<()> {
+        self.update_position(id, Some(selection), top)
+    }
+
+    fn update_position(&self, id: &str, selection: Option<crate::editor::core::ReadingSelection>, top: Option<(usize, f32)>) -> Result<()> {
         let mut s = self.settings();
+        let same = selection.is_none_or(|sel| s.selections.insert(id.to_owned(), sel) == Some(sel));
         match top {
             Some((ix, y)) => {
                 let v = [ix as f32, y];
-                if s.scroll_top.get(id) == Some(&v) { return Ok(()) }
+                if same && s.scroll_top.get(id) == Some(&v) { return Ok(()) }
                 s.scroll_top.insert(id.to_string(), v);
             }
             None => {
-                if s.scroll_top.remove(id).is_none() { return Ok(()) }
+                if s.scroll_top.remove(id).is_none() && same { return Ok(()) }
             }
         }
         self.save_settings(&s)
@@ -2221,6 +2249,24 @@ mod tests {
         d
     }
 
+    #[test]
+    fn abandoning_a_new_session_never_changes_an_existing_empty_document() {
+        let lib = Lib::new("private-new-note");
+        let mut store = lib.open();
+        let existing = store.create().unwrap().0;
+        let draft = NewNoteDraft::new(None);
+        let mut core = crate::editor::core::Core::new(draft.seed.clone());
+        assert!(draft.untouched(&core));
+        assert_eq!(store.list().len(), 1);
+        core.insert_text("字");
+        assert!(core.undo());
+        assert!(core.doc.is_blank() && !draft.untouched(&core));
+        let id = draft.materialize(&mut store).unwrap();
+        assert_ne!(id, existing);
+        assert_eq!(store.list().len(), 2);
+        assert!(store.list_trash().is_empty());
+    }
+
     fn check_reading_position_state(mut store: Store) {
         let id = store.create_from(&doc("reading state")).unwrap();
         let before = docxml::serialize(&store.load(&id).unwrap());
@@ -2228,12 +2274,18 @@ mod tests {
         let settings = Settings { window_size: Some([900., 700.]), ..Default::default() };
         store.save_settings(&settings).unwrap();
         assert_eq!(store.scroll_top(&id), None);
-        store.remember_scroll(&id, Some((12, 18.5))).unwrap();
+        let mut core = crate::editor::core::Core::new(store.load(&id).unwrap());
+        core.sel = crate::editor::core::Selection { anchor: crate::editor::core::Pos::new(crate::editor::core::TITLE, 7),
+            head: crate::editor::core::Pos::new(crate::editor::core::TITLE, 2) };
+        let saved = crate::editor::core::ReadingSelection::capture(&core, false);
+        store.remember_position(&id, saved, Some((12, 18.5))).unwrap();
+        assert_eq!(store.settings().selections.get(&id), Some(&saved));
         assert_eq!(store.scroll_top(&id), Some((12, 18.5)));
         assert_eq!(store.settings().window_size, settings.window_size);
         assert_eq!(docxml::serialize(&store.load(&id).unwrap()), before);
         assert!(journal.take().is_empty());
         store.remember_scroll(&id, None).unwrap();
+        assert_eq!(store.settings().selections.get(&id), Some(&saved));
         assert_eq!(store.scroll_top(&id), None);
         assert_eq!(store.settings().window_size, settings.window_size);
     }

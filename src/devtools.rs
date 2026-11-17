@@ -63,15 +63,16 @@ thread_local! { static CURRENT: std::cell::Cell<Option<(AnyWindowHandle, usize)>
 static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Move a scripted window off screen where it still renders (unless `FDL_NOPARK`).
-async fn park(ns_view: usize, cx: &mut AsyncApp) {
-    let _ = ns_view;
+async fn park(handle: AnyWindowHandle, ns_view: usize, cx: &mut AsyncApp) {
+    let _ = (handle, ns_view);
     cx.background_executor().timer(Duration::from_millis(800)).await;
     #[cfg(target_os = "macos")]
     if std::env::var_os("FDL_NOPARK").is_none() {
-        for origin in native::park_candidates(ns_view) {
-            native::place(ns_view, origin);
+        let candidates = handle.update(cx, |_, _, _| native::park_candidates(ns_view)).unwrap_or_default();
+        for origin in candidates {
+            if handle.update(cx, |_, _, _| native::place(ns_view, origin)).is_err() { return; }
             cx.background_executor().timer(Duration::from_millis(250)).await;
-            if native::is_visible(ns_view) { return }
+            if handle.update(cx, |_, _, _| native::is_visible(ns_view)).unwrap_or(true) { return }
         }
         eprintln!("devtools: no visible off-screen spot; window may stop rendering");
     }
@@ -82,7 +83,17 @@ async fn park(ns_view: usize, cx: &mut AsyncApp) {
 pub(crate) fn park_window(window: &mut Window, cx: &mut App) {
     if !scripted() { return; }
     #[cfg(target_os = "macos")]
-    if let Some(ns_view) = ns_view_of(window) { cx.spawn(async move |cx| park(ns_view, cx).await).detach(); }
+    if let Some(ns_view) = ns_view_of(window) {
+        let handle = window.window_handle();
+        cx.spawn(async move |cx| park(handle, ns_view, cx).await).detach();
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+pub(crate) fn select_script_window(window: &mut Window) {
+    if scripted() && let Some(view) = ns_view_of(window) {
+        CURRENT.with(|current| current.set(Some((window.window_handle(), view))));
+    }
 }
 
 pub fn start(window: &mut Window, cx: &mut App) {
@@ -102,11 +113,11 @@ pub fn start(window: &mut Window, cx: &mut App) {
     // over to the main window) becomes where the rest of it plays.
     CURRENT.with(|c| c.set(Some((handle, ns_view))));
     if RUNNING.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        cx.spawn(async move |cx| park(ns_view, cx).await).detach();
+        cx.spawn(async move |cx| park(handle, ns_view, cx).await).detach();
         return;
     }
     cx.spawn(async move |cx| {
-        park(ns_view, cx).await;
+        park(handle, ns_view, cx).await;
         let mut recording: Option<std::rc::Rc<std::cell::Cell<bool>>> = None;
         // Only leading whitespace is insignificant: `type ab ` types a trailing space.
         for line in script.lines().map(str::trim_start).filter(|l| !l.trim().is_empty() && !l.starts_with('#')) {
@@ -245,6 +256,66 @@ pub fn start(window: &mut Window, cx: &mut App) {
                 cx.background_executor().timer(Duration::from_millis(120)).await;
                 continue;
             }
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            if cmd.starts_with("qa-note-") {
+                let root = crate::cloud_sync::test_root().expect("isolated QA library").expect("isolated QA library");
+                assert!(root.join("pause-cloud").is_file(), "Use the offline note fixture");
+                if cmd == "qa-note-peer" {
+                    let primary = handle.downcast::<crate::app::Workspace>().unwrap();
+                    let note = primary.update(cx, |ws, _, _| ws.current.clone().unwrap()).unwrap();
+                    cx.update(|cx| {
+                        let peer = cx.open_window(WindowOptions { focus: false, show: false, ..Default::default() }, |window, cx|
+                            cx.new(|cx| crate::app::Workspace::new_document_window(Some(note), window, cx))).unwrap();
+                        peer.update(cx, |ws, _, cx| ws.editor.as_ref().unwrap().update(cx, |ed, _| {
+                            use crate::editor::core::{Selection, Pos, TITLE};
+                            ed.core.sel = Selection::caret(Pos::new(TITLE, 2));
+                        })).unwrap();
+                    }).unwrap();
+                    continue;
+                }
+                if cmd == "qa-note-check-peer" {
+                    cx.update(|cx| {
+                        let peer = cx.windows().into_iter().find(|w| w.window_id() != handle.window_id()).unwrap()
+                            .downcast::<crate::app::Workspace>().unwrap();
+                        peer.update(cx, |ws, window, cx| {
+                            use crate::editor::core::{Selection, Pos, TITLE};
+                            let core = &ws.editor.as_ref().unwrap().read(cx).core;
+                            assert_eq!(core.sel, Selection::caret(Pos::new(TITLE, 2)));
+                            assert_eq!(core.doc.plain_text(), "ab中文ef");
+                            eprintln!("QA_PEER_OK");
+                            window.remove_window();
+                        }).unwrap();
+                    }).unwrap();
+                    continue;
+                }
+                let workspace = handle.downcast::<crate::app::Workspace>().expect("workspace");
+                workspace.update(cx, |ws, window, cx| {
+                    assert!(ws.store.root().starts_with(&root));
+                    if cmd == "qa-note-guards" {
+                        let blank = ws.store.create_from(&Default::default()).unwrap();
+                        let asset = ws.store.root().join("assets/files/qa-keep.txt");
+                        std::fs::create_dir_all(asset.parent().unwrap()).unwrap();
+                        std::fs::write(&asset, b"QA attachment").unwrap();
+                        let xml = format!(r#"<title>Guard</title><p><cite type="doc" doc-id="{blank}" file-type="docx">Empty target</cite></p><source path="assets/files/qa-keep.txt" name="qa-keep.txt"/>"#);
+                        let guard = ws.store.create_from(&crate::docxml::parse(&xml).unwrap()).unwrap();
+                        ws.entries = ws.store.list();
+                        ws.open(&blank, window, cx);
+                        ws.open(&guard, window, cx);
+                        eprintln!("QA_GUARD {blank} {guard}");
+                    } else if cmd == "qa-note-open" {
+                        let id = ws.entries.iter().find(|e| e.title == rest).expect("fixture").id.clone();
+                        ws.open(&id, window, cx);
+                    } else if cmd == "qa-note-home" {
+                        ws.navigate_home(window, cx);
+                    } else if let Some(ed) = &ws.editor {
+                        let core = &ed.read(cx).core;
+                        eprintln!("QA_STATE {}", serde_json::json!({"label":rest,"id":ws.current,"title":core.doc.title.text,
+                            "anchor":[core.sel.anchor.block.0,core.sel.anchor.offset as u64],
+                            "head":[core.sel.head.block.0,core.sel.head.offset as u64],"body":core.doc.plain_text()}));
+                    }
+                }).unwrap();
+                continue;
+            }
             if cmd == "check-export-safety" {
                 cx.update(|cx| {
                     let handle = cx.windows().into_iter().find_map(|w| w.downcast::<crate::app::Workspace>()).unwrap();
@@ -268,7 +339,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                     let handle = cx.windows().into_iter().find_map(|w| w.downcast::<crate::app::Workspace>()).unwrap();
                     handle.update(cx, |ws, window, cx| match paths {
                         // Over the sidebar the tree takes it; otherwise the page.
-                        Some(p) if drop => { FILE_DRAG.lock().unwrap().take(); if ws.sidebar_drop_at(at, false, cx) { ws.sidebar_files_dropped(p, cx); } else { ws.file_drag_at(at, p.clone(), cx); ws.file_drop_paths(p, window, cx); } }
+                        Some(p) if drop => { FILE_DRAG.lock().unwrap().take(); if ws.sidebar_drop_at(at, false, cx) { ws.sidebar_files_dropped(p, window, cx); } else { ws.file_drag_at(at, p.clone(), cx); ws.file_drop_paths(p, window, cx); } }
                         Some(p) => { if !ws.sidebar_drop_at(at, false, cx) { ws.file_drag_at(at, p, cx); } }
                         None => cx.notify(),
                     }).unwrap();
@@ -301,6 +372,11 @@ pub fn start(window: &mut Window, cx: &mut App) {
                         let _ = handle.update(cx, |_, window, cx| capture(window, cx, &format!("{dir}/shared-session-{i}.png")));
                     }
                 });
+                continue;
+            }
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            if cmd == "sharing-ui" {
+                cx.update(|cx| crate::sharing::qa::step(rest.trim(), cx)).unwrap().unwrap();
                 continue;
             }
             #[cfg(target_os = "macos")]

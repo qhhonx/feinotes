@@ -774,9 +774,7 @@ Windows 安装包随附未修改的 Microsoft Visual C++ Runtime `vcruntime140.d
 | 素材 | 许可 |
 |---|---|
 | `assets/editor-icons/`（编辑器与文档里的 173 个图标） | 包括 Lucide 图标（ISC，其中源自 Feather 的部分保留 MIT 许可），其余按同一 24px / 2px 描边规格绘制。见同目录 `LICENSE-lucide`。 |
-| `assets/icons/`（界面外壳的 75 个图标） | 66 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 9 个项目自绘的 MIT 图标（包含 `globe.svg` 与共享按钮的后备图标 `share.svg`）。 |
-
-`notes-todo-check.svg` in both icon directories is original Fei Notes artwork under MIT, measured against the checklist proportions in the 2026-11-17 native Notes captures. No Apple artwork is bundled.
+| `assets/icons/`（界面外壳的 76 个图标） | 67 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，包含接受邀请入口的 `mail-check.svg`；各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 9 个项目自绘的 MIT 图标（包含 `globe.svg` 与共享按钮的后备图标 `share.svg`）。 |
 | macOS 共享按钮的 `square.and.arrow.up` | 通过 AppKit 的 [系统符号 API](https://developer.apple.com/documentation/appkit/nsimage/init(systemsymbolname:accessibilitydescription:)) 在运行时获取；不随仓库或发行包分发 Apple 图形素材。 |
 | `packaging/macos/fei-notes.png` | 飞记的应用图标，随飞记构建嵌入。 |
 | `assets/branding/` | 上游 Quiet.md 品牌资源，未嵌入飞记构建。 |
@@ -792,3 +790,5 @@ Windows 安装包随附未修改的 Microsoft Visual C++ Runtime `vcruntime140.d
 ## 内置文档
 
 `shared-mock/library/` 里的「开始指南」是上游 Quiet.md 的示例文档，随上游按 MIT 分发。飞记的应用构建不嵌入这套指南及其照片和截图。
+
+`notes-todo-check.svg` in both icon directories is original Fei Notes artwork (MIT), drawn for the Notes circular task control.

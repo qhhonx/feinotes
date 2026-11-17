@@ -13,6 +13,10 @@ impl Workspace {
         self.create_menu = None;
         let (m, p) = (markdown, parent.clone());
         if !self.save_before(cx, move |w, window, cx| w.create_doc(m, p.clone(), window, cx)) { return; }
+        if crate::FEI_NOTES && !markdown {
+            self.start_draft(parent, window, cx);
+            return;
+        }
         let file_before = self.store.track_file_changes();
         let made = if markdown {
             self.store.create_markdown(&crate::model::Document::default(), "").and_then(|id| {
@@ -69,7 +73,8 @@ impl Workspace {
     }
 
     pub(crate) fn creation_parent(&self) -> Option<String> {
-        if self.view == View::Folder { self.folder_current.clone() }
+        if let Some(draft) = &self.draft { draft.parent.clone() }
+        else if self.view == View::Folder { self.folder_current.clone() }
         else if self.view == View::Doc { self.current.as_ref().and_then(|id| self.entries.iter().find(|e| &e.id == id)).and_then(|e| e.meta.parent.clone()) }
         else { None }
     }
@@ -77,6 +82,9 @@ impl Workspace {
     pub(crate) fn open_folder(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let target = id.to_string();
         if !self.save_before(cx, move |w, window, cx| { w.open_folder(&target, window, cx); }) { return false; }
+        self.remember_scroll(cx);
+        self.draft = None;
+        self.editor_sub = None;
         self.editor = None;
         self.current = None;
         if self.folder_current.as_deref() != Some(id) { self.reset_folder_scroll(); }

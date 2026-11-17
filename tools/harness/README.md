@@ -86,3 +86,17 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 `python3 tools/harness/sqlite_history.py` checks first-launch creation, synthetic IME marked text (not persisted before commit), read-only history preview, returning to the live document, and restoring a snapshot into SQLite. Build with `cargo build --features cloudkit-sync,devtools`; `FDL_CLOUD_BIN` selects another binary and `FDL_CLOUD_DYLD_PATH` selects the matching Swift bridge directory. The test creates a fresh `/private/tmp/quiet-sync-qa-history-*` local-only library, uses the existing offscreen driver and never selects an iCloud account or uses the system clipboard.
 
 The table-paste and scroll-intent tests locate visible documents in both the old flat library and FORMAT 4, excluding hidden migration backups.
+
+`python3 tools/harness/sharing_ui.py` checks the contextual shared-note list,
+creation and member-management flow with a fresh synthetic library and an
+explicit devtools-only offline invitation transport. It injects initial-upload
+and invitation failures, checks retry identity and original-note preservation,
+then exercises permission changes, confirmed removal and read-only invitation
+acceptance. It also verifies collapsible shared navigation, same-window opening,
+participant leave, owner deletion and retry after a recoverable deletion failure.
+Shared Documents reuses the existing Home document-list renderer. The shared
+section starts collapsed above My Documents; captures also check the linked
+mail-check invitation controls.
+Captures include narrow/dark member management. No live CloudKit,
+real notes, system clipboard or foreground activation is used. The existing
+`FDL_CLOUD_BIN` and `FDL_CLOUD_DYLD_PATH` overrides apply.

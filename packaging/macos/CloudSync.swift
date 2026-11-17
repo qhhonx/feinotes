@@ -6,6 +6,7 @@ import CryptoKit
 import Foundation
 import Network
 import Quartz
+import QuickLookThumbnailing
 
 private let syncZoneName = "QuietLibraryEdits-v4"
 private let legacyZoneName = "QuietLibraryEdits-v3"
@@ -560,6 +561,36 @@ public func quietCloudPresence(_ json: UnsafePointer<CChar>) -> UnsafeMutablePoi
     }
     guard let bytes = try? JSONEncoder().encode(reply) else { return nil }
     return strdup(String(decoding: bytes, as: UTF8.self))
+}
+
+// Called on a Rust background executor. Quick Look's service can read the
+// app's sandbox container; launching qlmanage loses that access.
+private final class ThumbnailResult: @unchecked Sendable {
+    let done = DispatchSemaphore(value: 0)
+    var saved = false
+}
+
+@_cdecl("quiet_cloud_thumbnail")
+public func quietCloudThumbnail(_ path: UnsafePointer<CChar>, _ destination: UnsafePointer<CChar>) -> Bool {
+    guard !Thread.isMainThread else { return false }
+    let source = URL(fileURLWithPath: String(cString: path))
+    let output = URL(fileURLWithPath: String(cString: destination))
+    let request = QLThumbnailGenerator.Request(fileAt: source, size: CGSize(width: 1200, height: 1200), scale: 1, representationTypes: .thumbnail)
+    let result = ThumbnailResult()
+    QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { representation, _ in
+        defer { result.done.signal() }
+        guard let representation,
+              let png = NSBitmapImageRep(cgImage: representation.cgImage).representation(using: .png, properties: [:]) else { return }
+        do {
+            try png.write(to: output, options: .atomic)
+            result.saved = true
+        } catch { }
+    }
+    guard result.done.wait(timeout: .now() + 30) == .success else {
+        QLThumbnailGenerator.shared.cancel(request)
+        return false
+    }
+    return result.saved
 }
 
 @MainActor private var previewPanel: NSPanel?

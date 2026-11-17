@@ -7,7 +7,7 @@ use crate::settings::display_title;
 use crate::search::doc_icon;
 use crate::store::{TRASH_DAYS, TrashEntry};
 pub(crate) use crate::ui::{close_button, dialog, list_header_text, list_line, menu_label, primary_button, row_hover, scrim, secondary_button};
-use crate::theme::{self, Theme, craft};
+use crate::theme::{self, Theme};
 use crate::ui::{ROW_RADIUS, TipExt, TitleBarExt, icon, popover, ui_para, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 
@@ -531,8 +531,7 @@ impl Workspace {
             Confirm::Refs { show: false, no_ask } => Some(*no_ask),
             _ => None,
         };
-        let ok = primary_button("confirm-ok", action);
-        let ok = if danger { ok.bg(Theme::danger()).hover(|s| s.bg(theme::c(craft::R600))).active(|s| s.bg(theme::c(craft::R700))) } else { ok };
+        let ok = if danger { crate::ui::danger_button("confirm-ok", action) } else { primary_button("confirm-ok", action) };
         let max_width = px(if matches!(c, Confirm::SaveFailed) || version_list.is_some() { 520. } else { 400. });
         let width = (window.viewport_size().width - px(32.)).min(max_width);
         let dialog = dialog("confirm-dialog")

@@ -117,17 +117,25 @@ impl Workspace {
 /// Files the system asked us to open (Finder's Open With, a double-click,
 /// the command line), waiting for a main window.
 #[derive(Clone, Default)]
-pub struct Incoming(std::rc::Rc<std::cell::RefCell<Vec<PathBuf>>>);
+pub struct Incoming(std::rc::Rc<std::cell::RefCell<Vec<PathBuf>>>,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))] std::rc::Rc<std::cell::RefCell<Vec<String>>>);
 
 impl Incoming {
     /// Markdown files named on the command line (Windows and Linux "Open with").
     pub fn from_args() -> Self {
         let me = Self::default();
         me.0.borrow_mut().extend(std::env::args_os().skip(1).map(PathBuf::from).filter(|p| is_markdown_path(p) && p.is_file()));
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        me.1.borrow_mut().extend(std::env::args().skip(1).filter(|url| crate::sharing::links::incoming(url)));
         me
     }
 
     pub fn push_urls(&self, urls: Vec<String>) {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        {
+            let mut invitations = self.1.borrow_mut(); let available = 8usize.saturating_sub(invitations.len());
+            invitations.extend(urls.iter().filter(|url| crate::sharing::links::incoming(url)).take(available).cloned());
+        }
         let paths = urls.iter().filter_map(|u| u.strip_prefix("file://")).map(|p| PathBuf::from(crate::markdown::percent_decode(p)));
         self.0.borrow_mut().extend(paths.filter(|p| is_markdown_path(p)));
     }
@@ -135,6 +143,23 @@ impl Incoming {
     /// Hand waiting files to the front main window, now and whenever more arrive.
     pub fn deliver(self, cx: &mut App) {
         cx.spawn(async move |cx| loop {
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            if !self.1.borrow().is_empty() {
+                let _ = cx.update(|cx| {
+                    let target = cx.active_window().and_then(|w| w.downcast::<Workspace>())
+                        .or_else(|| cx.windows().into_iter().find_map(|w| w.downcast::<Workspace>()));
+                    let target = match target {
+                        Some(target) => target,
+                        None => { crate::open_main_window(false, None, cx); return; }
+                    };
+                    if target.read(cx).is_ok_and(|w| w.sharing_request_busy()) { return; }
+                    let link = self.1.borrow_mut().remove(0);
+                    let _ = target.update(cx, |w, window, cx| {
+                        window.activate_window();
+                        w.receive_invitation(link, window, cx);
+                    });
+                });
+            }
             if !self.0.borrow().is_empty() {
                 let _ = cx.update(|cx| {
                     let personal = |w: &WindowHandle<Workspace>| w.read(cx).is_ok_and(|ws| !ws.is_shared());

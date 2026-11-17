@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Copyright 2026 Fei Notes contributors. See LICENSES.md.
 use anyhow::Result;
-use loro::{LoroDoc, UndoManager};
-use crate::editor::core::Core;
+use loro::{LoroDoc, UndoManager, UndoItemMeta};
+use std::sync::{Arc, Mutex};
+use crate::editor::core::{Core, Selection};
 use super::content;
 
 pub(super) struct History {
     pub doc: LoroDoc,
     undo: UndoManager,
     group: Option<u64>,
+    push: Arc<Mutex<UndoItemMeta>>,
+    pop: Arc<Mutex<UndoItemMeta>>,
 }
 
 impl History {
@@ -17,7 +20,34 @@ impl History {
         let mut undo = UndoManager::new(&doc);
         undo.add_exclude_origin_prefix("sync-metadata");
         undo.set_max_undo_steps(500);
-        Ok(Self { doc, undo, group: None })
+        let push = Arc::new(Mutex::new(UndoItemMeta::default()));
+        let pop = Arc::new(Mutex::new(UndoItemMeta::default()));
+        let input = push.clone(); let output = pop.clone();
+        undo.set_on_push(Some(Box::new(move |_, _, _| input.lock().unwrap().clone())));
+        undo.set_on_pop(Some(Box::new(move |_, _, meta| *output.lock().unwrap() = meta)));
+        Ok(Self { doc, undo, group: None, push, pop })
+    }
+
+    pub fn checkpoint_selection(&self, sel: Option<Selection>) -> Result<()> {
+        let mut meta = UndoItemMeta::default();
+        if let Some(sel) = sel {
+            meta.value = serde_json::to_string(&sel)?.into();
+            if let (Some(a), Some(b)) = (content::anchor(&self.doc, sel.anchor), content::anchor(&self.doc, sel.head)) {
+                meta.add_cursor(&a); meta.add_cursor(&b);
+            }
+        }
+        *self.push.lock().unwrap() = meta;
+        Ok(())
+    }
+
+    pub fn restored_selection(&self) -> Option<Selection> {
+        let meta = self.pop.lock().unwrap();
+        let mut sel: Selection = serde_json::from_str(meta.value.as_string()?.as_str()).ok()?;
+        if let [a, b] = meta.cursors.as_slice() {
+            sel.anchor = content::resolve(&self.doc, sel.anchor.block, &a.cursor).unwrap_or(sel.anchor);
+            sel.head = content::resolve(&self.doc, sel.head.block, &b.cursor).unwrap_or(sel.head);
+        }
+        Some(sel)
     }
 
     pub fn save(&mut self, core: &Core, peer: u64) -> Result<()> {
@@ -27,6 +57,7 @@ impl History {
                 self.undo.group_end();
                 self.undo.group_start()?;
             }
+            self.checkpoint_selection(step.before)?;
             let transfer = (self.group != group).then_some(step.transfer).flatten();
             content::edit_with_transfer(&self.doc, peer, step.body, transfer)?;
             self.group = group;
@@ -50,6 +81,27 @@ impl History {
 mod tests {
     use super::*;
     use crate::{editor::core::{EditKind, Pos, Selection}, model::{Block, Document, Marks, RichText}};
+
+    #[test]
+    fn undo_range_tracks_remote_prefix_and_preserves_direction() -> Result<()> {
+        let base = Document { blocks: vec![Block::text("ab中文ef")], ..Default::default() };
+        let id = base.blocks[0].id;
+        let seed = content::seed(&base)?;
+        let mut history = History::new(content::open(&seed)?, 101)?;
+        let mut editor = Core::new(base.clone());
+        editor.sel = Selection { anchor: Pos::new(id, 10), head: Pos::new(id, 8) };
+        editor.insert_text("Z");
+        history.save(&editor, 101)?;
+        let remote = content::open(&seed)?;
+        let mut other = base;
+        other.blocks[0].text = RichText::plain("远ab中文ef");
+        history.doc.import(&content::edit(&remote, 202, &other)?.unwrap())?;
+        history.checkpoint_selection(Some(Selection::caret(Pos::new(id, 12))))?;
+        assert!(history.apply(false)?);
+        assert_eq!(content::render(&history.doc)?.blocks[0].text.text, "远ab中文ef");
+        assert_eq!(history.restored_selection(), Some(Selection { anchor: Pos::new(id, 13), head: Pos::new(id, 11) }));
+        Ok(())
+    }
 
     #[test]
     fn undo_redo_keeps_remote_text_and_independent_style() -> Result<()> {

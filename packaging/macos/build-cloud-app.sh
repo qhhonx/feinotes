@@ -186,6 +186,11 @@ entitlements = {
 aps_key = "com.apple.developer.aps-environment"
 if allowed.get(aps_key) == environment.lower():
     entitlements[aps_key] = environment.lower()
+associated_key = "com.apple.developer.associated-domains"
+if bundle_id == "app.feinotes.mac":
+    require(allowed.get(associated_key) == "*" or "applinks:feinotes.app" in allowed.get(associated_key, []),
+            "Enable Associated Domains and regenerate this provisioning profile for Fei Notes sharing links.")
+    entitlements[associated_key] = ["applinks:feinotes.app"]
 (work / "entitlements.plist").write_bytes(plistlib.dumps(entitlements))
 (work / "bundle-id").write_text(bundle_id)
 require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version), "Use a three-component app version in Cargo.toml.")
@@ -202,6 +207,9 @@ info = {
         "LSItemContentTypes": ["net.daringfireball.markdown"],
     }],
 }
+if bundle_id == "app.feinotes.mac":
+    info["NSUserActivityTypes"] = ["NSUserActivityTypeBrowsingWeb"]
+    info["CFBundleURLTypes"] = [{"CFBundleURLName": "app.feinotes.invitation", "CFBundleTypeRole": "Viewer", "CFBundleURLSchemes": ["feinotes"]}]
 exempt = os.environ.get("FEI_EXPORT_EXEMPT", "")
 if exempt:
     require(mode == "app-store" and exempt == "1", "Set FEI_EXPORT_EXEMPT=1 only for an eligible Apple upload.")

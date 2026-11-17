@@ -530,12 +530,63 @@ impl Store {
         result
     }
 
+    /// Retain a cached shared note in the personal Trash before ending access.
+    /// The source remains untouched; repeated attempts at one revision reuse the copy.
+    pub fn archive_note_to_trash(root: &Path, source: &Path, id: &str) -> Result<String> {
+        use std::fs;
+        let source = source.canonicalize()?; let root = root.canonicalize()?;
+        anyhow::ensure!(root != source, "Recovery requires a different library");
+        let input = Library::new(source.join(SQLITE_FILE)).connect()?;
+        let snapshot = input.unchecked_transaction()?;
+        let mut meta: Meta = serde_json::from_str(&snapshot.query_row("SELECT meta FROM library_entries WHERE id = ?1", [id], |row| row.get::<_, String>(0))?)?;
+        let (mut doc, revision, front) = Self::read_sync_body(&snapshot, id, false)?;
+        let _lock = lock_root(&root)?;
+        let mut output = Library::new(root.join(SQLITE_FILE)).connect()?;
+        let tx = output.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        anyhow::ensure!(get_value(&tx, "restored")?.is_some(), "Personal recovery library is not ready");
+        let key = format!("shared-trash-{id}-{revision}");
+        if let Some(existing) = get_value(&tx, &key)?.and_then(|value| String::from_utf8(value).ok())
+            && tx.query_row("SELECT EXISTS(SELECT 1 FROM library_documents WHERE id = ?1)", [&existing], |row| row.get::<_, bool>(0))?
+        { return Ok(existing); }
+        let new = uuid::Uuid::new_v4().to_string();
+        let batch = format!("shared-recovery-{new}"); let prefix = Path::new("assets").join(&batch);
+        let stage = root.join(format!(".{batch}")); let assets = root.join(&prefix);
+        meta.parent = None; meta.root_order = None; meta.order = 0; meta.opened = 0; meta.pinned = false; meta.starred = 0;
+        let result = (|| {
+            stage_copy_assets(&mut doc, &source, &stage, &prefix, &HashMap::from([(id.to_owned(), new.clone())]))?;
+            write_document(&tx, &new, true, &doc, &front)?;
+            let trash = Trashed { meta, deleted: now(), root: None };
+            tx.execute("INSERT INTO library_trash VALUES (?1, ?2)", params![new, serde_json::to_string(&trash)?])?;
+            set_value(&tx, &key, new.as_bytes())?;
+            if stage.is_dir() { fs::rename(&stage, &assets)?; }
+            if let Err(error) = tx.commit() { let _ = fs::remove_dir_all(&assets); return Err(error.into()); }
+            Ok(new)
+        })();
+        if stage.is_dir() { let _ = fs::remove_dir_all(&stage); }
+        result
+    }
+
+    /// Read an existing cached document without opening or migrating its library.
+    pub fn read_cached_note(root: &Path, id: &str) -> Result<Document> {
+        let input = Library::new(root.join(SQLITE_FILE)).connect()?;
+        Ok(Self::read_sync_body(&input, id, false)?.0)
+    }
+
+    /// Copy one shared note into the personal library with new document and asset identities.
+    pub fn copy_note_to_personal(root: &Path, source: &Path, id: &str, title: &str) -> Result<String> {
+        Self::copy_cached_note(root, source, id, Some(title))
+    }
+
     /// Copy a cached note and its local attachments into the separate offline library.
     pub fn copy_note_to_local(root: &Path, source: &Path, id: &str) -> Result<String> {
+        Self::copy_cached_note(root, source, id, None)
+    }
+
+    fn copy_cached_note(root: &Path, source: &Path, id: &str, title: Option<&str>) -> Result<String> {
         use std::fs;
         let source = source.canonicalize()?;
         let root = root.canonicalize()?;
-        anyhow::ensure!(!root.starts_with(&source) && !source.starts_with(&root), "请选择独立的本机文档库");
+        anyhow::ensure!(root != source && (title.is_some() || (!root.starts_with(&source) && !source.starts_with(&root))), "请选择独立的文档库");
         let input = Library::new(source.join(SQLITE_FILE)).connect()?;
         let snapshot = input.unchecked_transaction()?;
         let meta: String = snapshot.query_row("SELECT meta FROM library_entries WHERE id = ?1", [id], |r| r.get(0))?;
@@ -551,11 +602,12 @@ impl Store {
         meta.created = now();
         meta.modified = meta.created;
         let (mut doc, _, front) = Self::read_sync_body(&snapshot, id, false)?;
+        if let Some(title) = title { doc.title = crate::model::RichText::plain(title); }
 
         let _lock = lock_root(&root)?;
         let mut output = Library::new(root.join(SQLITE_FILE)).connect()?;
         let tx = output.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        anyhow::ensure!(get_value(&tx, "restored")?.as_deref() == Some(b"local-only\n"), "目标不是本机文档库");
+        anyhow::ensure!(if title.is_some() { get_value(&tx, "restored")?.is_some() } else { get_value(&tx, "restored")?.as_deref() == Some(b"local-only\n") }, "目标文档库尚未就绪");
         let new = uuid::Uuid::new_v4().to_string();
         let batch = format!("local-copy-{new}");
         let prefix = Path::new("assets").join(&batch);
@@ -874,6 +926,60 @@ mod tests {
         std::fs::write(stage.join(".cloud-restore-ready"), "synthetic account\n")?;
         Store::initialize_sqlite(&temp.0)?;
         Ok(temp)
+    }
+
+    #[test]
+    fn shared_copy_to_personal_preserves_assets_and_rolls_back_missing_files() -> Result<()> {
+        use crate::model::{Block, BlockKind, FileBlock, FileView, RichText};
+        let target = isolated_sqlite("shared-personal-copy")?;
+        let source = target.0.join("shared-session"); std::fs::create_dir_all(&source)?;
+        Store::initialize_shared_sqlite(&source, "synthetic account")?;
+        std::fs::create_dir_all(source.join("assets/files"))?;
+        std::fs::write(source.join("assets/files/sample.txt"), b"independent copy")?;
+        let doc = Document { title: RichText::plain("shared source"), blocks: vec![Block::new(BlockKind::File(FileBlock {
+            src_kind: "path".into(), src: "assets/files/sample.txt".into(), name: "sample.txt".into(), view: FileView::Card,
+        }), RichText::default())], ..Default::default() };
+        let mut input = Store::open_sqlite_at(source.clone())?; let id = input.create_from(&doc)?;
+        let copy = Store::copy_note_to_personal(&target.0, &source, &id, "personal copy")?;
+        assert_ne!(copy, id);
+        let mut output = Store::open_sqlite_at(target.0.clone())?; let copied = output.load(&copy)?;
+        assert_eq!(copied.title.text, "personal copy");
+        let BlockKind::File(file) = &copied.blocks[0].kind else { panic!("attachment preserved") };
+        assert_ne!(file.src, "assets/files/sample.txt");
+        assert_eq!(std::fs::read(target.0.join(&file.src))?, b"independent copy");
+        assert_eq!(Store::read_cached_note(&source, &id)?, doc);
+        std::fs::remove_file(source.join("assets/files/sample.txt"))?;
+        assert!(Store::copy_note_to_personal(&target.0, &source, &id, "failed copy").is_err());
+        assert_eq!(output.list().len(), 1); assert!(output.list_trash().is_empty());
+        assert_eq!(Store::read_cached_note(&source, &id)?, doc);
+        Ok(())
+    }
+
+    #[test]
+    fn shared_recovery_is_idempotent_and_keeps_attachments_in_personal_trash() -> Result<()> {
+        use crate::model::{Block, BlockKind, FileBlock, FileView, RichText};
+        let source = isolated_sqlite("shared-recovery-source")?; let target = isolated_sqlite("shared-recovery-target")?;
+        std::fs::create_dir_all(source.0.join("assets/files"))?;
+        std::fs::write(source.0.join("assets/files/sample.txt"), b"recover this attachment")?;
+        let doc = Document { title: RichText::plain("shared recovery"), blocks: vec![Block::new(BlockKind::File(FileBlock {
+            src_kind: "path".into(), src: "assets/files/sample.txt".into(), name: "sample.txt".into(), view: FileView::Card,
+        }), RichText::default())], ..Default::default() };
+        let mut input = Store::open_sqlite_at(source.0.clone())?; let id = input.create_from(&doc)?;
+        let copy = Store::archive_note_to_trash(&target.0, &source.0, &id)?;
+        assert_eq!(Store::archive_note_to_trash(&target.0, &source.0, &id)?, copy);
+        let mut recovered = Store::open_sqlite_at(target.0.clone())?;
+        assert!(recovered.list().is_empty()); assert_eq!(recovered.list_trash().len(), 1);
+        recovered.restore(&copy)?;
+        assert!(recovered.list().iter().any(|entry| entry.id == copy));
+        let body = recovered.load(&copy)?;
+        let BlockKind::File(file) = &body.blocks[0].kind else { panic!("file attachment preserved") };
+        assert_eq!(std::fs::read(target.0.join(&file.src))?, b"recover this attachment");
+        assert_eq!(input.load(&id)?, doc);
+        std::fs::remove_file(source.0.join("assets/files/sample.txt"))?;
+        let fresh = isolated_sqlite("shared-recovery-missing-asset")?;
+        assert!(Store::archive_note_to_trash(&fresh.0, &source.0, &id).is_err());
+        assert!(Store::open_sqlite_at(fresh.0.clone())?.list_trash().is_empty());
+        Ok(())
     }
 
     #[test]

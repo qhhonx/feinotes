@@ -114,8 +114,8 @@ private func shareReply(_ share: CKShare, scope: ShareScope) -> ShareReply {
     let members: [ShareMember] = share.participants.compactMap { member in
         guard member.role != .owner else { return nil }
         let id = member.participantID
-        let name = member.userIdentity.lookupInfo?.emailAddress
-            ?? member.userIdentity.nameComponents.map { PersonNameComponentsFormatter().string(from: $0) } ?? id
+        let realName = member.userIdentity.nameComponents.map { PersonNameComponentsFormatter().string(from: $0) }.flatMap { $0.isEmpty ? nil : $0 }
+        let name = realName ?? member.userIdentity.lookupInfo?.emailAddress ?? ""
         return ShareMember(id: id, name: name, permission: member.permission == .readWrite ? .readWrite : .readOnly,
                            accepted: member.acceptanceStatus == .accepted)
     }
@@ -157,13 +157,26 @@ private func manageShare(_ request: ShareRequest, revision: UInt64) async throws
     let container = CKContainer(identifier: containerID)
     try await shareAccount(container, expected: request.account)
     // Existing participants can still be inspected or removed after access ends.
-    if request.action != "members" && request.action != "revoke" {
+    if !["members", "revoke", "delete", "leave"].contains(request.action) {
         try await CloudAccess.shared.require(account: request.account, channel: request.accessChannel)
     }
     try checkCloudAccountRevision(revision)
     if request.action == "checkAccess" { return ShareReply() }
     if request.action == "accept", let url = request.url {
         return try await acceptShare(url, container: container, revision: revision)
+    }
+    if request.action == "delete" || request.action == "leave" {
+        guard let scope = request.scope,
+              (request.action == "delete" && scope.owner == nil) || (request.action == "leave" && scope.owner != nil)
+        else { throw ShareError.ownerOnly }
+        let zone = try scope.zone()
+        let db = shareDatabase(container, scope)
+        try checkCloudAccountRevision(revision)
+        do {
+            if request.action == "delete" { _ = try await db.deleteRecordZone(withID: zone) }
+            else { _ = try await db.deleteRecord(withID: shareID(in: zone)) }
+        } catch let error as CKError where [.unknownItem, .zoneNotFound, .userDeletedZone].contains(error.code) { }
+        return ShareReply(scope: scope)
     }
     guard let scope = request.scope, scope.owner == nil else { throw ShareError.ownerOnly }
     let zone = try scope.zone()

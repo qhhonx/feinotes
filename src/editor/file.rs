@@ -258,15 +258,24 @@ fn first_png(dir: &Path) -> Option<PathBuf> {
 fn make_thumb(root: &Path, p: &Path) -> Option<PathBuf> {
     let dir = thumb_dir(root, p);
     let _ = std::fs::create_dir_all(&dir);
-    let _ = std::process::Command::new("qlmanage")
-        .args(["-t", "-s", "1200", "-o"])
-        .arg(&dir)
-        .arg(p)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    first_png(&dir)
+    if let Some(cached) = first_png(&dir) { return Some(cached); }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    {
+        let output = dir.join("preview.png");
+        crate::cloud_sync::thumbnail(p, &output).then_some(output)
+    }
+    #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+    {
+        let _ = std::process::Command::new("qlmanage")
+            .args(["-t", "-s", "1200", "-o"])
+            .arg(&dir)
+            .arg(p)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        first_png(&dir)
+    }
 }
 
 /// Opens the file in Quick Look (scripted runs only log it).

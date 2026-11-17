@@ -54,3 +54,10 @@ The availability workflow runs after release jobs and every 30 minutes. It queri
 When a newer build is in review, keep the latest externally available build downloadable and show the pending version separately. Review, rejection or an internal-only upload must not hide an older valid public build. Disable the download only when no public build is available or the public invitation is disabled. Website availability changes do not require rebuilding the app; publish them without triggering another Apple release.
 
 The public website and app support link use feinotes.app. The canonical repository is https://github.com/qhhonx/feinotes.
+
+
+## Runner recovery
+
+Automatic releases keep using `macos-26` and the triggering commit. For public-TestFlight recovery after a confirmed infrastructure failure, manual dispatch accepts `runner=macos-26-intel` and an optional full 40-character `source` commit. The source must be an ancestor of the workflow commit; both macOS jobs check out and verify that exact source. Runner or source overrides are rejected for Store operations and automatic branch releases.
+
+Before a replacement run, confirm the previous run is terminal and read the exact Apple upload receipt. Keep the authorized version and build only when that number has not been uploaded, or let the existing upload-resume logic handle a verified receipt. Record the workflow commit separately from the application source. Both executable and Swift bridge still require arm64 and x86_64 slices. Intel-hosted compilation does not establish physical Intel application acceptance.

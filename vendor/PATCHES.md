@@ -54,6 +54,8 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 | 32 | `text_system/line.rs` | `WrappedLine::paint` / `paint_background`：折成多行、且第一个字母属于从右到左文字的段落，默认的左对齐改成右对齐（`rtl_align`）；单行文字、显式指定的对齐和编辑器用的 `paint_rows` 不变 | 阿拉伯文等的多行说明文字贴右边排，符合这些文字的阅读习惯 |
 | 33 | `platform/mac/metal_renderer.rs` | `CAMetalLayer` 的 `maximumDrawableCount` 从 3 改为 2 | 每张 drawable 是一整窗 BGRA（2560×1600 时 16MB），第三张只在帧堆积时才会建出来并一直留着。我们每帧的 GPU 时间只有一两毫秒，滚动文件夹页时 `nextDrawable` 等待最长 0.17ms，和 3 张时一样 |
 
+| 34 | `platform/mac/platform.rs` | Forward `NSUserActivityTypeBrowsingWeb` to the existing open-URL callback. | Fei Notes Universal Links use the same invitation queue as custom-scheme URLs; no change to file-open handling. |
+
 ## taffy 0.9.0
 
 | 文件 | 改动 | 用途 |

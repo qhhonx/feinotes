@@ -54,8 +54,11 @@ impl Workspace {
     }
 
     /// Files from the Finder let go over the sidebar.
-    pub(crate) fn sidebar_files_dropped(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    pub(crate) fn sidebar_files_dropped(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(target) = self.sidebar_drop.take() else { return };
+        if self.is_shared() {
+            self.personal_action(window, cx, move |w, window, cx| { w.sidebar_drop = Some(target); w.sidebar_files_dropped(paths, window, cx); }); return;
+        }
         let (dirs, files): (Vec<_>, Vec<_>) = paths.into_iter().filter(|p| importable(p)).partition(|p| p.is_dir());
         if dirs.is_empty() && files.is_empty() {
             self.show_toast_kind(crate::ui::ToastKind::Error, tr("这些文件不能导入：支持 Markdown、DocxXML 文件和文件夹", "These files can't be imported: Markdown, DocxXML files and folders are supported"), cx);
@@ -107,7 +110,11 @@ impl Workspace {
 
     /// A 本机文件 row let go over the tree: a Markdown copy lands there; the
     /// file itself stays where it is and in 本机文件.
-    pub(crate) fn local_row_dropped(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(crate) fn local_row_dropped(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_shared() {
+            let id = id.to_string(); let target = self.sidebar_drop.take();
+            self.personal_action(window, cx, move |w, window, cx| { w.sidebar_drop = target; w.local_row_dropped(&id, window, cx); }); return;
+        }
         let Some(target) = self.sidebar_drop.take() else { return };
         self.ask_import(crate::app::DropImport::Local(id.to_string()), target, cx);
     }
@@ -164,7 +171,7 @@ impl Workspace {
                 if ev.bounds.contains(&at) { w.sidebar_drop_at(at, true, cx); } else if w.sidebar_drop.take().is_some() { cx.notify(); }
             }))
             // Where it is let go decides, not the last move heard.
-            .on_drop(cx.listener(|w, paths: &ExternalPaths, window, cx| { w.sidebar_drop_at(window.mouse_position(), false, cx); w.sidebar_files_dropped(paths.paths().to_vec(), cx) }))
-            .on_drop(cx.listener(|w, d: &LocalRowDrag, window, cx| { w.sidebar_drop_at(window.mouse_position(), true, cx); w.local_row_dropped(&d.id, cx) }))
+            .on_drop(cx.listener(|w, paths: &ExternalPaths, window, cx| { w.sidebar_drop_at(window.mouse_position(), false, cx); w.sidebar_files_dropped(paths.paths().to_vec(), window, cx) }))
+            .on_drop(cx.listener(|w, d: &LocalRowDrag, window, cx| { w.sidebar_drop_at(window.mouse_position(), true, cx); w.local_row_dropped(&d.id, window, cx) }))
     }
 }

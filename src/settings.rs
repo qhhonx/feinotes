@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-use crate::cloud_sync::shared::{self, Access, Reply, Room};
+use crate::cloud_sync::shared;
 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
 use crate::cloud_subscription::{self, Action as SubscriptionAction, ActiveSubscription, Offer, Outcome as SubscriptionOutcome, Plan};
 
@@ -29,28 +29,6 @@ pub(crate) struct Subscription {
     trial: Option<crate::cloud_trial::Trial>,
     trial_busy: bool,
     trial_message: Option<String>,
-}
-
-#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-pub(crate) struct Sharing {
-    link: Entity<crate::input::TextField>,
-    email: Entity<crate::input::TextField>,
-    selected: Option<Room>,
-    reply: Option<Reply>,
-    busy: bool,
-    pub panel_open: bool,
-    toolbar_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
-}
-
-#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-impl Sharing {
-    pub fn new(cx: &mut App) -> Self {
-        Self {
-            link: cx.new(|cx| crate::input::TextField::new("粘贴 iCloud 邀请链接", cx)),
-            email: cx.new(|cx| crate::input::TextField::new("对方的 Apple 账户邮箱", cx)),
-            selected: None, reply: None, busy: false, panel_open: false, toolbar_bounds: Default::default(),
-        }
-    }
 }
 
 // ---- preferences
@@ -352,8 +330,6 @@ pub(crate) fn watch_themes(cx: &mut Context<Workspace>) {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Page {
     #[default] General, Appearance, Shortcuts, Library,
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    Shared,
     About,
 }
 
@@ -364,8 +340,6 @@ impl Page {
             Page::Appearance => tr("外观", "Appearance"),
             Page::Shortcuts => tr("快捷键", "Shortcuts"),
             Page::Library => tr("文档库", "Documents"),
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-            Page::Shared => tr("共享笔记", "Shared Notes"),
             Page::About => tr("关于", "About"),
         }
     }
@@ -375,8 +349,6 @@ impl Page {
             Page::Appearance => "palette",
             Page::Shortcuts => "keyboard",
             Page::Library => "storage",
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-            Page::Shared => "doc",
             Page::About => "info",
         }
     }
@@ -919,7 +891,7 @@ impl Workspace {
                 .tip(if open { tr("收起侧栏", "Hide sidebar") } else { tr("展开侧栏", "Show sidebar") }, Some(crate::shortcuts::hint("workspace::ToggleSidebar", "⌘ + ]")))
                 .on_click(cx.listener(|w, _, _, cx| { w.sidebar_open = !w.sidebar_open; cx.notify(); })))
             .child(bar_button("settings-home", "home").tip(tr("返回主页", "Home"), Some(crate::shortcuts::hint("workspace::GoHome", "⌘ + ⌥ + Home")))
-                .on_click(cx.listener(|w, _, _, cx| w.show_view(View::Home, cx))))
+                .on_click(cx.listener(|w, _, window, cx| w.navigate_home(window, cx))))
             .into_any_element()
     }
 
@@ -936,8 +908,6 @@ impl Workspace {
             Page::Appearance => self.appearance_page(cx),
             Page::Shortcuts => self.shortcut_settings(cx),
             Page::Library => self.library_page(cx),
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-            Page::Shared => self.sharing_panel(window, cx).into_any_element(),
             Page::About => self.about_page(cx),
         };
         let content_width = f32::from(window.viewport_size().width)
@@ -1564,290 +1534,6 @@ impl Workspace {
                     });
                 }
             }
-        }).detach();
-    }
-
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    fn sharing_panel(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let state = &self.sharing;
-        let mut rows = vec![row(tr("接受邀请", "Accept invitation"), None,
-            div().flex().flex_wrap().items_center().gap(px(6.))
-                .child(crate::input::TextField::framed(&state.link, px(190.), window, cx).flex_none().max_w_full())
-                .child(button("join-share", tr("接受", "Accept"))
-                    .on_click(cx.listener(|w, _, window, cx| w.accept_shared_note(window, cx))))).into_any_element()];
-        let mut rooms = shared::rooms(&crate::store::Store::root_dir()).unwrap_or_default();
-        for room in rooms.drain(..) {
-            let open = room.clone();
-            let manage = room.clone();
-            let note = room.scope.note.clone();
-            let title = if room.title.is_empty() { tr("共享笔记", "Shared note").into() } else { room.title };
-            let owner = room.scope.owner.is_none();
-            let controls = div().flex().gap(px(6.))
-                .child(button("open-share", tr("打开", "Open"))
-                    .on_click(cx.listener(move |w, _, _, cx| {
-                        w.open_shared_note(&open, cx);
-                    })))
-                .when(owner, |d| d.child(button("manage-share", tr("管理", "Manage"))
-                    .on_click(cx.listener(move |w, _, window, cx| {
-                        if w.sharing.busy { return; }
-                        w.sharing.selected = Some(manage.clone());
-                        w.sharing.reply = None;
-                        w.manage_shared_note("members", String::new(), None, window, cx);
-                    }))));
-            let status = if owner { tr("由你共享", "Shared by you") } else { tr("与你共享", "Shared with you") };
-            rows.push(div().id(SharedString::from(format!("share-{note}"))).child(row(title, Some(status.into()), controls)).into_any_element());
-        }
-        rows.extend(self.sharing_controls(window, cx));
-        group(None, rows)
-    }
-
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    fn sharing_controls(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let state = &self.sharing;
-        let mut rows = vec![];
-        if let Some(room) = &state.selected {
-            rows.push(row(room.title.clone(), Some(tr("邀请指定账户", "Invite a specific account").into()),
-                div().flex().flex_wrap().items_center().gap(px(6.))
-                    .child(crate::input::TextField::framed(&state.email, px(190.), window, cx).flex_none().max_w_full())
-                    .child(button("invite-reader", tr("邀请只读", "Invite to view"))
-                        .on_click(cx.listener(|w, _, window, cx| w.invite_shared_note(Access::ReadOnly, window, cx))))
-                    .child(button("invite-writer", tr("邀请编辑", "Invite to edit"))
-                        .on_click(cx.listener(|w, _, window, cx| w.invite_shared_note(Access::ReadWrite, window, cx))))).into_any_element());
-        }
-        if let Some(reply) = &state.reply {
-            if let Some(url) = &reply.url {
-                let link = url.clone();
-                rows.push(row(tr("邀请链接", "Invitation link"),
-                    Some(tr("把链接发给已获邀请的人。", "Send this link to an invited person.").into()),
-                    button("copy-share-link", tr("复制链接", "Copy link"))
-                        .on_click(cx.listener(move |w, _, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
-                            w.show_toast(tr("已复制邀请链接", "Invitation link copied"), cx);
-                        }))).into_any_element());
-            }
-            for member in &reply.members {
-                let permission = if member.permission == Access::ReadWrite { tr("可编辑", "Can edit") } else { tr("只读", "Can view") };
-                let status = if member.accepted { tr("已加入", "Joined") } else { tr("待接受", "Invitation pending") };
-                let (label, next) = if member.permission == Access::ReadWrite {
-                    (tr("改为只读", "Allow viewing"), Access::ReadOnly)
-                } else { (tr("允许编辑", "Allow editing"), Access::ReadWrite) };
-                let id = member.id.clone();
-                let revoke = member.id.clone();
-                rows.push(div().id(SharedString::from(format!("share-member-{}", member.id))).child(row(member.name.clone(),
-                    Some(format!("{permission} · {status}").into()),
-                    div().flex().flex_wrap().gap(px(6.))
-                        .child(button("change-share-role", label).on_click(cx.listener(move |w, _, window, cx| {
-                            w.manage_shared_note("permission", id.clone(), Some(next), window, cx);
-                        })))
-                        .child(button("revoke-share-role", tr("撤销访问", "Revoke access")).on_click(cx.listener(move |w, _, window, cx| {
-                            w.manage_shared_note("revoke", revoke.clone(), None, window, cx);
-                        }))))).into_any_element());
-            }
-        }
-        if state.busy {
-            rows.push(row(tr("正在连接 iCloud", "Contacting iCloud"), None, div()).into_any_element());
-        }
-        rows
-    }
-
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    fn sharing_toolbar_access(&self, cx: &App) -> Option<Access> {
-        use crate::cloud_sync::SyncPhase;
-        let room = shared::scope(&self.store, cx)?;
-        if self.current.as_deref() != Some(room.note.as_str()) { return None; }
-        if crate::cloud_sync::status(self.store.root(), cx).is_some_and(|status| matches!(status.phase,
-            SyncPhase::AccountChecking | SyncPhase::AccountChanged | SyncPhase::SignedOut)) { return None; }
-        shared::access(&self.store, cx).filter(|access| *access != Access::Revoked)
-    }
-
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    fn online_collaborators<'a>(&self, cx: &'a App) -> &'a [crate::cloud_sync::presence::Collaborator] {
-        self.current.as_ref().and_then(|id| crate::cloud_sync::presence::view(self.store.root(), cx)?.collaborators.get(id))
-            .map(Vec::as_slice).unwrap_or_default()
-    }
-
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    pub(crate) fn sharing_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> Option<Div> {
-        if !self.is_shared() {
-            let id = self.current.clone()?;
-            if self.store.local_path(&id).is_some() { return None; }
-            let share = ui::grouped_toolbar_control(div().id("doc-create-share").no_drag().flex_none()
-                .size(px(crate::app::HEADER_ACTIONS_H)).flex().items_center().justify_center()
-                .cursor_pointer().text_size(px(13.)).font_weight(FontWeight::MEDIUM)
-                .text_color(ui::toolbar_color("toolbar.button.color").unwrap_or_else(Theme::icon)),
-                8., Theme::fill_hover, Some(Theme::fill_pressed))
-                .child(ui::share_toolbar_icon()).tip(tr("创建共享副本", "Create shared copy"), None)
-                .on_click(cx.listener(move |w, _, window, cx| {
-                    if crate::cloud_restore::local_only() {
-                        w.open_settings(Page::Library, cx);
-                        w.show_toast_kind(ui::ToastKind::Info, tr("开启 iCloud 同步后，即可创建共享笔记。", "Turn on iCloud sync to create a shared note."), cx);
-                    } else { w.create_shared_note(&id, window, cx); }
-                }));
-            return Some(div().flex_none().child(share));
-        }
-        self.sharing_toolbar_access(cx)?;
-        let collaborators = self.online_collaborators(cx);
-        let cap = if window.viewport_size().width < px(500.) { 0 } else { 3 };
-        let count = collaborators.len();
-        let avatars: Vec<_> = collaborators.iter().take(cap).enumerate().map(|(index, person)| {
-            let name = person.name.clone().unwrap_or_default();
-            let color = person.color();
-            div().id(("shared-avatar", index)).no_drag().flex_none().size(px(23.)).rounded_full()
-                .bg(color).text_color(crate::cloud_sync::presence::badge_ink(color)).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD)
-                .flex().items_center().justify_center().child(person.initials.clone()).tip(&name, None)
-        }).collect();
-        let share = ui::grouped_toolbar_control(div().id("doc-share").no_drag().flex_none().size(px(crate::app::HEADER_ACTIONS_H))
-            .flex().items_center().justify_center().cursor_pointer().text_size(px(13.)).font_weight(FontWeight::MEDIUM)
-            .text_color(ui::toolbar_color("toolbar.button.color").unwrap_or_else(Theme::icon)), 8., Theme::fill_hover, Some(Theme::fill_pressed))
-            .when(self.sharing.panel_open, |d| d.bg(ui::toolbar_color("toolbar.button.hover").unwrap_or_else(Theme::fill_hover)))
-            .child(ui::share_toolbar_icon()).tip(tr("共享", "Share"), None)
-            .on_click(cx.listener(|w, _, window, cx| w.toggle_sharing_toolbar(window, cx)));
-        let bounds = self.sharing.toolbar_bounds.clone();
-        Some(div().relative().flex_none().flex().items_center().gap(px(4.)).children(avatars)
-            .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
-            .when(count > cap, |d| d.child(div().id("more-collaborators").no_drag().flex_none().h(px(23.)).px(px(6.))
-                .rounded_full().bg(Theme::fill_hover()).text_color(Theme::text_caption()).text_size(px(11.))
-                .flex().items_center().justify_center().cursor_pointer()
-                .child(if cap == 0 { count.to_string() } else { format!("+{}", count - cap) })
-                .tip(tr("正在编辑的协作者", "Collaborators editing now"), None)
-                .on_click(cx.listener(|w, _, window, cx| w.toggle_sharing_toolbar(window, cx)))))
-            .child(share))
-    }
-
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    fn toggle_sharing_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(access) = self.sharing_toolbar_access(cx) else { return };
-        self.sharing.panel_open = !self.sharing.panel_open;
-        if self.sharing.panel_open && access == Access::Owner && !self.sharing.busy {
-            let room = shared::scope(&self.store, cx).expect("open shared note").clone();
-            let title = self.editor.as_ref().map(|editor| display_title(&editor.read(cx).core.doc.title.text)).unwrap_or_default();
-            self.sharing.selected = Some(Room { scope: room, title });
-            self.sharing.reply = None;
-            self.manage_shared_note("members", String::new(), None, window, cx);
-        }
-        cx.notify();
-    }
-
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    pub(crate) fn render_sharing_toolbar_panel(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.sharing.panel_open || self.view != View::Doc { return None; }
-        let access = self.sharing_toolbar_access(cx)?;
-        let anchor = self.sharing.toolbar_bounds.get()?;
-        let role = match access {
-            Access::Owner => tr("所有者", "Owner"),
-            Access::ReadWrite => tr("可编辑", "Can edit"),
-            _ => tr("只读", "Can view"),
-        };
-        let mut rows = vec![row(tr("你的权限", "Your access"), None, div().text_size(px(13.)).child(role)).into_any_element()];
-        for person in self.online_collaborators(cx) {
-            if let Some(name) = &person.name {
-                rows.push(row(name.clone(), None, div().text_size(px(12.)).text_color(person.color())
-                    .child(tr("正在编辑", "Editing now"))).into_any_element());
-            }
-        }
-        if access == Access::Owner { rows.extend(self.sharing_controls(window, cx)); }
-        let width = (window.viewport_size().width - px(16.)).min(px(if access == Access::Owner { 520. } else { 320. }));
-        let panel = ui::popover().id("doc-sharing-panel").occlude().w(width)
-            .max_h((window.viewport_size().height - anchor.bottom() - px(12.)).max(px(100.))).overflow_y_scroll()
-            .py(px(5.)).children(rows_with_dividers(rows))
-            .on_mouse_down_out(cx.listener(move |w, event: &MouseDownEvent, _, cx| {
-                if !anchor.contains(&event.position) { w.sharing.panel_open = false; cx.notify(); }
-            }));
-        Some(deferred(anchored().anchor(Corner::TopRight).position(point(anchor.right(), anchor.bottom() + px(4.)))
-            .snap_to_window_with_margin(px(8.)).child(panel))
-            .with_priority(2).into_any_element())
-    }
-
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    pub(crate) fn open_shared_note(&mut self, room: &shared::Room, cx: &mut Context<Self>) {
-        let task = shared::launch(room, cx);
-        cx.spawn(async move |this, cx| {
-            if let Err(error) = task.await {
-                let _ = this.update(cx, |w, cx| w.show_toast_kind(ui::ToastKind::Error, &error.to_string(), cx));
-            }
-        }).detach();
-    }
-
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    fn accept_shared_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let link = self.sharing.link.read(cx).text.trim().to_owned();
-        if self.sharing.busy || link.is_empty() { return; }
-        self.sharing.busy = true;
-        cx.notify();
-        let root = crate::store::Store::root_dir();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { shared::accept(&root, &link) }).await;
-            let result = match result {
-                Ok(room) => match this.update_in(cx, |_, _, cx| shared::launch(&room, cx)) {
-                    Ok(task) => task.await,
-                    Err(_) => return,
-                },
-                Err(error) => Err(error),
-            };
-            let _ = this.update_in(cx, |w, _, cx| {
-                w.sharing.busy = false;
-                match result {
-                    Ok(()) => w.sharing.link.update(cx, |field, cx| field.set_text("", cx)),
-                    Err(error) => w.show_toast_kind(ui::ToastKind::Error, &error.to_string(), cx),
-                }
-                cx.notify();
-            });
-        }).detach();
-    }
-
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    fn invite_shared_note(&mut self, access: Access, window: &mut Window, cx: &mut Context<Self>) {
-        let email = self.sharing.email.read(cx).text.trim().to_owned();
-        if !email.is_empty() { self.manage_shared_note("invite", email, Some(access), window, cx); }
-    }
-
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    fn manage_shared_note(&mut self, action: &'static str, person: String, access: Option<Access>,
-        window: &mut Window, cx: &mut Context<Self>) {
-        if shared::scope(&self.store, cx).is_some() && self.sharing_toolbar_access(cx) != Some(Access::Owner) { return; }
-        let Some(room) = self.sharing.selected.clone().filter(|_| !self.sharing.busy) else { return };
-        self.sharing.busy = true;
-        cx.notify();
-        let root = self.store.root().to_path_buf();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { shared::manage(&root, &room, action, &person, access) }).await;
-            let _ = this.update_in(cx, |w, _, cx| {
-                w.sharing.busy = false;
-                match result {
-                    Ok(reply) => {
-                        w.sharing.reply = Some(reply);
-                        if action == "invite" { w.sharing.email.update(cx, |field, cx| field.set_text("", cx)); }
-                    }
-                    Err(error) => w.show_toast_kind(ui::ToastKind::Error, &error.to_string(), cx),
-                }
-                cx.notify();
-            });
-        }).detach();
-    }
-
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    pub(crate) fn create_shared_note(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if crate::cloud_restore::local_only() || shared::scope(&self.store, cx).is_some()
-            || self.sharing.busy || self.store.local_path(id).is_some() || !self.flush(cx) { return; }
-        let Ok(doc) = self.store.load(id) else { return; };
-        let root = crate::store::Store::root_dir();
-        let title = crate::model::display_title(&doc.title.text);
-        self.sharing.busy = true;
-        self.open_settings(Page::Shared, cx);
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { shared::create(&root, title, &doc, "") }).await;
-            let _ = this.update_in(cx, |w, window, cx| {
-                w.sharing.busy = false;
-                match result {
-                    Ok(room) => {
-                        w.sharing.selected = Some(room);
-                        w.sharing.reply = None;
-                        w.manage_shared_note("members", String::new(), None, window, cx);
-                    }
-                    Err(error) => w.show_toast_kind(ui::ToastKind::Error, &error.to_string(), cx),
-                }
-                cx.notify();
-            });
         }).detach();
     }
 

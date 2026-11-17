@@ -142,7 +142,6 @@ impl Workspace {
 
     /// The row "+" → 文档: a new page under `parent`, opened.
     pub fn new_child(&mut self, parent: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let file_before = self.store.track_file_changes();
         let parent = if self.entries.iter().any(|e| e.id == parent && e.meta.folder.is_some()) { parent.to_string() }
             else { return; };
         let parent = parent.as_str();
@@ -150,6 +149,11 @@ impl Workspace {
         if !self.save_before(cx, move |w, window, cx| w.new_child(&p, window, cx)) {
             return;
         }
+        if crate::FEI_NOTES {
+            self.start_draft(Some(parent.to_owned()), window, cx);
+            return;
+        }
+        let file_before = self.store.track_file_changes();
         let made = self.store.create().and_then(|(id, _)| self.store.set_parent(&id, Some(parent)).map(|_| id));
         match made {
             Ok(id) => {
