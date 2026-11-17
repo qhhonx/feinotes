@@ -384,7 +384,7 @@ pub(crate) fn publish_navigation(workspace: &crate::app::Workspace, cx: &App) {
     if workspace.is_shared() { for entry in &workspace.entries { if !navigation_entries.iter().any(|e|e.id==entry.id) { navigation_entries.push(entry.clone()); } } }
     let mut items: Vec<_> = navigation_entries.iter().map(|entry| NavigationItem {
         id: entry.id.clone(), title: display_title(&entry.title), parent: entry.meta.parent.clone(),
-        folder: entry.meta.folder.is_some(), pinned: entry.meta.pinned, starred: entry.meta.starred > 0, trashed: false, shared:workspace.shared_list_room(&entry.id,cx).is_some(), owned:workspace.shared_list_room(&entry.id,cx).is_some_and(|room|room.scope.owner.is_none()),
+        folder: entry.meta.folder.is_some(), pinned: entry.meta.pinned, starred: entry.meta.starred > 0, trashed: false, shared:workspace.shared_list_room(&entry.id,cx).is_some() && (workspace.home.tab==crate::home::HomeTab::Shared || !workspace.entries.iter().any(|personal|personal.id==entry.id)), owned:workspace.shared_list_room(&entry.id,cx).is_some_and(|room|room.scope.owner.is_none()),
     }).collect();
     if workspace.view == View::Trash {
         items.extend(workspace.trash.iter().map(|entry| NavigationItem {

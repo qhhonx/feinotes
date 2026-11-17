@@ -42,6 +42,7 @@ impl Workspace {
         out.reverse();out
     }
     pub(crate) fn mobile_move_shortcut(&mut self, id: &str, parent: Option<String>, cx: &mut Context<Self>) -> bool {
+        if self.is_shared() || self.home.tab != crate::home::HomeTab::Shared { return false; }
         if self.shared_list_room(id,cx).is_none() && !cx.global::<organizer::Organizer>().0.contains_key(id) { return false; }
         if !self.is_shared() { self.update_organizer(cx,|tree|tree.place(id,parent.as_deref())); }
         true
