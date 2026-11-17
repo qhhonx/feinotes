@@ -1,10 +1,10 @@
 # 架构
 
-Quiet.md 是一个单进程 GPUI 应用（Rust，约 4 万行）。一篇文档在内存里是一棵 block 树（`model.rs`），在磁盘上是一份 DocxXML 文件（`docxml.rs`）。编辑器把这棵树画成一个虚拟化列表。
+Quiet.md 是一个单进程 GPUI 应用（Rust，约 9 万行，其中画板约 2.6 万行）。一篇文档在内存里是一棵 block 树（`model.rs`），在磁盘上是一份 DocxXML 文件（`docxml.rs`）。编辑器把这棵树画成一个虚拟化列表。
 
 仓库是一个 Cargo workspace，分两个 crate：
 
-- **`crates/core`（`fdl_core`，约 1 万行）**：文档引擎。包括模型、DocxXML、编辑内核和撤销、磁盘上的文档库、Markdown / HTML 导入和 Markdown 导出。它不依赖 GPUI，可以单独编译和测试（`cargo test -p fdl_core`），fuzzer 也在这里。
+- **`crates/core`（`fdl_core`，约 3.6 万行，其中画板 2 万行）**：文档引擎。包括模型、DocxXML、编辑内核和撤销、磁盘上的文档库、Markdown / HTML 导入和 Markdown 导出，以及画板的模型和算法。它不依赖 GPUI，可以单独编译和测试（`cargo test -p fdl_core`），fuzzer 也在这里。
 - **根 crate（`quiet_md`）**：GPUI 应用，即窗口、视图、渲染、菜单和浮层。`main.rs` 把 `fdl_core` 的模块重新导出到 crate 根，`editor/mod.rs` 重新导出 `editor::core` 和 `editor::table_ops`，所以应用里仍然写 `crate::model`、`super::core`。
 
 依赖只能从应用指向 core。core 里的模块只引用 core 里的模块。
@@ -108,6 +108,13 @@ Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机�
 | `lang.rs` | 代码语言表 |
 | `palette.rs` | 文字色、背景色、高亮块色板（RGBA，不依赖 GPUI；`theme.rs` 转成 GPUI 颜色） |
 | `time.rs` | 日期换算、本地时区、当前时间 |
+| `whiteboard.rs` | 画板 block（`BlockKind::Board`）与独立 `.excalidraw` 文件的读写、SVG、搜索文字 |
+| `board/` 模型 | 按 Excalidraw 源码移植（docs/design/whiteboard-excalidraw.md）：`types` `new_element` `mutate` `scene` `fractional_index` `app_state` `consts` `random` `color` `utils`；读写 `restore` `json` `encode` `clipboard` `transform` |
+| `board/` 几何 | `math` `bounds` `collision` `deconstruct` `shape` `hachure` `freehand` `handles` `size_helpers` `viewport` |
+| `board/` 编辑算法 | `drag` `resize` `selection` `groups` `zindex` `duplicate` `align` `snapping` `lasso` `eraser` `frame` `crop` `image` `sticky` `flowchart` |
+| `board/` 线条与文字 | `linear` `binding` `elbow` `heading` `arrow_text`；`text` `text_wrapping` `text_measure` `text_edit` `list_marker` |
+| `board/` 撤销与 action | `history`（store + delta + history）；`actions.rs` + `actions/`（上游每个 action 一个函数） |
+| `board/` 输出 | `display`（显示列表，各后端共用）、`export_svg` |
 | `editor/core.rs` | 编辑内核 |
 | `editor/table_ops.rs` | 表格操作和单元格选区（`CellSel`） |
 | `editor/fuzz_tests.rs` | 随机编辑 fuzzer |
@@ -134,6 +141,10 @@ Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机�
 | `assets.rs` | 编进二进制的图标、字体、封面图库 |
 | `devtools.rs` | 脚本驱动，只在 `--features devtools` 构建里编入（见 tools/harness/README.md） |
 | `history.rs` | 版本历史抽屉：按天分组的列表、正文就地只读预览、显示改动、命名版本、恢复 / 另存 / 删除 |
+| `board/` 视图 | 画板 `BoardView`（打开时取代文档占满笔记区）（`mod.rs`：场景、store、提交循环）、指针分发 `canvas.rs`、快捷键 `keys.rs`、action 执行与剪贴板 `run.rs` / `action.rs`、文字编辑框 `text_editor.rs`、分区改名 `frame_name.rs`；文档里的缩略图和进出在 `editor/board.rs` |
+| `board/tools/` | 工具状态机：`selection`（拖动、手柄、框选）`shape` `linear` `freedraw` `text` `eraser` `lasso` `image` `crop` `flowchart` |
+| `board/` 渲染 | GPUI 后端 `render.rs` + `render_geom.rs`（CPU 裁剪与图片重采样）、macOS 的 vello_cpu 后端 `render_vello.rs`、交互层 `overlay.rs`（选框、手柄、吸附线） |
+| `board/chrome/` | 工具栏、属性面板、色板、右键菜单、缩放控件、快捷键帮助 |
 
 编辑器（`src/editor/`）：
 

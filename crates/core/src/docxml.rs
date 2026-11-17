@@ -189,6 +189,16 @@ fn parse_blocks(children: &[Node]) -> Vec<Block> {
 
 fn parse_block(e: &Element, out: &mut Vec<Block>) {
     let name = e.name.as_str();
+    // Ours: an Excalidraw scene. Other boards (飞书's `type="blank"`, cloud
+    // ones), or a scene that doesn't read, stay as they came.
+    if name == "whiteboard" && e.attr("type") == Some("excalidraw") {
+        let json: String = e.children.iter().filter_map(|n| if let Node::Text(t) = n { Some(t.as_str()) } else { None }).collect();
+        let height = e.attr("height").and_then(|v| v.parse::<f32>().ok()).filter(|h| h.is_finite() && *h > 0.).unwrap_or(crate::whiteboard::DEFAULT_HEIGHT);
+        if let Some(bd) = crate::whiteboard::Board::from_scene(&json, height) {
+            out.push(Block::new(BlockKind::Board(std::sync::Arc::new(bd)), RichText::default()));
+            return;
+        }
+    }
     let mut block = match name {
         // Blocks nested in a paragraph or heading are its (indented) children.
         "p" => {
@@ -976,6 +986,11 @@ fn write_block(b: &Block, s: &mut String, depth: usize) {
             indent(s, depth);
             s.push_str("</column>\n");
         }
+        BlockKind::Board(bd) => {
+            s.push_str(&format!("<whiteboard type=\"excalidraw\" height=\"{}\">", fmt_num(bd.height)));
+            s.push_str(&esc(&bd.scene_json()));
+            s.push_str("</whiteboard>\n");
+        }
         BlockKind::Raw { xml, .. } => {
             if IN_CELL.get() {
                 s.push_str(&xml.replace('\n', "&#10;"));
@@ -1388,8 +1403,10 @@ mod tests {
         let x = include_str!("../tests/fixtures/all-blocks.xml");
         let doc = parse(x).unwrap();
         assert_eq!(serialize(&doc), x);
+        assert!(doc.blocks.iter().any(|b| matches!(&b.kind, BlockKind::Board(bd) if bd.elements.len() == 3 && bd.height == 360.)));
+        assert!(doc.blocks.iter().any(|b| matches!(&b.kind, BlockKind::Raw { tag, .. } if tag == "whiteboard")), "a 飞书 board stays as it came");
         let text = doc.plain_text();
-        for s in ["被折叠的段落", "尾随空格 \n", "\n \n", "fn main() {\n    println!(\"<hi> & 'q'\");\n\n}", "a = 1\nb = 2", "\\frac{1}{2}", "空项下的段落"] {
+        for s in ["被折叠的段落", "尾随空格 \n", "\n \n", "fn main() {\n    println!(\"<hi> & 'q'\");\n\n}", "a = 1\nb = 2", "\\frac{1}{2}", "空项下的段落", "画板 <&>"] {
             assert!(text.contains(s), "{s:?} missing from {text:?}");
         }
     }

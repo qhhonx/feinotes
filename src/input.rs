@@ -93,6 +93,8 @@ pub struct TextField {
     /// Enter and pasted newlines insert line breaks; Up/Down move by line.
     pub multiline: bool,
     pub mono: bool,
+    /// Fonts by run (`TextSpec::font_runs`).
+    pub font_runs: Option<crate::editor::text::FontRuns>,
     /// Longest text in chars (longer input is cut off).
     pub max_len: Option<usize>,
     /// Only ASCII digits get in (number inputs).
@@ -146,6 +148,7 @@ impl TextField {
             wrap: false,
             multiline: false,
             mono: false,
+            font_runs: None,
             max_len: None,
             digits: false,
             tab_events: false,
@@ -173,6 +176,20 @@ impl TextField {
         self.reversed = false;
         cx.notify();
     }
+
+    /// Selects `r` (byte offsets, clamped; a caret when empty).
+    pub fn select_range(&mut self, r: Range<usize>, cx: &mut Context<Self>) {
+        let (a, b) = (r.start.min(self.text.len()), r.end.min(self.text.len()));
+        self.sel = a.min(b)..a.max(b);
+        self.reversed = false;
+        cx.notify();
+    }
+
+    /// The caret (the selection's moving end).
+    pub fn caret(&self) -> usize { self.cursor() }
+
+    /// The selection (byte offsets; empty: the caret).
+    pub fn selection(&self) -> Range<usize> { self.sel.clone() }
 
     pub fn is_focused(&self, window: &Window) -> bool {
         self.focus.is_focused(window)
@@ -547,6 +564,7 @@ impl Render for TextField {
         spec.color = self.color;
         spec.wrap = self.wrap;
         spec.mono = self.mono;
+        spec.font_runs = self.font_runs.clone();
         let el = RichTextElement {
             id: self.id,
             text: RichText::plain(self.text.clone()),

@@ -290,7 +290,7 @@ impl Workspace {
         let page_icon = |e: &Entry| match &e.icon {
             _ if e.meta.folder.is_some() => icon("folder", 16., Theme::icon()).into_any_element(),
             Some(em) => div().size(px(16.)).flex_none().flex().items_center().justify_center().text_size(px(14.)).child(em.clone()).into_any_element(),
-            None => icon(if e.meta.markdown { "doc-md" } else { "doc" }, 16., Theme::icon()).into_any_element(),
+            None => icon(crate::search::file_glyph(&e.meta), 16., Theme::icon()).into_any_element(),
         };
         let mut list = div().id("move-tree").flex_1().min_w_0().px(px(8.)).py(px(12.)).overflow_y_scroll().track_scroll(&dlg.scroll);
         if q.is_empty() {

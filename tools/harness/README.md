@@ -29,6 +29,7 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 - `python3 tools/harness/scroll_intent.py` 验证标题折叠/展开保留视口和文字选区、隐藏光标迁到标题后仍可见、输入/方向键仍跟随光标，以及分栏调整与两种主题代码换行的保存和位置保持；需要 Pillow。`SCROLL_CASES` 可指定逗号分隔的场景名。
 - `python3 tools/harness/pointer_properties.py` 逐项验证图片对齐、附件卡片/预览、提示块颜色/图标/默认设置、倒计时、日期提醒和单元格背景/垂直对齐，核对视口、编辑位置、保存及撤销重做；需要 Pillow。`PROPERTY_CASES` 可指定逗号分隔的场景名；单独运行撤销场景时，会先验证对应基础操作确实生效。
 - `python3 tools/harness/clipboard_images.py` 用模拟剪贴板验证 TIFF 截图、图片附带文字、多图、光标处插入、保存、撤销重做，以及纯文本和富文本粘贴；需要 Pillow。
+- `python3 tools/harness/paste_remote_images.py` 用本机 HTTP 服务和模拟剪贴板验证从网页粘贴的网络图片下载后变成文档库自己的图片（#220），覆盖撤销重做、关闭「自动下载网络图片」时不联网、已过期链接保持原样；需要 Pillow。
 - 比较时光标不闪烁（`FDL_NOBLINK`）。脚本开头要先把指针移到空白处，否则真实鼠标的位置会以 hover 的形式出现在截图里。
 - 旧版二进制可以这样编：`git worktree add /tmp/old <提交>`，在那里用 `CARGO_TARGET_DIR=<本仓库>/target cargo build --release --features devtools`，再把二进制复制出来。
 
@@ -42,6 +43,8 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 | `key <按键>` | 发送按键，如 `key cmd-b`、`key escape` |
 | `type <文字>` | 输入文字（行尾空格有效） |
 | `move x y` / `click x y` / `dclick x y` / `rclick x y` / `drag x1 y1 x2 y2` | 鼠标操作（窗口坐标） |
+| `down x y` / `dragto x y` / `dragby dx dy` / `up x y` | 分步拖动：按下、拖到某点、从上一个拖动点挪一步、松开；`bench 30 dragby 4 0` 测拖拽每一步的耗时 |
+| `mdown x y` / `mdragto x y` / `mup x y` | 中键（按下滚轮）：按下、拖到某点、松开 |
 | `wheel x y dy [dx]` | 一次滚轮事件；可选的 `dx` 是横向分量（模拟触控板），正数露出右边的内容 |
 | `shot <名字>` / `burst <名字> n` | 截图；连拍 n 张，间隔约 8ms |
 | `mark <文字>` / `commit <文字>` | 输入法组合文字 / 提交 |
@@ -84,6 +87,8 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 ## Fei Notes SQLite regression
 
 `python3 tools/harness/sqlite_history.py` checks first-launch creation, synthetic IME marked text (not persisted before commit), read-only history preview, returning to the live document, and restoring a snapshot into SQLite. Build with `cargo build --features cloudkit-sync,devtools`; `FDL_CLOUD_BIN` selects another binary and `FDL_CLOUD_DYLD_PATH` selects the matching Swift bridge directory. The test creates a fresh `/private/tmp/quiet-sync-qa-history-*` local-only library, uses the existing offscreen driver and never selects an iCloud account or uses the system clipboard.
+
+`python3 tools/harness/sqlite_board.py` uses the same binary overrides and isolated local-only startup to draw a shape, edit board text, paste a synthetic image through the fake clipboard, and verify the persisted scene and image ownership in SQLite. It reopens the note read-only and checks that attempted board edits leave its payload unchanged. Artifacts stay in `/private/tmp/quiet-sync-qa-board-*`.
 
 The table-paste and scroll-intent tests locate visible documents in both the old flat library and FORMAT 4, excluding hidden migration backups.
 

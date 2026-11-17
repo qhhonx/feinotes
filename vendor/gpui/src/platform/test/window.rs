@@ -359,4 +359,6 @@ impl PlatformAtlas for TestAtlas {
         let mut state = self.0.lock();
         state.tiles.remove(key);
     }
+
+    fn update(&self, _key: &AtlasKey, _bytes: &[u8]) {}
 }

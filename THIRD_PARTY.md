@@ -101,6 +101,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | cocoa-foundation | 0.1.2 | MIT OR Apache-2.0 |
 | cocoa-foundation | 0.2.0 | MIT OR Apache-2.0 |
 | codespan-reporting | 0.12.0 | Apache-2.0 |
+| color | 0.3.3 | Apache-2.0 OR MIT |
 | color_quant | 1.1.0 | MIT |
 | command-fds | 0.3.3 | Apache-2.0 |
 | compression-codecs | 0.4.46 | MIT OR Apache-2.0 |
@@ -127,6 +128,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
 | cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
 | crc32fast | 1.5.2 | MIT OR Apache-2.0 |
+| crossbeam-channel | 0.5.17 | MIT OR Apache-2.0 |
 | crossbeam-deque | 0.8.8 | MIT OR Apache-2.0 |
 | crossbeam-epoch | 0.9.21 | MIT OR Apache-2.0 |
 | crossbeam-queue | 0.3.14 | MIT OR Apache-2.0 |
@@ -181,9 +183,11 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | fastrand | 2.5.0 | Apache-2.0 OR MIT |
 | fax | 0.2.7 | MIT |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 |
+| fearless_simd | 0.7.0 | Apache-2.0 OR MIT |
 | filedescriptor | 0.8.3 | MIT |
 | filetime | 0.2.29 | MIT/Apache-2.0 |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
+| fixed_decimal | 0.7.3 | Unicode-3.0 |
 | flate2 | 1.1.10 | MIT OR Apache-2.0 |
 | float-cmp | 0.9.0 | MIT |
 | float-ord | 0.3.2 | MIT / Apache-2.0 |
@@ -219,6 +223,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | getrandom | 0.3.4 | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
 | gif | 0.14.2 | MIT OR Apache-2.0 |
+| glifo | 0.4.0 | Apache-2.0 OR MIT |
 | glob | 0.3.4 | MIT OR Apache-2.0 |
 | globset | 0.4.20 | Unlicense OR MIT |
 | gloo-timers | 0.3.0 | MIT OR Apache-2.0 |
@@ -239,6 +244,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | gpui_util | 0.2.2 | Apache-2.0 |
 | gpui_util_macros | 0.2.2 | Apache-2.0 |
 | grid | 0.18.0 | MIT |
+| guillotiere | 0.7.0 | MIT/Apache-2.0 |
 | h2 | 0.4.20 | MIT |
 | half | 2.7.1 | MIT OR Apache-2.0 |
 | hashbrown | 0.14.5 | MIT OR Apache-2.0 |
@@ -263,12 +269,16 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | hyper-rustls | 0.27.10 | Apache-2.0 OR ISC OR MIT |
 | hyper-util | 0.1.21 | MIT |
 | icu_collections | 2.3.0 | Unicode-3.0 |
-| icu_locale_core | 2.3.0 | Unicode-3.0 |
+| icu_locale_core | 2.4.0 | Unicode-3.0 |
+| icu_locale_fallback | 2.4.0 | Unicode-3.0 |
+| icu_locale_fallback_data | 2.4.0 | Unicode-3.0 |
 | icu_normalizer | 2.3.0 | Unicode-3.0 |
 | icu_normalizer_data | 2.3.0 | Unicode-3.0 |
+| icu_plurals | 2.4.0 | Unicode-3.0 |
+| icu_plurals_data | 2.4.0 | Unicode-3.0 |
 | icu_properties | 2.3.0 | Unicode-3.0 |
 | icu_properties_data | 2.3.0 | Unicode-3.0 |
-| icu_provider | 2.3.1 | Unicode-3.0 |
+| icu_provider | 2.4.0 | Unicode-3.0 |
 | ident_case | 1.0.1 | MIT/Apache-2.0 |
 | idna | 1.1.0 | MIT OR Apache-2.0 |
 | idna_adapter | 1.2.2 | Apache-2.0 OR MIT |
@@ -294,6 +304,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | katex-rs | 0.3.0 | MIT |
 | khronos-egl | 6.0.0 | MIT/Apache-2.0 |
 | kurbo | 0.11.3 | Apache-2.0 OR MIT |
+| kurbo | 0.13.1 | Apache-2.0 OR MIT |
 | kv-log-macro | 1.0.7 | MIT OR Apache-2.0 |
 | lazy_static | 1.5.1 | MIT OR Apache-2.0 |
 | leak | 0.1.2 | Apache-2.0 OR MIT |
@@ -304,6 +315,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | libloading | 0.8.9 | ISC |
 | libm | 0.2.16 | MIT |
 | libredox | 0.1.25 | MIT |
+| linebender_resource_handle | 0.1.1 | Apache-2.0 OR MIT |
 | linux-raw-sys | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litemap | 0.8.3 | Unicode-3.0 |
@@ -329,6 +341,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | mime | 0.3.17 | MIT OR Apache-2.0 |
 | mime_guess | 2.0.5 | MIT |
 | minimal-lexical | 0.2.1 | MIT/Apache-2.0 |
+| minisign-verify | 0.3.0 | MIT |
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | mint | 0.5.9 | MIT |
@@ -373,6 +386,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | open | 5.4.4 | MIT |
 | openssl-probe | 0.2.1 | MIT OR Apache-2.0 |
 | option-ext | 0.2.0 | MPL-2.0 |
+| ordered-channel | 1.2.0 | MIT OR Apache-2.0 |
 | ordered-stream | 0.2.0 | MIT OR Apache-2.0 |
 | parking | 2.2.1 | Apache-2.0 OR MIT |
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 |
@@ -382,6 +396,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | pathfinder_geometry | 0.5.1 | MIT/Apache-2.0 |
 | pathfinder_simd | 0.5.6 | MIT OR Apache-2.0 |
 | pbkdf2 | 0.12.2 | MIT OR Apache-2.0 |
+| peniko | 0.6.1 | Apache-2.0 OR MIT |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
 | phf | 0.11.3 | MIT |
 | phf | 0.14.0 | MIT |
@@ -403,6 +418,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | png | 0.18.1 | MIT OR Apache-2.0 |
 | polling | 3.11.0 | Apache-2.0 OR MIT |
 | pollster | 0.2.5 | Apache-2.0/MIT |
+| polycool | 0.4.0 | MIT OR Apache-2.0 |
 | postage | 0.5.0 | MIT |
 | potential_utf | 0.1.6 | Unicode-3.0 |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
@@ -569,11 +585,12 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | thiserror | 2.0.21 | MIT OR Apache-2.0 |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
 | thiserror-impl | 2.0.21 | MIT OR Apache-2.0 |
+| thread_local | 1.1.10 | MIT OR Apache-2.0 |
 | tiff | 0.11.3 | MIT |
 | tiny-keccak | 2.0.2 | CC0-1.0 |
 | tiny-skia | 0.11.4 | BSD-3-Clause |
 | tiny-skia-path | 0.11.4 | BSD-3-Clause |
-| tinystr | 0.8.4 | Unicode-3.0 |
+| tinystr | 0.8.5 | Unicode-3.0 |
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
 | tokio | 1.53.3 | MIT |
 | tokio-rustls | 0.26.6 | MIT OR Apache-2.0 |
@@ -625,6 +642,8 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | value-bag | 1.14.1 | Apache-2.0 OR MIT |
 | value-bag-serde1 | 1.14.1 | Apache-2.0 OR MIT |
 | value-bag-sval2 | 1.14.1 | Apache-2.0 OR MIT |
+| vello_common | 0.3.0 | Apache-2.0 OR MIT |
+| vello_cpu | 0.3.0 | Apache-2.0 OR MIT |
 | version_check | 0.9.5 | MIT/Apache-2.0 |
 | vswhom | 0.1.0 | MIT |
 | vswhom-sys | 0.1.3 | MIT |
@@ -649,6 +668,9 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | wayland-sys | 0.31.11 | MIT |
 | web-sys | 0.3.106 | MIT OR Apache-2.0 |
 | web-time | 1.1.0 | MIT OR Apache-2.0 |
+| webview2-com | 0.38.2 | MIT |
+| webview2-com-macros | 0.8.1 | MIT |
+| webview2-com-sys | 0.38.2 | MIT |
 | weezl | 0.1.12 | MIT OR Apache-2.0 |
 | which | 6.0.3 | MIT |
 | winapi | 0.3.9 | MIT/Apache-2.0 |
@@ -729,7 +751,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | y4m | 0.8.0 | MIT |
 | yazi | 0.2.1 | Apache-2.0 OR MIT |
 | yeslogic-fontconfig-sys | 6.0.1 | MIT |
-| yoke | 0.8.3 | Unicode-3.0 |
+| yoke | 0.8.4 | Unicode-3.0 |
 | yoke-derive | 0.8.4 | Unicode-3.0 |
 | zbus | 5.19.0 | MIT |
 | zbus_macros | 5.19.0 | MIT |
@@ -748,8 +770,8 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | zeroize | 1.9.1 | Apache-2.0 OR MIT |
 | zeroize_derive | 1.5.0 | Apache-2.0 OR MIT |
 | zerotrie | 0.2.5 | Unicode-3.0 |
-| zerovec | 0.11.8 | Unicode-3.0 |
-| zerovec-derive | 0.11.6 | Unicode-3.0 |
+| zerovec | 0.11.9 | Unicode-3.0 |
+| zerovec-derive | 0.11.7 | Unicode-3.0 |
 | zlib-rs | 0.6.8 | Zlib |
 | zmij | 1.0.23 | MIT |
 | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib |
@@ -759,9 +781,49 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | zvariant_derive | 5.15.1 | MIT |
 | zvariant_utils | 4.2.0 | MIT |
 
-## Windows 运行库
+## 移植的源码
 
-Windows 安装包随附未修改的 Microsoft Visual C++ Runtime `vcruntime140.dll`，从 Visual Studio 的 x64 Redistributable 目录复制。它受微软的分发许可约束，不属于本项目的 MIT 许可；参见 [Visual Studio 2022 Redistribution](https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution)。源码仓库不包含该二进制文件。
+画板（`crates/core/src/board/`、`src/board/`）是下面这些项目源码的 Rust 移植，每个文件开头注明对应的上游文件。
+
+| 项目 | 版本 | 许可 | 移植到 |
+|---|---|---|---|
+| [Excalidraw](https://github.com/excalidraw/excalidraw) | `3a317b5`（0.18.0） | MIT | 元素模型、几何、编辑算法、撤销、剪贴板与文件格式、工具与界面逻辑 |
+| [rough.js](https://github.com/rough-stuff/rough) | 4.6.4 | MIT（Preet Shihn） | `rough/`（生成器、手绘笔触、全部填充方式）、`random.rs`（Park–Miller 随机数） |
+| [hachure-fill](https://github.com/pshihn/hachure-fill) | 0.5.2 | MIT（Preet Shihn） | `rough/fillers.rs`（扫描线） |
+| [points-on-curve](https://github.com/pshihn/bezier-points) | 0.2.0 / 1.0.1 | MIT（Preet Shihn） | `rough/curve.rs`（贝塞尔取点、简化） |
+| [points-on-path](https://github.com/pshihn/points-on-path) | 0.2.1 | MIT（Preet Shihn） | `rough/path_data.rs`（路径取点） |
+| [path-data-parser](https://github.com/pshihn/path-data-parser) | 0.1.0 | MIT（Preet Shihn） | `rough/path_data.rs`（SVG 路径解析、规范化） |
+| [perfect-freehand](https://github.com/steveruizok/perfect-freehand) | 1.2.0 | MIT（Steve Ruiz） | `freehand.rs`（画笔轮廓） |
+| [fractional-indexing](https://github.com/rocicorp/fractional-indexing)（经 Excalidraw 内置的副本） | — | CC0 | `fractional_index.rs` |
+| [nanoid](https://github.com/ai/nanoid) | — | MIT（Andrey Sitnik） | `random.rs`（只用了 id 字母表） |
+
+Excalidraw 的许可声明：
+
+```
+MIT License
+
+Copyright (c) 2020 Excalidraw
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+rough.js、hachure-fill、points-on-curve、points-on-path、path-data-parser、perfect-freehand、nanoid 同为 MIT 许可，条款与上文相同，版权人见表。
 
 ## 字体
 
@@ -774,10 +836,11 @@ Windows 安装包随附未修改的 Microsoft Visual C++ Runtime `vcruntime140.d
 | 素材 | 许可 |
 |---|---|
 | `assets/editor-icons/`（编辑器与文档里的 173 个图标） | 包括 Lucide 图标（ISC，其中源自 Feather 的部分保留 MIT 许可），其余按同一 24px / 2px 描边规格绘制。见同目录 `LICENSE-lucide`。 |
-| `assets/icons/`（界面外壳的 76 个图标） | 67 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，包含接受邀请入口的 `mail-check.svg`；各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 9 个项目自绘的 MIT 图标（包含 `globe.svg` 与共享按钮的后备图标 `share.svg`）。 |
+| `assets/icons/`（界面外壳的 77 个图标） | 68 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，包含接受邀请入口的 `mail-check.svg` 和画板入口的 `whiteboard.svg`；各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 9 个项目自绘的 MIT 图标（包含 `globe.svg` 与共享按钮的后备图标 `share.svg`）。 |
 | macOS 共享按钮的 `square.and.arrow.up` | 通过 AppKit 的 [系统符号 API](https://developer.apple.com/documentation/appkit/nsimage/init(systemsymbolname:accessibilitydescription:)) 在运行时获取；不随仓库或发行包分发 Apple 图形素材。 |
 | `packaging/macos/fei-notes.png` | 飞记的应用图标，随飞记构建嵌入。 |
 | `assets/branding/` | 上游 Quiet.md 品牌资源，未嵌入飞记构建。 |
+| `assets/icons/excalidraw/`（画板界面的 96 个图标：工具栏、属性面板、菜单、页脚，含 6 个工具激活时的填充版 `*-filled.svg`） | 取自 Excalidraw `packages/excalidraw/components/icons.tsx` @ 3a317b5（MIT，© Excalidraw），其中多数由 tabler-icons（MIT，© Paweł Kuna）改来；每个文件开头注明对应的上游图标。由 `icons.tsx` 原样渲染成 SVG，只把 `var(--icon-fill-color)` 换成 `currentColor`、根元素上的 CSS 旋转换成 SVG 变换，编组 / 取消编组图标的白色手柄改成蒙版镂空（界面按单色绘制图标）。不属于上述 Nucleo 图标 |
 
 ## 封面与插画
 

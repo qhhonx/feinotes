@@ -24,6 +24,7 @@ pub enum SlashKind {
     Button,
     File,
     Reminder,
+    Board,
 }
 
 pub struct SlashItem {
@@ -172,6 +173,7 @@ pub const SLASH_ITEMS: &[SlashItem] = &[
         group: 1,
         keywords: &["gongshi", "gs", "latex", "formula", "equation", "math"],
     },
+    SlashItem { kind: SlashKind::Board, label: "画板", icon: "palette", color: GREEN, group: 1, keywords: &["画板", "huaban", "hb", "board", "whiteboard", "excalidraw", "draw"] },
     SlashItem { kind: SlashKind::Button, label: "按钮", icon: "button", color: BLUE, group: 1, keywords: &["按钮", "anniu", "an", "button"] },
     SlashItem {
         kind: SlashKind::Reminder,
@@ -185,7 +187,7 @@ pub const SLASH_ITEMS: &[SlashItem] = &[
 
 /// What a Markdown file can hold: blocks Markdown writes back as they are.
 pub fn markdown_ok(kind: SlashKind) -> bool {
-    !matches!(kind, SlashKind::File | SlashKind::Grid | SlashKind::Callout | SlashKind::Formula | SlashKind::Button | SlashKind::Reminder | SlashKind::Countdown)
+    !matches!(kind, SlashKind::File | SlashKind::Grid | SlashKind::Callout | SlashKind::Formula | SlashKind::Button | SlashKind::Reminder | SlashKind::Countdown | SlashKind::Board)
 }
 
 /// Whether a basic-group item shows in the icon grid. 文本 shows only where
@@ -380,8 +382,8 @@ mod tests {
         assert_eq!(SLASH_ITEMS[r[0]].label, "表格");
         let r = filter_slash("cy");
         assert!(r.iter().all(|i| SLASH_ITEMS[*i].group == 1));
-        // 子页面列表 left the menu with folders (pages no longer hold pages).
-        assert_eq!(r.len(), 9);
+        // Folders replaced child-page lists; boards add another common block.
+        assert_eq!(r.len(), 10);
         assert!(filter_slash("zzz").is_empty());
         assert_eq!(SLASH_ITEMS[filter_slash("djs")[0]].label, "倒计时");
         let r = filter_slash("list");

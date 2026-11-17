@@ -253,6 +253,23 @@ impl PlatformTextSystem for DirectWriteTextSystem {
         self.0.read().glyph_for_char(font_id, ch)
     }
 
+    // quiet.md: DirectWrite's outline at the design size (font units), y
+    // flipped up; simulated oblique and bold come with the font face.
+    fn glyph_outline(&self, font_id: FontId, glyph_id: GlyphId) -> Option<Vec<crate::GlyphOutlineCmd>> {
+        let state = self.0.read();
+        let face = &state.fonts.get(font_id.0)?.font_face;
+        let cmds = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
+        let sink: windows::Win32::Graphics::Direct2D::Common::ID2D1SimplifiedGeometrySink = OutlineSink { cmds: cmds.clone() }.into();
+        unsafe {
+            let mut metrics = std::mem::zeroed();
+            face.GetMetrics(&mut metrics);
+            let glyph = glyph_id.0 as u16;
+            face.GetGlyphRunOutline(metrics.Base.designUnitsPerEm as f32, &glyph, None, None, 1, false, false, &sink).ok()?;
+        }
+        drop(sink);
+        Some(std::rc::Rc::try_unwrap(cmds).ok()?.into_inner())
+    }
+
     fn glyph_raster_bounds(
         &self,
         params: &RenderGlyphParams,
@@ -1329,6 +1346,29 @@ impl TextRendererWrapper {
         let inner = TextRenderer::new(locale_str);
         TextRendererWrapper(inner.into())
     }
+}
+
+/// quiet.md: collects `GetGlyphRunOutline`'s figures (y down) as `GlyphOutlineCmd`s (y up).
+#[implement(windows::Win32::Graphics::Direct2D::Common::ID2D1SimplifiedGeometrySink)]
+struct OutlineSink { cmds: std::rc::Rc<std::cell::RefCell<Vec<crate::GlyphOutlineCmd>>> }
+
+#[allow(non_snake_case)]
+impl windows::Win32::Graphics::Direct2D::Common::ID2D1SimplifiedGeometrySink_Impl for OutlineSink_Impl {
+    fn SetFillMode(&self, _: windows::Win32::Graphics::Direct2D::Common::D2D1_FILL_MODE) {}
+    fn SetSegmentFlags(&self, _: windows::Win32::Graphics::Direct2D::Common::D2D1_PATH_SEGMENT) {}
+    fn BeginFigure(&self, p: &Vector2, _: windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_BEGIN) {
+        std::cell::RefCell::borrow_mut(&self.cmds).push(crate::GlyphOutlineCmd::MoveTo([p.X, -p.Y]));
+    }
+    fn AddLines(&self, points: *const Vector2, count: u32) {
+        let points = unsafe { std::slice::from_raw_parts(points, count as usize) };
+        std::cell::RefCell::borrow_mut(&self.cmds).extend(points.iter().map(|p| crate::GlyphOutlineCmd::LineTo([p.X, -p.Y])));
+    }
+    fn AddBeziers(&self, beziers: *const windows::Win32::Graphics::Direct2D::Common::D2D1_BEZIER_SEGMENT, count: u32) {
+        let beziers = unsafe { std::slice::from_raw_parts(beziers, count as usize) };
+        std::cell::RefCell::borrow_mut(&self.cmds).extend(beziers.iter().map(|b| crate::GlyphOutlineCmd::CubicTo([b.point1.X, -b.point1.Y], [b.point2.X, -b.point2.Y], [b.point3.X, -b.point3.Y])));
+    }
+    fn EndFigure(&self, _: windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_END) { std::cell::RefCell::borrow_mut(&self.cmds).push(crate::GlyphOutlineCmd::Close); }
+    fn Close(&self) -> windows::core::Result<()> { Ok(()) }
 }
 
 #[implement(IDWriteTextRenderer)]

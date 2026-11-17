@@ -673,7 +673,7 @@ impl Onboarding {
             let mut rows: Vec<AnyElement> = found.iter().take(shown).enumerate().map(|(i, f)| {
                 let on = self.chosen.get(i).copied().unwrap_or(false);
                 let title = if f.app == "Markdown" || f.name == f.app { f.name.clone() } else { format!("{} · {}", f.app, f.name) };
-                let desc = crate::localized_format!("{} · {} 篇 Markdown", "{} · {} Markdown files", where_short(&f.path), f.count);
+                let desc = crate::localized_count!(f.count, "{} · {} 篇 Markdown", "{} · {} Markdown file", "{} · {} Markdown files", where_short(&f.path), f.count);
                 div().id(("onb-found", i)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
                     .on_click(cx.listener(move |w, _, _, cx| { if let Some(c) = w.chosen.get_mut(i) { *c = !*c; } cx.notify(); }))
                     .child(row(title, Some(desc.into()), tick(on))).into_any_element()
@@ -750,7 +750,7 @@ fn import_all(dirs: &[(PathBuf, Option<String>)]) -> Option<String> {
     let saved = if batch { store.end_batch() } else { Ok(()) };
     match saved {
         Err(e) => Some(crate::localized_format!("导入未能完成：{}", "Import could not finish: {}", crate::settings::diagnostic(&e.to_string()))),
-        Ok(()) => (failed > 0).then(|| crate::localized_format!("有 {failed} 个文件未能导入", "{failed} files could not be imported")),
+        Ok(()) => (failed > 0).then(|| crate::localized_count!(failed, "有 {failed} 个文件未能导入", "{failed} file could not be imported", "{failed} files could not be imported")),
     }
 }
 

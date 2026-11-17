@@ -27,6 +27,7 @@ fn one_line(b: &Block) -> bool {
             | BlockKind::Grid
             | BlockKind::SubPageList
             | BlockKind::Countdown(_)
+            | BlockKind::Board(_)
             | BlockKind::File(_)
             | BlockKind::Raw { .. }
     )

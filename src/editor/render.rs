@@ -111,6 +111,7 @@ fn hash_block(b: &Block, orders: &rustc_hash::FxHashMap<BlockId, String>, h: &mu
         }
         BlockKind::Column { ratio } => ratio.to_bits().hash(h),
         BlockKind::File(f) => (&f.src, &f.name, f.view).hash(h),
+        BlockKind::Board(bd) => bd.height.to_bits().hash(h),
         BlockKind::Table(t) => {
             t.col_widths.iter().for_each(|w| w.to_bits().hash(h));
             (t.header_rows, t.header_col).hash(h);
@@ -509,6 +510,7 @@ impl R<'_> {
             BlockKind::Image { .. } => self.image(b, env, cx),
             BlockKind::SubPageList => self.sub_page_list(b, cx),
             BlockKind::Countdown(c) => self.countdown(b, c, cx),
+            BlockKind::Board(bd) => self.board_block(b, bd, cx),
             BlockKind::File(f) => self.file(b, f, env, cx),
             BlockKind::Table(t) if self.ghost => self.ghost_table(b, t, cx),
             BlockKind::Table(t) => self.table(b, t, env.root, cx),
@@ -850,6 +852,7 @@ impl R<'_> {
             doc_font: true,
             font: None,
             italic: false,
+            font_runs: None,
         };
         // Line numbers follow the wrapped rows of the last layout.
         let rows_per_line: Vec<usize> = {
@@ -1452,6 +1455,7 @@ impl Editor {
         // before the caches are reset for this frame.
         let overlays = self.render_overlays(window, cx);
         let lightbox = self.lightbox_el(window, cx);
+        let board = self.board_el();
         let toast = self.toast_el(window);
         let probes = std::mem::take(&mut *self.probes.borrow_mut());
         let origin0 = self.content_origin.get();
@@ -1738,6 +1742,7 @@ impl Editor {
             .children(counter)
             .children(find_box)
             .children(lightbox)
+            .children(board)
             .children(toast)
             .child(root_canvas)
     }
@@ -1751,7 +1756,11 @@ fn code_rows(cache: &HashMap<BlockId, super::text::TextLayout>) -> HashMap<Block
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t0 = std::time::Instant::now();
-        let el = self.render_editor(window, cx);
+        // A board open over the whole window covers the note: only the board
+        // renders (the note would otherwise be laid out again on every frame
+        // the board draws, and its keys and pointer handlers sit under it).
+        if self.board_open() { return div().size_full().children(self.board_el()).into_any_element(); }
+        let el = self.render_editor(window, cx).into_any_element();
         crate::devtools::RENDER_NS.fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
         el
     }
@@ -1913,6 +1922,7 @@ pub(super) fn block_feishu(&self, b: &Block, siblings: &[Block], idx: usize, env
             BlockKind::Image { .. } => self.image(b, env, cx),
             BlockKind::SubPageList => self.sub_page_list(b, cx),
             BlockKind::Countdown(c) => self.countdown(b, c, cx),
+            BlockKind::Board(bd) => self.board_block(b, bd, cx),
             BlockKind::File(f) => self.file(b, f, env, cx),
             BlockKind::Table(t) if self.ghost => self.ghost_table(b, t, cx),
             BlockKind::Table(t) => self.table(b, t, env.root, cx),
@@ -2165,6 +2175,7 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
             doc_font: true,
             font: None,
             italic: false,
+            font_runs: None,
         };
         // Line numbers follow the wrapped rows of the last layout.
         let rows_per_line: Vec<usize> = {

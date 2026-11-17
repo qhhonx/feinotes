@@ -1,0 +1,23 @@
+# 画板拖拽延迟（board_gen.py perf 场景，100%）：按住一个带两条绑定箭头的矩形
+# 拖（每步 4pt，来回各 30 步），再全选拖动全部元素。X Y 是 100% 视图里某个矩形内
+# 不压文字的一点，按场景替换：n=1000 910 230，3000 794 350，10000 656 355。
+#   sed 's/X Y/656 355/' tools/perf/board_drag.txt > /tmp/d.txt; python3 tools/harness/run.py /tmp/d.txt <lib> <work>
+move 640 760
+wait 2500
+key cmd-0
+wait 500
+down X Y
+bench 30 dragby 4 0
+shot drag-one
+bench 30 dragby -4 0
+bench 30 dragby 0 4
+bench 30 dragby 0 -4
+up X Y
+wait 300
+key cmd-a
+wait 300
+down X Y
+bench 20 dragby 4 0
+shot drag-all
+bench 20 dragby -4 0
+up X Y

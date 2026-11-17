@@ -108,10 +108,19 @@ pub(crate) fn summary_text(text: String, mut hits: Vec<Range<usize>>, width: f32
     StyledText::new(text).with_runs(runs)
 }
 
+/// The glyph of a file titled by its name: Markdown, a 画板; else a page.
+pub(crate) fn file_glyph(m: &crate::store::Meta) -> &'static str {
+    match m.kind {
+        crate::store::DocKind::Board => "whiteboard",
+        _ if m.markdown => "doc-md",
+        _ => "doc",
+    }
+}
+
 /// A result's icon: the page's emoji, or the page glyph.
 pub(crate) fn entry_icon(e: &Entry) -> Div {
     match &e.icon {
-        _ if e.meta.markdown => doc_icon_named("doc-md"),
+        _ if e.meta.named_by_file() => doc_icon_named(file_glyph(&e.meta)),
         Some(em) => div().flex_none().size(px(24.)).mr(px(10.)).flex().items_center().justify_center().text_size(px(20.)).child(em.clone()),
         None => doc_icon(),
     }

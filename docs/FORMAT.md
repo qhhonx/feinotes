@@ -26,7 +26,7 @@ Quiet.md/
     └── before-folders-4/  迁移前的旧布局备份，30 天后清理
 ```
 
-扫描时递归遍历文档库，认 `.md` 和 `.xml`，跳过以 `.` 开头的目录和文件（`.quiet`、`.assets`、`.git`、`.obsidian` 等）。在访达里手放的文件也会出现。窗口尺寸只属于这台电脑，存在本机应用数据目录，不进文档库。
+扫描时递归遍历文档库，认 `.md`、`.xml` 和 `.excalidraw`（独立画板，Excalidraw 官方 JSON，标题是文件名；旧版本跳过它），跳过以 `.` 开头的目录和文件（`.quiet`、`.assets`、`.git`、`.obsidian` 等）。在访达里手放的文件也会出现。窗口尺寸只属于这台电脑，存在本机应用数据目录，不进文档库。
 
 ### 链接与图片
 
@@ -102,6 +102,7 @@ DocxXML 是飞书 / Lark 的文档 XML 格式。`crates/core/tests/fixtures/all-
 DocxXML 里没有、本应用自己加的写法。别的工具不认识这些写法，按上一节的规则它们只会被当作未知元素或属性：
 
 - `<countdown duration start-time notify color timing/>`：倒计时。云端的倒计时是小组件，不在 DocxXML 里。
+- `<whiteboard type="excalidraw" height="360">{"elements":[…],"files":{…}}</whiteboard>`：画板。正文是 Excalidraw 场景 JSON（XML 转义），每个元素一行，键序固定（`board/json.rs`），已删除的元素不写；`height` 是在页面里的高度。读入经 `board/restore.rs` 修复；读不了的 JSON 和别的 `type`（飞书的 `type="blank"`）原样保留为未知元素。
 - `<time … is-whole-day="true">`：全天提醒。模型里有 `isWholeDay`，但 XML 里没有这个属性。没有此属性、且时间是本地 23:59 的提醒，也按全天处理。
 - 图片和附件的本地文件写成 `path="…"`（云端用 `token` / `href`）。`<figure><source path=… name=…/></figure>` 表示视频或文件。
 

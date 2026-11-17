@@ -362,7 +362,7 @@ impl Workspace {
                 .child(div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::text())
                     .overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(display_title(&e.title))))
                 .child(div().text_size(px(12.)).line_height(px(18.)).text_color(Theme::text_caption())
-                    .child(if count == 1 { crate::settings::tr("1 项", "1 item").into() } else { crate::localized_format!("{} 项", "{} items", count) })))
+                    .child(crate::localized_count!(count, "{} 项", "{} item", "{} items", count))))
             .when(self.batch.is_none(), |d| d
                 .child(div().id(SharedString::from(format!("home-fnew-{id}"))).flex_none().size(px(28.)).rounded_full().flex().items_center().justify_center()
                     .bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_button()).opacity(reveal).cursor_pointer()
@@ -586,9 +586,9 @@ impl FileDrop {
     /// "2 个 Markdown 文件 · 1 个文件夹".
     fn summary(&self) -> String {
         let mut parts = vec![];
-        if self.md > 0 { parts.push(crate::localized_format!("{} 个 Markdown 文件", "{} Markdown files", self.md)); }
-        if self.xml > 0 { parts.push(crate::localized_format!("{} 个 DocxXML 文件", "{} DocxXML files", self.xml)); }
-        if self.dirs > 0 { parts.push(crate::localized_format!("{} 个文件夹", "{} folders", self.dirs)); }
+        if self.md > 0 { parts.push(crate::localized_count!(self.md, "{} 个 Markdown 文件", "{} Markdown file", "{} Markdown files", self.md)); }
+        if self.xml > 0 { parts.push(crate::localized_count!(self.xml, "{} 个 DocxXML 文件", "{} DocxXML file", "{} DocxXML files", self.xml)); }
+        if self.dirs > 0 { parts.push(crate::localized_count!(self.dirs, "{} 个文件夹", "{} folder", "{} folders", self.dirs)); }
         if self.other > 0 && !parts.is_empty() { parts.push(crate::localized_format!("{} 个不支持的文件会被跳过", "{} unsupported skipped", self.other)); }
         parts.join(" · ")
     }

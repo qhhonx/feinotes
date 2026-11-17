@@ -86,6 +86,11 @@
   </tbody>
 </table>
 <img href="https://x/y.png" width="300" caption="图" align="center"/>
+<whiteboard type="excalidraw" height="360">{"elements":[
+{"id":"r1","type":"rectangle","x":0,"y":0,"strokeColor":"#1e1e1e","backgroundColor":"#a5d8ff","fillStyle":"solid","strokeWidth":2,"strokeStyle":"solid","roundness":{"type":3},"roughness":0,"opacity":100,"width":160,"height":80,"angle":0,"seed":1,"version":2,"versionNonce":1,"index":"a0","isDeleted":false,"groupIds":[],"frameId":null,"boundElements":[{"id":"t1","type":"text"}],"updated":1,"created":null,"link":null,"locked":false},
+{"id":"t1","type":"text","x":40,"y":27.5,"strokeColor":"#1e1e1e","backgroundColor":"transparent","fillStyle":"solid","strokeWidth":2,"strokeStyle":"solid","roundness":null,"roughness":0,"opacity":100,"width":80,"height":25,"angle":0,"seed":2,"version":2,"versionNonce":2,"index":"a1","isDeleted":false,"groupIds":[],"frameId":null,"boundElements":[],"updated":1,"created":null,"link":null,"locked":false,"fontSize":20,"fontFamily":5,"baseFontSize":null,"text":"画板 &lt;&amp;&gt;","textAlign":"center","verticalAlign":"middle","containerId":"r1","originalText":"画板 &lt;&amp;&gt;","autoResize":true,"lineHeight":1.25,"labelPosition":null},
+{"id":"a1","type":"arrow","x":170,"y":40,"strokeColor":"#1e1e1e","backgroundColor":"transparent","fillStyle":"solid","strokeWidth":2,"strokeStyle":"dashed","roundness":null,"roughness":0,"opacity":100,"width":100,"height":0,"angle":0,"seed":3,"version":2,"versionNonce":3,"index":"a2","isDeleted":false,"groupIds":[],"frameId":null,"boundElements":[],"updated":1,"created":null,"link":null,"locked":false,"points":[[0,0],[100,0]],"startBinding":null,"endBinding":null,"startArrowhead":null,"endArrowhead":"arrow","elbowed":false}
+],"files":{}}</whiteboard>
 <whiteboard type="blank"/>
 <sheet token="shtabc"/>
 <bookmark href="https://example.com" title="书签"/>

@@ -20,7 +20,7 @@ struct PurgedTrash { errors: Vec<String> }
 fn remaining(deleted: u64) -> String {
     let end = deleted + TRASH_DAYS * 86_400;
     let left = end.saturating_sub(crate::time::now());
-    if left < 86_400 { crate::settings::text("即将彻底删除").into() } else { crate::localized_format!("{} 天", "{} days", left.div_ceil(86_400)) }
+    if left < 86_400 { crate::settings::text("即将彻底删除").into() } else { crate::localized_count!(left.div_ceil(86_400), "{} 天", "{} day", "{} days", left.div_ceil(86_400)) }
 }
 
 /// The page header, as tall as the document's so the header pills sit in
@@ -382,7 +382,7 @@ impl Workspace {
         };
         let (title, body, action, danger) = match c {
             Confirm::Delete { ids, batch } => (
-                if *batch || ids.len() > 1 { crate::localized_format!("是否删除所选的 {} 项？", "Delete the {} selected items?", ids.len()) } else { crate::localized_format!("是否删除： {}？", "Delete {}?", title_of(&ids[0])) },
+                if *batch || ids.len() > 1 { crate::localized_count!(ids.len(), "是否删除所选的 {} 项？", "Delete the {} selected item?", "Delete the {} selected items?", ids.len()) } else { crate::localized_format!("是否删除： {}？", "Delete {}?", title_of(&ids[0])) },
                 crate::settings::text("删除的内容将进入回收站，30 天后自动彻底删除").to_string(),
                 crate::settings::text("删除"),
                 true,
@@ -390,7 +390,7 @@ impl Workspace {
             Confirm::Restore(_) => (crate::settings::text("确认恢复？").to_string(), crate::settings::text("确认后将恢复至原位置").to_string(), crate::settings::text("恢复"), false),
             Confirm::EmptyTrash => (
                 crate::settings::text("确认清空回收站？").to_string(),
-                crate::localized_format!("回收站中的 {} 项将被彻底删除，无法恢复", "The {} items in the Trash will be deleted permanently. This cannot be undone.", self.trash.len()),
+                crate::localized_count!(self.trash.len(), "回收站中的 {} 项将被彻底删除，无法恢复", "The {} item in the Trash will be deleted permanently. This cannot be undone.", "The {} items in the Trash will be deleted permanently. This cannot be undone.", self.trash.len()),
                 crate::settings::text("清空"),
                 true,
             ),

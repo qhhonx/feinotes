@@ -1,3 +1,4 @@
+mod board;
 mod button;
 mod caption;
 mod catalogue;

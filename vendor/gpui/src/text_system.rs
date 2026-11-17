@@ -336,7 +336,19 @@ pub struct WindowTextSystem {
     text_system: Arc<TextSystem>,
 }
 
+/// quiet.md: one step of a glyph outline (`WindowTextSystem::glyph_outline`),
+/// in font units, y up.
+#[allow(missing_docs)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GlyphOutlineCmd { MoveTo([f32; 2]), LineTo([f32; 2]), QuadTo([f32; 2], [f32; 2]), CubicTo([f32; 2], [f32; 2], [f32; 2]), Close }
+
 impl WindowTextSystem {
+    /// quiet.md: a glyph's outline in font units, y up, for
+    /// drawing text with another rasterizer (the board's CPU renderer).
+    pub fn glyph_outline(&self, font_id: FontId, glyph_id: GlyphId) -> Option<Vec<GlyphOutlineCmd>> {
+        self.text_system.platform_text_system.glyph_outline(font_id, glyph_id)
+    }
+
     pub(crate) fn new(text_system: Arc<TextSystem>) -> Self {
         Self {
             line_layout_cache: LineLayoutCache::new(text_system.platform_text_system.clone()),
@@ -558,13 +570,17 @@ impl WindowTextSystem {
                 true
             };
 
+            // quiet.md: compare this run's font, as `shape_text` does
+            // (upstream merged any run of the same decoration into the
+            // previous font's).
+            let font_id = self.resolve_font(&run.font);
             if let Some(font_run) = font_runs.last_mut()
                 && Some(font_run.font_id) == last_font
+                && font_id == font_run.font_id
                 && !decoration_changed
             {
                 font_run.len += run.len;
             } else {
-                let font_id = self.resolve_font(&run.font);
                 last_font = Some(font_id);
                 font_runs.push(FontRun {
                     len: run.len,

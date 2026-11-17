@@ -808,10 +808,11 @@ impl Workspace {
                 e.remote_selections = crate::cloud_sync::presence::view(self.store.root(), cx)
                     .and_then(|view| view.notes.get(id)).cloned().unwrap_or_default();
             }
+            e.board_file = meta.as_ref().is_some_and(|m| m.kind == crate::store::DocKind::Board);
             if let Some(m) = &meta {
                 e.created = m.created;
                 e.info = m.info;
-                e.set_read_only(m.reading, cx);
+                if crate::FEI_NOTES || !e.board_file { e.set_read_only(m.reading, cx); }
             }
             #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
             if crate::cloud_sync::shared::editing_paused(&self.store, cx)
@@ -839,6 +840,7 @@ impl Workspace {
         if !self.search_open {
             editor.read(cx).focus(window);
         }
+        editor.update(cx, |e, cx| e.open_board_file(window, cx));
         if let Some(m) = self.store.touch(id)
             && let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
                 e.meta.opened = m.opened;
@@ -847,6 +849,7 @@ impl Workspace {
             && self.document_peers(previous, window, cx).is_empty() { self.store.forget_loaded(previous); }
         self.editor = Some(editor);
         self.current = Some(id.to_string());
+        if let Some(e) = self.editor.clone() { e.update(cx, |e, cx| e.adopt_remote(cx)); }
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         self.refresh_shared_entry(cx);
         crate::quick_note::used(id, cx);
@@ -923,6 +926,7 @@ impl Workspace {
                     this.duplicate_doc(&id, window, cx);
                 }
             }
+            EditorEvent::Leave => cx.defer_in(window, |this, window, cx| this.leave_board(window, cx)),
             EditorEvent::Catalogue(pinned) => {
                 if let Some(id) = this.current.clone() {
                     if let Some(e) = this.entries.iter_mut().find(|e| e.id == id) {
@@ -1140,6 +1144,21 @@ impl Workspace {
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         if self.is_shared() { self.navigate_personal(View::Home, None, _window, cx); return; }
         self.show_view(View::Home, cx);
+    }
+
+    /// 退出 on a standalone 画板: save it, close it, and show the folder it
+    /// is in (主页 at the top).
+    fn leave_board(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.flush(cx) { return; }
+        let Some(id) = self.current.take() else { return };
+        self.editor = None;
+        self.editor_sub = None;
+        if self.document_peers(&id, window, cx).is_empty() { self.store.forget_loaded(&id); }
+        match self.entries.iter().find(|e| e.id == id).and_then(|e| e.meta.parent.clone()) {
+            Some(p) => { self.open_folder(&p, window, cx); }
+            None => self.show_view(View::Home, cx),
+        }
+        cx.notify();
     }
 
     /// Switch the main pane to 主页 or 回收站 (or back to the document).
@@ -1624,11 +1643,14 @@ impl Workspace {
 
     /// `pane_w`: the width the header spans, to fold the breadcrumbs when narrow.
     fn top_bar(&self, pane_w: f32, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self
+        let mut title = self
             .editor
             .as_ref()
             .map(|e| display_title(&e.read(cx).core.doc.title.text))
             .unwrap_or_default();
+        // a 画板 block open in the document's place: the document becomes a
+        // crumb back to it, and the board is the page
+        let board_block = self.editor.as_ref().is_some_and(|e| e.read(cx).board_block_open());
         let save_error = match &self.status {
             SaveStatus::Failed(error) => Some(error.clone()),
             _ => None,
@@ -1712,6 +1734,17 @@ impl Workspace {
                     .into_any_element(),
             );
             crumbs.push(sep());
+        }
+        if board_block {
+            crumbs.push(
+                div().id("crumb-board-doc").no_drag().min_w(px(28.)).max_w(px(200.)).px(px(4.)).flex().items_center().rounded(px(4.)).cursor_pointer()
+                    .text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::primary_500()))
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(title.clone())))
+                    .on_click(cx.listener(|w, _, window, cx| if let Some(e) = w.editor.clone() { e.update(cx, |e, cx| e.close_open_board(window, cx)) }))
+                    .into_any_element(),
+            );
+            crumbs.push(sep());
+            title = crate::settings::tr("画板", "Board").to_string();
         }
         // Too narrow for the path: it folds into one "…" (the path on hover),
         // and the title keeps the room. Left: the sidebar's buttons when it is

@@ -1,0 +1,23 @@
+# 画板 pan / zoom benchmark (tools/perf/board_bench.py runs it per scene size).
+# The board opens fitted to the scene (10% at most out); pans there and back,
+# then the same at 100%, then zoom steps. Panning goes back where it started
+# so the view stays on the drawing.
+move 640 760
+wait 2500
+shot fit
+bench 20 wheel 640 400 30
+bench 20 wheel 640 400 -30
+bench 20 wheel 640 400 0 30
+bench 20 wheel 640 400 0 -30
+# hover (hit testing): the pointer moving over the drawing
+bench 20 move 641 401
+bench 20 move 700 420
+key cmd-0
+wait 500
+shot z100
+bench 20 wheel 640 400 30
+bench 20 wheel 640 400 -30
+bench 6 key cmd-=
+bench 6 key cmd--
+bench 6 key cmd--
+shot end

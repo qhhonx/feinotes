@@ -253,6 +253,12 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
             for child in &b.children { node = node.child(div().py(px(9. * s)).px(px(6. * s)).flex().items_start().gap(px(6. * s)).child(icon("doc", 16. * s, Theme::icon())).child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(child.text.text.clone()))); }
             return node.into_any_element();
         }
+        // a 画板 block: its board fit into the block's box (painters cached by board version)
+        BlockKind::Board(bd) => {
+            let board = bd.clone();
+            return node.h(px(bd.height * s)).rounded(px(8. * s)).border(px(s)).border_color(Theme::line_border()).bg(crate::board::render::canvas_color(bd)).overflow_hidden()
+                .child(canvas(|_, _, _| {}, move |bounds, _, window, cx| crate::board::render::paint_card(&board, bounds, window, cx)).size_full()).into_any_element();
+        }
         BlockKind::Raw { tag, .. } => return node.p(px(8. * s)).rounded(px(8. * s)).bg(Theme::bg_overlay()).text_color(Theme::text_caption()).child(crate::localized_format!("<{tag}> 已保留的内容", "<{tag}> Preserved content")).into_any_element(),
         _ => {}
     }
@@ -433,7 +439,7 @@ fn weight3(mut d: Div) -> Div {
 fn entry_icon(e: &Entry) -> AnyElement {
     if e.meta.folder.is_some() { return icon("folder", 22., Theme::icon()).mr(px(13.)).into_any_element(); }
     match &e.icon {
-        _ if e.meta.markdown => crate::search::doc_icon_named("doc-md").mr(px(12.)).into_any_element(),
+        _ if e.meta.named_by_file() => crate::search::doc_icon_named(crate::search::file_glyph(&e.meta)).mr(px(12.)).into_any_element(),
         Some(em) => div().size(px(24.)).mr(px(12.)).flex_none().flex().items_center().justify_center().text_size(px(18.)).child(em.clone()).into_any_element(),
         None => doc_icon().mr(px(12.)).into_any_element(),
     }
@@ -546,13 +552,29 @@ impl Workspace {
         }
         let mut budget = 32;
         let mut eqnos = HashMap::new();
+        #[allow(unused_mut)]
+        let mut loaded_root = self.store.root().to_path_buf();
         let loaded = self.store.load(&e.id);
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         let loaded = loaded.or_else(|error| {
-            if let Ok(root) = crate::cloud_sync::shared::room_root(&crate::store::Store::root_dir(), &e.id) { return crate::store::Store::read_cached_note(&root, &e.id); }
+            if let Ok(root) = crate::cloud_sync::shared::room_root(&crate::store::Store::root_dir(), &e.id) { loaded_root = root.clone(); return crate::store::Store::read_cached_note(&root, &e.id); }
             Err(error)
         });
-        let loaded = loaded.map(|doc| {
+        let loaded = loaded.map(|mut doc| {
+            fn scope(blocks: &mut [crate::model::Block], root: &std::path::Path) {
+                for block in blocks {
+                    if let BlockKind::Board(board) = &mut block.kind {
+                        for file in std::sync::Arc::make_mut(board).files.values_mut() {
+                            if let Some(path) = file.path.as_deref().and_then(|p| crate::store::image_path_in(root, p)) {
+                                file.path = Some(path.to_string_lossy().into_owned());
+                            }
+                        }
+                    }
+                    scope(&mut block.children, root);
+                    if let BlockKind::Table(table) = &mut block.kind { for cell in table.rows.iter_mut().flatten() { scope(&mut cell.blocks, root); } }
+                }
+            }
+            scope(&mut doc.blocks, &loaded_root);
             let numbers = crate::editor::equation_numbers(&doc);
             thumb_blocks(&doc.blocks, &mut budget, 0, &numbers, &mut eqnos)
         });
@@ -686,7 +708,7 @@ impl Workspace {
             .child(
             crate::ui::header_icon("home-new", "plus")
                 .child(self.home.track("create-home"))
-                .when(self.create_menu.is_some(), |d| d.bg(Theme::fill_hover()))
+                .when(self.create_menu.as_ref().is_some_and(|(_, pos)| self.home.anchor("create-home").is_some_and(|b| point(b.left(), b.bottom() + px(4.)) == *pos)), |d| d.bg(Theme::fill_hover()))
                 .tip(crate::settings::tr("新建", "New"), Some(crate::shortcuts::hint("workspace::NewDoc", "⌘ + N")))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(|w, ev: &ClickEvent, _, cx| { let pos = w.home.anchor("create-home").map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.))); w.create_menu = if w.create_menu.is_some() { None } else { Some((None, pos)) }; cx.notify(); })).into_any_element()
@@ -975,6 +997,11 @@ impl Workspace {
                 p = p.child(div().flex_none().flex().items_start().gap(px(6.)).mb(px(8.))
                     .when_some(e.icon.as_ref(), |d, emoji| d.child(div().flex_none().text_size(px(14.)).line_height(px(20.)).child(emoji.clone())))
                     .child(div().min_w_0().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::BOLD).child(e.title.clone())));
+                // A 画板: its board, drawn to fit the rest of the card.
+                if e.meta.kind == crate::store::DocKind::Board {
+                    let board = thumb.blocks.iter().find_map(|b| match &b.kind { BlockKind::Board(bd) => Some(bd.clone()), _ => None }).unwrap_or_default();
+                    return p.child(canvas(|_, _, _| {}, move |bounds, _, window, cx| crate::board::render::paint_card(&board, bounds, window, cx)).flex_1().w_full());
+                }
                 for (i, block) in thumb.blocks.iter().enumerate() {
                     let (mt, _) = bs::gap(&block.kind);
                     let prev = if i == 0 { 0. } else { bs::gap(&thumb.blocks[i - 1].kind).1 };

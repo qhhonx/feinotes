@@ -36,6 +36,9 @@ pub struct Export {
     pub text: String,
     /// Local image files to copy: (source, path relative to the .md file).
     pub files: Vec<(PathBuf, String)>,
+    /// Files made for the export (a 画板's SVG and `.excalidraw`): (path
+    /// relative to the .md file, contents).
+    pub generated: Vec<(String, String)>,
 }
 
 #[cfg(test)]
@@ -44,7 +47,7 @@ pub fn to_markdown(doc: &Document) -> String {
 }
 
 pub fn export(doc: &Document, opts: &Options) -> Export {
-    let mut w = Writer { opts, files: vec![], missing: 0 };
+    let mut w = Writer { opts, files: vec![], generated: vec![], missing: 0 };
     let mut out = String::new();
     let title = doc.title.text.trim();
     if !title.is_empty() && !opts.in_place {
@@ -54,7 +57,7 @@ pub fn export(doc: &Document, opts: &Options) -> Export {
     let trimmed = out.trim_end().len();
     out.truncate(trimmed);
     out.push('\n');
-    Export { text: out, files: w.files, missing: w.missing }
+    Export { text: out, files: w.files, generated: w.generated, missing: w.missing }
 }
 
 /// 复制为 Markdown (#60): `blocks` (and the title, for a whole document) as
@@ -62,7 +65,7 @@ pub fn export(doc: &Document, opts: &Options) -> Export {
 /// linked by their absolute paths, nothing is copied.
 pub fn clipboard(title: Option<&str>, blocks: &[Block], library_root: &Path) -> String {
     let opts = Options { in_place: true, absolute: true, library_root: Some(library_root), ..Default::default() };
-    let mut w = Writer { opts: &opts, files: vec![], missing: 0 };
+    let mut w = Writer { opts: &opts, files: vec![], generated: vec![], missing: 0 };
     let mut out = title.map(str::trim).filter(|t| !t.is_empty()).map(|t| format!("# {}\n\n", escape(t))).unwrap_or_default();
     out.push_str(&w.blocks(blocks));
     let trimmed = out.trim_end().len();
@@ -81,6 +84,7 @@ struct Writer<'a> {
     missing: usize,
     opts: &'a Options<'a>,
     files: Vec<(PathBuf, String)>,
+    generated: Vec<(String, String)>,
 }
 
 impl Writer<'_> {
@@ -156,6 +160,19 @@ impl Writer<'_> {
             BlockKind::Grid | BlockKind::Column { .. } => self.blocks(&b.children),
             // An add-on block: Markdown has nothing for it.
             BlockKind::Countdown(_) => String::new(),
+            // A 画板 with 所有内容: its SVG, linking to its `.excalidraw`;
+            // otherwise its words.
+            BlockKind::Board(bd) => match self.opts.assets.filter(|_| !self.opts.in_place) {
+                Some(dir) => {
+                    let n = self.generated.len() / 2 + 1;
+                    let (svg, file) = (format!("{dir}/board-{n}.svg"), format!("{dir}/board-{n}.excalidraw"));
+                    let root = self.opts.library_root.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::root_dir);
+                    self.generated.push((svg.clone(), bd.svg_in(&root)));
+                    self.generated.push((file.clone(), bd.file_json()));
+                    format!("[![]({})]({})", link_target(&svg), link_target(&file))
+                }
+                None => bd.plain_text().lines().map(escape).collect::<Vec<_>>().join("<br>"),
+            },
             BlockKind::File(f) => self.file_link(f).map(|url| format!("[{}]({url})", escape(&f.name))).unwrap_or_else(|| escape(&f.name)),
             BlockKind::SubPageList => {
                 self.opts.sub_pages.iter().map(|t| format!("- {}", escape(&crate::model::display_title(t)))).collect::<Vec<_>>().join("\n")
@@ -429,7 +446,7 @@ pub fn write_file(doc: &Document, front: &str, base: Option<&Path>) -> String {
 /// relative to the file's folder).
 pub fn write_file_with(doc: &Document, front: &str, opts: &Options) -> Export {
     let opts = Options { in_place: true, library_root: opts.library_root, base: opts.base, name: opts.name, copied: opts.copied, original: opts.original, ..Default::default() };
-    let mut w = Writer { opts: &opts, files: vec![], missing: 0 };
+    let mut w = Writer { opts: &opts, files: vec![], generated: vec![], missing: 0 };
     let pieces = w.pieces(&doc.blocks);
     let canonical = joined(&pieces);
     // Kept lines must still read back as the document; if a kept spacing
@@ -444,7 +461,7 @@ pub fn write_file_with(doc: &Document, front: &str, opts: &Options) -> Export {
     let misread = front.is_empty() && !front_matter(&body).0.is_empty();
     let body = match body.strip_prefix("---\n").filter(|_| misread) { Some(rest) => format!("***\n{rest}"), None => body };
     let text = if body.trim().is_empty() { front.to_string() } else { format!("{front}{body}") };
-    Export { text, files: w.files, missing: 0 }
+    Export { text, files: w.files, generated: vec![], missing: 0 }
 }
 
 /// The body of `original` (a whole file) rewritten to `pieces`: a piece
@@ -461,7 +478,7 @@ fn preserve(original: &str, pieces: &[Piece], opts: &Options, strict: bool) -> S
     // The file's blocks as written now, each with the lines it came from.
     let mut old: Vec<(String, (usize, usize))> = vec![];
     {
-        let mut w = Writer { opts, files: vec![], missing: 0 };
+        let mut w = Writer { opts, files: vec![], generated: vec![], missing: 0 };
         let mut prev_list = false;
         let mut seq = 0u32;
         // `pieces` drops empty blocks; walk the same way to keep each span.
@@ -546,7 +563,7 @@ fn joined(pieces: &[Piece]) -> String {
 fn reads_as(body: &str, canonical: &str, opts: &Options) -> bool {
     let mut blocks = crate::paste::markdown_to_blocks(body, crate::paste::Off { file: true, alt: true, ..Default::default() });
     if let Some(dir) = opts.base { resolve_images(&mut blocks, dir); }
-    let mut w = Writer { opts, files: vec![], missing: 0 };
+    let mut w = Writer { opts, files: vec![], generated: vec![], missing: 0 };
     joined(&w.pieces(&blocks)) == canonical
 }
 

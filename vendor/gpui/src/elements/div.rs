@@ -2319,14 +2319,20 @@ impl Interactivity {
                 .clicked_state
                 .get_or_insert_with(Default::default)
                 .clone();
-            if active_state.borrow().is_clicked() {
+            // Always listen for the release: a press and release delivered
+            // before the next frame (a trackpad tap) would otherwise leave the
+            // element active, as the release listener was only registered by
+            // a paint that saw it pressed.
+            {
+                let active_state = active_state.clone();
                 window.on_mouse_event(move |_: &MouseUpEvent, phase, window, _cx| {
-                    if phase == DispatchPhase::Capture {
+                    if phase == DispatchPhase::Capture && active_state.borrow().is_clicked() {
                         *active_state.borrow_mut() = ElementClickedState::default();
                         window.refresh();
                     }
                 });
-            } else {
+            }
+            if !active_state.borrow().is_clicked() {
                 let active_group_hitbox = self
                     .group_active_style
                     .as_ref()

@@ -42,6 +42,8 @@ pub enum EditorEvent {
     Toast,
     /// A 创建副本 button was clicked.
     Duplicate,
+    /// A standalone 画板 was closed (退出 / Esc): go back to where it is.
+    Leave,
     /// Esc while 版本历史 is open: back to the live document, then close.
     HistoryEscape,
 }
@@ -241,6 +243,7 @@ pub struct Editor {
     pub(super) captions: HashMap<BlockId, (Entity<TextField>, Vec<Subscription>)>,
     pub(super) img: super::image::ImageUi,
     pub(super) cd: super::countdown::CdUi,
+    pub(super) boards: super::board::BoardUi,
     pub(super) btn: super::button::BtnUi,
     pub(super) rm: super::reminder::RmUi,
     pub(super) file: super::file::FileUi,
@@ -257,6 +260,9 @@ pub struct Editor {
     /// A Markdown file: only what Markdown can hold is offered (no colors,
     /// alignment, callouts, columns, add-on blocks, icon or cover).
     pub markdown: bool,
+    /// A standalone 画板 (`.excalidraw`): its one board is open over the
+    /// window, and leaving it leaves the file.
+    pub board_file: bool,
     pub(super) ro_doc: Option<crate::model::Document>,
     /// 版本历史 preview: this snapshot is not the live document. Only the
     /// hint text differs from 阅读模式.
@@ -490,6 +496,7 @@ impl Editor {
             created: modified,
             read_only: false,
             markdown: false,
+            board_file: false,
             ro_doc: None,
             preview: false,
             history_drawer: false,
@@ -497,6 +504,7 @@ impl Editor {
             info: Default::default(),
             restore_top: None,
             cd,
+            boards: Default::default(),
             btn,
             rm,
             _subs: subs,
@@ -549,6 +557,7 @@ impl Editor {
     }
 
     pub(crate) fn receive_document_at(&mut self, core: &Core, sel: Selection, cx: &mut Context<Self>) {
+        self.discard_open_board();
         let generation = self.core.generation;
         self.core = core.clone();
         self.core.sel = sel;
@@ -978,6 +987,14 @@ impl Editor {
                 self.core.sel = Selection::caret(Pos::new(p, 0));
                 self.changed(window, cx);
                 return self.open_countdown(nid, window, cx);
+            }
+            // an empty board, opened over the window at once
+            SlashKind::Board => {
+                let nid = self.core.insert_block(Block::new(BlockKind::Board(std::sync::Arc::default()), RichText::default()));
+                let p = self.core.ensure_paragraph_after(nid);
+                self.core.sel = Selection::caret(Pos::new(p, 0));
+                self.changed(window, cx);
+                return self.open_board(nid, window, cx);
             }
             SlashKind::Table => {
                 let (rows, cols) = size.unwrap_or((3, 3));
@@ -1995,7 +2012,9 @@ impl Editor {
         } else if let Some(d) = internal {
             self.core.paste_blocks(d.blocks);
         } else if let Some(b) = html.filter(|b| !b.is_empty() && !restates(b) && !(image.is_some() && b.iter().all(|b| matches!(b.kind, BlockKind::Image { .. })))) {
+            let remote = super::image::pasted_remote(&b);
             self.core.paste_blocks(b);
+            self.adopt_pasted(remote, cx);
         } else if let Some(images) = image.filter(|_| rich_target) {
             let mut blocks = Vec::new();
             for img in images {

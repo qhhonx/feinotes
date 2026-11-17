@@ -1,6 +1,6 @@
 #!/bin/sh
 # Regenerate the dependency table in THIRD_PARTY.md from cargo metadata.
-# Everything between the table header and "## 字体" is replaced; the rest stays.
+# Everything between the table header and the next "## " heading is replaced; the rest stays.
 set -e
 cd "$(dirname "$0")/.."
 cargo metadata --locked --format-version 1 | python3 -c '
@@ -15,7 +15,8 @@ for p in deps:
 src = open("THIRD_PARTY.md").read()
 src = re.sub(r"共 [0-9]+ 个包", "共 " + str(len(deps)) + " 个包", src)
 head = src[: src.index("| 包 | 版本 | 许可 |")] + "| 包 | 版本 | 许可 |\n|---|---|---|\n"
-tail = src[src.index("## 字体") :]
+start = src.index("| 包 | 版本 | 许可 |")
+tail = src[src.index("\n## ", start) + 1 :]
 open("THIRD_PARTY.md", "w").write(head + "\n".join(lines) + "\n\n" + tail)
 print("THIRD_PARTY.md:", len(deps), "packages")
 '

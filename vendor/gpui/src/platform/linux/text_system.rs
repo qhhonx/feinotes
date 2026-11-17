@@ -168,6 +168,25 @@ impl PlatformTextSystem for CosmicTextSystem {
         self.0.read().glyph_for_char(font_id, ch)
     }
 
+    // quiet.md: swash's unscaled outline (font units, y up); like the
+    // rasterizer here, no synthetic oblique or bold.
+    fn glyph_outline(&self, font_id: FontId, glyph_id: GlyphId) -> Option<Vec<crate::GlyphOutlineCmd>> {
+        use crate::GlyphOutlineCmd as C;
+        use swash::zeno::{Command, PathData};
+        let state = self.0.read();
+        let font = &state.loaded_font(font_id).font;
+        let mut ctx = swash::scale::ScaleContext::new();
+        let outline = ctx.builder(font.as_swash()).build().scale_outline(glyph_id.0 as u16)?;
+        let p = |v: swash::zeno::Vector| [v.x, v.y];
+        Some(outline.path().commands().map(|c| match c {
+            Command::MoveTo(a) => C::MoveTo(p(a)),
+            Command::LineTo(a) => C::LineTo(p(a)),
+            Command::QuadTo(a, b) => C::QuadTo(p(a), p(b)),
+            Command::CurveTo(a, b, c) => C::CubicTo(p(a), p(b), p(c)),
+            Command::Close => C::Close,
+        }).collect())
+    }
+
     fn glyph_raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
         self.0.write().raster_bounds(params)
     }
@@ -234,6 +253,7 @@ impl CosmicTextSystemState {
             let allowed_bad_font_names = [
                 "SegoeFluentIcons", // NOTE: Segoe fluent icons postscript name is inconsistent
                 "Segoe Fluent Icons",
+                "XiaolaiSC", // quiet.md: the board's CJK-only font
             ];
 
             if font.as_swash().charmap().map('m') == 0

@@ -1,0 +1,150 @@
+# 画板编辑（二）：分区改名 → 图片裁剪 → 箭头标签沿线拖动 → 拖出定宽文字框、Tab 缩进
+# → 快捷创建流程图（待定节点）→ 透明度一次撤销、颜色弹层、帮助 → 复制为 SVG / PNG 再粘贴（模拟剪贴板）
+# → 全部解锁 → 拖入图片文件。每段结束 ⌘A ⌫ 清空。
+# python3 tools/harness/run.py tools/harness/examples/board_edit2.txt
+move 700 700
+wait 1500
+click 251 106
+wait 300
+click 295 208
+wait 1200
+# 分区：Enter 改名，双击名字再改，清空即回到默认名
+key f
+drag 300 250 650 450
+wait 300
+key enter
+wait 300
+type Login flow
+shot b2-00-frame-rename
+key enter
+wait 200
+dclick 320 236
+wait 300
+key cmd-a
+key backspace
+key escape
+wait 200
+shot b2-01-frame-default
+key cmd-a
+key backspace
+# 图片：Enter 进入裁剪，拖右下角裁剪，拖图片移动裁剪区域，Esc 退出
+pick lib/.assets/sample-memory.png
+key 9
+wait 1000
+key enter
+wait 300
+drag 1146 601 900 450
+wait 300
+shot b2-02-cropped
+drag 600 400 520 380
+wait 300
+shot b2-03-crop-moved
+key escape
+wait 200
+key cmd-a
+key backspace
+# 箭头标签：抓住标签（偏离中点控制柄）沿箭头拖动
+key a
+drag 400 400 1000 300
+wait 200
+key enter
+type label
+key escape
+wait 200
+click 1100 650
+click 700 350
+drag 685 352 865 322
+wait 300
+shot b2-04-label-dragged
+key cmd-a
+key backspace
+# 文字工具拖出定宽框（自动换行）；Tab / ⇧Tab 缩进
+key t
+drag 300 300 560 300
+wait 200
+type The quick brown fox jumps over the lazy dog again and again
+key escape
+key t
+click 300 500
+type one
+key enter
+type two
+key tab
+key tab
+key shift-tab
+wait 200
+shot b2-05-text
+key escape
+key cmd-a
+key backspace
+# 流程图快捷创建：⌘→ 两次显示淡出的待定节点
+key r
+drag 400 300 550 400
+wait 200
+key cmd-right
+key cmd-right
+wait 300
+shot b2-06-flowchart-pending
+key escape
+# 透明度拖动一次，撤销一次即复原；颜色弹层在触发器右侧
+drag 190 432 80 432
+wait 200
+shot b2-07-opacity
+key cmd-z
+wait 200
+shot b2-08-opacity-undone
+# （默认透明度拉回 100，后面新画的元素不淡）
+drag 150 432 194 432
+click 200 115
+wait 300
+shot b2-09-color-popover
+key escape
+key cmd-a
+key backspace
+# 复制为 SVG / PNG（嵌入场景），再粘贴回元素
+key r
+drag 600 200 750 300
+key o
+drag 800 200 950 300
+wait 200
+clip clear
+key cmd-a
+rclick 700 250
+wait 300
+click 792 332
+wait 200
+click 1100 700
+move 650 450
+key cmd-v
+wait 300
+shot b2-10-svg-pasted
+key cmd-a
+rclick 700 250
+wait 300
+click 792 299
+wait 500
+click 1100 700
+move 650 650
+key cmd-v
+wait 500
+shot b2-11-png-pasted
+key cmd-a
+key backspace
+# 全部解锁（画布右键菜单）
+key r
+drag 500 300 700 450
+key cmd-shift-l
+click 1100 700
+rclick 1000 600
+wait 300
+shot b2-12-unlock-menu
+click 1060 711
+wait 300
+shot b2-13-unlocked
+key cmd-a
+key backspace
+# 拖入普通图片：在落点插入图片元素（拖入 .excalidraw / 含场景的 PNG、SVG 则插入其中的元素）
+filedrag 400 500 lib/.assets/sample-rag.png
+filedrop 400 500
+wait 800
+shot b2-14-image-dropped

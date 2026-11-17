@@ -101,6 +101,7 @@ Un écran 120 Hz laisse 8,3 ms par image. Même à P95 sur un document d'un mill
 ## Fonctionnalités
 
 - **Édition** : titres, listes numérotées et à puces, tâches, citations, blocs de code avec coloration syntaxique, math LaTeX, tableaux (avec cellules fusionnées), encadrés, colonnes, images, pièces jointes et couvertures. Raccourcis Markdown comme `#`, `-`, `[]` et `>`, plus un menu barre oblique `/`.
+- **Tableaux blancs** : un tableau porté depuis Excalidraw (formes, flèches qui restent liées, dessin à main levée, texte, notes adhésives, cadres et images), en bloc dans une note ou en fichier `.excalidraw` autonome qu’excalidraw.com sait ouvrir.
 - **Organisation** : arborescence de documents, épinglage, favoris, recherche plein texte et corbeille.
 - **Import et export** : importez des dossiers Markdown (images intégrées et encadrés Obsidian inclus) et du DocxXML Feishu (Lark). Exportez en Markdown et PDF, ou imprimez directement. Glissez des fichiers depuis le Finder vers l'accueil ou directement dans un dossier de la barre latérale. Un collage depuis Feishu ou une page web conserve la structure.
 - **Raccourcis** : appuyez sur `⌘ /` (`Ctrl+/` sous Windows) pour tous les voir. Chacun est reconfigurable. Sous Windows, Ctrl remplace ⌘ et Alt remplace ⌥. L'app et les guides de prise en main affichent les touches de votre système.

@@ -819,6 +819,9 @@ pub enum BlockKind {
     Countdown(Countdown),
     /// 视频或文件 (`<source>`, or `<figure view-type><source/></figure>`).
     File(FileBlock),
+    /// 画板 (`<whiteboard type="excalidraw">`): an Excalidraw scene, shared
+    /// between undo snapshots until it changes.
+    Board(std::sync::Arc<crate::whiteboard::Board>),
     /// Any element we don't model; kept verbatim for round-tripping.
     Raw { tag: String, xml: String },
 }
@@ -1077,8 +1080,9 @@ impl Document {
     pub(crate) fn for_each_search_fragment(&self, mut write: impl FnMut(String)) {
         let mut started = false;
         self.for_each_block(|block| {
-            if block.text.is_empty() { return; }
             let mut part = block.text.plain_text();
+            if let BlockKind::Board(board) = &block.kind { part.push_str(&board.plain_text()); }
+            if part.is_empty() { return; }
             if started { part.insert(0, '\n'); }
             if !part.is_empty() {
                 started = true;
@@ -1141,6 +1145,7 @@ impl Document {
         let mut out = vec![];
         self.for_each_block(|b| {
             match &b.kind {
+                BlockKind::Board(board) => out.extend(board.files.values().filter_map(|f| f.path.clone())),
                 BlockKind::Image { src, .. } => out.push(src.clone()),
                 BlockKind::File(f) if f.src_kind == "path" => out.push(f.src.clone()),
                 _ => {}

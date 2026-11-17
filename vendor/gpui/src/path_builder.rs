@@ -9,7 +9,8 @@ use lyon::tessellation::{
 };
 
 pub use lyon::math::Transform;
-pub use lyon::tessellation::{FillOptions, FillRule, StrokeOptions};
+// quiet.md: LineCap / LineJoin too (the board's strokes).
+pub use lyon::tessellation::{FillOptions, FillRule, LineCap, LineJoin, StrokeOptions};
 
 use crate::{Path, Pixels, Point, point, px};
 

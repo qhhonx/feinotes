@@ -482,4 +482,33 @@ mod tests {
         assert_eq!(docxml::serialize(&render(&loro)?), docxml::serialize(&initial));
         Ok(())
     }
+
+    #[test]
+    fn board_scene_and_independent_paragraph_edits_merge_without_losing_assets() -> Result<()> {
+        let mut board = crate::whiteboard::Board::from_file(include_str!("../../crates/core/tests/fixtures/board/all-elements.excalidraw"))?;
+        let file = board.files.get_mut("file1").unwrap();
+        file.data_url = None;
+        file.path = Some("assets/boards/synthetic.png".into());
+        let mut initial = crate::whiteboard::file_doc(board, "Board sync");
+        initial.blocks.push(Block::text("Original paragraph"));
+        assign_seed_ids(&mut initial);
+        let left = open(&seed(&initial)?)?;
+        let right = open(&seed(&initial)?)?;
+        let mut a = render(&left)?;
+        let mut b = render(&right)?;
+        let BlockKind::Board(scene) = &mut a.blocks[0].kind else { unreachable!() };
+        std::sync::Arc::make_mut(scene).elements[0].x += 37.;
+        let expected = scene.scene_json();
+        b.blocks[1].text = RichText::plain("Edited on another device");
+        let au = edit(&left, 12, &a)?.context("board update")?;
+        let bu = edit(&right, 13, &b)?.context("paragraph update")?;
+        left.import(&bu)?;
+        right.import(&au)?;
+        let merged = render(&left)?;
+        assert_eq!(crate::whiteboard::board_of(&merged).unwrap().scene_json(), expected);
+        assert_eq!(merged.blocks[1].text.text, "Edited on another device");
+        assert!(local_assets(&merged).contains("assets/boards/synthetic.png"));
+        assert_eq!(merged, render(&right)?);
+        Ok(())
+    }
 }

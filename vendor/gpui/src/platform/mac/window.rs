@@ -161,6 +161,16 @@ unsafe fn build_classes() {
                     sel!(mouseDragged:),
                     handle_view_event as extern "C" fn(&Object, Sel, id),
                 );
+                // the middle and right buttons' drags (the events map them;
+                // without these selectors AppKit never delivers them)
+                decl.add_method(
+                    sel!(rightMouseDragged:),
+                    handle_view_event as extern "C" fn(&Object, Sel, id),
+                );
+                decl.add_method(
+                    sel!(otherMouseDragged:),
+                    handle_view_event as extern "C" fn(&Object, Sel, id),
+                );
                 decl.add_method(
                     sel!(scrollWheel:),
                     handle_view_event as extern "C" fn(&Object, Sel, id),

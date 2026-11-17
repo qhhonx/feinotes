@@ -28,6 +28,10 @@ const SEED_DOC: &str = r#"<title>随机 <b>编辑</b></title>
 <table><colgroup><col width="120"/><col width="80"/><col width="80"/></colgroup><thead><tr><th><p>A</p></th><th><p>B</p></th><th><p>C</p></th></tr></thead><tbody><tr><td colspan="2" rowspan="2"><p>合并</p><ul><li>格内列表</li></ul></td><td><p>3</p></td></tr><tr><td><p>6</p></td></tr><tr><td><p>7</p></td><td><p>8</p></td><td><pre lang="text"><code>a
 b</code></pre></td></tr></tbody></table>
 <p>公式 <latex>E=mc^2</latex> 结束</p>
+<whiteboard type="excalidraw" height="200">{"elements":[
+{"id":"r1","type":"rectangle","x":0,"y":0,"width":100,"height":50,"index":"a0","version":1,"versionNonce":1,"seed":1},
+{"id":"t1","type":"text","x":10,"y":10,"width":40,"height":25,"index":"a1","version":1,"versionNonce":2,"seed":2,"text":"画","originalText":"画","fontSize":20,"fontFamily":5}
+],"files":{}}</whiteboard>
 <p></p>
 "#;
 
@@ -214,6 +218,7 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
             c.toggle_todos(&c.selected_blocks());
             "toggle_selected_todos".into()
         }
+        20 if rng.chance(20) => board_step(c, rng),
         20 => table_step(c, rng),
         21 => object_step(c, rng),
         22 => {
@@ -228,6 +233,44 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
             "trailing_line".into()
         }
     }
+}
+
+/// 画板: a random board block gets a changed scene (what leaving the
+/// full-window board writes back).
+fn board_step(c: &mut Core, rng: &mut Rng) -> String {
+    let mut boards = vec![];
+    c.doc.for_each_block(|b| if let BlockKind::Board(bd) = &b.kind { boards.push((b.id, (**bd).clone())) });
+    if boards.is_empty() {
+        return "set_board(none)".into();
+    }
+    let (id, mut bd) = boards.swap_remove(rng.below(boards.len()));
+    match rng.below(4) {
+        0 if !bd.elements.is_empty() => {
+            let i = rng.below(bd.elements.len());
+            let e = &mut bd.elements[i];
+            e.x += rng.below(200) as f64 - 100.5;
+            e.angle = rng.below(7) as f64 * 0.5;
+            e.version += 1;
+        }
+        1 => bd.height = (80 + rng.below(600)) as f32,
+        2 => bd.elements.retain(|e| e.is_text() && e.container_id().is_none()),
+        _ => {
+            let n = bd.elements.len();
+            let json = format!(r#"{{"elements":[{{"id":"n{n}","type":"ellipse","x":{},"y":{},"width":30,"height":{},"seed":{n}}}]}}"#, rng.below(300), rng.below(300), 1 + rng.below(90));
+            let extra = crate::whiteboard::Board::from_scene(&json, bd.height).unwrap().elements;
+            bd.elements.extend(extra);
+            // as saving then loading would leave it (indices, versions)
+            bd = crate::whiteboard::Board::from_scene(&bd.scene_json(), bd.height).unwrap();
+        }
+    }
+    let changed = c.set_board(id, bd.clone(), false);
+    // the open board saving again: joins that step
+    if changed && rng.below(3) == 0 {
+        bd.height += 10.;
+        c.set_board(id, bd, true);
+        return format!("set_board({id:?}, {changed}) + join");
+    }
+    format!("set_board({id:?}, {changed})")
 }
 
 /// Block mode takes only block commands (the view ignores text ones).
@@ -511,6 +554,11 @@ fn round_trip(c: &Core) -> Result<(), String> {
     if x != y {
         return Err(format!("save → load → save differs:\n--- first\n{x}\n--- second\n{y}"));
     }
+    // A board reads back as the same scene, not just the same text.
+    let boards = |d: &Document| { let mut v = vec![]; d.for_each_block(|b| if let BlockKind::Board(bd) = &b.kind { v.push(bd.clone()) }); v };
+    if boards(&doc) != boards(&back) {
+        return Err(format!("a board's scene changed on save → load:\n{x}"));
+    }
     Ok(())
 }
 
@@ -538,6 +586,7 @@ fn diff(a: &str, b: &str) -> String {
 fn run(seed: u64, steps: usize) {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut c = Core::new(parse(SEED_DOC).unwrap());
+    assert!(c.doc.blocks.iter().any(|b| matches!(&b.kind, BlockKind::Board(bd) if bd.elements.len() == 2)), "the seed's board reads");
     let start = unfolded(&c.doc);
     let mut log: Vec<String> = vec![];
     let fail = |log: &[String], c: &Core, e: String| -> ! {

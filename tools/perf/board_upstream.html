@@ -1,0 +1,73 @@
+<!doctype html>
+<!-- The same pan / zoom benchmark on the original Excalidraw (npm @excalidraw/excalidraw 0.18.0, production build from esm.sh).
+     Serve this file and the board_gen.py scenes from one localhost directory, open
+     index.html?scene=<lib>/bench-<n>.excalidraw at a 1280x800 viewport, then run runAll() in the console.
+     Results: board-results.md. -->
+<html><head><meta charset="utf-8"><title>excalidraw bench</title>
+<link rel="stylesheet" href="https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/prod/index.css">
+<style>html,body,#root{margin:0;height:100%;}</style>
+<script>window.EXCALIDRAW_ASSET_PATH = "https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/prod/";</script>
+</head><body><div id="root"></div>
+<script type="module">
+import React from "https://esm.sh/react@19.0.0";
+import { createRoot } from "https://esm.sh/react-dom@19.0.0/client";
+import { Excalidraw } from "https://esm.sh/@excalidraw/excalidraw@0.18.0?deps=react@19.0.0,react-dom@19.0.0";
+const scene = new URLSearchParams(location.search).get("scene");
+let initialData = null;
+if (scene) { const d = await (await fetch(scene)).json(); initialData = { elements: d.elements, appState: { ...d.appState }, files: d.files || {}, scrollToContent: true }; }
+createRoot(document.getElementById("root")).render(
+  React.createElement(Excalidraw, { initialData, excalidrawAPI: (api) => { window.api = api; } })
+);
+// Same steps as board_bench.txt. In the console: JSON.stringify(await runAll(<zoom of our fitted view>))
+// Each step: dispatch the event, then count main-thread busy time for 150ms (gaps in a MessageChannel ping loop).
+window.busyAfter = async (fn, windowMs = 150) => {
+  const ch = new MessageChannel(); const start = performance.now(); fn();
+  let busy = performance.now() - start; let last = performance.now();
+  await new Promise(res => { ch.port1.onmessage = () => { const now = performance.now(); const g = now - last; if (g > 0.25) busy += g; last = now; if (now - start < windowMs) ch.port2.postMessage(0); else res(); }; ch.port2.postMessage(0); });
+  return busy;
+};
+window.stat = a => { const s = [...a].sort((x, y) => x - y); const q = p => s[Math.min(s.length - 1, Math.floor(p * s.length))]; return { p50: +q(0.5).toFixed(2), p95: +q(0.95).toFixed(2), max: +s[s.length - 1].toFixed(2) }; };
+window.canvasEl = () => document.querySelector('canvas.excalidraw__canvas.interactive') || document.querySelectorAll('canvas')[1];
+window.wheel = (dx, dy) => canvasEl().dispatchEvent(new WheelEvent('wheel', { deltaX: dx, deltaY: dy, clientX: 640, clientY: 400, bubbles: true, cancelable: true }));
+window.pmove = (x, y) => canvasEl().dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: y, bubbles: true, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+window.zkey = (k) => document.querySelector('.excalidraw-container').dispatchEvent(new KeyboardEvent('keydown', { key: k, code: k === '=' ? 'Equal' : 'Minus', metaKey: true, bubbles: true, cancelable: true }));
+window.bench = async (n, fn) => { const a = []; for (let i = 0; i < n; i++) a.push(await busyAfter(fn)); return stat(a); };
+window.runAll = async (zoom) => {
+  api.scrollToContent(api.getSceneElements(), { fitToContent: true, animate: false });
+  await new Promise(r => setTimeout(r, 2500));
+  api.updateScene({ appState: { zoom: { value: zoom } } });
+  await new Promise(r => setTimeout(r, 4000));
+  const out = {};
+  out.panFit = [await bench(20, () => wheel(0, 30)), await bench(20, () => wheel(0, -30)), await bench(20, () => wheel(30, 0)), await bench(20, () => wheel(-30, 0))];
+  out.hover = [await bench(20, () => pmove(641, 401)), await bench(20, () => pmove(700, 420))];
+  api.updateScene({ appState: { zoom: { value: 1 } } }); await new Promise(r => setTimeout(r, 2500));
+  out.pan100 = [await bench(20, () => wheel(0, 30)), await bench(20, () => wheel(0, -30))];
+  out.zoom = [await bench(6, () => zkey('=')), await bench(6, () => zkey('-')), await bench(6, () => zkey('-'))];
+  return out;
+};
+// board_drag.txt: press a rectangle with two bound arrows at 100% and drag it 4px a step; then select all and drag.
+window.pdown = (x, y) => canvasEl().dispatchEvent(new PointerEvent('pointerdown', { clientX: x, clientY: y, bubbles: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1 }));
+window.pdrag = (x, y) => canvasEl().dispatchEvent(new PointerEvent('pointermove', { clientX: x, clientY: y, bubbles: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 1 }));
+window.pup = (x, y) => window.dispatchEvent(new PointerEvent('pointerup', { clientX: x, clientY: y, bubbles: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 0 }));
+window.dragSteps = async (n, x0, y0, dx, dy) => { const a = []; let x = x0, y = y0; for (let i = 0; i < n; i++) { x += dx; y += dy; const xx = x, yy = y; a.push(await busyAfter(() => pdrag(xx, yy))); } return { stat: stat(a), x, y }; };
+window.runDrag = async () => {
+  const els = api.getSceneElements();
+  // a rectangle in the middle of the grid with arrows bound on both sides
+  const rects = els.filter(e => e.type === 'rectangle' && (e.boundElements || []).filter(b => b.type === 'arrow').length >= 2);
+  const r = rects[Math.floor(rects.length / 2)]; const rx0 = r.x;
+  api.updateScene({ appState: { zoom: { value: 1 }, scrollX: -r.x + 400, scrollY: -r.y + 300, selectedElementIds: {} } });
+  await new Promise(res => setTimeout(res, 2500));
+  const st = api.getAppState(); const x0 = (r.x + st.scrollX) * 1 + 20, y0 = (r.y + st.scrollY) * 1 + r.height - 12;
+  const out = {};
+  pdown(x0, y0); let p = await dragSteps(30, x0, y0, 4, 0); out.one = [p.stat]; out.movedMid = r.x - rx0;
+  p = await dragSteps(30, p.x, p.y, -4, 0); out.one.push(p.stat);
+  p = await dragSteps(30, p.x, p.y, 0, 4); out.one.push(p.stat);
+  p = await dragSteps(30, p.x, p.y, 0, -4); out.one.push(p.stat);
+  pup(p.x, p.y); await new Promise(res => setTimeout(res, 1000));
+  zkeyA(); await new Promise(res => setTimeout(res, 1500));
+  pdown(x0, y0); p = await dragSteps(20, x0, y0, 4, 0); out.all = [p.stat];
+  p = await dragSteps(20, p.x, p.y, -4, 0); out.all.push(p.stat); pup(p.x, p.y);
+  return out;
+};
+window.zkeyA = () => document.querySelector('.excalidraw-container').dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', metaKey: true, bubbles: true, cancelable: true }));
+</script></body></html>

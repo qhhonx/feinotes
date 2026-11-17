@@ -21,6 +21,8 @@ Keep product additions separate when importing upstream changes. Preserve origin
 
 ## Imported upstream updates
 
+- 2026-11-17, through `e9cb5408d0ffcad5bf5b31814e10e1b2f275347f`: imported 18 pending commits, including Excalidraw boards, owned copies of pasted web images, sidebar row/menu fixes and plural forms. Boards remain DocxXML block payloads in SQLite and the existing cloud protocol, while file libraries retain standalone `.excalidraw` files. Board creation, asset enumeration/import, version recovery and backups use their selected backend and library root. Shared read-only/history previews cannot open an editable board; permission loss or an incoming document discards the stale board editor. Product drafts, shared navigation, focused sidebar colors, branding and licensing remain intact. The shell board icon uses Lucide rather than the upstream Nucleo asset; Excalidraw MIT and font notices are preserved.
+
 - 2026-11-12, through `a6a188bd315076fff83dca8f027fdbc67a72eab6`: imported upstream clipboard, table, creation-menu and rendering changes. `vendor/PATCHES.md` includes upstream's macOS clipboard patch record.
 - 2026-11-13, through `7ead2356ef2c82609bdae9ad084b26dbd877e65d`: imported reading positions, literal paste, interface preferences and pointer/scroll fixes. `docs/ARCHITECTURE.md` now preserves upstream's distinction between caret reveal and viewport preservation. Fei Notes keeps its shared-note access checks, responsive settings rows, cloud/release panels and Notes theme tokens. Incoming cloud documents clear the local wrapped-row caret hint; the new base64-image test initializes the product's table identity extension through `Default`. Inline Markdown images create the assets directory on first use, including in a fresh library.
 

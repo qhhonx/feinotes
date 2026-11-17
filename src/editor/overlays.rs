@@ -85,6 +85,7 @@ pub fn kind_icon(k: &BlockKind) -> &'static str {
         BlockKind::Raw { .. } => "file-text",
         BlockKind::SubPageList => "list-tree",
         BlockKind::Countdown(_) => "timer",
+        BlockKind::Board(_) => "palette",
         BlockKind::File(_) => "paperclip",
     }
 }
@@ -100,6 +101,7 @@ pub fn kind_color(k: &BlockKind) -> Hsla {
         BlockKind::Table(_) => menus::TEAL,
         BlockKind::Raw { .. } => menus::NEUTRAL,
         BlockKind::Countdown(_) => menus::ORANGE,
+        BlockKind::Board(_) => menus::GREEN,
         BlockKind::File(_) => menus::WATHET,
         _ => menus::BLUE,
     })

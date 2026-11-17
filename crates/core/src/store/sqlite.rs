@@ -261,6 +261,11 @@ fn rewrite_import_references(doc: &mut Document, source: &mut impl FnMut(&mut St
         ids: &HashMap<String, String>) -> Result<()> {
         for block in blocks {
             match &mut block.kind {
+                BlockKind::Board(board) => {
+                    for file in std::sync::Arc::make_mut(board).files.values_mut() {
+                        if let Some(path) = &mut file.path { source(path)?; }
+                    }
+                }
                 BlockKind::Image { src, .. } => source(src)?,
                 BlockKind::File(file) if file.src_kind == "path" => source(&mut file.src)?,
                 BlockKind::Table(table) => {
@@ -280,7 +285,9 @@ fn rewrite_import_references(doc: &mut Document, source: &mut impl FnMut(&mut St
 
 fn legacy_trash_body(snapshot: &Store, id: &str, meta: &Meta) -> Result<(Document, String)> {
     let text = std::fs::read_to_string(snapshot.trash_path(id))?;
-    Ok(if meta.markdown {
+    Ok(if meta.kind == DocKind::Board {
+        (crate::whiteboard::parse_file(&text, meta.name.as_deref().unwrap_or_default())?, String::new())
+    } else if meta.markdown {
         let title = meta.name.as_deref().unwrap_or_default();
         (crate::markdown::parse_file(&text, title, None), crate::markdown::front_matter(&text).0.to_owned())
     } else { (docxml::parse(&text)?, String::new()) })
@@ -926,6 +933,45 @@ mod tests {
         std::fs::write(stage.join(".cloud-restore-ready"), "synthetic account\n")?;
         Store::initialize_sqlite(&temp.0)?;
         Ok(temp)
+    }
+
+    #[test]
+    fn sqlite_board_preserves_scene_search_history_trash_and_import_assets() -> Result<()> {
+        let temp = isolated_sqlite("board")?;
+        let mut store = Store::open_sqlite_at(temp.0.clone())?;
+        let board = crate::whiteboard::Board::from_file(include_str!("../../tests/fixtures/board/all-elements.excalidraw"))?;
+        let folder = store.create_folder("Boards", None)?;
+        let id = store.create_board_in("Synthetic board", &board, Some(&folder))?;
+        assert_eq!(store.kind(&id), DocKind::Board);
+        assert_eq!(store.index[&id].parent.as_deref(), Some(folder.as_str()));
+        let original = store.load_for_edit(&id, false)?;
+        assert_eq!(crate::whiteboard::board_of(&original).unwrap().scene_json(), board.scene_json());
+        assert!(original.plain_text().contains(&board.plain_text()));
+        store.save_version_now(&id)?;
+        let version = store.versions(&id)[0].name.clone();
+        let mut changed = original.clone();
+        changed.title = crate::model::RichText::plain("Renamed board");
+        store.save(&id, &changed)?;
+        let restored = store.restore_version(&id, &version)?;
+        assert_eq!(docxml::serialize(&restored), docxml::serialize(&original));
+        store.save(&id, &restored)?;
+        store.delete(&id, None)?;
+        store.restore(&id)?;
+        drop(store);
+        let store = Store::open_sqlite_at(temp.0.clone())?;
+        assert_eq!(store.kind(&id), DocKind::Board);
+        assert_eq!(docxml::serialize(&store.load(&id)?), docxml::serialize(&original));
+        assert!(!store.versions(&id).is_empty());
+        let mut imported = original.clone();
+        let mut file = crate::board::types::FileData { id: "asset".into(), mime_type: "image/png".into(), data_url: None,
+            path: Some(".assets/pic.png".into()), created: 1, last_retrieved: None, version: None, extra: Default::default() };
+        let crate::model::BlockKind::Board(scene) = &mut imported.blocks[0].kind else { unreachable!() };
+        std::sync::Arc::make_mut(scene).files.insert("asset".into(), file.clone());
+        rewrite_import_references(&mut imported, &mut |src| { *src = src.replace(".assets/", "assets/legacy-test/"); Ok(()) }, &HashMap::new())?;
+        file.path = Some("assets/legacy-test/pic.png".into());
+        assert_eq!(crate::whiteboard::board_of(&imported).unwrap().files["asset"], file);
+        assert!(imported.asset_sources().contains(&file.path.unwrap()));
+        Ok(())
     }
 
     #[test]

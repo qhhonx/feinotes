@@ -8,7 +8,7 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod mac;
 #[cfg(target_os = "macos")]
-pub use mac::check_fallback_glyphs;
+pub use mac::{check_fallback_glyphs, test_text_system};
 
 #[cfg(any(
     all(
@@ -600,6 +600,9 @@ pub(crate) trait PlatformTextSystem: Send + Sync {
         raster_bounds: Bounds<DevicePixels>,
     ) -> Result<(Size<DevicePixels>, Vec<u8>)>;
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout;
+    /// quiet.md: a glyph's outline in font units, y up (macOS only; None
+    /// elsewhere and for bitmap glyphs).
+    fn glyph_outline(&self, _font_id: FontId, _glyph_id: GlyphId) -> Option<Vec<crate::GlyphOutlineCmd>> { None }
 }
 
 pub(crate) struct NoopTextSystem;
@@ -777,6 +780,8 @@ pub(crate) trait PlatformAtlas: Send + Sync {
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>>;
     fn remove(&self, key: &AtlasKey);
+    /// quiet.md: writes `bytes` over `key`'s tile (same size), for `Window::paint_pixels`.
+    fn update(&self, key: &AtlasKey, bytes: &[u8]);
 }
 
 struct AtlasTextureList<T> {

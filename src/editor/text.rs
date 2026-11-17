@@ -230,7 +230,12 @@ pub struct TextSpec {
     pub font: Option<&'static str>,
     /// Everything italic (a theme's quotes).
     pub italic: bool,
+    /// Fonts by run instead (board text: Excalidraw's fonts, `board::fonts::runs`).
+    pub font_runs: Option<FontRuns>,
 }
+
+/// Cuts a span into runs by font (byte lengths).
+pub type FontRuns = Rc<dyn Fn(&str) -> Vec<(usize, Font)>>;
 
 impl TextSpec {
     /// The page body: 15pt, 1.25 × the natural line height.
@@ -249,6 +254,7 @@ impl TextSpec {
             doc_font: true,
             font: None,
             italic: false,
+            font_runs: None,
         }
     }
 }
@@ -746,15 +752,18 @@ pub fn build_runs(
                 font.weight = if m.bold { bold_weight() } else { FontWeight::NORMAL };
             }
             let background_color = m.bg_color.as_ref().and_then(|c| theme::bg_color(&c.0)).map(|c| if spec.dim_marks { c.opacity(0.7) } else { c });
-            runs.push(TextRun {
-                len: b - a,
-                font,
-                color: background_color.map_or(color, |bg| theme::marked_text(color, m, bg)),
-                background_color,
-                underline,
-                // Painted by `RichTextElement::paint`, see `paint_strikes`.
-                strikethrough: None,
-            });
+            let fonts = match &spec.font_runs { Some(f) => f(&text.text[a..b]), None => vec![(b - a, font)] };
+            for (len, font) in fonts {
+                runs.push(TextRun {
+                    len,
+                    font,
+                    color: background_color.map_or(color, |bg| theme::marked_text(color, m, bg)),
+                    background_color,
+                    underline,
+                    // Painted by `RichTextElement::paint`, see `paint_strikes`.
+                    strikethrough: None,
+                });
+            }
         }
     }
     runs

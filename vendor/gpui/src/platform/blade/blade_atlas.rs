@@ -101,6 +101,11 @@ impl PlatformAtlas for BladeAtlas {
         }
     }
 
+    fn update(&self, key: &AtlasKey, bytes: &[u8]) {
+        let mut lock = self.0.lock();
+        if let Some(tile) = lock.tiles_by_key.get(key).cloned() { lock.upload_texture(tile.texture_id, tile.bounds, bytes); }
+    }
+
     fn remove(&self, key: &AtlasKey) {
         let mut lock = self.0.lock();
 

@@ -198,7 +198,7 @@ fn row_face(e: &Entry, open: bool) -> Div {
     div().h(px(crate::sidebar::ROW_H)).w_full().pl(px(6.)).flex().items_center()
         .child(div().size(px(20.)).flex_none().flex().items_center().justify_center().map(|d| match &e.icon {
             _ if e.meta.folder.is_some() => d.child(icon(if open { "folder-open" } else { "folder" }, crate::sidebar::ROW_ICON, crate::sidebar::folder_color())),
-            _ if e.meta.markdown => d.child(icon("doc-md", crate::sidebar::ROW_ICON, Theme::icon())),
+            _ if e.meta.named_by_file() => d.child(icon(crate::search::file_glyph(&e.meta), crate::sidebar::ROW_ICON, Theme::icon())),
             Some(em) => d.text_size(px(13.)).line_height(px(20.)).child(em.clone()),
             None => d.child(icon("doc", crate::sidebar::ROW_ICON, Theme::icon())),
         }))
@@ -496,10 +496,14 @@ impl Workspace {
         let renaming = self.rename.as_ref().filter(|rename| rows.iter().any(|row| row.entry.id == rename.id)).map(|r| r.id.clone());
         self.folder_drag.parents = self.folder_drag.personal_rows.as_ref().unwrap_or(&self.entries).iter().filter_map(|e| e.meta.parent.clone()).collect();
         let high = crate::settings::motion_high();
-        // The visible list's bottom edge, in this list's coordinates (last frame's layout).
+        // The visible band in this list's coordinates, from last frame's layout. Both edges are
+        // measured against the list itself (sections above it scroll too), and padded so a
+        // scroll since that frame doesn't uncover rows that were skipped.
         let visible = self.folder_drag.bounds.get();
-        let vis_bottom = visible.map_or(f32::MAX, |b| f32::from(self.list_scroll.bounds().bottom() - b.top()));
-        let vis_top = visible.map_or(f32::MIN, |_| -f32::from(self.list_scroll.offset().y));
+        let sb = self.list_scroll.bounds();
+        let pad = f32::from(sb.size.height).max(200.);
+        let vis_bottom = visible.map_or(f32::MAX, |b| f32::from(sb.bottom() - b.top()) + pad);
+        let vis_top = visible.map_or(f32::MIN, |b| f32::from(sb.top() - b.top()) - pad);
         // ---- Step every spring; nothing below this block mutates.
         let fd = &mut self.folder_drag;
         let index: HashMap<&str, usize> = rows.iter().enumerate().map(|(i, r)| (r.entry.id.as_str(), i)).collect();

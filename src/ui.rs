@@ -565,7 +565,7 @@ pub fn format_relative(secs: u64) -> String {
     match ago {
         0..60 => crate::settings::text("几秒前").into(),
         60..3600 => crate::localized_format!("{} 分钟前", "{} min ago", ago / 60),
-        3600..86_400 => crate::localized_format!("{} 小时前", "{} hours ago", ago / 3600),
+        3600..86_400 => crate::localized_count!(ago / 3600, "{} 小时前", "{} hour ago", "{} hours ago", ago / 3600),
         _ => format_date(secs),
     }
 }

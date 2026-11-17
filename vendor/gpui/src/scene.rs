@@ -726,6 +726,30 @@ impl Path<Pixels> {
         }
     }
 
+    /// quiet.md: this path scaled about the origin by `scale`, then moved
+    /// by `offset`; a tessellated path redrawn at another zoom or scroll
+    /// (the board caches paths per element).
+    pub fn transformed(&self, scale: f32, offset: Point<Pixels>) -> Path<Pixels> {
+        let map = |p: Point<Pixels>| point(p.x * scale + offset.x, p.y * scale + offset.y);
+        Path {
+            id: self.id,
+            order: self.order,
+            bounds: Bounds { origin: map(self.bounds.origin), size: self.bounds.size.map(|v| v * scale) },
+            content_mask: self.content_mask.clone(),
+            vertices: self.vertices.iter().map(|v| PathVertex { xy_position: map(v.xy_position), st_position: v.st_position, content_mask: v.content_mask.clone() }).collect(),
+            start: map(self.start),
+            current: map(self.current),
+            contour_count: self.contour_count,
+            color: self.color,
+        }
+    }
+
+    /// quiet.md: the triangles this path fills, as (positions, curve
+    /// coordinates); the board clips tessellated paths by frames.
+    pub fn triangles(&self) -> impl Iterator<Item = ([Point<Pixels>; 3], [Point<f32>; 3])> + '_ {
+        self.vertices.chunks_exact(3).map(|t| ([t[0].xy_position, t[1].xy_position, t[2].xy_position], [t[0].st_position, t[1].st_position, t[2].st_position]))
+    }
+
     /// Move the start, current point to the given point.
     pub fn move_to(&mut self, to: Point<Pixels>) {
         self.contour_count += 1;

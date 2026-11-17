@@ -42,11 +42,20 @@ regex = "1"
 html5ever = "0.27"
 markup5ever_rcdom = "0.3"
 base64 = "0.22"
+# the board's 复制为 PNG rasterizes its SVG (the same resvg GPUI draws SVGs with)
+resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+# the board's Xiaolai font is stored deflated (src/board/fonts.rs)
+miniz_oxide = "0.9"
 minisign-verify = "0.3.0"
 log = "0.4"
 sys-locale = "0.3.2"
 jpeg-decoder = { version = "0.3", default-features = false }
 png = "0.18"
+icu_plurals = "2.4.0"
+icu_locale_core = "2.4.0"
+# 画板's CPU renderer above a scene size (src/board/render_vello.rs), on every
+# platform; its frames are shown with GPUI's `Window::paint_pixels`.
+vello_cpu = { version = "=0.3.0", default-features = false, features = ["std", "u8_pipeline", "multithreading"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.24"

@@ -121,8 +121,10 @@ pub fn card(on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> 
         .child(div().flex_none().child("·")).child(div().flex_1().min_w_0().child(text));
     let mut list = div().mt(px(6.)).w_full().min_w_0().flex().flex_col().gap(px(4.));
     if let Some((docs, folders)) = moved {
-        list = list.child(line(crate::localized_format!("文档库改为真实文件夹：访达里看到的就是侧栏，文件以标题命名（{docs} 篇文档、{folders} 个文件夹）",
-            "The library now uses real folders: Finder shows what the sidebar shows, files named by title ({docs} documents, {folders} folders)")));
+        let s = |n: usize| if n == 1 { "" } else { "s" };
+        list = list.child(line(crate::settings::localized(crate::settings::lang(), "文档库改为真实文件夹：访达里看到的就是侧栏，文件以标题命名（{docs} 篇文档、{folders} 个文件夹）",
+            || format!("文档库改为真实文件夹：访达里看到的就是侧栏，文件以标题命名（{docs} 篇文档、{folders} 个文件夹）"),
+            || format!("The library now uses real folders: Finder shows what the sidebar shows, files named by title ({docs} document{}, {folders} folder{})", s(docs), s(folders)))));
     }
     for &(zh, en) in notes.unwrap_or_default() {
         if moved.is_some() && zh == REAL_FOLDERS { continue }

@@ -32,10 +32,34 @@ impl AssetSource for () {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ImageId(pub usize);
 
+impl ImageId {
+    /// quiet.md: a fresh id, for images painted without a `RenderImage` (`Window::paint_pixels`).
+    pub fn next() -> Self {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        ImageId(NEXT_ID.fetch_add(1, SeqCst))
+    }
+}
+
 #[derive(PartialEq, Eq, Hash, Clone)]
 pub(crate) struct RenderImageParams {
     pub(crate) image_id: ImageId,
     pub(crate) frame_index: usize,
+}
+
+/// quiet.md: a frame drawn on the CPU, shown with `Window::paint_pixels`:
+/// premultiplied BGRA rows, `width` × `height` device pixels. Bump
+/// `generation` when the pixels change; `id` (`ImageId::next`) names its tile.
+pub struct PixelFrame {
+    /// Names the frame's atlas tile.
+    pub id: ImageId,
+    /// Width in device pixels.
+    pub width: u32,
+    /// Height in device pixels.
+    pub height: u32,
+    /// Changes whenever `bgra` does.
+    pub generation: u64,
+    /// `width * height * 4` bytes.
+    pub bgra: Vec<u8>,
 }
 
 /// A cached and processed image, in BGRA format
@@ -60,10 +84,8 @@ impl Eq for RenderImage {}
 impl RenderImage {
     /// Create a new image from the given data.
     pub fn new(data: impl Into<SmallVec<[Frame; 1]>>) -> Self {
-        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
-
         Self {
-            id: ImageId(NEXT_ID.fetch_add(1, SeqCst)),
+            id: ImageId::next(),
             scale_factor: 1.0,
             data: data.into(),
             hollow: None,

@@ -93,7 +93,7 @@ pub(super) struct Scan {
     pub partial: bool,
 }
 
-/// Walk the library: `.md` and `.xml` files and the folders holding them;
+/// Walk the library: its files (`DocKind::of_name`) and the folders holding them;
 /// names starting with `.` (`.quiet`, `.assets`, `.git` …) are not the user's notes.
 pub(super) fn scan(root: &Path) -> Scan {
     fn walk(root: &Path, rel: &str, out: &mut Scan) {
@@ -102,7 +102,7 @@ pub(super) fn scan(root: &Path) -> Scan {
             let Ok(e) = e else { out.partial = true; continue };
             let Some(name) = e.file_name().to_str().map(str::to_string) else { continue };
             if let Some(real) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".icloud")) {
-                if real.ends_with(".md") || real.ends_with(".xml") { out.pending.push(join_rel(rel, real)); }
+                if crate::store::DocKind::of_name(real).is_some() { out.pending.push(join_rel(rel, real)); }
                 continue;
             }
             if name.starts_with('.') { continue; }
@@ -111,7 +111,7 @@ pub(super) fn scan(root: &Path) -> Scan {
             let dir = kind.is_dir();
             let child = join_rel(rel, &name);
             if dir { out.dirs.push(child.clone()); walk(root, &child, out); }
-            else if kind.is_file() && (name.ends_with(".md") || name.ends_with(".xml")) && !stem_of(&name).is_empty() { out.docs.push(child); }
+            else if kind.is_file() && crate::store::DocKind::of_name(&name).is_some() && !stem_of(&name).is_empty() { out.docs.push(child); }
         }
     }
     let mut out = Scan::default();

@@ -680,21 +680,13 @@ impl MetalRenderer {
         command_encoder.set_render_pipeline_state(&self.paths_rasterization_pipeline_state);
 
         align_offset(instance_offset);
-        // quiet.md: shift the batch so its rect starts at the texture's origin.
+        // quiet.md: shift the batch so its rect starts at the texture's origin;
+        // the vertices are written straight into the instance buffer (they
+        // were gathered in a Vec grown vertex by vertex, then copied)
         let (ox, oy) = (ScaledPixels(origin.x.0 as f32), ScaledPixels(origin.y.0 as f32));
         let viewport_size: Size<DevicePixels> = size((intermediate_texture.width() as i32).into(), (intermediate_texture.height() as i32).into());
-        let mut vertices = Vec::new();
-        for path in paths {
-            let mut bounds = path.bounds.intersect(&path.content_mask.bounds);
-            bounds.origin = point(bounds.origin.x - ox, bounds.origin.y - oy);
-            vertices.extend(path.vertices.iter().map(|v| PathRasterizationVertex {
-                xy_position: point(v.xy_position.x - ox, v.xy_position.y - oy),
-                st_position: v.st_position,
-                color: path.color,
-                bounds,
-            }));
-        }
-        let vertices_bytes_len = mem::size_of_val(vertices.as_slice());
+        let count: usize = paths.iter().map(|p| p.vertices.len()).sum();
+        let vertices_bytes_len = count * mem::size_of::<PathRasterizationVertex>();
         let next_offset = *instance_offset + vertices_bytes_len;
         if next_offset > instance_buffer.size {
             command_encoder.end_encoding();
@@ -715,19 +707,22 @@ impl MetalRenderer {
             Some(&instance_buffer.metal_buffer),
             *instance_offset as u64,
         );
-        let buffer_contents =
-            unsafe { (instance_buffer.metal_buffer.contents() as *mut u8).add(*instance_offset) };
-        unsafe {
-            ptr::copy_nonoverlapping(
-                vertices.as_ptr() as *const u8,
-                buffer_contents,
-                vertices_bytes_len,
-            );
+        let dst = unsafe { (instance_buffer.metal_buffer.contents() as *mut u8).add(*instance_offset) as *mut PathRasterizationVertex };
+        let mut i = 0;
+        for path in paths {
+            let mut bounds = path.bounds.intersect(&path.content_mask.bounds);
+            bounds.origin = point(bounds.origin.x - ox, bounds.origin.y - oy);
+            let color = path.color;
+            for v in &path.vertices {
+                let xy_position = point(v.xy_position.x - ox, v.xy_position.y - oy);
+                unsafe { dst.add(i).write(PathRasterizationVertex { xy_position, st_position: v.st_position, color, bounds }) };
+                i += 1;
+            }
         }
         command_encoder.draw_primitives(
             metal::MTLPrimitiveType::Triangle,
             0,
-            vertices.len() as u64,
+            count as u64,
         );
         *instance_offset = next_offset;
 

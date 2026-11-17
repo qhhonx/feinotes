@@ -293,9 +293,35 @@ pub fn picture(path: &Path, long: f32) -> Img {
     match PICTURES.with(|p| p.get().cloned()) { Some(e) => im.image_cache(&e).load_visible_only(), None => im }
 }
 
+/// A board's image file (`board::render`), painted by hand: the pixels
+/// straight from the picture cache, decoded for a long edge of `long`
+/// logical pixels; None until they arrive (the view being painted is
+/// notified then).
+pub fn board_picture(path: &Path, long: f32, window: &mut Window, cx: &mut App) -> Option<Arc<RenderImage>> {
+    let cap = cap(long * window.scale_factor());
+    let uri = SharedUri::from(format!("docpic:{cap}:{}", path.display()));
+    KEYS.with(|k| { k.borrow_mut().entry(uri.clone()).or_insert_with(|| (Arc::from(path), cap)); });
+    let e = PICTURES.with(|p| p.get().cloned())?;
+    e.update(cx, |c, cx| c.load(&Resource::Uri(uri), window, cx))?.ok()
+}
+
 /// Decodes `path` with its long edge at most `cap` pixels (0: as is). The
 /// shrunken image keeps the file's size for layout through its scale factor.
 fn decode(path: &Path, cap: u32) -> Decoded {
+    let (im, w, _) = shrunk(path, cap)?;
+    let mut rgba = im.into_rgba8();
+    for px in rgba.as_chunks_mut::<4>().0 { px.swap(0, 2); }
+    let scale = rgba.width() as f32 / w.max(1) as f32;
+    Ok(Arc::new(RenderImage::new(vec![image::Frame::new(rgba)]).with_scale_factor(scale)))
+}
+
+/// `path`'s pixels as straight RGBA, the long edge at most `cap` (0: as
+/// is), shrunk while decoding as `decode` does (board image sources).
+pub fn decode_rgba(path: &Path, cap: u32) -> Option<image::RgbaImage> { shrunk(path, cap).ok().map(|(im, _, _)| im.into_rgba8()) }
+
+/// `path` decoded with its long edge at most `cap` (0: as is), with the
+/// file's own size.
+fn shrunk(path: &Path, cap: u32) -> Result<(image::DynamicImage, u32, u32), ImageCacheError> {
     // A PNG streams from the file, never read whole.
     let (im, w, h) = match if cap > 0 { decode_png(path, cap) } else { None } {
         Some(p) => p,
@@ -319,10 +345,7 @@ fn decode(path: &Path, cap: u32) -> Decoded {
         drop(im);
         small
     } else { im };
-    let mut rgba = im.into_rgba8();
-    for px in rgba.as_chunks_mut::<4>().0 { px.swap(0, 2); }
-    let scale = rgba.width() as f32 / w.max(1) as f32;
-    Ok(Arc::new(RenderImage::new(vec![image::Frame::new(rgba)]).with_scale_factor(scale)))
+    Ok((im, w, h))
 }
 
 /// A PNG shrunk row by row as it decodes (box filter, alpha-weighted), so only
@@ -2131,6 +2154,7 @@ impl Editor {
                 let _ = this.update(cx, |e, cx| {
                     if ok {
                         e.img.remote.borrow_mut().remove(&url);
+                        e.adopt_remote(cx);
                     } else {
                         e.img.remote.borrow_mut().insert(url, Remote::Failed);
                     }
@@ -2141,6 +2165,97 @@ impl Editor {
             .detach();
         }
     }
+}
+
+/// Web images pasted this session (#220), with their copy in the assets
+/// folder once made. Links like Feishu's expire within hours, so a pasted
+/// one becomes an owned asset as soon as it is downloaded. Process-wide: the
+/// document may be closed before the download lands, and is relinked the
+/// next time an editor opens it.
+static PASTED: std::sync::Mutex<Vec<(PathBuf, String, Option<PathBuf>)>> = std::sync::Mutex::new(Vec::new());
+
+impl Editor {
+    /// Queues pasted web images for download now (not only once scrolled
+    /// to) and adopts any already cached. With 网络图片 turned off they stay
+    /// links; a failed download too.
+    pub(super) fn adopt_pasted(&mut self, urls: Vec<String>, cx: &mut Context<Self>) {
+        if urls.is_empty() || !crate::settings::prefs().remote_images { return }
+        {
+            let mut pasted = PASTED.lock().unwrap_or_else(|e| e.into_inner());
+            for url in urls {
+                self.img.remote.borrow_mut().entry(url.clone()).or_insert(Remote::Queued);
+                if !pasted.iter().any(|(root, u, _)| *root == self.library_root && *u == url) { pasted.push((self.library_root.clone(), url, None)); }
+            }
+        }
+        self.adopt_remote(cx);
+        // Queued downloads start on the next frame.
+        cx.notify();
+    }
+
+    /// Points this document's pasted web images at their downloaded copies,
+    /// copying a download into the assets folder the first time (not an undo
+    /// step: the undo history is relinked too). Saves like any other edit.
+    pub fn adopt_remote(&mut self, cx: &mut Context<Self>) {
+        if self.read_only { return }
+        let mut pasted = PASTED.lock().unwrap_or_else(|e| e.into_inner());
+        if pasted.is_empty() { return }
+        let mut srcs = std::collections::HashSet::new();
+        self.core.doc.for_each_block(|b| if let BlockKind::Image { src, .. } = &b.kind && src.starts_with("http") { srcs.insert(src.clone()); });
+        let mut changed = false;
+        pasted.retain_mut(|(root, url, copy)| {
+            if *root != self.library_root { return true; }
+            if !srcs.contains(url.as_str()) { return true }
+            if copy.is_none() {
+                let Some(cached) = cached_remote_in(root, url) else { return true };
+                // Not an image we can keep (too big, odd format): it stays a link.
+                let Some(p) = adopt_file(root, &cached) else { return false };
+                *copy = Some(p);
+            }
+            let to = copy.as_ref().map(|p| crate::store::asset_source_in(root, p)).unwrap_or_default();
+            changed |= self.core.relink_image(url, &to);
+            true
+        });
+        drop(pasted);
+        // Right after a paste the caller's `changed()` reports it.
+        if changed && !self.core.dirty {
+            cx.emit(EditorEvent::Changed);
+            cx.notify();
+        }
+    }
+}
+
+/// The `http(s)` image sources among pasted blocks, for `adopt_pasted`.
+pub(super) fn pasted_remote(blocks: &[Block]) -> Vec<String> {
+    let mut out = vec![];
+    remote_srcs(blocks, &mut out);
+    out
+}
+
+fn remote_srcs(blocks: &[Block], out: &mut Vec<String>) {
+    for b in blocks {
+        remote_srcs(&b.children, out);
+        if let BlockKind::Table(t) = &b.kind {
+            for cell in t.rows.iter().flatten() { remote_srcs(&cell.blocks, out); }
+        }
+        if let BlockKind::Image { src, .. } = &b.kind
+            && (src.starts_with("http://") || src.starts_with("https://")) && !out.contains(src) {
+            out.push(src.clone());
+        }
+    }
+}
+
+/// A downloaded remote image (no extension in the cache) as a new asset.
+fn adopt_file(root: &Path, cached: &Path) -> Option<PathBuf> {
+    let bytes = std::fs::read(cached).ok()?;
+    let ext = match image::guess_format(&bytes).ok()? {
+        image::ImageFormat::Png => "png",
+        image::ImageFormat::Jpeg => "jpg",
+        image::ImageFormat::Gif => "gif",
+        image::ImageFormat::WebP => "webp",
+        image::ImageFormat::Bmp => "bmp",
+        _ => return None,
+    };
+    store_image(root, &bytes, ext).ok()
 }
 
 fn download(url: &str, dest: &Path) -> bool {
@@ -2195,7 +2310,7 @@ pub(super) fn image_block_from(root: &Path, bytes: &[u8], ext: &str) -> Result<B
 
 /// macOS screenshots may only offer TIFF. Store those as lossless PNG;
 /// other clipboard formats keep their original bytes (including animation).
-pub(super) fn clipboard_image_data(img: &gpui::Image) -> Result<(std::borrow::Cow<'_, [u8]>, &'static str), &'static str> {
+pub(crate) fn clipboard_image_data(img: &gpui::Image) -> Result<(std::borrow::Cow<'_, [u8]>, &'static str), &'static str> {
     if img.bytes.len() as u64 > MAX_BYTES { return Err(TOO_BIG); }
     let ext = match img.format {
         ImageFormat::Png => "png",
@@ -2227,12 +2342,12 @@ fn image_block_named(root: &Path, bytes: &[u8], ext: &str, name: Option<&str>) -
 }
 
 /// Checks picked or pasted image bytes and copies them into the assets folder.
-pub(super) fn store_image(root: &Path, bytes: &[u8], ext: &str) -> Result<PathBuf, &'static str> { store_image_named(root, bytes, ext, None) }
+pub(crate) fn store_image(root: &Path, bytes: &[u8], ext: &str) -> Result<PathBuf, &'static str> { store_image_named(root, bytes, ext, None) }
 
 /// `store_image`; an image with a `name` (a picked or dropped file) is kept
 /// as `<8 hex>-<name>.<ext>`, so its name survives in the library and in the
 /// copy beside a Markdown file. A pasted one is just `<uuid>.<ext>`.
-fn store_image_named(root: &Path, bytes: &[u8], ext: &str, name: Option<&str>) -> Result<PathBuf, &'static str> {
+pub(crate) fn store_image_named(root: &Path, bytes: &[u8], ext: &str, name: Option<&str>) -> Result<PathBuf, &'static str> {
     let ext = ext.to_ascii_lowercase();
     if !FORMATS.contains(&ext.as_str()) {
         return Err(BAD_FORMAT);
@@ -2317,8 +2432,40 @@ pub(crate) fn localize_pasted_images(root: &Path, blocks: &mut Vec<Block>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap, clipboard_image_data, decode, decode_png, BAD_DIMS};
+    use super::{cap, clipboard_image_data, decode, decode_png, pasted_remote, BAD_DIMS};
+    use crate::model::{Block, BlockKind, RichText};
     use gpui::ImageFormat;
+
+    fn img(src: &str) -> Block {
+        Block::new(BlockKind::Image { src_kind: "src".into(), src: src.into(), width: None, height: None, caption: None, crop: None }, RichText::default())
+    }
+
+    /// #220: pasted web images to fetch, nested ones too, each once; local and inline ones stay out.
+    #[test]
+    fn finds_pasted_remote_images() {
+        let mut quote = Block::text("q");
+        quote.children = vec![img("https://f.cn/a?code=1"), img("/tmp/x.png")];
+        let blocks = vec![img("http://e.com/b.png"), quote, img("data:image/png;base64,AAAA"), img("https://f.cn/a?code=1")];
+        assert_eq!(pasted_remote(&blocks), ["http://e.com/b.png", "https://f.cn/a?code=1"]);
+    }
+
+    #[test]
+    fn downloaded_images_are_copied_into_their_own_library() {
+        let root = std::env::temp_dir().join(format!("quiet-image-adopt-{}", uuid::Uuid::new_v4()));
+        let first = root.join("personal");
+        let second = root.join("shared");
+        std::fs::create_dir_all(&root).unwrap();
+        let cached = root.join("cached.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([20, 40, 60, 255])).save(&cached).unwrap();
+        for library in [&first, &second] {
+            let copied = super::adopt_file(library, &cached).unwrap();
+            assert!(copied.starts_with(library));
+            let source = crate::store::asset_source_in(library, &copied);
+            assert_eq!(crate::store::image_path_in(library, &source).unwrap(), copied);
+            assert_eq!(std::fs::read(copied).unwrap(), std::fs::read(&cached).unwrap());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn photo(dir: &std::path::Path, w: u32, h: u32) -> std::path::PathBuf {
         let p = dir.join(format!("{w}x{h}.jpg"));

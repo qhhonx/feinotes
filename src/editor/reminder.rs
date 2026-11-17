@@ -208,7 +208,7 @@ pub fn jet_lags(whole_day: bool, cur: i64) -> Vec<(&'static str, i64)> {
 fn jet_label(whole_day: bool, cur: i64) -> String {
     match jet_lags(whole_day, cur).into_iter().find(|(_, v)| *v == cur) {
         Some((l, _)) => l.into(),
-        None => crate::localized_format!("提前 {} 分钟", "{} minutes before", -cur / MINUTE),
+        None => crate::localized_count!(-cur / MINUTE, "提前 {} 分钟", "{} minute before", "{} minutes before", -cur / MINUTE),
     }
 }
 

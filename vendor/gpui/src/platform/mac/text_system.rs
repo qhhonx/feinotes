@@ -185,6 +185,27 @@ impl PlatformTextSystem for MacTextSystem {
         self.0.read().glyph_for_char(font_id, ch)
     }
 
+    // quiet.md: outlines for the board's CPU renderer (synthetic italics sheared like their raster).
+    fn glyph_outline(&self, font_id: FontId, glyph_id: GlyphId) -> Option<Vec<crate::GlyphOutlineCmd>> {
+        use crate::GlyphOutlineCmd as C;
+        use font_kit::{hinting::HintingOptions, outline::OutlineSink};
+        use pathfinder_geometry::line_segment::LineSegment2F;
+        struct Sink(Vec<C>, f32);
+        impl Sink { fn p(&self, v: Vector2F) -> [f32; 2] { [v.x() + v.y() * self.1, v.y()] } }
+        impl OutlineSink for Sink {
+            fn move_to(&mut self, to: Vector2F) { let p = self.p(to); self.0.push(C::MoveTo(p)); }
+            fn line_to(&mut self, to: Vector2F) { let p = self.p(to); self.0.push(C::LineTo(p)); }
+            fn quadratic_curve_to(&mut self, ctrl: Vector2F, to: Vector2F) { let (a, b) = (self.p(ctrl), self.p(to)); self.0.push(C::QuadTo(a, b)); }
+            fn cubic_curve_to(&mut self, ctrl: LineSegment2F, to: Vector2F) { let (a, b, c) = (self.p(ctrl.from()), self.p(ctrl.to()), self.p(to)); self.0.push(C::CubicTo(a, b, c)); }
+            fn close(&mut self) { self.0.push(C::Close); }
+        }
+        let state = self.0.read();
+        let font = state.fonts.get(font_id.0)?;
+        let mut sink = Sink(vec![], if state.oblique.contains(&font_id) { 14f32.to_radians().tan() } else { 0. });
+        font.outline(glyph_id.0, HintingOptions::None, &mut sink).ok()?;
+        Some(sink.0)
+    }
+
     fn glyph_raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
         self.0.read().raster_bounds(params)
     }
@@ -257,8 +278,10 @@ impl MacTextSystemState {
                 // quiet.md: KaTeX's symbol faces (Size1-4, AMS,
                 // Caligraphic, Script) have no lowercase letters.
                 let is_katex = font.full_name().starts_with("KaTeX_");
+                // quiet.md: nor does the board's CJK-only Xiaolai.
+                let is_xiaolai = font.full_name().starts_with("Xiaolai");
 
-                if !has_m_glyph && !is_segoe_fluent_icons && !is_katex {
+                if !has_m_glyph && !is_segoe_fluent_icons && !is_katex && !is_xiaolai {
                     // I spent far too long trying to track down why a font missing the 'm'
                     // character wasn't loading. This log statement will hopefully save
                     // someone else from suffering the same fate.
@@ -815,6 +838,14 @@ pub fn check_fallback_glyphs(text: &str) -> std::result::Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// quiet.md: a window-less text system over CoreText, for tests that shape
+/// and measure text outside an app (the board's bundled fonts).
+#[doc(hidden)]
+pub fn test_text_system() -> std::sync::Arc<crate::WindowTextSystem> {
+    let ts = std::sync::Arc::new(crate::TextSystem::new(std::sync::Arc::new(MacTextSystem::new())));
+    std::sync::Arc::new(crate::WindowTextSystem::new(ts))
 }
 
 #[cfg(test)]

@@ -102,7 +102,11 @@ impl Workspace {
         doc.title = crate::model::RichText::plain(title);
         let width = self.entries.iter().find(|e| e.id == id).map(|e| e.meta.width).unwrap_or_default();
         // A Markdown file copies as Markdown, into the library even from a 本机文件.
-        let made = if self.store.is_markdown(id) { let front = self.store.front_matter_of(id); self.store.create_markdown(&doc, &front) } else { self.store.create_from(&doc) };
+        // A 画板 copies as a 画板.
+        let board = self.entries.iter().find(|e| e.id == id).filter(|e| e.meta.kind == crate::store::DocKind::Board)
+            .map(|_| doc.blocks.iter().find_map(|b| match &b.kind { crate::model::BlockKind::Board(bd) => Some(bd.clone()), _ => None }).unwrap_or_default());
+        let made = if let Some(board) = board { self.store.create_board_in(&doc.title.text, &board, None) }
+            else if self.store.is_markdown(id) { let front = self.store.front_matter_of(id); self.store.create_markdown(&doc, &front) } else { self.store.create_from(&doc) };
         match made {
             Ok(new) => {
                 let _ = self.store.set_width(&new, width);
@@ -171,6 +175,8 @@ impl Workspace {
     /// 查找和替换 (also ⌘F / ⌘⇧H).
     pub fn find_in_doc(&mut self, replace: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.close_doc_menu(cx);
+        // the document's text is hidden under an open board
+        if self.editor.as_ref().is_some_and(|e| e.read(cx).board_open()) { return; }
         if let Some(ed) = &self.editor {
             ed.update(cx, |e, cx| e.open_find(replace, window, cx));
         }
@@ -194,6 +200,10 @@ impl Workspace {
         let starred = entry.is_some_and(|e| e.meta.starred > 0);
         let width = entry.map(|e| e.meta.width).unwrap_or_default();
         let refs_shown = !entry.is_some_and(|e| e.meta.refs_hidden);
+        // An open board isn't the page: no page width, find in its text or
+        // editor shortcuts; a standalone board file has no Markdown or
+        // references either
+        let (board, board_file) = self.editor.as_ref().map_or((false, false), |e| { let e = e.read(cx); (e.board_open(), e.board_file) });
         let sub = self.doc_sub;
         let hover_sub = |s: Option<DocSub>| {
             cx.listener(move |w: &mut Workspace, hovered: &bool, _, cx| {
@@ -218,7 +228,7 @@ impl Workspace {
                     w.close_doc_menu(cx);
                 }
             }))
-            .child(
+            .when(!board, |d| d.child(
                 menu_item("dm-width", "page-width", crate::settings::text("页宽设置"), true, sub == Some(DocSub::Width))
                     .on_hover(hover_sub(Some(DocSub::Width))),
             )
@@ -228,7 +238,7 @@ impl Workspace {
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(|w, _, window, cx| w.find_in_doc(false, window, cx))),
             )
-            .child(divider())
+            .child(divider()))
             .child(
                 menu_item("dm-move", "folder-input", crate::settings::text("移动到"), false, false)
                     .on_hover(hover_sub(None))
@@ -313,13 +323,14 @@ impl Workspace {
             )
             .child(divider())
             // 更多 and 删除 share the last group.
-            .child(menu_item("dm-more", "ellipsis", crate::settings::text("更多"), true, sub == Some(DocSub::More)).on_hover(hover_sub(Some(DocSub::More))))
+            .when(!board_file, |d| d.child(menu_item("dm-more", "ellipsis", crate::settings::text("更多"), true, sub == Some(DocSub::More)).on_hover(hover_sub(Some(DocSub::More)))))
             .child(
                 menu_item("dm-delete", "bin", crate::settings::text("删除"), false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(move |w, _, _, cx| w.ask_delete(&del_id, cx))),
             )
-            .child(divider())
+            // (a board has its own shortcut help, `?`)
+            .when(!board, |d| d.child(divider())
             .child(
                 menu_item("dm-shortcuts", "keyboard", crate::settings::text("快捷键"), false, false)
                     .on_hover(hover_sub(None))
@@ -328,7 +339,7 @@ impl Workspace {
                         w.shortcuts = true;
                         cx.notify();
                     })),
-            );
+            ));
         let vw = window.viewport_size().width;
         let btn = self.more_btn_bounds.get();
         let right = btn.map_or(vw - px(120.), |b| b.right());
@@ -348,11 +359,13 @@ impl Workspace {
             let record = record.clone();
             canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {}).absolute().inset_0()
         };
+        // the items and dividers above a submenu's item that aren't shown
+        let hidden = if board { (2, 2) } else { (0, 0) };
         let sub_el = match sub {
             Some(DocSub::Width) => Some((item_top(0, 0) - 1. - PAD, self.width_panel(width, cx).child(recorder()).into_any_element())),
             // Level the submenu's first item with 下载为.
             Some(DocSub::Download) => Some((
-                item_top(6 + extra_rows, 3) - 1. - PAD,
+                item_top(6 + extra_rows - hidden.0, 3 - hidden.1) - 1. - PAD,
                 {
                     let pdf = id.clone();
                     popover()
@@ -368,7 +381,7 @@ impl Workspace {
                 },
             )),
             Some(DocSub::More) => Some((
-                if crate::printing::SUPPORTED { item_top(10 + extra_rows, 6) } else { item_top(9 + extra_rows, 5) } - 1. - PAD,
+                if crate::printing::SUPPORTED { item_top(10 + extra_rows - hidden.0, 6 - hidden.1) } else { item_top(9 + extra_rows - hidden.0, 5 - hidden.1) } - 1. - PAD,
                 popover()
                     .id("dm-more-menu")
                     .occlude()

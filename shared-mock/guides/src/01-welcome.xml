@@ -27,6 +27,7 @@
 <tr><td><p>{{doc:tables}}</p></td><td><p>Tables, merged cells, header rows, cell colors and columns</p></td></tr>
 <tr><td><p>{{doc:code}}</p></td><td><p>Syntax highlighting, code captions, wrapping and LaTeX equations</p></td></tr>
 <tr><td><p>{{doc:media}}</p></td><td><p>Images, cropping, attachments, document icons and covers</p></td></tr>
+<tr><td><p>{{doc:boards}}</p></td><td><p>Shapes, connected arrows, sticky notes and sketches on a board</p></td></tr>
 <tr><td><p>{{doc:organize}}</p></td><td><p>Folders, pins, favorites, backlinks, search, reading mode and trash</p></td></tr>
 <tr><td><p>{{doc:data}}</p></td><td><p>Importing, exporting, printing, backups and moving your documents</p></td></tr>
 <tr><td><p>{{doc:personalize}}</p></td><td><p>Themes, custom CSS, shortcuts, quick notes and interface language</p></td></tr>

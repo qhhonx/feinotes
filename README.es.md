@@ -101,6 +101,7 @@ Una pantalla de 120 Hz da 8.3 ms a cada fotograma. Incluso en el P95 de un docum
 ## Funciones
 
 - **Edición**: títulos, listas numeradas y con viñetas, tareas, citas, bloques de código con resaltado de sintaxis, ecuaciones LaTeX, tablas (con celdas combinadas), destacados, columnas, imágenes, adjuntos y portadas. Atajos de Markdown como `#`, `-`, `[]` y `>`, y un menú `/`.
+- **Pizarras**: una pizarra portada de Excalidraw (formas, flechas que siguen conectadas, trazo libre, texto, notas adhesivas, marcos e imágenes), como bloque dentro de una nota o como archivo `.excalidraw` independiente que abre excalidraw.com.
 - **Organización**: árbol de documentos, fijados, favoritos, búsqueda en todo el texto y papelera.
 - **Importar y exportar**: importa carpetas de Markdown (con las imágenes incrustadas y los callouts de Obsidian) y DocxXML de Feishu (Lark); exporta a Markdown y PDF, o imprime directamente. Arrastra archivos desde el Finder a Inicio o directamente a una carpeta de la barra lateral. Al pegar desde Feishu o una página web se conserva la estructura.
 - **Atajos**: pulsa `⌘ /` (`Ctrl+/` en Windows) para verlos todos. Todos se pueden reasignar. En Windows, Ctrl sustituye a ⌘ y Alt a ⌥; la app y las guías Getting started muestran las teclas de tu sistema.

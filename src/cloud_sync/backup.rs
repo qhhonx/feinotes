@@ -479,7 +479,7 @@ mod tests {
         let bytes = vec![0x93; 1024 * 1024 + 13];
         fs::write(source.join(asset), &bytes)?;
         let body = Document { title: RichText::plain("离线编辑"),
-            blocks: vec![Block::text("还没上传"), Block::new(BlockKind::File(FileBlock {
+            blocks: vec![Block::new(BlockKind::Board(std::sync::Arc::new(crate::whiteboard::Board::from_file(include_str!("../../crates/core/tests/fixtures/board/all-elements.excalidraw"))?)), RichText::default()), Block::text("还没上传"), Block::new(BlockKind::File(FileBlock {
                 src_kind: "path".into(), src: asset.into(), name: "sample.bin".into(), view: FileView::Card,
             }), RichText::default())], ..Default::default() };
         let note = store.create_from(&body)?;
@@ -491,7 +491,7 @@ mod tests {
         store.delete(&trashed, None)?;
         journal.merge(&Default::default())?;
         let mut edited = store.load_for_edit(&note, false)?;
-        edited.blocks[0].text = RichText::plain("快照之后还没上传的改动");
+        edited.blocks[1].text = RichText::plain("快照之后还没上传的改动");
         store.save(&note, &edited)?;
         let version = store.versions(&note)[0].name.clone();
         store.set_version_label(&note, &version, Some("离线草稿"))?;

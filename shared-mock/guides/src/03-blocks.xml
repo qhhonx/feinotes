@@ -2,7 +2,7 @@
 <p>A document is made of blocks. Paragraphs, headings, list items, images and tables are all blocks you can insert, transform or move. Learn these few operations and the rest of the editor will feel familiar.</p>
 <h1>Three ways to work with blocks</h1><h2>The slash menu</h2><p>Type <code>/</code> on an empty line. Keep typing to narrow the list, use the arrow keys to choose an item, and press Enter to insert it.</p>
 <img src="assets/guides/slash.jpg" caption="Type a slash, search for a block, then press Enter" align="center"/>
-<p>The menu includes text, headings, lists, tasks, code, quotes, callouts, dividers, links, images, files, tables, columns, equations, buttons, reminders and countdowns. Try <code>/table</code>, <code>/code</code>, <code>/callout</code> or <code>/countdown</code>.</p>
+<p>The menu includes text, headings, lists, tasks, code, quotes, callouts, dividers, links, images, files, tables, columns, equations, boards, buttons, reminders and countdowns. Try <code>/table</code>, <code>/code</code>, <code>/callout</code> or <code>/countdown</code>.</p>
 <h2>The block handle</h2><p>Hover to the left of a block to reveal its handle. Click it to open the block menu.</p>
 
 <ol><li><b>Turn into:</b> change a paragraph into a heading, list, task, quote, callout or code block without retyping it.</li><li><b>Indent and align:</b> adjust hierarchy and horizontal alignment.</li><li><b>Color:</b> set the block's text and background colors.</li><li><b>Cut, copy or delete:</b> act on the block and its children.</li><li><b>Add below:</b> insert another block directly underneath.</li></ol><p>On an empty line, the handle becomes a plus button that opens the insert menu.</p>

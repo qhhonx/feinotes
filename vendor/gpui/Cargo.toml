@@ -69,6 +69,7 @@ wayland = [
     "bytemuck",
     "ashpd/wayland",
     "cosmic-text",
+    "swash",
     "font-kit",
     "calloop-wayland-source",
     "wayland-backend",
@@ -88,6 +89,7 @@ x11 = [
     "bytemuck",
     "ashpd",
     "cosmic-text",
+    "swash",
     "font-kit",
     "as-raw-xcb-connection",
     "x11rb",
@@ -494,6 +496,10 @@ optional = true
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.flume]
 version = "0.11"
 
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.swash]
+version = "0.2.10"
+optional = true
+
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.font-kit]
 version = "0.14.1-zed"
 features = ["source-fontconfig-dlopen"]
@@ -677,6 +683,7 @@ features = [
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Direct2D_Common",
     "Win32_Graphics_DirectComposition",
     "Win32_Graphics_DirectWrite",
     "Win32_Graphics_Dwm",

@@ -1,0 +1,74 @@
+# 画板编辑：新建画板 → 画各种图形 → 肘形箭头连两个矩形 → 拖动矩形（箭头跟随）→ 旋转
+# → 容器内中英文 → 撤销重做 → 复制粘贴（模拟剪贴板）→ 组合 → 退出再打开。
+# python3 tools/harness/run.py tools/harness/examples/board_edit.txt
+move 700 700
+wait 1500
+# 侧栏「+」› 画板（新建后直接打开整窗画板）
+click 251 106
+wait 300
+click 295 208
+wait 1200
+shot board-0-empty
+key r
+drag 300 200 450 300
+key d
+drag 520 180 640 300
+key o
+drag 700 190 840 290
+key r
+drag 750 450 900 560
+key p
+drag 300 600 420 650
+key l
+drag 500 600 640 660
+# 箭头类型：肘形（属性面板第三个）
+key a
+wait 300
+click 102 306
+wait 100
+drag 445 260 800 500
+wait 200
+shot board-1-shapes
+key escape
+# 拖动下方矩形：箭头跟随
+drag 750 520 650 650
+wait 200
+shot board-2-moved
+# 选中左上矩形，旋转
+click 300 250
+drag 375 183 470 200
+wait 200
+shot board-3-rotated
+# 容器内文字（含输入法）
+key enter
+type Hello 
+mark 你好
+commit 你好
+wait 200
+shot board-4-editing
+key escape
+wait 200
+shot board-5-text
+key cmd-z
+wait 200
+shot board-6-undo
+key cmd-shift-z
+wait 200
+# 复制粘贴走模拟剪贴板
+clip clear
+key cmd-a
+key cmd-c
+move 900 300
+key cmd-v
+wait 200
+shot board-7-pasted
+key cmd-a
+key cmd-g
+click 1200 760
+wait 200
+key escape
+wait 600
+shot board-8-closed
+click 70 128
+wait 1200
+shot board-9-reopened

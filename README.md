@@ -10,6 +10,7 @@ Native Markdown notes for macOS, with optional iCloud sync and collaboration.
 - **Optional iCloud sync.** Sync notes, folders and attachments across your Macs. Offline edits to different parts of the same paragraph merge when devices reconnect.
 - **Shared notes.** Invite another Apple Account to view or edit a note and manage access from the app.
 - **Markdown and rich content.** Use headings, lists, code, tables, images and attachments in a native block editor.
+- **Boards.** Add Excalidraw drawings inside notes or create a standalone board, with local history and library backups.
 - **Import Quiet.md libraries.** Copy an existing library into Fei Notes through library settings.
 
 ## Try the app
