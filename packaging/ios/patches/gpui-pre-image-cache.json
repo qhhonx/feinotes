@@ -39,11 +39,11 @@
     },
     "src/window.rs": {
       "before": "83bace5e5cf503b21c789c4ca7bc3b11965c2256cb5a2398f2b70e5baf7aa1bb",
-      "after": "706a96554485f2f8a25183841d6dfdf1806e05ac030a1310ce365fce4907dd41"
+      "after": "7bd972e7cdebc5cbb6e6dee9ab5414d8ff8770e11ad2c4aee5fb235412264836"
     }
   },
   "archive_sha256": "df4b5f8d0c278308df2f11e0bfe0212dd77d7848ce1bdc4b9d513334414396f6",
-  "patch_sha256": "80de227d116f1e5166440a1802efff7aeb53b0b64f30a9bd9aac22923d27ecf9",
+  "patch_sha256": "311308264d80bc5c65536bb7e37d76c84feda79c69ad655ff996dcbf0c85f9fc",
   "prepared_tree_sha256": {
     "Cargo.lock": "df0ec15b14bacef15ca89939f455e17d62099994463b453491829a5ce7e8fac8",
     "Cargo.toml": "17c581884c21901f604eec93d32171dd17518606ce726fd7e59f9a442abc07de",
@@ -206,7 +206,7 @@
     "src/window/a11y/debug.rs": "2055ed9e63900a601a973191ff82ebbd91557178036826a4d2c04b09f5cf4dc2",
     "src/window/a11y.rs": "1579b5772038313635feda4ad5c32a46f5bd843396268c8b573d68e7c57488b5",
     "src/window/prompts.rs": "0d58ec14e8139af53b50f4ad67690f01959ed59ffafc4adb2cf522f3f6197164",
-    "src/window.rs": "706a96554485f2f8a25183841d6dfdf1806e05ac030a1310ce365fce4907dd41",
+    "src/window.rs": "7bd972e7cdebc5cbb6e6dee9ab5414d8ff8770e11ad2c4aee5fb235412264836",
     "tests/action_macros.rs": "47b69024f403feb6cb63c9990a6993b8582856146f5a6ae16984714321956a84"
   }
 }

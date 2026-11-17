@@ -138,7 +138,7 @@ from the archive are retained. This is not an upstream-version upgrade.
 The pinned iOS GPUI core patch also exposes path transforms and triangle iteration,
 line cap/join types, glyph outlines and element opacity used by the current board
 renderer. Mobile CPU frames use the existing image atlas with generation-based
-replacement and explicit eviction; desktop GPU upload code is unchanged. Image IDs
+replacement, a six-frame cache bound and explicit eviction; desktop GPU upload code is unchanged. Image IDs
 share one allocator. Dynamic explicit-modifier key bindings own parsed keystrokes.
 The mobile CoreText platform supplies FontKit outlines in
 `packaging/ios/patches/gpui-mobile-ios-board-outlines.patch`. The complete prepared

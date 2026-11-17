@@ -5,3 +5,5 @@ Fei Notes comes to iPhone and iPad.
 • Notes and Feishu themes, with improvements to titles, text selection, formatting controls, document outlines and file-preview navigation.
 • Improved search clearing, note-to-note back navigation and table scrolling on iPad.
 • Cloud features are available in TestFlight without starting a trial or purchasing a subscription.
+
+Update all Macs, iPhones and iPads participating in this cloud beta to the latest compatible release. Earlier checkpoint-protocol builds must not write to the same library.

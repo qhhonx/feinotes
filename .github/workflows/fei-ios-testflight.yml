@@ -49,7 +49,7 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_SOURCE" =~ ^[0-9a-f]{40}$ ]]
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$BUILD" =~ ^[1-9][0-9]{0,3}$ ]]
-          [[ "$NOTES" =~ ^docs/releases/[A-Za-z0-9._/-]+$ && "$NOTES" != *..* ]]
+          [[ "$NOTES" =~ ^(docs/releases|packaging/ios/release-notes)/[A-Za-z0-9._/-]+$ && "$NOTES" != *..* ]]
           relation=$(gh api "repos/$GITHUB_REPOSITORY/compare/$RELEASE_SOURCE...$GITHUB_SHA" --jq .status)
           [[ "$relation" == ahead || "$relation" == identical ]]
           printf 'source=%s\n' "$RELEASE_SOURCE" >> "$GITHUB_OUTPUT"

@@ -336,7 +336,7 @@
          &mut self,
          opacity: Option<f32>,
          f: impl FnOnce(&mut Self) -> R,
-@@ -5061,12 +5065,37 @@
+@@ -5061,12 +5065,42 @@
      }
  
      /// Paint an image into the scene for the next frame at the current z-index.
@@ -355,6 +355,11 @@
 +        let cached = self.pixel_frames.get(&frame.id).filter(|(generation, _)| *generation == frame.generation).map(|(_, image)| image.clone());
 +        let image = if let Some(image) = cached { image } else {
 +            self.drop_pixels(frame.id);
++            // Bound frames retained by boards closed before their next paint.
++            while self.pixel_frames.len() >= 6 {
++                let Some(oldest) = self.pixel_frames.keys().min().copied() else { break; };
++                self.drop_pixels(oldest);
++            }
 +            let buffer = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra.clone()).expect("validated CPU frame size");
 +            let image = Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(buffer)]));
 +            self.pixel_frames.insert(frame.id, (frame.generation, image.clone()));
@@ -374,7 +379,7 @@
      /// applied to `bounds`.
      pub fn paint_image(
          &mut self,
-@@ -5092,18 +5121,13 @@
+@@ -5092,18 +5126,13 @@
              frame_index,
          };
  
