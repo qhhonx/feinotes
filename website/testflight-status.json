@@ -3,5 +3,10 @@
   "url": "https://testflight.apple.com/join/NdcXugMy",
   "version": "1.0.4",
   "build": "1010",
-  "updatedAt": "2026-11-16T20:16:25.815835+00:00"
+  "pending": {
+    "state": "review",
+    "version": "1.0.5",
+    "build": "1012"
+  },
+  "updatedAt": "2026-11-17T08:18:05.289467+00:00"
 }
