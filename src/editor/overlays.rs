@@ -11,6 +11,8 @@ use crate::feishu_theme as theme;
 use crate::editor_theme::Theme;
 use crate::editor_ui::{MENU_INSET, MENU_PAD_Y, MENU_ROW_H, TipExt, icon, menu, panel, popover};
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 
 const SLASH_W: f32 = 247.;
 const SLASH_MAX_H: f32 = 351.;
@@ -437,12 +439,22 @@ impl Editor {
     }
 
     fn slash_menu_into(&self, window: &Window, cx: &mut Context<Self>, out: &mut Vec<AnyElement>) -> Option<()> {
+        let native=cfg!(target_os="ios");
+        let viewport=self.list.viewport_bounds();
+        let slash_w=if native { SLASH_W.min(f32::from(viewport.size.width)-16.).max(120.) } else { SLASH_W };
+        let max_h=if native { (f32::from(viewport.size.height)-16.).clamp(44.,SLASH_MAX_H) } else { SLASH_MAX_H };
+        let row_h=if native { 44. } else { MENU_ROW_H };
         // `beside`: the handle menu's 在下方添加 row (its top-left in window
         // coordinates); the panel opens right next to the menu.
         let (anchor_top, anchor_bottom, selected, beside) = match (&self.slash, &self.menu) {
             (Some(s), _) => {
                 let (p, lh) = self.point_of(Pos::new(s.block, s.trigger))?;
                 (p, point(p.x, p.y + lh), s.selected, None)
+            }
+            (None, Some(Menu::Add { block, selected })) if cfg!(target_os="ios") => {
+                let offset=if self.core.sel.head.block==*block { self.core.sel.head.offset } else { 0 };
+                let (p,lh)=self.point_of(Pos::new(*block,offset))?;
+                (p,point(p.x,p.y+lh),*selected,None)
             }
             (None, Some(Menu::Add { block, selected })) => {
                 let r = self.handle_rect(*block, true)?;
@@ -456,11 +468,11 @@ impl Editor {
             _ => return None,
         };
         let results = self.slash_results();
-        let grid_basic = self.slash_grid();
+        let grid_basic = self.slash_grid() && !native;
         let mut list = div()
             .id("slash-list")
-            .w(px(SLASH_W - SCROLLBAR_GUTTER - 2.))
-            .max_h(px(SLASH_MAX_H - 2.))
+            .w(px(slash_w - SCROLLBAR_GUTTER - 2.))
+            .max_h(px(max_h - 2.))
             .overflow_y_scroll()
             .track_scroll(&self.slash_scroll)
             .py(px(MENU_PAD_Y))
@@ -485,7 +497,7 @@ impl Editor {
         let add_panel = self.slash.is_none();
         // 按钮 opens its type menu in both.
         let has_picker = |k: menus::SlashKind| {
-            k == menus::SlashKind::Button || add_panel && matches!(k, menus::SlashKind::Table | menus::SlashKind::Grid)
+            !native && (k == menus::SlashKind::Button || add_panel && matches!(k, menus::SlashKind::Table | menus::SlashKind::Grid))
         };
         let mut picker_at: Option<(menus::SlashKind, f32)> = None;
         let run = |kind: menus::SlashKind| {
@@ -555,13 +567,13 @@ impl Editor {
             if sub && n == selected {
                 picker_at = Some((kind, content_h - MENU_PAD_Y));
             }
-            content_h += 32.;
+            content_h += row_h;
             list = list.child(
                 div()
                     .id(("slash", n))
                     // The list is height-capped; rows must not shrink to fit it.
                     .flex_none()
-                    .h(px(MENU_ROW_H))
+                    .h(px(row_h))
                     .mx(px(MENU_INSET))
                     .px(px(8.))
                     .flex()
@@ -570,7 +582,7 @@ impl Editor {
                     .cursor_pointer()
                     .when(n == selected, |d| d.bg(Theme::fill_hover()))
                     .child(block_icon(it.icon, 16., crate::editor_theme::style().color("block.icon").unwrap_or_else(|| theme::c(it.color))))
-                    .child(div().ml(px(8.)).flex_1().text_size(px(13.)).line_height(px(20.)).child(crate::settings::label(it.label)))
+                    .child(div().ml(px(8.)).flex_1().text_size(px(if native { 16. } else { 13. })).line_height(px(if native { 24. } else { 20. })).child(crate::settings::label(it.label)))
                     .when(sub, |d| d.child(icon("chevron-right", 14., Theme::icon())))
                     .on_mouse_move(hover_sel(n))
                     .when(!sub, |d| d.on_mouse_down(MouseButton::Left, run(kind)))
@@ -588,9 +600,14 @@ impl Editor {
         }
         // An always-visible 8px thumb, rgba(31,35,41,.3), 3px in
         // from the right border and 2px from the top/bottom.
-        let view_h = content_h.min(SLASH_MAX_H - 2.);
+        let view_h = content_h.min(max_h - 2.);
         let vh = f32::from(window.viewport_size().height);
-        let (pos, corner) = if let Some(p) = beside {
+        let (pos, corner) = if native {
+            let y=if anchor_bottom.y+px(view_h+2.)<=viewport.bottom()-px(8.) { anchor_bottom.y } else { anchor_top.y-px(view_h+2.) };
+            let x=anchor_bottom.x.max(viewport.left()+px(8.)).min((viewport.right()-px(slash_w+8.)).max(viewport.left()+px(8.)));
+            let y=y.max(viewport.top()+px(8.)).min((viewport.bottom()-px(view_h+10.)).max(viewport.top()+px(8.)));
+            (point(x,y),Corner::TopLeft)
+        } else if let Some(p) = beside {
             // The panel lines up 8px above the row, inside the window.
             let top = (f32::from(p.y) - 8.).min(vh - 8. - view_h - 2.).max(8.);
             (point(p.x, px(top)), Corner::TopLeft)
@@ -611,7 +628,7 @@ impl Editor {
             .id("slash-menu")
             .occlude()
             .relative()
-            .w(px(SLASH_W))
+            .w(px(slash_w))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
             .child(list)
@@ -628,7 +645,7 @@ impl Editor {
         let menu_top = if corner == Corner::TopLeft { pos.y } else { pos.y - px(view_h + 2.) };
         let off = -f32::from(self.slash_scroll.offset().y);
         let top = (f32::from(menu_top) + 1. + row_top - off + 16. - ph / 2.).min(vh - 8. - ph).max(8.);
-        let left = pos.x + px(1. + SLASH_W - SCROLLBAR_GUTTER - 2.);
+        let left = pos.x + px(1. + slash_w - SCROLLBAR_GUTTER - 2.);
         out.push(at(self.rel(point(left, px(top))), Corner::TopLeft, picker));
         Some(())
     }
@@ -1168,6 +1185,7 @@ impl Editor {
 
     /// The LaTeX editor under an equation.
     fn equation_editor(&self, block: BlockId, offset: usize, window: &mut Window, cx: &App) -> Option<AnyElement> {
+        if cfg!(target_os = "ios") { return None; }
         let Some(b) = self.cache.borrow().get(&block).and_then(|l| l.equation_bounds(offset)) else {
             // Not laid out yet (just inserted): place it next frame.
             window.request_animation_frame();
@@ -1316,20 +1334,21 @@ impl Editor {
     // ---- floating text toolbar
 
     fn toolbar(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if cfg!(target_os = "ios") && (!self.mobile_format || self.read_only) { return None; }
         let dropdown = match &self.menu {
             None => None,
             Some(m @ (Menu::TurnInto | Menu::Align | Menu::Color | Menu::TbMore)) => Some(m.clone()),
             _ => return None,
         };
         let sel = self.core.sel;
-        if self.core.cell_sel.is_some() || self.toolbar_hidden || matches!(self.menu, Some(Menu::Equation { .. })) || self.dragging || sel.is_collapsed() || self.core.in_block_mode() || self.slash.is_some() {
+        if self.core.cell_sel.is_some() || self.toolbar_hidden || matches!(self.menu, Some(Menu::Equation { .. })) || self.dragging || sel.is_collapsed() && !self.mobile_format || self.core.in_block_mode() || self.slash.is_some() {
             return None;
         }
         if !self.focus.is_focused(window) {
             return None;
         }
         let (s, e) = self.core.ordered();
-        if s.block == TITLE {
+        if s.block == TITLE && !self.mobile_format {
             return None;
         }
         let (sp, _) = self.point_of(s)?;
@@ -1343,17 +1362,20 @@ impl Editor {
         let pane_right = self.rel(point(viewport.right() - px(8.), px(0.))).x;
         // Keep the bar inside the pane on both sides: a selection near the right
         // edge used to push it, and its dropdowns, past the window (#95).
-        let x = (hp.x - px(TOOLBAR_W / 2.)).max(pane_left).min((pane_right - px(TOOLBAR_W)).max(pane_left));
-        let above = sp.y - px(45.) >= view_top;
-        let pos = if above { point(x, sp.y - px(45.)) } else { point(x, ep.y + elh + px(5.)) };
+        let mobile = cfg!(target_os = "ios");
+        let toolbar_w = if mobile { (f32::from(pane_right-pane_left)).min(TOOLBAR_W+120.) } else { TOOLBAR_W };
+        let bar_h = if mobile { if toolbar_w < TOOLBAR_W+100. { 104. } else { 48. } } else { 40. };
+        let x = (hp.x - px(toolbar_w / 2.)).max(pane_left).min((pane_right - px(toolbar_w)).max(pane_left));
+        let above = sp.y - px(bar_h+5.) >= view_top;
+        let pos = if above { point(x, sp.y - px(bar_h+5.)) } else { point(x, ep.y + elh + px(5.)) };
 
         let head_kind = self.core.kind_of(s.block).cloned().unwrap_or(BlockKind::Text);
         let align = self.current_align();
         let btn = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(24.))
-                .min_w(px(24.))
+                .h(px(if mobile { 44. } else { 24. }))
+                .min_w(px(if mobile { 44. } else { 24. }))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1387,21 +1409,21 @@ impl Editor {
             })
         };
         let hover = |m: Menu| cx.listener(move |e: &mut Editor, h: &bool, _, cx| e.tb_drop_over(m.clone(), 0, *h, cx));
-        let turn_below = (window.viewport_size().height - pos.y - px(52.)).max(px(0.));
+        let turn_below = (window.viewport_size().height - pos.y - px(bar_h+12.)).max(px(0.));
         let turn_above = (pos.y - px(8.)).max(px(0.));
         let turn_up = turn_below < px(338.) && turn_above > turn_below;
         let turn_height = if turn_up { turn_above } else { turn_below }.min(px(338.));
         let more_height = px(2. + 2. * crate::editor_ui::MENU_PAD_Y + 2. * crate::editor_ui::MENU_ROW_H);
         let more_above = (pos.y - px(10.)).max(px(0.));
-        let more_below = (window.viewport_size().height - pos.y - px(52.)).max(px(0.));
+        let more_below = (window.viewport_size().height - pos.y - px(bar_h+12.)).max(px(0.));
         // Down unless it doesn't fit there, like the other dropdowns.
         let more_up = more_below < more_height && more_above > more_below;
         let drop = |m: Menu, x: f32| {
             div()
                 .id("tb-drop")
                 .absolute()
-                .when(matches!(m, Menu::TurnInto) && turn_up, |d| d.bottom(px(44.)))
-                .when(!matches!(m, Menu::TurnInto) || !turn_up, |d| d.top(px(44.)))
+                .when(matches!(m, Menu::TurnInto) && turn_up, |d| d.bottom(px(bar_h+4.)))
+                .when(!matches!(m, Menu::TurnInto) || !turn_up, |d| d.top(px(bar_h+4.)))
                 .left(px(x))
                 .on_hover(cx.listener(move |e: &mut Editor, h: &bool, _, cx| e.tb_drop_over(m.clone(), 1, *h, cx)))
         };
@@ -1419,13 +1441,14 @@ impl Editor {
         let x_align = x_turn + 44. + 8. + 1. + 8.;
         // The colour panel is wider than the bar's right-hand section, so it is
         // right-aligned inside the bar instead of hanging past its edge (#95).
-        let x_color = f32::min(x_align + 44. + 8. + 1. + 8. + 6. * (24. + 8.), TOOLBAR_W - CALLOUT_PANEL_W - 2.).max(0.);
+        let x_color = f32::min(x_align + 44. + 8. + 1. + 8. + 6. * (24. + 8.), toolbar_w - CALLOUT_PANEL_W - 2.).max(0.);
         let bar = div()
-            .h(px(40.))
+            .h(px(bar_h))
+            .when(mobile, |d| d.w(px(toolbar_w)).flex_wrap())
             .px(px(8.))
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(px(if mobile { 4. } else { 8. }))
             .child(
                 btn("tb-turn")
                     .w(px(44.))
@@ -1470,15 +1493,20 @@ impl Editor {
             .child(div().mx(px(4.)).w(px(1.)).h(px(40.)).bg(Theme::line_border()))
             .child(
                 btn("tb-more")
-                    .w(px(24.))
+                    .w(px(if mobile { 80. } else { 24. }))
                     .when(matches!(dropdown, Some(Menu::TbMore)), |d| d.bg(Theme::fill_hover_strong()))
-                    .child(icon("layout-grid", 18., Theme::icon()))
+                    .child(icon(if mobile { "plus" } else { "layout-grid" }, 18., Theme::icon()))
+                    .when(mobile,|d|d.gap(px(6.)).child(crate::settings::tr("插入","Insert")))
                     .on_hover(hover(Menu::TbMore))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|e, _, _, cx| {
+                        cx.listener(|e, _, window, cx| {
                             cx.stop_propagation();
-                            e.menu = Some(Menu::TbMore);
+                            if cfg!(target_os="ios") {
+                                let block=if e.core.sel.head.block==TITLE { e.core.doc.blocks.first().map(|b|b.id).unwrap_or(TITLE) } else { e.core.sel.head.block };
+                                e.mobile_format=false;
+                                e.open_block_menu(block,true,window,cx);
+                            } else { e.menu = Some(Menu::TbMore); }
                             cx.notify();
                         }),
                     ),
@@ -1531,7 +1559,7 @@ impl Editor {
                 Some(drop(Menu::Align, x_align).child(list).into_any_element())
             }
             Some(Menu::Color) => Some(drop(Menu::Color, x_color).child(self.color_panel(None, cx)).into_any_element()),
-            Some(Menu::TbMore) => Some(div().absolute().when(more_up, |d| d.bottom(px(44.))).when(!more_up, |d| d.top(px(44.))).right_0().child(self.tb_more_menu(cx)).into_any_element()),
+            Some(Menu::TbMore) => Some(div().absolute().when(more_up, |d| d.bottom(px(bar_h+4.))).when(!more_up, |d| d.top(px(bar_h+4.))).right_0().child(self.tb_more_menu(cx)).into_any_element()),
             _ => None,
         };
         let el = popover()
@@ -1650,6 +1678,8 @@ impl Editor {
     /// The toolbar over selected table cells: no text toolbar and no
     /// context menu, so this bar carries the cell operations.
     fn table_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let mobile = cfg!(target_os = "ios");
+        if mobile && (!self.mobile_format || self.read_only) { return None; }
         let s = self.core.cell_sel?;
         let dropdown = match &self.menu {
             None => None,
@@ -1667,14 +1697,16 @@ impl Editor {
         // A Markdown file keeps only a column's alignment, no colours or
         // vertical alignment, so those are left out (as on the text toolbar).
         let md = self.markdown;
-        let w = TABLE_TB_W + if whole { 17. + 24. } else { 0. } - if md { 24. + 17. + 8. + 44. } else { 0. };
+        let natural_w = TABLE_TB_W + if whole { 17. + 24. } else { 0. } - if md { 24. + 17. + 8. + 44. } else { 0. };
         let viewport = self.list.viewport_bounds();
         let pane_left = viewport.left() + px(12.);
         let pane_right = viewport.right() - px(12.);
+        let w = if mobile { natural_w.min(f32::from(pane_right-pane_left).max(1.)) } else { natural_w };
+        let bar_h = if mobile { if w < natural_w { 144. } else { 96. } } else { TABLE_TB_H };
         // Same two-sided clamp as the text toolbar (#95).
         let x = (rect.center().x - px(w / 2.)).max(pane_left).min((pane_right - px(w)).max(pane_left));
         let bottom = if range_top == 0 { table_top - px(22.) } else { rect.top() - px(15.) };
-        let y = if bottom - px(TABLE_TB_H) >= viewport.top() { bottom - px(TABLE_TB_H) } else { rect.bottom() + px(15.) };
+        let y = if bottom - px(bar_h) >= viewport.top() { bottom - px(bar_h) } else { rect.bottom() + px(15.) };
 
         let cell = self.core.first_selected_cell();
         let valign = cell.and_then(|c| c.valign.clone());
@@ -1692,8 +1724,8 @@ impl Editor {
         let btn = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(24.))
-                .min_w(px(24.))
+                .h(px(if mobile { 44. } else { 24. }))
+                .min_w(px(if mobile { 44. } else { 24. }))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1718,7 +1750,7 @@ impl Editor {
             })
         };
         let hover = |m: Menu| cx.listener(move |e: &mut Editor, h: &bool, _, cx| e.tb_drop_over(m.clone(), 0, *h, cx));
-        let turn_below = (window.viewport_size().height - y - px(52.)).max(px(0.));
+        let turn_below = (window.viewport_size().height - y - px(bar_h+12.)).max(px(0.));
         let turn_above = (y - px(8.)).max(px(0.));
         let turn_up = turn_below < px(338.) && turn_above > turn_below;
         let turn_height = if turn_up { turn_above } else { turn_below }.min(px(338.));
@@ -1726,9 +1758,9 @@ impl Editor {
             div()
                 .id("ttb-drop")
                 .absolute()
-                .when(matches!(m, Menu::TurnInto) && turn_up, |d| d.bottom(px(44.)))
-                .when(!matches!(m, Menu::TurnInto) || !turn_up, |d| d.top(px(44.)))
-                .left(px(x))
+                .when(matches!(m, Menu::TurnInto) && turn_up, |d| d.bottom(px(bar_h+4.)))
+                .when(!matches!(m, Menu::TurnInto) || !turn_up, |d| d.top(px(bar_h+4.)))
+                .left(px(if mobile { x.clamp(0.,(w-CALLOUT_PANEL_W-2.).max(0.)) } else { x }))
                 .on_hover(cx.listener(move |e: &mut Editor, h: &bool, _, cx| e.tb_drop_over(m.clone(), 1, *h, cx)))
         };
         // The chevron flips while its dropdown is open.
@@ -1760,8 +1792,7 @@ impl Editor {
                     cx.listener(|e, _, window, cx| {
                         cx.stop_propagation();
                         e.menu = None;
-                        e.core.table_unmerge();
-                        e.changed(window, cx);
+                        e.table_action(super::table_actions::TableAction::Unmerge,window,cx);
                     }),
                 )
         } else if n_cells >= 2 {
@@ -1774,8 +1805,7 @@ impl Editor {
                     cx.listener(|e, _, window, cx| {
                         cx.stop_propagation();
                         e.menu = None;
-                        e.core.table_merge();
-                        e.changed(window, cx);
+                        e.table_action(super::table_actions::TableAction::Merge,window,cx);
                     }),
                 )
         } else {
@@ -1793,11 +1823,12 @@ impl Editor {
             Align::Right => "align-right",
         };
         let mut bar = div()
-            .h(px(40.))
+            .h(px(bar_h))
+            .when(mobile, |d| d.w(px(w)).flex_wrap())
             .px(px(8.))
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(px(if mobile { 4. } else { 8. }))
             .child(merge_btn)
             .when(!md, |d| d.child(sep()).child(
                 btn("ttb-bg")
@@ -1855,8 +1886,7 @@ impl Editor {
                             cx.stop_propagation();
                             e.menu = None;
                             e.tables.danger = false;
-                            e.core.table_delete_selected();
-                            e.changed(window, cx);
+                            e.table_action(super::table_actions::TableAction::DeleteSelected,window,cx);
                         }),
                     ),
             );
@@ -1915,8 +1945,7 @@ impl Editor {
                         cx.listener(move |e, _, window, cx| {
                             cx.stop_propagation();
                             e.menu = None;
-                            e.core.table_set_valign(value);
-                            e.changed_preserving_viewport(window, cx);
+                            e.table_action(super::table_actions::TableAction::Vertical(value),window,cx);
                         }),
                     )
                 };
@@ -1955,8 +1984,7 @@ impl Editor {
             cx.listener(move |e: &mut Editor, _: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
                 e.menu = None;
-                e.core.table_set_bg(v.clone());
-                e.changed_preserving_viewport(window, cx);
+                e.table_action(super::table_actions::TableAction::Background(v.clone()),window,cx);
             })
         };
         let mut grid = div().flex().flex_wrap().justify_between().gap_y(px(4.));

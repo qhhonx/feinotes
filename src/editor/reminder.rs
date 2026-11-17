@@ -13,6 +13,8 @@ use crate::input::{TextField, TextFieldEvent};
 use crate::editor_theme::{Theme, c, craft};
 use crate::editor_ui::{ROW_RADIUS, icon, panel, popover};
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 pub const DAY: i64 = 86_400_000;
@@ -364,6 +366,8 @@ impl Editor {
         self.slash = None;
         self.dragging = false;
         self.menu = Some(Menu::Reminder { block: p.block, offset: p.offset });
+        #[cfg(target_os = "ios")]
+        self.present_native_object(cx);
         cx.notify();
     }
 
@@ -380,11 +384,13 @@ impl Editor {
     }
 
     fn close_reminder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "ios")]
+        super::object_mobile::dismiss_form();
         self.rm.panel = None;
         if matches!(self.menu, Some(Menu::Reminder { .. })) {
             self.menu = None;
         }
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         cx.notify();
     }
 
@@ -430,7 +436,7 @@ impl Editor {
                 if let Some(p) = &mut self.rm.panel {
                     p.drop = None;
                 }
-                window.focus(&self.focus);
+                crate::gpui_compat::focus(window, &self.focus, cx);
             }
             TextFieldEvent::Cancel => {
                 if self.rm.panel.as_ref().is_some_and(|p| p.drop.is_some()) {
@@ -469,7 +475,7 @@ impl Editor {
         let at_ = p.at;
         if d == Drop::Time {
             let fh = self.rm.time.read(cx).focus_handle(cx);
-            window.focus(&fh);
+            crate::gpui_compat::focus(window, &fh, cx);
             self.rm.time.update(cx, |f, cx| f.select_all_text(cx));
             if let Some(r) = self.core.reminder_at(at_) {
                 let t = r.expire - day_start(r.expire);
@@ -480,7 +486,7 @@ impl Editor {
                 self.rm.list.set_offset(point(px(0.), px(-y)));
             }
         } else {
-            window.focus(&self.focus);
+            crate::gpui_compat::focus(window, &self.focus, cx);
         }
         cx.notify();
     }
@@ -512,6 +518,7 @@ impl Editor {
 
     /// The editor (`intact` popover): calendar, 设置时间, 提醒.
     pub(super) fn reminder_popover(&self, block: crate::model::BlockId, offset: usize, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if cfg!(target_os = "ios") { return None; }
         let p = self.rm.panel.as_ref().filter(|p| p.at == Pos::new(block, offset))?;
         let r = self.core.reminder_at(p.at)?;
         let rect = self.probed(Probe::Button(p.at))?;
@@ -730,6 +737,7 @@ impl Editor {
 
     /// The open select's list.
     pub(super) fn reminder_layers(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if cfg!(target_os = "ios") { return Vec::new(); }
         let Some(p) = self.rm.panel.as_ref().filter(|_| self.reminder_open()) else { return vec![] };
         let (Some(d), Some(r)) = (p.drop, self.core.reminder_at(p.at)) else { return vec![] };
         let ix = if d == Drop::Time { 0 } else { 1 };
@@ -772,7 +780,7 @@ impl Editor {
                                 Drop::Time => e.apply_reminder(|r| at_time(r, v), window, cx),
                                 Drop::Jet => e.apply_reminder(|r| with_jet(r, v), window, cx),
                             }
-                            window.focus(&e.focus);
+                            crate::gpui_compat::focus(window, &e.focus, cx);
                         }),
                     ),
             );
@@ -905,5 +913,46 @@ mod tests {
         assert_eq!(back.notify, back.expire);
         let off = toggle(&InlineReminder { notify: r.expire - HOUR, ..r }, false, false, now);
         assert_eq!(off.notify, off.expire);
+    }
+}
+
+#[cfg(target_os = "ios")]
+impl Editor {
+    pub(super) fn native_reminder_request(&self) -> Option<serde_json::Value> {
+        use super::object_mobile::{date_field,field};
+        use crate::settings::tr;
+        use serde_json::json;
+        let r = self.core.reminder_at(self.rm.panel.as_ref()?.at)?;
+        let mut fields = vec![field("whole",tr("全天","All day"),"toggle",if r.whole_day { "true" } else { "false" }),
+            date_field("when",tr("日期与时间","Date and time"),r.expire,r.whole_day),
+            field("notify",tr("提醒","Notify"),"toggle",if r.should_notify { "true" } else { "false" })];
+        if r.should_notify {
+            let jet = r.notify-r.expire;
+            let mut advance = field("advance",tr("提醒时间","Notify at"),"choice",&jet.to_string());
+            advance["value_title"] = json!(jet_label(r.whole_day,jet));
+            advance["options"] = json!(jet_lags(r.whole_day,jet).into_iter().map(|(title,value)|json!({"title":title,"value":value.to_string()})).collect::<Vec<_>>());
+            fields.push(advance);
+        }
+        fields.push(field("permission",tr("系统通知设置","System notification settings"),"action",""));
+        Some(json!({"kind":"reminder","title":tr("日期提醒","Date reminder"),"live":true,"fields":fields}))
+    }
+
+    pub(super) fn mobile_reminder_event(&mut self, action: &str, edit: Option<(&str,&str)>, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            "object-action" if edit == Some(("permission",""))=>crate::ipad_notifications::present_settings(),
+            "object-close" | "object-submit"=>self.close_reminder(window,cx),
+            "object-edit"=>match edit {
+                Some(("whole",value)) if value == "true" || value == "false"=>self.apply_reminder(|r|toggle(r,value == "true",r.should_notify,now()),window,cx),
+                Some(("notify",value)) if value == "true" || value == "false"=>self.apply_reminder(|r|toggle(r,r.whole_day,value == "true",now()),window,cx),
+                Some(("when",value))=>if let Some(value) = super::object_mobile::date_millis(value) {
+                    self.apply_reminder(|r| { let moved = on_day(r,day_of(value)); if r.whole_day { moved } else { at_time(&moved,value-day_start(value)) } },window,cx);
+                },
+                Some(("advance",value))=>if let Some(jet) = value.parse::<i64>().ok() {
+                    self.apply_reminder(|r|if jet_lags(r.whole_day,r.notify-r.expire).iter().any(|(_,value)|*value == jet) { with_jet(r,jet) } else { *r },window,cx);
+                },
+                _=>{},
+            },
+            _=>{},
+        }
     }
 }

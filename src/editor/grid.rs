@@ -103,7 +103,7 @@ impl Editor {
         from.insert(at.min(from.len()), 0.);
         self.col_anim.insert(grid, (from, Instant::now()));
         self.gap_hover = None;
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         self.changed(window, cx);
     }
 
@@ -222,7 +222,7 @@ impl R<'_> {
                     cx.listener(move |e, _, window, cx| {
                         cx.stop_propagation();
                         e.core.focus_column_end(cid);
-                        window.focus(&e.focus);
+                        crate::gpui_compat::focus(window, &e.focus, cx);
                         e.changed(window, cx);
                     }),
                 ));

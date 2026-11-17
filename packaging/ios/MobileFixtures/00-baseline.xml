@@ -1,0 +1,66 @@
+<title>备忘录格式对照验收 20261117</title>
+<p>产品方向：飞书文档书写体验 + 备忘录视觉布局 + iCloud；保留飞记自己的操作。</p>
+<h1>一、标题与正文</h1>
+<h2>小标题接清单</h2>
+<checkbox done="false">未完成任务 A</checkbox>
+<checkbox done="true">已完成任务 B</checkbox>
+<h3>副标题接正文</h3>
+<p>正文中英文 ABC 123。<b>粗体</b> <em>Italic</em> <u>下划线</u> <del>删除线</del> <code>inline_code</code></p>
+<blockquote>
+<p>引用内容，不改变飞记的块编辑操作。</p></blockquote>
+<h1>二、列表</h1>
+<ul>
+  <li>圆点 A<ul>
+  <li>子级 A1</li>
+</ul></li>
+</ul>
+<ul>
+  <li>圆点 B</li>
+</ul>
+<ul>
+  <li list-style-type="dash">短划线 A</li>
+</ul>
+<ul>
+  <li list-style-type="dash">短划线 B</li>
+</ul>
+<ol>
+  <li>编号 A</li>
+</ol>
+<ol>
+  <li>编号 B</li>
+</ol>
+<p>编号间隔正文</p>
+<ol>
+  <li seq="8">编号 C</li>
+</ol>
+<ol>
+  <li>编号 D</li>
+</ol>
+<h1>三、表格操作</h1>
+<table>
+  <colgroup><col width="151" /><col width="100" /><col width="100" /></colgroup>
+  <tbody>
+    <tr><td><p>COL_ACELL_EDIT</p></td><td><p><b><u>CELL_BOLD</u></b></p></td><td><p>COL_B</p></td></tr>
+    <tr><td><p>ROW2_A</p></td><td><p /></td><td><p>ROW2_B</p></td></tr>
+    <tr><td><p>ROW3_A</p></td><td><p>ROW3_B</p></td><td><p>ROW3_C</p></td></tr>
+  </tbody>
+</table>
+<p>TABLE_END</p>
+<h1>四、颜色与正文布局</h1>
+<p><span text-color="#a22fc0" background-color="#f6dcfb">紫色 PURPLE</span> <span text-color="#b12a62" background-color="#ffdce8">粉色 PINK</span> <span text-color="#9a4e00" background-color="#ffead3">橙色 ORANGE</span> <span text-color="#176739" background-color="#d2f4df">薄荷 MINT</span> <span text-color="#1254a3" background-color="#d6eaff">蓝色 BLUE</span></p>
+<p>左对齐 LEFT</p>
+<p align="center">居中 CENTER</p>
+<p align="right">右对齐 RIGHT</p>
+<p>软换行 A<br /><b>软换行 B</b></p>
+<pre lang="plaintext"><code>let value = 42;
+	print(value)</code></pre>
+<p><a href="https://example.org/fei-visual-qa">网页链接（仅核对显示）</a></p>
+<hr />
+<h1>五、附件与预览（文末样例）</h1>
+<p />
+<h1>六、对照说明</h1>
+<p>对照标准：看标题层级、段距、留白、颜色、选中态与浅深色效果；不要求菜单、快捷键与备忘录完全一致。</p>
+<p>现有功能验收：表格加列、续行、文字样式、列宽、编号与媒体预览。</p>
+<h1>七、媒体样例</h1>
+<p>图片块、音频、PDF、文件及视频样例，均为合成测试内容。</p>
+<p>MEDIA_INSERT_HERE</p>

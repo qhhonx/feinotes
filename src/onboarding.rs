@@ -4,6 +4,8 @@
 //! along. ⌘⌥⇧O and Settings › About replay it without touching the library. Nothing is written until 开始使用;
 //! closing the window before that quits without a library.
 
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 use crate::settings::tr;
 use crate::theme::{self, Theme};
 use crate::ui;
@@ -20,6 +22,7 @@ pub fn pending() -> bool { PENDING.load(Ordering::Relaxed) }
 
 /// A new library gets the pages; `QUIET_MD_ONBOARDING` shows them anyway (previews, screenshots).
 pub fn wanted(existed: bool, scripted: bool) -> bool {
+    if cfg!(all(any(target_os = "macos", target_os = "ios"),feature = "cloudkit-restore")) { return false; }
     std::env::var_os("QUIET_MD_ONBOARDING").is_some() || (!existed && !scripted)
 }
 
@@ -86,7 +89,7 @@ pub fn paint_texture(img: std::sync::Arc<RenderImage>, b: Bounds<Pixels>, window
     let (w, h) = (FILM_W as f32 * s, FILM_H as f32 * s);
     let at = point(b.left() + px((bw - w) / 2.), b.top() + px((bh - h) / 2.));
     window.with_content_mask(Some(ContentMask { bounds: b }), |window| {
-        let _ = window.paint_image(Bounds::new(at, size(px(w), px(h))), Corners::default(), img, 0, false);
+        let _ = crate::gpui_compat::paint_image(window,Bounds::new(at, size(px(w), px(h))), Corners::default(), img, 0, false);
     });
 }
 
@@ -152,8 +155,8 @@ fn paint_backdrop(b: Bounds<Pixels>, t: f32, window: &mut Window) {
         let cy = y + h * (cy + 0.05 * (TAU * t / ly + ph).cos());
         let d = w * d * (1. + 0.10 * (TAU * t / (lx + ly) + ph).sin());
         let c = Hsla::from(rgb(color)).opacity(if dark { 0.16 } else { k });
-        window.paint_shadows(Bounds::new(point(px(cx - d / 2.), px(cy - d / 2.)), size(px(d), px(d))), Corners::all(px(d / 2.)),
-            &[BoxShadow { color: c, offset: point(px(0.), px(0.)), blur_radius: px(d * 0.45), spread_radius: px(0.) }]);
+        crate::gpui_compat::paint_shadows(window,Bounds::new(point(px(cx - d / 2.), px(cy - d / 2.)), size(px(d), px(d))), Corners::all(px(d / 2.)),
+            &[BoxShadow { #[cfg(target_os = "ios")] inset: false, color: c, offset: point(px(0.), px(0.)), blur_radius: px(d * 0.45), spread_radius: px(0.) }]);
     }
     // Grain: one tile of noise repeated, a texel per point.
     let tile = GRAIN_N as f32;
@@ -161,7 +164,7 @@ fn paint_backdrop(b: Bounds<Pixels>, t: f32, window: &mut Window) {
     while ty < y + h {
         let mut tx = x;
         while tx < x + w {
-            let _ = window.paint_image(Bounds::new(point(px(tx), px(ty)), size(px(tile), px(tile))), Corners::default(), img.clone(), 0, false);
+            let _ = crate::gpui_compat::paint_image(window,Bounds::new(point(px(tx), px(ty)), size(px(tile), px(tile))), Corners::default(), img.clone(), 0, false);
             tx += tile;
         }
         ty += tile;
@@ -395,7 +398,7 @@ impl Onboarding {
 
     fn new(scripted: bool, incoming: crate::local_files::Incoming, replay: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
-        window.focus(&focus);
+        crate::gpui_compat::focus(window,&focus,cx);
         let fps = FLOW_FPS;
         let ticker = cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(Duration::from_secs_f32(1. / fps)).await;
@@ -450,7 +453,7 @@ impl Onboarding {
     fn pick_folder(&mut self, for_library: bool, window: &mut Window, cx: &mut Context<Self>) {
         let _ = window;
         let picked = crate::devtools::take_pick();
-        let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(tr("选择", "Choose").into()), extensions: None }));
+        let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(tr("选择", "Choose").into()), #[cfg(not(target_os = "ios"))] extensions: None }));
         cx.spawn(async move |this, cx| {
             let paths = match prompt { Some(p) => p.await.ok().and_then(Result::ok).flatten(), None => picked };
             let Some(dir) = paths.and_then(|p| p.into_iter().next()) else { return };
@@ -465,7 +468,7 @@ impl Onboarding {
     fn start_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.recording = true;
         self.hotkey_error = None;
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window,&self.focus,cx);
         cx.clear_key_bindings();
         cx.notify();
     }
@@ -503,7 +506,7 @@ impl Onboarding {
         if plain && k.key == "escape" { return self.stop_recording(cx) }
         if matches!(k.key.as_str(), "shift" | "alt" | "ctrl" | "cmd" | "fn" | "control" | "platform" | "function") { return }
         let m = k.modifiers;
-        let key = k.unparse();
+        let key = crate::shortcuts::key_string(k);
         if !(m.platform || m.control || m.alt) { self.hotkey_error = Some(tr("请包含 ⌘、⌃ 或 ⌥", "Include ⌘, ⌃ or ⌥")); }
         else if key == "cmd-alt-space" || key == "alt-cmd-space" { self.hotkey_error = Some(tr("⌘ ⌥ Space 用于打开上次的文档，请换一个", "⌘ ⌥ Space opens the last document; pick another")); }
         else { self.hotkey = key; self.hotkey_error = None; return self.stop_recording(cx) }
@@ -569,11 +572,21 @@ impl Onboarding {
     fn hand_over(&mut self, existed: bool, import_error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self._ticker = Task::ready(());
         if let Some((_, t)) = self.film_tex.take() { let _ = window.drop_image(t); }
-        let ws = crate::start(existed, self.scripted, Some(window), self.incoming.take().unwrap_or_default(), cx);
-        let hotkey_error = (cfg!(target_os = "macos") && self.hotkey != crate::shortcuts::global_key())
-            .then(|| crate::shortcuts::set_global(&self.hotkey, cx).err()).flatten().map(|e| e.to_string());
-        if let Some(e) = hotkey_error.or(import_error) && let Some(ws) = ws {
-            ws.update(cx, |w, cx| w.show_toast_kind(ui::ToastKind::Error, &e, cx));
+        #[cfg(target_os = "ios")]
+        {
+            let _ = (existed,import_error);
+            self.error = Some(tr("请在设置中切换飞记文档库。", "Switch your Fei Notes library in Settings.").into());
+            self.importing = None;
+            cx.notify();
+        }
+        #[cfg(not(target_os = "ios"))]
+        {
+            let ws = crate::start(existed, self.scripted, Some(window), self.incoming.take().unwrap_or_default(), cx);
+            let hotkey_error = (cfg!(target_os = "macos") && self.hotkey != crate::shortcuts::global_key())
+                .then(|| crate::shortcuts::set_global(&self.hotkey, cx).err()).flatten().map(|e| e.to_string());
+            if let Some(e) = hotkey_error.or(import_error) && let Some(ws) = ws {
+                ws.update(cx, |w, cx| w.show_toast_kind(ui::ToastKind::Error, &e, cx));
+            }
         }
     }
 

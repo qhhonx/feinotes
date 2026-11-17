@@ -142,14 +142,20 @@ impl Element for PreviewText {
         let area = Bounds::new(bounds.origin, size(ready.width, ready.height));
         window.with_content_mask(Some(ContentMask { bounds: area }), |window| {
             for (line, tops) in &ready.lines {
+                #[cfg(not(target_os = "ios"))]
                 let _ = line.paint_background_rows(bounds.origin, px(self.line_height), tops, align, Some(area), window, cx);
+                #[cfg(target_os = "ios")]
+                let _ = line.paint_background(bounds.origin, px(self.line_height), align, Some(area), window, cx);
+                #[cfg(not(target_os = "ios"))]
                 let _ = line.paint_rows(bounds.origin, px(self.line_height), tops, align, Some(area), window, cx);
+                #[cfg(target_os = "ios")]
+                let _ = line.paint(bounds.origin, px(self.line_height), align, Some(area), window, cx);
             }
             for placed in &ready.equations {
                 let origin = point(bounds.left() + placed.x + px(placed.equation.left), bounds.top() + placed.baseline);
                 match &placed.equation.body {
                     Body::Math(math) => { math.paint(origin, window, cx); if let Some(tag) = &math.tag { tag.paint(point(origin.x + px(math.width + 8. * super::bs::SCALE), origin.y), window, cx); } }
-                    Body::Invalid(line) => { let _ = line.paint(point(origin.x, origin.y - line.ascent), line.ascent + line.descent, window, cx); }
+                    Body::Invalid(line) => { let _ = crate::gpui_compat::paint_line(line, point(origin.x, origin.y - line.ascent), line.ascent + line.descent, window, cx); }
                 }
             }
         });

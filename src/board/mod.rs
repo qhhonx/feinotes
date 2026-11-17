@@ -279,13 +279,13 @@ impl BoardView {
         if ty == ToolType::FreeDraw { self.store.schedule_capture(); }
         self.commit(None, cx);
         if ty == ToolType::Image { tools::image::pick_images(self, window, cx); }
-        self.focus(window);
+        self.focus(window, cx);
     }
 
     /// `run`: one user action (toolbar, panel, menu or shortcut).
     pub fn run(&mut self, a: BoardAction, window: &mut Window, cx: &mut Context<Self>) { run::run(self, a, window, cx) }
 
-    pub fn focus(&self, window: &mut Window) { window.focus(&self.focus); }
+    pub fn focus(&self, window: &mut Window, cx: &mut App) { crate::gpui_compat::focus(window, &self.focus, cx); }
 
     // ---- state helpers
 
@@ -411,7 +411,7 @@ impl BoardView {
 impl Render for BoardView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         text_editor::restyle(self, window, cx);
-        if std::mem::take(&mut self.refocus) && self.text.is_none() && self.frame_name.is_none() { self.focus(window); }
+        if std::mem::take(&mut self.refocus) && self.text.is_none() && self.frame_name.is_none() { self.focus(window, cx); }
         let canvas_el = canvas::canvas_element(self, cx).into_any_element();
         let editor = text_editor::element(self);
         let labels = frame_name::labels(self, window);

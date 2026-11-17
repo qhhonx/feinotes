@@ -13,6 +13,7 @@ const SCHEMA_VERSION: u32 = 7;
 pub(super) struct Library {
     path: PathBuf,
     reader: OnceCell<Connection>,
+    _session: Option<super::SessionLease>,
 }
 
 impl Clone for Library {
@@ -20,7 +21,10 @@ impl Clone for Library {
 }
 
 impl Library {
-    fn new(path: PathBuf) -> Self { Self { path, reader: OnceCell::new() } }
+    fn new(path: PathBuf) -> Self {
+        let session = path.parent().and_then(|root| super::SESSION.lease(root));
+        Self { path, reader: OnceCell::new(), _session: session }
+    }
 
     pub(super) fn connect(&self) -> Result<Connection> {
         let db = Connection::open(&self.path)?;
@@ -370,8 +374,7 @@ impl Store {
 
 impl Store {
     pub fn set_sqlite_session_root(root: PathBuf) -> Result<()> {
-        anyhow::ensure!(SESSION_ROOT.set(root).is_ok(), "Library root is already set for this process");
-        SESSION_SQLITE.set(true).map_err(|_| anyhow::anyhow!("SQLite session is already set"))
+        super::SESSION.select(root, true)
     }
 
     pub fn open_sqlite_at(root: PathBuf) -> Result<Self> {
@@ -683,7 +686,20 @@ impl Store {
         Ok(())
     }
 
-    pub fn sqlite_session() -> bool { SESSION_SQLITE.get() == Some(&true) }
+    pub fn sqlite_session() -> bool { super::SESSION.sqlite() }
+
+    /// Keep the selected root stable while a service owns its library.
+    pub fn session_lease(root: &Path) -> Option<super::SessionLease> { super::SESSION.lease(root) }
+
+    pub fn session_quiescent(expected: &Path) -> Result<bool> { super::SESSION.quiescent(expected) }
+
+    /// Called after closing the editor, stores and sync runtime. Validation
+    /// failure or a retained owner leaves the selected library unchanged.
+    pub fn switch_sqlite_session_root(expected: &Path, root: PathBuf) -> Result<()> {
+        anyhow::ensure!(root.is_absolute(), "Select an absolute library path");
+        drop(Self::open_sqlite_at(root.clone())?);
+        super::SESSION.replace(expected, root)
+    }
 
     pub(super) fn check_shared_writer(&self, structural_target: Option<&str>) -> Result<()> {
         if !self.root.join("shared-note.json").is_file() { return Ok(()); }

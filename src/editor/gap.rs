@@ -117,6 +117,8 @@ impl Editor {
         self.core.clear_block_sel();
         self.set_caret(Pos::new(id, 0), false);
         self.restart_blink(window, cx);
+        #[cfg(target_os = "ios")]
+        gpui_mobile::show_keyboard();
         self.changed(window, cx);
     }
 }

@@ -12,6 +12,8 @@ use crate::feishu_theme as theme;
 use crate::editor_theme::Theme;
 use crate::editor_ui::{MENU_RADIUS, ROW_RADIUS, TipExt, icon};
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EmojiTarget {
@@ -121,7 +123,7 @@ impl Editor {
         // Keys go to the search box (typing must not reach the block), but it
         // only looks focused once clicked or typed into.
         let fh = self.emoji_field.read(cx).focus_handle(cx);
-        window.focus(&fh);
+        crate::gpui_compat::focus(window, &fh, cx);
         cx.notify();
     }
 
@@ -320,7 +322,7 @@ impl Editor {
                                     *selected = 0;
                                 }
                                 let fh = ed.emoji_field.read(cx).focus_handle(cx);
-                                window.focus(&fh);
+                                crate::gpui_compat::focus(window, &fh, cx);
                                 cx.notify();
                             }),
                         ),

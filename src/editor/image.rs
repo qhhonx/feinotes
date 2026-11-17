@@ -4,6 +4,7 @@
 //! crop-spec).
 
 use super::core::{DropPlace, EditKind, Pos, Selection, TITLE};
+#[cfg(not(target_os = "ios"))]
 use super::overlays::{Probe, at};
 use super::render::{Env, R};
 use super::view::{Editor, EditorEvent};
@@ -11,7 +12,9 @@ use crate::store::image_path_in;
 use crate::model::*;
 use crate::store::Store;
 use crate::editor_theme::{self as theme, Theme, craft};
-use crate::editor_ui::{ROW_RADIUS, TipExt, ToastKind, icon, popover};
+use crate::editor_ui::{ROW_RADIUS, TipExt, ToastKind, icon};
+#[cfg(not(target_os = "ios"))]
+use crate::editor_ui::popover;
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -187,7 +190,7 @@ struct Slot { path: Option<Arc<Path>>, image: Option<Decoded>, used: Instant, wi
 pub struct DocImages(Rc<RefCell<HashMap<Resource, Slot>>>, u8);
 
 thread_local! {
-    static PICTURES: std::cell::OnceCell<Entity<DocImages>> = const { std::cell::OnceCell::new() };
+    static PICTURES: RefCell<Option<Entity<DocImages>>> = const { RefCell::new(None) };
     /// When each window last drew a frame.
     static FRAMES: RefCell<HashMap<WindowId, Instant>> = RefCell::default();
     /// The scale factor of the window being drawn.
@@ -239,7 +242,18 @@ pub fn init_pictures(cx: &mut App) {
         }).detach();
         DocImages(Rc::default(), 0)
     });
-    PICTURES.with(|p| { let _ = p.set(e); });
+    PICTURES.with(|p| { *p.borrow_mut() = Some(e); });
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn close_pictures(cx: &mut App) {
+    if let Some(entity) = PICTURES.with(|pictures| pictures.borrow_mut().take()) {
+        entity.update(cx, |images, cx| {
+            for (_,slot) in images.0.borrow_mut().drain() {
+                if let Some(Ok(image)) = slot.image { cx.drop_image(image,None); }
+            }
+        });
+    }
 }
 
 /// Called once per frame from the window root.
@@ -252,7 +266,7 @@ pub fn frame_drawn(window: &mut Window, cx: &mut App) {
     // was rebuilt): decode them again.
     let missing = window.take_missing_images();
     if missing.is_empty() { return }
-    let Some(e) = PICTURES.with(|p| p.get().cloned()) else { return };
+    let Some(e) = PICTURES.with(|p| p.borrow().clone()) else { return };
     let map = e.read(cx).0.clone();
     let mut map = map.borrow_mut();
     let keys: Vec<Resource> = map.iter().filter(|(_, s)| matches!(&s.image, Some(Ok(im)) if im.is_hollow() && missing.contains(&im.id))).map(|(r, _)| r.clone()).collect();
@@ -265,7 +279,7 @@ pub fn frame_drawn(window: &mut Window, cx: &mut App) {
 /// frame, as a rebuilt atlas (Windows device loss) would. Returns how many.
 #[cfg(feature = "devtools")]
 pub fn forget_uploads(window: &mut Window, cx: &mut App) -> usize {
-    let Some(e) = PICTURES.with(|p| p.get().cloned()) else { return 0 };
+    let Some(e) = PICTURES.with(|p| p.borrow().clone()) else { return 0 };
     let map = e.read(cx).0.clone();
     let ims: Vec<_> = map.borrow().values().filter_map(|s| match &s.image { Some(Ok(im)) if im.is_hollow() => Some(im.clone()), _ => None }).collect();
     for im in &ims { let _ = window.drop_image(im.clone()); }
@@ -290,7 +304,7 @@ pub fn picture(path: &Path, long: f32) -> Img {
     let uri = SharedUri::from(format!("docpic:{cap}:{}", path.display()));
     KEYS.with(|k| { k.borrow_mut().entry(uri.clone()).or_insert_with(|| (Arc::from(path), cap)); });
     let im = img(uri);
-    match PICTURES.with(|p| p.get().cloned()) { Some(e) => im.image_cache(&e).load_visible_only(), None => im }
+    match PICTURES.with(|p| p.borrow().clone()) { Some(e) => im.image_cache(&e).load_visible_only(), None => im }
 }
 
 /// A board's image file (`board::render`), painted by hand: the pixels
@@ -301,7 +315,7 @@ pub fn board_picture(path: &Path, long: f32, window: &mut Window, cx: &mut App) 
     let cap = cap(long * window.scale_factor());
     let uri = SharedUri::from(format!("docpic:{cap}:{}", path.display()));
     KEYS.with(|k| { k.borrow_mut().entry(uri.clone()).or_insert_with(|| (Arc::from(path), cap)); });
-    let e = PICTURES.with(|p| p.get().cloned())?;
+    let e = PICTURES.with(|p| p.borrow().clone())?;
     e.update(cx, |c, cx| c.load(&Resource::Uri(uri), window, cx))?.ok()
 }
 
@@ -471,7 +485,7 @@ impl DocImages {
 
     /// Forgets every decode of one file, so the next frame decodes it again.
     fn remove(path: &Path, cx: &mut App) {
-        let Some(e) = PICTURES.with(|p| p.get().cloned()) else { return };
+        let Some(e) = PICTURES.with(|p| p.borrow().clone()) else { return };
         let map = e.read(cx).0.clone();
         let mut map = map.borrow_mut();
         let keys: Vec<Resource> = map.iter().filter(|(_, s)| s.path.as_deref() == Some(path)).map(|(r, _)| r.clone()).collect();
@@ -637,7 +651,7 @@ impl ImageUi {
         d
     }
 
-    fn local(&self, src: &str) -> Option<PathBuf> {
+    pub(super) fn local(&self, src: &str) -> Option<PathBuf> {
         match self.resolve(src) {
             Src::Local(p) => Some(p),
             _ => None,
@@ -834,7 +848,7 @@ impl R<'_> {
             if active { d.border_2().border_color(Theme::primary()) } else { d.border_1().border_color(ring) }
         });
         // Resize handles: white dots with a soft drop, the accent rim once selected.
-        let handles = (ok && !self.ghost && !cropping && !ed.read_only && (active || hovered)).then(|| {
+        let handles = (!cfg!(target_os = "ios") && ok && !self.ghost && !cropping && !ed.read_only && (active || hovered)).then(|| {
             [(true, true), (false, true), (true, false), (false, false)].map(|(left, top)| {
                 let corner = match (left, top) {
                     (true, true) => "img-handle-tl",
@@ -844,7 +858,7 @@ impl R<'_> {
                 };
                 let cursor = if left == top { CursorStyle::ResizeUpLeftDownRight } else { CursorStyle::ResizeUpRightDownLeft };
                 div()
-                    .id((corner, id.0))
+                    .id(SharedString::from(format!("{corner}-{}",id.0)))
                     .absolute()
                     .size(px(20.))
                     .map(|d| if left { d.left(px(-9.)) } else { d.right(px(-9.)) })
@@ -860,7 +874,7 @@ impl R<'_> {
                             .bg(gpui::white())
                             .border_1()
                             .border_color(if active { Theme::primary() } else { theme::ca(craft::N1000, 0.24) })
-                            .shadow(vec![BoxShadow { color: Theme::shadow(), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.) }]),
+                            .shadow(vec![BoxShadow { #[cfg(target_os = "ios")] inset: false, color: Theme::shadow(), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.) }]),
                     )
                     .on_mouse_down(
                         MouseButton::Left,
@@ -951,7 +965,7 @@ impl R<'_> {
         let (x, y, w, h) = (l * fw, t * fh, (r - l) * fw, (b - t) * fh);
         let mask = |n: u64, x: f32, y: f32, w: f32, h: f32| {
             div()
-                .id(("crop-mask", n))
+                .id(SharedString::from(format!("crop-mask-{}-{n}",id.0)))
                 .absolute()
                 .left(px(x))
                 .top(px(y))
@@ -993,7 +1007,7 @@ impl R<'_> {
             div().absolute().left(px(x + inset)).top(px(y + inset)).w(px((w - 2. * inset).max(0.))).h(px((h - 2. * inset).max(0.))).bg(color)
         };
         let grab = |n: u64, hx: i8, hy: i8, moving: bool, cursor: CursorStyle| {
-            div().id(("crop-grab", id.0 * 16 + n)).absolute().cursor(cursor).on_mouse_down(
+            div().id(SharedString::from(format!("crop-grab-{}-{n}",id.0))).absolute().cursor(cursor).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |e, ev: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
@@ -1034,10 +1048,10 @@ impl R<'_> {
         div()
             .absolute()
             .inset_0()
-            .child(mask(id.0 * 4, 0., 0., fw, y))
-            .child(mask(id.0 * 4 + 1, 0., y + h, fw, fh - y - h))
-            .child(mask(id.0 * 4 + 2, 0., y, x, h))
-            .child(mask(id.0 * 4 + 3, x + w, y, fw - x - w, h))
+            .child(mask(0, 0., 0., fw, y))
+            .child(mask(1, 0., y + h, fw, fh - y - h))
+            .child(mask(2, 0., y, x, h))
+            .child(mask(3, x + w, y, fw - x - w, h))
             .child(area)
             .into_any_element()
     }
@@ -1110,6 +1124,7 @@ impl Editor {
         let p = if src.starts_with("http://") || src.starts_with("https://") { Some(self.img.remote_path(src)) } else { image_path_in(&self.library_root, src) };
         if let Some(p) = p {
             self.img.dims.borrow_mut().remove(&p);
+            if src.starts_with("http://") || src.starts_with("https://") { let _ = std::fs::remove_file(&p); }
             DocImages::remove(&p, cx);
         }
         self.img.generation += 1;
@@ -1121,7 +1136,7 @@ impl Editor {
     fn start_resize(&mut self, id: BlockId, left: bool, cursor: CursorStyle, x: Pixels, window: &mut Window, cx: &mut Context<Self>) {
         let Some((g, container)) = self.image_geo(id) else { return };
         let center = self.core.block(id).is_some_and(|b| b.align == Align::Center);
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         self.menu = None;
         self.slash = None;
         self.core.clear_block_sel();
@@ -1218,7 +1233,7 @@ impl Editor {
             cx.emit(EditorEvent::Changed);
         }
         if reselect {
-            window.focus(&self.focus);
+            crate::gpui_compat::focus(window, &self.focus, cx);
             self.core.clear_block_sel();
             self.core.cell_sel = None;
             self.core.sel = Selection::caret(Pos::new(c.id, 0));
@@ -1360,6 +1375,7 @@ impl Editor {
     // ---- toolbar
 
     /// 裁剪 · 重置图片 | 添加描述 | 左 · 中 · 右 above the selected image.
+    #[cfg(not(target_os = "ios"))]
     pub(super) fn image_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let focused = self.focus.is_focused(window);
         let id = match &self.img.crop {
@@ -1511,6 +1527,7 @@ impl Editor {
     }
 
     /// 添加描述 / 编辑描述: shows the description and puts the caret in it.
+    #[cfg(not(target_os = "ios"))]
     fn edit_caption(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         if self.img.crop.is_some() {
             self.save_crop(false, window, cx);
@@ -1524,7 +1541,7 @@ impl Editor {
         }
         self.img.caption_focus = Some(id);
         if let Some(f) = self.caption_field(id) {
-            window.focus(&f.read(cx).focus_handle(cx));
+            crate::gpui_compat::focus(window, &f.read(cx).focus_handle(cx), cx);
         }
         cx.notify();
     }
@@ -1544,6 +1561,20 @@ impl Editor {
 
     // ---- lightbox
 
+    #[cfg(target_os = "ios")]
+    pub(super) fn image_toolbar(&self, _window: &Window, _cx: &mut Context<Self>) -> Option<AnyElement> { None }
+
+    #[cfg(target_os = "ios")]
+    fn open_lightbox(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.read_only && crate::cloud_sync::shared::can_edit_in(&self.library_root,cx) { self.open_native_image(id,window,cx); return; }
+        if let Some(BlockKind::Image { src,caption,.. }) = self.core.kind_of(id) && let Some(path) = self.img.local(src)
+            && let (Ok(path),Ok(title)) = (std::ffi::CString::new(path.to_string_lossy().as_bytes()),std::ffi::CString::new(caption.as_deref().unwrap_or(crate::settings::tr("图片","Image")))) {
+            unsafe extern "C" { fn fei_ios_preview_named_file(path: *const std::ffi::c_char,title: *const std::ffi::c_char); }
+            unsafe { fei_ios_preview_named_file(path.as_ptr(),title.as_ptr()); }
+        }
+    }
+
+    #[cfg(not(target_os = "ios"))]
     fn open_lightbox(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         let mut ids = vec![];
         self.core.doc.for_each_block(&mut |b: &Block| {
@@ -1573,7 +1604,7 @@ impl Editor {
             moved: false,
             rotated: None,
         });
-        window.focus(&self.img.lb_focus);
+        crate::gpui_compat::focus(window, &self.img.lb_focus, cx);
         cx.notify();
     }
 
@@ -1581,7 +1612,7 @@ impl Editor {
         let Some(lb) = &mut self.img.lightbox else { return };
         if lb.closing.is_none() {
             lb.closing = Some(Instant::now());
-            window.focus(&self.focus);
+            crate::gpui_compat::focus(window, &self.focus, cx);
             cx.notify();
         }
     }
@@ -1809,7 +1840,7 @@ impl Editor {
                 && lb.closing.is_none()
             {
                 lb.closing = Some(Instant::now());
-                window.focus(&self.focus);
+                crate::gpui_compat::focus(window, &self.focus, cx);
             }
             window.request_animation_frame();
             return;
@@ -1972,7 +2003,7 @@ impl Editor {
             .h(px(vh))
             .bg(theme::rgbaf(0, 0, 0, 0.8))
             .opacity(fade)
-            .when(!lb.chrome && k >= 1., |d| d.cursor(CursorStyle::None))
+            .when(!lb.chrome && k >= 1., |d| d.cursor(crate::gpui_compat::NO_CURSOR))
             .on_action(cx.listener(|e, _: &LbClose, window, cx| e.close_lightbox(window, cx)))
             .on_action(cx.listener(|e, _: &LbPrev, _, cx| e.lb_go(-1, cx)))
             .on_action(cx.listener(|e, _: &LbNext, _, cx| e.lb_go(1, cx)))
@@ -2141,13 +2172,13 @@ impl Editor {
         self.core.clear_block_sel();
         self.core.cell_sel = None;
         self.core.sel = Selection::caret(Pos::new(last, 0));
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         self.changed(window, cx);
     }
 
     // ---- remote images
 
-    /// Fetches queued remote images into the cache (`curl`, off the main thread).
+    /// Fetches queued remote images off the main thread into the shared cache.
     pub(super) fn start_downloads(&mut self, cx: &mut Context<Self>) {
         let queued: Vec<String> = self.img.remote.borrow().iter().filter(|(_, s)| **s == Remote::Queued).map(|(u, _)| u.clone()).collect();
         for url in queued {
@@ -2165,6 +2196,8 @@ impl Editor {
                         e.img.remote.borrow_mut().insert(url, Remote::Failed);
                     }
                     e.img.generation += 1;
+                    #[cfg(target_os = "ios")]
+                    e.refresh_native_image_form(cx);
                     cx.notify();
                 });
             })
@@ -2269,6 +2302,9 @@ fn download(url: &str, dest: &Path) -> bool {
         let _ = std::fs::create_dir_all(d);
     }
     let tmp = dest.with_extension("part");
+    #[cfg(target_os = "ios")]
+    let fetched = download_ios(url,&tmp);
+    #[cfg(not(target_os = "ios"))]
     let fetched = std::process::Command::new("curl")
         .args(["-fsSL", "--max-time", "60", "-o"])
         .arg(&tmp)
@@ -2285,6 +2321,21 @@ fn download(url: &str, dest: &Path) -> bool {
         let _ = std::fs::remove_file(&tmp);
     }
     ok
+}
+
+#[cfg(target_os = "ios")]
+fn download_ios(url: &str, destination: &Path) -> bool {
+    use std::ffi::{CString,c_char,c_void};
+    unsafe extern "C" { fn fei_ios_download_image(url: *const c_char,path: *const c_char,complete: extern "C" fn(bool,*mut c_void),context: *mut c_void); }
+    extern "C" fn complete(ok: bool, context: *mut c_void) {
+        let sender = unsafe { Box::from_raw(context.cast::<std::sync::mpsc::Sender<bool>>()) };
+        let _ = sender.send(ok);
+    }
+    let (Ok(url),Ok(path)) = (CString::new(url),CString::new(destination.to_string_lossy().as_bytes())) else { return false };
+    let (sender,receiver) = std::sync::mpsc::channel();
+    let context = Box::into_raw(Box::new(sender)).cast();
+    unsafe { fei_ios_download_image(url.as_ptr(),path.as_ptr(),complete,context); }
+    receiver.recv().unwrap_or(false)
 }
 
 /// Crops and turns the image `rot` quarter turns counter-clockwise (BGRA).
@@ -2319,6 +2370,10 @@ pub(super) fn image_block_from(root: &Path, bytes: &[u8], ext: &str) -> Result<B
 pub(crate) fn clipboard_image_data(img: &gpui::Image) -> Result<(std::borrow::Cow<'_, [u8]>, &'static str), &'static str> {
     if img.bytes.len() as u64 > MAX_BYTES { return Err(TOO_BIG); }
     let ext = match img.format {
+        #[cfg(target_os = "ios")]
+        ImageFormat::Ico => "ico",
+        #[cfg(target_os = "ios")]
+        ImageFormat::Pnm => "pnm",
         ImageFormat::Png => "png",
         ImageFormat::Jpeg => "jpg",
         ImageFormat::Gif => "gif",
@@ -2377,7 +2432,7 @@ pub(crate) fn store_image_named(root: &Path, bytes: &[u8], ext: &str, name: Opti
     Ok(path)
 }
 
-fn image_block_from_file(root: &Path, p: &Path) -> Result<Block, &'static str> {
+pub(super) fn image_block_from_file(root: &Path, p: &Path) -> Result<Block, &'static str> {
     let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
     if !p.is_file() || !FORMATS.contains(&ext.as_str()) {
         return Err(BAD_FORMAT);
@@ -2434,6 +2489,101 @@ pub(crate) fn localize_pasted_images(root: &Path, blocks: &mut Vec<Block>) {
             Err(_) => false,
         }
     });
+}
+
+
+#[cfg(target_os = "ios")]
+impl Editor {
+    pub(super) fn open_native_image(&mut self, block: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only || !crate::cloud_sync::shared::can_edit_in(&self.library_root,cx) || !matches!(self.core.kind_of(block),Some(BlockKind::Image { .. })) { return; }
+        self.core.clear_block_sel();
+        self.core.cell_sel = None;
+        self.core.sel = Selection::caret(Pos::new(block,0));
+        crate::gpui_compat::focus(window,&self.focus,cx);
+        self.menu = Some(super::view::Menu::NativeImage { block });
+        self.present_native_object(cx);
+    }
+
+    pub(super) fn native_image_request(&self, block: BlockId) -> Option<serde_json::Value> {
+        use super::object_mobile::field;
+        use crate::settings::tr;
+        use serde_json::json;
+        let BlockKind::Image { src,caption,crop,.. } = self.core.kind_of(block)? else { return None };
+        let (geo,container) = self.image_geo(block)?;
+        if let Some(c) = self.img.crop.as_ref().filter(|c|c.id == block) {
+            let path = self.img.local(src)?;
+            let mut preview = field("crop",tr("拖动边角或移动裁剪框","Drag an edge or move the crop box"),"image-crop","");
+            preview["path"] = json!(path.to_string_lossy());
+            preview["rect"] = json!(c.rect);
+            return Some(json!({"kind":"image-crop","title":tr("裁剪图片","Crop image"),"live":false,"fields":[preview]}));
+        }
+        let mut alignment = field("alignment",tr("对齐","Alignment"),"choice",match self.core.block(block)?.align { Align::Left=>"left",Align::Center=>"center",Align::Right=>"right" });
+        alignment["options"] = json!([{"value":"left","title":tr("左对齐","Align left")},{"value":"center","title":tr("居中对齐","Align center")},{"value":"right","title":tr("右对齐","Align right")}]);
+        let mut size = field("width",tr("宽度","Width"),"slider",&geo.w.to_string());
+        size["minimum"] = json!(MIN);
+        size["maximum"] = json!(container.max(MIN));
+        let mut fields = vec![field("caption",tr("图片描述","Image description"),"text",caption.as_deref().unwrap_or("")),alignment,size];
+        let local = self.img.local(src);
+        let measured = local.as_ref().and_then(|p|self.img.dims(p)).is_some();
+        if src.starts_with("http://") || src.starts_with("https://") {
+            let pending = matches!(self.img.remote.borrow().get(src),Some(Remote::Queued | Remote::Pending));
+            let failed = self.img.remote.borrow().get(src) == Some(&Remote::Failed) || local.is_some() && !measured;
+            let status = if pending { tr("正在下载","Downloading") } else if failed { tr("加载失败，可稍后重试","Load failed. Retry shortly.") } else if local.is_some() { tr("已缓存","Cached") } else { tr("尚未下载","Not downloaded") };
+            fields.push(field("web-status",tr("网页图片","Web image"),"info",status));
+            let mut retry = field("retry",if local.is_some() { tr("重新下载","Download again") } else { tr("加载图片","Load image") },"action","");
+            retry["enabled"] = json!(!pending);
+            fields.push(retry);
+        }
+        if measured && geo.w >= MIN && geo.h >= MIN { fields.push(field("crop",tr("裁剪","Crop"),"action","")); }
+        if valid_crop(*crop).is_some() { fields.push(field("reset",tr("重置图片","Reset image"),"action","")); }
+        Some(json!({"kind":"image","title":tr("图片设置","Image settings"),"live":true,"fields":fields}))
+    }
+
+    pub(super) fn mobile_image_event(&mut self, block: BlockId, action: &str, edit: Option<(&str,&str)>, window: &mut Window, cx: &mut Context<Self>) {
+        use super::view::Menu;
+        if action != "object-edit" || !matches!(edit,Some(("width",_))) { self.end_resize(cx); }
+        match action {
+            "object-submit" | "object-close"=>{
+                if action == "object-submit" { self.save_crop(false,window,cx); } else { self.cancel_crop(cx); }
+                self.caption_blurred(block,cx);
+                self.menu = None;
+                cx.notify();
+            }
+            "object-edit"=>match edit {
+                Some(("caption",value))=>self.set_caption_text(block,value,cx),
+                Some(("alignment",value))=>if let Some(align) = match value { "left"=>Some(Align::Left),"center"=>Some(Align::Center),"right"=>Some(Align::Right),_=>None } { self.core.set_align(&[block],align); self.changed(window,cx); },
+                Some(("width",value))=>if let Some(width) = value.parse::<f32>().ok().filter(|v|v.is_finite()) {
+                    if self.img.resize.is_none() { self.start_resize(block,false,CursorStyle::ResizeLeftRight,px(0.),window,cx); }
+                    if let Some(r) = &self.img.resize { let x = (width-r.start_w)/r.mul; self.resize_to(px(x),cx); }
+                    self.menu = Some(Menu::NativeImage { block });
+                },
+                _=>{},
+            },
+            "object-action"=>match edit {
+                Some(("resize-end",_))=>{},
+                Some(("retry",_))=>if let Some(BlockKind::Image { src,.. }) = self.core.kind_of(block) && (src.starts_with("http://") || src.starts_with("https://")) { let src = src.clone(); self.retry_image(&src,cx); },
+                Some(("crop",_))=>self.start_crop(block,window,cx),
+                Some(("reset",_))=>self.reset_crop(block,cx),
+                Some(("crop-start",value))=>{
+                    #[derive(serde::Deserialize)] struct Start { hx:i8,hy:i8,x:f32,y:f32 }
+                    if let Some(p) = serde_json::from_str::<Start>(value).ok().filter(|p|(-1..=1).contains(&p.hx) && (-1..=1).contains(&p.hy) && p.x.is_finite() && p.y.is_finite()) && let Some((g,container)) = self.image_geo(block) {
+                        let (w,h) = crop_display(&g,container);
+                        self.start_crop_drag(p.hx,p.hy,p.hx == 0 && p.hy == 0,CursorStyle::OpenHand,point(px(p.x*w),px(p.y*h)),cx);
+                    }
+                }
+                Some(("crop-move",value))=>{
+                    #[derive(serde::Deserialize)] struct Move { x:f32,y:f32 }
+                    if let Some(p) = serde_json::from_str::<Move>(value).ok().filter(|p|p.x.is_finite() && p.y.is_finite()) && let Some((g,container)) = self.image_geo(block) {
+                        let (w,h) = crop_display(&g,container);
+                        self.crop_drag_to(point(px(p.x*w),px(p.y*h)),false,cx);
+                    }
+                }
+                Some(("crop-end",_))=>self.end_crop_drag(cx),
+                _=>{},
+            },
+            _=>{},
+        }
+    }
 }
 
 #[cfg(test)]

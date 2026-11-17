@@ -145,7 +145,7 @@ impl Workspace {
         let parent = if self.entries.iter().any(|e| e.id == parent && e.meta.folder.is_some()) { parent.to_string() }
             else { return; };
         let parent = parent.as_str();
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if !self.is_shared() && crate::cloud_sync::shared::original::owner_room(&self.entries, parent).is_some() {
             self.create_doc(false, Some(parent.into()), window, cx); return;
         }
@@ -186,7 +186,7 @@ impl Workspace {
             }
             cx.notify();
         })];
-        window.focus(&search.focus_handle(cx));
+        crate::gpui_compat::focus(window, &search.focus_handle(cx), cx);
         self.move_dlg = Some(MoveDialog { ids, target: None, expanded: HashSet::new(), search, scroll: ScrollHandle::new(), _subs: subs });
         cx.notify();
     }
@@ -194,7 +194,7 @@ impl Workspace {
     fn close_move(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.move_dlg = None;
         if let Some(ed) = &self.editor {
-            ed.read(cx).focus(window);
+            crate::gpui_compat::focus(window, &ed.read(cx).focus_handle(cx), cx);
         }
         cx.notify();
     }
@@ -202,7 +202,7 @@ impl Workspace {
     /// 移动到: hang each page under `target` (`None`: top level), skipping
     /// moves into its own subtree.
     pub(crate) fn move_docs(&mut self, ids: &[String], target: Option<String>, cx: &mut Context<Self>) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.confirm_shared_move(ids, target.as_deref(), cx) { return; }
         let file_before = self.store.track_file_changes();
         let mut failed = false;

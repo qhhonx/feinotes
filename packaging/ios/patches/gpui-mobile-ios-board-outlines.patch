@@ -1,0 +1,30 @@
+--- a/src/ios/text_system.rs
++++ b/src/ios/text_system.rs
+@@ -209,6 +209,27 @@
+         self.0.read().glyph_for_char(font_id, ch)
+     }
+ 
++    // FontKit outlines for the board CPU renderer, using the selected CoreText face.
++    fn glyph_outline(&self, font_id: FontId, glyph_id: GlyphId) -> Option<Vec<gpui::GlyphOutlineCmd>> {
++        use gpui::GlyphOutlineCmd as C;
++        use font_kit::{hinting::HintingOptions, outline::OutlineSink};
++        use pathfinder_geometry::line_segment::LineSegment2F;
++        struct Sink(Vec<C>, f32);
++        impl Sink { fn p(&self, v: Vector2F) -> [f32; 2] { [v.x() + v.y() * self.1, v.y()] } }
++        impl OutlineSink for Sink {
++            fn move_to(&mut self, to: Vector2F) { let p = self.p(to); self.0.push(C::MoveTo(p)); }
++            fn line_to(&mut self, to: Vector2F) { let p = self.p(to); self.0.push(C::LineTo(p)); }
++            fn quadratic_curve_to(&mut self, ctrl: Vector2F, to: Vector2F) { let (a, b) = (self.p(ctrl), self.p(to)); self.0.push(C::QuadTo(a, b)); }
++            fn cubic_curve_to(&mut self, ctrl: LineSegment2F, to: Vector2F) { let (a, b, c) = (self.p(ctrl.from()), self.p(ctrl.to()), self.p(to)); self.0.push(C::CubicTo(a, b, c)); }
++            fn close(&mut self) { self.0.push(C::Close); }
++        }
++        let state = self.0.read();
++        let font = &state.fonts[font_id.0];
++        let mut sink = Sink(Vec::new(), 0.);
++        font.outline(glyph_id.0, HintingOptions::None, &mut sink).ok()?;
++        Some(sink.0)
++    }
++
+     fn glyph_raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+         self.0.read().raster_bounds(params)
+     }

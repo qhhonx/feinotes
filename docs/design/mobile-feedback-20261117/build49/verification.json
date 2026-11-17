@@ -1,0 +1,187 @@
+{
+  "candidate": "0.1.9 (49)",
+  "completed_at": "2026-11-17T16:25:31.714846+00:00",
+  "source_head": "52d391c063067e667ba7dee9b0e15288eed5bb97",
+  "source_branch": "mobile/iphone-layout",
+  "source_contains_uncommitted_work": true,
+  "test_environment": "isolated synthetic iPhone and iPad simulator libraries",
+  "ui_passes": [
+    {
+      "selector": "testPhoneFeedback49Navigation",
+      "status": "passed",
+      "seconds": 102.811,
+      "log": "/private/tmp/fei-mobile-feedback49-20261117/phone4.log",
+      "xcresult": "/private/tmp/fei-mobile-feedback49-20261117/phone4.xcresult"
+    },
+    {
+      "selector": "testPhoneFeedback49Preview",
+      "status": "passed",
+      "seconds": 43.915,
+      "log": "/private/tmp/fei-mobile-feedback49-20261117/phone4.log",
+      "xcresult": "/private/tmp/fei-mobile-feedback49-20261117/phone4.xcresult"
+    },
+    {
+      "selector": "testPadFeedback49Navigation",
+      "status": "passed",
+      "seconds": 76.121,
+      "log": "/private/tmp/fei-mobile-feedback49-20261117/pad4.log",
+      "xcresult": "/private/tmp/fei-mobile-feedback49-20261117/pad4.xcresult"
+    },
+    {
+      "selector": "testPadFeedback49Preview",
+      "status": "passed",
+      "seconds": 37.101,
+      "log": "/private/tmp/fei-mobile-feedback49-20261117/pad4.log",
+      "xcresult": "/private/tmp/fei-mobile-feedback49-20261117/pad4.xcresult"
+    },
+    {
+      "selector": "testPadFeedback49ThemesAndCatalog",
+      "status": "passed",
+      "seconds": 105.974,
+      "log": "/private/tmp/fei-mobile-feedback49-20261117/pad4.log",
+      "xcresult": "/private/tmp/fei-mobile-feedback49-20261117/pad4.xcresult"
+    },
+    {
+      "selector": "testPhoneClearedSearchDoesNotReturnOnClose",
+      "status": "passed",
+      "seconds": 62.839,
+      "log": "/private/tmp/fei-mobile-feedback49-20261117/phone-final.log",
+      "xcresult": "/private/tmp/fei-mobile-feedback49-20261117/phone-final.xcresult"
+    },
+    {
+      "selector": "testPhoneFeedback49BilingualDemo",
+      "status": "passed",
+      "seconds": 55.576,
+      "log": "/private/tmp/fei-mobile-feedback49-20261117/phone-final.log",
+      "xcresult": "/private/tmp/fei-mobile-feedback49-20261117/phone-final.xcresult"
+    },
+    {
+      "selector": "testPhoneFeedback49ThemesAndCatalog",
+      "status": "passed",
+      "seconds": 130.288,
+      "log": "/private/tmp/fei-mobile-feedback49-20261117/phone-final.log",
+      "xcresult": "/private/tmp/fei-mobile-feedback49-20261117/phone-final.xcresult"
+    },
+    {
+      "selector": "testPhoneTableGestureAxes",
+      "status": "passed",
+      "seconds": 30.506,
+      "log": "/private/tmp/fei-mobile-feedback49-20261117/phone-final.log",
+      "xcresult": "/private/tmp/fei-mobile-feedback49-20261117/phone-final.xcresult"
+    },
+    {
+      "selector": "testPadFeedback49TableGestureAxes",
+      "status": "passed",
+      "seconds": 32.788,
+      "log": "/private/tmp/fei-mobile-feedback49-20261117/pad-axes-final.log",
+      "xcresult": "/private/tmp/fei-mobile-feedback49-20261117/pad-axes-final.xcresult"
+    }
+  ],
+  "host_regressions": {
+    "passed": 241,
+    "ignored": 4,
+    "log": "/private/tmp/fei-mobile-feedback49-20261117/root-tests-final.log",
+    "clippy_strict": "passed",
+    "clippy_log": "/private/tmp/fei-mobile-feedback49-20261117/root-clippy-final.log"
+  },
+  "theme_matrix": {
+    "devices": [
+      "iPhone",
+      "iPad"
+    ],
+    "themes": [
+      "Notes",
+      "Feishu"
+    ],
+    "appearances": [
+      "light",
+      "dark"
+    ],
+    "scenes": [
+      "headings",
+      "inline marks",
+      "code",
+      "tables",
+      "nested lists",
+      "tasks",
+      "quote",
+      "callout",
+      "columns"
+    ]
+  },
+  "superseded_test_setup": {
+    "phone4 theme run": "Reopened document restored its prior scroll. Final test resets to the top before measuring; phone-final passed.",
+    "earlier iPad axes fixture": "Six 160-point columns fit focused iPad width. Final ten-column fixture forces actual overflow; pad-axes-final passed."
+  },
+  "package": {
+    "bundle": "app.feinotes.mac",
+    "version": "0.1.9",
+    "build": "49",
+    "sha256": "07c3472409cfa016d9690090c7110bcce0ca34e954497f356a4983cc394aec9a",
+    "path": "/private/tmp/fei-mobile-feedback49-20261117/XcodeExport49Final/FeiNotes.ipa",
+    "bytes": 51887247,
+    "signature": "actual IPA unpacked; codesign --verify --deep --strict passed",
+    "archive": "/private/tmp/fei-mobile-feedback49-20261117/FeiNotes49Final.xcarchive",
+    "external_transfer": false,
+    "cloud_environment": "Production",
+    "profile_device_count": 2,
+    "qa_fixtures_bundled": false
+  },
+  "screenshots": [
+    {
+      "file": "screenshots/iphone-selection-dark.png",
+      "sha256": "0d93b17d7b5bc9e058ecb3518a1cbd2725bc177f37e355d55639ef143bb640a2",
+      "source": "/private/tmp/fei-mobile-feedback49-20261117/phone4-attachments/FAB34399-FFBA-4E52-A889-C9D42E41FFD7.png",
+      "synthetic": true
+    },
+    {
+      "file": "screenshots/iphone-preview-close.png",
+      "sha256": "b78c770ced6b6b1bf8bf0cd1ee92ea4e7dd13b43bd39effcba74eacd897b3488",
+      "source": "/private/tmp/fei-mobile-feedback49-20261117/phone4-attachments/6C994217-95A3-4E12-88EC-EA87867622C0.png",
+      "synthetic": true
+    },
+    {
+      "file": "screenshots/ipad-selection-dark.png",
+      "sha256": "f4f5ce477816d81fa8a3c38803092c41dcc12fae7512f5ed7f8420afc360cdf9",
+      "source": "/private/tmp/fei-mobile-feedback49-20261117/pad4-attachments/5002BDB4-0309-4972-AB4E-B987811754CB.png",
+      "synthetic": true
+    },
+    {
+      "file": "screenshots/ipad-catalog.png",
+      "sha256": "07ec0ab5e0d8907a501cd36d06004b68bb6896c9bf7b6e3874d195e7dd14e52c",
+      "source": "/private/tmp/fei-mobile-feedback49-20261117/pad4-attachments/7505D71A-3544-4DED-B65C-0F8CD6792C8A.png",
+      "synthetic": true
+    },
+    {
+      "file": "screenshots/iphone-demo-zh-dark.png",
+      "sha256": "309c66cd1ec49f1a36d99e59375e5b10b44e097a1ad6477970d820e0cf3eeff7",
+      "source": "/private/tmp/fei-mobile-feedback49-20261117/phone-final-attachments/841FA17C-21ED-4B53-89A4-3B17529E7BE6.png",
+      "synthetic": true
+    },
+    {
+      "file": "screenshots/iphone-demo-zh-light.png",
+      "sha256": "b56b9850c917d8eb3c4f5f7961f1e2ed6f5f2b7cef1bf062b12f9ce490a31ad3",
+      "source": "/private/tmp/fei-mobile-feedback49-20261117/phone-final-attachments/E9DB503A-5627-474B-9BB0-FF518317F434.png",
+      "synthetic": true
+    },
+    {
+      "file": "screenshots/iphone-demo-en-light.png",
+      "sha256": "e093d9fd12d8c8e1d00ff383e82bb472958b0eeeaf3d25eb2e762021640becb2",
+      "source": "/private/tmp/fei-mobile-feedback49-20261117/phone-final-attachments/9522B428-20CE-4F1A-97C9-A14E528F9647.png",
+      "synthetic": true
+    },
+    {
+      "file": "screenshots/iphone-catalog.png",
+      "sha256": "7e25627d16268b90faa5a85ae3efa7f36cd1636edc32cdf3330cb04393bc03b0",
+      "source": "/private/tmp/fei-mobile-feedback49-20261117/phone-final-attachments/C48C5BBE-649A-4432-8040-0C5F41F0D101.png",
+      "synthetic": true
+    }
+  ],
+  "boundaries": [
+    "No physical device install or interaction acceptance for build 49",
+    "No TestFlight upload",
+    "No live cross-account sharing test",
+    "Historical version-named UI tests are not the current selector set",
+    "Folder mentions retain existing folder hierarchy; document link return frames are for documents"
+  ]
+}

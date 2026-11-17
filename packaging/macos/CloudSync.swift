@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Copyright 2026 Fei Notes contributors. See LICENSES.md.
+#if os(macOS)
 import AppKit
+import Quartz
+#elseif os(iOS)
+import UIKit
+#endif
 import CloudKit
 import CryptoKit
 import Foundation
 import Network
+#if os(macOS)
 import Quartz
 import QuickLookThumbnailing
+#endif
 
 private let syncZoneName = "QuietLibraryEdits-v4"
 private let legacyZoneName = "QuietLibraryEdits-v3"
@@ -45,10 +52,16 @@ private final class SyncResumeMonitor: @unchecked Sendable {
 
     @MainActor init(signal: @escaping @convention(c) (Int32) -> Void) {
         self.signal = signal
+        #if os(macOS)
         let workspace = NSWorkspace.shared
         workspaceNotifications = workspace.notificationCenter
         wakeObserver = workspaceNotifications.addObserver(forName: NSWorkspace.didWakeNotification,
             object: workspace, queue: .main) { _ in signal(1) }
+        #elseif os(iOS)
+        workspaceNotifications = .default
+        wakeObserver = workspaceNotifications.addObserver(forName: UIScene.didActivateNotification,
+            object: nil, queue: .main) { _ in signal(1) }
+        #endif
         accountObserver = NotificationCenter.default.addObserver(forName: .CKAccountChanged,
             object: nil, queue: nil) { _ in
                 accountRevision.lock.withLock { accountRevision.value &+= 1 }
@@ -96,8 +109,12 @@ public func quietCloudWatchSyncResume(_ signal: @escaping @convention(c) (Int32)
 @_cdecl("quiet_cloud_simulate_sync_resume")
 public func quietCloudSimulateSyncResume(_ kind: Int32) {
     if kind == 1 {
+        #if os(macOS)
         let workspace = NSWorkspace.shared
         workspace.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: workspace)
+        #elseif os(iOS)
+        NotificationCenter.default.post(name: UIScene.didActivateNotification, object: nil)
+        #endif
     }
     else if kind == 2 { syncResumeMonitor?.simulateNetworkResume() }
     else if kind == 3 { syncResumeMonitor?.simulateAccountChange() }
@@ -466,6 +483,21 @@ public func quietCloudExchange(_ json: UnsafePointer<CChar>) -> UnsafeMutablePoi
             completion.reply = reply
         } catch {
             let failure: Error = quietCloudAccountRevision() == revision ? error : SyncError.accountChecking
+            #if os(iOS) && FEI_CLOUD_QA
+            if (try? request.get())?.channel != nil {
+                let detail = failure as NSError
+                var codes = ["\(detail.domain):\(detail.code)"]
+                var underlying = detail.userInfo[NSUnderlyingErrorKey] as? NSError
+                for _ in 0..<4 {
+                    guard let cause = underlying else { break }
+                    let host = (cause.userInfo[NSURLErrorFailingURLErrorKey] as? URL)?.host
+                    let endpoint = host.map { " [\($0)]" } ?? ""
+                    codes.append("\(cause.domain):\(cause.code)\(endpoint)")
+                    underlying = cause.userInfo[NSUnderlyingErrorKey] as? NSError
+                }
+                FileHandle.standardError.write(Data("CloudKit QA error \(codes.joined(separator: " → "))\n".utf8))
+            }
+            #endif
             completion.reply = Changes(error: failure.localizedDescription, errorKind: syncErrorKind(failure))
         }
         completion.done.signal()
@@ -571,7 +603,12 @@ private func presence(_ request: PresenceRequest, revision: UInt64) async throws
         let id = CKRecord.ID(recordName: request.peer, zoneID: zone)
         let record = CKRecord(recordType: "QuietPresence", recordID: id)
         record["state"] = state
-        record["name"] = request.room == nil ? String((Host.current().localizedName ?? "Mac").prefix(48)) : "Collaborator"
+        #if os(macOS)
+        let deviceName = Host.current().localizedName ?? "Mac"
+        #else
+        let deviceName = "iPad"
+        #endif
+        record["name"] = request.room == nil ? String(deviceName.prefix(48)) : "Collaborator"
         do {
             let response = try await db.modifyRecords(saving: [record], deleting: [], savePolicy: .allKeys, atomically: true)
             guard let saved = response.saveResults[id] else { throw SyncError.invalid }
@@ -660,6 +697,7 @@ public func quietCloudPresence(_ json: UnsafePointer<CChar>) -> UnsafeMutablePoi
     return strdup(String(decoding: bytes, as: UTF8.self))
 }
 
+#if os(macOS)
 // Called on a Rust background executor. Quick Look's service can read the
 // app's sandbox container; launching qlmanage loses that access.
 private final class ThumbnailResult: @unchecked Sendable {
@@ -730,3 +768,4 @@ public func quietCloudPreview(_ path: UnsafePointer<CChar>) -> Bool {
     previewPanel = panel
     return true
 }
+#endif

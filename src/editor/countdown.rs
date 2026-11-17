@@ -21,6 +21,7 @@ use std::{
 
 const COLOR_NAMES: [&str; 7] = ["红色", "橙色", "黄色", "绿色", "蓝色", "紫色", "灰色"];
 const UNITS: [&str; 4] = ["天", "时", "分", "秒"];
+const INVALID_END: &str = "设置的倒计时时间必须晚于当前 GMT+8 的时间";
 /// Largest value each duration field accepts (typed), and how many values
 /// its dropdown lists.
 const MAX: [u32; 4] = [999, 23, 59, 59];
@@ -104,6 +105,12 @@ pub(super) struct Dialog {
     /// The calendar's page.
     month: (i64, u32),
     drop: Option<Drop>,
+    #[cfg(target_os = "ios")]
+    native_error: Option<&'static str>,
+    #[cfg(target_os = "ios")]
+    native_color: Option<String>,
+    #[cfg(target_os = "ios")]
+    native_time_edited: bool,
 }
 
 pub(super) struct CdUi {
@@ -148,7 +155,7 @@ impl CdUi {
                         if let Some(d) = &mut e.cd.dialog {
                             d.drop = None;
                         }
-                        window.focus(&e.cd.focus);
+                        crate::gpui_compat::focus(window, &e.cd.focus, cx);
                         cx.notify();
                     }
                     TextFieldEvent::Cancel => e.cd_escape(window, cx),
@@ -477,15 +484,22 @@ impl Editor {
         self.slash = None;
         self.cd.palette = None;
         self.cd.palette_in = [false; 2];
-        self.cd.dialog = Some(Dialog { block: id, by_date: c.by_date, notify: c.notify, date, time, month: (date.0, date.1), drop: None });
+        self.cd.dialog = Some(Dialog { block: id, by_date: c.by_date, notify: c.notify, date, time, month: (date.0, date.1), drop: None,
+            #[cfg(target_os = "ios")] native_error: None, #[cfg(target_os = "ios")] native_color: None, #[cfg(target_os = "ios")] native_time_edited: false });
         self.cd_set_mode(c.by_date, cx);
-        window.focus(&self.cd.focus);
+        #[cfg(target_os = "ios")]
+        self.present_native_object(cx);
+        #[cfg(not(target_os = "ios"))]
+        crate::gpui_compat::focus(window, &self.cd.focus, cx);
+        let _ = window;
         cx.notify();
     }
 
     fn close_countdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.cd.dialog.take().is_some() {
-            window.focus(&self.focus);
+            #[cfg(target_os = "ios")]
+            super::object_mobile::dismiss_form();
+            crate::gpui_compat::focus(window, &self.focus, cx);
             cx.notify();
         }
     }
@@ -540,7 +554,9 @@ impl Editor {
         let duration = if d.by_date {
             let end = crate::time::local_to_unix(y, m, dd, h, mi) * 1000;
             if end < now as i64 {
-                self.toast_kind(ToastKind::Error, crate::settings::text("设置的倒计时时间必须晚于当前 GMT+8 的时间"), cx);
+                #[cfg(target_os = "ios")]
+                if let Some(d) = &mut self.cd.dialog { d.native_error = Some(INVALID_END); }
+                self.toast_kind(ToastKind::Error, crate::settings::text(INVALID_END), cx);
                 return;
             }
             (end - now as i64) as f64 / 1000. + 1.
@@ -583,6 +599,7 @@ impl Editor {
 
     /// The dialog and its open dropdown (window-level layers).
     pub(super) fn countdown_overlays(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if cfg!(target_os = "ios") { return Vec::new(); }
         let Some(d) = &self.cd.dialog else { return vec![] };
         let vp = window.viewport_size();
         let mut out = vec![self.cd_dialog(d, vp, cx)];
@@ -868,7 +885,7 @@ impl Editor {
                     if let Some(d) = &mut e.cd.dialog {
                         d.drop = None;
                     }
-                    window.focus(&e.cd.focus);
+                    crate::gpui_compat::focus(window, &e.cd.focus, cx);
                     cx.notify();
                 }, cx)
                 .w(px(64.))
@@ -1047,4 +1064,71 @@ impl Editor {
 /// material, hairline, radius 12, the menu drop.
 pub(super) fn list_box() -> Div {
     popover()
+}
+
+#[cfg(target_os = "ios")]
+impl Editor {
+    pub(super) fn native_countdown_request(&self, cx: &App) -> Option<serde_json::Value> {
+        use super::object_mobile::{date_field,field};
+        use crate::settings::tr;
+        use serde_json::json;
+        let d = self.cd.dialog.as_ref()?;
+        let Some(BlockKind::Countdown(current)) = self.core.kind_of(d.block) else { return None };
+        let mut mode = field("mode",tr("倒计时方式","Countdown mode"),"choice",if d.by_date { "date" } else { "duration" });
+        mode["options"] = json!([{"value":"duration","title":tr("输入倒计时时长","Duration")},{"value":"date","title":tr("选择具体日期","End date")}]);
+        let mut fields = vec![mode];
+        if d.by_date {
+            let end = crate::time::local_to_unix(d.date.0,d.date.1,d.date.2,d.time.0,d.time.1)*1000;
+            fields.push(date_field("end",tr("截止时间","End time"),end,false));
+        } else {
+            for (i,key) in ["days","hours","minutes","seconds"].into_iter().enumerate() {
+                let input = self.cd.fields[i].read(cx);
+                let mut value = field(key,crate::settings::text(UNITS[i]),"number",&input.text);
+                value["max_length"] = json!(input.max_len);
+                fields.push(value);
+            }
+        }
+        fields.push(field("notify",tr("结束时提醒","Notify when finished"),"toggle",if d.notify { "true" } else { "false" }));
+        let mut color = field("color",tr("颜色","Color"),"choice",d.native_color.as_deref().unwrap_or(&current.color));
+        color["value_title"] = json!(tr("自定义","Custom"));
+        color["options"] = json!(COUNTDOWN_COLORS.iter().zip(COLOR_NAMES).map(|(value,title)| { let c: Rgba = hex(value).into(); json!({"value":value,"title":crate::settings::text(title),"swatch":[c.r,c.g,c.b,c.a]}) }).collect::<Vec<_>>());
+        fields.push(color);
+        Some(json!({"kind":"countdown","title":tr("倒计时设置","Countdown settings"),"live":false,"fields":fields,"error":d.native_error.map(crate::settings::text)}))
+    }
+
+    pub(super) fn mobile_countdown_event(&mut self, action: &str, edit: Option<(&str,&str)>, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            "object-close"=>self.close_countdown(window,cx),
+            "object-submit"=>{
+                let color = self.cd.dialog.as_ref().and_then(|d|d.native_color.clone().map(|color|(d.block,color)));
+                if self.cd.dialog.as_ref().is_some_and(|d|!d.native_time_edited) && let Some((id,color)) = color {
+                    self.close_countdown(window,cx);
+                    self.set_countdown_color(id,&color,window,cx);
+                    return;
+                }
+                self.confirm_countdown(window,cx);
+                if self.cd.dialog.is_none() && let Some((id,color)) = color { self.set_countdown_color(id,&color,window,cx); }
+            }
+            "object-edit"=>{
+                let Some((key,value)) = edit else { return };
+                if let Some(d) = &mut self.cd.dialog {
+                    d.native_error = None;
+                    if matches!(key,"mode"|"notify"|"end"|"days"|"hours"|"minutes"|"seconds") { d.native_time_edited = true; }
+                }
+                match key {
+                    "mode" if value == "date" || value == "duration"=>self.cd_set_mode(value == "date",cx),
+                    "notify" if value == "true" || value == "false"=>if let Some(d) = &mut self.cd.dialog { d.notify = value == "true"; },
+                    "color" if COUNTDOWN_COLORS.contains(&value)=>if let Some(d) = &mut self.cd.dialog { d.native_color = Some(value.into()); },
+                    "end"=>if let Some(value) = super::object_mobile::date_millis(value) {
+                        let date = from_days(super::reminder::day_of(value));
+                        let tod = value-super::reminder::day_start(value);
+                        if let Some(d) = &mut self.cd.dialog { d.date = date; d.time = ((tod/3_600_000) as u32,((tod%3_600_000)/60_000) as u32); }
+                    },
+                    _=>if let Some(i) = ["days","hours","minutes","seconds"].iter().position(|k|*k == key) && value.bytes().all(|b|b.is_ascii_digit()) { self.cd.fields[i].update(cx,|f,cx|f.set_text(value,cx)); },
+                }
+                cx.notify();
+            }
+            _=>{},
+        }
+    }
 }

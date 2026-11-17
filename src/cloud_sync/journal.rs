@@ -18,6 +18,7 @@ use super::shared::{self, Access};
 pub struct Journal {
     db: Connection,
     _lock: File,
+    _session: Option<crate::store::SessionLease>,
     root: PathBuf,
     peer: u64,
     account: String,
@@ -290,6 +291,7 @@ impl Journal {
     }
 
     pub(super) fn open_locked(root: &Path, channel: Option<String>, lock: std::fs::File) -> Result<Self> {
+        let session = Store::session_lease(root);
         let marker = std::fs::read_to_string(root.join(".cloud-restore-ready"))?;
         let account = marker.lines().next().filter(|a| a.len() == 64).context("Invalid library account")?.to_string();
         let room = shared::descriptor(root)?.map(|room| room.scope);
@@ -373,7 +375,7 @@ impl Journal {
             peer
         };
         tx.commit()?;
-        let mut journal = Self { db, _lock: lock, root: root.to_path_buf(), peer: peer as u64, account, channel, room, access,
+        let mut journal = Self { db, _lock: lock, _session: session, root: root.to_path_buf(), peer: peer as u64, account, channel, room, access,
             next_collection: Default::default(), merged_data_version: None, history: HashMap::new() };
         if let Err(error) = journal.collect_local() { crate::logging::write(&format!("Deferred local attachment cleanup: {error:#}")); }
         Ok(journal)
@@ -822,6 +824,29 @@ impl Journal {
                 ensure!(page.edits.is_empty() && page.token.is_none(), "A revoked share returned note content");
                 tx.execute("DELETE FROM library_entries", [])?;
             }
+        }
+        if let Some(receipt) = &page.retention {
+            ensure!(!page.legacy && page.room_access != Some(Access::Revoked), "Incorrect inventory scope");
+            retention::received(&tx, receipt, &page.edits)?;
+        }
+        for edit in &mut page.edits {
+            if edit.note==assets::SCOPE { continue; }
+            let (index,body)=retention::unpack(&edit.data.0)?;
+            if body.len()==edit.data.0.len() { continue; }
+            if !index.versions.is_empty() {
+                let doc=content::open(body)?;
+                for a in index.versions {
+                    ensure!(doc.oplog_vv().includes_vv(&a.version), "Checkpoint is missing a protected version");
+                    let branch=doc.fork_at(&doc.vv_to_frontiers(&a.version))?;
+                    let archived=content::render(&branch)?;
+                    for path in content::local_assets(&archived) {
+                        tx.execute("INSERT OR IGNORE INTO cloud_checkpoint_paths VALUES (?1,?2)",params![edit.id,path])?;
+                    }
+                    archive(&tx,&edit.note,&archived,&front(&branch),a.recovery)?;
+                }
+                trim_recent_versions(&tx,&edit.note)?;
+            }
+            edit.data.0=body.to_vec();
         }
         if let Some(receipt) = &page.retention {
             ensure!(!page.legacy && page.room_access != Some(Access::Revoked), "Incorrect inventory scope");

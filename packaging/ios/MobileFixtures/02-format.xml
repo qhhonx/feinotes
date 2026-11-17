@@ -1,0 +1,28 @@
+<title>QA45 二、列表</title>
+<ul>
+  <li>圆点 A<ul>
+  <li>子级 A1</li>
+</ul></li>
+</ul>
+<ul>
+  <li>圆点 B</li>
+</ul>
+<ul>
+  <li list-style-type="dash">短划线 A</li>
+</ul>
+<ul>
+  <li list-style-type="dash">短划线 B</li>
+</ul>
+<ol>
+  <li>编号 A</li>
+</ol>
+<ol>
+  <li>编号 B</li>
+</ol>
+<p>编号间隔正文</p>
+<ol>
+  <li seq="8">编号 C</li>
+</ol>
+<ol>
+  <li>编号 D</li>
+</ol>

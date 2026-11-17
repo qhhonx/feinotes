@@ -84,7 +84,7 @@ async fn park(handle: AnyWindowHandle, ns_view: usize, cx: &mut AsyncApp) {
 }
 
 /// Park additional QA windows without transferring the script driver.
-#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 pub(crate) fn park_window(window: &mut Window, cx: &mut App) {
     if !scripted() { return; }
     #[cfg(target_os = "macos")]
@@ -369,12 +369,12 @@ pub fn start(window: &mut Window, cx: &mut App) {
                 cx.update(|cx| crate::app::check_save_safety(rest.trim(), cx)).unwrap();
                 continue;
             }
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             if cmd == "cloudresume" {
                 crate::cloud_sync::simulate_resume(rest.trim()).unwrap();
                 continue;
             }
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             if cmd == "check-shared-sessions" {
                 cx.update(crate::cloud_sync::shared::session_qa::open).unwrap().unwrap();
                 cx.background_executor().timer(Duration::from_millis(1500)).await;

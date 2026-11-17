@@ -8,6 +8,8 @@
 //! draw-to-shape, bucket fill or "Generate" items.
 
 use super::*;
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 use super::menu::{dropdown, dropdown_item};
 use super::tip::ExTip;
 use crate::board::action::{BoardAction, Tool};

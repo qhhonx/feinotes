@@ -17,6 +17,14 @@ pub struct DocInfo {
     pub size: u64,
 }
 
+#[cfg(target_os = "ios")]
+pub(crate) struct InformationSession { serial:u64, root:std::path::PathBuf, note:String }
+#[cfg(target_os = "ios")]
+static INFORMATION_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+#[cfg(target_os = "ios")]
+#[derive(serde::Serialize)]
+pub(crate) struct NativeInformation { serial:u64, note:String, title:&'static str, message:String, done:&'static str }
+
 fn is_cjk(c: char) -> bool {
     matches!(c as u32,
         0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x2fa1f
@@ -100,15 +108,39 @@ impl Workspace {
             chars: char_count(&text),
             size: self.store.size_of(&id, doc),
         });
+        #[cfg(target_os = "ios")]
+        { self.mobile_information = Some(InformationSession { serial:INFORMATION_SERIAL.fetch_add(1,std::sync::atomic::Ordering::Relaxed),root:crate::store::Store::root_dir(),note:id }); }
         self.doc_menu = false;
         self.doc_sub = None;
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         cx.notify();
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn native_document_information(&self) -> Option<NativeInformation> {
+        use crate::settings::tr;
+        let session = self.mobile_information.as_ref()?;
+        let info = self.doc_info.as_ref()?;
+        if self.view != crate::app::View::Doc || self.confirm.is_some() || self.current.as_ref() != Some(&session.note) || session.root != crate::store::Store::root_dir() { return None; }
+        #[cfg(feature = "cloudkit-sync")]
+        if self.library_switching { return None; }
+        let message = format!("{}：{}\n{}：{}\n\n{}：{}\n{}：{}\n{}：{}",
+            tr("创建时间","Created"),format_date(info.created),tr("最近修改","Modified"),format_relative(info.modified),
+            tr("总字数","Words"),info.words,tr("总字符数","Characters"),info.chars,tr("大小","Size"),format_size(info.size));
+        Some(NativeInformation { serial:session.serial,note:session.note.clone(),title:tr("文档信息","Document information"),message,done:tr("完成","Done") })
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn close_native_information(&mut self, serial:u64, cx:&mut Context<Self>) {
+        if self.mobile_information.as_ref().is_some_and(|session|session.serial == serial) {
+            self.mobile_information = None; self.doc_info = None; cx.notify();
+        }
     }
 
     /// The modal (white, radius 16): a 15pt semibold title with the grey
     /// close disc, a quiet selected nav item and soft tiles.
     pub(crate) fn render_doc_info(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if cfg!(target_os = "ios") { return None; }
         let info = self.doc_info.clone()?;
         let section = |title: &'static str| {
             div().text_size(px(13.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::text()).child(title)

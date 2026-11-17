@@ -85,7 +85,7 @@ pub mod ud {
 
 fn shadow(a: f32, y: f32, blur: f32, spread: f32) -> BoxShadow {
     let a = if crate::theme::dark() { (a * 3.).min(0.6) } else { a };
-    BoxShadow { color: rgbaf(31, 35, 41, a), offset: point(px(0.), px(y)), blur_radius: px(blur), spread_radius: px(spread) }
+    BoxShadow { #[cfg(target_os = "ios")] inset: false, color: rgbaf(31, 35, 41, a), offset: point(px(0.), px(y)), blur_radius: px(blur), spread_radius: px(spread) }
 }
 
 /// Dropdowns and the slash / block menus (`shadow.popover`: 0 4 8).

@@ -95,7 +95,7 @@ pub const GRAY_5: u32 = 0xadb5bd;
 pub fn selection() -> Hsla { pick(0x6965db, 0xb4b0ff) }
 
 // ---- shadows
-fn sh(y: f32, blur: f32, a: f32) -> BoxShadow { BoxShadow { color: gpui::hsla(0., 0., 0., a), offset: point(px(0.), px(y)), blur_radius: px(blur), spread_radius: px(0.) } }
+fn sh(y: f32, blur: f32, a: f32) -> BoxShadow { BoxShadow { color: gpui::hsla(0., 0., 0., a), offset: point(px(0.), px(y)), blur_radius: px(blur), spread_radius: px(0.), #[cfg(target_os = "ios")] inset: false } }
 /// `--shadow-island`.
 pub fn shadow_island() -> Vec<BoxShadow> { vec![sh(0., 1., 0.17), sh(0., 3., 0.08), sh(7., 14., 0.05)] }
 /// `--shadow-island-stronger`.
@@ -107,4 +107,4 @@ pub fn shadow_modal() -> Vec<BoxShadow> {
 /// `.context-menu`: `0 3px 10px rgba(0, 0, 0, 0.2)`.
 pub fn shadow_context_menu() -> Vec<BoxShadow> { vec![sh(3., 10., 0.2)] }
 /// A 1px ring (`box-shadow: 0 0 0 1px …`).
-pub fn ring(c: Hsla) -> Vec<BoxShadow> { vec![BoxShadow { color: c, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.) }] }
+pub fn ring(c: Hsla) -> Vec<BoxShadow> { vec![BoxShadow { color: c, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), #[cfg(target_os = "ios")] inset: false }] }

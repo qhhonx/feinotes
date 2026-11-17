@@ -1,0 +1,66 @@
+[package]
+name = "fei_notes_ipad"
+version = "0.1.9"
+edition = "2024"
+publish = false
+build = "../../build.rs"
+
+[workspace]
+exclude = [".gpui-mobile"]
+
+[lib]
+path = "../../src/main.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+fdl_core = { path = "../../crates/core", features = ["sqlite-store"] }
+gpui = { package = "gpui-pre", version = "=0.3.10", default-features = false }
+gpui-mobile = { package = "gpui-pre-mobile", path = ".gpui-mobile", default-features = false, features = ["camera", "video_player", "image_picker"] }
+anyhow = "1.0.104"
+async-lock = "3.4"
+dirs = "7.0.0"
+quick-xml = "0.37"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+unicode-segmentation = "1.13.3"
+uuid = { version = "1.28.0", features = ["v4"] }
+image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
+raw-window-handle = "0.6"
+rustc-hash = "2.1"
+katex-rs = { version = "0.3", default-features = false }
+regex = "1"
+resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+miniz_oxide = "0.9"
+icu_plurals = "2.4.0"
+icu_locale_core = "2.4.0"
+vello_cpu = { version = "=0.3.0", default-features = false, features = ["std", "u8_pipeline", "multithreading"] }
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
+base64 = "0.22"
+minisign-verify = "0.3.0"
+log = "0.4"
+sys-locale = "0.3.2"
+jpeg-decoder = { version = "0.3", default-features = false }
+png = "0.18"
+async-channel = { version = "2", optional = true }
+flate2 = { version = "1.1", optional = true }
+loro = { version = "1.17.1", default-features = false, optional = true }
+rusqlite = "=0.40.2"
+sha2 = { version = "0.10.9", optional = true }
+
+[features]
+devtools = []
+mobile-qa = []
+cloudkit-restore = []
+cloudkit-sync = ["cloudkit-restore", "dep:async-channel", "dep:flate2", "dep:loro", "dep:sha2"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
+# The UIKit main thread has a 1 MiB stack on the tested iPadOS 17 device.
+# Optimize the editor in development builds to keep nested GPUI layout within it.
+[profile.dev.package.fei_notes_ipad]
+opt-level = 1
+
+[patch.crates-io]
+gpui-pre = { path = ".gpui-core" }

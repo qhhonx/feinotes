@@ -92,6 +92,7 @@ if [[ "$existing" == new ]]; then
     xcodebuild "${xcode_args[@]}" -archivePath "$work/FeiNotes.xcarchive" archive
     app="$work/FeiNotes.xcarchive/Products/Applications/FeiNotes.app"
     python3 -B packaging/ios/release.py verify "$app" "$version" "$build" "$FEI_IOS_APP_CERT_SHA1" "$FEI_IOS_PROFILE_UUID"
+    python3 -B packaging/ios/privacy-audit.py "$app"
     for destination in export upload; do
         python3 -B packaging/ios/release.py export-options "$work/store.mobileprovision" "$FEI_IOS_APP_CERT_SHA1" \
             "$FEI_IOS_PROFILE_UUID" "$destination" "$work/ExportOptions.plist"
@@ -105,6 +106,7 @@ if [[ "$existing" == new ]]; then
             ditto -x -k "$ipa" "$work/exported"
             python3 -B packaging/ios/release.py verify "$work/exported/Payload/FeiNotes.app" \
                 "$version" "$build" "$FEI_IOS_APP_CERT_SHA1" "$FEI_IOS_PROFILE_UUID"
+            python3 -B packaging/ios/privacy-audit.py "$work/exported/Payload/FeiNotes.app"
         fi
     done
 fi

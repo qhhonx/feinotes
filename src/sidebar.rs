@@ -8,6 +8,8 @@ use crate::store::Entry;
 use crate::theme::{self, Theme, craft};
 use crate::ui::{TipExt, TitleBarExt, icon, popover, ui_text};
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 
 /// Row "…" menu geometry: 32pt rows, 11pt dividers, 6pt padding inside
 /// a 1pt border.
@@ -56,7 +58,7 @@ pub(crate) fn hover() -> Hsla { crate::themes::active().color("sidebar.hover").u
 pub(crate) fn selection_fill() -> Hsla { crate::themes::active().color("sidebar.selected").unwrap_or_else(Theme::sidebar_selected) }
 
 pub(crate) fn folder_glyph(entry: &Entry, open: bool, _cx: &App) -> Option<&'static str> {
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     if (entry.meta.folder.is_some() && entry.meta.share_root.as_ref() == Some(&entry.id))
         || _cx.try_global::<crate::cloud_sync::activity::ActivityView>().is_some_and(|view|
             view.0.iter().any(|row| row.room.scope.folder && row.room.scope.note == entry.id)) {
@@ -65,7 +67,7 @@ pub(crate) fn folder_glyph(entry: &Entry, open: bool, _cx: &App) -> Option<&'sta
     entry.meta.folder.as_ref().map(|_| if open { "folder-open" } else { "folder" })
 }
 
-#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 pub(crate) fn entry_icon(entry: &Entry, open: bool, cx: &App) -> Div {
     let folder = folder_glyph(entry, open, cx);
     div().size(px(20.)).flex_none().flex().items_center().justify_center().relative().map(|d| match &entry.icon {
@@ -216,20 +218,20 @@ impl Workspace {
         let mut list = div().flex().flex_col().px(px(SB_X)).pb(px(8.));
         // Pinned docs are shortcuts: they stay in 我的文档 too.
         let pinned: Vec<Entry> = entries.iter().filter(|e| e.meta.pinned).cloned().collect();
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let pinned: Vec<Entry> = pinned.into_iter().chain(self.shared_entries(cx).into_iter().filter(|entry| entry.meta.pinned)).collect();
         if !pinned.is_empty() {
             list = list.child(self.section(0, crate::settings::text("置顶"), cx));
             if !self.folded[0] {
                 for e in pinned {
-                    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                     if self.shared_list_room(&e.id, cx).is_some() { list = list.child(self.shared_shortcut_row(&e, cx)); continue; }
                     list = list.child(self.doc_row(&e, "pinned", 0, false, cx));
                 }
             }
             list = list.child(div().h(px(GROUP_GAP - SECTION_TOP)));
         }
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if !crate::cloud_restore::local_only() { list = list.child(self.shared_sidebar(window, cx)).child(div().h(px(GROUP_GAP - SECTION_TOP))); }
         // Dropped from outside with no tree shown to open a slot in: the heading lights.
         list = list.child(self.section(1, crate::settings::text("我的文档"), cx).rounded(px(ROW_R)).when(self.sidebar_drop_top(), |d| d.bg(Theme::sidebar_selected())));
@@ -312,7 +314,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub(crate) fn shared_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let folded = self.sharing.folded;
         let rows = cx.try_global::<crate::cloud_sync::activity::ActivityView>().map(|view| view.0.clone()).unwrap_or_default();
@@ -443,7 +445,7 @@ impl Workspace {
                         w.folded[idx] = !w.folded[idx];
                         if idx == 1 { w.folder_drag.reset(); }
                     }
-                    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                     if idx.is_none() { w.sharing.folded = !w.sharing.folded; if !w.sharing.folded { w.sharing.sidebar.reset(); } }
                     cx.notify();
                 })),
@@ -459,7 +461,7 @@ impl Workspace {
     fn section_batch_button(&self, shared: bool, cx: &mut Context<Self>) -> Stateful<Div> {
         Self::section_trigger(if shared { "shared-section-batch" } else { "section-batch" }, "batch")
             .tip(crate::settings::text("批量操作"), None).on_click(cx.listener(move |w, _, window, cx| {
-                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 if shared {
                     w.batch = Some(vec![]); w.sharing.batch = true; w.sharing.folded = false;
                     if w.view == View::Home { w.home.tab = crate::home::HomeTab::Shared; }
@@ -477,7 +479,7 @@ impl Workspace {
         use crate::folders::CreateTarget;
         let key = if shared { "accept-sidebar" } else { "create-sidebar" };
         let target = CreateTarget::Library(None);
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let target = if shared { CreateTarget::Shared } else { target };
         let open = self.create_menu.as_ref().is_some_and(|(item, _)| *item == target);
         Self::section_trigger(if shared { "shared-section-add" } else { "section-add" }, "plus")
@@ -485,7 +487,7 @@ impl Workspace {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| {
                 let pos = w.home.anchor(key).map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.)));
-                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 if shared {
                     if w.accept_invitation_open() { w.close_sharing(window, cx); }
                     w.create_menu = (!open).then_some((CreateTarget::Shared, pos)); cx.notify(); return;
@@ -519,14 +521,14 @@ impl Workspace {
 
     /// 批量创建副本: a "… 副本" of each checked doc; leaves 批量操作.
     pub(crate) fn batch_copy(&mut self, cx: &mut Context<Self>) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let shared_ids = self.batch.as_ref().into_iter().flatten().filter(|id| self.shared_list_room(id, cx).is_some()).cloned().collect::<Vec<_>>();
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.shared_batch() { self.copy_shared_documents(shared_ids, cx); return; }
         let file_before = self.store.track_file_changes();
         let ids = self.checked();
         if ids.is_empty() {
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             self.copy_shared_documents(shared_ids, cx);
             return;
         }
@@ -538,7 +540,7 @@ impl Workspace {
         self.batch = None;
         self.row_menu = None;
         self.remember_files(file_before, crate::settings::tr("批量创建副本", "Duplicate selection"));
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if !shared_ids.is_empty() { self.copy_shared_documents(shared_ids, cx); }
         cx.notify();
     }
@@ -551,7 +553,7 @@ impl Workspace {
     }
 
     pub(crate) fn ask_batch_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.batch_contains_shared(cx) { self.confirm_shared_batch_removal(window, cx); return; }
         let _ = window;
         let ids = self.checked();
@@ -819,7 +821,7 @@ impl Workspace {
 
     pub(crate) fn render_row_menu(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(m) = self.row_menu.clone() else { return vec![] };
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         {
             if let Some(id) = m.id.strip_prefix("shared:") { let mut shared = m.clone(); shared.id = id.to_string(); return self.shared_row_menu(shared, window, cx); }
             if self.shared_list_room(&m.id, cx).is_some() { return self.shared_row_menu(m, window, cx); }
@@ -834,7 +836,7 @@ impl Workspace {
                 .child(div().flex_1().min_w_0().child(crate::ui::menu_label(label, g, gpui::white())))
         };
         let item = |id, ic, label| item_c(id, ic, label, Theme::text(), Theme::icon());
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if m.id.starts_with("collection-") {
             let rename = m.id.clone(); let remove = rename.clone();
             let pos = if m.pos.x < px(0.) { point(-m.pos.x, m.pos.y + px(22.)) } else { m.pos };
@@ -1018,29 +1020,29 @@ impl Workspace {
 type PersonalAction = Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
 impl Workspace {
     pub(crate) fn personal_navigation_entries(&self, cx: &App) -> Vec<Entry> {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.is_shared() { return cx.global::<crate::shared_store::SharedStore>().clone().list(); }
         let _ = cx;
         self.entries.clone()
     }
 
     pub(crate) fn shared_batch(&self) -> bool {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         { self.batch.is_some() && self.sharing.batch }
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         { false }
     }
 
     pub(crate) fn batch_contains_shared(&self, cx: &App) -> bool {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         { self.shared_batch() || self.batch.as_ref().is_some_and(|ids| ids.iter().any(|id| self.shared_list_room(id, cx).is_some())) }
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         { let _ = cx; false }
     }
 
     pub(crate) fn begin_personal_batch(&mut self) {
         self.batch = Some(vec![]);
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         { self.sharing.batch = false; }
     }
 
@@ -1049,7 +1051,7 @@ impl Workspace {
     }
 
     fn personal_action_boxed(&mut self, window: &mut Window, cx: &mut Context<Self>, action: PersonalAction) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.is_shared() {
             if self.sharing_busy() { return; }
             let held = std::rc::Rc::new(std::cell::RefCell::new(Some(action))); let retry = held.clone();

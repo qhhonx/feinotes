@@ -1,0 +1,7 @@
+<title>QA49 Nested containers</title>
+<p>Structured content remains the same across mobile themes.</p>
+<checkbox done="false">Unchecked task<checkbox done="true">Nested checked task</checkbox></checkbox>
+<callout emoji="💡" background-color="light-orange" border-color="orange"><p>Callout English gyjpq 中文</p><p><b>Emphasis</b> and inline <code>let x = 1</code></p></callout>
+<grid><column width-ratio="0.5"><p>Left column with wrapping text and 中文。</p></column><column width-ratio="0.5"><p>Right column English gyjpq.</p><blockquote><p>Nested quote</p></blockquote></column></grid>
+<table><tbody><tr><th><p>Header</p></th><td><p>Value</p></td></tr><tr><td><p>English gyjpq</p></td><td><p>中文内容</p></td></tr></tbody></table>
+<hr/><p>CONTAINER49_END</p>

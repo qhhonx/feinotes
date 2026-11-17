@@ -26,7 +26,7 @@ html5ever = "0.27"
 markup5ever_rcdom = "0.3"
 miniz_oxide = "0.9"
 sha1_smol = "1.0"
-rusqlite = { version = "0.41.1", optional = true }
+rusqlite = { version = ">=0.40.2, <=0.41.1", optional = true }
 
 [features]
 sqlite-store = ["dep:rusqlite"]

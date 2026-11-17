@@ -59,6 +59,11 @@ pub struct PageLayout {
 }
 
 pub fn page_layout(o: f32, max: Option<f32>, has_cat: bool, pinned: bool) -> PageLayout {
+    #[cfg(target_os = "ios")]
+    if o < 700. || unsafe { crate::ipad::fei_ios_is_phone() } {
+        return PageLayout { ml: 18., mr: 18., content: (o - 36.).max(1.),
+            cat: CatMode::None };
+    }
     page_layout_with_padding(o, max, has_cat, pinned, padding())
 }
 
@@ -281,7 +286,7 @@ impl Editor {
         cx.notify();
     }
 
-    fn jump_to_heading(&mut self, id: BlockId, cx: &mut Context<Self>) {
+    pub(super) fn jump_to_heading(&mut self, id: BlockId, cx: &mut Context<Self>) {
         self.cat_active = Some(id);
         self.cat_jump = Some(id);
         if id == TITLE {
@@ -464,11 +469,10 @@ impl Editor {
                 })
                 .collect()
         })
-        .track_scroll(self.cat_scroll.clone())
         .w(px(width - 11.))
         .h(px((n as f32 * ROW_H + 22.).min(max_h.max(ROW_H))))
         .pb(px(22.));
-        div().w(px(width)).child(list).into_any_element()
+        div().w(px(width)).child(crate::gpui_compat::track_scroll(list, &self.cat_scroll)).into_any_element()
     }
 }
 

@@ -5,8 +5,23 @@ use std::fmt::Write;
 use std::path::Path;
 
 fn main() {
-    embed("assets", "assets.rs", SKIP);
-    embed("shared-mock/library", "guides.rs", &[]);
+    let manifest = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let root = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios") {
+        manifest.join("../..").canonicalize().expect("find Fei Notes project root")
+    } else { manifest };
+    embed(&root, "assets", "assets.rs", SKIP);
+    embed(&root, "shared-mock/library", "guides.rs", &[]);
+    println!("cargo:rustc-env=FEI_TESTFLIGHT_BETA=0");
+    let revision = std::process::Command::new("git").arg("-C").arg(&root).args(["rev-parse", "--short=12", "HEAD"])
+        .output().ok().filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned()).unwrap_or_else(|| "unknown".into());
+    println!("cargo:rustc-env=FEI_SOURCE_REVISION={revision}");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios")
+        && std::env::var_os("CARGO_FEATURE_CLOUDKIT_SYNC").is_some() {
+        println!("cargo:rerun-if-env-changed=FEI_IOS_PRODUCT_CLOUD");
+        let product = std::env::var("FEI_IOS_PRODUCT_CLOUD").as_deref() == Ok("1");
+        println!("cargo:rustc-env=FEI_CLOUD_NAMESPACE={}", if product { "Production:iCloud.app.feinotes.mac" } else { "Development:iCloud.app.quietmd.cloudlab" });
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") { windows_resources(); }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
         && std::env::var_os("CARGO_FEATURE_CLOUDKIT_RESTORE").is_some() {
@@ -121,13 +136,12 @@ END
 /// used by the installer), themes (`include_str!` in src/themes.rs) and notes.
 const SKIP: &[&str] = &["branding/hamster-source.png", "branding/quiet-q/", "branding/app-icon-dev.png", "branding/app-icon.ico", "themes/", "onboarding/README.md"];
 
-fn embed(source: &str, output: &str, skip: &[&str]) {
-    // Read at run time: a compile-time path goes stale when the checkout moves.
-    let root = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(source);
+fn embed(project: &Path, source: &str, output: &str, skip: &[&str]) {
+    let root = project.join(source);
     println!("cargo:rerun-if-changed={}", root.display());
     let mut files = vec![];
     collect(&root, &root, &mut files);
-    let fei_notes = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
+    let fei_notes = matches!(std::env::var("CARGO_CFG_TARGET_OS").as_deref(), Ok("macos" | "ios"))
         && std::env::var_os("CARGO_FEATURE_CLOUDKIT_SYNC").is_some();
     if source == "assets" && fei_notes {
         for (path, file) in files.iter().filter(|(path, _)| path.starts_with("icons/")) {

@@ -6,14 +6,14 @@
 use anyhow::{Context, Result, ensure};
 use gpui::AppContext;
 use serde::{Deserialize, Serialize};
-use std::{ffi::{CStr, CString, c_char}, fs, path::{Path, PathBuf}, sync::OnceLock};
+use std::{ffi::{CStr, CString, c_char}, fs, path::{Path, PathBuf}, sync::Mutex};
 use crate::{model::Document, store::Store};
 use super::{Journal, assets, content};
 
 pub(crate) mod original;
 
-static ACTIVE: OnceLock<Scope> = OnceLock::new();
-#[cfg(feature = "devtools")]
+static ACTIVE: Mutex<Option<Scope>> = Mutex::new(None);
+#[cfg(all(feature = "devtools", target_os = "macos"))]
 pub(crate) mod session_qa;
 #[cfg(feature = "devtools")]
 mod ui_qa;
@@ -52,7 +52,14 @@ pub(crate) struct Room {
     pub title: String,
 }
 
-pub(crate) fn active() -> Option<&'static Scope> { ACTIVE.get() }
+pub(crate) fn active() -> Option<Scope> { ACTIVE.lock().expect("shared session lock").clone() }
+
+#[cfg(target_os = "ios")]
+pub(crate) fn select_session(root: &Path) -> Result<()> {
+    let scope = descriptor(root)?.map(|room| room.scope);
+    *ACTIVE.lock().expect("shared session lock") = scope;
+    Ok(())
+}
 
 fn account(root: &Path) -> Result<String> {
     let marker = fs::read_to_string(root.join(".cloud-restore-ready"))?;
@@ -61,7 +68,7 @@ fn account(root: &Path) -> Result<String> {
     Ok(key.to_owned())
 }
 
-pub(super) fn descriptor(root: &Path) -> Result<Option<Room>> {
+pub(crate) fn descriptor(root: &Path) -> Result<Option<Room>> {
     let room = match fs::read(root.join(MARKER)) {
         Ok(bytes) => serde_json::from_slice::<Room>(&bytes)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -82,10 +89,18 @@ pub(crate) fn room_root(personal: &Path, note: &str) -> Result<PathBuf> {
 }
 
 pub(crate) fn startup(personal: &Path, note: &str) -> Result<PathBuf> {
+    let root = session_root(personal,note)?;
+    let scope = descriptor(&root)?.context("Missing shared note")?.scope;
+    let mut active = ACTIVE.lock().expect("shared session lock");
+    ensure!(active.is_none(), "A shared note is already open");
+    *active = Some(scope);
+    Ok(root)
+}
+
+pub(crate) fn session_root(personal: &Path, note: &str) -> Result<PathBuf> {
     let root = room_root(personal, note)?;
-    let room = descriptor(&root)?.context("Shared note has not been accepted on this Mac")?;
+    let room = descriptor(&root)?.context("Shared note has not been accepted on this device")?;
     ensure!(room.scope.note == note && account(personal)? == account(&root)?, "Shared note belongs to another library");
-    ACTIVE.set(room.scope).map_err(|_| anyhow::anyhow!("A shared note is already open"))?;
     Ok(root)
 }
 
@@ -345,6 +360,18 @@ pub(crate) fn manage(personal: &Path, room: &Room, action: &str, person: &str, a
     command.send()
 }
 
+#[cfg(target_os = "ios")]
+pub(crate) fn launch(room: &Room, cx: &mut gpui::App) -> gpui::Task<Result<()>> {
+    let room = room.clone();
+    cx.defer(move |cx| {
+        if let Some(handle) = cx.windows().into_iter().find_map(|w| w.downcast::<crate::app::Workspace>()) {
+            let _ = handle.update(cx,|w,window,cx| w.open_shared_note(&room,window,cx));
+        }
+    });
+    gpui::Task::ready(Ok(()))
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
     room.scope.validate()?;
     let personal = Store::root_dir();
@@ -426,6 +453,12 @@ pub(crate) fn access(store: &crate::shared_store::SharedStore, cx: &gpui::App) -
 pub(crate) fn editing_paused(store: &crate::shared_store::SharedStore, cx: &gpui::App) -> bool {
     store.is_shared() && super::status(store.root(), cx).is_some_and(|status| status.access_paused
         || matches!(status.phase, super::SyncPhase::AccountChecking | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut))
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn can_edit_in(root: &Path, cx: &gpui::App) -> bool {
+    let Some(session) = super::session(root,cx) else { return root == Store::root_dir() };
+    !session.store.is_shared() || (!editing_paused(&session.store,cx) && access(&session.store,cx).is_some_and(Access::can_write))
 }
 
 #[cfg(any(feature = "devtools", test))]
@@ -584,6 +617,69 @@ mod tests {
     struct Fixture(PathBuf);
     impl Drop for Fixture {
         fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn room_selection_requires_its_library_account_and_descriptor() -> Result<()> {
+        let temp = Fixture(std::env::temp_dir().join(format!("quiet-share-selection-{}",uuid::Uuid::new_v4())));
+        fs::create_dir_all(&temp.0)?;
+        fs::write(temp.0.join(".cloud-restore-ready"),format!("{}\n","a".repeat(64)))?;
+        let room = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(),owner: Some("synthetic-owner".into()), folder: false },title: "Selected note".into() };
+        let root = stage(&temp.0,&room,None)?;
+        assert_eq!(session_root(&temp.0,&room.scope.note)?,root);
+        fs::write(root.join(".cloud-restore-ready"),format!("{}\nshared\n","b".repeat(64)))?;
+        assert!(session_root(&temp.0,&room.scope.note).is_err());
+        fs::write(root.join(".cloud-restore-ready"),format!("{}\nshared\n","a".repeat(64)))?;
+        let other = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(),..room.scope.clone() },..room.clone() };
+        fs::write(root.join(MARKER),serde_json::to_vec(&other)?)?;
+        assert!(session_root(&temp.0,&room.scope.note).is_err());
+        assert!(session_root(&temp.0,"../personal").is_err());
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "Creates an explicit synthetic library for the iOS session UI check"]
+    fn prepare_mobile_sharing_fixture() -> Result<()> {
+        let output = PathBuf::from(std::env::var("FEI_NOTES_SHARE_FIXTURE_ROOT")?);
+        ensure!(output.is_absolute() && (output.starts_with(std::env::temp_dir()) || output.starts_with("/private/tmp")) && !output.exists(), "Use a new temporary fixture directory");
+        fs::create_dir(&output)?;
+        let personal = output.join("personal");
+        let source = personal.join(".restore-source");
+        fs::create_dir_all(&source)?;
+        fs::write(source.join(".cloud-restore-ready"),format!("{}\n","a".repeat(64)))?;
+        let mut store = Store::open_at(source)?;
+        let personal_note = store.create_from(&Document { title: crate::model::RichText::plain("FEI_PERSONAL_SESSION"),..Default::default() })?;
+        drop(store);
+        Store::initialize_sqlite(&personal)?;
+        let mut personal_journal = Journal::open(&personal,Some("44ecb219-6dec-4b51-ae62-bcd575b86813".into()))?;
+        personal_journal.merge(&Default::default())?;
+        drop(personal_journal);
+
+        let owner = output.join("owner");
+        fs::create_dir(&owner)?;
+        fs::write(owner.join(".cloud-restore-ready"),format!("{}\n","a".repeat(64)))?;
+        let mut doc = sample(&owner)?;
+        doc.title = crate::model::RichText::plain("FEI_SHARED_READONLY");
+        let room = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(),owner: None, folder: false },title: doc.title.text.clone() };
+        let owner_root = stage(&owner,&room,Some((&doc,"")))?;
+        let owner_journal = Journal::open(&owner_root,None)?;
+        let guest = Room { scope: Scope { owner: Some("synthetic-owner".into()),..room.scope.clone() },..room.clone() };
+        let guest_root = stage(&personal,&guest,None)?;
+        let mut guest_journal = Journal::open(&guest_root,None)?;
+        guest_journal.receive(Changes { retention: None, uploaded: vec![],edits: owner_journal.request()?.edits,token: Some(Bytes(vec![1])),more: false,legacy: false,
+            room_access: Some(Access::ReadOnly),#[cfg(feature = "devtools")] cursor_replayed: false,upload_quota_exceeded: false })?;
+        guest_journal.merge(&Default::default())?;
+        drop(guest_journal);
+        doc.title = crate::model::RichText::plain("FEI_SHARED_WRITABLE");
+        let writable = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(),owner: None, folder: false },title: doc.title.text.clone() };
+        // Copy only the shared attachment into this room, using the same product staging path.
+        let personal_asset = assets::path(&personal,"assets/files/shared-fixture.txt")?;
+        fs::create_dir_all(personal_asset.parent().unwrap())?;
+        fs::write(personal_asset,b"shared attachment fixture")?;
+        let writable_root = stage(&personal,&writable,Some((&doc,"")))?;
+        fs::write(writable_root.join("seed-published"),b"1")?;
+        fs::write(output.join("fixture.json"),serde_json::to_vec(&serde_json::json!({ "personal_note": personal_note,"readonly": guest,"writable": writable }))?)?;
+        Ok(())
     }
 
     #[test]

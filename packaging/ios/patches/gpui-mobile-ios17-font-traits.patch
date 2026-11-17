@@ -1,0 +1,80 @@
+--- a/src/ios/text_system.rs
++++ b/src/ios/text_system.rs
+@@ -20,6 +20,7 @@
+     font::CTFont,
+     font_descriptor::{
+         kCTFontSlantTrait, kCTFontSymbolicTrait, kCTFontWeightTrait, kCTFontWidthTrait,
++        SymbolicTraitAccessors,
+     },
+     line::CTLine,
+     string_attributes::kCTFontAttributeName,
+@@ -75,6 +76,26 @@
+     postscript_names_by_font_id: HashMap<FontId, String>,
+ }
+ 
++fn font_properties(font: &FontKitFont) -> font_kit::properties::Properties {
++    let native = font.native_font();
++    let traits = native.all_traits();
++    // iPadOS 17 can omit numeric traits. FontKit assumes all of them exist.
++    let complete = unsafe {
++        [kCTFontSymbolicTrait, kCTFontWidthTrait, kCTFontWeightTrait, kCTFontSlantTrait]
++            .into_iter()
++            .all(|key| traits.find(key).is_some_and(|value| value.downcast::<CFNumber>().is_some()))
++    };
++    if complete {
++        return font.properties();
++    }
++    let symbolic = native.symbolic_traits();
++    font_kit::properties::Properties {
++        style: if symbolic.is_italic() { FontkitStyle::Italic } else { FontkitStyle::Normal },
++        weight: if symbolic.is_bold() { FontkitWeight::BOLD } else { FontkitWeight::NORMAL },
++        ..Default::default()
++    }
++}
++
+ impl IosTextSystem {
+     pub fn new() -> Self {
+         Self(RwLock::new(IosTextSystemState {
+@@ -139,7 +160,7 @@
+ 
+             let candidate_properties: SmallVec<[font_kit::properties::Properties; 4]> = candidates
+                 .iter()
+-                .map(|font_id| lock.fonts[font_id.0].properties())
++                .map(|font_id| font_properties(&lock.fonts[font_id.0]))
+                 .collect();
+ 
+             let ix = font_kit::matching::find_best_match(
+@@ -265,33 +286,6 @@
+                     );
+                     continue;
+                 }
+-            }
+-
+-            // Validate font traits to avoid panics from malformed fonts
+-            let traits = font.native_font().all_traits();
+-            if unsafe {
+-                !(traits
+-                    .get(kCTFontSymbolicTrait)
+-                    .downcast::<CFNumber>()
+-                    .is_some()
+-                    && traits
+-                        .get(kCTFontWidthTrait)
+-                        .downcast::<CFNumber>()
+-                        .is_some()
+-                    && traits
+-                        .get(kCTFontWeightTrait)
+-                        .downcast::<CFNumber>()
+-                        .is_some()
+-                    && traits
+-                        .get(kCTFontSlantTrait)
+-                        .downcast::<CFNumber>()
+-                        .is_some())
+-            } {
+-                log::error!(
+-                    "Failed to read traits for font {:?}",
+-                    font.postscript_name().unwrap()
+-                );
+-                continue;
+             }
+ 
+             let font_id = FontId(self.fonts.len());

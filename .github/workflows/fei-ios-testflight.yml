@@ -70,6 +70,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$RELEASE_SOURCE"
           python3 -B packaging/macos/test-apple-release.py
           python3 -B packaging/ios/test-release.py
+          python3 -B packaging/ios/test-privacy-audit.py
           python3 -B packaging/ios/test-config.py
           node website/test-testflight.cjs
           xcodebuild -version

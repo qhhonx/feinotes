@@ -42,12 +42,12 @@ pub fn begin(me: &mut BoardView, id: &str, window: &mut Window, cx: &mut Context
             let v = field.read(cx).text.clone();
             if let Some(id) = me.frame_name.as_ref().map(|f| f.id.clone()) { set_name(me, &id, Some(v)); me.commit(None, cx); }
         }
-        TextFieldEvent::Submit | TextFieldEvent::Cancel => { end(me, cx); me.focus(window); }
+        TextFieldEvent::Submit | TextFieldEvent::Cancel => { end(me, cx); me.focus(window, cx); }
         _ => {}
     });
     let fh = field.read(cx).focus_handle(cx);
-    window.focus(&fh);
-    window.defer(cx, move |window, _| window.focus(&fh));
+    crate::gpui_compat::focus(window, &fh, cx);
+    window.defer(cx, move |window, cx| crate::gpui_compat::focus(window, &fh, cx));
     me.frame_name = Some(FrameNameEditing { id: id.to_string(), field, _sub: sub });
     cx.notify();
 }

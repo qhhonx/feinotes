@@ -294,7 +294,7 @@ impl R<'_> {
             placeholder_color: None,
             placeholder_dx: 0.,
             selection,
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             remote: if self.ghost { vec![] } else {
                 self.ed.remote_selections.iter().filter_map(|device| {
                     let sel = device.selection;
@@ -329,7 +329,7 @@ impl R<'_> {
             .relative()
             .flex_1()
             .min_w_0()
-            .child(div().id(("code-scroll", id.0)).w_full().flex().overflow_x_scroll().track_scroll(&scroll).child(RichTextElement { fit_content: true, ..el }))
+            .child(div().id(("code-scroll", id.0)).w_full().flex().overflow_x_scroll().map(|d| { #[cfg(target_os="ios")] let d=d.restrict_scroll_to_axis(); d }).track_scroll(&scroll).child(RichTextElement { fit_content: true, ..el }))
             .child(super::scrollbar::table_scrollbar(scroll, bar).absolute().left_0().right_0().bottom(px(-below)).h(px(12.)))
             .into_any_element()
     }
@@ -345,13 +345,13 @@ impl R<'_> {
     }
 
     fn spec_for(&self, b: &Block, env: Env) -> TextSpec {
-        if crate::settings::feishu() { return self.spec_for_feishu(b, env); }
+        if crate::settings::feishu() && !cfg!(target_os="ios") { return self.spec_for_feishu(b, env); }
 
         let st = theme::style();
         let mut spec = TextSpec::body();
         if env.cell {
-            spec.size = st.num("table.size");
-            spec.line_height = st.num("table.line-height");
+            spec.size = theme::table_size();
+            spec.line_height = theme::table_line();
         }
         if let BlockKind::Heading { level, .. } = b.kind {
             let m = theme::heading_metrics(level);
@@ -394,7 +394,7 @@ impl R<'_> {
     }
 
     pub(super) fn block(&self, b: &Block, siblings: &[Block], idx: usize, env: Env, gap_above: f32, cx: &mut Context<Editor>) -> AnyElement {
-        if crate::settings::feishu() { return self.block_feishu(b, siblings, idx, env, cx); }
+        if crate::settings::feishu() && !cfg!(target_os="ios") { return self.block_feishu(b, siblings, idx, env, cx); }
 
         if !env.cell && !env.in_callout && !matches!(b.kind, BlockKind::Column { .. }) && !self.ghost {
             self.targets.borrow_mut().push(b.id);
@@ -669,7 +669,7 @@ impl R<'_> {
     }
 
     fn text_block(&self, b: &Block, env: Env, cx: &mut Context<Editor>) -> AnyElement {
-        if crate::settings::feishu() { return self.text_block_feishu(b, env, cx); }
+        if crate::settings::feishu() && !cfg!(target_os="ios") { return self.text_block_feishu(b, env, cx); }
 
         let spec = self.spec_for(b, env);
         let placeholder = match b.kind {
@@ -720,7 +720,7 @@ impl R<'_> {
     }
 
     fn children_of(&self, b: &Block, env: Env, cx: &mut Context<Editor>) -> Div {
-        if crate::settings::feishu() { return self.children_of_feishu(b, env, cx); }
+        if crate::settings::feishu() && !cfg!(target_os="ios") { return self.children_of_feishu(b, env, cx); }
 
         if b.children.is_empty() || b.folded || self.flat == Some(b.id) {
             return div();
@@ -731,7 +731,7 @@ impl R<'_> {
     }
 
     fn list_item(&self, b: &Block, siblings: &[Block], idx: usize, env: Env, cx: &mut Context<Editor>) -> AnyElement {
-        if crate::settings::feishu() { return self.list_item_feishu(b, siblings, idx, env, cx); }
+        if crate::settings::feishu() && !cfg!(target_os="ios") { return self.list_item_feishu(b, siblings, idx, env, cx); }
 
         let spec = self.spec_for(b, env);
         let lh = spec.line_height;
@@ -801,7 +801,7 @@ impl R<'_> {
                         MouseButton::Left,
                         cx.listener(move |e, _, window, cx| {
                             cx.stop_propagation();
-                            window.focus(&e.focus);
+                            crate::gpui_compat::focus(window, &e.focus, cx);
                             e.core.toggle_todo(id);
                             e.changed_preserving_viewport(window, cx);
                         }),
@@ -841,12 +841,12 @@ impl R<'_> {
     }
 
     fn code_block(&self, b: &Block, lang: &str, wrap: bool, gap_above: Option<f32>, cx: &mut Context<Editor>) -> AnyElement {
-        if crate::settings::feishu() { return self.code_block_feishu(b, lang, wrap, cx); }
+        if crate::settings::feishu() && !cfg!(target_os="ios") { return self.code_block_feishu(b, lang, wrap, cx); }
 
         let id = b.id;
         let g = SharedString::from(format!("code-{}", id.0));
         let st = theme::style();
-        let (code_size, code_line, radius) = (st.num("pre.size"), st.num("pre.line"), st.num("pre.radius"));
+        let (code_size, code_line, radius) = (theme::code_size(), theme::code_line(), st.num("pre.radius"));
         let gutter_w = if st.flag("pre.numbers") { GUTTER_W } else { 0. };
         // SF Mono 13 on a 20pt line.
         let spec = TextSpec {
@@ -876,7 +876,6 @@ impl R<'_> {
             }
             v
         };
-        let text = b.text.text.clone();
         let mut el = self.text_el(id, &b.text, spec, Align::Left, None);
         if lang != "Plain Text" {
             let lang = lang.to_string();
@@ -994,14 +993,7 @@ impl R<'_> {
                 MouseButton::Left,
                 cx.listener(move |e, _, _, cx| {
                     cx.stop_propagation();
-                    if !e.code_folded.remove(&id) {
-                        e.code_folded.insert(id);
-                        // Leave the hidden code (it opens again if the caret comes back).
-                        if e.core.sel.head.block == id || e.core.sel.anchor.block == id {
-                            e.core.select_block(id);
-                        }
-                    }
-                    cx.notify();
+                    e.toggle_code_fold(id, cx);
                 }),
             );
         let border = if menu_on {
@@ -1017,7 +1009,7 @@ impl R<'_> {
             .relative()
             .when(!compact || inside, |d| d.group(g.clone()))
             .rounded(px(radius))
-            .when(inside, |d| d.min_h(px(32.)))
+            .when(inside, |d| d.min_h(px(if cfg!(target_os="ios") { 52. } else { 32. })))
             .border_1()
             .border_color(border)
             .when(!menu_on, |d| d.bg(Theme::code_bg()))
@@ -1073,13 +1065,7 @@ impl R<'_> {
                                             MouseButton::Left,
                                             cx.listener(move |e, _, window, cx| {
                                                 cx.stop_propagation();
-                                                e.core.checkpoint(core::EditKind::Other);
-                                                if let Some(b) = e.core.block_mut(id)
-                                                    && let BlockKind::Code { wrap, .. } = &mut b.kind
-                                                {
-                                                    *wrap = !*wrap;
-                                                }
-                                                e.changed_preserving_viewport(window, cx);
+                                                e.toggle_code_wrap(id, window, cx);
                                             }),
                                         ),
                                 )
@@ -1090,9 +1076,9 @@ impl R<'_> {
                                     .child(crate::settings::tr("复制", "Copy"))
                                     .on_mouse_down(
                                         MouseButton::Left,
-                                        cx.listener(move |_, _, _, cx| {
+                                        cx.listener(move |e, _, _, cx| {
                                             cx.stop_propagation();
-                                            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                                            e.copy_code(id, cx);
                                         }),
                                     ),
                             ),
@@ -1100,7 +1086,7 @@ impl R<'_> {
             ))
             .child(fold_btn)
             .when(inside && !self.ed.read_only, |d| d.child(
-                div().id(("code-tools", id.0)).absolute().right(px(4.)).top(px(4.)).size(px(24.))
+                div().id(("code-tools", id.0)).absolute().right(px(4.)).top(px(4.)).size(px(crate::mobile::control(24.)))
                     .when(folded, |d| d.top_0().bottom_0().h_auto())
                     .rounded(px(4.)).flex().items_center().justify_center().cursor_pointer()
                     .bg(Theme::code_bg()).hover(|s| s.bg(Theme::fill_hover_strong()))
@@ -1108,7 +1094,10 @@ impl R<'_> {
                     .child(icon("ellipsis", 16., Theme::text_caption()))
                     .on_mouse_down(MouseButton::Left, cx.listener(move |e, _, _, cx| {
                         cx.stop_propagation();
-                        e.menu = if matches!(e.menu, Some(Menu::CodeTools { block }) if block == id) { None } else { Some(Menu::CodeTools { block: id }) };
+                        #[cfg(target_os = "ios")]
+                        { e.open_native_code(id,false,cx); }
+                        #[cfg(not(target_os = "ios"))]
+                        { e.menu = if matches!(e.menu, Some(Menu::CodeTools { block }) if block == id) { None } else { Some(Menu::CodeTools { block: id }) }; }
                         cx.notify();
                     }))
             ))
@@ -1116,8 +1105,8 @@ impl R<'_> {
             .when(!folded, |d| {
                 d.child(
                     div()
-                        .pt(px(if compact { st.num("pre.pad-y") } else { 36. }))
-                        .pb(px(if compact { st.num("pre.pad-y") } else { 12. }))
+                        .pt(px(if cfg!(target_os = "ios") && inside && compact { st.num("pre.pad-y").max(14.) } else if cfg!(target_os = "ios") && inside { 48. } else if compact { st.num("pre.pad-y") } else { 36. }))
+                        .pb(px(if cfg!(target_os="ios") && inside && compact { st.num("pre.pad-y").max(14.) } else if compact { st.num("pre.pad-y") } else { 12. }))
                         .pr(px(if inside { 64. } else if compact { st.num("pre.pad-x") } else { 16. }))
                         .flex()
                         .when(gutter_w == 0., |d| d.pl(px(if compact { st.num("pre.pad-x") } else { 16. })))
@@ -1301,8 +1290,8 @@ impl Editor {
                 div()
                     .relative()
                     .group("doc-header")
-                    .pt(px(theme::style().num("page.top").max(32.)))
-                    .pb(px(theme::style().num("title.gap").max(0.)))
+                    .pt(px(if cfg!(target_os = "ios") { (f32::from(window.viewport_size().height) - spec.line_height - 8.).clamp(0.,32.) } else { theme::style().num("page.top").max(32.) }))
+                    .pb(px(if cfg!(target_os = "ios") { 16. } else { theme::style().num("title.gap").max(0.) }))
                     .children(self.header_entries(cx))
                     .child(
                         div()
@@ -1393,8 +1382,15 @@ impl Editor {
     /// target outside the rendered items is first brought on screen by its
     /// item and refined on the next frame.
     fn apply_reveal(&mut self, window: &mut Window) {
-        let Some((req, tries)) = self.reveal.take() else { return };
         let view = self.list.viewport_bounds();
+        #[cfg(target_os = "ios")]
+        if let Some(find) = &mut self.find && find.native_viewport != Some(view.size) {
+            find.native_viewport = Some(view.size);
+            if let Some((id, range)) = find.current.and_then(|index|find.matches.get(index)) {
+                self.reveal = Some((Reveal::Find(Pos::new(*id,range.start)),0));
+            }
+        }
+        let Some((req, tries)) = self.reveal.take() else { return };
         let caret_rect = |p: Pos| {
             self.cache.borrow().get(&p.block).map(|l| {
                 let at = if self.caret_row_end == Some((p.block, p.offset)) {
@@ -1435,7 +1431,9 @@ impl Editor {
                 (t.bottom() - (view.bottom() - margin)).min(t.top() - view.top() - margin)
             }
             Reveal::Caret => px(0.),
-            // The find box covers the top right of the page.
+            // The iOS navigator docks below the document, above the keyboard.
+            Reveal::Find(_) if cfg!(target_os = "ios") => t.top() - (view.top() + px(16.).min(((view.size.height - t.size.height) / 2.).max(px(0.)))),
+            // The desktop find box covers the top right of the page.
             Reveal::Find(_) if t.top() >= view.top() + px(250.) && t.bottom() <= view.bottom() - margin => px(0.),
             Reveal::Find(_) => t.top() - (view.top() + view.size.height / 2.),
             Reveal::Block(_) => t.top() - view.top() - px(24.),
@@ -1448,7 +1446,7 @@ impl Editor {
         if !matches!(req, Reveal::Block(_))
             && let Some((scroll, _)) = self.code_hscroll.borrow().get(&block)
         {
-            let (b, off, max) = (scroll.bounds(), scroll.offset(), scroll.max_offset().width);
+            let (b, off, max) = (scroll.bounds(), scroll.offset(), crate::gpui_compat::max_scroll_x(scroll));
             let pad = px(16.);
             let dx = if t.left() < b.left() + pad { b.left() + pad - t.left() } else if t.right() > b.right() - pad { b.right() - pad - t.right() } else { px(0.) };
             let x = (off.x + dx).clamp(-max, px(0.));
@@ -1550,6 +1548,8 @@ impl Editor {
                 if !read_only {
                     window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
                 }
+                #[cfg(target_os = "ios")]
+                super::touch::paint(&entity,bounds,window,cx);
                 // Links point (`cursor: pointer`).
                 for h in &link_hitboxes {
                     window.set_cursor_style(CursorStyle::PointingHand, h);
@@ -1567,7 +1567,7 @@ impl Editor {
                     }
                 }
                 if pointer_hidden {
-                    window.set_window_cursor_style(CursorStyle::None);
+                    window.set_window_cursor_style(crate::gpui_compat::NO_CURSOR);
                     let e = entity.clone();
                     window.on_mouse_event(move |_: &MouseMoveEvent, phase, _, cx| {
                         if phase == DispatchPhase::Bubble {
@@ -1728,7 +1728,9 @@ impl Editor {
                     ed.end_block_drag(Some(ev.position), window, cx);
                     ed.button_release(ev.position, cx);
                     ed.gap_release(ev.position, window, cx);
-                    ed.end_drag(Some(ev.position), cx)
+                    ed.end_drag(Some(ev.position), cx);
+                    #[cfg(target_os = "ios")]
+                    if ev.click_count >= 2 && !ed.core.sel.is_collapsed() { ed.present_touch_menu(ev.position,cx); }
                 }),
             );
         self.register_actions(root, cx)
@@ -1766,6 +1768,8 @@ fn code_rows(cache: &HashMap<BlockId, super::text::TextLayout>) -> HashMap<Block
 
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(target_os = "ios")]
+        self.publish_native_find(cx);
         let t0 = std::time::Instant::now();
         // A board open over the whole window covers the note: only the board
         // renders (the note would otherwise be laid out again on every frame
@@ -2126,7 +2130,7 @@ fn list_item_feishu(&self, b: &Block, siblings: &[Block], idx: usize, env: Env, 
                         MouseButton::Left,
                         cx.listener(move |e, _, window, cx| {
                             cx.stop_propagation();
-                            window.focus(&e.focus);
+                            crate::gpui_compat::focus(window, &e.focus, cx);
                             e.core.toggle_todo(id);
                             e.changed_preserving_viewport(window, cx);
                         }),
@@ -2199,7 +2203,6 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
             }
             v
         };
-        let text = b.text.text.clone();
         let mut el = self.text_el(id, &b.text, spec, Align::Left, None);
         if lang != "Plain Text" {
             let lang = lang.to_string();
@@ -2310,14 +2313,7 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
                 MouseButton::Left,
                 cx.listener(move |e, _, _, cx| {
                     cx.stop_propagation();
-                    if !e.code_folded.remove(&id) {
-                        e.code_folded.insert(id);
-                        // Leave the hidden code (it opens again if the caret comes back).
-                        if e.core.sel.head.block == id || e.core.sel.anchor.block == id {
-                            e.core.select_block(id);
-                        }
-                    }
-                    cx.notify();
+                    e.toggle_code_fold(id, cx);
                 }),
             );
         let border = if menu_on {
@@ -2371,13 +2367,7 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
                                             MouseButton::Left,
                                             cx.listener(move |e, _, window, cx| {
                                                 cx.stop_propagation();
-                                                e.core.checkpoint(core::EditKind::Other);
-                                                if let Some(b) = e.core.block_mut(id)
-                                                    && let BlockKind::Code { wrap, .. } = &mut b.kind
-                                                {
-                                                    *wrap = !*wrap;
-                                                }
-                                                e.changed_preserving_viewport(window, cx);
+                                                e.toggle_code_wrap(id, window, cx);
                                             }),
                                         ),
                                 )
@@ -2388,9 +2378,9 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
                                     .child(crate::settings::tr("复制", "Copy"))
                                     .on_mouse_down(
                                         MouseButton::Left,
-                                        cx.listener(move |_, _, _, cx| {
+                                        cx.listener(move |e, _, _, cx| {
                                             cx.stop_propagation();
-                                            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                                            e.copy_code(id, cx);
                                         }),
                                     ),
                             ),

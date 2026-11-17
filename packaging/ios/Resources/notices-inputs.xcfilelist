@@ -1,0 +1,22 @@
+$(SRCROOT)/../../LICENSE
+$(SRCROOT)/../../LICENSES.md
+$(SRCROOT)/../../LICENSE-FEINOTES.md
+$(SRCROOT)/../../THIRD_PARTY.md
+$(SRCROOT)/../../assets/icons/LICENSE-lucide
+$(SRCROOT)/../../assets/editor-icons/LICENSE-lucide
+$(SRCROOT)/../../assets/fonts/katex/LICENSE
+$(SRCROOT)/../../scripts/fei-release-licenses.py
+$(SRCROOT)/../../packaging/macos/dependency-notices.json
+$(SRCROOT)/../../packaging/ios/prepare-notices.py
+$(SRCROOT)/../../packaging/ios/dependency-notices.json
+$(SRCROOT)/../../packaging/ios/Cargo.toml
+$(SRCROOT)/../../packaging/ios/Cargo.lock
+$(SRCROOT)/../../packaging/ios/.gpui-mobile/Cargo.toml
+$(SRCROOT)/../../packaging/ios/.gpui-mobile/LICENSE-APACHE
+$(SRCROOT)/../../packaging/ios/.gpui-mobile/LICENSE-AGPL
+$(SRCROOT)/../../packaging/ios/.gpui-mobile/LICENSE-GPL
+$(SRCROOT)/../../packaging/ios/.gpui-core/Cargo.toml
+$(SRCROOT)/../../packaging/ios/.gpui-core/LICENSE-APACHE
+$(SRCROOT)/../../packaging/ios/Resources/notices-manifest.json
+$(SRCROOT)/../../packaging/ios/Resources/Open Source Licenses.txt
+$(SRCROOT)/../../packaging/ios/Resources/Open Source Licenses.json

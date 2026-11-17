@@ -1,0 +1,6 @@
+*.xcodeproj/
+/target/
+/.gpui-mobile/
+
+/.gpui-core/
+/.private-builds/

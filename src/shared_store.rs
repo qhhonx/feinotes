@@ -22,9 +22,9 @@ impl SharedStore {
     }
     pub fn root(&self) -> &std::path::Path { &self.2 }
     pub fn is_shared(&self) -> bool { self.3 }
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub(crate) fn open_shared(root: std::path::PathBuf) -> Result<Self> { Ok(Self::from_store(Store::open_sqlite_at(root)?, true)) }
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub(crate) fn only_session_reference(&self) -> bool { Rc::strong_count(&self.0) == 1 }
     pub fn file_task_busy(&self) -> bool { self.1.load(Ordering::Acquire) }
     pub fn begin_file_task(&self) -> Option<FileTaskGuard> {
@@ -39,7 +39,7 @@ impl SharedStore {
     pub fn forget_loaded(&self, id: &str) { self.0.borrow().forget_loaded(id); }
     pub fn recover_later(&self, doc: &Document) -> Result<()> { self.0.borrow().recover_later(doc) }
     pub fn save(&mut self, id: &str, doc: &Document) -> Result<Meta> { self.0.borrow_mut().save(id, doc) }
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub fn save_sqlite_with<T>(&mut self, id: &str, doc: &Document, sync: impl FnOnce(&rusqlite::Transaction<'_>, i64) -> Result<T>) -> Result<(Meta, T)> {
         self.0.borrow_mut().save_sqlite_with(id, doc, sync)
     }

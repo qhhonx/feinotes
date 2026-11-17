@@ -80,3 +80,66 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 ## 删掉的上游文件
 
 `gpui/examples/image/black-cat-typing.gif`（4.3 MB）只在 `examples/gif_viewer.rs` 和 `examples/opacity.rs` 里用到，这两个示例不参与本项目的构建；为了减小仓库体积删掉了。
+
+## GPUI Mobile 7548ebc (iOS)
+
+The staged dependency in `packaging/ios/.gpui-mobile` is reconstructed by
+`packaging/ios/prepare-gpui.sh`. Its tracked patches are kept under
+`packaging/ios/patches`, rather than editing an unrecorded dependency copy.
+
+- `gpui-mobile-ios17-font-traits.patch`: preserve the existing iPadOS 17 font
+  trait compatibility adaptation.
+- `gpui-mobile-ios-clipboard.patch`: use length-aware NSString construction,
+  preserve GPUI JSON metadata as a private pasteboard flavor, and transfer
+  supported encoded images. This keeps the shared editor's rich fragment copy
+  path usable on iOS. Reads copy data while UIKit owns it and bound binary data
+  to 64 MiB. No editor/model/format code is forked into the platform backend.
+- `gpui-mobile-ios-url.patch`: construct URLs through the backend's length-aware
+  NSString helper and use a valid empty UIKit options dictionary. Reject an
+  invalid NSURL before requesting the system open action.
+
+- `gpui-mobile-ios-return.patch`: forward a committed software-keyboard Return
+  through the existing GPUI Enter key event path before the platform input
+  handler. Keep the legacy global text callback and marked-text commit path
+  unchanged. This preserves shared paragraph/list/code and single-line Submit
+  behavior without adding a second editor command implementation.
+
+- `gpui-mobile-ios-gallery.patch`: add an iOS `pick_gallery_image` receiver for
+  the existing image-picker package. Schedule presentation and completion on the
+  UIKit main queue, keep picker/delegate ownership until completion, reject an
+  overlapping picker and copy the selected provider representation before its
+  temporary URL expires. Preserve supported PNG/GIF/JPEG/WebP/BMP representations
+  and request compatible JPEG for other photo formats. Cancellation and errors
+  resolve the receiver without blocking GPUI. Logical request serials isolate late
+  callbacks; stale or uncollected copied results are removed. The legacy synchronous APIs remain
+  unchanged; Fei Notes uses only the new receiver for Photo Library selection.
+
+
+The mobile platform also applies `gpui-mobile-ios-picker-dismissal.patch` after
+the patches listed above. File prompts use a native page sheet so single-file
+mode can be dismissed even when UIKit omits a Cancel button. An adaptive
+presentation delegate resolves dismissal as cancellation through the existing
+one-shot receiver. Explicit cancel, selection and late dismissal share the
+same pending-picker identity check; no importer/model code is forked.
+
+
+## Fei Notes iOS GPUI core image-cache extension
+
+The iOS target uses gpui-pre 0.3.10 through a generated `.gpui-core` directory,
+not this desktop GPUI fork. `packaging/ios/prepare-gpui-core.py` verifies the
+crates.io archive and applies `patches/gpui-pre-image-cache.patch`. The extension
+ports natural-size thumbnail scaling, static-image buffer release, missing-atlas
+recovery and visible-only custom-cache loading to the pinned mobile core. Its
+source and patch checksums are in `gpui-pre-image-cache.json`. Existing licenses
+from the archive are retained. This is not an upstream-version upgrade.
+
+### Mobile board compatibility
+
+The pinned iOS GPUI core patch also exposes path transforms and triangle iteration,
+line cap/join types, glyph outlines and element opacity used by the current board
+renderer. Mobile CPU frames use the existing image atlas with generation-based
+replacement and explicit eviction; desktop GPU upload code is unchanged. Image IDs
+share one allocator. Dynamic explicit-modifier key bindings own parsed keystrokes.
+The mobile CoreText platform supplies FontKit outlines in
+`packaging/ios/patches/gpui-mobile-ios-board-outlines.patch`. The complete prepared
+core tree and patch checksums remain verified by `prepare-gpui-core.py`.

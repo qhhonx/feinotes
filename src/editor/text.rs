@@ -269,7 +269,7 @@ pub struct RichTextElement {
     /// Horizontal nudge for the placeholder glyphs only (caret stays put).
     pub placeholder_dx: f32,
     pub selection: Option<Range<usize>>,
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub remote: Vec<RemoteMark>,
     pub caret: Option<usize>,
     /// The caret sits at the end of a wrapped row: draw it there rather than
@@ -294,7 +294,7 @@ pub struct RichTextElement {
     pub fit_content: bool,
 }
 
-#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 pub struct RemoteMark {
     pub range: Option<Range<usize>>,
     pub caret: Option<usize>,
@@ -1088,9 +1088,12 @@ impl Element for RichTextElement {
         let o = point(bounds.left() + dx - sx, bounds.top());
         for (hi, (_, line)) in layout.lines.iter().enumerate() {
             let tops: Vec<Pixels> = layout.rows.iter().filter(|r| r.hard == hi).map(|r| r.y + r.base_dy).collect();
+            #[cfg(not(target_os = "ios"))]
             let _ = line.paint_background_rows(o, lh, &tops, gpui_align, Some(bounds), window, cx);
+            #[cfg(target_os = "ios")]
+            let _ = line.paint_background(point(o.x,o.y+tops.first().copied().unwrap_or(px(0.))), lh, gpui_align, Some(bounds), window, cx);
         }
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         for mark in &self.remote {
             if let Some(range) = &mark.range {
                 let start = self.text.text.floor_char_boundary(range.start.min(self.text.len()));
@@ -1148,7 +1151,10 @@ impl Element for RichTextElement {
         }
         for (hi, (_, line)) in layout.lines.iter().enumerate() {
             let tops: Vec<Pixels> = layout.rows.iter().filter(|r| r.hard == hi).map(|r| r.y + r.base_dy).collect();
+            #[cfg(not(target_os = "ios"))]
             let _ = line.paint_rows(o, lh, &tops, gpui_align, Some(bounds), window, cx);
+            #[cfg(target_os = "ios")]
+            let _ = line.paint(point(o.x,o.y+tops.first().copied().unwrap_or(px(0.))), lh, gpui_align, Some(bounds), window, cx);
         }
         for eq in prepaint.placed.iter() {
             let o = eq.origin;
@@ -1165,10 +1171,10 @@ impl Element for RichTextElement {
                 EqBody::Reminder { .. } => self.paint_reminder(eq, window, cx),
                 EqBody::Text { line, at, icon } => {
                     let top = o.y + px(at[1]) - line.ascent;
-                    let _ = line.paint(point(o.x + px(at[0]), top), line.ascent + line.descent, window, cx);
+                    let _ = crate::gpui_compat::paint_line(line, point(o.x + px(at[0]), top), line.ascent + line.descent, window, cx);
                     if let Some(i) = icon {
                         let b = Bounds::new(point(o.x + px(i[0]), o.y + px(i[1])), size(px(14.), px(14.)));
-                        let _ = window.paint_svg(
+                        let _ = crate::gpui_compat::paint_svg(window,
                             b,
                             "editor-icons/equation-error.svg".into(),
                             TransformationMatrix::unit(),
@@ -1193,7 +1199,7 @@ impl Element for RichTextElement {
                 window.paint_quad(fill(Bounds::new(point(r.left(), top), size(r.size.width, box_h)), color));
             }
         }
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         for mark in &self.remote {
             if let Some(caret) = mark.caret {
                 let caret = self.text.text.floor_char_boundary(caret.min(self.text.len()));
@@ -1217,7 +1223,7 @@ impl Element for RichTextElement {
                     let x = p.x.min(mask.right() - width).max(mask.left());
                     let y = (top - px(15.)).max(mask.top());
                     window.paint_quad(fill(Bounds::new(point(x, y), size(width, px(15.))), mark.color).corner_radii(px(3.)));
-                    let _ = line.paint(point(x + px(4.), y), px(15.), window, cx);
+                    let _ = crate::gpui_compat::paint_line(&line, point(x + px(4.), y), px(15.), window, cx);
                 }
             }
         }
@@ -1269,7 +1275,7 @@ impl RichTextElement {
         let shadows = if lifted { crate::editor::button::shadow_s4() } else { crate::editor::button::shadow_s1() };
         // Content stays crisp: buttons in the text round at 5.
         let radius = px(5.);
-        window.paint_shadows(v, Corners::all(radius), &shadows);
+        crate::gpui_compat::paint_shadows(window, v, Corners::all(radius), &shadows);
         window.paint_quad(fill(v, bg).corner_radii(radius));
         // A done to-do: `.todo-line-through .docx-button-component` draws
         // a 1.6px `--icon-n2` line at 55% behind the label; `opacity: .7`.
@@ -1282,7 +1288,7 @@ impl RichTextElement {
         let line = window.text_system().shape_line(line.text.clone(), line.font_size, &[run], None);
         let clip = Bounds::new(point(v.left() + px(*pad), v.top()), size((v.size.width - px(pad * 2.)).max(px(0.)), v.size.height));
         window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
-            let _ = line.paint(point(v.left() + px(*pad), v.top()), px(*bh), window, cx);
+            let _ = crate::gpui_compat::paint_line(&line, point(v.left() + px(*pad), v.top()), px(*bh), window, cx);
         });
     }
 
@@ -1301,7 +1307,7 @@ impl RichTextElement {
         let line = window.text_system().shape_line(line.text.clone(), line.font_size, &[run], None);
         let clip = Bounds::new(point(o.x + px(*text_x), v.top()), size((v.size.width - px(text_x + 2.)).max(px(0.)), v.size.height));
         window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
-            let _ = line.paint(point(o.x + px(*text_x), v.top()), v.size.height, window, cx);
+            let _ = crate::gpui_compat::paint_line(&line, point(o.x + px(*text_x), v.top()), v.size.height, window, cx);
         });
     }
 
@@ -1320,12 +1326,12 @@ impl RichTextElement {
         let ib = Bounds::new(point(o.x + px(icon[0]), o.y + px(icon[1])), size(px(icon[2]), px(icon[2])));
         match emoji {
             Some(e) => {
-                let _ = e.paint(point(ib.origin.x, v.top()), v.size.height, window, cx);
+                let _ = crate::gpui_compat::paint_line(e, point(ib.origin.x, v.top()), v.size.height, window, cx);
             }
             None => {
                 let c = if *deleted { Theme::text_disabled() } else { Theme::primary_500() };
-                let _ = window.paint_svg(ib, "editor-icons/doc-blue.svg".into(), TransformationMatrix::unit(), c, cx);
-                let _ = window.paint_svg(ib, "editor-icons/doc-blue-lines.svg".into(), TransformationMatrix::unit(), Theme::bg_body(), cx);
+                let _ = crate::gpui_compat::paint_svg(window, ib, "editor-icons/doc-blue.svg".into(), TransformationMatrix::unit(), c, cx);
+                let _ = crate::gpui_compat::paint_svg(window, ib, "editor-icons/doc-blue-lines.svg".into(), TransformationMatrix::unit(), Theme::bg_body(), cx);
             }
         }
         let color = if *deleted { Theme::text_disabled() } else if hovered { Theme::link_hover() } else { Theme::link() };
@@ -1333,7 +1339,7 @@ impl RichTextElement {
         let line = window.text_system().shape_line(line.text.clone(), line.font_size, &[run], None);
         let clip = Bounds::new(point(o.x + px(*text_x), v.top()), size((v.size.width - px(text_x + 2.)).max(px(0.)), v.size.height));
         window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
-            let _ = line.paint(point(o.x + px(*text_x), v.top()), v.size.height, window, cx);
+            let _ = crate::gpui_compat::paint_line(&line, point(o.x + px(*text_x), v.top()), v.size.height, window, cx);
         });
     }
 
@@ -1347,9 +1353,9 @@ impl RichTextElement {
         let o = eq.origin;
         let ib = Bounds::new(point(o.x + px(icon[0]), o.y + px(icon[1])), size(px(icon[2]), px(icon[2])));
         let path = if *filled { "editor-icons/reminder-filled.svg" } else { "editor-icons/reminder.svg" };
-        let _ = window.paint_svg(ib, path.into(), TransformationMatrix::unit(), *icon_color, cx);
+        let _ = crate::gpui_compat::paint_svg(window, ib, path.into(), TransformationMatrix::unit(), *icon_color, cx);
         let lh = px(self.spec.line_height);
-        let _ = line.paint(point(o.x + px(*text_x), o.y), lh, window, cx);
+        let _ = crate::gpui_compat::paint_line(line, point(o.x + px(*text_x), o.y), lh, window, cx);
     }
 
     /// Pointer cursor, hover and `:active` repaints for equation views.

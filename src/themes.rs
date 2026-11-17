@@ -186,6 +186,21 @@ pub static PROPS: LazyLock<Vec<Prop>> = LazyLock::new(|| {
         p(".sidebar-row.is-selected.is-focused", "background-color", "sidebar.focused", Color, Inherit, Inherit),
         p(".sidebar-folder.is-selected.is-focused", "background-color", "sidebar.folder.focused", Color, Inherit, Inherit),
         p(".sidebar-folder.is-selected.is-focused", "color", "sidebar.folder.focused.text", Color, Inherit, Inherit),
+        p(".mobile-page", "font-size", "mobile.page.size", Len, Unused, Unused),
+        p(".mobile-page", "line-height", "mobile.page.line", Len, Unused, Unused),
+        p(".mobile-title", "font-size", "mobile.title.size", Len, Unused, Unused),
+        p(".mobile-title", "line-height", "mobile.title.line", Len, Unused, Unused),
+        p(".mobile-table", "font-size", "mobile.table.size", Len, Unused, Unused),
+        p(".mobile-table", "line-height", "mobile.table.line", Len, Unused, Unused),
+        p(".mobile-code", "font-size", "mobile.code.size", Len, Unused, Unused),
+        p(".mobile-code", "line-height", "mobile.code.line", Len, Unused, Unused),
+        p(".mobile-chrome", "color", "mobile.accent", Color, Unused, Unused),
+        p(".mobile-chrome", "background-color", "mobile.chrome.bg", Color, Unused, Unused),
+        p(".mobile-list", "background-color", "mobile.list.bg", Color, Unused, Unused),
+        p(".mobile-list", "color", "mobile.list.text", Color, Unused, Unused),
+        p(".mobile-row", "background-color", "mobile.row.bg", Color, Unused, Unused),
+        p(".mobile-row.is-selected", "background-color", "mobile.row.selected", Color, Unused, Unused),
+        p(".mobile-row.is-selected", "color", "mobile.row.selected.text", Color, Unused, Unused),
         p(".toolbar", "background-color", "toolbar.bg", Color, Inherit, Inherit),
         p(".toolbar-button", "background-color", "toolbar.button.bg", Color, Inherit, Inherit),
         p(".toolbar-button", "border-color", "toolbar.button.border", Color, Inherit, Inherit),
@@ -716,7 +731,8 @@ fn parse_with_fonts<'a>(css: &str, fonts: &mut dyn FnMut() -> &'a [String]) -> R
         };
         let Some(val) = val else { warn.push(format!("{} {{ {}: {v} }}", p.sel, p.prop)); continue };
         let def = if feishu { p.feishu } else { p.craft };
-        if matches!(def, Def::Unused) {
+        // Mobile overrides are optional for every base and are resolved only by mobile consumers.
+        if matches!(def, Def::Unused) && !p.key.starts_with("mobile.") {
             warn.push(format!("{} {{ {} }} — {}", p.sel, p.prop, crate::settings::tr("飞书基础样式不使用", "unused by the feishu base")));
             continue;
         }
@@ -966,6 +982,22 @@ mod tests {
                 assert!(rules.iter().any(|r| r.sels.iter().any(|s| s == p.sel) && r.decls.iter().any(|(n, _)| n == p.prop)), "{id} lacks {} {{ {} }}", p.sel, p.prop);
             }
         }
+    }
+
+    #[test]
+    fn mobile_roles_preserve_desktop_theme_metrics() {
+        let (notes,_,warnings) = parse(include_str!("../assets/themes/notes.css"),&[]).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(notes.num("page.size"),13.);
+        assert_eq!(notes.num_override("mobile.page.size"),Some(17.));
+        assert_eq!(notes.num_override("mobile.page.line"),Some(24.));
+        assert_eq!(notes.num("title.size"),20.);
+        assert_eq!(notes.num_override("mobile.title.size"),Some(26.));
+        assert_eq!(notes.color("mobile.accent"),Some(notes.token("primary_500")));
+        assert!(notes.color("mobile.chrome.bg").is_none());
+        let (craft,_,_) = parse(BUNDLED[0].1,&[]).unwrap();
+        assert!(craft.color("mobile.accent").is_none());
+        assert!(craft.num_override("mobile.page.size").is_none());
     }
 
     #[test]

@@ -449,6 +449,20 @@ pub(crate) fn install(root: &Path) -> Result<Option<File>> {
     Ok(Some(lock))
 }
 
+/// Move legacy flat local storage into a dedicated session directory by copy.
+/// Publishing the complete directory is atomic; the old library is retained.
+#[cfg(target_os = "ios")]
+pub(crate) fn migrate_local(source: &Path, target: &Path) -> Result<()> {
+    ensure!(!target.exists() && owner(&fs::read(source.join(READY))?)? == "local-only", "Invalid local library migration");
+    let output = Stage::new(std::env::temp_dir().join(format!("fei-local-copy-{}",uuid::Uuid::new_v4())))?;
+    let (archive,_) = create(source,&output.0)?;
+    let stage = Stage::new(target.with_file_name(format!(".local-copy-{}",uuid::Uuid::new_v4())))?;
+    read_archive(&archive,&stage.0)?;
+    Store::ensure_sqlite_wal(&open_db(&stage.0.join(SQLITE_FILE),OpenFlags::SQLITE_OPEN_READ_WRITE)?)?;
+    rename(&stage.0,target,0x00000004)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

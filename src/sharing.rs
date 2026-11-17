@@ -4,6 +4,10 @@
 use crate::{app::{View, Workspace}, cloud_sync::{self, shared::{self, Access, Reply, Room}},
     input::{TextField, TextFieldEvent}, settings::{self, tr, display_title}, theme::Theme, ui::{self, TipExt, TitleBarExt}};
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
+#[cfg(target_os = "ios")]
+mod mobile;
 
 #[cfg(feature = "devtools")]
 pub(crate) mod qa;
@@ -21,22 +25,22 @@ pub(crate) mod links;
 pub(crate) enum Sheet { MoveInto(Vec<String>, String, Room), Collection(Option<String>), Create(String), Accept, Members(Room), Invite(Room), End(Room), EndMany(Vec<Room>, Vec<String>) }
 
 pub(crate) struct Sharing {
-    link: Entity<TextField>,
-    email: Entity<TextField>,
-    folder_name: Entity<TextField>,
+    pub(crate) link: Entity<TextField>,
+    pub(crate) email: Entity<TextField>,
+    pub(crate) folder_name: Entity<TextField>,
     pub(crate) collection: Option<String>,
     edit_collection: Option<String>,
     pub sheet: Option<Sheet>,
-    reply: Option<Reply>,
+    pub(crate) reply: Option<Reply>,
     prepared: Option<Room>,
     original: Option<String>,
     pub(crate) pending_open: Option<String>,
     copied_text: Option<String>,
-    permission: Access,
+    pub(crate) permission: Access,
     member: Option<String>,
     revoke_confirm: bool,
-    busy: bool,
-    message: Option<(bool, String)>,
+    pub(crate) busy: bool,
+    pub(crate) message: Option<(bool, String)>,
     epoch: u64,
     focus_before: Option<FocusHandle>,
     subscriptions: Vec<Subscription>,
@@ -111,7 +115,7 @@ fn line(title: impl Into<SharedString>, detail: impl Into<SharedString>, control
         .child(controls)
 }
 
-fn member_label(name: &str, id: &str, index: usize) -> String {
+pub(crate) fn member_label(name: &str, id: &str, index: usize) -> String {
     let name = name.trim();
     if name.is_empty() || name == id || matches!(name, "..." | "…") || name.chars().any(char::is_control) {
         crate::localized_format!("参与者 {}", "Participant {}", index + 1)
@@ -124,7 +128,10 @@ impl Workspace {
         let Some((target, room)) = target.and_then(|t| shared::original::owner_room(&self.entries, t).map(|r| (t, r))).filter(|(_, r)| r.scope.folder) else { return false; };
         if !self.sharing.busy {
             self.sharing.sheet = Some(Sheet::MoveInto(ids.to_vec(), target.into(), room));
-            self.sharing.message = None; self.row_menu = None; cx.notify();
+            self.sharing.message = None; self.row_menu = None;
+            #[cfg(target_os = "ios")]
+            self.mobile_present_sharing(cx);
+            cx.notify();
         }
         true
     }
@@ -159,12 +166,16 @@ impl Workspace {
         self.sharing.sheet = None;
         self.sharing.epoch += 1;
         self.sharing.subscriptions.clear();
-        if let Some(focus) = self.sharing.focus_before.take() { window.focus(&focus); }
+        if let Some(focus) = self.sharing.focus_before.take() { crate::gpui_compat::focus(window,&focus,cx); }
+        #[cfg(target_os = "ios")]
+        if self.view == View::Settings && self.settings_page == settings::Page::Shared { self.mobile_close_settings(cx); }
         cx.notify();
     }
 
-    fn sharing_sheet(&mut self, sheet: Sheet, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn sharing_sheet(&mut self, sheet: Sheet, window: &mut Window, cx: &mut Context<Self>) {
         if self.sharing.busy { return; }
+        #[cfg(target_os = "ios")]
+        self.mobile_present_sharing(cx);
         if self.sharing.sheet.is_none() { self.sharing.focus_before = window.focused(cx); }
         self.sharing.epoch += 1;
         self.sharing.sheet = Some(sheet);
@@ -181,8 +192,8 @@ impl Workspace {
         self.sharing.email.update(cx, |field, cx| field.set_text("", cx));
         self.sharing.link.update(cx, |field, cx| field.set_text("", cx));
         let input = if matches!(self.sharing.sheet, Some(Sheet::Collection(_))) { &self.sharing.folder_name } else if matches!(self.sharing.sheet, Some(Sheet::Accept)) { &self.sharing.link } else { &self.sharing.email };
-        if matches!(self.sharing.sheet, Some(Sheet::Members(_) | Sheet::End(_) | Sheet::EndMany(..))) { window.focus(&self.focus); }
-        else { window.focus(&input.focus_handle(cx)); }
+        if matches!(self.sharing.sheet, Some(Sheet::Members(_) | Sheet::End(_) | Sheet::EndMany(..))) { crate::gpui_compat::focus(window,&self.focus,cx); }
+        else { crate::gpui_compat::focus(window,&input.focus_handle(cx),cx); }
         self.sharing.subscriptions = vec![cx.subscribe_in(input, window, |w, _, event: &TextFieldEvent, window, cx| {
             match event {
                 TextFieldEvent::Submit => w.submit_sharing(window, cx),
@@ -193,7 +204,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn current_room(&self, cx: &App) -> Option<Room> {
+    pub(crate) fn current_room(&self, cx: &App) -> Option<Room> {
         let scope = shared::scope(&self.store, cx)?.clone();
         let title = self.entries.iter().find(|entry| entry.id == scope.note).map(|entry| entry.title.clone()).unwrap_or_default();
         Some(Room { scope, title })
@@ -283,7 +294,7 @@ impl Workspace {
             .tip(tr("当前参与者", "Current participants"), None)
             .on_click(cx.listener(|w, _, window, cx| {
                 w.sharing.panel_open = !w.sharing.panel_open;
-                window.focus(&w.focus);
+                crate::gpui_compat::focus(window,&w.focus,cx);
                 cx.notify();
             }));
         let anchor = anchor_control(presence, bounds);
@@ -404,11 +415,15 @@ impl Workspace {
 
     pub(crate) fn open_member_management(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
         if room.scope.owner.is_some() { return; }
+        #[cfg(target_os = "ios")]
+        if self.is_shared() && shared::scope(&self.store,cx) != Some(&room.scope) {
+            self.personal_action(window,cx,move|w,window,cx|w.open_member_management(room,window,cx)); return;
+        }
         self.sharing_sheet(Sheet::Members(room), window, cx);
         self.manage_shared_note("members", String::new(), None, window, cx);
     }
 
-    fn sheet_room(&self) -> Option<&Room> {
+    pub(crate) fn sheet_room(&self) -> Option<&Room> {
         match &self.sharing.sheet { Some(Sheet::Members(room) | Sheet::Invite(room) | Sheet::End(room)) => Some(room), _ => None }
     }
 
@@ -612,14 +627,14 @@ impl Workspace {
             .child(caption(tr("只有这个账户可使用邀请链接。请把链接发给对方，飞记不会自动发送通知。", "Only this account can use the invitation link. Send it to them; Fei Notes does not send a notification automatically.")))
     }
 
-    fn confirm_shared_removal(&mut self, member: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn confirm_shared_removal(&mut self, member: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(room) = self.sheet_room() else { return };
         if self.sharing.busy || !self.can_manage_room(room, cx) || self.sharing.member.as_deref() != Some(&member) { return; }
         if !self.sharing.revoke_confirm { self.sharing.revoke_confirm = true; cx.notify(); }
         else { self.manage_shared_note("revoke", member, None, window, cx); }
     }
 
-    fn submit_sharing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn submit_sharing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.sharing.busy { return; }
         if let Some(Sheet::MoveInto(ids, target, room)) = self.sharing.sheet.clone() {
             if !self.sharing_allowed(cx) || !self.flush(cx) { return; }
@@ -669,7 +684,7 @@ impl Workspace {
         self.navigate_shared(room.clone(), None, window, cx);
     }
 
-    fn accept_shared_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn accept_shared_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let link = self.sharing.link.read(cx).text.trim().to_owned();
         if link.is_empty() { return; }
         let epoch = self.begin_sharing_request(cx);
@@ -685,7 +700,7 @@ impl Workspace {
         }).detach();
     }
 
-    fn manage_shared_note(&mut self, action: &'static str, person: String, access: Option<Access>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn manage_shared_note(&mut self, action: &'static str, person: String, access: Option<Access>, window: &mut Window, cx: &mut Context<Self>) {
         if self.sharing.busy { return; }
         let Some(room) = self.sheet_room().cloned() else { return };
         if action == "members" {
@@ -708,7 +723,7 @@ impl Workspace {
                             w.sharing.copied_text = Some(text);
                         }
                         w.sharing.sheet = Some(Sheet::Members(room));
-                        window.focus(&w.focus);
+                        crate::gpui_compat::focus(window,&w.focus,cx);
                         w.sharing.email.update(cx, |field, cx| field.set_text("", cx));
                         w.show_toast(if w.sharing.copied_text.is_some() { tr("邀请文案和链接已复制", "Invitation message and link copied") } else { tr("邀请已准备好，请复制链接发给对方。", "Invitation ready. Copy the link and send it.") }, cx);
                     }
@@ -718,7 +733,7 @@ impl Workspace {
         }).detach();
     }
 
-    fn publish_shared_copy(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn publish_shared_copy(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let email = self.sharing.email.read(cx).text.trim().to_owned();
         if email.is_empty() || !self.flush(cx) { return; }
         let Some(title) = self.entries.iter().find(|entry| entry.id == id).map(|entry| display_title(&entry.title)) else { return };

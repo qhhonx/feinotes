@@ -123,7 +123,7 @@ impl TextField {
     /// The standard single-line input used alongside buttons.
     pub(crate) fn framed(field: &Entity<Self>, width: Pixels, window: &Window, cx: &App) -> Div {
         let focused = field.read(cx).is_focused(window);
-        div().w(width).h(px(30.)).px(px(10.)).flex().items_center().rounded(px(9.))
+        div().w(width).h(px(crate::mobile::control(30.))).px(px(10.)).flex().items_center().rounded(px(9.))
             .bg(crate::theme::raised(Theme::bg_body())).border_1()
             .border_color(if focused { Theme::primary() } else { Theme::line_border() })
             .child(field.clone())
@@ -139,9 +139,9 @@ impl TextField {
             placeholder: placeholder.into(),
             cache: Default::default(),
             id: BlockId(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
-            // macOS's control text: 13pt.
-            size: 13.,
-            line_height: 20.,
+            // Preserve desktop metrics while making mobile fields legible.
+            size: crate::mobile::label(13.),
+            line_height: if cfg!(target_os = "ios") { 24. } else { 20. },
             placeholder_color: Theme::text_placeholder(),
             color: Theme::text(),
             align: Align::Left,
@@ -432,7 +432,9 @@ impl TextField {
     }
 
     fn on_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
+        #[cfg(target_os = "ios")]
+        gpui_mobile::show_keyboard();
         let i = self.index_for(ev.position);
         if ev.click_count >= 2 {
             self.select_all_text(cx);
@@ -574,7 +576,7 @@ impl Render for TextField {
             placeholder_color: Some(self.placeholder_color),
             placeholder_dx: 0.,
             selection: (focused && !self.sel.is_empty()).then(|| self.sel.clone()),
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             remote: vec![],
             caret: Some(self.cursor()),
             caret_row_end: false,
@@ -637,7 +639,7 @@ impl Render for TextField {
                     move |bounds, _, window, cx| {
                         window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
                         if pointer_hidden {
-                            window.set_window_cursor_style(CursorStyle::None);
+                            window.set_window_cursor_style(crate::gpui_compat::NO_CURSOR);
                             let e = entity.clone();
                             window.on_mouse_event(move |_: &MouseMoveEvent, phase, _, cx| {
                                 if phase == DispatchPhase::Bubble {

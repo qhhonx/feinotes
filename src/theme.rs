@@ -271,7 +271,7 @@ pub mod craft {
 /// Shadows stay black; on the dark page they need more weight to show.
 fn shadow(a: f32, y: f32, blur: f32, spread: f32) -> BoxShadow {
     let a = if dark() { (a * 3.).min(0.6) } else { a };
-    BoxShadow { color: rgbaf(0, 0, 0, a), offset: point(px(0.), px(y)), blur_radius: px(blur), spread_radius: px(spread) }
+    BoxShadow { #[cfg(target_os = "ios")] inset: false, color: rgbaf(0, 0, 0, a), offset: point(px(0.), px(y)), blur_radius: px(blur), spread_radius: px(spread) }
 }
 
 /// Menus and dropdowns: macOS 26 menu panel, soft and wide.
@@ -581,8 +581,8 @@ pub fn heading_metrics(level: u8) -> BlockMetrics {
 
 /// Body text: 15pt, 1.25 × natural line height ≈ 22pt; single-line
 /// paragraphs repeat every 35pt, so 13pt between blocks.
-pub const BODY_SIZE: f32 = 15.0;
-pub const BODY_LINE: f32 = 22.0;
+pub const BODY_SIZE: f32 = if cfg!(target_os = "ios") { 17. } else { 15. };
+pub const BODY_LINE: f32 = if cfg!(target_os = "ios") { 26. } else { 22. };
 pub const BLOCK_GAP: f32 = 13.0;
 
 /// Heading weight per level (Title / Subtitle 700, Heading / Strong 600).

@@ -21,8 +21,9 @@ pub fn is_markdown_path(p: &std::path::Path) -> bool {
 /// Markdown files to open: the system open panel, or a scripted answer.
 fn pick(cx: &mut App) -> impl std::future::Future<Output = Option<Vec<PathBuf>>> + use<> {
     let picked = crate::devtools::take_pick();
+    #[cfg(not(target_os = "ios"))]
     let extensions = Some(MARKDOWN_EXTS.iter().map(|e| SharedString::from(*e)).collect());
-    let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(tr("打开", "Open").into()), extensions }));
+    let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(tr("打开", "Open").into()), #[cfg(not(target_os = "ios"))] extensions }));
     async move {
         match prompt {
             Some(p) => p.await.ok().and_then(Result::ok).flatten(),
@@ -118,20 +119,20 @@ impl Workspace {
 /// the command line), waiting for a main window.
 #[derive(Clone, Default)]
 pub struct Incoming(std::rc::Rc<std::cell::RefCell<Vec<PathBuf>>>,
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))] std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))] std::rc::Rc<std::cell::RefCell<Vec<String>>>);
 
 impl Incoming {
     /// Markdown files named on the command line (Windows and Linux "Open with").
     pub fn from_args() -> Self {
         let me = Self::default();
         me.0.borrow_mut().extend(std::env::args_os().skip(1).map(PathBuf::from).filter(|p| is_markdown_path(p) && p.is_file()));
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         me.1.borrow_mut().extend(std::env::args().skip(1).filter(|url| crate::sharing::links::incoming(url)));
         me
     }
 
     pub fn push_urls(&self, urls: Vec<String>) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         {
             let mut invitations = self.1.borrow_mut(); let available = 8usize.saturating_sub(invitations.len());
             invitations.extend(urls.iter().filter(|url| crate::sharing::links::incoming(url)).take(available).cloned());
@@ -143,7 +144,7 @@ impl Incoming {
     /// Hand waiting files to the front main window, now and whenever more arrive.
     pub fn deliver(self, cx: &mut App) {
         cx.spawn(async move |cx| loop {
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             if !self.1.borrow().is_empty() {
                 let _ = cx.update(|cx| {
                     let target = cx.active_window().and_then(|w| w.downcast::<Workspace>())

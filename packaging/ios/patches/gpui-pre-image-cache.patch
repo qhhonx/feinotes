@@ -1,0 +1,402 @@
+--- a/src/assets.rs
++++ b/src/assets.rs
+@@ -32,11 +32,33 @@
+ #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+ pub struct ImageId(pub usize);
+ 
++impl ImageId {
++    /// Allocate an image identity shared with decoded images.
++    pub fn next() -> Self { static NEXT_ID: AtomicUsize = AtomicUsize::new(0); Self(NEXT_ID.fetch_add(1, SeqCst)) }
++}
++
++
+ #[derive(PartialEq, Eq, Hash, Clone)]
+ #[expect(missing_docs)]
+ pub struct RenderImageParams {
+     pub image_id: ImageId,
+     pub frame_index: usize,
++}
++
++/// quiet.md: a frame drawn on the CPU, shown with `Window::paint_pixels`:
++/// premultiplied BGRA rows, `width` × `height` device pixels. Bump
++/// `generation` when the pixels change; `id` (`ImageId::next`) names its tile.
++pub struct PixelFrame {
++    /// Names the frame's atlas tile.
++    pub id: ImageId,
++    /// Width in device pixels.
++    pub width: u32,
++    /// Height in device pixels.
++    pub height: u32,
++    /// Changes whenever `bgra` does.
++    pub generation: u64,
++    /// `width * height * 4` bytes.
++    pub bgra: Vec<u8>,
+ }
+ 
+ /// A cached and processed image, in BGRA format
+@@ -46,6 +68,7 @@
+     /// The scale factor of this image on render.
+     pub(crate) scale_factor: f32,
+     data: SmallVec<[Frame; 1]>,
++    hollow: Option<Size<DevicePixels>>,
+ }
+ 
+ impl PartialEq for RenderImage {
+@@ -59,14 +82,26 @@
+ impl RenderImage {
+     /// Create a new image from the given data.
+     pub fn new(data: impl Into<SmallVec<[Frame; 1]>>) -> Self {
+-        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+ 
+         Self {
+-            id: ImageId(NEXT_ID.fetch_add(1, SeqCst)),
++            id: ImageId::next(),
+             scale_factor: 1.0,
+             data: data.into(),
++            hollow: None,
+         }
+     }
++
++    /// Keep the uploaded image identity and dimensions without decoded pixels.
++    /// Animated images retain their pixels.
++    pub fn hollow(&self) -> Option<Self> {
++        (self.data.len() == 1).then(|| Self { id: self.id, scale_factor: self.scale_factor, data: SmallVec::new(), hollow: Some(self.size(0)) })
++    }
++
++    /// Whether decoded pixels have been released after upload.
++    pub fn is_hollow(&self) -> bool { self.hollow.is_some() }
++
++    /// Preserve natural layout size when decoding a smaller image.
++    pub fn with_scale_factor(mut self, scale_factor: f32) -> Self { self.scale_factor = scale_factor; self }
+ 
+     /// Convert this image into a byte slice.
+     pub fn as_bytes(&self, frame_index: usize) -> Option<&[u8]> {
+@@ -77,6 +112,7 @@
+ 
+     /// Get the size of this image, in pixels.
+     pub fn size(&self, frame_index: usize) -> Size<DevicePixels> {
++        if let Some(size) = self.hollow { return size }
+         self.data
+             .get(frame_index)
+             .map(|frame| {
+@@ -102,6 +138,7 @@
+ 
+     /// Get the number of frames for this image.
+     pub fn frame_count(&self) -> usize {
++        if self.hollow.is_some() { return 1 }
+         self.data.len()
+     }
+ }
+--- a/src/elements/image_cache.rs
++++ b/src/elements/image_cache.rs
+@@ -23,6 +23,7 @@
+ #[derive(Clone)]
+ pub struct AnyImageCache {
+     image_cache: AnyEntity,
++    peek_fn: fn(&AnyEntity, &Resource, &App) -> Option<Result<Arc<RenderImage>, ImageCacheError>>,
+     load_fn: fn(
+         image_cache: &AnyEntity,
+         resource: &Resource,
+@@ -36,11 +37,15 @@
+         Self {
+             image_cache: image_cache.into_any(),
+             load_fn: any_image_cache::load::<I>,
++            peek_fn: any_image_cache::peek::<I>,
+         }
+     }
+ }
+ 
+ impl AnyImageCache {
++    /// Read cached pixels without starting a load or marking visibility.
++    pub fn peek(&self, resource: &Resource, cx: &App) -> Option<Result<Arc<RenderImage>, ImageCacheError>> { (self.peek_fn)(&self.image_cache, resource, cx) }
++
+     /// Load an image given a resource
+     /// returns the result of loading the image if it has finished loading, or None if it is still loading
+     pub fn load(
+@@ -55,6 +60,10 @@
+ 
+ mod any_image_cache {
+     use super::*;
++
++    pub(crate) fn peek<I: ImageCache>(cache: &AnyEntity, resource: &Resource, cx: &App) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
++        cache.clone().downcast::<I>().unwrap().read(cx).peek(resource)
++    }
+ 
+     pub(crate) fn load<I: 'static + ImageCache>(
+         image_cache: &AnyEntity,
+@@ -195,6 +204,9 @@
+ /// An object that can handle the caching and unloading of images.
+ /// Implementations of this trait should ensure that images are removed from all windows when they are no longer needed.
+ pub trait ImageCache: 'static {
++    /// Read cached pixels without loading; caches may opt into this.
++    fn peek(&self, _resource: &Resource) -> Option<Result<Arc<RenderImage>, ImageCacheError>> { None }
++
+     /// Load an image given a resource
+     /// returns the result of loading the image if it has finished loading, or None if it is still loading
+     fn load(
+--- a/src/elements/img.rs
++++ b/src/elements/img.rs
+@@ -194,6 +194,7 @@
+     source: ImageSource,
+     style: ImageStyle,
+     image_cache: Option<AnyImageCache>,
++    load_visible_only: bool,
+ }
+ 
+ /// Create a new image element.
+@@ -204,10 +205,14 @@
+         source: source.into(),
+         style: ImageStyle::default(),
+         image_cache: None,
++        load_visible_only: false,
+     }
+ }
+ 
+ impl Img {
++    /// With explicit dimensions, defer loading until visible painting.
++    pub fn load_visible_only(mut self) -> Self { self.load_visible_only = true; self }
++
+     /// A list of all format extensions currently supported by this img element
+     pub fn extensions() -> &'static [&'static str] {
+         // This is the list in [image::ImageFormat::from_extension] + `svg`
+@@ -305,13 +310,10 @@
+                 |mut style, window, cx| {
+                     let mut replacement_id = None;
+ 
+-                    match self.source.use_data(
+-                        self.image_cache
+-                            .clone()
+-                            .or_else(|| window.image_cache_stack.last().cloned()),
+-                        window,
+-                        cx,
+-                    ) {
++                    let cache = self.image_cache.clone().or_else(|| window.image_cache_stack.last().cloned());
++                    let deferred = self.load_visible_only && !matches!(style.size.width, Length::Auto) && !matches!(style.size.height, Length::Auto);
++                    let data = if deferred { self.source.get_data(cache, window, cx) } else { self.source.use_data(cache, window, cx) };
++                    match data {
+                         Some(Ok(data)) => {
+                             let frame_count = data.frame_count();
+                             let max_frame_index = frame_count.saturating_sub(1);
+@@ -477,6 +479,10 @@
+             window,
+             cx,
+             |style, window, cx| {
++                if self.load_visible_only {
++                    let visible = bounds.intersect(&window.content_mask().bounds);
++                    if visible.size.width <= px(0.) || visible.size.height <= px(0.) { return }
++                }
+                 if let Some(Ok(data)) = source.use_data(
+                     self.image_cache
+                         .clone()
+@@ -562,7 +568,7 @@
+         match self {
+             ImageSource::Resource(resource) => {
+                 if let Some(cache) = cache {
+-                    cache.load(resource, window, cx)
++                    cache.peek(resource, cx)
+                 } else {
+                     window.get_asset::<ImgResourceLoader>(resource, cx)
+                 }
+--- a/src/keymap/binding.rs
++++ b/src/keymap/binding.rs
+@@ -32,7 +32,7 @@
+     /// Constructs a static keybinding with explicit modifiers. Panics on parse error.
+     ///
+     /// Use [`Self::load`] for dynamic input or to resolve `secondary-` using the host OS.
+-    pub fn new<A: Action>(keystrokes: &'static str, action: A, context: Option<&str>) -> Self {
++    pub fn new<A: Action>(keystrokes: &str, action: A, context: Option<&str>) -> Self {
+         let context_predicate =
+             context.map(|context| KeyBindingContextPredicate::parse(context).unwrap().into());
+         Self::load_internal(
+--- a/src/path_builder.rs
++++ b/src/path_builder.rs
+@@ -9,7 +9,7 @@
+ };
+ 
+ pub use lyon::math::Transform;
+-pub use lyon::tessellation::{FillOptions, FillRule, StrokeOptions};
++pub use lyon::tessellation::{FillOptions, FillRule, LineCap, LineJoin, StrokeOptions};
+ 
+ use crate::{Path, Pixels, Point, point, px};
+ 
+--- a/src/platform/keystroke.rs
++++ b/src/platform/keystroke.rs
+@@ -117,7 +117,7 @@
+     /// Syntax: `[ctrl-][alt-][shift-][cmd-][fn-]key[->key_char]`.
+     /// The `key_char` suffix is used for generating test events.
+     /// Use [`Self::parse_with_os`] for dynamic input or the `secondary-` alias.
+-    pub fn parse(source: &'static str) -> std::result::Result<Self, InvalidKeystrokeError> {
++    pub fn parse(source: &str) -> std::result::Result<Self, InvalidKeystrokeError> {
+         Self::parse_internal(source, None)
+     }
+ 
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -1540,6 +1540,8 @@
+     fn advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Size<f32>>;
+     /// Get the glyph ID for a character.
+     fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId>;
++    /// Font-unit glyph outline for CPU renderers.
++    fn glyph_outline(&self, _font_id: FontId, _glyph_id: GlyphId) -> Option<Vec<crate::GlyphOutlineCmd>> { None }
+     /// Get raster bounds for a glyph.
+     fn glyph_raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>>;
+     /// Rasterize a glyph.
+--- a/src/scene.rs
++++ b/src/scene.rs
+@@ -836,6 +836,30 @@
+         }
+     }
+ 
++    /// quiet.md: this path scaled about the origin by `scale`, then moved
++    /// by `offset`; a tessellated path redrawn at another zoom or scroll
++    /// (the board caches paths per element).
++    pub fn transformed(&self, scale: f32, offset: Point<Pixels>) -> Path<Pixels> {
++        let map = |p: Point<Pixels>| point(p.x * scale + offset.x, p.y * scale + offset.y);
++        Path {
++            id: self.id,
++            order: self.order,
++            bounds: Bounds { origin: map(self.bounds.origin), size: self.bounds.size.map(|v| v * scale) },
++            content_mask: self.content_mask.clone(),
++            vertices: self.vertices.iter().map(|v| PathVertex { xy_position: map(v.xy_position), st_position: v.st_position, content_mask: v.content_mask.clone() }).collect(),
++            start: map(self.start),
++            current: map(self.current),
++            contour_count: self.contour_count,
++            color: self.color,
++        }
++    }
++
++    /// quiet.md: the triangles this path fills, as (positions, curve
++    /// coordinates); the board clips tessellated paths by frames.
++    pub fn triangles(&self) -> impl Iterator<Item = ([Point<Pixels>; 3], [Point<f32>; 3])> + '_ {
++        self.vertices.chunks_exact(3).map(|t| ([t[0].xy_position, t[1].xy_position, t[2].xy_position], [t[0].st_position, t[1].st_position, t[2].st_position]))
++    }
++
+     /// Move the start, current point to the given point.
+     pub fn move_to(&mut self, to: Point<Pixels>) {
+         self.contour_count += 1;
+--- a/src/text_system.rs
++++ b/src/text_system.rs
+@@ -638,7 +638,16 @@
+     text_system: Arc<TextSystem>,
+ }
+ 
++/// quiet.md: one step of a glyph outline (`WindowTextSystem::glyph_outline`),
++/// in font units, y up.
++#[allow(missing_docs)]
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub enum GlyphOutlineCmd { MoveTo([f32; 2]), LineTo([f32; 2]), QuadTo([f32; 2], [f32; 2]), CubicTo([f32; 2], [f32; 2], [f32; 2]), Close }
++
+ impl WindowTextSystem {
++    /// Return the font-unit outline for CPU drawing.
++    pub fn glyph_outline(&self, font_id: FontId, glyph_id: GlyphId) -> Option<Vec<GlyphOutlineCmd>> { self.text_system.platform_text_system.glyph_outline(font_id, glyph_id) }
++
+     /// Create a new WindowTextSystem with the given TextSystem.
+     pub fn new(text_system: Arc<TextSystem>) -> Self {
+         Self {
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -1231,6 +1231,7 @@
+     is_resizable: bool,
+     is_minimizable: bool,
+     sprite_atlas: Arc<dyn PlatformAtlas>,
++    pixel_frames: std::collections::HashMap<crate::ImageId, (u64, Arc<RenderImage>)>,
+     text_system: Arc<WindowTextSystem>,
+     text_rendering_mode: Rc<Cell<TextRenderingMode>>,
+     rem_size: Pixels,
+@@ -1255,6 +1256,7 @@
+     last_text_input_configuration: Option<TextInputConfiguration>,
+     focused_text_input: Option<FocusId>,
+     pub(crate) image_cache_stack: Vec<AnyImageCache>,
++    missing_images: Vec<crate::ImageId>,
+     pub(crate) rendered_frame: Frame,
+     pub(crate) next_frame: Frame,
+     next_hitbox_id: HitboxId,
+@@ -2143,6 +2145,7 @@
+             is_resizable,
+             is_minimizable,
+             sprite_atlas,
++            pixel_frames: Default::default(),
+             text_system,
+             text_rendering_mode: cx.text_rendering_mode.clone(),
+             rem_size: px(16.),
+@@ -2207,6 +2210,7 @@
+             prompt: None,
+             client_inset: None,
+             image_cache_stack: Vec::new(),
++            missing_images: Vec::new(),
+             captured_hitbox: None,
+             #[cfg(any(feature = "inspector", debug_assertions))]
+             inspector: None,
+@@ -4227,7 +4231,7 @@
+         result
+     }
+ 
+-    pub(crate) fn with_element_opacity<R>(
++    pub fn with_element_opacity<R>(
+         &mut self,
+         opacity: Option<f32>,
+         f: impl FnOnce(&mut Self) -> R,
+@@ -5061,12 +5065,37 @@
+     }
+ 
+     /// Paint an image into the scene for the next frame at the current z-index.
++    /// Images missing from this atlas after their decoded pixels were released.
++    pub fn take_missing_images(&mut self) -> Vec<crate::ImageId> { std::mem::take(&mut self.missing_images) }
++
+     /// This method will panic if the frame_index is not valid
+     ///
+     /// This method should only be called as part of the paint phase of element drawing.
+     /// Paint an image into `bounds`, positioning and scaling it according to `image_bounds`.
+     ///
+     /// The visible region rendered is `bounds.intersect(&image_bounds)`, with `corner_radii`
++    /// Paint an opaque CPU frame through the mobile image atlas, at device-pixel size.
++    pub fn paint_pixels(&mut self, origin: Point<Pixels>, frame: &crate::PixelFrame) -> Result<()> {
++        if frame.width == 0 || frame.height == 0 || frame.bgra.len() != frame.width as usize * frame.height as usize * 4 { return Ok(()) }
++        let cached = self.pixel_frames.get(&frame.id).filter(|(generation, _)| *generation == frame.generation).map(|(_, image)| image.clone());
++        let image = if let Some(image) = cached { image } else {
++            self.drop_pixels(frame.id);
++            let buffer = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra.clone()).expect("validated CPU frame size");
++            let image = Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(buffer)]));
++            self.pixel_frames.insert(frame.id, (frame.generation, image.clone()));
++            image
++        };
++        let scale = self.scale_factor();
++        let origin = origin.map(|v| crate::px((f32::from(v) * scale).round() / scale));
++        let bounds = Bounds { origin, size: crate::size(crate::px(frame.width as f32 / scale), crate::px(frame.height as f32 / scale)) };
++        self.paint_image(bounds, bounds, Corners::default(), image, 0, false)
++    }
++
++    /// Release a CPU frame and its mobile image-atlas allocation.
++    pub fn drop_pixels(&mut self, id: crate::ImageId) {
++        if let Some((_, image)) = self.pixel_frames.remove(&id) { let _ = self.drop_image(image); }
++    }
++
+     /// applied to `bounds`.
+     pub fn paint_image(
+         &mut self,
+@@ -5092,18 +5121,13 @@
+             frame_index,
+         };
+ 
+-        let tile = self
+-            .sprite_atlas
+-            .get_or_insert_with(params.into(), &mut || {
+-                Ok(Some((
+-                    data.size(frame_index),
+-                    Cow::Borrowed(
+-                        data.as_bytes(frame_index)
+-                            .expect("It's the caller's job to pass a valid frame index"),
+-                    ),
+-                )))
+-            })?
+-            .expect("Callback above only returns Some");
++        let Some(tile) = self.sprite_atlas.get_or_insert_with(params.into(), &mut || {
++            Ok(data.as_bytes(frame_index).map(|bytes| (data.size(frame_index), Cow::Borrowed(bytes))))
++        })? else {
++            if self.missing_images.is_empty() { self.on_next_frame(|window, _| window.refresh()); }
++            self.missing_images.push(data.id);
++            return Ok(());
++        };
+ 
+         let visible_bounds_snapped = self.snap_bounds(visible_bounds);
+ 

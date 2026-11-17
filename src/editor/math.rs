@@ -101,7 +101,7 @@ impl Math {
             match it {
                 Item::Text { x, y, line } => {
                     let lh = line.ascent + line.descent;
-                    let _ = line.paint(point(origin.x + px(*x), origin.y + px(*y) - line.ascent), lh, window, cx);
+                    let _ = crate::gpui_compat::paint_line(line, point(origin.x + px(*x), origin.y + px(*y) - line.ascent), lh, window, cx);
                 }
                 Item::Rect { x, y, w, h, color } => {
                     window.paint_quad(fill(
@@ -111,7 +111,7 @@ impl Math {
                 }
                 Item::Svg { x, y, w, h, path, color } => {
                     let b = Bounds::new(point(origin.x + px(*x), origin.y + px(*y)), size(px(*w), px(*h)));
-                    let _ = window.paint_svg(b, path.clone(), TransformationMatrix::unit(), *color, cx);
+                    let _ = crate::gpui_compat::paint_svg(window, b, path.clone(), TransformationMatrix::unit(), *color, cx);
                 }
             }
         }

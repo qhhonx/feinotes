@@ -13,6 +13,7 @@ mod paragraphs;
 pub(crate) mod presence;
 pub(crate) mod shared;
 mod table;
+pub(crate) mod library;
 #[cfg(feature = "devtools")]
 pub mod qa;
 
@@ -168,7 +169,8 @@ struct Session {
 fn session<'a>(root: &Path, cx: &'a App) -> Option<&'a Session> { cx.try_global::<Sync>()?.0.get(root) }
 fn journal<'a>(root: &Path, cx: &'a App) -> &'a Journal { &session(root, cx).expect("open sync session").journal }
 fn journal_mut<'a>(root: &Path, cx: &'a mut App) -> &'a mut Journal { &mut cx.global_mut::<Sync>().0.get_mut(root).expect("open sync session").journal }
-fn current(root: &Path, generation: uuid::Uuid, cx: &App) -> bool { session(root, cx).is_some_and(|s| s.generation == generation) }
+fn generation_matches(open: uuid::Uuid, callback: uuid::Uuid) -> bool { open == callback }
+fn current(root: &Path, generation: uuid::Uuid, cx: &App) -> bool { session(root, cx).is_some_and(|s| generation_matches(s.generation, generation)) }
 
 #[derive(Default)]
 pub(crate) struct SyncStatuses(HashMap<PathBuf, SyncStatus>);
@@ -299,10 +301,39 @@ fn update_status_after_exchange(root: &Path, cx: &mut App, phase: SyncPhase, aut
     if scope(root, cx).is_some() && (changed || matches!(phase, SyncPhase::AccountChecking | SyncPhase::AccountChanged | SyncPhase::SignedOut)) { app::cloud_notes_changed(root, &[], false, cx); }
 }
 
+#[cfg(target_os = "macos")]
 pub fn start(cx: &mut App) -> Result<()> {
     let store = cx.global::<SharedStore>().clone();
     start_library(store, cx)
 }
+
+#[cfg(target_os = "ios")]
+pub(crate) fn start_personal_session(cx: &mut App, channel: Option<String>, parent: PathBuf) -> Result<()> {
+    let store = cx.global::<SharedStore>().clone();
+    let opened = Journal::open(store.root(), channel)?;
+    install_session_in(store, opened, Some(parent), cx)
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn start_test_channel(cx: &mut App, channel: uuid::Uuid, parent: PathBuf) -> Result<()> {
+    start_personal_session(cx, Some(channel.to_string()), parent)
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn start_shared_session(cx: &mut App, parent: PathBuf) -> Result<()> {
+    start_personal_session(cx, None, parent)
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn stop(cx: &mut App) {
+    let roots = cx.try_global::<Sync>().map(|sync| sync.0.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+    for root in roots { release(&root, cx); }
+    if cx.has_global::<Sync>() { drop(cx.remove_global::<Sync>()); }
+    if cx.has_global::<activity::ActivityView>() { drop(cx.remove_global::<activity::ActivityView>()); }
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn history_available(root: &Path, cx: &App) -> bool { session(root, cx).is_some() && scope(root, cx).is_none() }
 
 fn start_library(store: SharedStore, cx: &mut App) -> Result<()> {
     let root = store.root().to_path_buf();
@@ -317,8 +348,12 @@ fn start_library(store: SharedStore, cx: &mut App) -> Result<()> {
 }
 
 fn install_session(store: SharedStore, opened: Journal, cx: &mut App) -> Result<()> {
+    install_session_in(store, opened, test_root()?, cx)
+}
+
+fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBuf>, cx: &mut App) -> Result<()> {
     let root = store.root().to_path_buf();
-    let pause = test_root()?.map(|root| root.join("pause-cloud"));
+    let pause = parent.as_ref().map(|root| root.join("pause-cloud"));
     #[cfg(feature = "devtools")]
     let upload_fault_fixture = test_root()?.map(|root| root.join("qa-upload-fault"));
     let room = opened.room().is_some();
@@ -338,11 +373,11 @@ fn install_session(store: SharedStore, opened: Journal, cx: &mut App) -> Result<
     if first && !local_session_qa { unsafe { quiet_cloud_watch_sync_resume(sync_resumed) }; }
     update_status(&root, cx, SyncPhase::Connecting);
     if let Err(error) = presence::start(cx, root.clone(), generation, pause.clone()) { release(&root, cx); return Err(error); }
-    if !room { activity::start(cx, root.clone(), account, pause.clone()); }
+    if !room { activity::start(cx, root.clone(), account, pause.clone(), generation); }
     let account_root = root.clone();
     cx.spawn(async move |cx| {
         while account_rx.recv().await.is_ok() {
-            if !cx.update(|cx| {
+            if !crate::gpui_compat::async_update(cx, |cx| {
                 if !current(&account_root, generation, cx) { return false; }
                 update_status(&account_root, cx, SyncPhase::AccountChecking);
                 true
@@ -364,12 +399,12 @@ fn install_session(store: SharedStore, opened: Journal, cx: &mut App) -> Result<
                 if wake.as_mut().poll(cx).is_ready() || timer.as_mut().poll(cx).is_ready() { Poll::Ready(()) }
                 else { Poll::Pending }
             }).await;
-            if !cx.update(|cx| {
+            if !crate::gpui_compat::async_update(cx, |cx| {
                 if !current(&root, generation, cx) { return false; }
                 if room && session(&root, cx).unwrap().store.only_session_reference() { release(&root, cx); return false; }
                 true
             }).unwrap_or(false) { break; }
-            let result = cx.update(|cx| {
+            let result = crate::gpui_compat::async_update(cx, |cx| {
                 if observed_revision != account_revision() {
                     observed_revision = account_revision();
                     update_status(&root, cx, SyncPhase::AccountChecking);
@@ -406,8 +441,8 @@ fn install_session(store: SharedStore, opened: Journal, cx: &mut App) -> Result<
                 Ok((_, _, request)) => cx.background_executor().spawn(async move { exchange(request) }).await,
                 Err(error) => Err(error),
             };
-            if !cx.update(|cx| current(&root, generation, cx)).unwrap_or(false) { break; }
-            let Ok(result) = cx.update(|cx| -> Result<_> {
+            if !crate::gpui_compat::async_update(cx, |cx| current(&root, generation, cx)).unwrap_or(false) { break; }
+            let Ok(result) = crate::gpui_compat::async_update(cx, |cx| -> Result<_> {
                 check_account_revision(revision)?;
                 let page = result?;
                 let (more, quota_exceeded) = (page.more, page.upload_quota_exceeded);
@@ -424,7 +459,7 @@ fn install_session(store: SharedStore, opened: Journal, cx: &mut App) -> Result<
                     if legacy && !more { legacy_checked = Some(std::time::Instant::now()); }
                     if quota_exceeded { upload_retry_at = Some(std::time::Instant::now() + Duration::from_secs(30)); }
                     else if allow_upload { upload_retry_at = None; }
-                    let (pending, collaborating) = cx.update(|cx| {
+                    let (pending, collaborating) = crate::gpui_compat::async_update(cx, |cx| {
                         update_status_after_exchange(&root, cx, if upload_retry_at.is_some() { SyncPhase::Quota }
                             else if more { SyncPhase::Connecting } else { SyncPhase::Ready }, true);
                         let collaborating = match app::cloud_active_selection(&root, cx) {
@@ -440,7 +475,7 @@ fn install_session(store: SharedStore, opened: Journal, cx: &mut App) -> Result<
                 }
                 Err(error) => {
                     let phase = error.downcast_ref::<CloudFailure>().map_or(SyncPhase::Failed, |error| error.phase);
-                    let _ = cx.update(|cx| {
+                    let _ = crate::gpui_compat::async_update(cx, |cx| {
                         if matches!(phase, SyncPhase::AccountChanged | SyncPhase::SignedOut) {
                             if let Ok(marker) = journal(&root, cx).account_verification_marker() { protect_offline_library(&marker); }
                             if account_notice != Some(phase) {
@@ -542,10 +577,101 @@ pub fn preview(path: &Path) -> bool {
     CString::new(path.as_os_str().as_encoded_bytes()).is_ok_and(|path| unsafe { quiet_cloud_preview(path.as_ptr()) })
 }
 
+#[cfg(target_os = "macos")]
 /// Generate an attachment preview with the sandbox-aware native service.
 /// This blocks and must only run on a background executor.
 pub fn thumbnail(path: &Path, destination: &Path) -> bool {
     let Ok(path) = CString::new(path.as_os_str().as_encoded_bytes()) else { return false };
     let Ok(destination) = CString::new(destination.as_os_str().as_encoded_bytes()) else { return false };
     unsafe { quiet_cloud_thumbnail(path.as_ptr(), destination.as_ptr()) }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn library_handoff_preserves_queued_edits_and_isolates_late_callbacks() -> Result<()> {
+        const CHILD: &str = "FEI_SESSION_HANDOFF_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact","cloud_sync::session_tests::library_handoff_preserves_queued_edits_and_isolates_late_callbacks","--nocapture"])
+                .env(CHILD,"1").output()?;
+            ensure!(output.status.success(),"{}\n{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+            return Ok(());
+        }
+        struct Temporary(PathBuf);
+        impl Drop for Temporary { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+        let temporary = Temporary(std::env::temp_dir().join(format!("fei-session-check-{}",uuid::Uuid::new_v4())));
+        std::fs::create_dir(&temporary.0)?;
+        let first = temporary.0.join("cloud");
+        let second = temporary.0.join("local");
+        let staged = first.join(".restore-source");
+        let mut legacy = Store::open_at(staged.clone())?;
+        let document = crate::docxml::parse("<title>Session source</title>\n<p>Original</p>")?;
+        let note = legacy.create_from(&document)?;
+        std::fs::write(staged.join(".cloud-restore-ready"),format!("{}\n","a".repeat(64)))?;
+        drop(legacy);
+        Store::initialize_sqlite(&first)?;
+        std::fs::create_dir(&second)?;
+        Store::initialize_local_sqlite(&second)?;
+        Store::set_sqlite_session_root(first.clone())?;
+        let mut editor_store = SharedStore::open()?;
+        let mut journal = Journal::open(&first,Some("61d4fa9f-8938-468b-a920-fdb41ba3afe0".into()))?;
+        let mut core = Core::new(editor_store.load(&note)?);
+        let block = &core.doc.blocks[0];
+        core.sel = crate::editor::core::Selection::caret(Pos::new(block.id,block.text.len()));
+        core.insert_text(" · Pending offline edit");
+        journal.save(&mut editor_store,&note,&core)?;
+        ensure!(journal.counts()?.0 > 0,"The source edit was not queued");
+        let queued = journal.counts()?.0;
+        let peer = journal.identity().2;
+        let delayed = uuid::Uuid::new_v4();
+        assert!(Store::switch_sqlite_session_root(&first,second.clone()).is_err());
+        drop(journal);
+        assert!(Store::switch_sqlite_session_root(&first,second.clone()).is_err());
+        let export = Store::session_lease(&first).unwrap();
+        drop(editor_store);
+        assert!(Store::switch_sqlite_session_root(&first,second.clone()).is_err());
+        drop(export);
+        Store::switch_sqlite_session_root(&first,second.clone())?;
+        let mut local = SharedStore::open()?;
+        assert!(local.list().is_empty());
+        assert!(!generation_matches(uuid::Uuid::new_v4(), delayed));
+        assert!(local.list().is_empty());
+        local.create_from(&crate::docxml::parse("<title>Local session</title>\n<p>Separate</p>")?)?;
+        drop(local);
+        Store::switch_sqlite_session_root(&second,first.clone())?;
+        let mut reopened = SharedStore::open()?;
+        let journal = Journal::open(&first,Some(uuid::Uuid::new_v4().to_string()));
+        assert!(journal.is_err());
+        let db = rusqlite::Connection::open(first.join(crate::store::SQLITE_FILE))?;
+        let channel: String = db.query_row("SELECT value FROM state WHERE key='channel'",[],|row| row.get(0))?;
+        drop(db);
+        let journal = Journal::open(&first,Some(channel))?;
+        assert_eq!(journal.counts()?.0,queued);
+        assert_eq!(journal.identity().2,peer);
+        assert!(reopened.load(&note)?.plain_text().contains("Pending offline edit"));
+        assert_eq!(reopened.list().len(),1);
+        drop(journal); drop(reopened);
+        if let Some(output) = std::env::var_os("FEI_SESSION_FIXTURE_OUTPUT") {
+            let output = PathBuf::from(output);
+            ensure!(output.is_absolute() && output.starts_with("/private/tmp/"),"Use a private temporary fixture folder");
+            std::fs::create_dir(&output)?;
+            for name in [crate::store::SQLITE_FILE,".cloud-restore-ready"] { std::fs::copy(first.join(name),output.join(name))?; }
+            std::fs::write(output.join("fixture.json"),serde_json::to_vec(&serde_json::json!({
+                "channel":"61d4fa9f-8938-468b-a920-fdb41ba3afe0","note":note,"pending":queued,"peer":peer
+            }))?)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn replaced_session_rejects_the_previous_generation() {
+        let old = uuid::Uuid::new_v4();
+        let next = uuid::Uuid::new_v4();
+        assert!(generation_matches(old, old));
+        assert!(!generation_matches(next, old));
+        assert!(generation_matches(next, next));
+    }
 }

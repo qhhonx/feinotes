@@ -25,6 +25,10 @@ impl Workspace {
     }
 
     pub(crate) fn open_shared_window(&mut self, room: Room, window: &Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "ios")]
+        { let _ = window; shared::launch(&room,cx).detach(); self.row_menu = None; }
+        #[cfg(target_os = "macos")]
+        {
         let window_id = window.window_handle().window_id(); self.row_menu = None;
         cx.defer(move |cx| {
             if let Err(error) = shared::open_window(&room, cx) {
@@ -34,6 +38,7 @@ impl Workspace {
                 }
             }
         });
+        }
     }
 
     pub(crate) fn copy_shared_link(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {

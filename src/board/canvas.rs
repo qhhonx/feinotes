@@ -184,7 +184,7 @@ fn wheel(me: &mut BoardView, ev: &ScrollWheelEvent, _: &mut Window, cx: &mut Con
 }
 
 fn down(me: &mut BoardView, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<BoardView>) {
-    me.focus(window);
+    me.focus(window, cx);
     me.pointer = ev.position;
     me.menu = None;
     me.help = false;
@@ -227,7 +227,7 @@ fn down(me: &mut BoardView, ev: &MouseDownEvent, window: &mut Window, cx: &mut C
 /// `handleCanvasContextMenu`: selects what's under the pointer (unless it's
 /// part of the selection) and opens the menu.
 fn right_down(me: &mut BoardView, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<BoardView>) {
-    me.focus(window);
+    me.focus(window, cx);
     me.finish_pending(window, cx);
     let p = me.scene_point(ev.position);
     let hit = me.element_at(p, false, false).map(|e| e.id.clone());
