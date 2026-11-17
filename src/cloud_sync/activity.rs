@@ -56,7 +56,7 @@ pub(super) fn observe(db: &Connection, note: &str, edits: &[Edit]) -> Result<()>
         if known { continue; }
         // A newly shared note starts with one initial update. Only changes
         // that depend on earlier content represent collaborator activity.
-        let update = LoroDoc::decode_import_blob_meta(&edit.data.0, false)?;
+        let update = LoroDoc::decode_import_blob_meta(super::retention::unpack(&edit.data.0)?.1, false)?;
         if update.start_frontiers.is_empty() { continue; }
         if projected_version.is_none() {
             projected_version = Some(read_projected_version(db, note)?);
@@ -127,7 +127,7 @@ fn poll(personal: &Path, account: &str, room: &Room) -> Result<bool> {
     schema(&db)?;
     let token = value(&db, "shared-activity-token")?.map(Bytes);
     let revision = super::account_revision();
-    let page = exchange(Exchange { account: account.into(), channel: None, token, edits: vec![], legacy: false,
+    let page = exchange(Exchange { downloads: vec![], maintenance: None, account: account.into(), channel: None, token, edits: vec![], legacy: false,
         room: Some(room.scope.clone()), activity_only: true,
         #[cfg(feature = "devtools")] expire_cursor_for_qa: false,
         #[cfg(feature = "devtools")] upload_fault_for_qa: None })?;

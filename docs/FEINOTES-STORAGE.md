@@ -35,6 +35,36 @@ Portable `.feinotesbackup` archives now include local snapshot bodies, version l
 
 Restoring a snapshot uses the normal product cloud-save transaction, including CRDT state and the durable outbox. Queue failure rolls back the materialized body; shared-note read-only or revoked access rejects restoration. Local-only saves use SQLite directly. Returning from a preview restores the editor state and never saves the preview. Retention is the upstream limit (1-30 versions per note, 200 MiB total); deletion, undo/redo, restoration and purge move or remove ancillary history with the note.
 
+## Cloud checkpoints and attachment retention
+
+The journal inventories immutable CloudKit records in SQLite. After 32 records
+for a document or catalogue, the owner can publish a full Loro checkpoint,
+including causal history and protected recovery versions. A fresh Loro instance
+must import it with matching state and version vector before publication. Only
+a later verified readback authorizes deleting explicitly covered records, up to
+160 per batch. Checkpoints over 16 MiB leave the original updates intact.
+
+Every writer and maintenance request conditionally updates the same per-zone
+fence in an atomic CloudKit operation. A stale generation retries after fetching
+changes. Shared participants can write within their permissions; only the owner
+can compact or collect. Folder rooms checkpoint their catalogue and individual
+descendant documents independently.
+
+Attachment headers use `QuietNoteEdit.assetIndex` (BYTES). Restore downloads
+referenced chunks instead of all historical assets. Collection protects current
+and trashed documents, recoverable sync history, checkpoint versions, named local
+versions and crash recovery. Unreferenced chunks must be observed for at least
+one hour and all pending work must drain before collection. An offline device
+reusing a collected file uploads its local bytes before publishing the reference.
+Local cache collection additionally verifies the digest and runs at a new session.
+
+SQLite schema 7 and existing backups are retained; the new inventory tables are
+created on open. The checkpoint envelope changes the beta cloud wire format.
+Update all beta writers together; mixed writing with earlier beta builds is not
+supported. Production distribution requires the additive `assetIndex` schema
+field. Code integration and Development probes do not establish Production
+schema deployment or real multi-account acceptance.
+
 ## Boards
 
 Standalone boards use `Meta::kind = Board` on both backends. The file backend writes `.excalidraw`; SQLite stores its document and embedded scene through the existing DocxXML block payload, with no schema migration. SQLite history keeps XML snapshots and restores through the normal cloud transaction. Scene image paths participate in attachment enumeration, import rebasing, cloud upload, shared-copy recovery and portable backups. Image downloads and live board views use the selected personal or shared library root.

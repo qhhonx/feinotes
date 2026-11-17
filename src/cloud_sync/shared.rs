@@ -213,7 +213,7 @@ pub(crate) fn create(personal: &Path, title: String, doc: &Document, front: &str
     Ok(room)
 }
 
-#[cfg(any(test, feature = "devtools"))]
+#[cfg(feature = "devtools")]
 pub(crate) fn prepare_copy(personal: &Path, title: String, doc: &Document, front: &str) -> Result<Room> {
     Command::new(&account(personal)?, "checkAccess", None)?.send()?;
     let room = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(), owner: None, folder: false }, title };
@@ -618,7 +618,7 @@ mod tests {
         let mut guest = Journal::open(&guest_root, None)?;
         let db = rusqlite::Connection::open(guest_root.join(crate::store::SQLITE_FILE))?;
         let receive = |journal: &mut Journal, edits| journal.receive(Changes {
-            uploaded: vec![], edits, token: Some(Bytes(vec![1])), more: false, legacy: false,
+            retention: None, uploaded: vec![], edits, token: Some(Bytes(vec![1])), more: false, legacy: false,
             room_access: Some(Access::ReadOnly), #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false,
         });
         let base = owner.request()?.edits.into_iter().map(|edit| Edit { collaborator: true, ..edit }).collect();
@@ -691,7 +691,7 @@ mod tests {
         let guest_room = Room { scope: Scope { owner: Some("synthetic-owner".into()), ..room.scope.clone() }, title: room.title };
         let guest_root = stage(&guest, &guest_room, None)?;
         let mut guest = Journal::open(&guest_root, None)?;
-        guest.receive(Changes { uploaded: vec![], edits: request.edits, token: Some(Bytes(vec![1])), more: false, legacy: false,
+        guest.receive(Changes { retention: None, uploaded: vec![], edits: request.edits, token: Some(Bytes(vec![1])), more: false, legacy: false,
             room_access: Some(Access::ReadOnly), #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
         guest.merge(&Default::default())?;
         let mut store = Store::open_sqlite_at(guest_root.clone())?;
@@ -702,10 +702,10 @@ mod tests {
         let db = rusqlite::Connection::open(guest_root.join(crate::store::SQLITE_FILE))?;
         super::super::journal::enqueue(&db, &room.scope.note, vec![1])?;
         assert!(guest.request()?.edits.is_empty());
-        guest.receive(Changes { uploaded: vec![], edits: vec![], token: Some(Bytes(vec![2])), more: false, legacy: false,
+        guest.receive(Changes { retention: None, uploaded: vec![], edits: vec![], token: Some(Bytes(vec![2])), more: false, legacy: false,
             room_access: Some(Access::ReadWrite), #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
         assert_eq!(guest.request()?.edits.len(), 1);
-        guest.receive(Changes { uploaded: vec![], edits: vec![], token: None, more: false, legacy: false,
+        guest.receive(Changes { retention: None, uploaded: vec![], edits: vec![], token: None, more: false, legacy: false,
             room_access: Some(Access::Revoked), #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
         assert!(guest.request()?.edits.is_empty());
         assert_eq!(guest.counts()?.0, 1);

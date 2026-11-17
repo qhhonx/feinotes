@@ -943,8 +943,12 @@ impl Store {
     }
 
     fn recovery_dir(&self) -> PathBuf {
+        Self::recovery_directory(&self.root)
+    }
+
+    pub fn recovery_directory(root: &Path) -> PathBuf {
         dirs::data_local_dir().unwrap_or_else(std::env::temp_dir)
-            .join("quiet-md/recovery").join(library_key(&self.root))
+            .join("quiet-md/recovery").join(library_key(root))
     }
 
     pub fn recover_later(&self, doc: &Document) -> Result<()> {

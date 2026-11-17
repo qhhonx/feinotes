@@ -29,7 +29,7 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
             room.scope.owner = Some("synthetic-remote-owner".into());
             let guest = stage(&personal, &room, None)?;
             let mut reader = Journal::open(&guest, None)?;
-            reader.receive(crate::cloud_sync::Changes { uploaded: vec![], edits,
+            reader.receive(crate::cloud_sync::Changes { retention: None, uploaded: vec![], edits,
                 token: Some(crate::cloud_sync::Bytes(vec![1])), more: false, legacy: false,
                 room_access: Some(Access::ReadOnly), cursor_replayed: false, upload_quota_exceeded: false })?;
             reader.merge(&Default::default())?;

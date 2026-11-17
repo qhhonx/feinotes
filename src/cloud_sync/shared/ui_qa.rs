@@ -59,7 +59,7 @@ pub(super) fn publish(personal: &Path, room: &Room) -> Option<Result<()>> {
         if path.join("seed-published").is_file() { return Ok(()); }
         let mut journal = Journal::open(&path, None)?;
         let request = journal.request()?;
-        journal.receive(super::super::Changes { uploaded: request.edits.iter().map(|edit| edit.id.clone()).collect(),
+        journal.receive(super::super::Changes { retention: None, uploaded: request.edits.iter().map(|edit| edit.id.clone()).collect(),
             edits: vec![], token: Some(super::super::Bytes(b"synthetic-ui-cursor".to_vec())), more: false, legacy: false, room_access: Some(Access::Owner), cursor_replayed: false, upload_quota_exceeded: false })?;
         fs::write(path.join("seed-published"), b"synthetic UI regression")?;
         Ok(())

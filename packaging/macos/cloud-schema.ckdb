@@ -7,6 +7,7 @@ DEFINE SCHEMA
     RECORD TYPE QuietNoteEdit (
         note STRING,
         digest BYTES,
+        assetIndex BYTES,
         update ASSET
     );
 

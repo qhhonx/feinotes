@@ -4,7 +4,7 @@
 //! participate in the note CRDT. CloudKit transports bounded chunks.
 
 use anyhow::{Context, Result, ensure};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs::{self, File, OpenOptions}, io::{Read, Write}, path::{Component, Path, PathBuf}};
@@ -14,15 +14,15 @@ const CHUNK: usize = 1024 * 1024;
 pub(super) const LIMIT: usize = 64 * CHUNK;
 
 #[derive(Serialize, Deserialize)]
-struct Chunk {
-    path: String,
-    digest: String,
+pub(super) struct Chunk {
+    pub path: String,
+    pub digest: String,
     size: usize,
-    part: usize,
+    pub part: usize,
 }
 
 impl Chunk {
-    fn count(&self) -> usize { self.size.max(1).div_ceil(CHUNK) }
+    pub fn count(&self) -> usize { self.size.max(1).div_ceil(CHUNK) }
 
     fn validate(&self, data: &[u8]) -> Result<()> {
         ensure!(self.size <= LIMIT && self.part < self.count() &&
@@ -98,6 +98,14 @@ pub fn queue(db: &Connection, root: &Path, source: &str) -> Result<Option<AssetP
     Ok(None)
 }
 
+pub(super) fn decode(bytes: &[u8]) -> Result<(Chunk, &[u8])> {
+    let split = bytes.iter().take(4096).position(|b| *b == b'\n').context("Invalid attachment record")?;
+    let header: Chunk = serde_json::from_slice(&bytes[..split])?;
+    let data = &bytes[split + 1..];
+    header.validate(data)?;
+    Ok((header, data))
+}
+
 pub fn ingest(db: &Connection, root: &Path) -> Result<()> {
     let mut stmt = db.prepare("SELECT id, data FROM inbox WHERE note = ?1 ORDER BY rowid")?;
     let mut rows = stmt.query([SCOPE])?;
@@ -105,10 +113,7 @@ pub fn ingest(db: &Connection, root: &Path) -> Result<()> {
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let bytes: Vec<u8> = row.get(1)?;
-        let split = bytes.iter().take(4096).position(|b| *b == b'\n').context("Invalid attachment record")?;
-        let header: Chunk = serde_json::from_slice(&bytes[..split])?;
-        let data = &bytes[split + 1..];
-        header.validate(data)?;
+        let (header, data) = decode(&bytes)?;
         let target = path(root, &header.path)?;
         let cached: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sync_assets WHERE path = ?1 AND digest = ?2)",
             params![header.path, header.digest], |row| row.get(0))?;
@@ -160,4 +165,41 @@ fn materialize(db: &Connection, source: &str, digest: &str, staged: &Path, targe
         ensure!(format!("{:x}", hash.finalize()) == digest, "A local attachment already uses this path");
     }
     Ok(())
+}
+
+// An offline edit may reuse a previously uploaded file after its old records
+// have been collected. Verify actual chunk coverage, not the local sent flag.
+pub(super) fn ensure_upload(db: &Connection, root: &Path, source: &str) -> Result<bool> {
+    let known: Option<String> = db.query_row("SELECT digest FROM sync_assets WHERE path=?1", [source], |r| r.get(0)).optional()?;
+    let known = if known.is_some() { known } else {
+        db.query_row("SELECT min(digest) FROM cloud_inventory WHERE path=?1 HAVING count(DISTINCT digest)=1",
+            [source], |r| r.get::<_,String>(0)).optional()?
+    };
+    let parts = |digest: &str| -> Result<(i64, i64)> {
+        Ok(db.query_row("SELECT count(DISTINCT part),coalesce(max(parts),0) FROM cloud_inventory WHERE path=?1 AND digest=?2",
+            params![source,digest], |r| Ok((r.get(0)?,r.get(1)?)))?)
+    };
+    if let Some(digest) = &known {
+        let (n,total) = parts(digest)?;
+        if n != 0 && n == total { return Ok(false); }
+    }
+    let file = path(root, source)?;
+    let bytes = crate::store::read_bounded(&file, LIMIT as u64).with_context(|| format!("Missing offline attachment {source}"))?;
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    ensure!(known.as_ref().is_none_or(|old| *old == digest), "Attachment changed at its immutable path");
+    let mut header = Chunk { path: source.into(), digest, size: bytes.len(), part: 0 };
+    let mut added = false;
+    for part in 0..header.count() {
+        if db.query_row("SELECT EXISTS(SELECT 1 FROM cloud_inventory WHERE path=?1 AND digest=?2 AND part=?3)",
+            params![source,header.digest,part as i64], |r| r.get::<_,bool>(0))? { continue; }
+        header.part = part;
+        let mut record = serde_json::to_vec(&header)?;
+        record.push(b'\n');
+        let offset = part * CHUNK;
+        record.extend_from_slice(&bytes[offset..(offset+CHUNK).min(bytes.len())]);
+        super::journal::enqueue(db, SCOPE, record)?;
+        added = true;
+    }
+    db.execute("INSERT OR REPLACE INTO sync_assets VALUES (?1,?2)", params![source,header.digest])?;
+    Ok(added)
 }

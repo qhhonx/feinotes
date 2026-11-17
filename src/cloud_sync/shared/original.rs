@@ -250,6 +250,73 @@ mod tests {
     use crate::cloud_sync::{Bytes, Changes};
 
     #[test]
+    fn folder_checkpoints_restore_nested_content_without_granting_cleanup_to_readers() -> Result<()> {
+        use super::super::super::retention;
+        let temp = std::env::temp_dir().join(format!("fei-folder-checkpoint-{}", uuid::Uuid::new_v4()));
+        let personal = temp.join("owner"); let guest = temp.join("guest");
+        for (dir, key) in [(&personal, 'a'), (&guest, 'b')] {
+            Store::initialize_local_sqlite(dir)?;
+            fs::write(dir.join(".cloud-restore-ready"), format!("{}\n", key.to_string().repeat(64)))?;
+        }
+        let mut private = Store::open_sqlite_at(personal.clone())?;
+        let folder = private.create_folder("Shared", None)?;
+        let nested = private.create_folder("Nested", Some(&folder))?;
+        let child = private.create_from(&crate::docxml::parse("<title>Child</title><p>initial</p>")?)?;
+        private.set_parent(&child, Some(&nested))?;
+        let unrelated = private.create_from(&crate::docxml::parse("<title>Private</title><p>secret</p>")?)?;
+        let room = prepare_local(&personal, &folder, "Shared".into())?;
+        let root = room_root(&personal, &folder)?;
+        let mut owner = Journal::open(&root, None)?;
+        let mut store = Store::open_sqlite_at(root.clone())?;
+        let mut doc = store.load(&child)?;
+        let mut cloud = std::collections::HashMap::new();
+        let receipt = |edits: Vec<crate::cloud_sync::Edit>, deleted, access, acknowledge: bool| Changes {
+            retention: Some(retention::Receipt { reset: false, ready: true, deleted, chunks: vec![] }),
+            uploaded: if acknowledge { edits.iter().map(|e| e.id.clone()).collect() } else { vec![] },
+            edits, token: Some(Bytes(vec![1])), more: false, legacy: false, room_access: Some(access),
+            #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false };
+        for n in 0..40 {
+            doc.blocks[0].text = crate::model::RichText::plain(format!("edit {n}"));
+            store.save(&child, &doc)?;
+            store.rename(&nested, &format!("Nested {n}"))?;
+            owner.merge(&Default::default())?;
+            let edits = owner.request()?.edits;
+            for e in &edits { cloud.insert(e.id.clone(), e.clone()); }
+            owner.receive(receipt(edits, vec![], Access::Owner, true))?;
+            owner.merge(&Default::default())?;
+        }
+        let mut checkpoints = 0;
+        for _ in 0..12 {
+            let Some(plan) = owner.request()?.maintenance else { break; };
+            if let Some(snapshot) = plan.snapshot {
+                assert!(plan.remove.is_empty());
+                cloud.insert(snapshot.id.clone(), snapshot.clone()); checkpoints += 1;
+                owner.receive(receipt(vec![snapshot], vec![], Access::Owner, false))?;
+            } else {
+                for id in &plan.remove { cloud.remove(id); }
+                owner.receive(receipt(vec![], plan.remove, Access::Owner, false))?;
+            }
+            owner.merge(&Default::default())?;
+        }
+        assert!(checkpoints >= 2, "Both the folder catalogue and body need checkpoints");
+        let remote = Room { scope: Scope { owner: Some("synthetic-owner".into()), ..room.scope }, title: room.title };
+        let restored_root = stage(&guest, &remote, None)?;
+        let mut reader = Journal::open(&restored_root, None)?;
+        reader.receive(receipt(cloud.into_values().collect(), vec![], Access::ReadOnly, false))?;
+        reader.merge(&Default::default())?;
+        let restored = Store::open_sqlite_at(restored_root.clone())?;
+        assert_eq!(restored.load(&child)?, doc);
+        let entries = entries(&connect(&restored_root)?)?;
+        assert_eq!(entries[&nested].folder.as_deref(), Some("Nested 39"));
+        assert_eq!(entries[&child].parent.as_deref(), Some(nested.as_str()));
+        assert!(!entries.contains_key(&unrelated));
+        let request = reader.request()?;
+        assert!(request.edits.is_empty() && request.maintenance.is_none());
+        drop((owner, reader, store, restored, private)); fs::remove_dir_all(temp)?;
+        Ok(())
+    }
+
+    #[test]
     fn folder_round_trip_preserves_identity_and_limits_the_invitation_to_its_subtree() -> Result<()> {
         let temp = std::env::temp_dir().join(format!("fei-folder-share-{}", uuid::Uuid::new_v4()));
         let personal = temp.join("personal");
@@ -274,7 +341,7 @@ mod tests {
         let owner_root = room_root(&personal, &root)?;
         let owner = Journal::open(&owner_root, None)?;
         let mut reader = Journal::open(&remote_root, None)?;
-        let page = |edits, access| Changes { uploaded: vec![], edits, token: Some(Bytes(vec![1])), more: false, legacy: false,
+        let page = |edits, access| Changes { retention: None, uploaded: vec![], edits, token: Some(Bytes(vec![1])), more: false, legacy: false,
             room_access: Some(access), #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false };
         reader.receive(page(owner.request()?.edits, Access::ReadOnly))?;
         reader.merge(&Default::default())?;

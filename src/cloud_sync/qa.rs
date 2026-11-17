@@ -134,7 +134,7 @@ pub fn run(command: &str) -> Result<()> {
             // dependencies, catalogue entry or attachment chunks.
             for edit in edits.into_iter().rev() {
                 for _ in 0..2 {
-                    journal.receive(Changes { uploaded: vec![], edits: vec![edit.clone()], token: token.clone(), more: false, legacy: false,
+                    journal.receive(Changes { retention: None, uploaded: vec![], edits: vec![edit.clone()], token: token.clone(), more: false, legacy: false,
                         room_access: None, cursor_replayed: false, upload_quota_exceeded: false })?;
                     journal.merge(&Default::default())?;
                 }

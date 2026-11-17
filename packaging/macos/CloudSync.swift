@@ -119,7 +119,46 @@ private struct Edit: Codable {
     }
 }
 
+private struct Maintenance: Decodable {
+    let snapshot: Edit?
+    let remove: [String]
+}
+
+private let retentionFence = "FeiNotes-retention-v1"
+private struct InventoryCursor: Codable {
+    let token: Data
+    let generation: String?
+    let ready: Bool
+}
+private struct ChunkHeader: Codable {
+    let path: String
+    let digest: String
+    let size: Int
+    let part: Int
+    func entry(_ id: String) throws -> ChunkEntry {
+        guard size >= 0 && size <= 64 * 1024 * 1024 && path.hasPrefix("assets/") else { throw SyncError.invalid }
+        let parts = max(1, (size + 1048575) / 1048576)
+        guard (0..<parts).contains(part) else { throw SyncError.invalid }
+        return ChunkEntry(id: id, path: path, digest: digest, part: part, parts: parts)
+    }
+}
+private struct ChunkEntry: Encodable {
+    let id: String
+    let path: String
+    let digest: String
+    let part: Int
+    let parts: Int
+}
+private struct InventoryReceipt: Encodable {
+    let chunks: [ChunkEntry]
+    let reset: Bool
+    let ready: Bool
+    let deleted: [String]
+}
+
 private struct Exchange: Decodable {
+    let maintenance: Maintenance?
+    let downloads: [String]?
     let account: String
     let channel: String?
     let token: Data?
@@ -132,6 +171,7 @@ private struct Exchange: Decodable {
 }
 
 private struct Changes: Encodable {
+    var retention: InventoryReceipt?
     var uploaded: [String] = []
     var edits: [Edit] = []
     var token: Data?
@@ -174,12 +214,26 @@ private enum SyncError: LocalizedError {
 }
 
 private func push(_ edits: [Edit], to db: CKDatabase, in zone: CKRecordZone.ID,
-                  uploadFaultForQA: String?, revision: UInt64) async throws -> (uploaded: [String], quotaExceeded: Bool) {
-    guard !edits.isEmpty else { return ([], false) }
+                  maintenance: Maintenance?, generation: String?, uploadFaultForQA: String?, revision: UInt64) async throws -> (uploaded: [String], quotaExceeded: Bool) {
+    guard !edits.isEmpty || maintenance != nil else { return ([], false) }
+    let remove = maintenance?.remove ?? []
+    guard remove.count <= 160, remove.allSatisfy({ UUID(uuidString: $0) != nil }),
+          maintenance == nil || (edits.isEmpty && (remove.isEmpty == (maintenance?.snapshot != nil))) else { throw SyncError.invalid }
+    let zoneInfo = try await db.recordZone(for: zone)
+    guard zoneInfo.capabilities.contains(.atomic) else { throw SyncError.invalid }
+    let fenceID = CKRecord.ID(recordName: retentionFence, zoneID: zone)
+    let fence: CKRecord
+    do { fence = try await db.record(for: fenceID) }
+    catch let error as CKError where error.code == .unknownItem {
+        fence = CKRecord(recordType: editType, recordID: fenceID)
+    }
+    guard fence["note"] as? String == generation else { return ([], false) }
+    fence["note"] = UUID().uuidString
+
     let temp = FileManager.default.temporaryDirectory.appending(path: "Quiet-edits-\(UUID())")
     try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: false)
     defer { try? FileManager.default.removeItem(at: temp) }
-    let records = try edits.map { edit in
+    let records = try (edits + (maintenance?.snapshot.map { [$0] } ?? [])).map { edit in
         try edit.validate()
         let file = temp.appending(path: edit.id)
         try edit.data.write(to: file)
@@ -187,6 +241,12 @@ private func push(_ edits: [Edit], to db: CKDatabase, in zone: CKRecordZone.ID,
         record["note"] = edit.note
         record["digest"] = edit.digest
         record["update"] = CKAsset(fileURL: file)
+        if edit.note == sharedAssetScope {
+            guard let end = edit.data.prefix(4096).firstIndex(of: 10) else { throw SyncError.invalid }
+            let header = Data(edit.data[..<end])
+            _ = try JSONDecoder().decode(ChunkHeader.self, from: header).entry(edit.id)
+            record["assetIndex"] = header
+        }
         return record
     }
     var saving = records
@@ -194,44 +254,43 @@ private func push(_ edits: [Edit], to db: CKDatabase, in zone: CKRecordZone.ID,
     let accepted = uploadFaultForQA == timeoutAfterUpload || uploadFaultForQA == holdAfterUpload ? nil : uploadFaultForQA
     if let accepted { saving = records.filter { $0.recordID.recordName == accepted } }
     #endif
-    var results: [CKRecord.ID: Result<CKRecord, any Error>]
-    do {
-        try checkCloudAccountRevision(revision)
-        results = saving.isEmpty ? [:]
-            : try await db.modifyRecords(saving: saving, deleting: [], savePolicy: .ifServerRecordUnchanged, atomically: false).saveResults
-    } catch let error as CKError where error.code == .quotaExceeded {
-        return ([], true)
-    }
-    #if FEI_CLOUD_QA
-    if let accepted {
-        for record in records where record.recordID.recordName != accepted {
-            results[record.recordID] = .failure(CKError(.quotaExceeded))
+    let acceptedIDs = Set(saving.map(\.recordID))
+    let existing = saving.isEmpty ? [:] : try await db.records(for: saving.map(\.recordID), desiredKeys: ["note", "digest"])
+    var fresh: [CKRecord] = []
+    for record in saving {
+        guard let result = existing[record.recordID] else { throw SyncError.invalid }
+        switch result {
+        case .success(let stored):
+            guard stored["note"] as? String == record["note"] as? String,
+                  stored["digest"] as? Data == record["digest"] as? Data else { throw SyncError.invalid }
+        case .failure(let error):
+            guard (error as? CKError)?.code == .unknownItem else { throw error }
+            fresh.append(record)
         }
     }
-    #endif
-    var done: [String] = []
-    var quotaExceeded = false
-    for edit in edits {
+    let deleted = remove.map { CKRecord.ID(recordName: $0, zoneID: zone) }
+    if !fresh.isEmpty || !deleted.isEmpty {
         try checkCloudAccountRevision(revision)
-        let id = edit.recordID(in: zone)
-        guard let result = results[id] else { throw SyncError.invalid }
-        do { _ = try result.get() }
-        catch let error as CKError where error.code == .quotaExceeded {
-            quotaExceeded = true
-            continue
-        }
-        catch let error as CKError where error.code == .serverRecordChanged {
-            // An earlier request may have saved the record before the local acknowledgement.
-            let existing: CKRecord
-            if let server = error.serverRecord { existing = server }
-            else { existing = try await db.record(for: id) }
-            guard existing["note"] as? String == edit.note, existing["digest"] as? Data == edit.digest else {
-                throw SyncError.invalid
+        do {
+            let result = try await db.modifyRecords(saving: fresh + [fence], deleting: deleted,
+                                                    savePolicy: .ifServerRecordUnchanged, atomically: true)
+            let failures = result.saveResults.values.compactMap { if case .failure(let e) = $0 { e } else { nil } }
+                + result.deleteResults.values.compactMap { if case .failure(let e) = $0 { e } else { nil } }
+            if let cause = failures.first(where: { ($0 as? CKError)?.code != .batchRequestFailed }) ?? failures.first { throw cause }
+            guard result.saveResults.count == fresh.count + 1 && result.deleteResults.count == deleted.count else { throw SyncError.invalid }
+        } catch let error as CKError {
+            let errors = error.code == .partialFailure
+                ? (error.partialErrorsByItemID?.values.compactMap { $0 as? CKError } ?? []) : [error]
+            let causes = errors.filter { $0.code != .batchRequestFailed }
+            if causes.contains(where: { $0.code == .quotaExceeded }) { return ([], true) }
+            if !causes.isEmpty && causes.allSatisfy({ $0.code == .serverRecordChanged || $0.code == .unknownItem }) {
+                return ([], false)
             }
+            throw error
         }
-        done.append(edit.id)
     }
-    return (done, quotaExceeded)
+    let done = edits.filter { acceptedIDs.contains($0.recordID(in: zone)) }.map(\.id)
+    return (done, done.count != edits.count)
 }
 
 private func exchange(_ request: Exchange, revision: UInt64) async throws -> Changes {
@@ -268,7 +327,11 @@ private func exchange(_ request: Exchange, revision: UInt64) async throws -> Cha
         }
     }
     // The token is an opaque cache. Replay the zone if it can't be decoded.
-    var token = request.token.flatMap { try? NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: $0) }
+    let tracksInventory = !request.legacy && request.activityOnly != true
+    let saved = tracksInventory ? request.token.flatMap { try? JSONDecoder().decode(InventoryCursor.self, from: $0) } : nil
+    let rawToken = tracksInventory ? saved?.token : request.token
+    var token = rawToken.flatMap { try? NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: $0) }
+    var generation = saved?.generation
     if token == nil && request.room == nil {
         do { _ = try await db.recordZone(for: syncZone) }
         catch let error as CKError where error.code == .zoneNotFound || error.code == .unknownItem {
@@ -279,10 +342,11 @@ private func exchange(_ request: Exchange, revision: UInt64) async throws -> Cha
     }
     var uploaded: [String] = []
     var uploadQuotaExceeded = false
-    if !request.legacy && access != .readOnly {
+    if tracksInventory && token != nil && saved?.ready == true && access != .readOnly {
+        guard request.maintenance == nil || access == nil || access == .owner else { throw SyncError.invalid }
         try checkCloudAccountRevision(revision)
         do { (uploaded, uploadQuotaExceeded) = try await push(request.edits, to: db, in: syncZone,
-            uploadFaultForQA: request.uploadFaultForQA, revision: revision) }
+            maintenance: request.maintenance, generation: generation, uploadFaultForQA: request.uploadFaultForQA, revision: revision) }
         catch {
             guard let room = request.room, shareIsGone(error) else { throw error }
             // The owner may change permissions while the upload is in flight.
@@ -310,12 +374,20 @@ private func exchange(_ request: Exchange, revision: UInt64) async throws -> Cha
                 throw CKError(.changeTokenExpired)
             }
             let activityOnly = request.activityOnly == true
-            let page = try await db.recordZoneChanges(inZoneWith: syncZone, since: token,
-                desiredKeys: activityOnly ? ["note"] : nil, resultsLimit: 20)
+            let keys = activityOnly ? ["note"] : (tracksInventory ? ["note", "digest", "assetIndex"] : nil)
+            let page = try await db.recordZoneChanges(inZoneWith: syncZone, since: token, desiredKeys: keys, resultsLimit: 20)
+            var chunks: [ChunkEntry] = []
+            var fetch: [CKRecord.ID] = []
+            var authors: [CKRecord.ID: Bool] = [:]
             var edits: [Edit] = []
             for item in page.modificationResultsByID.values {
                 try checkCloudAccountRevision(revision)
                 let metadata = try item.get().record
+                if metadata.recordID.recordName == retentionFence {
+                    guard let value = metadata["note"] as? String, UUID(uuidString: value) != nil else { throw SyncError.invalid }
+                    generation = value
+                    continue
+                }
                 if request.room != nil && (metadata.recordType == CKRecord.SystemType.share || metadata.recordType == "QuietPresence") { continue }
                 let collaborator = request.room != nil && (metadata.creatorUserRecordID.map { creator in
                     // CloudKit can identify the current user by an alias in their private database.
@@ -324,7 +396,27 @@ private func exchange(_ request: Exchange, revision: UInt64) async throws -> Cha
                     return key != request.account
                 } ?? false)
                 if activityOnly && (!collaborator || metadata["note"] as? String != request.room?.note) { continue }
-                let record = activityOnly ? try await db.record(for: metadata.recordID) : metadata
+                if tracksInventory && metadata["note"] as? String == sharedAssetScope,
+                   let header = metadata["assetIndex"] as? Data {
+                    chunks.append(try JSONDecoder().decode(ChunkHeader.self, from: header).entry(metadata.recordID.recordName))
+                    continue
+                }
+                fetch.append(metadata.recordID)
+                authors[metadata.recordID] = collaborator
+            }
+            let requested = request.downloads ?? []
+            guard requested.count <= 8, requested.allSatisfy({ UUID(uuidString: $0) != nil }),
+                  requested.isEmpty || tracksInventory else { throw SyncError.invalid }
+            let wanted = Set(requested.map { CKRecord.ID(recordName: $0, zoneID: syncZone) })
+            let records = Set(fetch).union(wanted)
+            let full = records.isEmpty ? [:] : try await db.records(for: Array(records), desiredKeys: nil)
+            for id in records {
+                guard let result = full[id] else { throw SyncError.invalid }
+                let record: CKRecord
+                do { record = try result.get() }
+                catch let error as CKError where error.code == .unknownItem { continue }
+                let collaborator = authors[id] ?? false
+                if wanted.contains(id) && record["note"] as? String != sharedAssetScope { throw SyncError.invalid }
                 guard record.recordType == editType, let note = record["note"] as? String,
                       let file = (record["update"] as? CKAsset)?.fileURL,
                       let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= maxUpdate else {
@@ -337,11 +429,16 @@ private func exchange(_ request: Exchange, revision: UInt64) async throws -> Cha
                 edits.append(edit)
             }
             let next = try NSKeyedArchiver.archivedData(withRootObject: page.changeToken, requiringSecureCoding: true)
-            return Changes(uploaded: uploaded, edits: edits, token: next, more: page.moreComing,
+            let ready = !page.moreComing
+            let cursor = tracksInventory ? try JSONEncoder().encode(InventoryCursor(token: next, generation: generation, ready: ready)) : next
+            let receipt = tracksInventory ? InventoryReceipt(chunks: chunks, reset: token == nil, ready: ready,
+                deleted: page.deletions.map { $0.recordID.recordName }) : nil
+            return Changes(retention: receipt, uploaded: uploaded, edits: edits, token: cursor, more: page.moreComing,
                            legacy: request.legacy, roomAccess: access, cursorReplayed: replayed,
                            uploadQuotaExceeded: uploadQuotaExceeded)
         } catch let error as CKError where error.code == .changeTokenExpired && token != nil {
             token = nil // Loro imports are idempotent, so replay is safe.
+            generation = nil
             replayed = true
         } catch let error as CKError where request.legacy && (error.code == .zoneNotFound || error.code == .unknownItem) {
             return Changes(legacy: true)

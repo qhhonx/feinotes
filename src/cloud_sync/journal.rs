@@ -12,6 +12,7 @@ use std::{collections::{HashMap, HashSet}, fs::{File, OpenOptions}, io::{Read, W
 use crate::{editor::core::{Core, Pos, keep_outside_history}, model::Document, shared_store::SharedStore, store::{Meta, Store, SQLITE_FILE}};
 use super::{AttachmentIssue, Changes, Edit, Exchange, NoteChange, SyncIssue, activity, assets, catalogue, content};
 use super::history::History;
+use super::retention;
 use super::shared::{self, Access};
 
 pub struct Journal {
@@ -23,6 +24,7 @@ pub struct Journal {
     channel: Option<String>,
     room: Option<shared::Scope>,
     access: Option<Access>,
+    next_collection: std::cell::Cell<Option<std::time::Instant>>,
     merged_data_version: Option<i64>,
     history: HashMap<String, History>,
 }
@@ -118,7 +120,7 @@ fn attachment_warnings(db: &Connection, id: &str, count: usize) -> Result<bool> 
     Ok(count > previous.unwrap_or(0))
 }
 
-const RECENT_VERSIONS: i64 = 6;
+pub(super) const RECENT_VERSIONS: i64 = 6;
 
 pub(super) fn archive(db: &Connection, id: &str, doc: &Document, front: &str, recovery: bool) -> Result<i64> {
     let xml = crate::docxml::serialize(doc);
@@ -316,6 +318,7 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS offline_recoveries (
                 note TEXT PRIMARY KEY, sequence INTEGER NOT NULL, title TEXT NOT NULL, markdown INTEGER NOT NULL);
         ")?;
+        retention::schema(&db)?;
         let has_recovery = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sync_history') WHERE name = 'recovery')",
             [], |row| row.get::<_, bool>(0))?;
         // Preexisting versions may include conflict copies. Protect all of
@@ -370,8 +373,10 @@ impl Journal {
             peer
         };
         tx.commit()?;
-        Ok(Self { db, _lock: lock, root: root.to_path_buf(), peer: peer as u64, account, channel, room, access,
-            merged_data_version: None, history: HashMap::new() })
+        let mut journal = Self { db, _lock: lock, root: root.to_path_buf(), peer: peer as u64, account, channel, room, access,
+            next_collection: Default::default(), merged_data_version: None, history: HashMap::new() };
+        if let Err(error) = journal.collect_local() { crate::logging::write(&format!("Deferred local attachment cleanup: {error:#}")); }
+        Ok(journal)
     }
 
     pub fn room(&self) -> Option<&shared::Scope> { self.room.as_ref() }
@@ -530,10 +535,132 @@ impl Journal {
         self.request_with_uploads(true)
     }
 
+    fn retained_paths(&self) -> Result<HashSet<String>> {
+        let mut paths = HashSet::new();
+        let db = &self.db;
+        let mut stmt = db.prepare("SELECT id,trashed FROM library_documents")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let (doc, _, _) = Store::read_sync_body(db, row.get_ref(0)?.as_str()?,row.get(1)?)?;
+            paths.extend(content::local_assets(&doc));
+        }
+        let mut stmt = db.prepare("SELECT h.body FROM sync_history h WHERE EXISTS (
+            SELECT 1 FROM library_documents d WHERE d.id=h.note) OR EXISTS (
+            SELECT 1 FROM offline_recoveries r WHERE r.sequence=h.sequence)")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? { paths.extend(content::local_assets(&archived_document(row.get_ref(0)?)?)); }
+        retention::disk_roots(&self.root, &mut paths)?;
+        Ok(paths)
+    }
+
+    // A new session has no editor undo stack. Only consider immutable bytes
+    // previously acknowledged by the cloud, under this specific library root.
+    fn collect_local(&mut self) -> Result<()> {
+        if !retention::ready(&self.db)? || !self.db.query_row("SELECT EXISTS(SELECT 1 FROM cloud_release_candidates)
+            AND NOT EXISTS(SELECT 1 FROM inbox) AND NOT EXISTS(SELECT 1 FROM outbox)", [], |r| r.get::<_,bool>(0))?
+        { return Ok(()); }
+        let retained = self.retained_paths()?;
+        let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let candidates = tx.prepare("SELECT path,digest FROM cloud_release_candidates r WHERE NOT EXISTS (
+            SELECT 1 FROM cloud_inventory c WHERE c.path=r.path)")?.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (source, digest) in candidates {
+            if retained.contains(&source) { continue; }
+            let path = assets::path(&self.root, &source)?;
+            if path.try_exists()? {
+                use sha2::{Digest, Sha256};
+                let data = crate::store::read_bounded(&path, assets::LIMIT as u64)?;
+                if format!("{:x}", Sha256::digest(&data)) != digest { continue; }
+                std::fs::remove_file(&path)?;
+            }
+            tx.execute("DELETE FROM sync_assets WHERE path=?1 AND digest=?2", params![source,digest])?;
+            tx.execute("DELETE FROM sync_asset_chunks WHERE path=?1 AND digest=?2", params![source,digest])?;
+            tx.execute("DELETE FROM cloud_release_candidates WHERE path=?1", [&source])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn maintenance(&self) -> Result<Option<retention::Maintenance>> {
+        if self.access.is_some_and(|a| a != Access::Owner) || !retention::ready(&self.db)? ||
+            self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox) OR EXISTS(SELECT 1 FROM outbox)
+                OR EXISTS(SELECT 1 FROM notes WHERE held<>0)", [], |r| r.get::<_,bool>(0))? { return Ok(None); }
+        if let Some(plan)=retention::verified_cleanup(&self.db)? { return Ok(Some(plan)); }
+        if self.room.is_none() {
+            let missing = self.db.query_row("SELECT count(*) FROM cloud_inventory c WHERE vv IS NOT NULL AND scope<>?1
+                AND NOT EXISTS(SELECT 1 FROM library_documents d WHERE d.id=c.scope)", [catalogue::SCOPE], |r| r.get::<_,i64>(0))?;
+            if missing>0 {
+                let cat=content::open(&get_state(&self.db,"catalogue")?.context("Missing catalogue")?)?;
+                let mut stmt=self.db.prepare("SELECT id,scope FROM cloud_inventory c WHERE vv IS NOT NULL AND scope<>?1
+                    AND NOT EXISTS(SELECT 1 FROM library_documents d WHERE d.id=c.scope)")?;
+                let mut rows=stmt.query([catalogue::SCOPE])?;
+                let mut remove=vec![];
+                while let Some(row)=rows.next()? {
+                    if catalogue::permanently_deleted(&cat,row.get_ref(1)?.as_str()?) { remove.push(row.get(0)?); }
+                    if remove.len()==160 { break; }
+                }
+                if !remove.is_empty() { return Ok(Some(retention::Maintenance {snapshot:None,remove})); }
+            }
+        }
+        for id in retention::candidates(&self.db,32)? {
+            let doc = if id == catalogue::SCOPE { get_state(&self.db, "catalogue")?.as_deref().map(content::open).transpose()? }
+                else { self.text_state(&id)? };
+            if let Some(doc) = doc && let Some(plan) = retention::compact(&self.db, &id, &doc)? { return Ok(Some(plan)); }
+        }
+        let now = std::time::Instant::now();
+        if self.next_collection.get().is_some_and(|next| next>now) { return Ok(None); }
+        self.next_collection.set(Some(now + Duration::from_secs(60)));
+        if !self.db.query_row("SELECT EXISTS(SELECT 1 FROM cloud_inventory WHERE path IS NOT NULL AND observed<=unixepoch()-3600)", [],
+            |r| r.get::<_,bool>(0))? { return Ok(None); }
+        let paths=self.retained_paths()?;
+        let Some(plan)=retention::stale_assets(&self.db,&paths)? else { return Ok(None); };
+        // Publish the recoverable version set before reclaiming files it may
+        // reference. In small, low-traffic notes this need not wait for 32 edits.
+        for id in retention::candidates(&self.db,2)? {
+            if id==catalogue::SCOPE { continue; }
+            if let Some(doc)=self.text_state(&id)? {
+                return retention::compact(&self.db,&id,&doc);
+            }
+        }
+        let pins=self.db.prepare("SELECT DISTINCT p.path FROM cloud_checkpoint_paths p JOIN cloud_inventory c USING(id)
+            JOIN library_documents d ON d.id=c.scope")?.query_map([], |r| r.get::<_,String>(0))?
+            .collect::<rusqlite::Result<HashSet<_>>>()?;
+        if pins.is_empty() { return Ok(Some(plan)); }
+        let mut protected=paths;
+        protected.extend(pins);
+        retention::stale_assets(&self.db,&protected)
+    }
+
+    fn ensure_dependencies(&self, edits: &[Edit]) -> Result<Option<bool>> {
+        let tx = self.db.unchecked_transaction()?;
+        let mut paths = HashSet::new();
+        for edit in edits.iter().filter(|e| e.note != catalogue::SCOPE && e.note != assets::SCOPE) {
+            let state = self.text_state(&edit.note)?.context("Missing local history for pending edit")?;
+            let end = LoroDoc::decode_import_blob_meta(&edit.data.0, true)?.partial_end_vv;
+            let branch = state.fork_at(&state.vv_to_frontiers(&end))?;
+            let excluded = branch.get_map("local-only-attachments");
+            paths.extend(content::local_assets(&content::render(&branch)?).into_iter().filter(|p| excluded.get(p).is_none()));
+        }
+        let mut added = false;
+        for path in paths {
+            match assets::ensure_upload(&tx, &self.root,&path) {
+                Ok(queued) => added |= queued,
+                Err(e) if e.chain().any(|e| e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind()==std::io::ErrorKind::NotFound)) => {
+                    tx.execute("INSERT OR IGNORE INTO sync_asset_repairs VALUES (?1)",[&path])?;
+                    tx.commit()?;
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        tx.commit()?;
+        Ok(Some(added))
+    }
+
     pub fn request_with_uploads(&self, allow_upload: bool) -> Result<Exchange> {
         let allow_upload = allow_upload && self.access.is_none_or(Access::can_write);
-        let mut stmt = self.db.prepare("SELECT id, note, length(data), data FROM outbox WHERE ?1 ORDER BY rowid LIMIT 20")?;
-        let mut rows = stmt.query([allow_upload])?;
+        let mut stmt = self.db.prepare("SELECT id, note, length(data), data FROM outbox WHERE ?1 ORDER BY (note=?2) DESC,rowid LIMIT 20")?;
+        let mut rows = stmt.query(params![allow_upload,assets::SCOPE])?;
         let mut edits = vec![];
         let mut bytes = 0i64;
         while let Some(row) = rows.next()? {
@@ -545,7 +672,18 @@ impl Journal {
             edits.push(Edit { id: row.get(0)?, note, data: super::Bytes(row.get(3)?), collaborator: false });
             bytes += size;
         }
-        Ok(Exchange { account: self.account.clone(), channel: self.channel.clone(),
+        drop(rows);
+        drop(stmt);
+        if allow_upload && retention::ready(&self.db)? && !edits.is_empty() {
+            if edits[0].note == assets::SCOPE { edits.retain(|e| e.note == assets::SCOPE); }
+            else { match self.ensure_dependencies(&edits)? {
+                Some(true) => return self.request_with_uploads(true),
+                Some(false) => {},
+                None => edits.clear(),
+            } }
+        }
+        let maintenance = if allow_upload && edits.is_empty() { self.maintenance()? } else { None };
+        Ok(Exchange { downloads: retention::downloads(&self.db,&self.root)?, maintenance, account: self.account.clone(), channel: self.channel.clone(),
             token: get_state(&self.db, "token")?.map(super::Bytes), edits, legacy: false, room: self.room.clone(), activity_only: false,
             #[cfg(feature = "devtools")]
             expire_cursor_for_qa: false,
@@ -555,7 +693,7 @@ impl Journal {
 
     pub fn legacy_request(&self) -> Result<Exchange> {
         ensure!(self.room.is_none(), "A shared note cannot access the personal sync zone");
-        Ok(Exchange { account: self.account.clone(), channel: self.channel.clone(),
+        Ok(Exchange { downloads: vec![], maintenance: None, account: self.account.clone(), channel: self.channel.clone(),
             token: get_state(&self.db, "legacy_token")?.map(super::Bytes), edits: vec![], legacy: true, room: None, activity_only: false,
             #[cfg(feature = "devtools")]
             expire_cursor_for_qa: false,
@@ -669,7 +807,7 @@ impl Journal {
         Ok(replay)
     }
 
-    pub fn receive(&mut self, page: Changes) -> Result<bool> {
+    pub fn receive(&mut self, mut page: Changes) -> Result<bool> {
         let tx = self.db.transaction()?;
         let cursor = if page.legacy { "legacy_token" } else { "token" };
         ensure!(!page.legacy || page.uploaded.is_empty(), "The previous sync zone is read-only");
@@ -684,6 +822,29 @@ impl Journal {
                 ensure!(page.edits.is_empty() && page.token.is_none(), "A revoked share returned note content");
                 tx.execute("DELETE FROM library_entries", [])?;
             }
+        }
+        if let Some(receipt) = &page.retention {
+            ensure!(!page.legacy && page.room_access != Some(Access::Revoked), "Incorrect inventory scope");
+            retention::received(&tx, receipt, &page.edits)?;
+        }
+        for edit in &mut page.edits {
+            if edit.note==assets::SCOPE { continue; }
+            let (index,body)=retention::unpack(&edit.data.0)?;
+            if body.len()==edit.data.0.len() { continue; }
+            if !index.versions.is_empty() {
+                let doc=content::open(body)?;
+                for a in index.versions {
+                    ensure!(doc.oplog_vv().includes_vv(&a.version), "Checkpoint is missing a protected version");
+                    let branch=doc.fork_at(&doc.vv_to_frontiers(&a.version))?;
+                    let archived=content::render(&branch)?;
+                    for path in content::local_assets(&archived) {
+                        tx.execute("INSERT OR IGNORE INTO cloud_checkpoint_paths VALUES (?1,?2)",params![edit.id,path])?;
+                    }
+                    archive(&tx,&edit.note,&archived,&front(&branch),a.recovery)?;
+                }
+                trim_recent_versions(&tx,&edit.note)?;
+            }
+            edit.data.0=body.to_vec();
         }
         for id in page.uploaded { tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?; }
         for edit in page.edits {
@@ -780,7 +941,8 @@ impl Journal {
                 let local_only = loro.get_map("local-only-attachments");
                 let total = paths.len();
                 paths.retain(|source| local_only.get(source).is_none());
-                if paths.iter().any(|source| !assets::present(&self.root, source)) { continue; }
+                if !tx.query_row("SELECT EXISTS(SELECT 1 FROM cloud_inventory_state)", [], |r| r.get::<_,bool>(0))?
+                    && paths.iter().any(|source| !assets::present(&self.root, source)) { continue; }
                 attachment_warnings(&tx, &id, total - paths.len())?;
                 let (tips, has_fork) = archive_frontiers(&loro, &before, &updates)?;
                 let trashed = tx.query_row("SELECT trashed FROM library_documents WHERE id = ?1", [&id],
@@ -912,7 +1074,7 @@ fn permanent_delete_wins_over_late_restore_and_archives_offline_body() -> Result
             id: id.into(), note: note.into(), data: super::Bytes(data), collaborator: false,
         });
     for _ in 0..2 {
-        journal.receive(Changes { uploaded: uploaded.clone(), edits: edits.to_vec(), token: Some(super::Bytes(vec![1])),
+        journal.receive(Changes { retention: None, uploaded: uploaded.clone(), edits: edits.to_vec(), token: Some(super::Bytes(vec![1])),
             more: false, legacy: false, room_access: None, #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
         journal.merge(&Default::default())?;
         assert!(store.list().is_empty());
@@ -981,7 +1143,7 @@ fn acknowledged_local_updates_survive_reopen_and_compact_after_merge() -> Result
     assert_eq!(update_count(&journal)?, 1);
     assert_eq!(note(&journal.db, &id)?.unwrap().snapshot, base);
     let uploaded = journal.request()?.edits.into_iter().map(|edit| edit.id).collect();
-    journal.receive(Changes { uploaded, edits: vec![], token: Some(super::Bytes(vec![1])),
+    journal.receive(Changes { retention: None, uploaded, edits: vec![], token: Some(super::Bytes(vec![1])),
         more: false, legacy: false, room_access: None, #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
     assert_eq!(journal.counts()?.0, 0);
     drop(journal);
@@ -992,7 +1154,7 @@ fn acknowledged_local_updates_survive_reopen_and_compact_after_merge() -> Result
     let remote = content::open(&base)?;
     remote_doc.blocks[0].text.replace(0..0, &crate::model::RichText::plain("远端"));
     let data = content::edit(&remote, journal.peer + 1, &remote_doc)?.context("Missing concurrent update")?;
-    journal.receive(Changes { uploaded: vec![], edits: vec![Edit { id: "remote".into(), note: id.clone(),
+    journal.receive(Changes { retention: None, uploaded: vec![], edits: vec![Edit { id: "remote".into(), note: id.clone(),
         data: super::Bytes(data), collaborator: false }], token: Some(super::Bytes(vec![2])),
         more: false, legacy: false, room_access: None, #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
     journal.merge(&Default::default())?;
@@ -1059,7 +1221,7 @@ fn missing_cached_attachment_replays_without_dropping_pending_edits() -> Result<
     journal.merge(&Default::default())?;
     let saved = journal.request()?.edits;
     let asset = saved.iter().find(|edit| edit.note == assets::SCOPE).context("Missing queued attachment")?.clone();
-    journal.receive(Changes { uploaded: saved.into_iter().map(|edit| edit.id).collect(), edits: vec![],
+    journal.receive(Changes { retention: None, uploaded: saved.into_iter().map(|edit| edit.id).collect(), edits: vec![],
         token: Some(super::Bytes(vec![1])), more: false, legacy: false, room_access: None,
         #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
     let mut doc = store.load(&id)?;
@@ -1075,7 +1237,7 @@ fn missing_cached_attachment_replays_without_dropping_pending_edits() -> Result<
     let mut journal = Journal::open(root, None)?;
     assert!(journal.request()?.token.is_none());
     assert!(journal.issues()?[0].attachments[0].recovering);
-    journal.receive(Changes { uploaded: vec![], edits: vec![asset], token: Some(super::Bytes(vec![2])),
+    journal.receive(Changes { retention: None, uploaded: vec![], edits: vec![asset], token: Some(super::Bytes(vec![2])),
         more: false, legacy: false, room_access: None, #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
     journal.merge(&Default::default())?;
     assert_eq!(std::fs::read(path)?, b"previously synced bytes");
@@ -1134,7 +1296,7 @@ fn linear_history_is_bounded_without_expiring_conflict_recovery() -> Result<()> 
     let deliver = |journal: &mut Journal, payloads: Vec<Vec<u8>>| -> Result<()> {
         let edits = payloads.into_iter().map(|bytes| Edit { id: uuid::Uuid::new_v4().to_string(), note: id.clone(),
             data: super::Bytes(bytes), collaborator: false }).collect();
-        journal.receive(Changes { uploaded: vec![], edits, token: Some(super::Bytes(vec![1])),
+        journal.receive(Changes { retention: None, uploaded: vec![], edits, token: Some(super::Bytes(vec![1])),
             more: false, legacy: false, room_access: None, #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
         journal.merge(&Default::default())?;
         Ok(())
@@ -1213,7 +1375,7 @@ fn measure_history_growth() -> Result<()> {
             batch.push(Edit { id: uuid::Uuid::new_v4().to_string(), note: id.clone(), data: super::Bytes(update), collaborator: false });
         }
         if index % 20 == 0 {
-            journal.receive(Changes { uploaded: vec![], edits: std::mem::take(&mut batch), token: Some(super::Bytes(vec![1])),
+            journal.receive(Changes { retention: None, uploaded: vec![], edits: std::mem::take(&mut batch), token: Some(super::Bytes(vec![1])),
                 more: false, legacy: false, room_access: None, #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
             journal.merge(&Default::default())?;
         }
@@ -1268,5 +1430,161 @@ fn local_version_restore_commits_cloud_state_atomically_and_obeys_shared_access(
         assert_eq!(store.load(&id)?, restored);
         assert_eq!(journal.counts()?.0, queue);
     }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn legacy_reuse_after_cloud_collection_does_not_resend_file() -> Result<()> {
+    let library = HistoryFixture::new()?;
+    let mut journal = Journal::open(&library.0, None)?;
+    let mut store = Store::open_sqlite_at(library.0.clone())?;
+    let name = "assets/kept-offline.bin";
+    std::fs::write(library.0.join(name), vec![7u8; 40_000])?;
+    let with_image = crate::docxml::parse(&format!("<title>Test</title><p>Text</p><figure><source path=\"{name}\" name=\"kept.bin\"/></figure>"))?;
+    let without_image = crate::docxml::parse("<title>Test</title><p>Text</p>")?;
+    let id = store.create_from(&with_image)?;
+    journal.merge(&Default::default())?;
+    let uploaded = journal.request()?.edits;
+    assert!(uploaded.iter().any(|edit| edit.note == assets::SCOPE));
+    let ack = |records: Vec<Edit>| Changes { retention: None, uploaded: records.into_iter().map(|edit| edit.id).collect(),
+        edits: vec![], token: Some(super::Bytes(vec![1])), more: false, legacy: false, room_access: None,
+        #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false };
+    journal.receive(ack(uploaded))?;
+    store.save(&id, &without_image)?;
+    journal.merge(&Default::default())?;
+    journal.receive(ack(journal.request()?.edits))?;
+    // An old device cannot observe a generation retired by another client.
+    store.save(&id, &with_image)?;
+    journal.merge(&Default::default())?;
+    let pending = journal.request()?.edits;
+    assert!(pending.iter().any(|edit| edit.note == id));
+    assert!(!pending.iter().any(|edit| edit.note == assets::SCOPE));
+    assert_eq!(std::fs::metadata(library.0.join(name))?.len(), 40_000);
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn cloud_checkpoint_restores_and_accepts_an_offline_branch() -> Result<()> {
+    let first = HistoryFixture::new()?;
+    let mut j = Journal::open(&first.0, None)?;
+    let mut store = Store::open_sqlite_at(first.0.clone())?;
+    let id = store.create_from(&crate::docxml::parse("<title>Recovery</title><p>initial</p>")?)?;
+    j.merge(&Default::default())?;
+    let old = j.text_state(&id)?.unwrap();
+    old.set_peer_id(j.peer.wrapping_add(1))?;
+    let old_base = old.oplog_vv();
+    let mut doc = store.load(&id)?;
+    for n in 0..40 {
+        doc.blocks[0].text = crate::model::RichText::plain(format!("local edit {n}"));
+        store.save(&id,&doc)?;
+        j.merge(&Default::default())?;
+    }
+    let receipt = |edits: Vec<Edit>, deleted| Changes { retention: Some(retention::Receipt {
+        reset: false, ready: true, deleted, chunks: vec![] }), uploaded: edits.iter().map(|e| e.id.clone()).collect(),
+        edits, token: Some(super::Bytes(vec![1])), more: false, legacy: false, room_access: None,
+        #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false };
+    let mut catalogue = vec![];
+    loop {
+        let edits = j.request()?.edits;
+        if edits.is_empty() { break; }
+        catalogue.extend(edits.iter().filter(|e| e.note == super::catalogue::SCOPE).cloned());
+        j.receive(receipt(edits, vec![]))?;
+        j.merge(&Default::default())?;
+    }
+    let plan = j.request()?.maintenance.context("No cloud checkpoint")?;
+    assert!(plan.remove.is_empty());
+    let checkpoint = plan.snapshot.unwrap();
+    j.receive(receipt(vec![checkpoint.clone()],vec![]))?;
+    j.merge(&Default::default())?;
+    let cleanup = j.request()?.maintenance.context("Missing verified cleanup")?;
+    assert!(cleanup.snapshot.is_none() && cleanup.remove.len()>=40);
+    let second = HistoryFixture::new()?;
+    let mut restored = Journal::open(&second.0,None)?;
+    catalogue.push(checkpoint);
+    restored.receive(receipt(catalogue,vec![]))?;
+    restored.merge(&Default::default())?;
+    assert_eq!(content::render(&restored.text_state(&id)?.unwrap())?, doc);
+    old.get_map("extra").insert("offline","kept")?;
+    let late = Edit { id: uuid::Uuid::new_v4().to_string(), note: id.clone(),
+        data: super::Bytes(old.export(ExportMode::updates(&old_base))?), collaborator: false };
+    j.receive(receipt(vec![late.clone()], cleanup.remove))?;
+    restored.receive(receipt(vec![late],vec![]))?;
+    for local in [&mut j,&mut restored] { local.merge(&Default::default())?; }
+    assert_eq!(j.text_state(&id)?.unwrap().oplog_vv(), restored.text_state(&id)?.unwrap().oplog_vv());
+    assert_eq!(content::value(&restored.text_state(&id)?.unwrap().get_map("extra"),"offline").as_deref(),Some("kept"));
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn clean_asset_is_not_downloaded_and_reuse_uploads_bytes_first() -> Result<()> {
+    let f = HistoryFixture::new()?;
+    let mut j = Journal::open(&f.0,None)?;
+    let mut store = Store::open_sqlite_at(f.0.clone())?;
+    let name = "assets/data.bin";
+    std::fs::write(f.0.join(name), b"offline test bytes")?;
+    let with_file = crate::docxml::parse(&format!("<title>Test</title><p>x</p><figure><source path=\"{name}\" name=\"x\"/></figure>"))?;
+    let id = store.create_from(&with_file)?;
+    j.merge(&Default::default())?;
+    let mut file_id=String::new();
+    let mut uploaded = Vec::new();
+    let page = |edits: Vec<Edit>, deleted: Vec<String>| Changes { retention: Some(retention::Receipt {
+        reset:false, ready:true, deleted, chunks: vec![] }), uploaded: edits.iter().map(|e| e.id.clone()).collect(),
+        edits, token: Some(super::Bytes(vec![1])), more:false, legacy:false, room_access:None,
+        #[cfg(feature="devtools")] cursor_replayed:false, upload_quota_exceeded:false };
+    loop {
+        let edits=j.request()?.edits;
+        if edits.is_empty() { break; }
+        if let Some(e)=edits.iter().find(|e| e.note==assets::SCOPE) { file_id=e.id.clone(); }
+        uploaded.extend(edits.iter().cloned());
+        j.receive(page(edits,vec![]))?;
+        j.merge(&Default::default())?;
+    }
+    assert!(!file_id.is_empty());
+    // A reinstalled client sees two attachment headers, but only the file
+    // referenced by the projected note should get a byte-range request.
+    let fresh_library = HistoryFixture::new()?;
+    let mut fresh = Journal::open(&fresh_library.0, None)?;
+    let expected = uploaded.iter().find(|e| e.note == assets::SCOPE).unwrap().clone();
+    let (header, _) = assets::decode(&expected.data.0)?;
+    uploaded.retain(|e| e.note != assets::SCOPE);
+    let mut metadata = page(uploaded, vec![]);
+    metadata.retention.as_mut().unwrap().chunks = vec![
+        retention::RemoteChunk { id: file_id.clone(), path: name.into(), digest: header.digest.clone(), part: 0, parts: 1 },
+        retention::RemoteChunk { id: uuid::Uuid::new_v4().to_string(), path: "assets/retired.bin".into(), digest: header.digest, part: 0, parts: 1 },
+    ];
+    fresh.receive(metadata)?;
+    fresh.merge(&Default::default())?;
+    assert_eq!(fresh.request()?.downloads, [file_id.clone()]);
+    fresh.receive(page(vec![expected], vec![]))?;
+    fresh.merge(&Default::default())?;
+    assert_eq!(std::fs::read(fresh_library.0.join(name))?, b"offline test bytes");
+    assert!(!fresh_library.0.join("assets/retired.bin").exists());
+    assert!(fresh.request()?.downloads.is_empty());
+    j.db.execute("UPDATE cloud_inventory SET observed=0",[])?;
+    assert!(retention::stale_assets(&j.db,&j.retained_paths()?)?.is_none());
+    let plain=crate::docxml::parse("<title>Test</title><p>plain</p>")?;
+    store.save(&id,&plain)?;
+    j.merge(&Default::default())?;
+    let pending=j.request()?.edits;
+    j.receive(page(pending,vec![]))?;
+    j.merge(&Default::default())?;
+    let versions = store.versions(&id);
+    assert!(!versions.is_empty());
+    assert!(j.retained_paths()?.contains(name));
+    for version in versions { store.delete_version(&id,&version.name)?; }
+    let stale=retention::stale_assets(&j.db,&j.retained_paths()?)?.context("Unreferenced attachment not collectable")?;
+    assert_eq!(stale.remove,[file_id.clone()]);
+    assert!(j.request()?.downloads.is_empty());
+    store.save(&id,&with_file)?;
+    j.merge(&Default::default())?;
+    j.receive(page(vec![],vec![file_id]))?;
+    let reupload=j.request()?.edits;
+    assert!(!reupload.is_empty() && reupload.iter().all(|e| e.note==assets::SCOPE));
+    assert_eq!(assets::decode(&reupload[0].data.0)?.1,b"offline test bytes");
+    j.receive(page(reupload,vec![]))?;
+    assert!(j.request()?.edits.iter().any(|e| e.note==id));
     Ok(())
 }

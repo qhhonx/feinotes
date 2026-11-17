@@ -8,6 +8,7 @@ mod organizer;
 mod content;
 mod history;
 mod journal;
+mod retention;
 mod paragraphs;
 pub(crate) mod presence;
 pub(crate) mod shared;
@@ -80,7 +81,7 @@ struct Edit { id: String, note: String, data: Bytes,
     collaborator: bool }
 
 #[derive(Serialize)]
-struct Exchange { account: String, channel: Option<String>, token: Option<Bytes>, edits: Vec<Edit>, legacy: bool,
+struct Exchange { #[serde(skip_serializing_if = "Vec::is_empty")] downloads: Vec<String>, #[serde(skip_serializing_if = "Option::is_none")] maintenance: Option<retention::Maintenance>, account: String, channel: Option<String>, token: Option<Bytes>, edits: Vec<Edit>, legacy: bool,
     room: Option<shared::Scope>,
     #[serde(rename = "activityOnly", skip_serializing_if = "std::ops::Not::not")]
     activity_only: bool,
@@ -92,7 +93,7 @@ struct Exchange { account: String, channel: Option<String>, token: Option<Bytes>
     upload_fault_for_qa: Option<String> }
 
 #[derive(Deserialize)]
-struct Changes { uploaded: Vec<String>, edits: Vec<Edit>, token: Option<Bytes>, more: bool, legacy: bool,
+struct Changes { #[serde(default)] retention: Option<retention::Receipt>, uploaded: Vec<String>, edits: Vec<Edit>, token: Option<Bytes>, more: bool, legacy: bool,
     #[serde(rename = "roomAccess")]
     room_access: Option<shared::Access>,
     #[serde(rename = "uploadQuotaExceeded", default)]
@@ -132,7 +133,7 @@ fn exchange(request: Exchange) -> Result<Changes> {
     let page: Changes = serde_json::from_value(value)?;
     ensure!(page.legacy == request.legacy, "CloudKit returned a page from the wrong sync zone");
     ensure!(page.room_access.is_some() == request.room.is_some(), "CloudKit returned the wrong sharing scope");
-    ensure!(!page.upload_quota_exceeded || !request.edits.is_empty(), "CloudKit reported upload quota for a download-only request");
+    ensure!(!page.upload_quota_exceeded || !request.edits.is_empty() || request.maintenance.is_some(), "CloudKit reported upload quota for a download-only request");
     ensure!(page.uploaded.iter().all(|id| request.edits.iter().any(|edit| &edit.id == id)), "CloudKit acknowledged an edit that was not sent");
     Ok(page)
 }
@@ -184,7 +185,7 @@ fn release(root: &Path, cx: &mut App) {
 
 pub(crate) fn shared_access_ended(root: &Path, note: &str, cx: &mut App) -> Result<()> {
     if let Some(session) = cx.global_mut::<Sync>().0.get_mut(root) {
-        session.journal.receive(Changes { uploaded: vec![], edits: vec![], token: None, more: false, legacy: false,
+        session.journal.receive(Changes { retention: None, uploaded: vec![], edits: vec![], token: None, more: false, legacy: false,
             room_access: Some(shared::Access::Revoked), upload_quota_exceeded: false,
             #[cfg(feature = "devtools")] cursor_replayed: false })?;
     }
