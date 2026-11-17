@@ -1,13 +1,13 @@
 # Fei Notes
 
-Native Markdown notes for macOS, with optional iCloud sync and collaboration.
+Native Markdown notes for Mac, iPhone and iPad, with optional iCloud sync and collaboration.
 
 [Website](https://feinotes.app/) · [Try TestFlight](https://feinotes.app/#testflight) · [Support](https://feinotes.app/support/) · [简体中文](README.zh-CN.md)
 
 ![Fei Notes on macOS](website/assets/sync-before-en.webp)
 
 - **Local notes.** Write offline, organize folders, search your notes, and use the trash and library backups.
-- **Optional iCloud sync.** Sync notes, folders and attachments across your Macs. Offline edits to different parts of the same paragraph merge when devices reconnect.
+- **Optional iCloud sync.** Sync notes, folders and attachments across your Macs, iPhone and iPad. Offline edits to different parts of the same paragraph merge when devices reconnect.
 - **Shared notes.** Invite another Apple Account to view or edit a note and manage access from the app.
 - **Markdown and rich content.** Use headings, lists, code, tables, images and attachments in a native block editor.
 - **Boards.** Add Excalidraw drawings inside notes or create a standalone board, with local history and library backups.
@@ -17,9 +17,11 @@ Native Markdown notes for macOS, with optional iCloud sync and collaboration.
 
 The macOS distribution builds a universal app for Apple silicon and Intel Macs running macOS 14 or later. Intel support is compiled and packaged, but has not been tested on Intel hardware. Join through the [website's TestFlight section](https://feinotes.app/#testflight), which shows the current availability and review status.
 
+The iPhone and iPad build targets iOS 17 or later. Its TestFlight availability is listed separately on the website. Mobile build instructions are in [packaging/ios/README.md](packaging/ios/README.md).
+
 ## Source and development
 
-Fei Notes is built with Rust, GPUI, SQLite and Loro. Swift bridges integrate CloudKit and StoreKit. The document engine lives in `crates/core`; the root crate implements the desktop app.
+Fei Notes is built with Rust, GPUI, SQLite and Loro. Swift bridges integrate CloudKit and StoreKit. The document engine lives in `crates/core`; the root crate contains the shared editor and desktop app. `packaging/ios` provides the native UIKit host and pinned mobile backend.
 
 You can build the local editor from the published source for personal, noncommercial use:
 

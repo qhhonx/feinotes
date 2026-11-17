@@ -36,3 +36,18 @@
   right: auto;
   left: var(--caption-inset);
 }
+
+/* Actual iPhone app capture; keep the Mac scene and its responsive stage. */
+.sync-window-secondary.sync-phone {
+  width: 25%;
+  padding: .48cqw;
+  border-radius: 3.1cqw;
+  background: #191b1c;
+  box-shadow: 0 1.7cqw 3.7cqw -.8cqw rgb(13 42 38 / 32%);
+}
+.sync-preview .sync-phone img {
+  aspect-ratio: auto;
+  border: 0;
+  border-radius: 2.65cqw;
+  box-shadow: none;
+}

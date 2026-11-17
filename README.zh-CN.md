@@ -1,11 +1,11 @@
 # 飞记 · Fei Notes
 
-原生 macOS Markdown 笔记应用，支持按需开启 iCloud 同步与多人协作。
+适用于 Mac、iPhone 和 iPad 的原生 Markdown 笔记应用，支持按需开启 iCloud 同步与多人协作。
 
 [官网](https://feinotes.app/) · [TestFlight 体验](https://feinotes.app/#testflight) · [支持](https://feinotes.app/support/) · [English](README.md)
 
 - **本机笔记。** 离线写作，支持文件夹、全文搜索、回收站和整库备份与恢复。
-- **按需开启 iCloud。** 在自己的 Mac 之间同步笔记、目录和附件，离线修改同段不同位置后可自动合并。
+- **按需开启 iCloud。** 在自己的 Mac、iPhone 和 iPad 之间同步笔记、目录和附件，离线修改同段不同位置后可自动合并。
 - **共享一篇笔记。** 邀请指定 Apple 账户查看或编辑，并管理访问权限。
 - **Markdown 与丰富内容。** 原生块编辑器支持标题、清单、代码、表格、图片和附件。
 - **画板。** 在笔记中插入 Excalidraw 绘图，或新建独立画板，支持本地历史与整库备份。
@@ -14,6 +14,8 @@
 ## 体验
 
 macOS 分发包同时包含 Apple 芯片和 Intel 架构，要求 macOS 14 或更高版本。Intel 已纳入编译与打包，尚未经 Intel 真机验证。在官网的 TestFlight 区域加入测试，官网显示当前分发与审核状态。
+
+iPhone 和 iPad 版要求 iOS 17 或更高版本，官网分别显示移动端 TestFlight 的开放状态。移动端构建说明见 [packaging/ios/README.md](packaging/ios/README.md)。
 
 ## 开发与来源
 
