@@ -19,7 +19,14 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios")
         && std::env::var_os("CARGO_FEATURE_CLOUDKIT_SYNC").is_some() {
         println!("cargo:rerun-if-env-changed=FEI_IOS_PRODUCT_CLOUD");
+        println!("cargo:rerun-if-env-changed=FEI_TESTFLIGHT_BETA");
         let product = std::env::var("FEI_IOS_PRODUCT_CLOUD").as_deref() == Ok("1");
+        let beta = std::env::var("FEI_TESTFLIGHT_BETA").unwrap_or_else(|_| "0".into());
+        assert!(matches!(beta.as_str(), "0" | "1"), "Invalid FEI_TESTFLIGHT_BETA");
+        assert!(beta != "1" || (product && std::env::var("PROFILE").as_deref() == Ok("release")
+            && std::env::var_os("CARGO_FEATURE_DEVTOOLS").is_none()
+            && std::env::var_os("CARGO_FEATURE_MOBILE_QA").is_none()), "TestFlight requires a Production release without QA");
+        println!("cargo:rustc-env=FEI_TESTFLIGHT_BETA={beta}");
         println!("cargo:rustc-env=FEI_CLOUD_NAMESPACE={}", if product { "Production:iCloud.app.feinotes.mac" } else { "Development:iCloud.app.quietmd.cloudlab" });
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") { windows_resources(); }
