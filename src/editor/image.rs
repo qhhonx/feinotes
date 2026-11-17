@@ -836,9 +836,15 @@ impl R<'_> {
         // Resize handles: white dots with a soft drop, the accent rim once selected.
         let handles = (ok && !self.ghost && !cropping && !ed.read_only && (active || hovered)).then(|| {
             [(true, true), (false, true), (true, false), (false, false)].map(|(left, top)| {
+                let corner = match (left, top) {
+                    (true, true) => "img-handle-tl",
+                    (false, true) => "img-handle-tr",
+                    (true, false) => "img-handle-bl",
+                    (false, false) => "img-handle-br",
+                };
                 let cursor = if left == top { CursorStyle::ResizeUpLeftDownRight } else { CursorStyle::ResizeUpRightDownLeft };
                 div()
-                    .id(("img-handle", id.0 * 4 + left as u64 * 2 + top as u64))
+                    .id((corner, id.0))
                     .absolute()
                     .size(px(20.))
                     .map(|d| if left { d.left(px(-9.)) } else { d.right(px(-9.)) })

@@ -1096,7 +1096,7 @@ impl Element for RichTextElement {
                 let start = self.text.text.floor_char_boundary(range.start.min(self.text.len()));
                 let end = self.text.text.floor_char_boundary(range.end.min(self.text.len()));
                 for rect in layout.rects_for(start..end) {
-                    window.paint_quad(fill(rect, mark.color.opacity(0.19)));
+                    window.paint_quad(fill(rect, mark.color.opacity(if crate::settings::feishu() { 0.19 } else { 0.12 })));
                 }
             }
         }
@@ -1201,7 +1201,14 @@ impl Element for RichTextElement {
                 let font_h = px(self.spec.size * 1.18);
                 let top = p.y + (lh - font_h) / 2.;
                 window.paint_quad(fill(Bounds::new(point(p.x, top), size(px(2.), font_h)), mark.color).corner_radii(px(1.)));
-                if let Some(name) = &mark.name {
+                if !crate::settings::feishu() {
+                    let mut marker = PathBuilder::fill();
+                    marker.move_to(point(p.x, top + px(2.)));
+                    marker.line_to(point(p.x, top - px(4.)));
+                    marker.line_to(point(p.x + px(6.), top - px(4.)));
+                    marker.close();
+                    if let Ok(path) = marker.build() { window.paint_path(path, mark.color); }
+                } else if let Some(name) = &mark.name {
                     let run = TextRun { len: name.len(), font: font(theme::UI_FONT), color: crate::cloud_sync::presence::badge_ink(mark.color),
                         background_color: None, underline: None, strikethrough: None };
                     let line = window.text_system().shape_line(name.clone(), px(10.), &[run], None);

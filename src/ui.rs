@@ -13,23 +13,32 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
 pub(crate) fn share_toolbar_icon() -> AnyElement {
     let color = toolbar_color("toolbar.button.color").unwrap_or_else(Theme::icon);
-    match system_share_symbol(color) {
+    match system_toolbar_symbol(c"square.and.arrow.up", color) {
         Some(image) => img(image).size(px(20.)).object_fit(ObjectFit::Contain).flex_none().into_any_element(),
         None => icon("share", 20., color).into_any_element(),
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+pub(crate) fn participants_icon() -> AnyElement {
+    let color = toolbar_color("toolbar.button.color").unwrap_or_else(Theme::icon);
+    match system_toolbar_symbol(c"person.2.circle", color) {
+        Some(image) => img(image).size(px(22.)).object_fit(ObjectFit::Contain).flex_none().into_any_element(),
+        None => svg().path("editor-icons/user.svg").size(px(20.)).text_color(color).into_any_element(),
+    }
+}
+
 /// Resolve SF Symbols through AppKit at runtime; no Apple artwork is bundled.
 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-fn system_share_symbol(color: Hsla) -> Option<std::sync::Arc<RenderImage>> {
+fn system_toolbar_symbol(symbol_name: &'static std::ffi::CStr, color: Hsla) -> Option<std::sync::Arc<RenderImage>> {
     use objc::{class, msg_send, sel, sel_impl, runtime::Object};
     use std::sync::Arc;
-    thread_local! { static CACHE: RefCell<Option<(Hsla, Arc<RenderImage>)>> = const { RefCell::new(None) }; }
-    if let Some(image) = CACHE.with(|cache| cache.borrow().as_ref().filter(|(c, _)| *c == color).map(|(_, im)| im.clone())) {
+    thread_local! { static CACHE: RefCell<Vec<(&'static std::ffi::CStr, Hsla, Arc<RenderImage>)>> = const { RefCell::new(Vec::new()) }; }
+    if let Some(image) = CACHE.with(|cache| cache.borrow().iter().find(|(n, c, _)| *n == symbol_name && *c == color).map(|(_, _, im)| im.clone())) {
         return Some(image);
     }
     let bytes = unsafe {
-        let name: *mut Object = msg_send![class!(NSString), stringWithUTF8String: c"square.and.arrow.up".as_ptr()];
+        let name: *mut Object = msg_send![class!(NSString), stringWithUTF8String: symbol_name.as_ptr()];
         let symbol: *mut Object = msg_send![class!(NSImage), imageWithSystemSymbolName: name accessibilityDescription: std::ptr::null_mut::<Object>()];
         if symbol.is_null() { return None; }
         // Rasterize at 2x for the 20pt toolbar slot, preserving the system outline.
@@ -50,7 +59,11 @@ fn system_share_symbol(color: Hsla) -> Option<std::sync::Arc<RenderImage>> {
             (ink.r * 255.).round() as u8, (p.0[3] as f32 * ink.a).round() as u8]);
     }
     let image = Arc::new(RenderImage::new(vec![image::Frame::new(mask)]).with_scale_factor(2.));
-    CACHE.with(|cache| *cache.borrow_mut() = Some((color, image.clone())));
+    CACHE.with(|cache| {
+        let mut items = cache.borrow_mut();
+        items.retain(|(name, _, _)| *name != symbol_name);
+        items.push((symbol_name, color, image.clone()));
+    });
     Some(image)
 }
 

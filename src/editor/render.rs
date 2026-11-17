@@ -427,6 +427,15 @@ impl R<'_> {
                 // Block decoration: a tinted field, radius 3; the rim
                 // is the chosen border colour, faint.
                 let st = theme::style();
+                let first_kind = b.children.first().map(|c| &c.kind);
+                let (icon_top, icon_size) = if crate::FEI_NOTES {
+                    let line = b.children.first().map(|child| self.spec_for(child, env)).unwrap_or_else(TextSpec::body);
+                    // Apple Color Emoji sits optically above the adjacent system text.
+                    ((line.line_height - 24.) / 2. + 2., line.size.clamp(14., 20.))
+                } else {
+                    ((super::emoji_picker::callout_emoji_height(first_kind) - 24.) / 2., 20.)
+                };
+
                 div()
                     .relative()
                     .flex()
@@ -450,12 +459,12 @@ impl R<'_> {
                             .id(("callout-emoji", id.0))
                             .flex_none()
                             .size(px(24.))
-                            .mt(px((super::emoji_picker::callout_emoji_height(b.children.first().map(|c| &c.kind)) - 24.) / 2.))
+                            .mt(px(icon_top))
                             .rounded(px(4.))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_size(px(20.))
+                            .text_size(px(icon_size))
                             .line_height(px(24.))
                             .cursor_pointer()
                             .hover(|s| s.bg(Theme::fill_hover()))
@@ -559,7 +568,9 @@ impl R<'_> {
         let bg = b.bg.as_ref().filter(|_| b.kind.takes_bg()).and_then(|c| theme::block_bg(&c.0)).map(|fill| {
             // Block decoration: 7pt past the column, 9pt above and
             // below (so neighbours with the same decoration merge), radius 3.
-            let m = div().absolute().top(px(-9.)).left(px(-7.)).right(px(-7.)).bottom(px(-9.)).bg(fill);
+            // Compact Fei note rows can touch. Keep the fill inside their line box.
+            let extension = if crate::FEI_NOTES { 0. } else { 9. };
+            let m = div().absolute().top(px(-extension)).left(px(-7.)).right(px(-7.)).bottom(px(-extension)).bg(fill);
             if self.flat == Some(b.id) { m.rounded_t(px(3.)) } else { m.rounded(px(3.)) }
         });
         div()
