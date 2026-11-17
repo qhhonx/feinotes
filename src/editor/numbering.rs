@@ -1,6 +1,6 @@
 use super::view::{Editor, Menu};
 use crate::model::BlockId;
-use crate::feishu_theme::Theme;
+use crate::editor_theme::Theme;
 use gpui::{prelude::FluentBuilder, *};
 
 impl Editor {
@@ -30,7 +30,7 @@ impl Editor {
                 .child(div().h(px(32.)).px(px(8.)).flex().items_center().border_1().border_color(Theme::primary()).rounded(px(4.)).child(self.number_field.clone()))
                 .child(div().id("ordered-number-confirm").h(px(32.)).flex().items_center().justify_center().rounded(px(4.))
                     .bg(if valid { Theme::primary() } else { Theme::fill_hover() })
-                    .text_color(if valid { gpui::white() } else { Theme::text_disabled() }).text_size(px(14.)).child(crate::settings::text("确定"))
+                    .text_color(if valid { Theme::on_primary() } else { Theme::text_disabled() }).text_size(px(14.)).child(crate::settings::text("确定"))
                     .when(valid, |d| d.cursor_pointer().on_mouse_down(MouseButton::Left, cx.listener(|e, _, w, cx| {
                         cx.stop_propagation(); e.submit_ordered_number(w, cx);
                     }))));

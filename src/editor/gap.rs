@@ -34,7 +34,7 @@ fn one_line(b: &Block) -> bool {
 
 /// A text block whose last descendant is a one-line block.
 fn text_child_one_line(b: &Block) -> bool {
-    let text = matches!(b.kind, BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. });
+    let text = matches!(b.kind, BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. });
     text && b.children.last().is_some_and(|l| one_line(l) || text_child_one_line(l))
 }
 

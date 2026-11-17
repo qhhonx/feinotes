@@ -5,7 +5,8 @@ use super::core::TITLE;
 use super::render::{TOP, flattens, visible_with_gaps};
 use super::view::{Editor, EditorEvent};
 use crate::model::*;
-use crate::feishu_theme::{self as theme, Theme, craft};
+use crate::feishu_theme as theme;
+use crate::editor_theme::Theme;
 use crate::editor_ui::{TipExt, TipSide, icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::Cell;
@@ -13,6 +14,9 @@ use std::rc::Rc;
 
 /// The page margin also reserves room for block handles.
 fn padding() -> f32 { crate::editor_theme::style().num("page.padding").clamp(24., 120.) }
+/// Full block handle, fold arrow and four points clear of the pane or outline.
+const HANDLE_GUTTER: f32 = 66.;
+fn left_padding() -> f32 { padding().max(HANDLE_GUTTER) }
 /// CATALOGUE_MAX_UNFOLD_WIDTH.
 const UNFOLD: f32 = 236.5;
 /// EDITOR_MIN_EXTRUDING_WIDTH: the narrowest text column beside a pinned catalogue.
@@ -55,10 +59,15 @@ pub struct PageLayout {
 }
 
 pub fn page_layout(o: f32, max: Option<f32>, has_cat: bool, pinned: bool) -> PageLayout {
-    let pad = padding();
+    page_layout_with_padding(o, max, has_cat, pinned, padding())
+}
+
+fn page_layout_with_padding(o: f32, max: Option<f32>, has_cat: bool, pinned: bool, pad: f32) -> PageLayout {
+    let left_pad = pad.max(HANDLE_GUTTER);
     let centered = |cat| {
         let m = max.map_or(pad, |w| ((o - w) / 2.).max(pad));
-        PageLayout { ml: m, mr: m, content: o - 2. * m, cat }
+        let ml = m.max(left_pad);
+        PageLayout { ml, mr: m, content: o - ml - m, cat }
     };
     if !has_cat {
         return centered(CatMode::None);
@@ -66,24 +75,24 @@ pub fn page_layout(o: f32, max: Option<f32>, has_cat: bool, pinned: bool) -> Pag
     if !pinned {
         return centered(CatMode::Unpinned);
     }
-    if o < RESPONSE_MIN + pad + EDITOR_MIN + pad {
+    if o < RESPONSE_MIN + left_pad + EDITOR_MIN + pad {
         return centered(CatMode::Forced);
     }
     let (ml, mr) = match max {
-        None => (UNFOLD + pad, pad),
-        Some(w) if o - pad >= UNFOLD + pad + EDITOR_MIN => {
-            let a = (o - UNFOLD - pad).min(w);
+        None => (UNFOLD + left_pad, pad),
+        Some(w) if o - pad >= UNFOLD + left_pad + EDITOR_MIN => {
+            let a = (o - UNFOLD - left_pad).min(w);
             let l = o - a;
-            if l / 2. < UNFOLD + pad {
+            if l / 2. < UNFOLD + left_pad {
                 let l = l - UNFOLD;
-                (UNFOLD + (l / 2.).max(pad), (l / 2.).max(pad))
+                (UNFOLD + (l / 2.).max(left_pad), (l / 2.).max(pad))
             } else {
                 (l / 2., l / 2.)
             }
         }
         Some(_) => (o - EDITOR_MIN - pad, pad),
     };
-    PageLayout { ml, mr, content: o - ml - mr, cat: CatMode::Pinned(ml - pad) }
+    PageLayout { ml, mr, content: o - ml - mr, cat: CatMode::Pinned(ml - left_pad) }
 }
 
 /// One catalogue row.
@@ -194,8 +203,8 @@ impl Editor {
     pub(super) fn bleed(&self) -> (f32, f32) {
         let pad = padding();
         let l = match self.layout.cat {
-            CatMode::Pinned(u) => self.layout.ml - pad - u.min(RESPONSE_MAX),
-            _ => self.layout.ml - pad,
+            CatMode::Pinned(u) => self.layout.ml - left_padding() - u.min(RESPONSE_MAX),
+            _ => self.layout.ml - left_padding(),
         };
         (l.max(0.), (self.layout.mr - pad).max(0.))
     }
@@ -313,7 +322,7 @@ impl Editor {
             .active(|s| s.bg(theme::ta(31, 35, 41, 0.2)))
             .child(
                 icon(if pinned { "catalogue-collapse" } else { "catalogue-list" }, 18., Theme::icon())
-                    .group_hover("cat-pin", |s| s.text_color(theme::c(craft::old::B500))),
+                    .group_hover("cat-pin", |s| s.text_color(Theme::primary_500())),
             )
             .tip_label(if pinned { crate::settings::text("收起目录") } else { crate::settings::text("展开目录") }.into(), TipSide::Above)
             .on_click(cx.listener(move |ed, _, _, cx| ed.set_cat_pinned(!pinned, cx)));
@@ -463,3 +472,29 @@ impl Editor {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::{page_layout_with_padding, CatMode, HANDLE_GUTTER, RESPONSE_MIN};
+
+    #[test]
+    fn compact_pages_keep_handles_inside_the_pane_and_clear_of_the_outline() {
+        for pad in [24., 28., 66., 120.] {
+            for width in [480., 820., 1280., 2600.] {
+                for max in [None, Some(820.), Some(1200.)] {
+                    for (has_cat, pinned) in [(false, false), (true, false), (true, true)] {
+                        let l = page_layout_with_padding(width, max, has_cat, pinned, pad);
+                        assert!(l.ml >= HANDLE_GUTTER && l.mr >= pad && l.content > 0., "{l:?}");
+                        assert!((l.ml + l.content + l.mr - width).abs() < 0.01);
+                        assert!(max.is_none_or(|w| l.content <= w + 0.01), "{l:?}");
+                        if let CatMode::Pinned(outline) = l.cat {
+                            assert!(outline >= RESPONSE_MIN && l.ml - outline >= HANDLE_GUTTER, "{l:?}");
+                        }
+                    }
+                }
+            }
+        }
+        let feishu = page_layout_with_padding(1280., Some(820.), true, true, 66.);
+        assert_eq!((feishu.ml, feishu.mr, feishu.content), (348.25, 111.75, 820.));
+    }
+}

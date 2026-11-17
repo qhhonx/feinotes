@@ -784,7 +784,7 @@ impl CellRange {
 pub enum BlockKind {
     Text,
     Heading { level: u8, seq_auto: bool },
-    Bullet,
+    Bullet { dash: bool },
     Ordered { seq: Option<u32> },
     Todo { done: bool },
     Code { lang: String, caption: Option<String>, wrap: bool },
@@ -830,7 +830,7 @@ impl BlockKind {
             self,
             BlockKind::Text
                 | BlockKind::Heading { .. }
-                | BlockKind::Bullet
+                | BlockKind::Bullet { .. }
                 | BlockKind::Ordered { .. }
                 | BlockKind::Todo { .. }
                 | BlockKind::Code { .. }
@@ -847,11 +847,11 @@ impl BlockKind {
 
     /// Text blocks that take indented children (Tab, drop as first child).
     pub fn nests(&self) -> bool {
-        matches!(self, BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. })
+        matches!(self, BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. })
     }
 
     pub fn is_list(&self) -> bool {
-        matches!(self, BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. })
+        matches!(self, BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. })
     }
 
     /// Blocks the handle menu's 颜色 can give a background (the
@@ -859,7 +859,7 @@ impl BlockKind {
     pub fn takes_bg(&self) -> bool {
         matches!(
             self,
-            BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } | BlockKind::Quote
+            BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } | BlockKind::Quote
         )
     }
 }

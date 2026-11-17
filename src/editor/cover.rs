@@ -126,7 +126,7 @@ fn meta_entry(id: &'static str, ic: &'static str, label: &'static str) -> Statef
 /// white semibold; radius 9.
 fn toolbar_button(id: &'static str, label: &'static str, primary: bool) -> Stateful<Div> {
     let (bg, hover, active, rim, color) = if primary {
-        (Theme::primary(), theme::c(craft::B600), theme::c(craft::B700), Theme::primary(), gpui::white())
+        (Theme::primary(), Theme::primary(), Theme::primary(), Theme::primary(), Theme::on_primary())
     } else {
         (theme::ta(255, 255, 255, 0.92), theme::ta(255, 255, 255, 1.), theme::c(craft::N100), Theme::button_border(), Theme::text())
     };
@@ -148,8 +148,8 @@ fn toolbar_button(id: &'static str, label: &'static str, primary: bool) -> State
         .when(primary, |d| d.font_weight(FontWeight::SEMIBOLD))
         .text_color(color)
         .bg(bg)
-        .hover(move |s| s.bg(hover))
-        .active(move |s| s.bg(active))
+        .hover(move |s| s.bg(hover).opacity(if primary { 0.9 } else { 1. }))
+        .active(move |s| s.bg(active).opacity(if primary { 0.8 } else { 1. }))
         .cursor_pointer()
         .child(label)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -298,7 +298,7 @@ impl Editor {
         Some(
             div()
                 .absolute()
-                .top(px(20.))
+                .top(px((theme::style().num("page.top").max(32.) - 32.).max(0.)))
                 .left_0()
                 .h(px(28.))
                 .flex()
@@ -484,7 +484,7 @@ impl Editor {
                 .cursor_pointer()
                 .when(on, |d| {
                     d.font_weight(FontWeight::SEMIBOLD)
-                        .text_color(Theme::primary())
+                        .text_color(Theme::primary_500())
                         .child(div().absolute().bottom(px(-0.5)).left_0().right_0().h(px(2.)).rounded(px(1.)).bg(Theme::primary()))
                 })
                 .when(!on, |d| d.text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::text())))
@@ -555,9 +555,9 @@ impl Editor {
                         .justify_center()
                         .bg(Theme::primary())
                         .shadow(theme::shadow_button())
-                        .hover(|s| s.bg(theme::c(craft::B600)))
-                        .active(|s| s.bg(theme::c(craft::B700)))
-                        .text_color(gpui::white())
+                        .hover(|s| s.bg(Theme::primary()).opacity(0.9))
+                        .active(|s| s.bg(Theme::primary()).opacity(0.8))
+                        .text_color(Theme::on_primary())
                         .cursor_pointer()
                         .child(crate::settings::text("上传图片"))
                         .on_click(cx.listener(|e, _, window, cx| {

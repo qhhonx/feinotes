@@ -553,7 +553,7 @@ fn sample_page(t: &themes::Theme, s: f32) -> Div {
     let task = |done: bool, label: &'static str| div().flex().items_center().child(marker(
             div().size(sc(task_size)).rounded(sc(st.num("task.radius"))).flex().items_center().justify_center()
                 .when(done, |d| d.bg(st.color("task.checked").unwrap_or_else(|| st.token("primary")))
-                    .child(ui::icon("todo-check", (task_size * s * 0.75).round(), st.color("task.check").unwrap_or_else(gpui::white))))
+                    .child(ui::icon(if st.num("task.radius") >= task_size / 2. - 0.1 { "notes-todo-check" } else { "todo-check" }, if st.num("task.radius") >= task_size / 2. - 0.1 { task_size * s } else { (task_size * s * 0.75).round() }, st.color("task.check").unwrap_or_else(gpui::white))))
                 .when(!done, |d| d.border_1().border_color(st.color("task.border").unwrap_or_else(|| st.token("todo_box"))))))
         .child(p(div()).child(label).when(done, |d| d.text_color(st.color("done.color").unwrap_or_else(|| st.token("todo_done"))).when(st.flag("done.strike"), |d| d.line_through())));
     let quote = div().flex().gap(sc((st.num("quote.indent") - st.num("quote.bar")).max(4.)))
@@ -2135,6 +2135,7 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "链接" => "Link",
         "代码块" => "Code block",
         "无序列表" => "Bulleted list",
+        "短划线列表" => "Dashed list",
         "有序列表" => "Numbered list",
         "任务" => "Task",
         "待办事项" => "To-do list",
@@ -2195,6 +2196,8 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "### 空格" => "### Space",
         "1. 空格" => "1. Space",
         "- 空格 或 * 空格" => "- Space or * Space",
+        "- 空格" => "- Space",
+        "* 空格" => "* Space",
         "任务列表" => "To-do list",
         "[] 空格" => "[] Space",
         "增加缩进" => "Increase indent",

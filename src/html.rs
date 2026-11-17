@@ -147,9 +147,10 @@ impl Writer<'_> {
                 let _ = write!(out, "<div class=\"b h h{}\"{align}>{n}{}</div>", level.clamp(&1, &9), inline(&b.text));
                 self.kids(b, depth, out);
             }
-            BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => {
+            BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => {
                 let (marker, body_class) = match b.kind {
-                    BlockKind::Bullet => (format!("<span class=\"dot\"><i class=\"d{}\"></i></span>", depth % 3), ""),
+                    BlockKind::Bullet { dash: true } => ("<span class=\"mk\">–</span>".into(), ""),
+                    BlockKind::Bullet { dash: false } => (format!("<span class=\"dot\"><i class=\"d{}\"></i></span>", depth % 3), ""),
                     BlockKind::Ordered { .. } => (
                         format!(
                             "<span class=\"mk\">{}</span>",

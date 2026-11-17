@@ -728,7 +728,7 @@ mod tests {
         let kinds: Vec<_> = doc.blocks.iter().map(|b| std::mem::discriminant(&b.kind)).collect();
         assert_eq!(kinds.len(), 5);
         assert_eq!(doc.blocks[0].text.text, "第一段");
-        assert!(matches!(doc.blocks[1].kind, BlockKind::Bullet));
+        assert!(matches!(doc.blocks[1].kind, BlockKind::Bullet { .. }));
         assert!(matches!(&doc.blocks[3].kind, BlockKind::Image { src, .. } if src == "https://e.com/a.png"));
         assert!(matches!(doc.blocks[4].kind, BlockKind::Heading { level: 2, .. }));
         assert_eq!(percent_decode("a%20b%E5%9B%BE.png"), "a b图.png");

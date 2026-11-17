@@ -31,7 +31,7 @@ fn kind_tag(k: &BlockKind) -> u8 {
     match k {
         BlockKind::Text => 0,
         BlockKind::Heading { .. } => 1,
-        BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => 2,
+        BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => 2,
         BlockKind::Code { .. } => 3,
         _ => 4,
     }

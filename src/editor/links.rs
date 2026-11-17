@@ -351,6 +351,8 @@ impl Editor {
             return None;
         }
         let back = l.tab.unwrap_or(!(nb == 0 && nr != 0));
+        let size = crate::editor_theme::body_size();
+        let line = crate::editor_theme::body_line();
         // The tabs: the chosen one in the accent and semibold over a
         // 2pt accent bar, the other secondary.
         let tab = |id: &'static str, name: &str, n: usize, active: bool, b: bool| {
@@ -362,8 +364,8 @@ impl Editor {
                 .items_center()
                 .py(px(10.))
                 .px(px(2.))
-                .text_size(px(13.))
-                .line_height(px(20.))
+                .text_size(px(size.min(13.)))
+                .line_height(px(line.min(20.)))
                 .cursor_pointer()
                 .text_color(if active { Theme::primary() } else { Theme::text_caption() })
                 .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
@@ -403,7 +405,8 @@ impl Editor {
             .child(close);
         let mut list = div().py(px(12.)).pr(px(20.)).flex().flex_col();
         let docs = self.links.docs.clone();
-        let font = window.text_style().font();
+        let mut font = window.text_style().font();
+        font.family = crate::editor_theme::body_font().into();
         let title_row = |id: String, row: usize, chevron: Option<bool>, cx: &mut Context<Self>| {
             let d = docs.iter().find(|d| d.id == id);
             let name = d.map(|d| display_title(&d.title).to_string()).unwrap_or_else(|| crate::settings::text("此文档已被删除").into());
@@ -465,7 +468,7 @@ impl Editor {
                         .active(|s| s.bg(Theme::fill_pressed()))
                         .on_click(cx.listener(move |_, _, _, cx| cx.emit(EditorEvent::OpenDoc(open.clone()))))
                         .child(glyph)
-                        .child(div().min_w_0().truncate().text_size(px(15.)).text_color(Theme::link()).child(ui_text(name))),
+                        .child(div().min_w_0().truncate().text_size(px(size.min(15.))).line_height(px(line.min(22.))).text_color(Theme::link()).child(ui_text(name))),
                 )
         };
         let (count, more_ix) = if back { (nb, 0) } else { (nr, 1) };
@@ -478,8 +481,8 @@ impl Editor {
                     .flex_col()
                     .items_center()
                     .justify_center()
-                    .text_size(px(13.))
-                    .line_height(px(20.))
+                    .text_size(px(size.min(13.)))
+                    .line_height(px(line.min(20.)))
                     .text_color(Theme::text_caption())
                     .child(ui_text(if back { crate::settings::text("本文暂未被其它文档引用") } else { crate::settings::text("本文暂未引用其它文档") })),
             );
@@ -514,8 +517,8 @@ impl Editor {
                         div()
                             .id(SharedString::from(format!("refs-line-{row}-{k}")))
                             .relative()
-                            .text_size(px(13.))
-                            .line_height(px(22.))
+                            .text_size(px(size.min(13.)))
+                            .line_height(px(line.min(22.)))
                             .pt(px(3.))
                             .pb(px(3.))
                             .pl(px(24.))
@@ -541,8 +544,8 @@ impl Editor {
                 div()
                     .id("refs-more")
                     .mt(px(4.))
-                    .text_size(px(13.))
-                    .line_height(px(20.))
+                    .text_size(px(size.min(13.)))
+                    .line_height(px(line.min(20.)))
                     .text_color(Theme::link())
                     .cursor_pointer()
                     .on_click(cx.listener(move |e, _, _, cx| {
@@ -556,6 +559,7 @@ impl Editor {
         Some(
             div()
                 .id("refs")
+                .font_family(crate::editor_theme::body_font())
                 .mt(px(40.))
                 .mb(px(40.))
                 .pl(px(20.))

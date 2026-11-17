@@ -334,7 +334,7 @@ fn checkbox(on: bool) -> Div {
         .items_center()
         .justify_center()
         .rounded(px(4.))
-        .when(on, |d| d.bg(Theme::primary()).child(icon("check", 12., gpui::white())))
+        .when(on, |d| d.bg(Theme::primary()).child(icon("check", 12., Theme::on_primary())))
         .when(!on, |d| d.border_1().border_color(Theme::todo_box()).bg(crate::theme::raised(gpui::white())))
 }
 
@@ -578,7 +578,7 @@ impl Editor {
                         .text_size(px(13.))
                         .cursor_pointer()
                         .text_color(if sel {
-                            gpui::white()
+                            Theme::on_primary()
                         } else if is_today {
                             Theme::primary()
                         } else if (y, m) == (vy, vm) {

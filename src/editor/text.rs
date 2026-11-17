@@ -749,7 +749,7 @@ pub fn build_runs(
             runs.push(TextRun {
                 len: b - a,
                 font,
-                color: if background_color.is_some() { crate::theme::on_mark(color) } else { color },
+                color: background_color.map_or(color, |bg| theme::marked_text(color, m, bg)),
                 background_color,
                 underline,
                 // Painted by `RichTextElement::paint`, see `paint_strikes`.

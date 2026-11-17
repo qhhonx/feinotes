@@ -7,7 +7,8 @@ use super::menus::{self, SLASH_ITEMS, TURN_ITEMS};
 use super::table::CellSelKind;
 use super::view::{BlockAct, BlockSub, Editor, Mark, Menu};
 use crate::model::*;
-use crate::feishu_theme::{self as theme, Theme};
+use crate::feishu_theme as theme;
+use crate::editor_theme::Theme;
 use crate::editor_ui::{MENU_INSET, MENU_PAD_Y, MENU_ROW_H, TipExt, icon, menu, panel, popover};
 use gpui::{prelude::FluentBuilder, *};
 
@@ -71,7 +72,7 @@ pub fn kind_icon(k: &BlockKind) -> &'static str {
             6 => "heading-6",
             _ => "heading",
         },
-        BlockKind::Bullet => "list",
+        BlockKind::Bullet { .. } => "list",
         BlockKind::Ordered { .. } => "list-ordered",
         BlockKind::Todo { .. } => "todo",
         BlockKind::Code { .. } => "braces",
@@ -90,8 +91,9 @@ pub fn kind_icon(k: &BlockKind) -> &'static str {
 
 /// Handle icon tint, same per-family colours as the slash menu.
 pub fn kind_color(k: &BlockKind) -> Hsla {
+    if let Some(color) = crate::editor_theme::style().color("block.icon") { return color; }
     theme::c(match k {
-        BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } | BlockKind::Grid | BlockKind::Column { .. } => menus::INDIGO,
+        BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } | BlockKind::Grid | BlockKind::Column { .. } => menus::INDIGO,
         BlockKind::Code { .. } => menus::GREEN,
         BlockKind::Divider | BlockKind::Callout { .. } => menus::ORANGE,
         BlockKind::Image { .. } => menus::YELLOW,
@@ -101,6 +103,16 @@ pub fn kind_color(k: &BlockKind) -> Hsla {
         BlockKind::File(_) => menus::WATHET,
         _ => menus::BLUE,
     })
+}
+
+/// Match the document's task shape without changing menu labels or hit areas.
+fn block_icon(name: &str, size: f32, color: Hsla) -> AnyElement {
+    let st = crate::editor_theme::style();
+    if name == "todo" && !st.feishu && st.num("task.radius") >= st.num("task.size") / 2. {
+        div().size(px(size)).flex_none().flex().items_center().justify_center()
+            .child(div().size(px(size - 2.)).rounded_full().border_1().border_color(color).flex().items_center().justify_center()
+                .child(icon("check", size - 6., color))).into_any_element()
+    } else { icon(name, size, color).into_any_element() }
 }
 
 /// 32-tall menu row: icon, label, optional right hint.
@@ -158,8 +170,9 @@ fn swatch(id: impl Into<ElementId>, sel: bool, hairline: bool, inner: Div) -> St
         .child(inner.size(px(22.)).rounded(px(2.)).when(hairline && !sel, |d| d.border_1().border_color(Theme::swatch_border())))
 }
 
-fn font_swatch(hex: u32) -> Div {
-    div().flex().items_center().justify_center().text_size(px(14.)).text_color(theme::c(hex)).child("A")
+fn font_swatch(name: Option<&str>, hex: u32) -> Div {
+    let color = name.and_then(crate::editor_theme::text_color).unwrap_or_else(|| if name.is_none() { Theme::text() } else { theme::c(hex) });
+    div().flex().items_center().justify_center().text_size(px(14.)).text_color(color).child("A")
 }
 
 /// White square crossed by a grey diagonal: "no color".
@@ -315,6 +328,7 @@ impl Editor {
             Some(Menu::Block { block, sub }) => self.block_menu(block, sub, cx),
             Some(Menu::Link { block, range, only_link }) => self.link_panel(block, range, only_link, window, cx),
             Some(Menu::Equation { block, offset }) => self.equation_editor(block, offset, window, cx),
+            Some(Menu::CodeTools { block }) => self.code_tools_menu(block, cx),
             Some(Menu::Lang { block, selected }) => self.lang_menu(block, selected, window, cx),
             Some(Menu::Emoji { target, selected }) => self.emoji_picker(target, selected, window, cx),
             Some(Menu::CoverEdit) => self.cover_menu(cx),
@@ -385,7 +399,7 @@ impl Editor {
             .when(!add, |d| {
                 // 1px padding, 24px type-icon box (14px glyph, family tint), 14px grip (#8f959e).
                 d.pl(px(1.))
-                    .child(div().size(px(24.)).flex().items_center().justify_center().child(icon(kind_icon(&kind), 14., kind_color(&kind))))
+                    .child(div().size(px(24.)).flex().items_center().justify_center().child(block_icon(kind_icon(&kind), 14., kind_color(&kind))))
                     .child(icon("grip-vertical", 14., Theme::icon()))
             })
             .on_mouse_down(
@@ -528,7 +542,7 @@ impl Editor {
                             .cursor_pointer()
                             .when(n == selected, |d| d.bg(Theme::fill_hover()))
                             .tip_md(it.label, keys, md)
-                            .child(icon(it.icon, 18., Theme::icon()))
+                            .child(block_icon(it.icon, 18., Theme::icon()))
                             .on_mouse_move(hover_sel(n))
                             .on_mouse_down(MouseButton::Left, run(kind))
                             .into_any_element(),
@@ -553,7 +567,7 @@ impl Editor {
                     .rounded(px(crate::ui::ROW_RADIUS))
                     .cursor_pointer()
                     .when(n == selected, |d| d.bg(Theme::fill_hover()))
-                    .child(icon(it.icon, 16., crate::feishu_theme::c(it.color)))
+                    .child(block_icon(it.icon, 16., crate::editor_theme::style().color("block.icon").unwrap_or_else(|| theme::c(it.color))))
                     .child(div().ml(px(8.)).flex_1().text_size(px(13.)).line_height(px(20.)).child(crate::settings::label(it.label)))
                     .when(sub, |d| d.child(icon("chevron-right", 14., Theme::icon())))
                     .on_mouse_move(hover_sel(n))
@@ -762,7 +776,7 @@ impl Editor {
                         .when(active, |d| d.bg(Theme::fill_turninto_active()))
                         .hover(|s| s.bg(Theme::fill_hover()))
                         .tip_md(tip, keys, md)
-                        .child(icon(it.icon, 18., if active { Theme::primary() } else { Theme::icon() }))
+                        .child(block_icon(it.icon, 18., if active { Theme::primary_500() } else { Theme::icon() }))
                         .on_mouse_down(MouseButton::Left, act(BlockAct::Turn(k))),
                 );
             }
@@ -798,7 +812,7 @@ impl Editor {
                 let can_in = self.core.can_indent(block);
                 let can_out = self.core.can_outdent(block);
                 let align_row = |id: &'static str, ic: &'static str, label: &'static str, keys: &'static str, a: Align| {
-                    let (t, i) = if align == a { (Theme::primary(), Theme::primary()) } else { (Theme::text(), Theme::icon()) };
+                    let (t, i) = if align == a { (Theme::primary_500(), Theme::primary_500()) } else { (Theme::text(), Theme::icon()) };
                     row_tinted(id, ic, label, None, false, t, i)
                         .tip_right(label, Some(keys))
                         .on_mouse_down(MouseButton::Left, act(BlockAct::Align(a)))
@@ -883,7 +897,7 @@ impl Editor {
             let sel = cur_t.as_ref().map(|c| c.0.as_str()) == *name;
             let value = name.map(|n| ColorName(n.to_string()));
             let toggled = if sel && value.is_some() { None } else { value };
-            fonts = fonts.child(swatch(("fc", i), sel, true, font_swatch(*hex)).on_mouse_down(
+            fonts = fonts.child(swatch(("fc", i), sel, true, font_swatch(*name, *hex)).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |e, _, window, cx| {
                     cx.stop_propagation();
@@ -893,7 +907,7 @@ impl Editor {
         }
         let mut bgs = div().flex().flex_wrap().justify_between().gap_y(px(4.));
         let (names, fill): (&[Option<&str>], fn(&str) -> Option<Hsla>) =
-            if block.is_some() { (&theme::CELL_BG_COLORS, theme::bg_swatch) } else { (&theme::BG_COLORS, theme::bg_color) };
+            if block.is_some() { (&theme::CELL_BG_COLORS, crate::editor_theme::bg_swatch) } else { (&theme::BG_COLORS, crate::editor_theme::bg_color) };
         for (i, name) in names.iter().enumerate() {
             let sel = cur_b.as_ref().map(|c| theme::bg_canon(&c.0)) == *name;
             let value = name.map(|n| ColorName(n.to_string()));
@@ -1031,7 +1045,7 @@ impl Editor {
             let sel = name_eq(&cur_text, *name);
             let v = if sel { None } else { name.map(|n| ColorName(n.to_string())) };
             fonts = fonts.child(
-                swatch(("cf", i), sel, true, font_swatch(*hex))
+                swatch(("cf", i), sel, true, font_swatch(*name, *hex))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |e, _, window, cx| {
@@ -1047,7 +1061,7 @@ impl Editor {
         for (i, name) in border_names.iter().enumerate() {
             let sel = name_eq(&cur_border, *name);
             let v = if sel { None } else { name.map(|n| ColorName(n.to_string())) };
-            let inner = match name.and_then(theme::callout_border_swatch) {
+            let inner = match name.and_then(crate::editor_theme::callout_border_swatch) {
                 Some(col) => div().rounded(px(2.)).border_2().border_color(col),
                 None => none_swatch(),
             };
@@ -1066,7 +1080,7 @@ impl Editor {
         for (i, name) in theme::CALLOUT_BG_COLORS.iter().enumerate() {
             let sel = name_eq(&cur_bg, *name);
             let v = if sel { None } else { name.map(|n| ColorName(n.to_string())) };
-            let inner = match name.and_then(theme::callout_bg) {
+            let inner = match name.and_then(crate::editor_theme::callout_bg) {
                 Some(col) => div().bg(col),
                 None => none_swatch(),
             };
@@ -1193,6 +1207,33 @@ impl Editor {
     }
 
     // ---- code language picker
+
+    fn code_tools_menu(&self, block: BlockId, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let b = self.block_rect(block)?;
+        let Some(BlockKind::Code { lang, wrap, .. }) = self.core.kind_of(block) else { return None };
+        let (lang, wrap) = (lang.clone(), *wrap);
+        let text = self.core.block(block)?.text.text.clone();
+        let row = |id: &'static str, glyph, label: String| {
+            let g = SharedString::from(id);
+            crate::ui::menu_row(id, g.clone()).child(icon(glyph, 16., crate::theme::Theme::icon()))
+                .child(div().flex_1().min_w_0().overflow_hidden().child(crate::ui::menu_label(label, g, gpui::white())))
+        };
+        let el = crate::ui::popover().id("code-tools-menu").occlude().w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
+            .flex().flex_col().shadow(crate::theme::shadow_s4_down())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(row("code-action-language", "braces", lang).child(crate::ui::icon("chevron-right", 10., crate::theme::Theme::icon())).on_mouse_down(MouseButton::Left, cx.listener(move |e, _, window, cx| {
+                cx.stop_propagation(); e.open_lang_menu(block, window, cx);
+            })))
+            .child(row("code-action-wrap", "wrap-text", crate::settings::text(if wrap { "取消换行" } else { "自动换行" }).into()).on_mouse_down(MouseButton::Left, cx.listener(move |e, _, window, cx| {
+                cx.stop_propagation(); e.core.checkpoint(super::core::EditKind::Other);
+                if let Some(b) = e.core.block_mut(block) && let BlockKind::Code { wrap, .. } = &mut b.kind { *wrap = !*wrap; }
+                e.menu = None; e.changed_preserving_viewport(window, cx);
+            })))
+            .child(row("code-action-copy", "copy", crate::settings::tr("复制", "Copy").into()).on_mouse_down(MouseButton::Left, cx.listener(move |e, _, _, cx| {
+                cx.stop_propagation(); cx.write_to_clipboard(ClipboardItem::new_string(text.clone())); e.menu = None; cx.notify();
+            })));
+        Some(at(self.rel(point(b.right() - px(4.), b.top() + px(30.))), Corner::TopRight, el))
+    }
 
     fn lang_menu(&self, block: BlockId, selected: usize, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let b = self.block_rect(block)?;
@@ -1325,7 +1366,7 @@ impl Editor {
                 .w(px(24.))
                 .when(active, |d| d.bg(Theme::fill_turninto_active()))
                 .tip_md(tip, Some(keys), md)
-                .child(icon(ic, 18., if active { Theme::primary() } else { Theme::icon() }))
+                .child(icon(ic, 18., if active { Theme::primary_500() } else { Theme::icon() }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |e, _, window, cx| {
@@ -1388,7 +1429,7 @@ impl Editor {
                     .w(px(44.))
                     .gap(px(6.))
                     .when(matches!(dropdown, Some(Menu::TurnInto)), |d| d.bg(Theme::fill_hover_strong()))
-                    .child(icon(kind_icon(&head_kind), 18., Theme::icon()))
+                    .child(block_icon(kind_icon(&head_kind), 18., Theme::icon()))
                     .child(chevron(Menu::TurnInto))
                     .on_hover(hover(Menu::TurnInto))
                     .on_mouse_down(MouseButton::Left, open(Menu::TurnInto)),
@@ -1467,7 +1508,7 @@ impl Editor {
             }
             Some(Menu::Align) => {
                 let item = |id: &'static str, ic: &'static str, label: &'static str, keys: &'static str, a: Align| {
-                    let (t, i) = if align == a { (Theme::primary(), Theme::primary()) } else { (Theme::text(), Theme::icon()) };
+                    let (t, i) = if align == a { (Theme::primary_500(), Theme::primary_500()) } else { (Theme::text(), Theme::icon()) };
                     row_tinted(id, ic, label, None, false, t, i).tip_above(label, Some(keys)).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |e, _, window, cx| {
@@ -1549,14 +1590,14 @@ impl Editor {
                         div()
                             .size(px(20.))
                             .rounded(px(2.))
-                            .when_some(lb.as_ref().and_then(|c| theme::bg_color(&c.0)), |d, c| d.bg(c))
+                            .when_some(lb.as_ref().and_then(|c| crate::editor_theme::bg_color(&c.0)), |d, c| d.bg(c))
                             .flex()
                             .items_center()
                             .justify_center()
                             .text_size(px(16.))
                             .text_color({
-                                let c = lt.as_ref().and_then(|c| theme::text_color(&c.0)).unwrap_or(Theme::text());
-                                if lb.is_some() { crate::theme::on_mark(c) } else { c }
+                                let c = lt.as_ref().and_then(|c| crate::editor_theme::text_color(&c.0)).unwrap_or(Theme::text());
+                                lb.as_ref().and_then(|b| crate::editor_theme::bg_color(&b.0)).map_or(c, |bg| crate::editor_theme::marked_text(c, &Marks { text_color: lt.clone(), bg_color: lb.clone(), ..Marks::default() }, bg))
                             })
                             .child("A"),
                     )
@@ -1696,7 +1737,7 @@ impl Editor {
                 .w(px(24.))
                 .when(active, |d| d.bg(Theme::fill_turninto_active()))
                 .tip_md(tip, Some(keys), md)
-                .child(icon(ic, 18., if active { Theme::primary() } else { Theme::icon() }))
+                .child(icon(ic, 18., if active { Theme::primary_500() } else { Theme::icon() }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |e, _, window, cx| {
@@ -1770,7 +1811,7 @@ impl Editor {
                     .w(px(44.))
                     .gap(px(6.))
                     .when(matches!(dropdown, Some(Menu::TurnInto)), |d| d.bg(Theme::fill_hover_strong()))
-                    .child(icon(kind_icon(&head_kind), 18., Theme::icon()))
+                    .child(block_icon(kind_icon(&head_kind), 18., Theme::icon()))
                     .child(chevron(Menu::TurnInto))
                     .on_hover(hover(Menu::TurnInto))
                     .on_mouse_down(MouseButton::Left, open(Menu::TurnInto)),
@@ -1849,7 +1890,7 @@ impl Editor {
             }
             Some(Menu::Align) => {
                 let item = |id: &'static str, ic: &'static str, label: &'static str, active: bool, keys: Option<&'static str>| {
-                    let (t, i) = if active { (Theme::primary(), Theme::primary()) } else { (Theme::text(), Theme::icon()) };
+                    let (t, i) = if active { (Theme::primary_500(), Theme::primary_500()) } else { (Theme::text(), Theme::icon()) };
                     let r = row_tinted(id, ic, label, None, false, t, i).when(active, |d| d.child(icon("check", 14., Theme::primary())));
                     match keys {
                         Some(k) => r.tip_right(label, Some(k)),
@@ -1919,7 +1960,7 @@ impl Editor {
         let mut grid = div().flex().flex_wrap().justify_between().gap_y(px(4.));
         for (i, name) in theme::CELL_BG_COLORS.iter().enumerate() {
             let sel = cur.as_ref().map(|c| c.0.as_str()) == *name;
-            let inner = match name.and_then(theme::bg_swatch) {
+            let inner = match name.and_then(crate::editor_theme::bg_swatch) {
                 Some(fill) => div().bg(fill),
                 None => none_swatch(),
             };

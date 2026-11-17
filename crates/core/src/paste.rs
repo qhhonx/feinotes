@@ -10,8 +10,10 @@ pub fn html_to_blocks(html: &str) -> Vec<Block> {
         return vec![];
     };
     let root = find(&dom.document, "body").unwrap_or_else(|| dom.document.clone());
+    inline_stylesheet(&dom.document);
     let mut out = vec![];
-    container(&root, &Ctx::default(), &mut out);
+    let ctx = Ctx { native: attr(&root, "data-fei-rich-text").as_deref() == Some("rtf"), ..Ctx::default() };
+    container(&root, &ctx, &mut out);
     // Markdown typed into another app's rich text still converts (inline).
     if !has_class(&dom.document, "lark-doc") {
         reparse_markdown(&mut out);
@@ -103,6 +105,7 @@ const BLOCK: &[&str] = &[
 struct Ctx {
     marks: Marks,
     align: Option<Align>,
+    native: bool,
 }
 
 fn tag(n: &Handle) -> Option<String> {
@@ -138,12 +141,62 @@ fn style(n: &Handle) -> Vec<(String, String)> {
         .collect()
 }
 
+/// AppKit's RTF exporter puts run attributes in `p.p1` / `span.s1` rules.
+/// Resolve only local tag/class selectors; never load a stylesheet or URL.
+fn inline_stylesheet(root: &Handle) {
+    fn collect(n: &Handle, rules: &mut Vec<(String, String)>) {
+        if tag(n).as_deref() == Some("style") {
+            let mut css = String::new();
+            for c in n.children.borrow().iter() { if let NodeData::Text { contents } = &c.data { css.push_str(&contents.borrow()); } }
+            for rule in css.split('}') {
+                let Some((selectors, body)) = rule.split_once('{') else { continue };
+                for selector in selectors.split(',').map(str::trim) {
+                    if !selector.is_empty() && selector.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c)) {
+                        rules.push((selector.into(), body.into()));
+                    }
+                }
+            }
+        }
+        for c in n.children.borrow().iter() { collect(c, rules); }
+    }
+    fn apply(n: &Handle, rules: &[(String, String)]) {
+        if let (Some(t), NodeData::Element { attrs, .. }) = (tag(n), &n.data) {
+            let classes = attr(n, "class").unwrap_or_default();
+            let mut css = String::new();
+            for (selector, body) in rules {
+                let mut parts = selector.split('.');
+                let head = parts.next().unwrap_or("");
+                if (head.is_empty() || head.eq_ignore_ascii_case(&t)) && parts.all(|c| classes.split_whitespace().any(|k| k == c)) {
+                    css.push_str(body); css.push(';');
+                }
+            }
+            if !css.is_empty() {
+                css.push_str(&attr(n, "style").unwrap_or_default());
+                let mut attrs = attrs.borrow_mut();
+                if let Some(a) = attrs.iter_mut().find(|a| &*a.name.local == "style") { a.value = css.into(); }
+                else { attrs.push(html5ever::Attribute { name: html5ever::QualName::new(None, "".into(), "style".into()), value: css.into() }); }
+            }
+        }
+        for c in n.children.borrow().iter() { apply(c, rules); }
+    }
+    let mut rules = vec![];
+    collect(root, &mut rules);
+    rules.sort_by_key(|(s, _)| s.bytes().filter(|&c| c == b'.').count());
+    if !rules.is_empty() { apply(root, &rules); }
+}
+
 fn font_px(st: &[(String, String)]) -> Option<f32> {
-    let v = &st.iter().find(|(k, _)| k == "font-size")?.1;
+    let v = st.iter().find(|(k, _)| k == "font-size").map(|(_, v)| v.as_str()).or_else(|| {
+        st.iter().find(|(k, _)| k == "font").and_then(|(_, v)| v.split_whitespace().find(|p| p.ends_with("px") || p.ends_with("pt")))
+    })?;
     if let Some(n) = v.strip_suffix("px") {
         return n.trim().parse().ok();
     }
     v.strip_suffix("pt").and_then(|n| n.trim().parse::<f32>().ok()).map(|pt| pt * 4. / 3.)
+}
+
+fn monospace(st: &[(String, String)]) -> bool {
+    st.iter().any(|(k, v)| matches!(k.as_str(), "font" | "font-family") && ["monospace", "menlo", "monaco", "courier", "sfmono"].iter().any(|f| v.contains(f)))
 }
 
 fn hidden(st: &[(String, String)]) -> bool {
@@ -179,6 +232,12 @@ fn inline_ctx(n: &Handle, t: &str, st: &[(String, String)], ctx: &Ctx) -> Ctx {
     }
     for (k, v) in st {
         match k.as_str() {
+            "font" => {
+                m.bold = v.contains("bold") || v.contains("heavy");
+                m.italic = v.contains("italic") || v.contains("oblique");
+                m.code |= monospace(st);
+            }
+            "font-family" if monospace(st) => m.code = true,
             "font-weight" => {
                 m.bold = match v.as_str() {
                     "bold" | "bolder" => true,
@@ -191,7 +250,6 @@ fn inline_ctx(n: &Handle, t: &str, st: &[(String, String)], ctx: &Ctx) -> Ctx {
                 m.underline |= v.contains("underline");
                 m.strike |= v.contains("line-through");
             }
-            // Only colors of the palette survive.
             "color" => {
                 if let Some(n) = parse_color(v).and_then(palette_text) {
                     m.text_color = n;
@@ -205,6 +263,9 @@ fn inline_ctx(n: &Handle, t: &str, st: &[(String, String)], ctx: &Ctx) -> Ctx {
             _ => {}
         }
     }
+    // Native default ink follows the destination appearance. Explicit
+    // highlight foregrounds remain attached to their imported background.
+    if c.native && m.bg_color.is_none() && m.text_color.as_ref().is_some_and(|c| matches!(c.0.as_str(), "#000000" | "#ffffff")) { m.text_color = None; }
     c
 }
 
@@ -212,6 +273,7 @@ fn inline_ctx(n: &Handle, t: &str, st: &[(String, String)], ctx: &Ctx) -> Ctx {
 fn parse_color(v: &str) -> Option<(u8, u8, u8, f32)> {
     let v = v.trim().trim_end_matches("!important").trim();
     if let Some(h) = v.strip_prefix('#') {
+        if !h.bytes().all(|c| c.is_ascii_hexdigit()) { return None; }
         let x = |s: &str| u8::from_str_radix(s, 16).ok();
         return match h.len() {
             3 => {
@@ -219,13 +281,17 @@ fn parse_color(v: &str) -> Option<(u8, u8, u8, f32)> {
                 Some((d[0], d[1], d[2], 1.))
             }
             6 => Some((x(&h[0..2])?, x(&h[2..4])?, x(&h[4..6])?, 1.)),
+            8 => Some((x(&h[0..2])?, x(&h[2..4])?, x(&h[4..6])?, x(&h[6..8])? as f32 / 255.)),
             _ => None,
         };
     }
+    let named = match v { "black" => Some((0, 0, 0, 1.)), "white" => Some((255, 255, 255, 1.)), "red" => Some((255, 0, 0, 1.)), "blue" => Some((0, 0, 255, 1.)), "transparent" => Some((0, 0, 0, 0.)), _ => None };
+    if named.is_some() { return named; }
     let inner = v.strip_prefix("rgba(").or_else(|| v.strip_prefix("rgb("))?.strip_suffix(')')?;
     let parts: Vec<&str> = inner.split([',', ' ', '/']).filter(|p| !p.is_empty()).collect();
-    let n = |i: usize| parts.get(i)?.trim().parse::<f32>().ok();
-    Some((n(0)? as u8, n(1)? as u8, n(2)? as u8, parts.get(3).map_or(Some(1.), |_| n(3))?))
+    if !matches!(parts.len(), 3 | 4) { return None; }
+    let n = |i: usize, scale: f32| { let s = parts.get(i)?.trim(); let v = s.trim_end_matches('%').parse::<f32>().ok()?; v.is_finite().then_some(if s.ends_with('%') { v * scale / 100. } else { v }) };
+    Some((n(0, 255.)?.clamp(0., 255.).round() as u8, n(1, 255.)?.clamp(0., 255.).round() as u8, n(2, 255.)?.clamp(0., 255.).round() as u8, parts.get(3).map_or(Some(1.), |_| n(3, 1.))?.clamp(0., 1.)))
 }
 
 fn same(a: (u8, u8, u8, f32), b: (u8, u8, u8, f32)) -> bool {
@@ -238,6 +304,7 @@ fn palette_text(c: (u8, u8, u8, f32)) -> Option<Option<ColorName>> {
         .iter()
         .find(|(_, v)| same(c, ((v >> 16) as u8, (v >> 8) as u8, *v as u8, 1.)))
         .map(|(n, _)| n.map(|n| ColorName(n.into())))
+        .or_else(|| Some(Some(ColorName(crate::palette::literal_name(crate::palette::rgba(c.0, c.1, c.2, c.3))))))
 }
 
 fn palette_bg(c: (u8, u8, u8, f32)) -> Option<Option<ColorName>> {
@@ -249,6 +316,7 @@ fn palette_bg(c: (u8, u8, u8, f32)) -> Option<Option<ColorName>> {
         .flatten()
         .find(|n| crate::palette::bg_color(n).is_some_and(|p| same(c, (p.r, p.g, p.b, p.a))))
         .map(|n| Some(ColorName(n.to_string())))
+        .or_else(|| Some(Some(ColorName(crate::palette::literal_name(crate::palette::rgba(c.0, c.1, c.2, c.3))))))
 }
 
 pub fn link_ok(h: &str) -> bool {
@@ -273,7 +341,7 @@ fn node(n: &Handle, ctx: &Ctx, out: &mut Vec<Block>, para: &mut RichText) {
             if SKIP.contains(&t.as_str()) || hidden(&st) {
                 return;
             }
-            let mut bctx = ctx.clone();
+            let mut bctx = inline_ctx(n, &t, &st, ctx);
             if let Some(a) = align_of(n, &st) {
                 bctx.align = Some(a);
             }
@@ -334,21 +402,9 @@ fn node(n: &Handle, ctx: &Ctx, out: &mut Vec<Block>, para: &mut RichText) {
                         out.push(Block::new(BlockKind::Quote, RichText::default()).with_children(kids));
                     }
                 }
-                "pre" if code_lang(n).is_some() || find(n, "code").is_some() => {
-                    flush(para, ctx, out);
-                    out.push(code(n));
-                }
-                // A `<pre>` that isn't code is text with its line breaks.
                 "pre" => {
                     flush(para, ctx, out);
-                    let mut text = String::new();
-                    raw_text(n, &mut text);
-                    for line in text.replace("\r\n", "\n").trim_end_matches('\n').split('\n') {
-                        let mut b = Block::new(BlockKind::Text, RichText::default());
-                        b.text.push(&line.replace('\t', " "), ctx.marks.clone());
-                        b.align = bctx.align.unwrap_or_default();
-                        out.push(b);
-                    }
+                    out.push(code(n));
                 }
                 "table" => {
                     flush(para, ctx, out);
@@ -360,15 +416,25 @@ fn node(n: &Handle, ctx: &Ctx, out: &mut Vec<Block>, para: &mut RichText) {
                     flush(para, ctx, out);
                     out.push(callout(n, &bctx));
                 }
+                _ if bctx.native && t == "p" && monospace(&st) && find(n, "img").is_none() => {
+                    flush(para, ctx, out);
+                    out.push(code(n));
+                }
                 _ if BLOCK.contains(&t.as_str()) => {
                     flush(para, ctx, out);
                     let before = out.len();
                     container(n, &bctx, out);
                     // Big text (a styled title) reads as a heading 1.
-                    if font_px(&st).is_some_and(|px| px >= 20.) {
+                    let level = font_px(&st).and_then(|px| {
+                        if bctx.native { if px >= 19. { Some(1) } else if px >= 16. { Some(2) } else { None } }
+                        else { (px >= 20.).then_some(1) }
+                    });
+                    if let Some(level) = level {
                         for b in &mut out[before..] {
-                            if matches!(b.kind, BlockKind::Text) && b.children.is_empty() {
-                                b.kind = BlockKind::Heading { level: 1, seq_auto: false };
+                            if matches!(b.kind, BlockKind::Text) && b.children.is_empty()
+                                && (!bctx.native || !b.text.is_empty() && b.text.runs.iter().all(|r| r.marks.bold))
+                            {
+                                b.kind = BlockKind::Heading { level, seq_auto: false };
                             }
                         }
                     }
@@ -424,20 +490,16 @@ fn trim_end_spaces(t: &mut RichText) {
 
 fn flush(para: &mut RichText, ctx: &Ctx, out: &mut Vec<Block>) {
     let t = std::mem::take(para);
-    let start = t.text.len() - t.text.trim_start_matches([' ', '\n']).len();
-    let end = t.text.trim_end_matches([' ', '\n']).len();
-    if end <= start {
+    let start = t.text.len() - t.text.trim_start_matches(' ').len();
+    let end = t.text.trim_end_matches(' ').len();
+    if end <= start || t.text[start..end].chars().all(|c| c == '\n') {
         return;
     }
-    // A `<br>` starts a new block.
+    // A soft break stays in its paragraph, including the run marks on each side.
     let t = t.slice(start..end);
-    let mut at = 0;
-    for line in t.text.split('\n') {
-        let mut b = Block::new(BlockKind::Text, t.slice(at..at + line.len()));
-        b.align = ctx.align.unwrap_or_default();
-        out.push(b);
-        at += line.len() + 1;
-    }
+    let mut b = Block::new(BlockKind::Text, t);
+    b.align = ctx.align.unwrap_or_default();
+    out.push(b);
 }
 
 fn list(n: &Handle, ctx: &Ctx, out: &mut Vec<Block>, ordered: bool) {
@@ -471,10 +533,15 @@ fn list(n: &Handle, ctx: &Ctx, out: &mut Vec<Block>, ordered: bool) {
 
 /// One `<li>`: its first paragraph is the item's text, the rest children.
 fn item(li: &Handle, ctx: &Ctx, ordered: bool, seq: Option<u32>) -> Block {
+    let dash_of = |n: &Handle| style(n).into_iter().find(|(k, _)| k == "list-style-type").map(|(_, v)| {
+        let v = v.trim_matches(['\'', '"']).trim();
+        matches!(v, "dash" | "hyphen") || v.starts_with(['-', '–', '—', '−'])
+    });
+    let dash = dash_of(li).or_else(|| li.parent.take().and_then(|p| { let parent = p.upgrade(); li.parent.set(Some(p)); parent.and_then(|p| dash_of(&p)) })).unwrap_or(false);
     let kind = match checkbox(li) {
         Some(done) => BlockKind::Todo { done },
         None if ordered => BlockKind::Ordered { seq: attr(li, "value").and_then(|v| v.trim().parse().ok()).or(seq) },
-        None => BlockKind::Bullet,
+        None => BlockKind::Bullet { dash },
     };
     let mut kids = vec![];
     container(li, ctx, &mut kids);
@@ -1030,7 +1097,7 @@ fn md_blocks(lines: &[&str], off: Off, mut spans: Option<&mut Vec<(usize, usize)
             let (kind, text) = match todo_prefix(content) {
                 Some((done, rest)) => (BlockKind::Todo { done }, rest),
                 None => match marker {
-                    Marker::Bullet => (BlockKind::Bullet, content),
+                    Marker::Bullet => (BlockKind::Bullet { dash: line.trim_start().starts_with(['-', '－']) }, content),
                     Marker::Ordered(n) => {
                         let cont = last_list && matches!(out.last().map(|b| &b.kind), Some(BlockKind::Ordered { .. }));
                         (BlockKind::Ordered { seq: (!cont && n != 1).then_some(n) }, content)
@@ -1545,7 +1612,7 @@ fn cjk_link_at(s: &str) -> Option<(&str, &str, usize)> {
 mod tests {
     use super::html_to_blocks;
     use crate::docxml;
-    use crate::model::{Document, RichText};
+    use crate::model::{BlockKind, Document, RichText};
 
     fn xml(html: &str) -> String {
         docxml::serialize(&Document { blocks: html_to_blocks(html), ..Default::default() })
@@ -1588,7 +1655,36 @@ mod tests {
     #[test]
     fn whitespace_and_breaks() {
         let x = xml("<div>\n  line one <br>\n  line   two\n</div><p></p><div>x</div>");
-        assert!(x.contains("<p>line one</p>\n<p>line two</p>\n<p></p>\n<p>x</p>"), "{x}");
+        assert!(x.contains("<p>line one<br/>line two</p>\n<p></p>\n<p>x</p>"), "{x}");
+    }
+
+    #[test]
+    fn native_export_styles_and_custom_colours_survive_import() {
+        let x = xml(r##"<html><head><style>p.p1 { font: 13px Helvetica; color: #000000; } span.s1 { font: bold italic 13px Helvetica; text-decoration: underline line-through; color: #cb0424; background-color: #f6dcfb; }</style></head><body data-fei-rich-text="rtf"><p class="p1">Plain <span class="s1">Styled 中文</span><br>Next</p></body></html>"##);
+        assert!(x.contains("<p>Plain "), "{x}");
+        assert!(!x.contains("#000000"), "{x}");
+        for token in ["<b>", "<em>", "<u>", "<del>", "#cb0424", "#f6dcfb", "Styled 中文", "<br/>Next"] { assert!(x.contains(token), "{token}: {x}"); }
+        let doc = docxml::parse(&x).unwrap();
+        assert_eq!(docxml::serialize(&doc), x);
+        assert_eq!(crate::palette::literal("#f6dcfb").unwrap(), crate::palette::hex(0xf6dcfb));
+        assert!(crate::palette::literal("#彩色").is_none());
+        assert!(super::parse_color("#彩彩").is_none());
+        assert!(super::parse_color("rgba(1,2,3,NaN)").is_none());
+        let a = xml("<p style='color:rgba(20,30,40,.5);background-color:#abcdefff'>alpha</p>");
+        assert!(a.contains("#141e2880") && a.contains("#abcdef"), "{a}");
+    }
+
+    #[test]
+    fn native_list_markers_and_monospace_blocks_survive_import() {
+        let x = xml("<ul><li>Dot<ul style='list-style-type:dash'><li>Nested dash</li></ul></li></ul><ul style='list-style-type:dash'><li>Dash</li><li style='list-style-type:disc'>Dot again</li></ul><pre>let x = 1;\n\tprintln(x)</pre>");
+        let doc = docxml::parse(&x).unwrap();
+        assert!(matches!(doc.blocks[0].kind, BlockKind::Bullet { dash: false }), "{x}");
+        assert!(matches!(doc.blocks[0].children[0].kind, BlockKind::Bullet { dash: true }), "{x}");
+        assert!(matches!(doc.blocks[1].kind, BlockKind::Bullet { dash: true }), "{x}");
+        assert!(matches!(doc.blocks[2].kind, BlockKind::Bullet { dash: false }), "{x}");
+        assert!(matches!(doc.blocks[3].kind, BlockKind::Code { .. }), "{x}");
+        assert!(doc.blocks[3].text.text.contains("\n\tprintln"), "{x}");
+        assert_eq!(docxml::serialize(&doc), x);
     }
 
     #[test]
@@ -1625,7 +1721,7 @@ mod tests {
         assert!(x.contains("<u>u</u>"), "{x}");
         assert!(x.contains("<code>c</code>"), "{x}");
         assert!(x.contains("<a href=\"https://a.b/c\">l</a>"), "{x}");
-        assert!(x.contains("<li>a"), "{x}");
+        assert!(x.contains("<li list-style-type=\"dash\">a"), "{x}");
         assert!(x.contains("<checkbox done=\"true\">t</checkbox>"), "{x}");
         assert!(x.contains("<li seq=\"3\">three</li>"), "{x}");
         assert!(x.contains("<li>four</li>"), "{x}");
@@ -1752,7 +1848,7 @@ mod tests {
         let blocks = super::markdown_to_blocks(src, Default::default());
         let kind = |i: usize| &blocks[i].kind;
         assert!(matches!(kind(0), crate::model::BlockKind::Heading { level: 1, .. }), "{blocks:?}");
-        assert!(matches!(kind(1), crate::model::BlockKind::Bullet), "{blocks:?}");
+        assert!(matches!(kind(1), crate::model::BlockKind::Bullet { .. }), "{blocks:?}");
         assert!(matches!(kind(2), crate::model::BlockKind::Ordered { .. }), "{blocks:?}");
         assert!(matches!(kind(3), crate::model::BlockKind::Quote), "{blocks:?}");
         assert!(matches!(kind(4), crate::model::BlockKind::Table(_)), "{blocks:?}");
@@ -1761,7 +1857,7 @@ mod tests {
         assert_eq!(text(5), "中文，强调，后续");
         assert_eq!(text(6), "加粗");
         assert!(blocks[7].text.runs.iter().any(|r| r.marks.link.is_some()), "{:?}", blocks[7].text);
-        assert!(matches!(kind(8), crate::model::BlockKind::Bullet), "{blocks:?}");
+        assert!(matches!(kind(8), crate::model::BlockKind::Bullet { .. }), "{blocks:?}");
     }
 
     #[test]

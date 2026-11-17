@@ -15,6 +15,7 @@ const SEED_DOC: &str = r#"<title>随机 <b>编辑</b></title>
 <h2 folded="true">可折叠</h2>
 <p>折叠内容</p>
 <ul><li>一<ul><li>一.一</li><li>一.二</li></ul></li><li>二</li></ul>
+<ul><li list-style-type="dash">短划线</li></ul>
 <ol><li seq="3">三</li><li>四</li></ol>
 <checkbox done="true">完成</checkbox>
 <blockquote><p>引用一</p><p>引用二</p></blockquote>
@@ -85,7 +86,7 @@ fn random_kind(rng: &mut Rng) -> BlockKind {
     match rng.below(7) {
         0 => BlockKind::Text,
         1 => BlockKind::Heading { level: 1 + rng.below(9) as u8, seq_auto: false },
-        2 => BlockKind::Bullet,
+        2 => BlockKind::Bullet { dash: rng.chance(50) },
         3 => BlockKind::Ordered { seq: None },
         4 => BlockKind::Todo { done: false },
         5 => BlockKind::Quote,
@@ -116,7 +117,7 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
     }
     let us = c.units();
     let any = |rng: &mut Rng| rng.pick(&us).id;
-    match rng.below(24) {
+    match rng.below(25) {
         0..=2 => {
             let s = *rng.pick(TEXTS);
             c.insert_text(s);
@@ -208,6 +209,10 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
             let place = *rng.pick(&[DropPlace::Before, DropPlace::After, DropPlace::FirstChild]);
             c.move_blocks(&[a], b, place);
             format!("move_blocks({a:?}, {b:?}, {place:?})")
+        }
+        24 => {
+            c.toggle_todos(&c.selected_blocks());
+            "toggle_selected_todos".into()
         }
         20 => table_step(c, rng),
         21 => object_step(c, rng),
@@ -541,7 +546,10 @@ fn run(seed: u64, steps: usize) {
     };
     for i in 0..steps {
         let (before, generation) = (c.doc.clone(), c.generation);
-        log.push(step(&mut c, &mut rng));
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| step(&mut c, &mut rng))) {
+            Ok(command) => log.push(command),
+            Err(_) => fail(&log, &c, "editing command panicked".into()),
+        }
         // The editor caches per-frame work against `generation`.
         if c.generation == generation && c.doc != before {
             fail(&log, &c, "the document changed without bumping `generation`".into());

@@ -139,6 +139,10 @@
   --token-popover-bg: #fafafa;
 }
 
+.block-icon {
+  color: inherit;
+}
+
 .page {
   padding-left: 66px;
   padding-top: 52px;
@@ -161,6 +165,10 @@ h2 + p {
 
 p {
   margin-bottom: 16px;
+}
+
+h2 + ul {
+  margin-top: inherit;
 }
 
 .title {
@@ -370,6 +378,11 @@ th {
 
 /* 代码高亮：Obsidian 的 --code-* 变量 */
 .attachment {
+  border-radius: inherit;
+  width: 400px;
+  margin-top: inherit;
+  margin-bottom: inherit;
+  row-gap: inherit;
   background-color: inherit;
   border-color: inherit;
 }

@@ -5,7 +5,8 @@ use super::core::{EditKind, Pos, Selection, TITLE};
 use super::view::Editor;
 use crate::input::TextField;
 use crate::model::*;
-use crate::feishu_theme::{self as theme, Theme, craft};
+use crate::feishu_theme::{self as theme, craft};
+use crate::editor_theme::Theme;
 use crate::editor_ui::{ROW_RADIUS, TipExt, TipSide, icon, popover};
 use gpui::{prelude::FluentBuilder, *};
 use std::ops::Range;
@@ -236,7 +237,7 @@ impl Editor {
                 .items_center()
                 .cursor_pointer()
                 .text_size(px(15.))
-                .text_color(if active { Theme::primary() } else { Theme::text_caption() })
+                .text_color(if active { Theme::primary_500() } else { Theme::text_caption() })
                 .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
                 .when(!active, |d| d.hover(|s| s.text_color(Theme::text())))
                 .child(label)
@@ -276,8 +277,8 @@ impl Editor {
         // button (hairline, 1px drop). Both 30 tall, radius 9.
         let button = |id: &'static str, text: &'static str, primary: bool| {
             let (bg, border, color) = match (primary, enabled) {
-                (true, true) => (Theme::primary(), Theme::primary(), gpui::white()),
-                (true, false) => (theme::ca(craft::B500, 0.4), gpui::transparent_black(), gpui::white()),
+                (true, true) => (Theme::primary(), Theme::primary(), Theme::on_primary()),
+                (true, false) => (Theme::fill_hover(), gpui::transparent_black(), Theme::text_disabled()),
                 (false, true) => (Theme::bg_body(), Theme::button_border(), Theme::text()),
                 (false, false) => (Theme::bg_body(), Theme::button_border(), Theme::text_disabled()),
             };
@@ -299,7 +300,7 @@ impl Editor {
                 .text_color(color)
                 .when(enabled, |d| {
                     d.cursor_pointer().hover(move |s| {
-                        if primary { s.bg(theme::c(craft::B600)).border_color(theme::c(craft::B600)) } else { s.bg(theme::c(craft::N100)) }
+                        if primary { s.bg(Theme::primary()).border_color(Theme::primary()).opacity(0.9) } else { s.bg(theme::c(craft::N100)) }
                     })
                 })
                 .when(!enabled, |d| d.cursor(CursorStyle::OperationNotAllowed))

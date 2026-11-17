@@ -128,7 +128,7 @@ impl Writer<'_> {
         match &b.kind {
             BlockKind::Text => nested(self, text),
             BlockKind::Heading { level, .. } => nested(self, format!("{} {text}", "#".repeat((*level).clamp(1, 6) as usize))),
-            BlockKind::Bullet => nested(self, format!("- {text}")),
+            BlockKind::Bullet { dash } => nested(self, format!("{} {text}", if *dash { "-" } else { "*" })),
             BlockKind::Ordered { .. } => nested(self, format!("{seq}. {text}")),
             BlockKind::Todo { done } => nested(self, format!("- [{}] {text}", if *done { "x" } else { " " })),
             BlockKind::Code { lang, .. } => {
@@ -794,7 +794,7 @@ mod tests {
                 Block::new(BlockKind::Heading { level: 2, seq_auto: false }, RichText::plain("小节")),
                 Block::new(BlockKind::Text, bold),
                 Block::new(BlockKind::Ordered { seq: None }, RichText::plain("one"))
-                    .with_children(vec![Block::new(BlockKind::Bullet, RichText::plain("sub"))]),
+                    .with_children(vec![Block::new(BlockKind::Bullet { dash: false }, RichText::plain("sub"))]),
                 Block::new(BlockKind::Ordered { seq: None }, RichText::plain("two")),
                 Block::new(BlockKind::Todo { done: true }, RichText::plain("done")),
                 Block::new(BlockKind::Code { lang: "Rust".into(), caption: None, wrap: false }, RichText::plain("fn main() {}")),
@@ -806,7 +806,7 @@ mod tests {
         let md = to_markdown(&doc);
         assert_eq!(
             md,
-            "# 标题\n\n## 小节\n\na **bold** [link](https://x.y)\n\n1. one\n    - sub\n2. two\n\n- [x] done\n\n```rust\nfn main() {}\n```\n\n> q\n\n---\n"
+            "# 标题\n\n## 小节\n\na **bold** [link](https://x.y)\n\n1. one\n    * sub\n2. two\n\n- [x] done\n\n```rust\nfn main() {}\n```\n\n> q\n\n---\n"
         );
     }
 
@@ -909,7 +909,7 @@ mod tests {
                         0 if n > 1 => { d.blocks.remove(rand(n)); }
                         1 => d.blocks.insert(rand(n + 1), Block::text("new")),
                         2 => { let i = rand(n); if d.blocks[i].kind.has_text() { d.blocks[i].text = RichText::plain("edited"); } }
-                        _ => { let i = rand(n); if d.blocks[i].kind.has_text() && !matches!(d.blocks[i].kind, BlockKind::Code { .. }) && d.blocks[i].children.is_empty() && d.blocks[i].text.text.trim() == d.blocks[i].text.text { d.blocks[i].kind = [BlockKind::Text, BlockKind::Bullet, BlockKind::Ordered { seq: None }][rand(3)].clone(); } }
+                        _ => { let i = rand(n); if d.blocks[i].kind.has_text() && !matches!(d.blocks[i].kind, BlockKind::Code { .. }) && d.blocks[i].children.is_empty() && d.blocks[i].text.text.trim() == d.blocks[i].text.text { d.blocks[i].kind = [BlockKind::Text, BlockKind::Bullet { dash: rand(2) == 1 }, BlockKind::Ordered { seq: None }][rand(3)].clone(); } }
                     }
                 }
             });

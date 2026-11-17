@@ -2,7 +2,8 @@
 //! the virtualized list after it lays out, so it never lags a frame behind.
 
 use super::view::Editor;
-use crate::feishu_theme::{self as theme, Theme, craft};
+use crate::feishu_theme::{self as theme, craft};
+use crate::editor_theme::Theme;
 use gpui::*;
 use std::cell::Cell;
 

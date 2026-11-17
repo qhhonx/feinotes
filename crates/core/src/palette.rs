@@ -18,6 +18,19 @@ pub const fn rgba(r: u8, g: u8, b: u8, a: f32) -> Rgba {
     Rgba { r, g, b, a }
 }
 
+/// Imported colours use bounded hex literals alongside the existing named palette.
+pub fn literal(name: &str) -> Option<Rgba> {
+    let h = name.strip_prefix('#')?;
+    if !matches!(h.len(), 6 | 8) || !h.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
+    let byte = |i| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    Some(rgba(byte(0)?, byte(2)?, byte(4)?, if h.len() == 8 { byte(6)? as f32 / 255. } else { 1. }))
+}
+
+pub fn literal_name(c: Rgba) -> String {
+    let a = (c.a.clamp(0., 1.) * 255.).round() as u8;
+    if a == 255 { format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b) } else { format!("#{:02x}{:02x}{:02x}{a:02x}", c.r, c.g, c.b) }
+}
+
 pub const HUES: [&str; 7] = ["gray", "red", "orange", "yellow", "green", "blue", "purple"];
 
 /// Font color swatches in panel order (first = default).
@@ -74,13 +87,14 @@ pub const CALLOUT_BG_COLORS: [Option<&str>; 16] = [
 ];
 
 pub fn text_color(name: &str) -> Option<Rgba> {
-    FONT_COLORS.iter().find(|(n, _)| *n == Some(name)).map(|(_, v)| hex(*v))
+    literal(name).or_else(|| FONT_COLORS.iter().find(|(n, _)| *n == Some(name)).map(|(_, v)| hex(*v)))
 }
 
 /// Text highlight for a DocxXML color name: the
 /// `--ccmtoken-doc-highlightcolor-*` tokens; the panel swatch is the same
 /// color. `medium-{hue}` (written by older builds) reads as the row-2 hue.
 pub fn bg_color(name: &str) -> Option<Rgba> {
+    if let Some(c) = literal(name) { return Some(c); }
     Some(match name {
         "light-gray" => hex(0xf2f3f5),
         "light-red" => hex(0xfbbfbc),

@@ -205,7 +205,9 @@ fn parse_block(e: &Element, out: &mut Vec<Block>) {
             for c in &e.children {
                 if let Node::El(li) = c {
                     if li.name == "li" {
-                        out.push(parse_li(li, name == "ol"));
+                        let mut b = parse_li(li, name == "ol");
+                        if name == "ul" && li.attr("list-style-type").is_none() && e.attr("list-style-type") == Some("dash") { b.kind = BlockKind::Bullet { dash: true }; }
+                        out.push(b);
                     } else {
                         parse_block(li, out);
                     }
@@ -341,7 +343,7 @@ fn parse_li(li: &Element, ordered: bool) -> Block {
         let seq = li.attr("seq").and_then(|s| s.parse().ok());
         BlockKind::Ordered { seq }
     } else {
-        BlockKind::Bullet
+        BlockKind::Bullet { dash: li.attr("list-style-type") == Some("dash") }
     };
     let mut b = Block::new(kind, text);
     b.align = parse_align(li);
@@ -793,7 +795,7 @@ fn write_blocks(blocks: &[Block], s: &mut String, depth: usize) {
     while i < blocks.len() {
         let b = &blocks[i];
         match &b.kind {
-            BlockKind::Bullet | BlockKind::Ordered { .. } => {
+            BlockKind::Bullet { .. } | BlockKind::Ordered { .. } => {
                 let ordered = matches!(b.kind, BlockKind::Ordered { .. });
                 let tag = if ordered { "ol" } else { "ul" };
                 indent(s, depth);
@@ -805,7 +807,8 @@ fn write_blocks(blocks: &[Block], s: &mut String, depth: usize) {
                         BlockKind::Ordered { seq: Some(n) } => format!(" seq=\"{n}\""),
                         _ => String::new(),
                     };
-                    s.push_str(&format!("<li{seq}{}{}{}>", align_attr(li.align), bg_attr(li), folded_attr(li.folded)));
+                    let marker = if matches!(li.kind, BlockKind::Bullet { dash: true }) { " list-style-type=\"dash\"" } else { "" };
+                    s.push_str(&format!("<li{seq}{marker}{}{}{}>", align_attr(li.align), bg_attr(li), folded_attr(li.folded)));
                     write_inline(&li.text, s);
                     // An empty item's first child paragraph would be read
                     // back as the item's own text (parse_li); spell it out.
@@ -871,7 +874,7 @@ fn write_block(b: &Block, s: &mut String, depth: usize) {
             }
             s.push_str("</checkbox>\n");
         }
-        BlockKind::Bullet | BlockKind::Ordered { .. } => unreachable!("handled by write_blocks"),
+        BlockKind::Bullet { .. } | BlockKind::Ordered { .. } => unreachable!("handled by write_blocks"),
         BlockKind::Code { lang, caption, wrap } => {
             s.push_str(&format!("<pre lang=\"{}\"", esc_attr(&crate::lang::to_token(lang))));
             if let Some(c) = caption {
@@ -1185,7 +1188,7 @@ mod tests {
         assert_eq!(doc.blocks.len(), 16, "{kinds:?}");
         let p = &doc.blocks[1];
         assert_eq!(p.text.text, "普通 加粗 斜体 彩色 链接 code\n第二行");
-        assert!(matches!(doc.blocks[2].kind, BlockKind::Bullet));
+        assert!(matches!(doc.blocks[2].kind, BlockKind::Bullet { .. }));
         assert_eq!(doc.blocks[2].children.len(), 1);
         assert!(matches!(doc.blocks[4].kind, BlockKind::Ordered { seq: Some(3) }));
         assert!(matches!(doc.blocks[6].kind, BlockKind::Todo { done: true }));

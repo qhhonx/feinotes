@@ -18,13 +18,14 @@
   --todo-gap: 5px;
   --countdown-muted: true;
   --code-compact: true;
-  --compact-code-gap-after-paragraph: 15.5px;
+  --code-tools-inside: true;
+  --compact-code-gap-after-paragraph: 4px;
   --notes-accent: #fcb827;
   --notes-paper: light-dark(#ffffff, #1e1e1e);
   --notes-ink: light-dark(#454545, #dcdcdc);
   --notes-code-ink: light-dark(#595959, #cfcfcf);
-  /* 深一档金色，保证浅色纸面上的链接可读。 */
-  --notes-link: light-dark(#876215, #f5b840);
+  /* Native link and checklist ink, sampled from the 2026-11-17 user captures. */
+  --notes-link: light-dark(#fcb827, #fcb827);
 
   /* 文字颜色 */
   --color-gray: #868b90;
@@ -102,22 +103,23 @@
   --token-block-placeholder: #1f222540;
   --token-text-disabled: #1f22254d;
   --token-text-code: #303335;
+  --token-bg-body: var(--notes-paper);
   --token-primary-500: var(--notes-link);
-  --token-primary-fill-1: #fcb8271a;
+  --token-primary-fill-1: light-dark(#fcb8271a, #fcb82726);
   --token-bg-overlay: #f7f7f7;
   --token-line-divider: #0000000f;
   --token-line-border: #00000014;
   --token-fill-hover: #0000000b;
   --token-fill-hover-strong: #0000000f;
   --token-fill-pressed: #00000017;
-  --token-fill-turninto-active: #e3edfd;
+  --token-fill-turninto-active: light-dark(#fcb8272e, #fcb82733);
   --token-block-hover: #fcb82714;
   --token-block-selected: #fcb82724;
   --token-handle-active: #0000000f;
   --token-size-cell: #f7f7f7;
   --token-size-cell-border: #eaebeb;
-  --token-size-cell-active: #9cc0fa;
-  --token-size-cell-disabled: #e3edfd;
+  --token-size-cell-active: light-dark(#fcb82780, #fcb82780);
+  --token-size-cell-disabled: light-dark(#fcb82724, #fcb82724);
   --token-swatch-border: #00000014;
   --token-block-bg-area: #00000008;
   --token-scrollbar-thumb: #00000038;
@@ -125,7 +127,7 @@
   --token-code-hover-ring: #fcb82759;
   --token-pinned: var(--notes-link);
   --token-table-bar-hover: #dedfe0;
-  --token-table-bar-selected: #c6dafc;
+  --token-table-bar-selected: light-dark(#fcb82759, #fcb82759);
   --token-danger-bar: #ff6467;
   --token-danger-cell: #fef2f2;
   --token-danger: #e7000b;
@@ -136,8 +138,12 @@
   --token-button-border: #00000013;
   --token-code-gutter-line: #e8e8e8;
   --token-caption: #7e8287;
-  --token-menu-highlight: #3a85f7;
+  --token-menu-highlight: var(--notes-link);
   --token-popover-bg: #fafafa;
+}
+
+.block-icon {
+  color: var(--notes-ink);
 }
 
 .page {
@@ -161,11 +167,15 @@
 }
 
 p {
-  margin-bottom: 17px;
+  margin-bottom: 0px;
 }
 
 h2 + p {
   margin-top: 0px;
+}
+
+h2 + ul {
+  margin-top: 4px;
 }
 
 .title {
@@ -183,8 +193,8 @@ h1 {
   line-height: 24px;
   font-weight: 700;
   color: inherit;
-  margin-top: 17px;
-  margin-bottom: 17px;
+  margin-top: 0px;
+  margin-bottom: 0px;
 }
 
 h2 {
@@ -193,7 +203,7 @@ h2 {
   line-height: 20px;
   font-weight: 700;
   color: inherit;
-  margin-top: 17px;
+  margin-top: 0px;
   margin-bottom: 0px;
 }
 
@@ -203,7 +213,7 @@ h3 {
   line-height: 17px;
   font-weight: 700;
   color: inherit;
-  margin-top: 4px;
+  margin-top: 0px;
   margin-bottom: 0px;
 }
 
@@ -318,7 +328,7 @@ blockquote {
 
 ul {
   padding-left: 25px;
-  list-style-type: dash;
+  list-style-type: disc;
 }
 
 ul li::marker {
@@ -330,8 +340,8 @@ ol li::marker {
 }
 
 .task {
-  width: 16px;
-  border-radius: 8px;
+  width: 17px;
+  border-radius: 8.5px;
   border-color: light-dark(#bdbdbd, #555555);
 }
 
@@ -374,9 +384,14 @@ th {
 }
 
 .attachment {
-  /* Match the file card and the preview footer in each appearance. */
-  background-color: light-dark(#ececec, #323232);
-  border-color: light-dark(#00000014, #414141);
+  /* Native card surface/radius and inter-card gap, 2026-11-17 captures. */
+  background-color: light-dark(#e5e6e9, #323232);
+  border-color: transparent;
+  border-radius: 12px;
+  width: 292px;
+  margin-top: 10px;
+  margin-bottom: 10px;
+  row-gap: 18px;
 }
 
 /* macOS Notes main window, sampled in both appearances.
@@ -394,7 +409,7 @@ th {
 }
 
 .sidebar-folder {
-  color: light-dark(#996400, #fdb82a);
+  color: var(--notes-accent);
 }
 
 .sidebar-row:hover {

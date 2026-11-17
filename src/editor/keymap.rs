@@ -65,6 +65,7 @@ actions!(
         TurnH9,
         TurnOrdered,
         TurnBullet,
+        TurnDash,
         TurnTodo,
         TurnCode,
         TurnQuote,

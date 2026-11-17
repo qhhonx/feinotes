@@ -52,15 +52,35 @@ tokens!(
 fn hue(name: &str) -> &str { name.strip_prefix("light-").or_else(|| name.strip_prefix("medium-")).unwrap_or(name) }
 pub fn text_color(name: &str) -> Option<gpui::Hsla> { style().palette("color", name).or_else(|| if crate::settings::feishu() { crate::feishu_theme::text_color(name) } else { crate::theme::text_color(name) }) }
 pub fn bg_color(name: &str) -> Option<gpui::Hsla> { style().palette("highlight", name).or_else(|| if crate::settings::feishu() { crate::feishu_theme::bg_color(name) } else { crate::theme::bg_color(name) }) }
+
+/// Imported highlights can themselves be dark. Keep their foreground when
+/// legible instead of applying the named palette's light-paper assumption.
+pub fn marked_text(color: gpui::Hsla, marks: &crate::model::Marks, background: gpui::Hsla) -> gpui::Hsla {
+    if marks.bg_color.as_ref().and_then(|c| crate::palette::literal(&c.0)).is_none() { return crate::theme::on_mark(color); }
+    let foreground = marks.text_color.as_ref().and_then(|c| crate::palette::literal(&c.0))
+        .map(|c| crate::theme::rgbaf(c.r, c.g, c.b, c.a)).unwrap_or_else(|| crate::theme::on_mark(color));
+    let blend = |top: gpui::Rgba, bottom: gpui::Rgba| gpui::Rgba { r: top.r * top.a + bottom.r * (1. - top.a), g: top.g * top.a + bottom.g * (1. - top.a), b: top.b * top.a + bottom.b * (1. - top.a), a: 1. };
+    let bg = blend(background.into(), Theme::bg_body().into());
+    let luminance = |c: gpui::Rgba| { let f = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }; 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b) };
+    let (b, f) = (luminance(bg), luminance(blend(foreground.into(), bg)));
+    if (b.max(f) + 0.05) / (b.min(f) + 0.05) >= 4.5 { foreground }
+    else if (1.05 / (b + 0.05)) > ((b + 0.05) / 0.05) { gpui::white() } else { gpui::black() }
+}
 pub fn block_bg(name: &str) -> Option<gpui::Hsla> { style().palette("background", name).or_else(|| if crate::settings::feishu() { crate::feishu_theme::block_bg(name) } else { crate::theme::block_bg(name) }) }
-pub fn bg_swatch(name: &str) -> Option<gpui::Hsla> { if crate::settings::feishu() { crate::feishu_theme::bg_swatch(name) } else { crate::theme::bg_swatch(name) } }
+pub fn bg_swatch(name: &str) -> Option<gpui::Hsla> { style().palette("background", name).or_else(|| if crate::settings::feishu() { crate::feishu_theme::bg_swatch(name) } else { crate::theme::bg_swatch(name) }) }
 pub fn callout_bg(name: &str) -> Option<gpui::Hsla> { style().palette("callout", name).or_else(|| if crate::settings::feishu() { crate::feishu_theme::callout_bg(name) } else { crate::theme::callout_bg(name) }) }
 pub fn callout_border(name: &str) -> Option<gpui::Hsla> { style().palette("border", hue(name)).or_else(|| if crate::settings::feishu() { crate::feishu_theme::callout_border(name) } else { crate::theme::callout_border(name) }) }
-pub fn callout_border_swatch(name: &str) -> Option<gpui::Hsla> { if crate::settings::feishu() { crate::feishu_theme::callout_border_swatch(name) } else { crate::theme::callout_border_swatch(name) } }
+pub fn callout_border_swatch(name: &str) -> Option<gpui::Hsla> { style().palette("border", hue(name)).or_else(|| if crate::settings::feishu() { crate::feishu_theme::callout_border_swatch(name) } else { crate::theme::callout_border_swatch(name) }) }
 pub use crate::theme::{shadow_button, shadow_menu, shadow_panel, shadow_dialog};
 
 pub fn mono_font() -> &'static str { style().font("pre.font") }
 
 impl Theme {
+    /// Keep labels readable on both dark accents and the Notes gold fill.
+    pub fn on_primary() -> gpui::Hsla {
+        let c = gpui::Rgba::from(Self::primary());
+        let linear = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        if 0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b) > 0.179 { gpui::black() } else { gpui::white() }
+    }
     pub fn icon() -> gpui::Hsla { if crate::theme::dark() { Self::text_code() } else { crate::theme::Theme::icon() } }
 }

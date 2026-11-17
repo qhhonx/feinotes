@@ -104,6 +104,7 @@ fn hash_block(b: &Block, orders: &rustc_hash::FxHashMap<BlockId, String>, h: &mu
     b.folded.hash(h);
     match &b.kind {
         BlockKind::Heading { level, .. } => (level, orders.get(&b.id)).hash(h),
+        BlockKind::Bullet { dash } => dash.hash(h),
         BlockKind::Code { wrap, .. } => wrap.hash(h),
         BlockKind::Image { src, width, height, caption, crop, .. } => {
             (src, width.map(f32::to_bits), height.map(f32::to_bits), caption.as_ref().map(String::len), crop.map(|c| c.map(f32::to_bits))).hash(h)
@@ -167,10 +168,12 @@ pub(super) fn margins(b: &Block, env: Env) -> (f32, f32) {
             (m.mt, m.mb)
         }
         // Decorated blocks and code keep a little more air than text.
+        BlockKind::File(_) | BlockKind::Image { .. } if theme::style().num_override("attachment.mt").is_some() => (theme::style().num("attachment.mt"), theme::style().num("attachment.mb")),
+        BlockKind::Code { .. } if theme::style().code_tools_inside => (4., 4.),
         BlockKind::Code { .. } if compact_code(b) => (COMPACT_CODE_TOOLS_H, 16.),
         BlockKind::Code { .. } | BlockKind::Callout { .. } => (16., 16.),
         BlockKind::Table(_) => if crate::settings::feishu() { (29.5, 22.) } else { (theme::style().num("table.mt"), 16.) },
-        BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => {
+        BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => {
             let gap = theme::style().list_gap();
             (gap, gap)
         }
@@ -184,6 +187,14 @@ pub(super) fn margins(b: &Block, env: Env) -> (f32, f32) {
 pub(super) fn gap_before(b: &Block, env: Env, top: f32, previous: Option<(&Block, f32)>) -> f32 {
     let Some((prev, bottom)) = previous else { return 0.; };
     let st = theme::style();
+    if !env.cell && matches!(prev.kind, BlockKind::File(_) | BlockKind::Image { .. }) && matches!(b.kind, BlockKind::File(_) | BlockKind::Image { .. })
+        && let Some(gap) = st.num_override("attachment.gap")
+    { return bottom.max(top).max(gap); }
+    if !env.cell && matches!(prev.kind, BlockKind::Heading { level: 2, .. }) && b.kind.is_list()
+        && let Some(gap) = st.num_override("h2.list-follow")
+    {
+        return bottom.max(gap.max(0.));
+    }
     if !env.cell && matches!(prev.kind, BlockKind::Heading { level: 2, .. }) && matches!(b.kind, BlockKind::Text)
         && let Some(gap) = st.num_override("h2.follow")
     {
@@ -389,7 +400,7 @@ impl R<'_> {
         }
         let content: AnyElement = match &b.kind {
             BlockKind::Text | BlockKind::Heading { .. } => self.text_block(b, env, cx),
-            BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => self.list_item(b, siblings, idx, env, cx),
+            BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => self.list_item(b, siblings, idx, env, cx),
             BlockKind::Code { lang, wrap, .. } => self.code_block(b, lang, *wrap, (idx > 0 && !env.cell && gap_above > 0.).then_some(gap_above), cx),
             // The focus decoration: a 4pt bar at the column edge, the text
             // 12pt after it and unchanged.
@@ -531,7 +542,7 @@ impl R<'_> {
         let handle = (!env.cell && !env.in_callout && !self.ghost && self.ed.handle_block() == Some(b.id))
             .then(|| {
                 let first_line = match &b.kind {
-                    BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => {
+                    BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => {
                         self.spec_for(b, env).line_height
                     }
                     // Level with the toolbar row at the block top.
@@ -716,10 +727,10 @@ impl R<'_> {
             // Drawn rather than typeset so the dot size (5.5) and its centring
             // on the line don't depend on how the font's bullet glyph renders.
             // Bullets: text-coloured dots (hollow on the second level).
-            BlockKind::Bullet => {
+            BlockKind::Bullet { .. } => {
                 let st = theme::style();
                 let c = st.color("bullet.color").unwrap_or_else(Theme::text);
-                let dash = st.flag("list.dash");
+                let dash = matches!(b.kind, BlockKind::Bullet { dash: true }) || st.flag("list.dash");
                 let marker = if dash {
                     div().w(px(6.)).h(px(1.)).rounded_full().bg(c)
                 } else {
@@ -757,11 +768,14 @@ impl R<'_> {
                 let st = theme::style();
                 let (box_size, fill) = (st.num("task.size"), st.color("task.checked").unwrap_or_else(Theme::primary));
                 let check = st.color("task.check").unwrap_or_else(gpui::white);
+                let circular = st.num("task.radius") >= box_size / 2. - 0.1;
+                let task_scale = if cfg!(target_os = "ios") && circular { spec.size / st.num("page.size").max(1.) } else { 1. };
+                let box_size = box_size * task_scale;
                 div()
                     .id(("todo", id.0))
                     .size(px(box_size))
                     .mr(px(8.))
-                    .rounded(px(st.num("task.radius")))
+                    .rounded(px(st.num("task.radius") * task_scale))
                     .border_1()
                     .when(!done, |d| d.border_color(Theme::todo_box()).bg(crate::theme::raised(Theme::bg_body())).hover(|s| s.border_color(Theme::primary())))
                     .when(done, |d| d.border_color(fill).bg(fill))
@@ -769,7 +783,7 @@ impl R<'_> {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .when(done, |d| d.child(icon("todo-check", (box_size * 13. / 17.).round(), check)))
+                    .when(done, |d| d.child(icon(if circular { "notes-todo-check" } else { "todo-check" }, if circular { box_size } else { (box_size * 13. / 17.).round() }, check)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |e, _, window, cx| {
@@ -859,6 +873,7 @@ impl R<'_> {
         let editing = self.focused && self.ed.core.sel.head.block == id;
         let folded = self.ed.code_folded.contains(&id);
         let compact = !folded && compact_code(b);
+        let inside = st.code_tools_inside;
         // Keep the labels above the rim when the paragraph gap is shorter than the tool row.
         let tools_above = gap_above.map_or(COMPACT_CODE_TOOLS_H, |gap| (gap + 5.5).min(COMPACT_CODE_TOOLS_H));
         // Handle hovered / its menu open (`.hovered`): light blue ring
@@ -922,9 +937,9 @@ impl R<'_> {
                 .id(("code-caption", id.0))
                 .flex_1()
                 .min_w(px(50.))
-                .ml(px(if compact { 32. } else if gutter_w > 0. { gutter_w + 10. } else { 16. }))
-                .mr(px(16.))
-                .h(px(28.))
+                .ml(px(if inside || compact { 36. } else if gutter_w > 0. { gutter_w + 10. } else { 16. }))
+                .mr(px(if inside { 64. } else { 16. }))
+                .h(px(if inside { 30. } else { 28. }))
                 .flex()
                 .child(f)
                 // The field takes the click; keep the page from moving the caret.
@@ -941,9 +956,11 @@ impl R<'_> {
         let fold_btn = div()
             .id(("code-fold", id.0))
             .absolute()
-            .left(px(6.))
-            .top(px(if compact { -tools_above } else { 7. }))
+            .when(inside && !folded, |d| d.right(px(30.)))
+            .when(!inside || folded, |d| d.left(px(6.)))
+            .top(px(if inside { 4. } else if compact { -tools_above } else { 7. }))
             .size(px(24.))
+            .when(inside && folded, |d| d.top_0().bottom_0().h_auto())
             .flex()
             .items_center()
             .justify_center()
@@ -984,8 +1001,9 @@ impl R<'_> {
         // gutter split off by a hairline.
         let pane = div()
             .relative()
-            .when(!compact, |d| d.group(g.clone()))
+            .when(!compact || inside, |d| d.group(g.clone()))
             .rounded(px(radius))
+            .when(inside, |d| d.min_h(px(32.)))
             .border_1()
             .border_color(border)
             .when(!menu_on, |d| d.bg(Theme::code_bg()))
@@ -1008,21 +1026,22 @@ impl R<'_> {
             })
             // Pointer over the block: the rim darkens a step.
             .when(!folded && !menu_on && !selected, |d| d.hover(|s| s.border_color(theme::c(craft::N400))))
-            .child(
+            .when(!inside || folded || !compact, |d| d.child(
                 div()
                     .absolute()
-                    .top(px(if compact { -tools_above } else { 0. }))
+                    .top(px(if compact && !inside { -tools_above } else { 0. }))
                     .left_0()
                     .right_0()
                     .h(px(if compact { COMPACT_CODE_TOOLS_H } else { 32. }))
                     .pt(px(if compact { 0. } else { 6. }))
+                    .when(inside && folded, |d| d.top_0().bottom_0().h_auto().pt(px(0.)))
                     .pr(px(6.))
                     .flex()
                     .items_center()
                     .font_family(theme::UI_FONT)
                     .when(compact && !editing, |d| d.opacity(0.).group_hover(g.clone(), |s| s.opacity(1.)))
                     .children(caption)
-                    .child(
+                    .when(!inside, |d| d.child(
                         div()
                             .flex()
                             .flex_none()
@@ -1063,16 +1082,29 @@ impl R<'_> {
                                         }),
                                     ),
                             ),
-                    ),
-            )
+                    )),
+            ))
             .child(fold_btn)
+            .when(inside && !self.ed.read_only, |d| d.child(
+                div().id(("code-tools", id.0)).absolute().right(px(4.)).top(px(4.)).size(px(24.))
+                    .when(folded, |d| d.top_0().bottom_0().h_auto())
+                    .rounded(px(4.)).flex().items_center().justify_center().cursor_pointer()
+                    .bg(Theme::code_bg()).hover(|s| s.bg(Theme::fill_hover_strong()))
+                    .tip_above(crate::settings::tr("代码块操作", "Code actions"), None)
+                    .child(icon("ellipsis", 16., Theme::text_caption()))
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |e, _, _, cx| {
+                        cx.stop_propagation();
+                        e.menu = if matches!(e.menu, Some(Menu::CodeTools { block }) if block == id) { None } else { Some(Menu::CodeTools { block: id }) };
+                        cx.notify();
+                    }))
+            ))
             .when(folded, |d| d.child(div().h(px(36.))))
             .when(!folded, |d| {
                 d.child(
                     div()
                         .pt(px(if compact { st.num("pre.pad-y") } else { 36. }))
                         .pb(px(if compact { st.num("pre.pad-y") } else { 12. }))
-                        .pr(px(if compact { st.num("pre.pad-x") } else { 16. }))
+                        .pr(px(if inside { 64. } else if compact { st.num("pre.pad-x") } else { 16. }))
                         .flex()
                         .when(gutter_w == 0., |d| d.pl(px(if compact { st.num("pre.pad-x") } else { 16. })))
                         .when(gutter_w > 0., |d| d.child(
@@ -1099,7 +1131,7 @@ impl R<'_> {
                         .child(self.code_column(id, wrap, el, 12.)),
                 )
             });
-        if compact {
+        if compact && !inside {
             // Include the tools in the hover area without reserving space inside the code panel.
             div().group(g).pt(px(tools_above))
                 .when(gap_above.is_some(), |d| d.mt(px(-tools_above)))
@@ -1255,7 +1287,7 @@ impl Editor {
                 div()
                     .relative()
                     .group("doc-header")
-                    .pt(px(theme::style().num("page.top").max(0.)))
+                    .pt(px(theme::style().num("page.top").max(32.)))
                     .pb(px(theme::style().num("title.gap").max(0.)))
                     .children(self.header_entries(cx))
                     .child(
@@ -1810,7 +1842,7 @@ pub(super) fn block_feishu(&self, b: &Block, siblings: &[Block], idx: usize, env
         }
         let content: AnyElement = match &b.kind {
             BlockKind::Text | BlockKind::Heading { .. } => self.text_block(b, env, cx),
-            BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => self.list_item(b, siblings, idx, env, cx),
+            BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => self.list_item(b, siblings, idx, env, cx),
             BlockKind::Code { lang, wrap, .. } => self.code_block_feishu(b, lang, *wrap, cx),
             BlockKind::Quote => div()
                 .relative()
@@ -1914,7 +1946,7 @@ pub(super) fn block_feishu(&self, b: &Block, siblings: &[Block], idx: usize, env
         let handle = (!env.cell && !env.in_callout && !self.ghost && self.ed.handle_block() == Some(b.id))
             .then(|| {
                 let first_line = match &b.kind {
-                    BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => {
+                    BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => {
                         self.spec_for(b, env).line_height
                     }
                     // Centered on the first code line (3px below the block top).
@@ -2026,13 +2058,13 @@ fn list_item_feishu(&self, b: &Block, siblings: &[Block], idx: usize, env: Env, 
         let marker: AnyElement = match b.kind {
             // Drawn rather than typeset so the dot size (5.5) and its centring
             // on the line don't depend on how the font's bullet glyph renders.
-            BlockKind::Bullet => {
+            BlockKind::Bullet { .. } => {
                 let dot = div().size(px(5.5)).flex_none();
-                let dot = match env.depth % 3 {
+                let dot = if matches!(b.kind, BlockKind::Bullet { dash: true }) { div().w(px(6.)).h(px(1.)).bg(Theme::primary()).flex_none() } else { match env.depth % 3 {
                     0 => dot.rounded_full().bg(Theme::primary()),
                     1 => dot.rounded_full().border_1().border_color(Theme::primary()),
                     _ => dot.size(px(5.)).bg(Theme::primary()),
-                };
+                } };
                 div().w(px(18.)).pl(px(4.)).mr(px(6.)).flex().child(dot).into_any_element()
             }
             BlockKind::Ordered { .. } => div()

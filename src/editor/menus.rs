@@ -9,6 +9,7 @@ pub enum SlashKind {
     Heading(u8),
     Ordered,
     Bullet,
+    Dash,
     Code,
     Quote,
     Divider,
@@ -140,6 +141,7 @@ pub const SLASH_ITEMS: &[SlashItem] = &[
         keywords: &["lianjie", "lj", "link", "url", "hyperlink"],
     },
     SlashItem { kind: SlashKind::Todo, label: "任务", icon: "todo", color: INDIGO, group: 1, keywords: &["todo", "renwu", "rw"] },
+    SlashItem { kind: SlashKind::Dash, label: "短划线列表", icon: "list", color: INDIGO, group: 1, keywords: &["dash", "hyphen", "duanhuaxian", "dhxlb"] },
     SlashItem { kind: SlashKind::Image, label: "图片", icon: "image", color: YELLOW, group: 1, keywords: &["image", "tupian", "tp"] },
     SlashItem {
         kind: SlashKind::File,
@@ -207,6 +209,7 @@ pub fn basic_tip(kind: SlashKind) -> (Option<&'static str>, Option<&'static str>
         SlashKind::Heading(l) => turn(["一级标题", "二级标题", "三级标题", "四级标题", "五级标题"][(l.clamp(1, 5) - 1) as usize]),
         SlashKind::Ordered => turn("有序列表"),
         SlashKind::Bullet => turn("无序列表"),
+        SlashKind::Dash => Some((None, Some("- 空格"))),
         SlashKind::Code => turn("代码块"),
         SlashKind::Quote => turn("引用"),
         SlashKind::Divider => Some((Some(crate::shortcuts::hint("editor::InsertDivider", "⌘ + ⌥ + S")), Some("---"))),
@@ -266,7 +269,8 @@ pub const TURN_ITEMS: &[TurnItem] = &[
     TurnItem { label: "四级标题", action: "editor::TurnH4", icon: "heading-4", keys: Some("⌘ + ⌥ + 4"), tip: "四级标题", md: Some("#### 空格"), kind: || heading(4) },
     TurnItem { label: "五级标题", action: "editor::TurnH5", icon: "heading-5", keys: Some("⌘ + ⌥ + 5"), tip: "五级标题", md: Some("##### 空格"), kind: || heading(5) },
     TurnItem { label: "有序列表", action: "editor::TurnOrdered", icon: "list-ordered", keys: Some("⌘ + Shift + 7"), tip: "有序列表", md: Some("1. 空格"), kind: || BlockKind::Ordered { seq: None } },
-    TurnItem { label: "无序列表", action: "editor::TurnBullet", icon: "list", keys: Some("⌘ + Shift + 8"), tip: "无序列表", md: Some("- 空格 或 * 空格"), kind: || BlockKind::Bullet },
+    TurnItem { label: "无序列表", action: "editor::TurnBullet", icon: "list", keys: Some("⌘ + Shift + 8"), tip: "无序列表", md: Some("* 空格"), kind: || BlockKind::Bullet { dash: false } },
+    TurnItem { label: "短划线列表", action: "editor::TurnDash", icon: "list", keys: None, tip: "短划线列表", md: Some("- 空格"), kind: || BlockKind::Bullet { dash: true } },
     TurnItem { label: "任务", action: "editor::TurnTodo", icon: "todo", keys: Some("⌘ + ⌥ + T"), tip: "任务列表", md: Some("[] 空格"), kind: || BlockKind::Todo { done: false } },
     TurnItem { label: "代码块", action: "editor::TurnCode", icon: "braces", keys: Some("⌘ + ⌥ + C"), tip: "代码块", md: Some("``` 空格 或 ``` 代码语言 空格"), kind: || code_block("Plain Text") },
     TurnItem { label: "引用", action: "editor::TurnQuote", icon: "quote", keys: Some("⌘ + Shift + >"), tip: "引用", md: Some("> 空格"), kind: || BlockKind::Quote },
@@ -292,7 +296,7 @@ impl MenuShape {
             BlockKind::Text
             | BlockKind::Heading { .. }
             | BlockKind::Ordered { .. }
-            | BlockKind::Bullet
+            | BlockKind::Bullet { .. }
             | BlockKind::Todo { .. }
             | BlockKind::Quote => MenuShape::Text,
             BlockKind::Code { .. } => MenuShape::Code,
@@ -333,6 +337,7 @@ pub fn callout(emoji: Option<&str>) -> BlockKind {
 pub fn same_kind(a: &BlockKind, b: &BlockKind) -> bool {
     match (a, b) {
         (BlockKind::Heading { level: x, .. }, BlockKind::Heading { level: y, .. }) => x == y,
+        (BlockKind::Bullet { dash: x }, BlockKind::Bullet { dash: y }) => x == y,
         _ => std::mem::discriminant(a) == std::mem::discriminant(b),
     }
 }
@@ -376,7 +381,7 @@ mod tests {
         let r = filter_slash("cy");
         assert!(r.iter().all(|i| SLASH_ITEMS[*i].group == 1));
         // 子页面列表 left the menu with folders (pages no longer hold pages).
-        assert_eq!(r.len(), 8);
+        assert_eq!(r.len(), 9);
         assert!(filter_slash("zzz").is_empty());
         assert_eq!(SLASH_ITEMS[filter_slash("djs")[0]].label, "倒计时");
         let r = filter_slash("list");

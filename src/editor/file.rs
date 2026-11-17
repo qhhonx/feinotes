@@ -342,6 +342,8 @@ impl R<'_> {
         let preview = (f.view == FileView::Preview && size.is_some()).then(|| preview_of(&f.name)).flatten();
         let st = theme::style();
         let attachment_bg = st.color("attachment.bg");
+        let radius = st.num_override("attachment.radius").unwrap_or(RADIUS);
+        let themed_card = st.num_override("attachment.radius").is_some();
         // The card rim: a hairline, a step darker under the pointer, the
         // accent once selected.
         let border = if selected {
@@ -456,7 +458,7 @@ impl R<'_> {
                             .items_center()
                             .gap(px(14.))
                             // The player bar: a quiet fill in the card rim.
-                            .rounded(px(RADIUS))
+                            .rounded(px(radius))
                             .bg(attachment_bg.unwrap_or_else(Theme::bg_overlay))
                             .border_1()
                             .border_color(border)
@@ -537,13 +539,13 @@ impl R<'_> {
                     .id(("file-preview", id.0))
                     .relative()
                     .w(px(w))
-                    .rounded(px(RADIUS))
+                    .rounded(px(radius))
                     .border_1()
                     .border_color(border)
-                    .shadow(theme::shadow_button())
+                    .when(!themed_card, |d| d.shadow(theme::shadow_button()))
                     .cursor_pointer()
-                    .when(menu_on, |d| d.child(ring().rounded(px(RADIUS + 2.))))
-                    .child(div().rounded(px(RADIUS - 1.)).overflow_hidden().child(content).child(footer))
+                    .when(menu_on, |d| d.child(ring().rounded(px(radius + 2.))))
+                    .child(div().rounded(px((radius - 1.).max(0.))).overflow_hidden().child(content).child(footer))
                     .children(recorder)
                     .on_mouse_down(MouseButton::Left, open_on_click)
                     .into_any_element()
@@ -563,7 +565,7 @@ impl R<'_> {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(RADIUS))
+                    .rounded(px(radius))
                     .cursor_pointer()
                     .hover(|s| s.bg(Theme::fill_hover()))
                     .tip_above(if av { crate::settings::text("播放") } else { crate::settings::text("预览") }, None)
@@ -574,16 +576,16 @@ impl R<'_> {
                     .id(("file-card", id.0))
                     .relative()
                     .flex()
-                    .w(px(400.))
+                    .w(px(st.num("attachment.width")))
                     .max_w_full()
                     .min_w(px(200.))
-                    .rounded(px(RADIUS))
+                    .rounded(px(radius))
                     .border_1()
                     .border_color(border)
                     .bg(attachment_bg.unwrap_or_else(|| crate::theme::raised(Theme::bg_body())))
-                    .shadow(theme::shadow_button())
+                    .when(!themed_card, |d| d.shadow(theme::shadow_button()))
                     .cursor_pointer()
-                    .when(menu_on, |d| d.child(ring().rounded(px(RADIUS + 2.))))
+                    .when(menu_on, |d| d.child(ring().rounded(px(radius + 2.))))
                     .child(div().flex_none().size(px(48.)).mt(px(8.)).mb(px(8.)).ml(px(8.)).mr(px(12.)).child(type_icon(kind, 48.)))
                     .child(
                         div()

@@ -89,6 +89,7 @@ pub enum Menu {
     /// Toolbar 更多.
     TbMore,
     Lang { block: BlockId, selected: usize },
+    CodeTools { block: BlockId },
     CalloutColor { block: BlockId, section: usize },
     /// Emoji picker; `selected` is the highlighted search result.
     Emoji { target: super::emoji_picker::EmojiTarget, selected: usize },
@@ -932,7 +933,8 @@ impl Editor {
             SlashKind::Text => Some(BlockKind::Text),
             SlashKind::Heading(l) => Some(menus::heading(l)),
             SlashKind::Ordered => Some(BlockKind::Ordered { seq: None }),
-            SlashKind::Bullet => Some(BlockKind::Bullet),
+            SlashKind::Bullet => Some(BlockKind::Bullet { dash: false }),
+            SlashKind::Dash => Some(BlockKind::Bullet { dash: true }),
             SlashKind::Todo => Some(BlockKind::Todo { done: false }),
             SlashKind::Code => Some(menus::code_block(&self.last_lang)),
             SlashKind::Quote => Some(BlockKind::Quote),
@@ -1777,11 +1779,7 @@ impl Editor {
         if !self.guard(window, cx) {
             return;
         }
-        for id in self.core.selected_blocks() {
-            if matches!(self.core.kind_of(id), Some(BlockKind::Todo { .. })) {
-                self.core.toggle_todo(id);
-            }
-        }
+        self.core.toggle_todos(&self.core.selected_blocks());
         self.changed(window, cx);
     }
 
@@ -2151,7 +2149,10 @@ impl Editor {
         self.turn_key(BlockKind::Ordered { seq: None }, w, cx)
     }
     fn on_turn_bullet(&mut self, _: &k::TurnBullet, w: &mut Window, cx: &mut Context<Self>) {
-        self.turn_key(BlockKind::Bullet, w, cx)
+        self.turn_key(BlockKind::Bullet { dash: false }, w, cx)
+    }
+    fn on_turn_dash(&mut self, _: &k::TurnDash, w: &mut Window, cx: &mut Context<Self>) {
+        self.turn_key(BlockKind::Bullet { dash: true }, w, cx)
     }
     fn on_turn_todo(&mut self, _: &k::TurnTodo, w: &mut Window, cx: &mut Context<Self>) {
         self.turn_key(BlockKind::Todo { done: false }, w, cx)
@@ -2292,6 +2293,7 @@ impl Editor {
             .on_action(guard(cx, Self::on_turn_h9))
             .on_action(guard(cx, Self::on_turn_ordered))
             .on_action(guard(cx, Self::on_turn_bullet))
+            .on_action(guard(cx, Self::on_turn_dash))
             .on_action(guard(cx, Self::on_turn_todo))
             .on_action(guard(cx, Self::on_turn_code))
             .on_action(guard(cx, Self::on_turn_quote))

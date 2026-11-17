@@ -187,6 +187,7 @@ pub fn text_color(name: &str) -> Option<Hsla> {
 }
 
 pub fn bg_color(name: &str) -> Option<Hsla> {
+    if let Some(c) = crate::palette::literal(name) { return Some(hsla(c)); }
     crate::palette::bg_color(name).map(|c| crate::theme::mark(crate::theme::rgbaf(c.r, c.g, c.b, c.a)))
 }
 

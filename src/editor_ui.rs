@@ -1,6 +1,7 @@
 pub use crate::ui::*;
 use gpui::*;
-use crate::feishu_theme::{self as theme, Theme};
+use crate::feishu_theme as theme;
+use crate::editor_theme::Theme;
 pub fn icon(name: &str, size: f32, color: Hsla) -> Svg { svg().path(SharedString::from(format!("editor-icons/{name}.svg"))).size(px(size)).flex_none().text_color(color) }
 pub fn popover() -> Div {
     div()

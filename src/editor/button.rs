@@ -608,10 +608,10 @@ impl Editor {
                     d.bg(Theme::primary())
                         .shadow(theme::shadow_button())
                         .border_color(Theme::primary())
-                        .text_color(gpui::white())
+                        .text_color(Theme::on_primary())
                         .font_weight(FontWeight::SEMIBOLD)
-                        .hover(|s| s.bg(c(craft::B600)).border_color(c(craft::B600)))
-                        .active(|s| s.bg(c(craft::B700)).border_color(c(craft::B700)))
+                        .hover(|s| s.bg(Theme::primary()).opacity(0.9))
+                        .active(|s| s.bg(Theme::primary()).opacity(0.8))
                 })
                 .when(!primary, |d| {
                     d.bg(crate::theme::raised(Theme::bg_body())).border_color(Theme::button_border()).shadow(theme::shadow_button()).hover(|s| s.bg(c(craft::N100))).active(|s| s.bg(c(craft::N200)))

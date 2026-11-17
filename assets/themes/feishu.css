@@ -126,6 +126,10 @@
   --token-popover-bg: #fafafa;
 }
 
+.block-icon {
+  color: inherit;
+}
+
 .page {
   background-color: #ffffff;
   color: #1f2329;
@@ -154,6 +158,10 @@ p {
 }
 
 h2 + p {
+  margin-top: inherit;
+}
+
+h2 + ul {
   margin-top: inherit;
 }
 
@@ -283,6 +291,10 @@ th {
 }
 
 .attachment {
+  border-radius: inherit;
+  margin-top: inherit;
+  margin-bottom: inherit;
+  row-gap: inherit;
   background-color: inherit;
   border-color: inherit;
 }

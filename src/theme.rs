@@ -497,12 +497,13 @@ fn split(name: &str) -> Option<(&str, bool)> {
 
 /// Font colour swatches as the colour panel shows them (first = default).
 pub fn text_color(name: &str) -> Option<Hsla> {
-    hue::of(name).map(|h| c(h.0))
+    crate::palette::literal(name).map(|c| adapt(rgbaf(c.r, c.g, c.b, c.a))).or_else(|| hue::of(name).map(|h| c(h.0)))
 }
 
 /// Text highlight: the marker colours at 35% (yellow #FFF100 → #FFFAA6
 /// measured), 65% for the strong row.
 pub fn bg_color(name: &str) -> Option<Hsla> {
+    if let Some(c) = crate::palette::literal(name) { return Some(mark(rgbaf(c.r, c.g, c.b, c.a))); }
     let (h, strong) = split(name)?;
     let m = hue::of(h)?;
     let (r, g, b) = ((m.1 >> 16) as u8, (m.1 >> 8) as u8, m.1 as u8);

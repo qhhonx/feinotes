@@ -262,13 +262,14 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
             let mut ink = if r.marks.link.is_some() { Theme::link() } else { r.marks.text_color.as_ref().and_then(|c| theme::text_color(&c.0)).map(bs::display_ink).unwrap_or(color) };
             if done { ink.a = 0.5; }
             let mark = r.marks.bg_color.as_ref().and_then(|c| theme::bg_color(&c.0)).map(bs::highlight);
-            TextRun { len: r.len, font: f, color: if mark.is_some() { crate::theme::on_mark(ink) } else { ink },
+            TextRun { len: r.len, font: f, color: mark.map_or(ink, |bg| crate::editor_theme::marked_text(ink, &r.marks, bg)),
                 background_color: mark.or_else(|| r.marks.code.then(bs::code_surface)),
                 underline: (r.marks.underline || r.marks.link.is_some()).then_some(UnderlineStyle { thickness: px(s), color: None, wavy: false }),
                 strikethrough: (r.marks.strike || done).then_some(StrikethroughStyle { thickness: px(s), color: None }) }
         }).collect::<Vec<_>>();
         let marker = match b.kind {
-            BlockKind::Bullet => Some(div().w(px(24. * s)).h(px(line_height * s)).pl(px(4. * s)).flex_none().flex().items_center().child(match list_depth % 3 {
+            BlockKind::Bullet { dash: true } => Some(div().w(px(24. * s)).h(px(line_height * s)).pl(px(4. * s)).flex_none().flex().items_center().child(div().w(px(6. * s)).h(px(s)).bg(Theme::text_caption())).into_any_element()),
+            BlockKind::Bullet { dash: false } => Some(div().w(px(24. * s)).h(px(line_height * s)).pl(px(4. * s)).flex_none().flex().items_center().child(match list_depth % 3 {
                 0 => div().size(px(5.5 * s)).rounded_full().bg(Theme::text_caption()),
                 1 => div().size(px(5.5 * s)).rounded_full().border(px(s)).border_color(Theme::text_caption()),
                 _ => div().size(px(5. * s)).bg(Theme::text_caption()),

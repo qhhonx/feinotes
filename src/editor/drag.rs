@@ -6,7 +6,8 @@ use super::core::{BlockSel, DropPlace, block_at, siblings_at};
 use super::render::{Env, R, TOP, flattens, gap_before, margins, visible_with_gaps};
 use super::view::Editor;
 use crate::model::*;
-use crate::feishu_theme::{self as theme, Theme};
+use crate::feishu_theme as theme;
+use crate::editor_theme::Theme;
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -80,7 +81,7 @@ impl Walk<'_> {
 
     fn nestable(b: &Block) -> bool {
         match b.kind {
-            BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => !b.folded,
+            BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => !b.folded,
             BlockKind::Text | BlockKind::Heading { .. } => !b.children.is_empty() && !b.folded,
             _ => false,
         }
@@ -514,7 +515,7 @@ impl R<'_> {
         for (r, c, cell) in t.cells() {
             let (rs, cs) = (cell.rowspan.max(1) as usize, cell.colspan.max(1) as usize);
             let header = r < t.header_rows || (t.header_col && c == 0);
-            let bg = cell.bg.as_ref().and_then(|x| theme::block_bg(&x.0)).or(header.then(Theme::table_header));
+            let bg = cell.bg.as_ref().and_then(|x| crate::editor_theme::block_bg(&x.0)).or(header.then(Theme::table_header));
             grid = grid.child(
                 div()
                     .row_start(r as i16 + 1)

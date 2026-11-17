@@ -1617,7 +1617,7 @@ impl Core {
             prev.kind,
             BlockKind::Text
                 | BlockKind::Heading { .. }
-                | BlockKind::Bullet
+                | BlockKind::Bullet { .. }
                 | BlockKind::Ordered { .. }
                 | BlockKind::Todo { .. }
         );
@@ -1713,6 +1713,7 @@ impl Core {
     pub fn toggle_turn_into(&mut self, ids: &[BlockId], kind: BlockKind) {
         let same = |k: &BlockKind| match (k, &kind) {
             (BlockKind::Heading { level: a, .. }, BlockKind::Heading { level: b, .. }) => a == b,
+            (BlockKind::Bullet { dash: a }, BlockKind::Bullet { dash: b }) => a == b,
             (a, b) => std::mem::discriminant(a) == std::mem::discriminant(b),
         };
         let already = !ids.is_empty()
@@ -1761,6 +1762,11 @@ impl Core {
             let adjacent = last.as_ref().is_some_and(|l| {
                 l.len() == p.len()
                     && l[..l.len() - 1] == p[..p.len() - 1]
+                    && match (l.last().unwrap(), p.last().unwrap()) {
+                        (Seg::Child(_), Seg::Child(_)) => true,
+                        (Seg::Cell(r, c, _), Seg::Cell(rr, cc, _)) => r == rr && c == cc,
+                        _ => false,
+                    }
                     && seg_index(*l.last().unwrap()) + 1 == seg_index(*p.last().unwrap())
             });
             if adjacent {
@@ -1867,11 +1873,16 @@ impl Core {
     }
 
     pub fn toggle_todo(&mut self, id: BlockId) {
+        self.toggle_todos(&[id]);
+    }
+
+    pub fn toggle_todos(&mut self, ids: &[BlockId]) {
+        let mut seen = HashSet::default();
+        let ids: Vec<_> = ids.iter().copied().filter(|id| seen.insert(*id) && matches!(self.kind_of(*id), Some(BlockKind::Todo { .. }))).collect();
+        if ids.is_empty() { return; }
         self.checkpoint(EditKind::Other);
-        if let Some(b) = self.block_mut(id)
-            && let BlockKind::Todo { done } = &mut b.kind
-        {
-            *done = !*done;
+        for id in ids {
+            if let Some(b) = self.block_mut(id) && let BlockKind::Todo { done } = &mut b.kind { *done = !*done; }
         }
     }
 
@@ -1889,7 +1900,7 @@ impl Core {
         match b.kind {
             BlockKind::Heading { .. } => true,
             BlockKind::Text => !b.children.is_empty(),
-            BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => !b.children.is_empty() || b.folded,
+            BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => !b.children.is_empty() || b.folded,
             _ => false,
         }
     }
@@ -2732,7 +2743,7 @@ impl Core {
             && self.kind_of(id).is_some_and(|k| {
                 matches!(
                     k,
-                    BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. }
+                    BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. }
                 )
             })
     }
@@ -2757,7 +2768,7 @@ impl Core {
         }
         let body = prefix.strip_suffix(' ')?;
         match body {
-            "-" | "*" | "+" => return Some(BlockKind::Bullet),
+            "-" | "*" | "+" => return Some(BlockKind::Bullet { dash: body == "-" }),
             "[]" | "[ ]" | "【】" => return Some(BlockKind::Todo { done: false }),
             ">" | "|" | "》" if !in_cell && !in_quote => return Some(BlockKind::Quote),
             _ => {}
@@ -3157,7 +3168,7 @@ impl Core {
         }
         let kind = self.kind_of(id).cloned();
         let off = crate::paste::Off {
-            bullet: matches!(kind, Some(BlockKind::Bullet)),
+            bullet: matches!(kind, Some(BlockKind::Bullet { .. })),
             ordered: matches!(kind, Some(BlockKind::Ordered { .. })),
             todo: matches!(kind, Some(BlockKind::Todo { .. })),
             quote: self.parent_kind_is(id, |k| matches!(k, BlockKind::Quote)),
@@ -3797,7 +3808,7 @@ mod tests {
         let mut c = doc("<title>T</title><p></p>");
         c.sel = Selection::caret(Pos::new(id(&c, 1), 0));
         c.paste_markdown("# H\n- a\n**b**");
-        assert_eq!(xml(&c), "<title>T</title>\n<h1>H</h1>\n<ul>\n  <li>a</li>\n</ul>\n<p><b>b</b></p>\n");
+        assert_eq!(xml(&c), "<title>T</title>\n<h1>H</h1>\n<ul>\n  <li list-style-type=\"dash\">a</li>\n</ul>\n<p><b>b</b></p>\n");
         // A non-empty one only inline rules, one paragraph per line.
         let mut c = doc("<title>T</title><p>xy</p>");
         c.sel = Selection::caret(Pos::new(id(&c, 1), 1));
@@ -3809,6 +3820,73 @@ mod tests {
         c.paste_markdown("A\nB");
         assert_eq!(xml(&c), "<title>TA</title>\n<p>B</p>\n<p>body</p>\n");
         assert_eq!(c.sel.head, Pos::new(id(&c, 1), 1));
+    }
+
+    #[test]
+    fn selected_todos_toggle_as_one_undo_step() {
+        let mut c = doc("<title>T</title><checkbox done=\"false\">A</checkbox><p>body</p><checkbox done=\"true\">B</checkbox>");
+        let (a, p, b) = (id(&c, 1), id(&c, 2), id(&c, 3));
+        let before = xml(&c);
+        c.toggle_todos(&[a, p, a, b]);
+        assert!(matches!(c.kind_of(a), Some(BlockKind::Todo { done: true })));
+        assert!(matches!(c.kind_of(b), Some(BlockKind::Todo { done: false })));
+        let after = xml(&c);
+        c.undo();
+        assert_eq!(xml(&c), before);
+        c.redo();
+        assert_eq!(xml(&c), after);
+        let generation = c.generation;
+        c.toggle_todos(&[p, TITLE]);
+        assert_eq!(c.generation, generation);
+    }
+
+    #[test]
+    fn quoting_multiple_table_cells_keeps_each_cells_blocks() {
+        let mut c = doc("<title>T</title><table><tbody><tr><td><p>A</p></td><td><p>B</p><p>C</p></td></tr></tbody></table>");
+        let us = c.units();
+        let ids: Vec<_> = us.iter().filter(|u| c.text_of(u.id).is_some_and(|t| t.text == "A" || t.text == "C")).map(|u| u.id).collect();
+        assert_eq!(ids.len(), 2);
+        let before = xml(&c);
+        c.turn_into(&ids, BlockKind::Quote);
+        let after = xml(&c);
+        assert!(after.contains("<td><blockquote><p>A</p></blockquote></td>"), "{after}");
+        assert!(after.contains("<td><p>B</p><blockquote><p>C</p></blockquote></td>"), "{after}");
+        c.undo();
+        assert_eq!(xml(&c), before);
+        c.redo();
+        assert_eq!(xml(&c), after);
+    }
+
+    #[test]
+    fn bullet_markers_survive_enter_undo_indent_and_markdown() {
+        let mut toggle = doc("<title>T</title><ul><li list-style-type=\"dash\">A</li></ul>");
+        let item = id(&toggle, 1);
+        toggle.toggle_turn_into(&[item], BlockKind::Bullet { dash: false });
+        assert!(matches!(toggle.kind_of(item), Some(BlockKind::Bullet { dash: false })));
+        toggle.toggle_turn_into(&[item], BlockKind::Bullet { dash: true });
+        assert!(matches!(toggle.kind_of(item), Some(BlockKind::Bullet { dash: true })));
+        toggle.toggle_turn_into(&[item], BlockKind::Bullet { dash: true });
+        assert!(matches!(toggle.kind_of(item), Some(BlockKind::Text)));
+        let mut c = doc("<title>T</title><ul><li list-style-type=\"dash\">A</li><li>B</li></ul>");
+        let first = id(&c, 1);
+        c.sel = Selection::caret(Pos::new(first, 1));
+        let before = xml(&c);
+        c.enter();
+        assert!(matches!(c.doc.blocks[1].kind, BlockKind::Bullet { dash: true }));
+        let entered = xml(&c);
+        c.undo();
+        assert_eq!(xml(&c), before);
+        c.redo();
+        assert_eq!(xml(&c), entered);
+        c.insert_text("tail");
+        c.indent();
+        assert!(matches!(c.doc.blocks[0].children[0].kind, BlockKind::Bullet { dash: true }));
+        let saved = crate::docxml::parse(&xml(&c)).unwrap();
+        let md = crate::markdown::export(&saved, &crate::markdown::Options { in_place: true, ..Default::default() }).text;
+        let pasted = crate::paste::markdown_to_blocks(&md, Default::default());
+        assert!(matches!(pasted[0].kind, BlockKind::Bullet { dash: true }), "{md}");
+        assert!(matches!(pasted[0].children[0].kind, BlockKind::Bullet { dash: true }), "{md}");
+        assert!(matches!(pasted[1].kind, BlockKind::Bullet { dash: false }), "{md}");
     }
 
     #[test]
@@ -3906,7 +3984,7 @@ mod tests {
     #[test]
     fn markdown_block_triggers() {
         let cases = [
-            ("- ", "<ul>\n  <li></li>\n</ul>"),
+            ("- ", "<ul>\n  <li list-style-type=\"dash\"></li>\n</ul>"),
             ("+ ", "<ul>\n  <li></li>\n</ul>"),
             ("3. ", "<ol>\n  <li seq=\"3\"></li>\n</ol>"),
             ("1。 ", "<ol>\n  <li></li>\n</ol>"),

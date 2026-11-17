@@ -38,7 +38,7 @@ pub fn weight(kind: &BlockKind) -> FontWeight {
 pub fn gap(kind: &BlockKind) -> (f32, f32) {
     match kind {
         BlockKind::Heading { .. } => { let m = typography(kind); (m.mt, m.mb) }
-        BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => (0., LIST_GAP),
+        BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => (0., LIST_GAP),
         BlockKind::Table(_) => (11., 11.),
         BlockKind::Code { .. } | BlockKind::Callout { .. } | BlockKind::Image { .. } | BlockKind::File(_) | BlockKind::Grid => (16., 16.),
         BlockKind::Quote => (8., 14.),

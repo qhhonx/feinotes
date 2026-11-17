@@ -8,7 +8,8 @@ use super::overlays::at;
 use super::view::{Editor, Menu};
 use crate::input::TextFieldEvent;
 use crate::model::*;
-use crate::feishu_theme::{self as theme, Theme};
+use crate::feishu_theme as theme;
+use crate::editor_theme::Theme;
 use crate::editor_ui::{MENU_RADIUS, ROW_RADIUS, TipExt, icon};
 use gpui::{prelude::FluentBuilder, *};
 
@@ -374,7 +375,7 @@ impl Editor {
                     .cursor_pointer()
                     .hover(|s| s.bg(Theme::fill_hover()))
                     .tip_above(label, None)
-                    .child(icon(ic, 18., if on { Theme::primary() } else { Theme::icon() }))
+                    .child(icon(ic, 18., if on { Theme::primary_500() } else { Theme::icon() }))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |ed, _, _, cx| {
                         // A category click leaves search.
@@ -405,7 +406,7 @@ impl Editor {
             .when(tabs, |d| {
                 d.child(
                     div().flex_none().h(px(TABS_H)).pl(px(24.)).flex().child(
-                        div().pt(px(20.)).pb(px(12.)).text_size(px(13.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::primary()).child(crate::settings::text("表情符号")),
+                        div().pt(px(20.)).pb(px(12.)).text_size(px(13.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::primary_500()).child(crate::settings::text("表情符号")),
                     ),
                 )
                 .child(

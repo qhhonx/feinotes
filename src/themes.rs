@@ -77,6 +77,7 @@ pub static PROPS: LazyLock<Vec<Prop>> = LazyLock::new(|| {
     use Kind::*;
     let p = |sel: &'static str, prop: &'static str, key: &str, kind: Kind, craft: Def, feishu: Def| Prop { sel, prop, key: key.to_string(), kind, craft, feishu };
     let mut v = vec![
+        p(".block-icon", "color", "block.icon", Color, Inherit, Inherit),
         p(".page", "background-color", "page.bg", Color, Tok("bg_body"), Tok("bg_body")),
         p(".page", "color", "page.color", Color, Tok("text"), Tok("text")),
         p(".page", "font-family", "page.font", Font, Family(SYSTEM), Family(SYSTEM)),
@@ -90,6 +91,7 @@ pub static PROPS: LazyLock<Vec<Prop>> = LazyLock::new(|| {
         p("::selection", "background-color", "selection", Color, Tok("selection"), Tok("selection")),
         p("p", "margin-bottom", "p.gap", Len, N(crate::theme::BLOCK_GAP), N(8.)),
         p("h2 + p", "margin-top", "h2.follow", Len, Inherit, Inherit),
+        p("h2 + ul", "margin-top", "h2.list-follow", Len, Inherit, Inherit),
         p(".title", "font-family", "title.font", Font, Family(SYSTEM), Family(SYSTEM)),
         p(".title", "font-size", "title.size", Len, N(crate::theme::TITLE.size), N(crate::theme::TITLE.size)),
         p(".title", "line-height", "title.line", Len, N(crate::theme::TITLE.line_height), N(crate::theme::TITLE.line_height)),
@@ -167,6 +169,11 @@ pub static PROPS: LazyLock<Vec<Prop>> = LazyLock::new(|| {
         p(".callout", "border-width", "callout.border", Len, N(1.), Unused),
         p(".callout", "padding-top", "callout.pad-y", Len, N(12.), Unused),
         p(".callout", "padding-left", "callout.pad-x", Len, N(14.), Unused),
+        p(".attachment", "border-radius", "attachment.radius", Len, Inherit, Inherit),
+        p(".attachment", "width", "attachment.width", Len, N(400.), Unused),
+        p(".attachment", "margin-top", "attachment.mt", Len, Inherit, Inherit),
+        p(".attachment", "margin-bottom", "attachment.mb", Len, Inherit, Inherit),
+        p(".attachment", "row-gap", "attachment.gap", Len, Inherit, Inherit),
         p(".attachment", "background-color", "attachment.bg", Color, Inherit, Inherit),
         p(".attachment", "border-color", "attachment.border", Color, Inherit, Inherit),
         p(".sidebar", "background-color", "sidebar.bg", Color, Inherit, Inherit),
@@ -235,6 +242,7 @@ pub struct Style {
     pub feishu: bool,
     tokens: Vec<Option<ThemeColor>>,
     pub compact_code: bool,
+    pub code_tools_inside: bool,
     pub muted_countdown: bool,
     pub compact_code_gap_after_paragraph: Option<f32>,
     pub todo_gap: Option<f32>,
@@ -671,7 +679,7 @@ fn parse_with_fonts<'a>(css: &str, fonts: &mut dyn FnMut() -> &'a [String]) -> R
             if target.is_none() { warn.push(format!("{key}: {v}")); }
         }
     }
-    for (key, target) in [("--code-compact", &mut st.compact_code), ("--countdown-muted", &mut st.muted_countdown)] {
+    for (key, target) in [("--code-compact", &mut st.compact_code), ("--code-tools-inside", &mut st.code_tools_inside), ("--countdown-muted", &mut st.muted_countdown)] {
         if let Some(v) = var(key) {
             match (feishu, v.as_str()) {
                 (false, "true") => *target = true,
@@ -681,7 +689,7 @@ fn parse_with_fonts<'a>(css: &str, fonts: &mut dyn FnMut() -> &'a [String]) -> R
         }
     }
     if let Some(v) = var("--compact-code-gap-after-paragraph") {
-        st.compact_code_gap_after_paragraph = parse_len(&v, body, None).filter(|n| st.compact_code && (15. ..2000.).contains(n));
+        st.compact_code_gap_after_paragraph = parse_len(&v, body, None).filter(|n| st.compact_code && *n >= 0. && *n < 2000. && (st.code_tools_inside || *n >= 15.));
         if st.compact_code_gap_after_paragraph.is_none() { warn.push(format!("--compact-code-gap-after-paragraph: {v}")); }
     }
     let size_of = |el: &str| -> f32 {
