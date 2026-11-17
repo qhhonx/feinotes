@@ -31,9 +31,15 @@
         <h1>写得自在，<br><span>记得安心。</span></h1>
         <p class="lead">飞书文档般顺手，iCloud 备忘录般安心。</p>
         <div id="testflight" class="beta-access" data-language="zh" data-status="testflight-status.json">
-          <a class="beta-download" data-beta-link href="https://testflight.apple.com/join/NdcXugMy" aria-disabled="true" tabindex="-1" aria-live="polite">测试版准备中</a>
-          <p class="beta-details">macOS 14 或更高版本</p>
-          <p class="beta-details" data-beta-review hidden aria-live="polite"></p>
+          <div class="beta-platform" data-beta-platform="MAC_OS">
+            <a class="beta-download" data-beta-link aria-disabled="true" tabindex="-1" aria-live="polite">测试版准备中</a>
+            <p class="beta-details">macOS 14 或更高版本</p>
+            <p class="beta-details" data-beta-review hidden aria-live="polite"></p>
+          </div>
+          <div class="beta-mobile" data-beta-platform="IOS">
+            <a class="beta-mobile-link" data-beta-link aria-disabled="true" tabindex="-1" aria-live="polite">iPhone / iPad · 测试版准备中</a>
+            <p class="beta-details" data-beta-review hidden aria-live="polite"></p>
+          </div>
         </div>
       </div>
       <div class="theme-switch" role="group" aria-label="查看功能">
@@ -77,6 +83,6 @@
     </footer>
   </div>
   <script src="theme-gallery.js" defer></script>
-  <script src="testflight.js?v=2" defer></script>
+  <script src="testflight.js?v=3" defer></script>
 </body>
 </html>

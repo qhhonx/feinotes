@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: MIT
+# Copyright 2026 Fei Notes contributors. See LICENSES.md.
+name: Fei Notes iOS TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Final integrated full 40-character source commit
+        required: true
+        type: string
+      version:
+        description: Authorized iOS marketing version
+        required: true
+        type: string
+      build:
+        description: Unused exact Apple iOS build number
+        required: true
+        type: string
+      notes:
+        description: Tracked directory containing zh-Hans.txt and en-US.txt
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: feinotes-ios-testflight
+  cancel-in-progress: false
+
+jobs:
+  select:
+    if: github.repository_owner == 'qhhonx' && github.ref_name == 'product/quiet-sync'
+    runs-on: ubuntu-latest
+    outputs:
+      source: ${{ steps.select.outputs.source }}
+    steps:
+      - name: Verify pinned source selection
+        id: select
+        env:
+          RELEASE_SOURCE: ${{ inputs.source }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          NOTES: ${{ inputs.notes }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$BUILD" =~ ^[1-9][0-9]{0,3}$ ]]
+          [[ "$NOTES" =~ ^docs/releases/[A-Za-z0-9._/-]+$ && "$NOTES" != *..* ]]
+          relation=$(gh api "repos/$GITHUB_REPOSITORY/compare/$RELEASE_SOURCE...$GITHUB_SHA" --jq .status)
+          [[ "$relation" == ahead || "$relation" == identical ]]
+          printf 'source=%s\n' "$RELEASE_SOURCE" >> "$GITHUB_OUTPUT"
+  testflight:
+    needs: select
+    runs-on: macos-26-intel
+    timeout-minutes: 120
+    environment: feinotes-ios-testflight
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.select.outputs.source }}
+          persist-credentials: false
+      - name: Verify source and release boundaries
+        env:
+          RELEASE_SOURCE: ${{ needs.select.outputs.source }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SOURCE"
+          python3 -B packaging/macos/test-apple-release.py
+          python3 -B packaging/ios/test-release.py
+          python3 -B packaging/ios/test-config.py
+          node website/test-testflight.cjs
+          xcodebuild -version
+          test "$(uname -m)" = x86_64
+      - name: Prepare iOS build tools
+        run: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: packaging/ios -> target
+          shared-key: feinotes-ios-release
+          cache-on-failure: true
+      - name: Archive and finish the selected iOS beta
+        env:
+          RELEASE_SOURCE: ${{ needs.select.outputs.source }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          NOTES: ${{ inputs.notes }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY_B64: ${{ secrets.ASC_PRIVATE_KEY_B64 }}
+          FEI_IOS_APP_CERT_B64: ${{ secrets.FEI_IOS_APP_CERT_B64 }}
+          FEI_IOS_CERT_PASSWORD: ${{ secrets.FEI_IOS_CERT_PASSWORD }}
+          FEI_IOS_STORE_PROFILE_B64: ${{ secrets.FEI_IOS_STORE_PROFILE_B64 }}
+          FEI_IOS_APP_CERT_SHA1: ${{ vars.FEI_IOS_APP_CERT_SHA1 }}
+          FEI_IOS_PROFILE_UUID: ${{ vars.FEI_IOS_PROFILE_UUID }}
+          FEI_IOS_EXPORT_EXEMPT: ${{ vars.FEI_IOS_EXPORT_EXEMPT }}
+          FEI_BETA_GROUP_ID: ${{ vars.FEI_BETA_GROUP_ID }}
+          FEI_PUBLIC_BETA_GROUP_ID: ${{ vars.FEI_PUBLIC_BETA_GROUP_ID }}
+          FEI_SUPPORT_URL: ${{ vars.FEI_SUPPORT_URL }}
+        shell: bash
+        run: bash packaging/ios/run-testflight.sh "$RELEASE_SOURCE" "$VERSION" "$BUILD" "$NOTES"

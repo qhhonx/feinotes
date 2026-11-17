@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Copyright 2026 Fei Notes contributors. See LICENSES.md.
-"""Select exact macOS builds and advance Fei Notes' App Store Connect release."""
+"""Select exact platform-specific builds and advance Fei Notes' App Store Connect release."""
 import argparse
 import base64
 import datetime
@@ -120,8 +120,9 @@ def only(items, message):
     return matches[0]
 
 
-def exact_upload(version, build):
-    query = {"filter[platform]": "MAC_OS", "filter[cfBundleShortVersionString]": version,
+def exact_upload(version, build, platform="MAC_OS"):
+    require(platform in {"MAC_OS", "IOS"}, "Unsupported beta platform")
+    query = {"filter[platform]": platform, "filter[cfBundleShortVersionString]": version,
              "filter[cfBundleVersion]": build, "include": "build"}
     response = request("GET", f"/v1/apps/{APP}/buildUploads", query=query)
     if not response["data"]:
@@ -134,10 +135,10 @@ def exact_upload(version, build):
     return upload, build_record
 
 
-def accepted_build(channel, version, number, wait):
+def accepted_build(channel, version, number, wait, platform="MAC_OS"):
     until = time.monotonic() + wait
     while True:
-        upload, build = exact_upload(version, number)
+        upload, build = exact_upload(version, number, platform)
         state = upload["attributes"]["state"] if upload else {"state": "NOT_FOUND"}
         if state["state"] == "FAILED":
             raise ValueError(f"Apple rejected {version} ({number}): {state.get('errors', [])}")
@@ -145,7 +146,7 @@ def accepted_build(channel, version, number, wait):
             attrs = build["attributes"]
             require(attrs["buildAudienceType"] == AUDIENCES[channel], "Build audience does not match the release channel")
             require(attrs["version"] == number and not attrs["expired"], "Unexpected or expired build")
-            if attrs["processingState"] == "VALID":
+            if attrs["processingState"] == "VALID" and (platform != "IOS" or state["state"] == "COMPLETE"):
                 print(f'{version} ({number}) {attrs["buildAudienceType"]} {build["id"]}', flush=True)
                 return build
             require(attrs["processingState"] not in {"FAILED", "INVALID"}, "Apple rejected the build")
@@ -193,6 +194,10 @@ def beta_notes(build):
         "en-US": "Write a local note, then turn on iCloud Sync. Edit the same sample note on a second Mac. You can also share and edit a sample note with a second Apple Account. Cloud access is included during TestFlight testing without a subscription.",
         "zh-Hans": "先写一篇本机笔记，再开启 iCloud 同步，在第二台 Mac 编辑同一篇样本笔记。也可以邀请另一个 Apple 账户一起编辑。TestFlight 测试期间可直接使用云功能，无需订阅。",
     }
+    directory = os.environ.get("FEI_BETA_NOTES_DIR")
+    if directory:
+        notes = {locale: (Path(directory) / f"{locale}.txt").read_text().strip() for locale in notes}
+        require(all(0 < len(text) <= 4000 for text in notes.values()), "Invalid release-specific beta notes")
     support_url = os.environ.get("FEI_SUPPORT_URL")
     if support_url:
         notes["en-US"] += f"\n\nFeedback: {support_url}"
@@ -221,9 +226,10 @@ def add_beta_build(identifier, group_id):
             "Could not verify the exact build in the intended TestFlight group")
 
 
-def distribute(build, group_id):
+def distribute(build, group_id, write_notes=True):
     group = beta_group(group_id, internal=True)
-    beta_notes(build)
+    if write_notes:
+        beta_notes(build)
     identifier = build["id"]
     add_beta_build(identifier, group_id)
     state = request("GET", f"/v1/builds/{identifier}/buildBetaDetail")["data"]["attributes"]["internalBuildState"]
@@ -259,27 +265,27 @@ def public_beta_status(output):
     builds = [item for item in rows(f"/v1/betaGroups/{group['id']}/builds")
               if not item["attributes"].get("expired") and item["attributes"].get("processingState") == "VALID"
               and item["attributes"].get("buildAudienceType") == "APP_STORE_ELIGIBLE"]
-    status = {"state": "unavailable", "url": group["attributes"].get("publicLink")}
-    if builds and status["url"] and group["attributes"].get("publicLinkEnabled"):
+    platforms = {platform: {"state": "unavailable", "url": group["attributes"].get("publicLink")}
+                 for platform in ("MAC_OS", "IOS")}
+    if group["attributes"].get("publicLink") and group["attributes"].get("publicLinkEnabled"):
         builds.sort(key=lambda item: item["attributes"]["uploadedDate"], reverse=True)
-        latest_review = None
-        selected = None
         for build in builds:
+            info = request("GET", f"/v1/builds/{build['id']}/preReleaseVersion")["data"]["attributes"]
+            status = platforms.get(info.get("platform"))
+            if status is None or status["state"] == "available":
+                continue
             state = request("GET", f"/v1/builds/{build['id']}/buildBetaDetail")["data"]["attributes"]["externalBuildState"]
+            version = {"version": info["version"], "build": build["attributes"]["version"]}
             if state in {"READY_FOR_BETA_TESTING", "IN_BETA_TESTING"}:
-                selected = build
-                break
-            if latest_review is None and state in {"WAITING_FOR_BETA_REVIEW", "IN_BETA_REVIEW", "READY_FOR_BETA_SUBMISSION"}:
-                latest_review = build
-        def version_info(build):
-            version = request("GET", f"/v1/builds/{build['id']}/preReleaseVersion")["data"]["attributes"]["version"]
-            return {"version": version, "build": build["attributes"]["version"]}
-        if selected:
-            status.update(state="available", **version_info(selected))
-            if latest_review:
-                status["pending"] = {"state": "review", **version_info(latest_review)}
-        else:
-            status.update(state="review" if latest_review else "unavailable", **version_info(latest_review or builds[0]))
+                pending = {key: value for key, value in status.items() if key in {"version", "build"}}
+                was_review = status["state"] == "review"
+                status.update(state="available", **version)
+                if was_review:
+                    status["pending"] = {"state": "review", **pending}
+            elif state in {"WAITING_FOR_BETA_REVIEW", "IN_BETA_REVIEW", "READY_FOR_BETA_SUBMISSION"} and status["state"] != "review":
+                status.update(state="review", **version)
+    # Retain the existing flat Mac contract for older website clients.
+    status = {**platforms["MAC_OS"], "platforms": platforms}
     previous = json.loads(output.read_text()) if output.exists() else {}
     if {k: v for k, v in previous.items() if k != "updatedAt"} != status:
         status["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -400,6 +406,7 @@ def main():
             cmd.add_argument("build")
         if name in {"check-upload", "finish"}:
             cmd.add_argument("channel", choices=AUDIENCES)
+            cmd.add_argument("--platform", choices=("MAC_OS", "IOS"), default="MAC_OS")
         if name in {"submit", "publish"}:
             cmd.add_argument("--confirm", required=True)
     args = parser.parse_args()
@@ -412,8 +419,12 @@ def main():
     require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.version), "Expected a three-component version")
     if args.operation != "publish":
         require(re.fullmatch(r"[1-9][0-9]{0,3}", args.build), "Expected a positive integer build number")
+    if getattr(args, "platform", "MAC_OS") == "IOS":
+        require(args.channel == "public-testflight", "iOS supports only the externally eligible beta channel")
+        if args.operation == "finish":
+            require(os.environ.get("FEI_BETA_NOTES_DIR"), "iOS requires release-specific bilingual beta notes")
     if args.operation == "check-upload":
-        upload, build = exact_upload(args.version, args.build)
+        upload, build = exact_upload(args.version, args.build, args.platform)
         if upload:
             state = upload["attributes"]["state"]["state"]
             require(state in {"COMPLETE", "PROCESSING"} or build, f"Upload already exists in state {state}. Check Apple before retrying.")
@@ -421,11 +432,13 @@ def main():
                 require(build["attributes"]["buildAudienceType"] == AUDIENCES[args.channel], "Existing build is for another channel")
         print("existing" if upload else "new")
     elif args.operation == "finish":
-        build = accepted_build(args.channel, args.version, args.build, 1200)
+        build = accepted_build(args.channel, args.version, args.build, 1200, args.platform)
         if args.channel == "testflight":
             distribute(build, os.environ["FEI_BETA_GROUP_ID"])
         elif args.channel == "public-testflight":
             distribute_public(build, os.environ["FEI_PUBLIC_BETA_GROUP_ID"])
+            if args.platform == "IOS":
+                distribute(build, os.environ["FEI_BETA_GROUP_ID"], write_notes=False)
         else:
             prepare_store(args.version, build)
     elif args.operation == "submit":
