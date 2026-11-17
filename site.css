@@ -152,11 +152,7 @@ html[lang="zh-Hans"] .document-content { line-height: 1.86; }
   .document-page .top { gap: 12px; }
 }
 
-/* Invitation handoff reuses the document card and the home page download button. */
-.invitation-page::before, .invitation-page::after { display: none; }
-.invitation-page .brand { color: var(--document-ink); text-shadow: none; }
-.invitation-main { width: min(100% - 36px, 520px); margin-block: clamp(48px, 13vh, 140px) 48px; }
-.invitation-main .document-sheet { display: block; text-align: center; padding: 36px 24px; }
-.invitation-main #invite-open { margin-top: 24px; }
-.invitation-main #invite-options { margin-top: 18px; color: var(--document-muted); font-size: 13px; }
-.invitation-main .beta-download { color: #173e43; text-decoration: none; }
+/* Invitation content uses the home page background, typography and CTA unchanged. */
+.invitation-main { padding-top: clamp(48px, 13vh, 140px); }
+.invitation-main article { display: flex; flex-direction: column; align-items: center; gap: 24px; }
+.invitation-main #invite-options { font-size: 13px; }
