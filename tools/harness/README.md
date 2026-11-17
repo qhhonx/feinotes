@@ -105,3 +105,13 @@ mail-check invitation controls.
 Captures include narrow/dark member management. No live CloudKit,
 real notes, system clipboard or foreground activation is used. The existing
 `FDL_CLOUD_BIN` and `FDL_CLOUD_DYLD_PATH` overrides apply.
+
+`python3 tools/harness/startup.py` verifies the Mac startup boundary with newly
+generated offline fixtures: verified cache, delayed background restore, local
+editing retained after a late reply, and explicit local-only preference. It
+also exercises the existing New Document shortcut before discovery completes.
+An unavailable-account fixture must reject an unverified cache; a fresh install
+with a delayed account check must retain a note entered before it completes.
+Build with `cloudkit-sync,devtools` and set `FDL_CLOUD_BIN` and
+`FDL_CLOUD_DYLD_PATH`; no real account or existing library is used. Account and
+device-marker mismatch checks also run in the cloud configuration unit tests.

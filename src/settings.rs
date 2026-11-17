@@ -206,7 +206,7 @@ pub fn load() {
     apply(p);
 }
 
-fn apply(p: Preferences) {
+pub(crate) fn apply(p: Preferences) {
     FEISHU.store(p.feishu, Ordering::Relaxed);
     LANG.store(p.lang() as u8, Ordering::Relaxed);
     MOTION_HIGH.store(p.motion == "high", Ordering::Relaxed);

@@ -235,14 +235,16 @@ private func syncSupport() throws -> URL {
     return support.appending(path: "Fei Notes Library").appending(path: cloudEnvironment).appending(path: containerID)
 }
 
-private func cachedSyncRoot(_ parent: URL, accountKey: String? = nil) -> Reply? {
+private func cachedSyncRoot(_ parent: URL, accountKey: String? = nil, identity: Data? = nil) -> Reply? {
     let verified = parent.appending(path: "verified-account")
     let marker = FileManager.default.fileExists(atPath: verified.path) ? verified : parent.appending(path: "active-account")
     guard let key = accountKey ?? (try? String(contentsOf: marker, encoding: .utf8)),
           key.count == 64, key.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
     let root = parent.appending(path: key)
-    if accountKey == nil && FileManager.default.fileExists(atPath: root.appending(path: "require-account-verification").path) {
-        return nil
+    if accountKey == nil {
+        guard !FileManager.default.fileExists(atPath: root.appending(path: "require-account-verification").path) else { return nil }
+        if let saved = try? String(contentsOf: root.appending(path: ".device-identity"), encoding: .utf8),
+           let current = identity ?? deviceIdentity(), sha256(current) != saved { return nil }
     }
     let stage = root.appending(path: ".restore-source")
     let ready = (try? String(contentsOf: root.appending(path: ".cloud-restore-ready"), encoding: .utf8))?.hasPrefix(key + "\n") == true
@@ -251,6 +253,29 @@ private func cachedSyncRoot(_ parent: URL, accountKey: String? = nil) -> Reply? 
         && FileManager.default.fileExists(atPath: stage.appending(path: "index.json").path)
     guard ready || downloaded else { return nil }
     return Reply(path: root.path, source: "local")
+}
+
+// A Drive identity, when available, can corroborate a previous CloudKit
+// verification locally. CloudKit remains authoritative for every exchange.
+private func deviceIdentity() -> Data? {
+    guard let token = FileManager.default.ubiquityIdentityToken else { return nil }
+    return try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: false)
+}
+
+private func startupCache(_ parent: URL, identity: Data?) -> Reply? {
+    guard let identity,
+          let active = try? String(contentsOf: parent.appending(path: "active-account"), encoding: .utf8),
+          let verified = try? String(contentsOf: parent.appending(path: "verified-account"), encoding: .utf8),
+          active == verified, let cached = cachedSyncRoot(parent, identity: identity), let path = cached.path,
+          FileManager.default.fileExists(atPath: path + "/library.sqlite3"),
+          (try? String(contentsOfFile: path + "/.cloud-restore-ready", encoding: .utf8))?.hasPrefix(active + "\n") == true,
+          (try? String(contentsOfFile: path + "/.device-identity", encoding: .utf8)) == sha256(identity)
+    else { return nil }
+    return cached
+}
+
+private func discoveryCache(_ parent: URL, action: Int32) -> Reply? {
+    action == 10 ? startupCache(parent, identity: deviceIdentity()) : cachedSyncRoot(parent)
 }
 
 private func unavailableAccountNetwork(_ error: Error) -> Bool {
@@ -300,10 +325,12 @@ private final class Completion: @unchecked Sendable {
     private var timedOut = false
     private var startupFallback: Reply?
     private var startupParent: URL?
+    private var startupAction: Int32 = 2
 
-    func allowLocalFallback(_ parent: URL) {
+    func allowLocalFallback(_ parent: URL, action: Int32) {
         lock.withLock {
             startupParent = parent
+            startupAction = action
             startupFallback = localReply(parent, reason: "unavailable")
         }
     }
@@ -335,7 +362,7 @@ private final class Completion: @unchecked Sendable {
     func timeout() -> Reply {
         lock.withLock {
             timedOut = true
-            return startupParent.flatMap { cachedSyncRoot($0) }
+            return startupParent.flatMap { discoveryCache($0, action: startupAction) }
                 ?? startupFallback ?? Reply(error: RestoreError.timeout.localizedDescription)
         }
     }
@@ -353,38 +380,71 @@ private func signedOut(_ completion: Completion, parent: URL?, action: Int32, re
 public func quietCloudRestore(_ action: Int32, _ path: UnsafePointer<CChar>?, _ scope: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
     let input = path.map { String(cString: $0) }
     let channel = scope.map { String(cString: $0) }
+    func encoded(_ reply: Reply) -> UnsafeMutablePointer<CChar>? {
+        guard let bytes = try? JSONEncoder().encode(reply) else { return nil }
+        return strdup(String(decoding: bytes, as: UTF8.self))
+    }
     let completion = Completion()
-    let worker = Task.detached {
+    let syncParent: URL?
+    do {
+        #if !FEI_CLOUD_QA
+        guard [2, 4, 5, 7, 8, 9, 10].contains(action), input == nil, channel == nil else {
+            throw RestoreError.invalid("不支持此文档库操作")
+        }
+        #endif
+        if let channel, UUID(uuidString: channel) == nil { throw RestoreError.invalid("测试库标识") }
+        syncParent = [2, 4, 5, 6, 7, 8, 9, 10].contains(action)
+            ? try input.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? syncSupport() : nil
+        if let parent = syncParent {
+            let manager = FileManager.default
+            let localChoice = parent.appending(path: "use-local-library")
+            if action == 5 {
+                try manager.createDirectory(at: parent, withIntermediateDirectories: true)
+                try Data().write(to: localChoice, options: .atomic)
+            }
+            if action == 5 || action == 9 || ([2, 8, 10].contains(action) && manager.fileExists(atPath: localChoice.path))
+                || (action == 2 && !manager.fileExists(atPath: parent.appending(path: "active-account").path)) {
+                return encoded(localReply(parent))
+            }
+            if action == 8 {
+                #if FEI_CLOUD_QA
+                let identity = startupFixture(input) == "bound-cache" ? Data("QA identity".utf8) : deviceIdentity()
+                #else
+                let identity = deviceIdentity()
+                #endif
+                return encoded(startupCache(parent, identity: identity) ?? Reply(source: "unresolved"))
+            }
+            if action == 2 || action == 10 { completion.allowLocalFallback(parent, action: action) }
+        }
+    } catch { return encoded(Reply(error: error.localizedDescription)) }
+    let worker = Task.detached(priority: .userInitiated) {
         defer { completion.done.signal() }
-        var syncParent: URL?
         do {
-            #if !FEI_CLOUD_QA
-            guard [2, 4, 5, 7].contains(action), input == nil, channel == nil else {
-                throw RestoreError.invalid("不支持此文档库操作")
+            let zone = restoreZone(channel)
+            #if FEI_CLOUD_QA
+            if action == 10, let input, let syncParent, startupFixture(input) == "slow-unavailable" {
+                try await Task.sleep(for: .milliseconds(150))
+                completion.reply = discoveryCache(syncParent, action: action) ?? completion.fallback("unavailable") ?? Reply(error: RestoreError.account.localizedDescription)
+                return
+            }
+            if action == 10, let input, let syncParent, startupFixture(input) == "slow-cache" {
+                try await Task.sleep(for: .seconds(3))
+                guard let cached = cachedSyncRoot(syncParent) else { throw RestoreError.missing }
+                completion.reply = cached
+                return
+            }
+            if action == 10, let input, let syncParent, startupFixture(input) == "slow-signed-out"
+                || ProcessInfo.processInfo.environment["FEI_QA_SLOW_SIGN_OUT"] == "1" {
+                try await Task.sleep(for: .seconds(15))
+                completion.reply = try signedOut(completion,parent: syncParent,action: action,reason: "signedOut")
+                return
             }
             #endif
-            if let channel, UUID(uuidString: channel) == nil { throw RestoreError.invalid("测试库标识") }
-            let zone = restoreZone(channel)
-            syncParent = [2, 4, 5, 6, 7].contains(action)
-                ? try input.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? syncSupport() : nil
-            if let syncParent {
-                if action == 2 { completion.allowLocalFallback(syncParent) }
-                let manager = FileManager.default
-                let localChoice = syncParent.appending(path: "use-local-library")
-                if action == 5 {
-                    try manager.createDirectory(at: syncParent, withIntermediateDirectories: true)
-                    try Data().write(to: localChoice, options: .atomic)
-                }
-                if action == 5 || (action == 2 && (manager.fileExists(atPath: localChoice.path)
-                    || !manager.fileExists(atPath: syncParent.appending(path: "active-account").path))) {
-                    completion.reply = localReply(syncParent)
-                    return
-                }
-            }
+            let identity = syncParent == nil ? nil : deviceIdentity()
             let container = CKContainer(identifier: containerID)
             let account: String
             do {
-                let status = try await accountStatus(container, startupTestRoot: action == 2 ? input : nil)
+                let status = try await accountStatus(container, startupTestRoot: [2, 10].contains(action) ? input : nil)
                 switch status {
                 case .noAccount, .restricted:
                     completion.reply = try signedOut(completion, parent: syncParent, action: action,
@@ -392,7 +452,7 @@ public func quietCloudRestore(_ action: Int32, _ path: UnsafePointer<CChar>?, _ 
                     return
                 case .available: break
                 default:
-                    if action != 4, let syncParent, let cached = cachedSyncRoot(syncParent) {
+                    if action != 4, let syncParent, let cached = discoveryCache(syncParent, action: action) {
                         completion.reply = cached
                         return
                     }
@@ -405,17 +465,17 @@ public func quietCloudRestore(_ action: Int32, _ path: UnsafePointer<CChar>?, _ 
                 account = try await container.userRecordID().recordName
             } catch let error as CKError where error.code == .notAuthenticated {
                 // CloudKit can report notAuthenticated while the current account is temporarily unavailable.
-                let status = try? await accountStatus(container, startupTestRoot: action == 2 ? input : nil)
+                let status = try? await accountStatus(container, startupTestRoot: [2, 10].contains(action) ? input : nil)
                 if status == .noAccount || status == .restricted {
                     completion.reply = try signedOut(completion, parent: syncParent, action: action,
                         reason: status == .noAccount ? "signedOut" : "restricted")
                     return
                 }
-                if action != 4, let syncParent, let cached = cachedSyncRoot(syncParent) { completion.reply = cached; return }
+                if action != 4, let syncParent, let cached = discoveryCache(syncParent, action: action) { completion.reply = cached; return }
                 if let fallback = completion.fallback("unavailable") { completion.reply = fallback; return }
                 throw error
             } catch where unavailableAccountNetwork(error) {
-                if action != 4, let syncParent, let cached = cachedSyncRoot(syncParent) {
+                if action != 4, let syncParent, let cached = discoveryCache(syncParent, action: action) {
                     completion.reply = cached
                     return
                 }
@@ -441,8 +501,13 @@ public func quietCloudRestore(_ action: Int32, _ path: UnsafePointer<CChar>?, _ 
                         testRoot: root.path, directory: ".restore-source", allowEmpty: true, container: container)
                 }
                 try Task.checkCancellation()
-                if action != 7 { try completion.clearAccountVerification(in: root) }
-                if action == 2 || action == 6 {
+                if action != 7 {
+                    try completion.clearAccountVerification(in: root)
+                    if let identity, deviceIdentity() == identity {
+                        try? completion.persist(sha256(identity), as: ".device-identity", in: root)
+                    }
+                }
+                if [2, 6, 10].contains(action) {
                     try completion.persist(key, as: "active-account", in: syncParent)
                 }
                 completion.reply = Reply(path: root.path, source: result.source)
@@ -468,8 +533,7 @@ public func quietCloudRestore(_ action: Int32, _ path: UnsafePointer<CChar>?, _ 
         reply = completion.timeout()
         worker.cancel()
     }
-    guard let bytes = try? JSONEncoder().encode(reply) else { return nil }
-    return strdup(String(decoding: bytes, as: UTF8.self))
+    return encoded(reply)
 }
 
 @_cdecl("quiet_cloud_restore_free")

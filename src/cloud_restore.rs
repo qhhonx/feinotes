@@ -14,7 +14,7 @@ unsafe extern "C" {
 }
 
 #[derive(Deserialize)]
-struct Reply {
+pub(super) struct Reply {
     path: Option<PathBuf>,
     source: Option<String>,
     #[cfg(any(not(feature = "cloudkit-sync"), feature = "devtools"))]
@@ -52,6 +52,45 @@ fn local_fallback_keeps_the_reason_from_the_swift_bridge() -> Result<()> {
     Ok(())
 }
 
+#[cfg(all(test, feature = "cloudkit-sync", feature = "devtools"))]
+#[test]
+fn startup_preflight_only_opens_the_selected_verified_cache() -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let parent = std::env::temp_dir().join(format!("quiet-sync-qa-{}",uuid::Uuid::new_v4()));
+    let key = "a".repeat(64);
+    let root = parent.join(&key);
+    std::fs::create_dir_all(&root)?;
+    let lookup = || request(8,Some(&parent),None);
+    assert!(lookup()?.path.is_none());
+    std::fs::write(parent.join("qa-startup-account"),"bound-cache")?;
+    std::fs::write(parent.join("active-account"),&key)?;
+    std::fs::write(parent.join("verified-account"),&key)?;
+    std::fs::write(root.join(".cloud-restore-ready"),format!("{key}\nfixture"))?;
+    std::fs::write(root.join(crate::store::SQLITE_FILE),[])?;
+    assert!(lookup()?.path.is_none());
+    std::fs::write(parent.join("qa-startup-account"),"slow-unavailable")?;
+    assert_eq!(request(10,Some(&parent),None)?.source.as_deref(),Some("localOnly"));
+    std::fs::write(parent.join("qa-startup-account"),"bound-cache")?;
+    std::fs::write(root.join(".device-identity"),format!("{:x}",Sha256::digest(b"QA identity")))?;
+    assert_eq!(lookup()?.path.as_deref(),Some(root.as_path()));
+    std::fs::write(root.join(".device-identity"),"another-device-identity")?;
+    assert!(lookup()?.path.is_none());
+    std::fs::write(root.join(".device-identity"),format!("{:x}",Sha256::digest(b"QA identity")))?;
+    std::fs::write(parent.join("verified-account"),"b".repeat(64))?;
+    assert!(lookup()?.path.is_none());
+    std::fs::write(parent.join("verified-account"),&key)?;
+    std::fs::write(root.join("require-account-verification"),[])?;
+    assert!(lookup()?.path.is_none());
+    std::fs::remove_file(root.join("require-account-verification"))?;
+    std::fs::write(parent.join("verified-account"),"signed-out")?;
+    assert!(lookup()?.path.is_none());
+    std::fs::write(parent.join("use-local-library"),[])?;
+    assert_eq!(lookup()?.source.as_deref(),Some("localOnly"));
+    assert_eq!(request(10,Some(&parent),None)?.source.as_deref(),Some("localOnly"));
+    std::fs::remove_dir_all(parent)?;
+    Ok(())
+}
+
 pub fn startup() {
     #[cfg(all(feature = "cloudkit-sync", feature = "devtools"))]
     if std::env::args().nth(1).as_deref() == Some("--cloud-sync-prepare-copy") {
@@ -74,16 +113,18 @@ pub fn startup() {
             legacy_startup();
             return;
         }
-        if let Err(error) = sync_startup() {
-            crate::logging::write(&format!("CloudKit sync startup: {error:#}"));
-            if !crate::devtools::scripted() && let Ok(message) = CString::new(format!("{error:#}")) {
-                unsafe { quiet_cloud_restore_alert(message.as_ptr()) };
-            }
-            crate::logging::fatal("Quiet Cloud Sync", &error);
-        }
+        if let Err(error) = sync_startup() { startup_error(&error); }
     }
     #[cfg(not(feature = "cloudkit-sync"))]
     legacy_startup();
+}
+
+#[cfg(feature = "cloudkit-sync")]
+pub(super) fn startup_error(error: &anyhow::Error) -> ! {
+    if !crate::devtools::scripted() && let Ok(message) = CString::new(format!("{error:#}")) {
+        unsafe { quiet_cloud_restore_alert(message.as_ptr()) };
+    }
+    crate::logging::fatal("Quiet Cloud Sync",error)
 }
 
 #[cfg(any(not(feature = "cloudkit-sync"), feature = "devtools"))]
@@ -210,6 +251,11 @@ fn sync_startup() -> Result<()> {
     let local_qa = cfg!(feature = "devtools") && std::env::var_os("QUIET_SYNC_QA_LOCAL_FIRST").is_some();
     let action = if shared { 7 } else if test.is_some() && !local_qa { 6 } else { 2 };
     let reply = request(action, test.as_deref(), scope.as_deref())?;
+    install_startup(reply,shared)
+}
+
+#[cfg(feature = "cloudkit-sync")]
+pub(super) fn install_startup(reply: Reply, shared: bool) -> Result<()> {
     let root = reply.path.context("Missing sync library path")?;
     let root = if shared {
         let note = std::env::args().nth(2).context("Missing shared note")?;
@@ -242,6 +288,48 @@ fn sync_startup() -> Result<()> {
     crate::store::Store::set_sqlite_session_root(root)?;
     crate::logging::write(&format!("CloudKit sync library source={}", reply.source.unwrap_or_default()));
     Ok(())
+}
+
+// Interactive startup separates choosing a library from installing the
+// process-wide Store root. Diagnostics and shared-room launches keep their
+// dedicated synchronous startup contract.
+#[cfg(feature = "cloudkit-sync")]
+fn startup_request(action: i32) -> Result<Reply> {
+    request(action,crate::cloud_sync::test_root()?.as_deref(),migration_scope()?.as_deref())
+}
+
+#[cfg(feature = "cloudkit-sync")]
+pub(super) fn cached_startup() -> Result<Option<Reply>> {
+    let reply = startup_request(8)?;
+    Ok(reply.path.is_some().then_some(reply))
+}
+
+#[cfg(feature = "cloudkit-sync")]
+pub(super) fn discover() -> Result<Reply> {
+    let reply = startup_request(10)?;
+    if reply.source.as_deref() != Some("localOnly") && let Some(root) = reply.path.as_deref()
+        && root.join(".restore-source").is_dir() && !crate::cloud_sync::backup::scheduled(root) {
+        // Import a downloaded snapshot off the UI thread before attaching it.
+        let _lock = lock_library(root)?;
+        crate::store::Store::initialize_sqlite(root)?;
+    }
+    Ok(reply)
+}
+
+#[cfg(feature = "cloudkit-sync")]
+pub(super) fn choose_local() -> Result<Reply> { startup_request(9) }
+
+#[cfg(feature = "cloudkit-sync")]
+pub(super) fn recent_local_notes() -> Result<Vec<(String,String)>> {
+    let root = choose_local()?.path.context("Missing local library path")?;
+    let file = root.join(crate::store::SQLITE_FILE);
+    if !file.is_file() || crate::cloud_sync::backup::scheduled(&root) { return Ok(Vec::new()); }
+    // A preview must not migrate the database, install backups or open a Store
+    // until the user chooses a note. Read only the titles needed for this frame.
+    let db = rusqlite::Connection::open_with_flags(file,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut stmt = db.prepare("SELECT d.id,d.title FROM library_documents d JOIN library_entries e ON e.id=d.id
+        WHERE d.trashed=0 ORDER BY json_extract(e.meta,'$.modified') DESC LIMIT 8")?;
+    Ok(stmt.query_map([],|row| Ok((row.get(0)?,row.get(1)?)))?.collect::<rusqlite::Result<_>>()?)
 }
 
 #[cfg(feature = "cloudkit-sync")]

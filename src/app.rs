@@ -735,8 +735,6 @@ impl Workspace {
             } else if BACKUP_RESTORED.get().is_some() {
                 ws.show_toast(crate::settings::tr("已恢复备份，之前的文档库已保留。",
                     "Backup restored. Your previous library was kept."), cx);
-            } else if let Some(reason) = crate::cloud_restore::startup_fallback() {
-                ws.show_toast(reason, cx);
             }
         }
         ws

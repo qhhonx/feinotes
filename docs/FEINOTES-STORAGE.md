@@ -6,6 +6,23 @@ The macOS product (`cloudkit-sync`, including its local-only mode) continues to 
 
 ## Library settings
 
+Mac startup first checks the explicit local-only preference and any previously
+verified cache bound to the current device's iCloud Drive identity. A cache is
+opened immediately only when the selected and verified account markers agree,
+the database and restore marker exist, and no account revalidation is pending.
+CloudKit still verifies the account for every exchange. Drive identity alone
+does not authorize a library or any cloud request.
+Failed or timed-out background discovery uses the same cache checks; without
+that confirmation it falls back to the local library and preserves old caches.
+
+When unresolved, an interactive home opens before account discovery and restore
+run in the background. Creating or opening a local note replaces that startup
+view with the normal local workspace; a late discovery reply cannot replace it
+or switch an active editor's library. This implicit local session does not set
+the explicit local-only preference. A user-selected local-only preference is
+retained without starting discovery. Diagnostic/shared-room command launches
+keep their synchronous startup contract. No schema or cloud protocol changes.
+
 Settings > Documents keeps upstream library rows together (location, Trash and local version-history retention). Fei Notes appends separate Import, iCloud Sync, and Backup and Restore groups through `product_library_groups`. Keep future product controls out of the upstream row list. Cloud library selection, sync status, sync issues and cloud-access controls are shown directly on this page; there is no separate iCloud settings page. Entering or reopening Documents refreshes cloud-access status, and purchase changes continue to refresh the visible controls.
 
 ## Import and recovery
