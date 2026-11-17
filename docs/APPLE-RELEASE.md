@@ -61,3 +61,20 @@ The public website and app support link use feinotes.app. The canonical reposito
 Automatic releases keep using `macos-26` and the triggering commit. For public-TestFlight recovery after a confirmed infrastructure failure, manual dispatch accepts `runner=macos-26-intel` and an optional full 40-character `source` commit. The source must be an ancestor of the workflow commit; both macOS jobs check out and verify that exact source. Runner or source overrides are rejected for Store operations and automatic branch releases.
 
 Before a replacement run, confirm the previous run is terminal and read the exact Apple upload receipt. Keep the authorized version and build only when that number has not been uploaded, or let the existing upload-resume logic handle a verified receipt. Record the workflow commit separately from the application source. Both executable and Swift bridge still require arm64 and x86_64 slices. Intel-hosted compilation does not establish physical Intel application acceptance.
+
+
+## Fei Notes 1.0.6 source selection
+
+The 1.0.6 TestFlight package selects application source
+`431232de1a9e67ae6d22b9da5428a0658e9da95d`, including the 18 upstream commits
+through `e9cb5408d0ffcad5bf5b31814e10e1b2f275347f`. That source passed the
+ordinary and cloud checks plus the board, owned-image, history and backup
+regressions documented in UPSTREAM.md. The release workflow checks that exact
+commit again and packages both architectures.
+
+Board scenes retain block-property conflict handling; element-level board
+collaboration and real multi-account board acceptance are not established by
+these local checks. Keep that boundary in the bilingual beta testing notes.
+The release preparation commit uses `[skip ci]` so a single explicit Intel
+public-TestFlight dispatch owns this version; do not also dispatch an automatic
+branch build. This selection does not submit an App Store version.
