@@ -9,7 +9,7 @@
   <title>Fei Notes · Space to think. Peace of mind.</title>
   <link rel="icon" href="../assets/fei-notes.png" type="image/png">
   <link rel="preload" as="image" href="../assets/coastal-canopy-v1.jpg">
-  <link rel="stylesheet" href="../landing.css">
+  <link rel="stylesheet" href="../landing.css?v=33c04d9f07">
   <link rel="stylesheet" href="../sync-preview.css">
   <link rel="stylesheet" href="../collab-preview.css">
 </head>
@@ -21,14 +21,20 @@
       <nav aria-label="Site navigation">
         <a href="support/index.html">Support</a>
         <a href="privacy/index.html">Privacy</a>
+        <a href="https://github.com/qhhonx/feinotes" rel="external">GitHub</a>
         <a class="language" href="../index.html" hreflang="zh-Hans" lang="zh-Hans">简体中文</a>
       </nav>
     </header>
     <main id="main" class="wrap">
       <div class="hero">
-        <p class="release"><span aria-hidden="true"></span>Coming to Mac</p>
+        <p class="release"><span aria-hidden="true"></span>Mac · TestFlight</p>
         <h1>Space to think.<br><span>Peace of mind.</span></h1>
         <p class="lead">The ease of Lark Docs. The peace of mind of Apple Notes with iCloud.</p>
+        <div id="testflight" class="beta-access" data-language="en" data-status="../testflight-status.json">
+          <a class="beta-download" data-beta-link href="https://testflight.apple.com/join/NdcXugMy" aria-disabled="true" tabindex="-1" aria-live="polite">Beta coming soon</a>
+          <p class="beta-details">macOS 14 or later</p>
+          <p class="beta-details" data-beta-review hidden aria-live="polite"></p>
+        </div>
       </div>
       <div class="theme-switch" role="group" aria-label="Explore features">
         <button type="button" class="active" data-theme="sync" aria-pressed="true">iCloud Sync</button>
@@ -71,5 +77,6 @@
     </footer>
   </div>
   <script src="../theme-gallery.js" defer></script>
+  <script src="../testflight.js?v=2" defer></script>
 </body>
 </html>

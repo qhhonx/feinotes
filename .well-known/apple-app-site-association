@@ -1,0 +1,17 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "95BC6VVXL8.app.feinotes.mac"
+        ],
+        "components": [
+          {
+            "/": "/share/*",
+            "comment": "Fei Notes shared document invitations"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -67,6 +67,7 @@
 .document-outline a {
   min-height: 32px;
   padding-block: 5px;
+  white-space: normal;
   color: #315b64;
   font-size: 13px;
   line-height: 1.45;
@@ -150,3 +151,12 @@ html[lang="zh-Hans"] .document-content { line-height: 1.86; }
 @media (max-width: 420px) {
   .document-page .top { gap: 12px; }
 }
+
+/* Invitation handoff reuses the document card and the home page download button. */
+.invitation-page::before, .invitation-page::after { display: none; }
+.invitation-page .brand { color: var(--document-ink); text-shadow: none; }
+.invitation-main { width: min(100% - 36px, 520px); margin-block: clamp(48px, 13vh, 140px) 48px; }
+.invitation-main .document-sheet { display: block; text-align: center; padding: 36px 24px; }
+.invitation-main #invite-open { margin-top: 24px; }
+.invitation-main #invite-options { margin-top: 18px; color: var(--document-muted); font-size: 13px; }
+.invitation-main .beta-download { color: #173e43; text-decoration: none; }
