@@ -8,5 +8,22 @@
     "version": "1.0.7",
     "build": "1014"
   },
-  "updatedAt": "2026-11-17T15:41:50.969869+00:00"
+  "platforms": {
+    "MAC_OS": {
+      "state": "available",
+      "url": "https://testflight.apple.com/join/NdcXugMy",
+      "version": "1.0.4",
+      "build": "1010",
+      "pending": {
+        "state": "review",
+        "version": "1.0.7",
+        "build": "1014"
+      }
+    },
+    "IOS": {
+      "state": "unavailable",
+      "url": "https://testflight.apple.com/join/NdcXugMy"
+    }
+  },
+  "updatedAt": "2026-11-17T20:58:31.872916+00:00"
 }
