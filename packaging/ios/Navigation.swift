@@ -81,17 +81,7 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
 }
 
 @MainActor
-private final class FeiBrowserRootView: UIView {
-    override func point(inside point: CGPoint,with event: UIEvent?) -> Bool {
-        // Triple-column UIKit extends supplementary content beneath primary.
-        // Its transparent leading extension must not intercept sidebar taps.
-        point.x >= safeAreaInsets.left && super.point(inside: point,with: event)
-    }
-}
-
-@MainActor
 class FeiRouteController: UIViewController {
-    override func loadView() { view = isWorkspaceBrowser ? FeiBrowserRootView() : UIView() }
     var isWorkspaceBrowser = false
     var routeKey = "notes"
     var frozenContent: UIView?
@@ -947,14 +937,12 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate {
     func createSidebarFolder(parentID: String? = nil) {
         if state?.browser?.shared == true { send("collection-new"); return }
         guard let state,let scope = state.browser?.listing.scope,!state.busy,state.can_create else { return }
-        let alert = UIAlertController(title: state.labels["new-folder"],message: nil,preferredStyle: .alert)
-        alert.addTextField { $0.accessibilityIdentifier = "fei.sidebar.folder-name" }
-        alert.addAction(UIAlertAction(title: label("cancel"),style: .cancel))
-        let save = UIAlertAction(title: label("save"),style: .default) { [weak self,weak alert] _ in
-            guard let name = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines),!name.isEmpty else { return }
+        let form = FeiRenameController(title: label("new-folder"),value: "",save: label("save"),cancel: label("cancel")) { [weak self] name in
             self?.send("browse-new-folder",value: name,id: parentID,scope: scope)
         }
-        save.accessibilityIdentifier = "fei.sidebar.folder-save"; alert.addAction(save); present(alert)
+        let navigation = UINavigationController(rootViewController: form)
+        navigation.sheetPresentationController?.detents = [.medium(),.large()]
+        present(navigation)
     }
 
     private func showSort() {

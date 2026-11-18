@@ -5,35 +5,38 @@ use std::{cell::RefCell,collections::HashMap};
 
 thread_local! { static QUERIES: RefCell<HashMap<String,String>> = RefCell::new(HashMap::new()); }
 
-pub(crate) fn scope(w: &Workspace) -> String { format!("{:?}|{:?}|{:?}",w.store.root(),w.folder_current,w.home.tab) }
+pub(crate) fn scope(w: &Workspace) -> String { format!("{:?}|{:?}|{:?}|{:?}",w.store.root(),w.folder_current,w.home.tab,w.sharing.collection) }
 
 fn entries(w: &Workspace,cx: &App) -> Vec<crate::store::Entry> { w.mobile_visible_entries(cx) }
 
 pub(crate) fn project(w: &Workspace,cx: &App) -> Option<serde_json::Value> {
     if unsafe { crate::ipad::fei_ios_is_phone() } { return None; }
-    let title = w.folder_current.as_ref().and_then(|id|w.entries.iter().find(|e|&e.id==id)).map(|e|display_title(&e.title))
-        .unwrap_or_else(||if w.home.tab==crate::home::HomeTab::Shared { tr("共享文档","Shared documents").into() } else if w.home.tab==crate::home::HomeTab::Starred { tr("收藏","Favorites").into() } else { tr("主页","Home").into() });
+    let collection = (!w.is_shared() && w.home.tab==crate::home::HomeTab::Shared).then(||w.mobile_collection_path(cx)).unwrap_or_default();
+    let folder = collection.last().map(|(id,_)|id.clone()).or_else(||w.folder_current.clone());
+    let title = collection.last().map(|(_,title)|display_title(title)).or_else(||w.folder_current.as_ref().and_then(|id|w.entries.iter().find(|e|&e.id==id)).map(|e|display_title(&e.title)))
+        .unwrap_or_else(||tr("主页","Home").into());
     let query = w.query(cx);
     let rows = entries(w,cx).into_iter().map(|entry|serde_json::json!({"id":entry.id,"title":display_title(&entry.title),"folder":entry.meta.folder.is_some(),"pinned":entry.meta.pinned,
         "summary":crate::mobile::list_summary(&entry.body,&query)})).collect::<Vec<_>>();
-    Some(serde_json::json!({"folder":w.folder_current,"favorites":w.home.tab==crate::home::HomeTab::Starred,"shared":!w.is_shared() && w.home.tab==crate::home::HomeTab::Shared,"title":title,
-        "listing":{"kind":if !w.is_shared() && w.home.tab==crate::home::HomeTab::Shared { "shared" } else { "notes" },"can_reorder":w.mobile_can_reorder(cx),"selection":w.mobile_batch_state(cx),"shared_count":w.shared_entries(cx).len(),"notice_kind":w.toast.as_ref().map(|(kind,_,_)|match kind { crate::ui::ToastKind::Success=>"success",crate::ui::ToastKind::Error=>"error",crate::ui::ToastKind::Info=>"info" }),"interface_size":settings::prefs().ui_font,"notice":w.toast.as_ref().filter(|(_,_,time)|time.elapsed().as_secs_f32()<3.).map(|(_,text,_)|text.to_string()),"scope":scope(w),"query":w.search.read(cx).text,"tab":0,"tabs":false,
-        "empty":if query.is_empty(){tr("选择文件夹或新建文档","Choose a folder or create a document")}else{tr("没有找到匹配的结果","No matching documents")},"rows":rows}}))
+    Some(serde_json::json!({"folder":folder,"favorites":w.home.tab==crate::home::HomeTab::Starred,"shared":!w.is_shared() && w.home.tab==crate::home::HomeTab::Shared,"title":title,
+        "listing":{"kind":if !w.is_shared() && w.home.tab==crate::home::HomeTab::Shared { "shared" } else { "notes" },"can_reorder":w.mobile_can_reorder(cx),"selection":w.mobile_batch_state(cx),"shared_count":w.shared_entries(cx).len(),"notice_kind":w.toast.as_ref().map(|(kind,_,_)|match kind { crate::ui::ToastKind::Success=>"success",crate::ui::ToastKind::Error=>"error",crate::ui::ToastKind::Info=>"info" }),"interface_size":settings::prefs().ui_font,"notice":w.toast.as_ref().filter(|(_,_,time)|time.elapsed().as_secs_f32()<3.).map(|(_,text,_)|text.to_string()),"scope":scope(w),"query":w.search.read(cx).text,"tab":match w.home.tab { crate::home::HomeTab::Starred=>1,crate::home::HomeTab::Shared=>2,_=>0 },"tabs":folder.is_none() && query.is_empty() && !w.is_shared(),
+        "empty":if !query.is_empty() { tr("没有找到匹配的结果","No matching documents") } else if w.home.tab==crate::home::HomeTab::Starred { tr("暂无收藏文档","No favorite documents yet") } else if w.home.tab==crate::home::HomeTab::Shared { tr("暂无共享文档，可从菜单接受邀请，或邀请他人协作笔记。","No shared documents. Accept an invitation from the menu, or invite someone to a note.") } else { tr("点新建按钮开始记录","Tap New to start a document") },"rows":rows}}))
 }
 
 fn select_scope(w: &mut Workspace,target: String,window: &mut Window,cx: &mut Context<Workspace>) {
     let folder = target.strip_prefix("folder:").map(str::to_owned);
-    if let Some(id) = &folder { if !w.entries.iter().chain(w.personal_navigation_entries(cx).iter()).any(|e|&e.id==id&&e.meta.folder.is_some()) { return; } }
+    if let Some(id) = &folder { if !w.entries.iter().chain(w.personal_navigation_entries(cx).iter()).chain(w.mobile_collection_entries(cx).iter()).any(|e|&e.id==id&&e.meta.folder.is_some()) { return; } }
     else if !matches!(target.as_str(),"all"|"favorites"|"shared") { return; }
     let tab = if target=="shared" { crate::home::HomeTab::Shared } else if target=="favorites" { crate::home::HomeTab::Starred } else { crate::home::HomeTab::Recent };
     if w.is_shared() && folder.as_ref().is_none_or(|id|!w.entries.iter().any(|e|&e.id==id)) { w.personal_action(window,cx,move|w,window,cx|select_scope(w,target,window,cx)); return; }
-    if w.folder_current==folder && w.home.tab==tab && w.view==View::Doc { cx.notify();return; }
     let retry = target.clone();
     if !w.save_before(cx,move|w,window,cx|select_scope(w,retry,window,cx)) { return; }
     QUERIES.with(|queries|queries.borrow_mut().insert(scope(w),w.search.read(cx).text.clone()));
     w.mobile_batch=None; w.batch=None; w.mobile_navigation.links.clear(); w.mobile_navigation.trash=None;
-    w.folder_current=folder;
+    w.sharing.collection=None;
     w.home.tab=tab;
+    if folder.as_ref().is_some_and(|id|w.mobile_collection(id,cx)) { w.folder_current=None; }
+    else { w.folder_current=folder; }
     let query=QUERIES.with(|queries|queries.borrow().get(&scope(w)).cloned().unwrap_or_default());
     w.search.update(cx,|field,cx|field.set_text(&query,cx));
     w.show_view(if w.folder_current.is_some(){View::Folder}else{View::Home},cx);

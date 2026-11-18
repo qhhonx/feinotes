@@ -204,7 +204,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         compose.accessibilityLabel = labels["new"]
         compose.isEnabled = !busy && coordinator?.allowsCompose == true
         tabs.setTitle(labels["all-notes"],forSegmentAt: 0); tabs.setTitle(labels["favorites"],forSegmentAt: 1); tabs.setTitle(labels["sharing"],forSegmentAt: 2)
-        tabs.selectedSegmentIndex = next.tab; tabs.isHidden = browsesWorkspace || !next.tabs || isSelecting
+        tabs.selectedSegmentIndex = next.tab; tabs.isHidden = !next.tabs || isSelecting
         empty.text = next.rows.isEmpty ? next.empty : nil
         tableView.isUserInteractionEnabled = !busy && pendingMove == nil; search.isUserInteractionEnabled = !busy && pendingMove == nil
         if pendingMove == nil && (previous?.rows != next.rows || previous?.interface_size != next.interface_size || previous?.shared_count != next.shared_count || previous?.selection?.serial != next.selection?.serial || labelsChanged || source.snapshot().itemIdentifiers != ordered) {
@@ -434,7 +434,9 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     func searchBarSearchButtonClicked(_ searchBar: UISearchBar) { searchBar.resignFirstResponder() }
     @objc private func newNote() { guard let listing else { return }; view.endEditing(true); coordinator?.composeNote(listingScope: listing.scope) }
     @objc private func changeTab() {
-        guard let listing else { return }; coordinator?.send("list-tab",value: String(tabs.selectedSegmentIndex),scope: listing.scope)
+        guard let listing else { return }
+        if browsesWorkspace { coordinator?.send("browse-scope",value: ["all","favorites","shared"][tabs.selectedSegmentIndex],scope: listing.scope) }
+        else { coordinator?.send("list-tab",value: String(tabs.selectedSegmentIndex),scope: listing.scope) }
     }
     func tableView(_ tableView: UITableView,contextMenuConfigurationForRowAt indexPath: IndexPath,point: CGPoint) -> UIContextMenuConfiguration? {
         guard !isSelecting,let id = source.itemIdentifier(for: indexPath) else { return nil }
@@ -457,10 +459,11 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         let container=UIView(), button=UIButton(type: .system)
         var config=UIButton.Configuration.plain(); config.title=labels["pinned"]
         config.image=UIImage(systemName: collapsedPinned.contains(listing.scope) ? "chevron.right" : "chevron.down")
-        config.imagePlacement = .trailing; config.imagePadding=10; config.contentInsets = .zero
+        config.preferredSymbolConfigurationForImage=UIImage.SymbolConfiguration(pointSize: UIFontMetrics(forTextStyle: .headline).scaledValue(for: 12),weight: .semibold)
+        config.imagePlacement = .trailing; config.imagePadding=6; config.contentInsets = .zero
         config.titleTextAttributesTransformer=UIConfigurationTextAttributesTransformer { incoming in var out=incoming; out.font=UIFont.preferredFont(forTextStyle: .headline); return out }
         pinnedHeaderButton=button
-        button.configuration=config; button.contentHorizontalAlignment = .fill; button.tintColor=palette.textColor
+        button.configuration=config; button.contentHorizontalAlignment = .leading; button.tintColor=palette.textColor
         button.accessibilityIdentifier="fei.notes.pinned-header"; button.accessibilityValue=collapsedPinned.contains(listing.scope) ? "collapsed" : "expanded"
         button.addTarget(self,action: #selector(togglePinned),for: .touchUpInside); button.translatesAutoresizingMaskIntoConstraints=false
         container.addSubview(button); NSLayoutConstraint.activate([button.topAnchor.constraint(equalTo: container.topAnchor),button.bottomAnchor.constraint(equalTo: container.bottomAnchor),button.leadingAnchor.constraint(equalTo: container.leadingAnchor),button.trailingAnchor.constraint(equalTo: container.trailingAnchor)])
