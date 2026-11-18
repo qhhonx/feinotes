@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 from pathlib import Path
 from unittest import TestCase, main
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('ios_release', Path(__file__).with_name('release.py'))
 release = importlib.util.module_from_spec(spec)
@@ -24,6 +25,21 @@ def profile():
 
 
 class IOSReleaseTest(TestCase):
+    def test_actual_signer_accepts_matching_leaf_and_rejects_another_certificate(self):
+        certificate = b'distribution certificate'
+        def extract(command, **kwargs):
+            # Match codesign's optional-argument parsing, which rejects a separate prefix.
+            option = next(item for item in command if item.startswith('--extract-certificates='))
+            Path(option.split('=', 1)[1] + '0').write_bytes(certificate)
+        with patch.object(release.subprocess, 'run', side_effect=extract):
+            release.validate_signer(Path('FeiNotes.app'), hashlib.sha1(certificate).hexdigest())
+            with self.assertRaises(ValueError): release.validate_signer(Path('FeiNotes.app'), '0' * 40)
+
+    def test_signature_without_leaf_certificate_is_rejected(self):
+        with patch.object(release.subprocess, 'run'):
+            with self.assertRaisesRegex(ValueError, 'no leaf signing certificate'):
+                release.validate_signer(Path('FeiNotes.app'), '0' * 40)
+
     def check_profile(self, value):
         return release.validate_profile(value, hashlib.sha1(b'distribution certificate').hexdigest(), 'expected')
 
