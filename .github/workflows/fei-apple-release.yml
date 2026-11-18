@@ -59,7 +59,11 @@ concurrency:
 
 jobs:
   select:
-    if: github.repository_owner == 'qhhonx' && (github.event_name == 'workflow_dispatch' || github.event.deleted == false)
+    if: >-
+      github.repository_owner == 'qhhonx' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.deleted == false &&
+        (github.ref_type == 'tag' || vars.FEI_AUTO_TESTFLIGHT == '1')))
     runs-on: ubuntu-latest
     outputs:
       operation: ${{ steps.release.outputs.operation }}
