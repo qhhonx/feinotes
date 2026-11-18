@@ -203,6 +203,8 @@ exec /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin \\
     metadata["sha256"] = {relative: digest(app / relative) for relative in (
         "Contents/MacOS/quiet_md", "Contents/MacOS/quiet_md.bin", "Contents/Frameworks/libQuietCloudRestore.dylib",
         "Contents/Resources/preview-smoke.txt")}
+    # The bundle signature seals the native launcher and rewrites its Mach-O signature.
+    if cloud: metadata["sha256"].pop("Contents/MacOS/quiet_md")
     (app / "Contents/Resources/upstream-preview.json").write_text(json.dumps(metadata, indent=2) + "\n")
     flags = ["--entitlements",str(entitlements)] if cloud else []
     run("codesign", "--force", "--sign", identity if cloud else "-", "--identifier", BUNDLE, "--timestamp=none", *flags, str(app))
