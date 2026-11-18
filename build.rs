@@ -18,6 +18,17 @@ fn main() {
         .output().ok().filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned()).unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=FEI_SOURCE_REVISION={revision}");
+    // A candidate may advance without changing Rust files. Do not cache its old revision.
+    let branch = std::process::Command::new("git").arg("-C").arg(&root).args(["symbolic-ref", "--quiet", "HEAD"])
+        .output().ok().filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    for name in [Some("HEAD"), Some("packed-refs"), branch.as_deref()].into_iter().flatten() {
+        if let Ok(output) = std::process::Command::new("git").arg("-C").arg(&root)
+            .args(["rev-parse", "--path-format=absolute", "--git-path", name]).output() && output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout);
+            if Path::new(path.trim()).exists() { println!("cargo:rerun-if-changed={}", path.trim()); }
+        }
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios")
         && std::env::var_os("CARGO_FEATURE_CLOUDKIT_SYNC").is_some() {
         println!("cargo:rerun-if-env-changed=FEI_IOS_PRODUCT_CLOUD");

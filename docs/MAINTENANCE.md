@@ -13,18 +13,39 @@ Preserve the upstream conventions in root AGENTS.md, CLAUDE.md and CONTRIBUTING.
 
 ## Integrating Quiet.md
 
-Commit the current product changes before starting an integration. Fetch upstream, then merge in an isolated worktree.
+Prepare upstream integrations only in an independent dated candidate branch and worktree. Never stage unrelated product changes. The product worktree may continue its own work: use its committed branch snapshot, record dirty files or active Git operations, and leave that worktree untouched. Reuse an existing pending candidate when possible; distinguish upstream commits missing from the product from commits already integrated into the candidate.
 
 ```sh
 git fetch upstream main
-git worktree add -b integrate/quiet-main ../feinotes-upstream product/quiet-sync
-cd ../feinotes-upstream
+git worktree add -b integrate/quiet-main-YYYYMMDD ../feinotes-upstream-YYYYMMDD product/quiet-sync
+cd ../feinotes-upstream-YYYYMMDD
 git merge --no-ff upstream/main
 scripts/check.sh
 scripts/check-cloud-sync.sh
 ```
 
 Review semantic interactions even when Git reports no conflict. Pay particular attention to document creation, editor selections and IME state, table identities, SQLite transactions, file import and shared-note permissions. Use targeted regression checks for paths changed by the integration.
+
+Keep the file and SQLite backends, cloud functionality and local version history in backup/restore intact. Run 2000 random-edit seeds when editor structure changes. If the product branch advances, merge its committed changes into the candidate, resolve conflicts there, and repeat the affected checks. A fast-forward product update avoids a merge conflict at that step; it does not eliminate conflicts during candidate integration.
+
+After the checks, commit the candidate and build a separate local experience app:
+
+```sh
+python3 packaging/macos/build-upstream-preview.py
+```
+
+The builder requires a clean candidate checkout and records its exact source revision. The app is **Fei Notes Upstream Preview**, with the fixed non-TestFlight Bundle ID **`local.feinotes.upstream-preview`**. Neither the bundle nor its compiled identity may use `app.feinotes.mac` or another TestFlight/Store identity. Use only ad-hoc signing, no provisioning profile, no CloudKit/app-group/keychain entitlements and no release credentials. The compiled cloud namespace is also separate. Do not replace installed applications, register production URL handlers or launch TestFlight. Use a separate temporary synthetic SQLite library and isolated logs; never use the user's real notes. Ship the bridge and resources inside the app. Verify the bundle identifier, signed identifier, empty entitlements and source manifest. This local experience build covers local SQLite/editor behavior; it does not establish live CloudKit or device acceptance.
+
+Deliver the candidate commit, verification results, app path and isolated data location to the user. **Daily automation stops here. Do not update `product/quiet-sync` until the user tests and explicitly approves that exact candidate commit.** A changed candidate invalidates the approval: rebuild, retest and obtain a fresh confirmation.
+
+After approval, check that the product worktree is clean, no Git operation is in progress, the candidate matches the approved tested revision, and the product is an ancestor of that revision. Only then update the product worktree:
+
+```sh
+git merge-base --is-ancestor product/quiet-sync APPROVED_CANDIDATE_SHA
+git -C ../quiet-md merge --ff-only APPROVED_CANDIDATE_SHA
+```
+
+If any guard fails, leave the product untouched. Refresh the independent candidate with committed product changes, retest, rebuild and ask the user to approve the new exact revision. Never reset, rebase or force-update the product to manufacture a fast-forward. Do not push or publish under the daily task. Send the authorized main-task handoff only after the approved fast-forward actually succeeds, once per resulting product commit.
 
 The first integration preview against upstream `fcd2aff` found text conflicts in `src/app.rs` and `src/settings.rs`. Preserve upstream's common creation entry point and quick-new preference, and retain Fei Notes' shared-note guards and save behavior. Refresh the preview against the actual upstream revision before merging.
 

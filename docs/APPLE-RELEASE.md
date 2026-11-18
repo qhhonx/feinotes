@@ -1,5 +1,7 @@
 # Fei Notes Apple release
 
+Local upstream experience builds follow [MAINTENANCE.md](MAINTENANCE.md), not this release workflow. Use `packaging/macos/build-upstream-preview.py`, the non-TestFlight Bundle ID `local.feinotes.upstream-preview`, ad-hoc signing and a separate synthetic library. Never package a candidate with the TestFlight identity or install it over TestFlight. Passing local checks does not authorize a release or product-branch update.
+
 The release workflow follows BackupDuck's practice of checking the exact source revision before distribution and identifying each release with an immutable tag. Fei Notes uses its existing Rust and Swift packager on a macOS runner. Xcode uploads both channels and App Store Connect is the source of truth for their processing and distribution state.
 
 | Release step | Trigger | Result |

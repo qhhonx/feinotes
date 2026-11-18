@@ -44,4 +44,6 @@ For a visual-preserving refactor, compare the before and after UI with the exist
 
 Create commits and push when the user requests them. Keep logical changes reviewable. Preserve the Quiet.md attribution and all applicable licenses. Follow MAINTENANCE.md for upstream integrations and APPLE-RELEASE.md for distribution.
 
+Upstream candidates stay in independent branches and worktrees until the user approves the exact tested revision. Provide an isolated local experience app first, using the non-TestFlight Bundle ID `local.feinotes.upstream-preview`, separate synthetic data and ad-hoc signing. Never reuse TestFlight identity or overwrite an installed app. Product updates require explicit user confirmation and `--ff-only`; automation cannot advance the product on its own.
+
 Run pull-request checks without release credentials. TestFlight distribution may run on the protected product branch. Store submission and publication have separate release gates. Verify the exact uploaded source revision, version and build number before distributing. Distribution packages include arm64 and x86_64 slices for both the executable and Swift bridge. Intel has no hardware validation; report compilation and package checks separately from runtime testing.
