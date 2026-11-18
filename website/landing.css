@@ -85,7 +85,10 @@ html[lang="en"] .lead { max-width: 680px; }
 
 /* Scenes keep the real editor frames as the visual anchor. */
 .story { background: #f4f8fa; }
-.story[hidden], .shot[hidden] { display: none; }
+/* Both scenes contribute to the shared height so cover backgrounds never rescale on a tab switch. */
+.scene-gallery { display: grid; }
+.scene-gallery > .story { grid-area: 1 / 1; align-self: start; min-width: 0; }
+.scene-gallery > .story[hidden] { display: block; visibility: hidden; pointer-events: none; }
 .scene-note {
   --caption-inset: clamp(4px, 1cqw, 12px);
   position: absolute;
