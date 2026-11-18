@@ -28,7 +28,23 @@ fn fps() -> f64 {
 }
 
 /// A script drives this run: other apps, dialogs and the updater stay out of it.
-pub fn scripted() -> bool { std::env::var_os("FDL_SCRIPT").is_some() }
+fn script_path() -> Option<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("FDL_SCRIPT") { return Some(path.into()); }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    if crate::cloud_sync::preview_channel().is_some() && std::env::args().nth(1).as_deref() == Some("--qa-script") {
+        let name = std::env::args().nth(2)?;
+        if name.starts_with('.') || name.contains('/') { return None; }
+        return Some(crate::cloud_sync::test_root().ok()??.join(name));
+    }
+    None
+}
+pub fn scripted() -> bool { script_path().is_some() }
+fn shots_dir() -> String {
+    if let Ok(path) = std::env::var("FDL_SHOTS") { return path; }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    if crate::cloud_sync::preview_channel().is_some() && let Ok(Some(root)) = crate::cloud_sync::test_root() { return root.to_string_lossy().into_owned(); }
+    "/private/tmp".into()
+}
 
 /// Time spent in the editor's `render` during the last benched frame.
 pub static RENDER_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -104,9 +120,9 @@ pub(crate) fn select_script_window(window: &mut Window) {
 }
 
 pub fn start(window: &mut Window, cx: &mut App) {
-    let Ok(path) = std::env::var("FDL_SCRIPT") else { return };
+    let Some(path) = script_path() else { return };
     let Ok(script) = std::fs::read_to_string(&path) else {
-        eprintln!("devtools: cannot read {path}");
+        eprintln!("devtools: cannot read {}",path.display());
         return;
     };
     let handle = window.window_handle();
@@ -148,7 +164,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
             // `burst name n`: n captures ~8ms apart, to catch transient frames.
             if cmd == "burst" {
                 let (name, n) = rest.trim().split_once(' ').unwrap_or((rest.trim(), "10"));
-                let dir = std::env::var("FDL_SHOTS").unwrap_or_else(|_| "/tmp".into());
+                let dir = shots_dir();
                 for i in 0..n.trim().parse().unwrap_or(10) {
                     let path = format!("{dir}/{name}-{i:02}.png");
                     let _ = handle.update(cx, |_, window, cx| capture(window, cx, &path));
@@ -388,7 +404,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                 cx.background_executor().timer(Duration::from_millis(100)).await;
                 cx.update(crate::cloud_sync::shared::session_qa::verify_account_check).unwrap();
                 cx.update(|cx| {
-                    let dir = std::env::var("FDL_SHOTS").unwrap_or_else(|_| "/private/tmp".into());
+                    let dir = shots_dir();
                     for (i, handle) in cx.windows().into_iter().enumerate() {
                         let _ = handle.update(cx, |_, window, cx| capture(window, cx, &format!("{dir}/shared-session-{i}.png")));
                     }
@@ -797,7 +813,7 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
             let mut it = rest.split_whitespace();
             let name = it.next().unwrap_or("desk").to_string();
             let margin: f64 = it.next().and_then(|m| m.parse().ok()).unwrap_or(48.);
-            let dir = std::env::var("FDL_SHOTS").unwrap_or_else(|_| "/tmp".into());
+            let dir = shots_dir();
             let path = format!("{dir}/{name}.png");
             match desk_grab(window, margin).and_then(|(w, h, mut px)| {
                 for p in px.as_chunks_mut::<4>().0 { p.swap(0, 2); p[3] = 255; }
@@ -809,7 +825,7 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
         }
         "shot" => {
             let name = rest.trim().to_string();
-            let dir = std::env::var("FDL_SHOTS").unwrap_or_else(|_| "/tmp".into());
+            let dir = shots_dir();
             let path = format!("{dir}/{name}.png");
             match capture(window, cx, &path) {
                 Ok(()) => eprintln!("devtools: saved {path}"),

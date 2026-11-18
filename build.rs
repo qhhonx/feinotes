@@ -77,6 +77,7 @@ fn cloudkit_restore() {
     println!("cargo:rerun-if-env-changed=FEI_CLOUD_ENVIRONMENT");
     println!("cargo:rerun-if-env-changed=FEI_BUNDLE_ID");
     println!("cargo:rerun-if-env-changed=FEI_MAC_UPSTREAM_PREVIEW");
+    println!("cargo:rerun-if-env-changed=FEI_UPSTREAM_PREVIEW_CHANNEL");
     println!("cargo:rerun-if-env-changed=FEI_TESTFLIGHT_BETA");
     let container = std::env::var("FEI_CLOUD_CONTAINER").unwrap_or_else(|_| "iCloud.app.quietmd.cloudlab".into());
     let environment = std::env::var("FEI_CLOUD_ENVIRONMENT").unwrap_or_else(|_| "Development".into());
@@ -101,7 +102,12 @@ fn cloudkit_restore() {
     let preview = std::env::var("FEI_MAC_UPSTREAM_PREVIEW").as_deref() == Ok("1");
     assert!(!preview || (qa && !testflight && environment == "Development" && bundle == "app.quietmd.cloudlab"
         && container == "iCloud.app.quietmd.cloudlab"), "Use the Development CloudLab identity for upstream cloud previews");
-    if preview { println!("cargo:rustc-env=FEI_UPSTREAM_PREVIEW=1"); }
+    if preview {
+        println!("cargo:rustc-env=FEI_UPSTREAM_PREVIEW=1");
+        let channel = std::env::var("FEI_UPSTREAM_PREVIEW_CHANNEL").expect("Set the isolated preview channel");
+        assert!(channel.len() == 36 && channel.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-'), "Invalid preview channel");
+        println!("cargo:rustc-env=FEI_UPSTREAM_PREVIEW_CHANNEL={channel}");
+    }
     println!("cargo:rustc-env=FEI_TESTFLIGHT_BETA={}", if testflight { "1" } else { "0" });
     println!("cargo:rustc-env=FEI_CLOUD_NAMESPACE={environment}:{container}");
     println!("cargo:rustc-env=FEI_BUNDLE_ID={bundle}");

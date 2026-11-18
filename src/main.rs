@@ -265,7 +265,7 @@ fn main() {
         #[cfg(feature = "cloudkit-sync")]
         let interactive = !std::env::args().skip(1).any(|arg| arg.starts_with("--cloud-") || arg == "--shared-note-room")
             && cloud_sync::test_root().is_ok_and(|root| if root.is_some() {
-                env!("FEI_UPSTREAM_PREVIEW") == "1" && !devtools::scripted()
+                env!("FEI_UPSTREAM_PREVIEW") == "1"
                     || devtools::scripted() && std::env::var_os("QUIET_SYNC_QA_STARTUP").is_some()
             } else { !devtools::scripted() });
         #[cfg(not(feature = "cloudkit-sync"))]

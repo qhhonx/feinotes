@@ -237,7 +237,7 @@ fn sync_startup() -> Result<()> {
     let test = crate::cloud_sync::test_root()?;
     let scope = migration_scope()?;
     let shared = std::env::args().nth(1).as_deref() == Some("--shared-note-room");
-    let local_qa = cfg!(feature = "devtools") && std::env::var_os("QUIET_SYNC_QA_LOCAL_FIRST").is_some();
+    let local_qa = crate::cloud_sync::preview_channel().is_some() || cfg!(feature = "devtools") && std::env::var_os("QUIET_SYNC_QA_LOCAL_FIRST").is_some();
     let action = if shared { 7 } else if test.is_some() && !local_qa { 6 } else { 2 };
     let reply = request(action, test.as_deref(), scope.as_deref())?;
     install_startup(reply,shared)
@@ -323,6 +323,7 @@ pub(super) fn recent_local_notes() -> Result<Vec<(String,String)>> {
 
 #[cfg(feature = "cloudkit-sync")]
 fn migration_scope() -> Result<Option<String>> {
+    if let Some(channel) = crate::cloud_sync::preview_channel() { return Ok(Some(channel.into())); }
     if !cfg!(feature = "devtools") || std::env::var_os("QUIET_SYNC_QA_MIGRATION").is_none() { return Ok(None); }
     ensure!(crate::cloud_sync::test_root()?.is_some(), "A migration QA run requires an isolated test root");
     let channel = std::env::var("QUIET_SYNC_QA_CHANNEL").context("A migration QA run requires a test channel")?;

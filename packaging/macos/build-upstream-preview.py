@@ -102,7 +102,8 @@ def build(output, cloud_profile=None, identity=None):
     output.mkdir(parents=True)
     env = {key: value for key, value in os.environ.items() if not key.startswith(("FEI_", "QUIET_", "FDL_", "DYLD_"))}
     env.update(FEI_BUNDLE_ID=BUNDLE, FEI_CLOUD_CONTAINER=CONTAINER, FEI_CLOUD_ENVIRONMENT="Development")
-    if cloud: env["FEI_MAC_UPSTREAM_PREVIEW"] = "1"
+    channel = plistlib.loads((REPO / "packaging/ios/UpstreamPreview-Info.plist").read_bytes())["FeiUpstreamPreviewCloudChannel"]
+    if cloud: env.update(FEI_MAC_UPSTREAM_PREVIEW="1",FEI_UPSTREAM_PREVIEW_CHANNEL=channel)
     process = subprocess.Popen(["cargo", "build", "--locked", "--features", "cloudkit-sync,devtools",
                                 "--message-format=json-render-diagnostics"], cwd=REPO, env=env, stdout=subprocess.PIPE, text=True)
     binary = bridge = configuration = None
@@ -174,8 +175,7 @@ exec /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin \\
 """.replace("ROOT", shlex.quote(str(root)), 1))
     launcher.chmod(0o755)
     if cloud:
-        run("xcrun","clang","-fobjc-arc","-O2","-mmacosx-version-min=14.0","-framework","Foundation",
-            str(REPO/"packaging/macos/upstream-preview-launcher.m"),"-o",str(launcher))
+        os.replace(app/"Contents/MacOS/quiet_md.bin",launcher)
         info = plistlib.loads((app/"Contents/Info.plist").read_bytes())
         info["FeiUpstreamPreviewCloudChannel"] = channel
         (app/"Contents/Info.plist").write_bytes(plistlib.dumps(info))
@@ -198,11 +198,12 @@ exec /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin \\
             "com.apple.developer.icloud-container-identifiers":[CONTAINER],"com.apple.developer.icloud-container-environment":"Development",
             "com.apple.developer.icloud-services":["CloudKit"]}))
     for relative in ("Contents/MacOS/quiet_md.bin", "Contents/Frameworks/libQuietCloudRestore.dylib"):
+        if not (app/relative).exists(): continue
         flags = ["--entitlements",str(entitlements),"--identifier",BUNDLE] if cloud and relative.endswith(".bin") else []
         run("codesign", "--force", "--sign", identity if cloud else "-", "--timestamp=none", *flags, str(app / relative))
     metadata["sha256"] = {relative: digest(app / relative) for relative in (
         "Contents/MacOS/quiet_md", "Contents/MacOS/quiet_md.bin", "Contents/Frameworks/libQuietCloudRestore.dylib",
-        "Contents/Resources/preview-smoke.txt")}
+        "Contents/Resources/preview-smoke.txt") if (app/relative).exists()}
     # The bundle signature seals the native launcher and rewrites its Mach-O signature.
     if cloud: metadata["sha256"].pop("Contents/MacOS/quiet_md")
     (app / "Contents/Resources/upstream-preview.json").write_text(json.dumps(metadata, indent=2) + "\n")

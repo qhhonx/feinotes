@@ -26,7 +26,7 @@ struct Reply { trial: Option<Trial>, error: Option<String> }
 #[cfg(feature = "devtools")]
 pub(crate) fn test_channel() -> Result<Option<String>> {
     if crate::cloud_sync::test_root()?.is_some() {
-        let id = std::env::var("QUIET_SYNC_QA_CHANNEL")?;
+        let id = std::env::var("QUIET_SYNC_QA_CHANNEL").or_else(|error| crate::cloud_sync::preview_channel().map(str::to_owned).ok_or(error))?;
         uuid::Uuid::parse_str(&id)?;
         Ok(Some(id))
     } else { Ok(None) }

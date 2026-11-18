@@ -13,6 +13,8 @@ static OPENED: OnceLock<PathBuf> = OnceLock::new();
 /// Windows; independent of where the program itself lives.
 pub fn dir() -> PathBuf {
     if let Some(d) = std::env::var_os("QUIET_MD_LOG_DIR") { return PathBuf::from(d) }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    if crate::cloud_sync::preview_channel().is_some() && let Ok(Some(root)) = crate::cloud_sync::test_root() { return root.join("logs"); }
     #[cfg(target_os = "macos")]
     let base = dirs::home_dir().map(|h| h.join("Library").join("Logs").join("quiet.md"));
     #[cfg(not(target_os = "macos"))]
