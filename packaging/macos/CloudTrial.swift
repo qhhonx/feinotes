@@ -3,7 +3,7 @@
 import CloudKit
 import CryptoKit
 import Foundation
-#if FEI_TESTFLIGHT_BETA
+#if FEI_TESTFLIGHT_BETA && os(macOS)
 import StoreKit
 #endif
 
@@ -129,7 +129,6 @@ actor CloudAccess {
             verifiedTestFlight = true
             return
         }
-        #endif
         let result: VerificationResult<AppTransaction>
         do { result = try await AppTransaction.shared }
         catch is CancellationError { throw CancellationError() }
@@ -140,6 +139,13 @@ actor CloudAccess {
             throw CloudAccessError.testflightVerification("Apple did not return a verified sandbox app transaction.")
         }
         try Task.checkCancellation()
+        #elseif os(iOS) && FEI_CLOUD_PRODUCT
+        // The iOS TestFlight configuration includes cloud access for testers.
+        // CloudKit still enforces the signed container entitlement and Apple account.
+        // The App Store uses Product and its subscription rules.
+        #else
+        #error("The TestFlight configuration requires macOS or Production iOS CloudKit")
+        #endif
         verifiedTestFlight = true
         #else
         let store = CloudSubscriptionStore(bundle: .main)
