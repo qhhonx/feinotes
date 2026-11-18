@@ -253,6 +253,7 @@ public func quietCloudShare(_ json: UnsafePointer<CChar>) -> UnsafeMutablePointe
         catch {
             completion.reply = ShareReply(error: error.localizedDescription)
             if case CloudAccessError.required = error { completion.reply.errorKind = "subscriptionRequired" }
+            if case CloudAccessError.testflightVerification = error { completion.reply.errorKind = "testflightVerification" }
         }
         completion.done.signal()
     }

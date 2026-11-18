@@ -187,6 +187,7 @@ private struct Changes: Encodable {
 private func syncErrorKind(_ error: Error) -> String {
     if case SyncError.accountChecking = error { return "accountChecking" }
     if case CloudAccessError.required = error { return "subscriptionRequired" }
+    if case CloudAccessError.testflightVerification = error { return "testflightVerification" }
     if case SyncError.account = error { return "account" }
     if case SyncError.timeout = error { return "offline" }
     if case ShareError.account = error { return "accountChanged" }

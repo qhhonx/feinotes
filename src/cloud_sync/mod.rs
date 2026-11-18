@@ -126,6 +126,7 @@ fn exchange(request: Exchange) -> Result<Changes> {
             Some("signedOut") => SyncPhase::SignedOut,
             Some("quota") => SyncPhase::Quota,
             Some("subscriptionRequired") => SyncPhase::SubscriptionRequired,
+            Some("testflightVerification") => SyncPhase::TestFlightVerification,
             _ => SyncPhase::Failed,
         };
         return Err(CloudFailure { phase, message: error.into() }.into());
@@ -213,6 +214,7 @@ pub(crate) enum SyncPhase {
     SignedOut,
     Quota,
     SubscriptionRequired,
+    TestFlightVerification,
     Failed,
 }
 

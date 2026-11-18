@@ -38,7 +38,7 @@ Document SQLite and cloud protocol migrations with their exact supported version
 
 ## Releases and website
 
-Follow [APPLE-RELEASE.md](APPLE-RELEASE.md). Each build must be traceable to one source commit, app version and Apple build number. The TestFlight channel includes cloud access after Apple verifies a sandbox app transaction. The Store channel uses its separate production access checks.
+Follow [APPLE-RELEASE.md](APPLE-RELEASE.md). Each build must be traceable to one source commit, app version and Apple build number. The TestFlight channel includes cloud access after verification of Apple's installed TestFlight signature or a sandbox app transaction. The Store channel uses its separate production access checks.
 
 Keep release secrets in the protected GitHub environments. Run pull-request checks without them. Use an ephemeral signing keychain on the release runner and remove it after the job. Public TestFlight requires Apple's beta review and a public group invitation.
 

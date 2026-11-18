@@ -1633,6 +1633,8 @@ fn cloud_sync_row(root: &std::path::Path, cx: &App) -> AnyElement {
             "iCloud is full. Pending uploads are saved on this Mac. Free up space, then choose Sync Now."),
         SyncPhase::SubscriptionRequired => tr("同步已暂停，改动仍保存在本机。恢复云功能后会继续同步。",
             "Sync is paused and changes are saved on this Mac. Sync resumes when cloud access is restored."),
+        SyncPhase::TestFlightVerification => tr("暂时无法验证 TestFlight 安装，改动已保存在本机。请联网后重试，或从 TestFlight 重新打开飞记。",
+            "Could not verify the TestFlight installation. Changes are saved on this Mac. Retry online or reopen Fei Notes from TestFlight."),
         SyncPhase::Failed => tr("同步失败，改动已保存在本机", "Sync failed. Changes are saved on this Mac."),
     };
     let mut detail = description.to_owned();

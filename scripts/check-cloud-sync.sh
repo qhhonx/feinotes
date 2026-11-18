@@ -8,5 +8,6 @@ if [ "$(uname -s)" != Darwin ]; then
     echo "The CloudKit build must be checked on macOS." >&2
     exit 1
 fi
+bash packaging/macos/test-testflight-install.sh
 cargo test --locked --workspace --features cloudkit-sync,devtools
 cargo clippy --locked --workspace --all-targets --features cloudkit-sync,devtools -- -D warnings
