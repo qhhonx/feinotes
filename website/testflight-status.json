@@ -6,7 +6,7 @@
   "pending": {
     "state": "review",
     "version": "1.0.8",
-    "build": "1016"
+    "build": "1018"
   },
   "platforms": {
     "MAC_OS": {
@@ -17,7 +17,7 @@
       "pending": {
         "state": "review",
         "version": "1.0.8",
-        "build": "1016"
+        "build": "1018"
       }
     },
     "IOS": {
@@ -27,5 +27,5 @@
       "build": "1019"
     }
   },
-  "updatedAt": "2026-11-18T16:09:13.562270+00:00"
+  "updatedAt": "2026-11-18T16:32:01.389637+00:00"
 }
