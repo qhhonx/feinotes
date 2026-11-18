@@ -341,5 +341,95 @@ class SupersessionTest(TestCase):
             self.simulate(confirm=False)
 
 
+class SameTrainReviewTest(TestCase):
+    def candidate(self, **changes):
+        return pending_record('new', platform='IOS', build='1019', state='READY_FOR_BETA_SUBMISSION', **changes)
+
+    def test_only_older_pending_same_platform_and_version(self):
+        rows = [pending_record('old', platform='IOS', build='1017'),
+                pending_record('approved', platform='IOS', build='1016', state='IN_BETA_TESTING'),
+                pending_record('mac', build='1018'),
+                pending_record('other-version', platform='IOS', version='1.0.7'),
+                pending_record('expired', platform='IOS', build='1015', expired=True)]
+        self.assertEqual([x['id'] for x in release.same_train_pending_plan(self.candidate(), rows)], ['old'])
+
+    def test_replacement_must_be_ready_valid_external_and_unexpired(self):
+        for changes in [dict(processing='PROCESSING'), dict(audience='INTERNAL_ONLY'), dict(expired=True)]:
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                release.same_train_pending_plan(self.candidate(**changes), [])
+        with self.assertRaises(ValueError):
+            release.same_train_pending_plan(pending_record('new', state='WAITING_FOR_BETA_REVIEW'), [])
+
+    def test_newer_submitted_build_blocks_a_stale_replacement(self):
+        with self.assertRaisesRegex(ValueError, 'newer build'):
+            release.same_train_pending_plan(self.candidate(), [pending_record('newer', platform='IOS', build='1020')])
+
+    def simulate(self, fresh=None, confirm=True, enabled=True):
+        candidate=self.candidate();old=pending_record('old', platform='IOS', build='1017')
+        row=record('builds','old',expired=False,processingState='VALID',buildAudienceType='APP_STORE_ELIGIBLE')
+        sequence=[candidate, old, fresh or candidate]
+        if fresh is None:sequence.append(old)
+        else:sequence.append(dict(old, state='IN_BETA_TESTING'))
+        with mock.patch.dict(os.environ, FEI_EXPIRE_SUPERSEDED_BETAS='1' if enabled else '0'), \
+             mock.patch.object(release,'rows',return_value=[row]), \
+             mock.patch.object(release,'beta_build_snapshot',side_effect=sequence), \
+             mock.patch.object(release,'request',return_value={'data':record('builds','old',expired=confirm)}) as request, \
+             mock.patch.object(release,'patch') as patch:
+            result=release.expire_same_train_pending(record('builds','new'),'public')
+            return result,patch.call_args_list,request.call_count
+
+    def test_expiration_is_verified_and_requires_explicit_switch(self):
+        result,calls,_=self.simulate();self.assertEqual(result,['old']);self.assertEqual(calls,[mock.call('builds','old',{'expired':True})])
+        with self.assertRaisesRegex(ValueError,'not enabled'):self.simulate(enabled=False)
+        with self.assertRaisesRegex(ValueError,'did not confirm'):self.simulate(confirm=False)
+
+    def test_approved_predecessor_race_is_preserved(self):
+        result,calls,_=self.simulate(fresh=self.candidate());self.assertEqual(result,[]);self.assertEqual(calls,[])
+
+    def test_concurrent_submission_does_not_expire_predecessor(self):
+        result,calls,_=self.simulate(fresh=dict(self.candidate(),state='WAITING_FOR_BETA_REVIEW'))
+        self.assertEqual(result,[]);self.assertEqual(calls,[])
+
+    def test_initial_submission_race_skips_expiration(self):
+        candidate=dict(self.candidate(),state='WAITING_FOR_BETA_REVIEW')
+        with mock.patch.dict(os.environ,FEI_EXPIRE_SUPERSEDED_BETAS='1'), \
+             mock.patch.object(release,'request',return_value={'data':record('builds','new')}), \
+             mock.patch.object(release,'beta_build_snapshot',return_value=candidate), \
+             mock.patch.object(release,'rows') as rows, mock.patch.object(release,'patch') as patch:
+            self.assertEqual(release.expire_same_train_pending(record('builds','new'),'public'),[])
+        rows.assert_not_called();patch.assert_not_called()
+
+    def test_submission_reread_avoids_a_second_post(self):
+        build=record('builds','new',buildAudienceType='APP_STORE_ELIGIBLE')
+        group=record('betaGroups','public',name='Public Beta')
+        ready=record('buildBetaDetails','detail',externalBuildState='READY_FOR_BETA_SUBMISSION')
+        pending=record('buildBetaDetails','detail',externalBuildState='WAITING_FOR_BETA_REVIEW')
+        with mock.patch.dict(os.environ,FEI_EXPIRE_SUPERSEDED_BETAS='1'), \
+             mock.patch.object(release,'beta_group',return_value=group), \
+             mock.patch.object(release,'beta_notes'), mock.patch.object(release,'patch'), \
+             mock.patch.object(release,'request',side_effect=[{'data':ready},{'data':pending},{'data':pending}]), \
+             mock.patch.object(release,'expire_same_train_pending') as expire, \
+             mock.patch.object(release,'add_beta_build'), mock.patch.object(release,'create') as create:
+            release.distribute_public(build,'public')
+        expire.assert_called_once_with(build,'public');create.assert_not_called()
+
+    def test_public_finish_distributes_internally_before_external_review(self):
+        import sys
+        for platform in ('IOS','MAC_OS'):
+            calls=[]
+            with mock.patch.dict(os.environ,FEI_BETA_GROUP_ID='internal',FEI_PUBLIC_BETA_GROUP_ID='public',FEI_BETA_NOTES_DIR='/tmp/notes'), \
+                 mock.patch.object(sys,'argv',['apple-release.py','finish','1.0.8','1019','public-testflight','--platform',platform]), \
+                 mock.patch.object(release,'accepted_build',return_value=record('builds','new')), \
+                 mock.patch.object(release,'distribute',side_effect=lambda *a,**k:calls.append('internal')), \
+                 mock.patch.object(release,'distribute_public',side_effect=lambda *a,**k:calls.append('external')):
+                release.main()
+            self.assertEqual(calls,['internal','external'])
+
+    def test_both_workflows_pass_the_existing_expiration_switch(self):
+        root=module.parents[2]
+        for name in ('fei-apple-release.yml','fei-ios-testflight.yml'):
+            self.assertIn('FEI_EXPIRE_SUPERSEDED_BETAS: ${{ vars.FEI_EXPIRE_SUPERSEDED_BETAS }}',(root/'.github/workflows'/name).read_text())
+
+
 if __name__ == "__main__":
     main()

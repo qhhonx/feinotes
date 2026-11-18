@@ -247,9 +247,15 @@ def distribute_public(build, group_id):
     patch("buildBetaDetails", detail["id"], {"autoNotifyEnabled": True})
     state = detail["attributes"]["externalBuildState"]
     if state == "READY_FOR_BETA_SUBMISSION":
+        if os.environ.get('FEI_EXPIRE_SUPERSEDED_BETAS') == '1':
+            expire_same_train_pending(build, group_id)
+            state = request('GET', f'/v1/builds/{identifier}/buildBetaDetail')['data']['attributes']['externalBuildState']
         # Apple may finish a prior request after a network interruption.
         # Re-read the build state on the next run instead of retrying POST.
-        create("betaAppReviewSubmissions", {"build": link("builds", identifier)})
+        if state == 'READY_FOR_BETA_SUBMISSION':
+            create("betaAppReviewSubmissions", {"build": link("builds", identifier)})
+        else:
+            require(state in BETA_SUBMITTED, f'External TestFlight needs attention: {state}')
     else:
         require(state in {"WAITING_FOR_BETA_REVIEW", "IN_BETA_REVIEW", "BETA_APPROVED",
                           "READY_FOR_BETA_TESTING", "IN_BETA_TESTING"},
@@ -279,6 +285,43 @@ def beta_candidate_eligible(record):
     return record.get('platform') in {'MAC_OS', 'IOS'} and not record.get('expired') \
         and record.get('processing') == 'VALID' and record.get('audience') == 'APP_STORE_ELIGIBLE' \
         and record.get('state') in BETA_SUBMITTED and beta_release_key(record) is not None
+
+
+def same_train_pending_plan(candidate, records):
+    require(candidate.get('platform') in {'MAC_OS', 'IOS'} and not candidate.get('expired')
+            and candidate.get('processing') == 'VALID' and candidate.get('audience') == 'APP_STORE_ELIGIBLE'
+            and candidate.get('state') == 'READY_FOR_BETA_SUBMISSION' and beta_release_key(candidate) is not None,
+            'Replacement must be a valid externally eligible build ready for beta submission')
+    same_train = [row for row in records if row.get('platform') == candidate['platform']
+                  and row.get('version') == candidate['version'] and beta_candidate_eligible(row)]
+    require(not any(beta_release_key(row) > beta_release_key(candidate) for row in same_train),
+            'A newer build is already submitted in this train')
+    return [row for row in same_train if row['state'] in BETA_PENDING
+            and beta_release_key(row) < beta_release_key(candidate)]
+
+
+def expire_same_train_pending(build, group_id):
+    require(os.environ.get('FEI_EXPIRE_SUPERSEDED_BETAS') == '1', 'Pending-build expiration is not enabled')
+    candidate = beta_build_snapshot(request('GET', f"/v1/builds/{build['id']}")['data'])
+    if beta_candidate_eligible(candidate):
+        return []
+    records = [beta_build_snapshot(row) for row in rows(f'/v1/betaGroups/{group_id}/builds')
+               if not row['attributes'].get('expired') and row['attributes'].get('processingState') == 'VALID'
+               and row['attributes'].get('buildAudienceType') == 'APP_STORE_ELIGIBLE']
+    planned = same_train_pending_plan(candidate, records)
+    expired = []
+    for old in planned:
+        current = beta_build_snapshot(request('GET', f"/v1/builds/{build['id']}")['data'])
+        if beta_candidate_eligible(current):
+            break  # Another request already submitted this exact replacement.
+        older = beta_build_snapshot(request('GET', f"/v1/builds/{old['id']}")['data'])
+        if not same_train_pending_plan(current, [older]):
+            continue  # Preserve a predecessor that became approved or otherwise changed.
+        patch('builds', older['id'], {'expired': True})
+        after = request('GET', f"/v1/builds/{older['id']}")['data']['attributes']
+        require(after.get('expired') is True, 'Apple did not confirm expiration of the old pending build')
+        expired.append(older['id'])
+    return expired
 
 
 def pending_beta_supersession_plan(records):
@@ -523,9 +566,8 @@ def main():
         if args.channel == "testflight":
             distribute(build, os.environ["FEI_BETA_GROUP_ID"])
         elif args.channel == "public-testflight":
+            distribute(build, os.environ["FEI_BETA_GROUP_ID"], write_notes=False)
             distribute_public(build, os.environ["FEI_PUBLIC_BETA_GROUP_ID"])
-            if args.platform == "IOS":
-                distribute(build, os.environ["FEI_BETA_GROUP_ID"], write_notes=False)
         else:
             prepare_store(args.version, build)
     elif args.operation == "submit":

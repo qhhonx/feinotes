@@ -101,6 +101,7 @@ jobs:
           FEI_IOS_EXPORT_EXEMPT: ${{ vars.FEI_IOS_EXPORT_EXEMPT }}
           FEI_BETA_GROUP_ID: ${{ vars.FEI_BETA_GROUP_ID }}
           FEI_PUBLIC_BETA_GROUP_ID: ${{ vars.FEI_PUBLIC_BETA_GROUP_ID }}
+          FEI_EXPIRE_SUPERSEDED_BETAS: ${{ vars.FEI_EXPIRE_SUPERSEDED_BETAS }}
           FEI_SUPPORT_URL: ${{ vars.FEI_SUPPORT_URL }}
         shell: bash
         run: bash packaging/ios/run-testflight.sh "$RELEASE_SOURCE" "$VERSION" "$BUILD" "$NOTES"
