@@ -59,11 +59,15 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         if let picker = navigationController?.topViewController as? FeiSettingsChoiceController { picker.update(next,busy: busy) }
     }
     private func updateFooter() {
-        guard notice.text != nil else { tableView.tableFooterView = nil; return }
+        guard notice.text != nil else { if tableView.tableFooterView != nil { tableView.tableFooterView = nil }; return }
         let width = tableView.bounds.width
         let size = notice.sizeThatFits(CGSize(width: max(1,width-40),height: .greatestFiniteMagnitude))
-        let container = UIView(frame: CGRect(x: 0,y: 0,width: width,height: size.height+32))
-        notice.frame = CGRect(x: 20,y: 8,width: max(1,width-40),height: size.height); container.addSubview(notice)
+        let frame = CGRect(x: 0,y: 0,width: width,height: ceil(size.height)+32)
+        if let container = tableView.tableFooterView,container.frame.size == frame.size { return }
+        let container = tableView.tableFooterView ?? UIView()
+        container.frame = frame
+        notice.frame = CGRect(x: 20,y: 8,width: max(1,width-40),height: ceil(size.height))
+        if notice.superview !== container { container.addSubview(notice) }
         tableView.tableFooterView = container
     }
     override func viewDidLayoutSubviews() { super.viewDidLayoutSubviews(); if notice.text != nil { updateFooter() } }

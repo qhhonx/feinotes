@@ -111,8 +111,12 @@ final class EditorHost: FeiRouteController {
         let library = URL.applicationSupportDirectory.appending(path: "FeiNotesEditorProbe")
         let environment = ProcessInfo.processInfo.environment
         let defaults = UserDefaults.standard
+        #if FEI_UPSTREAM_PREVIEW
+        let requested = environment["FEI_NOTES_CLOUD_CHANNEL"] ?? Bundle.main.object(forInfoDictionaryKey: "FeiUpstreamPreviewCloudChannel") as? String
+        #else
         let requested = environment["FEI_NOTES_CLOUD_CHANNEL"] ?? environment["FEI_NOTES_MVP_CHANNEL"]
             ?? defaults.string(forKey: Self.testChannelKey) ?? defaults.string(forKey: "FeiNotesMVPCloudChannel")
+        #endif
         guard let id = requested.flatMap(UUID.init(uuidString:)) ?? (requested == nil ? UUID() : nil) else {
             showStatus("iCloud 文档库标识无效。")
             return
@@ -122,12 +126,8 @@ final class EditorHost: FeiRouteController {
             showStatus("文档库配置无效。")
             return
         }
-        #if FEI_UPSTREAM_PREVIEW
-        let mode = "local"
-        #else
         let mode = environment["FEI_NOTES_MODE"] ?? environment["FEI_NOTES_MVP_MODE"]
             ?? defaults.string(forKey: "FeiNotesLibraryMode") ?? (feiIOSProductCloud() || requested != nil ? "cloud" : "local")
-        #endif
         let wantsCloud = mode == "cloud"
         if wantsCloud { defaults.set(channel, forKey: Self.testChannelKey) }
         Task { @MainActor in

@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>飞记·上游体验</string>
+	<string>飞记·上游云体验</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -33,6 +33,8 @@
 	<string>https://feinotes.app/support/</string>
 	<key>FeiUpstreamPreview</key>
 	<true/>
+	<key>FeiUpstreamPreviewCloudChannel</key>
+	<string>9f064dca-1cbc-45ef-a9f6-6f491db971b8</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>

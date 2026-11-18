@@ -45,8 +45,7 @@ fn main() {
         println!("cargo:rustc-env=FEI_TESTFLIGHT_BETA={beta}");
         assert!(!preview || (!product && beta == "0"), "Upstream previews cannot use the production or TestFlight configuration");
         println!("cargo:rustc-env=FEI_UPSTREAM_PREVIEW={}", if preview { "1" } else { "0" });
-        println!("cargo:rustc-env=FEI_CLOUD_NAMESPACE={}", if preview { "Development:iCloud.local.feinotes.upstream-preview" }
-            else if product { "Production:iCloud.app.feinotes.mac" } else { "Development:iCloud.app.quietmd.cloudlab" });
+        println!("cargo:rustc-env=FEI_CLOUD_NAMESPACE={}", if product { "Production:iCloud.app.feinotes.mac" } else { "Development:iCloud.app.quietmd.cloudlab" });
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") { windows_resources(); }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")

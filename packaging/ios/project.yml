@@ -120,10 +120,11 @@ targets:
           - "-lsqlite3"
       configs:
         UpstreamPreview:
-          PRODUCT_BUNDLE_IDENTIFIER: local.feinotes.upstream-preview.ios
-          INFOPLIST_KEY_CFBundleDisplayName: 飞记·上游体验
+          PRODUCT_BUNDLE_IDENTIFIER: app.quietmd.cloudlab
+          INFOPLIST_KEY_CFBundleDisplayName: 飞记·上游云体验
+          CURRENT_PROJECT_VERSION: "50"
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: FEI_CLOUD_QA FEI_UPSTREAM_PREVIEW
-          CODE_SIGN_ENTITLEMENTS: ""
+          CODE_SIGN_ENTITLEMENTS: DevCloud.entitlements
           INFOPLIST_FILE: UpstreamPreview-Info.plist
           GENERATE_INFOPLIST_FILE: NO
           FEI_MOBILE_QA: "0"
