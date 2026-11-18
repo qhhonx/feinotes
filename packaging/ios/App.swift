@@ -77,6 +77,9 @@ final class EditorHost: FeiRouteController {
     var findCoordinator: FeiFindCoordinator?
     private var frameConstraints: [NSLayoutConstraint] = []
     private let editorToolbar = FeiEditorToolbar()
+    #if FEI_MOBILE_QA
+    private let liveQAProbe = UIView(frame:CGRect(x:0,y:0,width:1,height:1))
+    #endif
     private let editorToolbarContainer = UIView()
     private var editorToolbarHeight: NSLayoutConstraint?
     private var editorToolbarVisible = false
@@ -235,7 +238,15 @@ final class EditorHost: FeiRouteController {
         toolbarState = state
         #if FEI_MOBILE_QA
         if let qa = state.qa {
-            editorView?.isAccessibilityElement=true; editorView?.accessibilityValue=qa.scroll
+            var probe = qa.scroll.data(using:.utf8).flatMap { try? JSONSerialization.jsonObject(with:$0) as? [String:Any] } ?? [:]
+            probe["qa_title"]=qa.title;probe["qa_body"]=qa.body
+            if ProcessInfo.processInfo.environment["FEI_LIVE_CLOUD_PROBE"] == "1" {
+                editorView?.isAccessibilityElement=false
+                liveQAProbe.isAccessibilityElement=true;liveQAProbe.isUserInteractionEnabled=false
+                liveQAProbe.accessibilityIdentifier="fei.qa.editor-state"
+                liveQAProbe.accessibilityValue=(try? JSONSerialization.data(withJSONObject:probe,options:[.sortedKeys])).flatMap { String(data:$0,encoding:.utf8) }
+                if liveQAProbe.superview !== editorView { liveQAProbe.removeFromSuperview();editorView?.addSubview(liveQAProbe) }
+            } else { editorView?.isAccessibilityElement=true;editorView?.accessibilityValue=qa.scroll }
             editorToolbar.accessibilityValue = "draft=\(qa.draft) gen=\(qa.generation) title=\(qa.title) body=\(qa.body) selection=\(qa.selection.anchor.block):\(qa.selection.anchor.offset)-\(qa.selection.head.block):\(qa.selection.head.offset) scroll=\(qa.scroll)"
         }
         #endif
