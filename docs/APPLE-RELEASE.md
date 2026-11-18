@@ -56,6 +56,14 @@ When a newer build is in review, keep the latest externally available build down
 The public website and app support link use feinotes.app. The canonical repository is https://github.com/qhhonx/feinotes.
 
 
+## Superseding pending TestFlight builds
+
+Set the repository variable `FEI_EXPIRE_SUPERSEDED_BETAS=1` to enable automatic expiration of obsolete pending builds. The existing availability workflow reconciles the public group after release runs and every 30 minutes; it does not start another app build.
+
+`python3 -B packaging/macos/apple-release.py supersede-pending` defaults to a read-only plan. Applying requires both `--apply` and the enabled variable. It treats macOS and iOS independently, compares numeric version/build values, and requires a newer valid externally eligible build already in beta review or approved in the same public group. Only older builds still waiting for beta review or in beta review can expire. Already approved, rejected, unsubmitted, internal-only and other-platform builds are preserved. Membership, processing and review states are read again immediately before each change, then Apple's `expired` field is read back. A failed or not-yet-submitted new build cannot retire the current pending build.
+
+Expiration uses Apple's TestFlight `builds.expired` API. It prevents further internal and external installation of that obsolete build; it does not submit or withdraw a formal App Store version. Beta review submission records remain historical evidence. Keep an approved public version downloadable until its replacement is actually approved. Disable the variable to stop automatic expiration.
+
 ## Runner recovery
 
 Automatic releases keep using `macos-26` and the triggering commit. For public-TestFlight recovery after a confirmed infrastructure failure, manual dispatch accepts `runner=macos-26-intel` and an optional full 40-character `source` commit. The source must be an ancestor of the workflow commit; both macOS jobs check out and verify that exact source. Runner or source overrides are rejected for Store operations and automatic branch releases.

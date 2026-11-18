@@ -260,6 +260,85 @@ def distribute_public(build, group_id):
     print(f"Public invitation: {group['attributes'].get('publicLink') or 'not enabled'}")
 
 
+BETA_PENDING = {'WAITING_FOR_BETA_REVIEW', 'IN_BETA_REVIEW'}
+BETA_SUBMITTED = BETA_PENDING | {'READY_FOR_BETA_TESTING', 'IN_BETA_TESTING', 'BETA_APPROVED'}
+
+
+def beta_release_key(record):
+    parts = []
+    for key in ('version', 'build'):
+        value = record.get(key, '')
+        if not re.fullmatch(r'[0-9]+(?:\.[0-9]+){0,2}', value):
+            return None
+        numbers = [int(part) for part in value.split('.')]
+        parts.append(tuple((numbers + [0, 0])[:3]))
+    return tuple(parts)
+
+
+def beta_candidate_eligible(record):
+    return record.get('platform') in {'MAC_OS', 'IOS'} and not record.get('expired') \
+        and record.get('processing') == 'VALID' and record.get('audience') == 'APP_STORE_ELIGIBLE' \
+        and record.get('state') in BETA_SUBMITTED and beta_release_key(record) is not None
+
+
+def pending_beta_supersession_plan(records):
+    newest = {}
+    for record in records:
+        if beta_candidate_eligible(record) and (record['platform'] not in newest or
+                beta_release_key(record) > beta_release_key(newest[record['platform']])):
+            newest[record['platform']] = record
+    result = []
+    for record in records:
+        replacement = newest.get(record.get('platform'))
+        if beta_candidate_eligible(record) and record['state'] in BETA_PENDING and replacement \
+                and beta_release_key(record) < beta_release_key(replacement):
+            result.append({'older': record, 'replacement': replacement})
+    return result
+
+
+def beta_build_snapshot(build):
+    identifier = build['id']
+    attributes = build['attributes']
+    info = request('GET', f'/v1/builds/{identifier}/preReleaseVersion')['data']['attributes']
+    detail = request('GET', f'/v1/builds/{identifier}/buildBetaDetail')['data']['attributes']
+    return {'id': identifier, 'platform': info['platform'], 'version': info['version'],
+            'build': attributes['version'], 'expired': attributes.get('expired', False),
+            'processing': attributes.get('processingState'), 'audience': attributes.get('buildAudienceType'),
+            'state': detail.get('externalBuildState')}
+
+
+def supersede_pending_betas(group_id, apply=False):
+    group = beta_group(group_id, internal=False)
+    records = [beta_build_snapshot(build) for build in rows(f"/v1/betaGroups/{group['id']}/builds")
+               if not build['attributes'].get('expired') and build['attributes'].get('processingState') == 'VALID'
+               and build['attributes'].get('buildAudienceType') == 'APP_STORE_ELIGIBLE']
+    planned = pending_beta_supersession_plan(records)
+    result = {'apply': apply, 'planned': planned, 'expired': [], 'skipped': []}
+    if not apply:
+        return result
+    require(os.environ.get('FEI_EXPIRE_SUPERSEDED_BETAS') == '1', 'Pending-build expiration is not enabled')
+    for item in planned:
+        old_id, new_id = item['older']['id'], item['replacement']['id']
+        members = {build['id'] for build in rows(f"/v1/betaGroups/{group['id']}/builds")}
+        if not {old_id, new_id} <= members:
+            result['skipped'].append({'id': old_id, 'reason': 'Public-group membership changed'})
+            continue
+        replacement = beta_build_snapshot(request('GET', f'/v1/builds/{new_id}')['data'])
+        older = beta_build_snapshot(request('GET', f'/v1/builds/{old_id}')['data'])
+        # Re-read immediately before mutation: never expire a build that has become approved.
+        if not pending_beta_supersession_plan([older, replacement]) or older['state'] not in BETA_PENDING \
+                or not beta_candidate_eligible(replacement) or older['platform'] != replacement['platform'] \
+                or beta_release_key(older) >= beta_release_key(replacement):
+            result['skipped'].append({'id': old_id, 'reason': 'Review or build state changed'})
+            continue
+        patch('builds', old_id, {'expired': True})
+        after = beta_build_snapshot(request('GET', f'/v1/builds/{old_id}')['data'])
+        require(after['expired'] is True, 'Apple did not confirm that the old pending build expired')
+        result['expired'].append({'before': older, 'after': after, 'replacement': replacement})
+    return result
+
+
+
 def public_beta_status(output):
     group = beta_group(os.environ["FEI_PUBLIC_BETA_GROUP_ID"], internal=False)
     builds = [item for item in rows(f"/v1/betaGroups/{group['id']}/builds")
@@ -399,6 +478,8 @@ def main():
     pack.add_argument("destination", choices=("export", "upload"))
     status = ops.add_parser("beta-status")
     status.add_argument("output", type=Path)
+    supersession = ops.add_parser("supersede-pending")
+    supersession.add_argument("--apply", action="store_true")
     for name in ("check-upload", "finish", "submit", "publish"):
         cmd = ops.add_parser(name)
         cmd.add_argument("version")
@@ -412,6 +493,12 @@ def main():
     args = parser.parse_args()
     if args.operation == "archive":
         archive(args.channel, args.app, args.folder, args.profile, args.app_signer, args.installer_signer, args.destination)
+        return
+    if args.operation == "supersede-pending":
+        if args.apply and os.environ.get("FEI_EXPIRE_SUPERSEDED_BETAS") != "1":
+            print(json.dumps({"enabled": False, "expired": []}))
+        else:
+            print(json.dumps(supersede_pending_betas(os.environ["FEI_PUBLIC_BETA_GROUP_ID"], args.apply), indent=2))
         return
     if args.operation == "beta-status":
         public_beta_status(args.output)
