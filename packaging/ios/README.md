@@ -1,5 +1,27 @@
 # Fei Notes iOS builds
 
+## Isolated upstream experience packages
+
+Use `UpstreamPreview` for the independent upstream candidate, never `Product`,
+`LocalPreview` or `TestFlight`. Its Bundle ID is
+`local.feinotes.upstream-preview.ios`, its display name is 飞记·上游体验, and it
+starts a separate sandbox's local SQLite library. It has no cloud, shared-group
+or product invitation entitlements, and the Rust boundary refuses live CloudKit
+requests. This leaves installed product/TestFlight apps and real notes intact.
+
+After preparing GPUI and notices, commit the candidate and run:
+
+```sh
+python3 packaging/ios/build-upstream-preview.py --profile /private/path/development.mobileprovision --identity APPLE_DEVELOPMENT_SHA1
+```
+
+Use an existing wildcard Apple Development profile covering the paired acceptance
+iPhone and iPad. Do not use TestFlight/Store release credentials. The builder
+checks the native configuration, signed app, raw extracted IPA and exact source
+revision. It writes separately named iPhone and iPad IPAs with the same universal
+payload under ignored `.private-builds/`. Install only this preview identity;
+record bundle/version readback and launch separately from interaction acceptance.
+
 ## Current local candidate, build 49
 
 Build 49 addresses the latest build-48 feedback using the existing shared editor

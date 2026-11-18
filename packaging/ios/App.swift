@@ -122,8 +122,12 @@ final class EditorHost: FeiRouteController {
             showStatus("文档库配置无效。")
             return
         }
+        #if FEI_UPSTREAM_PREVIEW
+        let mode = "local"
+        #else
         let mode = environment["FEI_NOTES_MODE"] ?? environment["FEI_NOTES_MVP_MODE"]
             ?? defaults.string(forKey: "FeiNotesLibraryMode") ?? (feiIOSProductCloud() || requested != nil ? "cloud" : "local")
+        #endif
         let wantsCloud = mode == "cloud"
         if wantsCloud { defaults.set(channel, forKey: Self.testChannelKey) }
         Task { @MainActor in

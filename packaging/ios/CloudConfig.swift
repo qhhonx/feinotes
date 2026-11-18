@@ -1,6 +1,9 @@
 import Foundation
 
-#if FEI_CLOUD_PRODUCT
+#if FEI_UPSTREAM_PREVIEW
+let containerID = "iCloud.local.feinotes.upstream-preview"
+let cloudEnvironment = "Development"
+#elseif FEI_CLOUD_PRODUCT
 let containerID = "iCloud.app.feinotes.mac"
 let cloudEnvironment = "Production"
 #else

@@ -14,6 +14,7 @@ fn main() {
     embed(&root, "assets", "assets.rs", &skip);
     embed(&root, "shared-mock/library", "guides.rs", &[]);
     println!("cargo:rustc-env=FEI_TESTFLIGHT_BETA=0");
+    println!("cargo:rustc-env=FEI_UPSTREAM_PREVIEW=0");
     let revision = std::process::Command::new("git").arg("-C").arg(&root).args(["rev-parse", "--short=12", "HEAD"])
         .output().ok().filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned()).unwrap_or_else(|| "unknown".into());
@@ -33,14 +34,19 @@ fn main() {
         && std::env::var_os("CARGO_FEATURE_CLOUDKIT_SYNC").is_some() {
         println!("cargo:rerun-if-env-changed=FEI_IOS_PRODUCT_CLOUD");
         println!("cargo:rerun-if-env-changed=FEI_TESTFLIGHT_BETA");
+        println!("cargo:rerun-if-env-changed=FEI_IOS_UPSTREAM_PREVIEW");
         let product = std::env::var("FEI_IOS_PRODUCT_CLOUD").as_deref() == Ok("1");
+        let preview = std::env::var("FEI_IOS_UPSTREAM_PREVIEW").as_deref() == Ok("1");
         let beta = std::env::var("FEI_TESTFLIGHT_BETA").unwrap_or_else(|_| "0".into());
         assert!(matches!(beta.as_str(), "0" | "1"), "Invalid FEI_TESTFLIGHT_BETA");
         assert!(beta != "1" || (product && std::env::var("PROFILE").as_deref() == Ok("release")
             && std::env::var_os("CARGO_FEATURE_DEVTOOLS").is_none()
             && std::env::var_os("CARGO_FEATURE_MOBILE_QA").is_none()), "TestFlight requires a Production release without QA");
         println!("cargo:rustc-env=FEI_TESTFLIGHT_BETA={beta}");
-        println!("cargo:rustc-env=FEI_CLOUD_NAMESPACE={}", if product { "Production:iCloud.app.feinotes.mac" } else { "Development:iCloud.app.quietmd.cloudlab" });
+        assert!(!preview || (!product && beta == "0"), "Upstream previews cannot use the production or TestFlight configuration");
+        println!("cargo:rustc-env=FEI_UPSTREAM_PREVIEW={}", if preview { "1" } else { "0" });
+        println!("cargo:rustc-env=FEI_CLOUD_NAMESPACE={}", if preview { "Development:iCloud.local.feinotes.upstream-preview" }
+            else if product { "Production:iCloud.app.feinotes.mac" } else { "Development:iCloud.app.quietmd.cloudlab" });
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") { windows_resources(); }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")

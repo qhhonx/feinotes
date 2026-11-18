@@ -12,7 +12,7 @@ parser.add_argument('--ios-dir', type=Path, default=Path(__file__).resolve().par
 args = parser.parse_args()
 with tempfile.TemporaryDirectory() as directory:
     cargo = Path(directory) / 'cargo'
-    cargo.write_text('#!/bin/sh\nprintf "beta=%s cloud=%s\\n" "$FEI_TESTFLIGHT_BETA" "$FEI_IOS_PRODUCT_CLOUD"\nprintf "%s\\n" "$@"\n')
+    cargo.write_text('#!/bin/sh\nprintf "beta=%s cloud=%s preview=%s\\n" "$FEI_TESTFLIGHT_BETA" "$FEI_IOS_PRODUCT_CLOUD" "$FEI_IOS_UPSTREAM_PREVIEW"\nprintf "%s\\n" "$@"\n')
     cargo.chmod(0o700)
     def run(config, profile='debug', qa='0'):
         env = dict(os.environ, CONFIGURATION=config, RUST_PROFILE=profile, FEI_MOBILE_QA=qa,
@@ -25,6 +25,8 @@ with tempfile.TemporaryDirectory() as directory:
     assert local.returncode == 0 and 'beta=0 cloud=0' in local.stdout and 'cloudkit-sync,mobile-qa' in local.stdout
     product = run('Product')
     assert product.returncode == 0 and 'beta=0 cloud=1' in product.stdout
+    preview = run('UpstreamPreview')
+    assert preview.returncode == 0 and 'beta=0 cloud=0 preview=1' in preview.stdout
     for config, profile, qa in [('TestFlight','debug','0'), ('TestFlight','release','1'), ('Product','debug','1')]:
         assert run(config, profile, qa).returncode != 0, (config, profile, qa)
-print('6 Rust prebuild namespace, optimized beta and QA exclusion scenarios passed.')
+print('7 Rust prebuild namespace, isolated preview, optimized beta and QA exclusion scenarios passed.')

@@ -111,7 +111,7 @@ use gpui::*;
 pub(crate) const FEI_NOTES: bool = cfg!(any(target_os = "ios", all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")));
 
 pub(crate) fn app_name() -> &'static str {
-    if APP_ID == "local.feinotes.upstream-preview" { return settings::tr("飞记 · 上游体验", "Fei Notes Upstream Preview") }
+    if APP_ID == "local.feinotes.upstream-preview" || env!("FEI_UPSTREAM_PREVIEW") == "1" { return settings::tr("飞记 · 上游体验", "Fei Notes Upstream Preview") }
     if FEI_NOTES { settings::tr("飞记", "Fei Notes") } else { "Quiet.md" }
 }
 

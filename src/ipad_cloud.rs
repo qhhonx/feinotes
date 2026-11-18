@@ -44,6 +44,7 @@ pub(crate) fn prepare_selection(parent: &Path, channel: uuid::Uuid) -> Result<Pa
 }
 
 fn request(parent: &Path, channel: uuid::Uuid, action: i32) -> Result<RestoreReply> {
+    ensure!(env!("FEI_UPSTREAM_PREVIEW") != "1", "This upstream preview uses an isolated local library");
     ensure!(configuration_matches(), "The native and Rust CloudKit configurations differ");
     ensure!(parent.is_absolute() && (production() || parent.file_name().is_some_and(|name| name == channel.to_string().as_str())),
         "Use an isolated CloudKit QA library for the requested channel");
