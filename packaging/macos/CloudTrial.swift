@@ -83,8 +83,14 @@ private func readTrial(start: Bool, channel: String?, expectedAccount: String? =
 
 enum CloudAccessError: LocalizedError {
     case required
+    case testflightVerification(String)
 
-    var errorDescription: String? { "iCloud sync and collaboration require an active trial or subscription." }
+    var errorDescription: String? {
+        switch self {
+        case .required: "iCloud sync and collaboration require an active trial or subscription."
+        case .testflightVerification(let detail): "Could not verify the TestFlight installation: \(detail)"
+        }
+    }
 }
 
 actor CloudAccess {
@@ -118,9 +124,21 @@ actor CloudAccess {
         #if FEI_TESTFLIGHT_BETA
         try Task.checkCancellation()
         if verifiedTestFlight { return }
-        guard case .verified(let transaction) = try? await AppTransaction.shared,
+        #if os(macOS)
+        if TestFlightInstall.verified(at: Bundle.main.bundleURL) {
+            verifiedTestFlight = true
+            return
+        }
+        #endif
+        let result: VerificationResult<AppTransaction>
+        do { result = try await AppTransaction.shared }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw CloudAccessError.testflightVerification(String(describing: error)) }
+        guard case .verified(let transaction) = result,
               transaction.bundleID == Bundle.main.bundleIdentifier,
-              transaction.environment == .sandbox else { throw CloudAccessError.required }
+              transaction.environment == .sandbox else {
+            throw CloudAccessError.testflightVerification("Apple did not return a verified sandbox app transaction.")
+        }
         try Task.checkCancellation()
         verifiedTestFlight = true
         #else

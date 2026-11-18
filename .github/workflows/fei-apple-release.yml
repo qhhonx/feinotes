@@ -141,6 +141,7 @@ jobs:
             macos-26-intel) test "$(uname -m)" = x86_64 ;;
             *) exit 1 ;;
           esac
+          bash packaging/macos/test-testflight-install.sh
           cargo test --locked --release --no-default-features --features cloudkit-sync
 
   release:
