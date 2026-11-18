@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Copyright 2026 Fei Notes contributors. See LICENSES.md.
-"""Collect license notices for the selected Fei Notes macOS Cargo build."""
+"""Collect license notices for the selected Fei Notes Cargo build."""
 
 import argparse
 import json
@@ -20,17 +20,18 @@ def cargo(*args):
     return subprocess.check_output(["cargo", *args], cwd=REPO, text=True)
 
 
-def selected_packages(target):
+def selected_packages(target, manifest=None, package="quiet_md"):
     features = ("--locked", "--offline", "--no-default-features", "--features", "cloudkit-sync")
-    metadata = json.loads(cargo("metadata", "--format-version=1", "--filter-platform", target, *features))
-    tree = cargo("tree", "-p", "quiet_md", "--target", target, *features,
+    manifest_args = ("--manifest-path", str(manifest)) if manifest else ()
+    metadata = json.loads(cargo("metadata", "--format-version=1", "--filter-platform", target, *manifest_args, *features))
+    tree = cargo("tree", "-p", package, "--target", target, *manifest_args, *features,
                  "--edges", "normal,no-proc-macro", "--prefix", "none", "--format", "{p}")
     active = {tuple(re.match(r"^(\S+) v(\S+)", line).groups()) for line in tree.splitlines()}
     packages = [package for package in metadata["packages"] if (package["name"], package["version"]) in active]
     if len(packages) != len(active):
         raise SystemExit("Could not identify every package selected for the release build.")
     return sorted(
-        (p for p in packages if p["source"] or p["name"] not in OWN_PACKAGES),
+        (p for p in packages if p["source"] or p["name"] not in OWN_PACKAGES | {package}),
         key=lambda p: (p["name"], p["version"]),
     )
 
@@ -56,8 +57,8 @@ def package_source(package):
     return package["repository"] or "Bundled source in the project checkout"
 
 
-def build_notice(target, supplemental):
-    packages = selected_packages(target)
+def build_notice(target, supplemental, manifest=None, package="quiet_md"):
+    packages = selected_packages(target, manifest, package)
     blocks = {}
     components = []
     mpl_sources = []
@@ -107,11 +108,13 @@ def build_notice(target, supplemental):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("target", choices=("aarch64-apple-darwin", "x86_64-apple-darwin"))
+    parser.add_argument("target", choices=("aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-apple-ios", "aarch64-apple-ios-sim"))
     parser.add_argument("output_directory", type=Path)
+    parser.add_argument("--manifest-path", type=Path)
+    parser.add_argument("--package", default="quiet_md")
     args = parser.parse_args()
     supplemental = json.loads(SUPPLEMENT.read_text(encoding="utf-8"))
-    notice = build_notice(args.target, supplemental)
+    notice = build_notice(args.target, supplemental, args.manifest_path, args.package)
     args.output_directory.mkdir(parents=True, exist_ok=True)
     (args.output_directory / "Open Source Notices.txt").write_text(notice, encoding="utf-8")
 

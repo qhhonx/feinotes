@@ -2,12 +2,14 @@ use super::view::{Editor, Menu};
 use crate::model::BlockId;
 use crate::editor_theme::Theme;
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 
 impl Editor {
     pub(super) fn open_ordered_number(&mut self, block: BlockId, depth: usize, pos: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         self.toolbar_hidden = true;
         self.menu = Some(Menu::OrderedNumber { block, pos: self.rel(pos + point(px(0.), px(16.))), edit: false, depth });
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         cx.notify();
     }
 
@@ -45,7 +47,7 @@ impl Editor {
                         if i == 2 {
                             e.number_field.update(cx, |f, cx| { f.set_text(super::core::ordered_marker(number, depth).trim_end_matches('.'), cx); f.select_all_text(cx); });
                             e.menu = Some(Menu::OrderedNumber { block, pos, edit: true, depth });
-                            w.focus(&e.number_field.read(cx).focus_handle(cx));
+                            crate::gpui_compat::focus(w, &e.number_field.read(cx).focus_handle(cx), cx);
                             cx.notify();
                         } else {
                             e.core.set_ordered_number(block, if i == 0 { previous.unwrap_or(1) } else { 1 }, i == 0);

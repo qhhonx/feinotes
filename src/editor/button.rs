@@ -3,6 +3,8 @@
 
 use crate::editor_theme::{c, craft};
 use gpui::*;
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 
 /// A button colour's text and fill at rest, hovered, pressed and disabled
 /// (`light-x` / `deep-x` names, painted from the palette).
@@ -370,7 +372,7 @@ impl Editor {
         }
     }
 
-    pub(super) fn open_button_panel(&mut self, p: Pos, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_button_panel(&mut self, p: Pos, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(b) = self.core.button_at(p) else { return };
         self.hide_button_card(cx);
         self.hide_link_card(cx);
@@ -384,18 +386,25 @@ impl Editor {
         self.slash = None;
         self.dragging = false;
         self.menu = Some(Menu::Button { block: p.block, offset: p.offset });
+        #[cfg(target_os = "ios")]
+        self.present_native_object(cx);
+        #[cfg(not(target_os = "ios"))]
+        {
         let fh = self.btn.text.read(cx).focus_handle(cx);
-        window.focus(&fh);
+        crate::gpui_compat::focus(_window, &fh, cx);
+        }
         cx.notify();
     }
 
     fn close_button_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(p) = self.btn.panel.take() else { return };
+        #[cfg(target_os = "ios")]
+        super::object_mobile::dismiss_form();
         if matches!(self.menu, Some(Menu::Button { .. })) {
             self.menu = None;
         }
         self.core.sel = Selection::caret(Pos::new(p.at.block, p.at.offset + EQUATION.len()));
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         self.restart_blink(window, cx);
         cx.notify();
     }
@@ -431,7 +440,7 @@ impl Editor {
                 if self.btn.panel.as_ref().is_some_and(|p| p.preview.action == ButtonAction::OpenLink) {
                     other.update(cx, |f, cx| f.select_all_text(cx));
                     let fh = other.read(cx).focus_handle(cx);
-                    window.focus(&fh);
+                    crate::gpui_compat::focus(window, &fh, cx);
                 }
                 cx.notify();
             }
@@ -477,11 +486,12 @@ impl Editor {
             self.btn.url.update(cx, |f, cx| f.set_text("", cx));
         }
         let fh = self.btn.text.read(cx).focus_handle(cx);
-        window.focus(&fh);
+        crate::gpui_compat::focus(window, &fh, cx);
         cx.notify();
     }
 
     pub(super) fn button_panel(&self, block: BlockId, offset: usize, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if cfg!(target_os = "ios") { return None; }
         let p = self.btn.panel.as_ref().filter(|p| p.at == Pos::new(block, offset))?;
         let r = self.probed(Probe::Button(p.at))?;
         let vh = f32::from(window.viewport_size().height);
@@ -740,5 +750,44 @@ impl Editor {
             );
         }
         el
+    }
+}
+
+#[cfg(target_os = "ios")]
+impl Editor {
+    pub(super) fn native_button_request(&self, cx: &App) -> Option<serde_json::Value> {
+        use super::object_mobile::field;
+        use crate::settings::tr;
+        use serde_json::json;
+        let p = self.btn.panel.as_ref()?;
+        let mut action = field("action",tr("执行操作","Action"),"choice",p.preview.action.name());
+        action["options"] = json!(ACTIONS.iter().map(|a|json!({"value":a.name(),"title":crate::settings::text(a.label())})).collect::<Vec<_>>());
+        let mut color = field("color",tr("颜色","Color"),"choice",&p.preview.color);
+        color["options"] = json!(COLORS.iter().flatten().map(|name| {
+            let (strength,hue) = name.split_once('-').unwrap();
+            let hue = match hue { "red"=>tr("红色","red"),"orange"=>tr("橙色","orange"),"green"=>tr("绿色","green"),"wathet"=>tr("青色","cyan"),"blue"=>tr("蓝色","blue"),"carmine"=>tr("粉色","pink"),"purple"=>tr("紫色","purple"),_=>tr("灰色","gray") };
+            let title = if crate::settings::english() { format!("{} {hue}",if strength == "light" { "Light" } else { "Deep" }) } else { format!("{}{hue}",if strength == "light" { "浅" } else { "深" }) };
+            let swatch: Rgba = palette(name).bg.into();
+            json!({"value":name,"title":title,"swatch":[swatch.r,swatch.g,swatch.b,swatch.a]})
+        }).collect::<Vec<_>>());
+        let mut fields = vec![field("text",tr("按钮文字","Button text"),"text",&self.btn.text.read(cx).text),action,color];
+        if p.preview.action == ButtonAction::OpenLink { fields.push(field("url",tr("超链接地址","URL"),"url",&self.btn.url.read(cx).text)); }
+        let error = p.text_err.or_else(||p.link_err.then(||crate::settings::text("超链接不合法，请重新输入")));
+        Some(json!({"kind":"button","title":tr("按钮设置","Button settings"),"live":false,"fields":fields,"error":error}))
+    }
+
+    pub(super) fn mobile_button_event(&mut self, action: &str, edit: Option<(&str,&str)>, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            "object-close"=>self.close_button_panel(window,cx),
+            "object-submit"=>self.submit_button(window,cx),
+            "object-edit"=>match edit {
+                Some(("text",value))=>{ self.btn.text.update(cx,|f,cx|f.set_text(value,cx)); self.on_button_field(&TextFieldEvent::Changed,true,window,cx); },
+                Some(("url",value))=>{ self.btn.url.update(cx,|f,cx|f.set_text(value,cx)); self.on_button_field(&TextFieldEvent::Changed,false,window,cx); },
+                Some(("action",value))=>if let Some(action) = ACTIONS.iter().copied().find(|a|a.name() == value) { self.set_button_action(action,window,cx); },
+                Some(("color",value)) if COLORS.iter().flatten().any(|name|*name == value)=>{ if let Some(p) = &mut self.btn.panel { p.preview.color = value.into(); } cx.notify(); },
+                _=>{},
+            },
+            _=>{},
+        }
     }
 }

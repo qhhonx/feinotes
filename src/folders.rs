@@ -3,29 +3,31 @@ use crate::settings::{display_title, tr};
 use crate::theme::Theme;
 use crate::ui::{TipExt, TitleBarExt, icon, popover, ui_text};
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 
 #[derive(Clone, PartialEq)]
 pub(crate) enum CreateTarget {
     Library(Option<String>),
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     Shared,
 }
 
 impl Workspace {
-    fn can_create_in_shared_folder(&self, parent: Option<&str>, cx: &gpui::App) -> bool {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub(crate) fn can_create_in_shared_folder(&self, parent: Option<&str>, cx: &gpui::App) -> bool {
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         { crate::cloud_sync::shared::scope(&self.store, cx).is_some_and(|room| room.folder)
             && self.sharing_access(cx).is_some_and(|access| access.can_write())
             && !crate::cloud_sync::shared::editing_paused(&self.store, cx)
             && self.entries.iter().any(|e| Some(e.id.as_str()) == parent && e.meta.folder.is_some()) }
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         { let _ = (parent, cx); false }
     }
 
     /// 新建文档/Markdown under `parent` (None = top level), opened and focused.
     /// `markdown` picks the on-disk format; the choice is remembered for ⌘N.
     pub(crate) fn create_doc(&mut self, markdown: bool, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if !self.is_shared() && let Some(id) = parent.clone()
             && let Some(room) = crate::cloud_sync::shared::original::owner_room(&self.entries, &id) {
             self.with_shared_document(room, window, cx, move |w, _, window, cx| w.create_doc(markdown, Some(id.clone()), window, cx));
@@ -59,7 +61,7 @@ impl Workspace {
                 match &parent { Some(p) => { self.expanded.insert(p.clone()); } None => self.folded[1] = false }
                 self.search.update(cx, |s, cx| s.set_text("", cx));
                 self.open(&id, window, cx);
-                if let Some(ed) = &self.editor { ed.read(cx).focus(window); }
+                if let Some(ed) = &self.editor { crate::gpui_compat::focus(window,&ed.read(cx).focus_handle(cx),cx); }
             }
             Err(e) => self.status = crate::app::SaveStatus::Failed(crate::localized_format!("新建失败：{}", "Could not create document: {}", crate::settings::diagnostic(&e.to_string()))),
         }
@@ -124,7 +126,7 @@ impl Workspace {
     }
 
     pub(crate) fn open_folder(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if !self.is_shared() && crate::cloud_sync::shared::original::owner_room(&self.entries, id).is_some() {
             return self.try_open(id, window, cx);
         }
@@ -145,13 +147,13 @@ impl Workspace {
         self.doc_menu = false;
         self.expanded.insert(id.to_string());
         self.reveal_in_tree(id);
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         cx.notify();
         true
     }
 
     pub(crate) fn new_folder(&mut self, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if !self.is_shared() && let Some(id) = parent.clone()
             && let Some(room) = crate::cloud_sync::shared::original::owner_room(&self.entries, &id) {
             self.with_shared_document(room, window, cx, move |w, _, window, cx| w.new_folder(Some(id.clone()), window, cx));
@@ -183,14 +185,14 @@ impl Workspace {
         let menu = popover().id("create-items").occlude().w(px(180.)).py(px(crate::ui::MENU_PAD_Y))
             .on_mouse_down_out(cx.listener(move |w, event: &MouseDownEvent, _, cx| {
                 let key = match &w.create_menu {
-                    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                     Some((CreateTarget::Shared, _)) => "accept-sidebar",
                     _ => "create-sidebar",
                 };
                 if !w.home.anchor(key).is_some_and(|bounds| bounds.contains(&event.position)) { w.create_menu = None; cx.notify(); }
             }));
         let menu = match target {
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             CreateTarget::Shared => menu
                 .child(row("create-collection", "folder", tr("新建个人文件夹", "New personal folder")).on_click(cx.listener(|w, _, window, cx| {
                     w.create_menu = None; w.personal_collection(None, window, cx);
@@ -222,7 +224,7 @@ impl Workspace {
                 .overflow_hidden().whitespace_nowrap().text_ellipsis().cursor_pointer()
                 .text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::text()))
                 .child(ui_text(label))
-                .on_click(cx.listener(move |w, _, window, cx| match &target { Some(t) => w.open(t, window, cx), #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))] None if w.is_shared() => w.return_to_shared_list(window, cx), None => w.show_view(View::Home, cx) }))
+                .on_click(cx.listener(move |w, _, window, cx| match &target { Some(t) => w.open(t, window, cx), #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))] None if w.is_shared() => w.return_to_shared_list(window, cx), None => w.show_view(View::Home, cx) }))
         };
         let path = self.ancestors(&id);
         let mut crumbs = div().min_w_0().flex().items_center().text_size(px(17.)).line_height(px(24.))
@@ -241,7 +243,7 @@ impl Workspace {
             .font_weight(FontWeight::SEMIBOLD).text_color(Theme::text()).child(ui_text(title)));
         let doc = id.clone();
         let header = crate::trash::page_header_with(self, crumbs, 26., cx);
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let header = if let Some(scope) = crate::cloud_sync::shared::scope(&self.store, cx).filter(|s| s.folder) {
             let room = crate::cloud_sync::shared::Room { scope: scope.clone(), title: self.entries.iter().find(|entry| entry.id == scope.note).map(|entry| entry.title.clone()).unwrap_or_default() };
             header.child(crate::ui::header_icon("folder-members", "share").tip(tr("共享文件夹", "Shared folder"), None)
@@ -276,10 +278,10 @@ impl Workspace {
         vec![deferred(anchored().position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("folder-row-menu").occlude().w(px(190.)).py(px(crate::ui::MENU_PAD_Y))
             .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }))
             .children({
-                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 { let target = m.id.clone(); (!self.is_shared()).then(|| row("share-folder", "share", tr("共享文件夹…", "Share folder…"))
                     .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.create_shared_note(&target, window, cx); }))) }
-                #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { None::<Stateful<Div>> }
             })
             .child(row("fr-new-doc", "doc", tr("新建文档", "New document")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.new_child(&doc, window, cx); })))

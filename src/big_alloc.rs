@@ -12,9 +12,9 @@ pub struct Alloc;
 const BIG: usize = 1 << 20;
 const PROT_READ_WRITE: i32 = 0x1 | 0x2;
 const MAP_PRIVATE: i32 = 0x2;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 const MAP_ANON: i32 = 0x1000;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 const MAP_ANON: i32 = 0x20;
 
 unsafe extern "C" {

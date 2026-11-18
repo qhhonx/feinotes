@@ -31,7 +31,7 @@ impl Scrollbar {
         canvas(
             move |bounds, window, _| {
                 let view = list.bounds().size.height;
-                let content = view + list.max_offset().height;
+                let content = view + crate::gpui_compat::scroll_max_y(&list);
                 let offset = -list.offset().y;
                 let (content, h) = match sb.grab.get() {
                     Some((_, content, h)) => (content, h),
@@ -89,7 +89,7 @@ impl Scrollbar {
                                 let f = ((ev.position.y - dy - bounds.top()) / travel).clamp(0., 1.);
                                 // At the end, go to the real bottom: the rows there may not
                                 // be measured yet, so the estimate can stop short.
-                                list.set_offset(point(list.offset().x, -list.max_offset().height * f));
+                                list.set_offset(point(list.offset().x, -crate::gpui_compat::scroll_max_y(&list) * f));
                                 window.refresh();
                             }
                             // The button went up somewhere we didn't see.

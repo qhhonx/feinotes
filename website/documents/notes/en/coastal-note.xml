@@ -1,0 +1,11 @@
+<title>A weekend by the sea</title>
+<p> </p>
+<p><b><span background-color="light-yellow">If there’s time, follow the coast until dark.</span></b></p>
+<p> </p>
+<p>Take the first train on Saturday. By the time we reach the lighthouse, the sea should just be waking up.</p>
+<img path="samples/image.png" width="554" height="220" crop="0.1995,0.3222,0.8005,0.7075" caption="The path to the lighthouse"/>
+<p> </p>
+<h1>Before we leave</h1>
+<checkbox done="true">Charge the camera battery</checkbox>
+<checkbox done="false">Pack a book and a windproof jacket</checkbox>
+<checkbox done="false">Pick up two cinnamon rolls at the bakery</checkbox>

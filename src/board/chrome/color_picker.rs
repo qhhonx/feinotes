@@ -216,7 +216,7 @@ fn picker(id: &'static str, p: Pop, current: Option<&str>, action: fn(String) ->
                 let t = f.read(cx).text.trim().trim_start_matches('#').to_ascii_lowercase();
                 if matches!(t.len(), 3 | 4 | 6 | 8) && t.chars().all(|c| c.is_ascii_hexdigit()) { me.run(action(format!("#{t}")), window, cx); }
             }
-            TextFieldEvent::Submit | TextFieldEvent::Cancel => me.focus(window),
+            TextFieldEvent::Submit | TextFieldEvent::Cancel => me.focus(window, cx),
             _ => {}
         });
         HEX.with(|h| h.borrow_mut().insert(eid, (p, f.clone(), sub)));

@@ -1,0 +1,10 @@
+<title>QA45 四、颜色与正文布局</title>
+<p><span text-color="#a22fc0" background-color="#f6dcfb">紫色 PURPLE</span> <span text-color="#b12a62" background-color="#ffdce8">粉色 PINK</span> <span text-color="#9a4e00" background-color="#ffead3">橙色 ORANGE</span> <span text-color="#176739" background-color="#d2f4df">薄荷 MINT</span> <span text-color="#1254a3" background-color="#d6eaff">蓝色 BLUE</span></p>
+<p>左对齐 LEFT</p>
+<p align="center">居中 CENTER</p>
+<p align="right">右对齐 RIGHT</p>
+<p>软换行 A<br /><b>软换行 B</b></p>
+<pre lang="plaintext"><code>let value = 42;
+	print(value)</code></pre>
+<p><a href="https://example.org/fei-visual-qa">网页链接（仅核对显示）</a></p>
+<hr />

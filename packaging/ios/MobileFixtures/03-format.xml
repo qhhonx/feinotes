@@ -1,0 +1,10 @@
+<title>QA45 三、表格操作</title>
+<table>
+  <colgroup><col width="151" /><col width="100" /><col width="100" /></colgroup>
+  <tbody>
+    <tr><td><p>COL_ACELL_EDIT</p></td><td><p><b><u>CELL_BOLD</u></b></p></td><td><p>COL_B</p></td></tr>
+    <tr><td><p>ROW2_A</p></td><td><p /></td><td><p>ROW2_B</p></td></tr>
+    <tr><td><p>ROW3_A</p></td><td><p>ROW3_B</p></td><td><p>ROW3_C</p></td></tr>
+  </tbody>
+</table>
+<p>TABLE_END</p>

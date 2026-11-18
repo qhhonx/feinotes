@@ -18,6 +18,7 @@ use super::shared::{self, Access};
 pub struct Journal {
     db: Connection,
     _lock: File,
+    _session: Option<crate::store::SessionLease>,
     root: PathBuf,
     peer: u64,
     account: String,
@@ -290,6 +291,7 @@ impl Journal {
     }
 
     pub(super) fn open_locked(root: &Path, channel: Option<String>, lock: std::fs::File) -> Result<Self> {
+        let session = Store::session_lease(root);
         let marker = std::fs::read_to_string(root.join(".cloud-restore-ready"))?;
         let account = marker.lines().next().filter(|a| a.len() == 64).context("Invalid library account")?.to_string();
         let room = shared::descriptor(root)?.map(|room| room.scope);
@@ -373,7 +375,7 @@ impl Journal {
             peer
         };
         tx.commit()?;
-        let mut journal = Self { db, _lock: lock, root: root.to_path_buf(), peer: peer as u64, account, channel, room, access,
+        let mut journal = Self { db, _lock: lock, _session: session, root: root.to_path_buf(), peer: peer as u64, account, channel, room, access,
             next_collection: Default::default(), merged_data_version: None, history: HashMap::new() };
         if let Err(error) = journal.collect_local() { crate::logging::write(&format!("Deferred local attachment cleanup: {error:#}")); }
         Ok(journal)
@@ -1586,5 +1588,61 @@ fn clean_asset_is_not_downloaded_and_reuse_uploads_bytes_first() -> Result<()> {
     assert_eq!(assets::decode(&reupload[0].data.0)?.1,b"offline test bytes");
     j.receive(page(reupload,vec![]))?;
     assert!(j.request()?.edits.iter().any(|e| e.note==id));
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn cloud_checkpoint_cursor_reset_preserves_retention_metadata() -> Result<()> {
+    let first = HistoryFixture::new()?;
+    let mut j = Journal::open(&first.0, None)?;
+    let mut store = Store::open_sqlite_at(first.0.clone())?;
+    std::fs::write(first.0.join("assets/audit.bin"), b"synthetic audit attachment")?;
+    let id = store.create_from(&crate::docxml::parse("<title>Recovery</title><p>initial</p><figure><source path=\"assets/audit.bin\" name=\"audit\"/></figure>")?)?;
+    j.merge(&Default::default())?;
+    let mut doc = store.load(&id)?;
+    for n in 0..40 {
+        if n == 39 { doc.blocks.truncate(1); }
+        doc.blocks[0].text = crate::model::RichText::plain(format!("local edit {n}"));
+        store.save(&id,&doc)?;
+        j.merge(&Default::default())?;
+    }
+    let receipt = |edits: Vec<Edit>, deleted| Changes { retention: Some(retention::Receipt {
+        reset: false, ready: true, deleted, chunks: vec![] }), uploaded: edits.iter().map(|e| e.id.clone()).collect(),
+        edits, token: Some(super::Bytes(vec![1])), more: false, legacy: false, room_access: None,
+        #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false };
+    let mut catalogue = vec![];
+    loop {
+        let edits = j.request()?.edits;
+        if edits.is_empty() { break; }
+        catalogue.extend(edits.iter().filter(|e| e.note == super::catalogue::SCOPE).cloned());
+        j.receive(receipt(edits, vec![]))?;
+        j.merge(&Default::default())?;
+    }
+    let plan = j.request()?.maintenance.context("No cloud checkpoint")?;
+    assert!(plan.remove.is_empty());
+    let checkpoint = plan.snapshot.unwrap();
+    j.receive(receipt(vec![checkpoint.clone()],vec![]))?;
+    j.merge(&Default::default())?;
+    let cleanup = j.request()?.maintenance.context("Missing verified cleanup")?;
+    assert!(cleanup.snapshot.is_none() && cleanup.remove.len()>=40);
+    let mut results = Vec::new();
+    for reset in [false, true] {
+        let second = HistoryFixture::new()?;
+        let mut restored = Journal::open(&second.0, None)?;
+        let mut edits = catalogue.clone(); edits.push(checkpoint.clone());
+        let mut page = receipt(edits, vec![]);
+        page.retention.as_mut().unwrap().reset = reset;
+        restored.receive(page)?;
+        restored.merge(&Default::default())?;
+        assert_eq!(content::render(&restored.text_state(&id)?.unwrap())?, doc);
+        let counts: (i64,i64,i64) = restored.db.query_row(
+            "SELECT (SELECT count(*) FROM cloud_covered), (SELECT count(*) FROM cloud_checkpoint_anchors), (SELECT count(*) FROM cloud_checkpoint_paths)",
+            [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        eprintln!("AUDIT reset={reset} covered={} anchors={} paths={} body_restored=true", counts.0,counts.1,counts.2);
+        results.push(counts);
+    }
+    assert!(results[0].0 > 0 && results[0].1 > 0 && results[0].2 > 0);
+    assert_eq!(results[0], results[1], "Cursor reset must retain the checkpoint's verified coverage, version anchors and attachment pins");
     Ok(())
 }

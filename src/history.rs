@@ -21,7 +21,12 @@ use std::collections::HashMap;
 pub const DRAWER_W: f32 = 300.;
 pub const BANNER_H: f32 = 40.;
 
+#[cfg(target_os = "ios")]
+pub(crate) mod mobile;
+
 pub struct HistoryView {
+    #[cfg(target_os = "ios")]
+    pub(crate) token: u64,
     pub id: String,
     pub versions: Vec<Version>,
     pub selected: Option<String>,
@@ -97,6 +102,8 @@ impl Workspace {
         }
         let first = versions.first().map(|v| v.name.clone());
         self.history = Some(HistoryView {
+            #[cfg(target_os = "ios")]
+            token: mobile::next_token(),
             id: id.to_string(),
             versions,
             selected: None,
@@ -113,7 +120,7 @@ impl Workspace {
             Some(name) => self.preview_version(&name, window, cx),
             None => {
                 self.preview = None;
-                window.focus(&self.focus);
+                crate::gpui_compat::focus(window,&self.focus,cx);
                 cx.notify();
             }
         }
@@ -282,18 +289,18 @@ impl Workspace {
     }
 
     pub fn restore_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if crate::cloud_sync::shared::editing_paused(&self.store, cx) || crate::cloud_sync::shared::access(&self.store, cx).is_some_and(|a| !a.can_write()) { return; }
         let Some((id, name)) = self.history.as_ref().and_then(|h| h.selected.clone().map(|n| (h.id.clone(), n))) else { return };
         let doc = match self.store.restore_version(&id, &name) {
             Ok(d) => d,
             Err(e) => return self.set_history_error(e.to_string(), cx),
         };
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let core = Core::new(doc.clone());
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let result = crate::cloud_sync::save(&mut self.store, &id, &core, cx);
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let result = self.store.save(&id, &doc).map(|meta| (meta, false));
         if let Err(error) = result {
             self.set_history_error(crate::settings::diagnostic(&error.to_string()), cx);
@@ -356,7 +363,7 @@ impl Workspace {
             f
         });
         let focus = field.focus_handle(cx);
-        window.focus(&focus);
+        crate::gpui_compat::focus(window,&focus,cx);
         let subs = vec![
             cx.subscribe_in(&field, window, |w, _, ev: &TextFieldEvent, window, cx| match ev {
                 TextFieldEvent::Submit => w.finish_version_rename(true, window, cx),
@@ -371,17 +378,21 @@ impl Workspace {
 
     fn finish_version_rename(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(r) = self.version_rename.take() else { return };
-        let Some(h) = self.history.as_ref() else { return };
-        let id = h.id.clone();
         let text = if save { r.field.read(cx).text.clone() } else { String::new() };
-        let label = (!text.trim().is_empty()).then(|| text.trim().to_string());
-        if self.store.set_version_label(&id, &r.name, label.as_deref()).is_err() {
-            return self.set_history_error(crate::settings::tr("重命名失败", "Could not rename").to_string(), cx);
+        self.set_history_label(&r.name,&text,cx);
+        crate::gpui_compat::focus(window,&self.focus,cx);
+        cx.notify();
+    }
+
+    pub(crate) fn set_history_label(&mut self, name: &str, text: &str, cx: &mut Context<Self>) {
+        let Some(h) = self.history.as_ref() else { return };
+        if !h.versions.iter().any(|v|v.name == name) { return; }
+        let id = h.id.clone();
+        let label = (!text.trim().is_empty()).then(||text.trim().to_string());
+        if self.store.set_version_label(&id,name,label.as_deref()).is_err() {
+            return self.set_history_error(crate::settings::tr("重命名失败","Could not rename").to_string(),cx);
         }
-        if let Some(v) = self.history.as_mut().and_then(|h| h.versions.iter_mut().find(|v| v.name == r.name)) {
-            v.label = label;
-        }
-        window.focus(&self.focus);
+        if let Some(v) = self.history.as_mut().and_then(|h|h.versions.iter_mut().find(|v|v.name == name)) { v.label = label; }
         cx.notify();
     }
 
@@ -394,9 +405,9 @@ impl Workspace {
     pub(crate) fn render_history_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let h = self.history.as_ref()?;
         let p = self.preview.as_ref()?;
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let writable = !crate::cloud_sync::shared::editing_paused(&self.store, cx) && crate::cloud_sync::shared::access(&self.store, cx).is_none_or(|a| a.can_write());
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let writable = true;
         let v = h.versions.iter().find(|v| v.name == p.name);
         let when = v.map_or_default(|v| format_time(v.ms / 1000));

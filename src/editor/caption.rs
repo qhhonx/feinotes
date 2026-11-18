@@ -85,25 +85,29 @@ impl Editor {
         self.captions.get(&id).map(|(f, _)| f.clone())
     }
 
+    pub(super) fn set_caption_text(&mut self, id: BlockId, text: &str, cx: &mut Context<Self>) {
+        self.core.checkpoint(core::EditKind::Typing);
+        if let Some(b) = self.core.block_mut(id) {
+            match &mut b.kind {
+                BlockKind::Code { caption, .. } | BlockKind::Image { caption, .. } => *caption = Some(text.to_string()),
+                _ => {}
+            }
+        }
+        self.core.dirty = false;
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+    }
+
     fn on_caption_event(&mut self, id: BlockId, ev: &TextFieldEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             TextFieldEvent::Changed => {
                 let Some((f, _)) = self.captions.get(&id) else { return };
                 let text = f.read(cx).text.clone();
-                self.core.checkpoint(core::EditKind::Typing);
-                if let Some(b) = self.core.block_mut(id) {
-                    match &mut b.kind {
-                        BlockKind::Code { caption, .. } | BlockKind::Image { caption, .. } => *caption = Some(text),
-                        _ => {}
-                    }
-                }
-                self.core.dirty = false;
-                cx.emit(EditorEvent::Changed);
-                cx.notify();
+                self.set_caption_text(id, &text, cx);
             }
             // Enter / ↓ / Esc leave a code name for the start of the code.
             TextFieldEvent::Submit | TextFieldEvent::Down | TextFieldEvent::Cancel if self.is_code(id) => {
-                window.focus(&self.focus);
+                crate::gpui_compat::focus(window, &self.focus, cx);
                 self.core.clear_block_sel();
                 self.core.cell_sel = None;
                 self.core.sel = core::Selection::caret(Pos::new(id, 0));
@@ -112,7 +116,7 @@ impl Editor {
             // Image description: Enter starts a paragraph below the image;
             // Esc, ↑ and Backspace on an empty description select the image.
             TextFieldEvent::Submit => {
-                window.focus(&self.focus);
+                crate::gpui_compat::focus(window, &self.focus, cx);
                 let nid = self.core.insert_paragraph_after(id);
                 self.core.clear_block_sel();
                 self.core.cell_sel = None;
@@ -120,7 +124,7 @@ impl Editor {
                 self.changed(window, cx);
             }
             TextFieldEvent::Cancel | TextFieldEvent::Up | TextFieldEvent::BackspaceEmpty => {
-                window.focus(&self.focus);
+                crate::gpui_compat::focus(window, &self.focus, cx);
                 self.core.select_block(id);
                 self.changed(window, cx);
             }

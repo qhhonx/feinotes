@@ -1,19 +1,31 @@
 pub use crate::theme::{craft, c, ca, rgbaf, ta, TITLE, UI_FONT, MONO_FONT, BlockMetrics};
 /// The active theme's resolved style (themes.rs).
 pub fn style() -> &'static crate::themes::Style { crate::themes::active() }
-pub fn body_size() -> f32 { style().num("page.size") }
-pub fn body_line() -> f32 { style().num("page.line") }
+#[cfg(target_os = "ios")]
+unsafe extern "C" { fn fei_ios_type_scale() -> f32; }
+fn mobile_metric(key: &str, value: f32, floor: f32) -> f32 {
+    #[cfg(target_os = "ios")]
+    { style().num_override(key).unwrap_or(value.max(floor)) * (unsafe { fei_ios_type_scale() }).clamp(0.8, 3.5) }
+    #[cfg(not(target_os = "ios"))]
+    { let _ = (key,floor); value }
+}
+pub fn body_size() -> f32 { mobile_metric("mobile.page.size",style().num("page.size"),17.) }
+pub fn table_size() -> f32 { mobile_metric("mobile.table.size",style().num("table.size"),16.) }
+pub fn table_line() -> f32 { mobile_metric("mobile.table.line",style().num("table.line-height"),24.) }
+pub fn code_size() -> f32 { mobile_metric("mobile.code.size",style().num("pre.size"),15.) }
+pub fn code_line() -> f32 { mobile_metric("mobile.code.line",style().num("pre.line"),22.) }
+pub fn body_line() -> f32 { mobile_metric("mobile.page.line",style().num("page.line"),26.) }
 pub fn block_gap() -> f32 { style().num("p.gap") }
 fn h(level: u8) -> u8 { level.clamp(1, 9) }
 pub fn heading_metrics(level: u8) -> BlockMetrics {
     let (s, l) = (style(), h(level));
-    BlockMetrics { size: s.num(&format!("h{l}.size")), line_height: s.num(&format!("h{l}.line")), mt: s.num(&format!("h{l}.mt")), mb: s.num(&format!("h{l}.mb")) }
+    BlockMetrics { size: mobile_metric("",s.num(&format!("h{l}.size")),if l == 1 { 22. } else if l == 2 { 20. } else { 17. }), line_height: mobile_metric("",s.num(&format!("h{l}.line")),if l <= 2 { 28. } else { 24. }), mt: s.num(&format!("h{l}.mt")), mb: s.num(&format!("h{l}.mb")) }
 }
 pub fn heading_weight(level: u8) -> gpui::FontWeight { gpui::FontWeight(style().num(&format!("h{}.weight", h(level)))) }
 pub fn heading_font(level: u8) -> &'static str { style().font(&format!("h{}.font", h(level))) }
 pub fn heading_color(level: u8) -> Option<gpui::Hsla> { style().color(&format!("h{}.color", h(level))) }
 /// The page title.
-pub fn title() -> BlockMetrics { BlockMetrics { size: style().num("title.size"), line_height: style().num("title.line"), mt: 0., mb: 0. } }
+pub fn title() -> BlockMetrics { BlockMetrics { size: mobile_metric("mobile.title.size",style().num("title.size"),26.), line_height: mobile_metric("mobile.title.line",style().num("title.line"),32.), mt: 0., mb: 0. } }
 /// Document text's family (UI fonts stay the system's).
 pub fn body_font() -> &'static str { style().font("page.font") }
 /// Document colour tokens: a theme file may override any of them by name

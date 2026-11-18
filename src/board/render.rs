@@ -579,7 +579,7 @@ fn paint_text(t: &dl::TextRun, d: &ElementDisplay, view: View, h: Hsla, window: 
         let at = view.to_screen(d.to_scene([l.x, l.baseline]));
         let x = match t.align { TextAlign::Left => at.x, TextAlign::Center => at.x - line.width / 2., TextAlign::Right => at.x - line.width };
         // with no leading, GPUI puts the baseline `ascent` below the origin
-        let _ = line.paint(point(x, at.y - line.ascent), line.ascent + line.descent, window, cx);
+        let _ = crate::gpui_compat::paint_line(&line, point(x, at.y - line.ascent), line.ascent + line.descent, window, cx);
     }
 }
 
@@ -648,7 +648,7 @@ fn text_sprite(t: &dl::TextRun, m: &GpuiMeasure) -> Option<(SharedString, [f64; 
 
 fn rotation_about(c: Point<Pixels>, angle: f32, scale: f32) -> TransformationMatrix {
     let c = c.scale(scale);
-    TransformationMatrix::unit().translate(c).rotate(radians(angle)).translate(c.negate())
+    TransformationMatrix::unit().translate(c).rotate(radians(angle)).translate(point(c.x * -1., c.y * -1.))
 }
 
 fn paint_rotated_text(path: &SharedString, r: [f64; 4], d: &ElementDisplay, view: View, h: Hsla, window: &mut Window, cx: &mut App) {
@@ -657,7 +657,7 @@ fn paint_rotated_text(path: &SharedString, r: [f64; 4], d: &ElementDisplay, view
     if f32::from(bounds.size.width) < 1. || f32::from(bounds.size.height) < 1. { return; }
     let center = view.to_screen([o[0] + d.center[0], o[1] + d.center[1]]);
     let m = rotation_about(center, d.angle as f32, window.scale_factor());
-    let _ = window.paint_svg(bounds, path.clone(), m, h, cx);
+    let _ = crate::gpui_compat::paint_svg(window, bounds, path.clone(), m, h, cx);
 }
 
 /// An image file's pixels: the document picture cache for library files,
@@ -834,7 +834,7 @@ fn paint_image(img: &ImageItem, d: &ElementDisplay, clip: Option<&[geom::Pt]>, c
             if let Some((_, Some((old, _)))) = cached.replace((res, made)) { trash.push(old); }
         }
         if let Some((_, Some((im, r)))) = cached {
-            let _ = window.with_element_opacity(Some(d.opacity as f32), |window| window.paint_image(view.rect(*r), Corners::default(), im.clone(), 0, false));
+            let _ = window.with_element_opacity(Some(d.opacity as f32), |window| crate::gpui_compat::paint_image(window, view.rect(*r), Corners::default(), im.clone(), 0, false));
         }
         return;
     }
@@ -851,7 +851,7 @@ fn paint_image(img: &ImageItem, d: &ElementDisplay, clip: Option<&[geom::Pt]>, c
     };
     let r = px(img.corner_radius as f32 * view.zoom);
     window.with_content_mask(Some(ContentMask { bounds: dest }), |window| {
-        let _ = window.with_element_opacity(Some(d.opacity as f32), |window| window.paint_image(full, Corners::all(r), im, 0, false));
+        let _ = window.with_element_opacity(Some(d.opacity as f32), |window| crate::gpui_compat::paint_image(window, full, Corners::all(r), im, 0, false));
     });
 }
 

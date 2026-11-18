@@ -1,0 +1,205 @@
+name: FeiNotesEditorProbe
+options:
+  deploymentTarget:
+    iOS: "17.0"
+configs:
+  Debug: debug
+  Release: release
+  Product: debug
+  TestFlight: release
+  StoreKitTesting: debug
+fileGroups:
+  - StoreKit.xctestplan
+  - StoreKitTests/FeiNotes.storekit
+targets:
+  FeiNotesEditorProbe:
+    type: application
+    productName: FeiNotes
+    platform: iOS
+    info:
+      path: Info.plist
+      properties:
+        CFBundleShortVersionString: "0.1.9"
+        CFBundleVersion: "49"
+        CKSharingSupported: true
+        CFBundleURLTypes:
+          - CFBundleURLName: app.feinotes.invitation
+            CFBundleURLSchemes: [feinotes]
+            CFBundleTypeRole: Editor
+        FeiSupportURL: https://feinotes.app/support/
+        FeiStoreKitAnnualProduct: $(FEI_STOREKIT_ANNUAL_PRODUCT)
+        FeiStoreKitMonthlyProduct: $(FEI_STOREKIT_MONTHLY_PRODUCT)
+        FeiPrivacyURL: https://feinotes.app/privacy/
+        FeiTermsURL: $(FEI_TERMS_URL)
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleLocalizations:
+          - zh-Hans
+          - en
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    sources:
+      - path: PrivacyInfo.xcprivacy
+        buildPhase: resources
+      - Assets.xcassets
+      - App.swift
+      - PadWorkspace.swift
+      - Navigation.swift
+      - NotesList.swift
+      - MobileTheme.swift
+      - Settings.swift
+      - EditorToolbar.swift
+      - Files.swift
+      - Printing.swift
+      - ThemeEditor.swift
+      - TextActions.swift
+      - EditorControls.swift
+      - LinkForm.swift
+      - FilePreview.swift
+      - Find.swift
+      - ObjectForm.swift
+      - Reorder.swift
+      - VersionHistory.swift
+      - LocalHistory.swift
+      - About.swift
+      - Reminders.swift
+      - ImageDownload.swift
+      - ImageCrop.swift
+      - CloudConfig.swift
+      - path: Resources/Open Source Licenses.txt
+        buildPhase: resources
+      - path: Resources/Open Source Licenses.json
+        buildPhase: resources
+      - ../macos/CloudRestore.swift
+      - ../macos/CloudSync.swift
+      - ../macos/CloudShare.swift
+      - ../macos/CloudTrial.swift
+      - ../macos/CloudSubscription.swift
+    dependencies:
+      - framework: target/$(RUST_TARGET)/$(RUST_PROFILE)/libfei_notes_ipad.a
+        embed: false
+    preBuildScripts:
+      - name: Build matching Rust cloud configuration
+        script: sh "$SRCROOT/build-rust.sh"
+        basedOnDependencyAnalysis: false
+      - name: Verify bundled notices
+        script: python3 "$SRCROOT/prepare-notices.py" --check
+        inputFileLists:
+          - $(SRCROOT)/Resources/notices-inputs.xcfilelist
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        PRODUCT_NAME: FeiNotes
+        MARKETING_VERSION: "0.1.9"
+        CURRENT_PROJECT_VERSION: "49"
+        PRODUCT_BUNDLE_IDENTIFIER: app.feinotes.ipad.editorprobe
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: 飞记
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_OBJC_BRIDGING_HEADER: Bridge.h
+        ENABLE_DEBUG_DYLIB: NO
+        RUST_PROFILE: debug
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: FEI_CLOUD_QA
+        CODE_SIGN_ENTITLEMENTS: DevCloud.entitlements
+        FEI_STOREKIT_ANNUAL_PRODUCT: ""
+        FEI_STOREKIT_MONTHLY_PRODUCT: ""
+        FEI_TERMS_URL: ""
+        "RUST_TARGET[sdk=iphonesimulator*]": aarch64-apple-ios-sim
+        "RUST_TARGET[sdk=iphoneos*]": aarch64-apple-ios
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/target/$(RUST_TARGET)/$(RUST_PROFILE)"
+        OTHER_LDFLAGS:
+          - "-lc++"
+          - "-lsqlite3"
+          - "-lsqlite3"
+      configs:
+        Product:
+          MARKETING_VERSION: "1.0.8"
+          PRODUCT_BUNDLE_IDENTIFIER: app.feinotes.mac
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: FEI_CLOUD_PRODUCT
+          CODE_SIGN_ENTITLEMENTS: ProductCloud.entitlements
+        TestFlight:
+          MARKETING_VERSION: "1.0.8"
+          PRODUCT_BUNDLE_IDENTIFIER: app.feinotes.mac
+          RUST_PROFILE: release
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: FEI_CLOUD_PRODUCT FEI_TESTFLIGHT_BETA
+          FEI_TESTFLIGHT_BETA: "1"
+          FEI_MOBILE_QA: "0"
+          CODE_SIGN_ENTITLEMENTS: TestFlightCloud.entitlements
+          INFOPLIST_FILE: TestFlight-Info.plist
+          GENERATE_INFOPLIST_FILE: NO
+        StoreKitTesting:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) FEI_STOREKIT_TESTING
+          FEI_STOREKIT_ANNUAL_PRODUCT: app.feinotes.testing.cloud.annual
+          FEI_STOREKIT_MONTHLY_PRODUCT: app.feinotes.testing.cloud.monthly
+  FeiNotesEditorProbeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - UITests
+    dependencies:
+      - target: FeiNotesEditorProbe
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: app.feinotes.ipad.editorprobe.tests
+  FeiNotesStoreKitUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - StoreKitTests/SubscriptionUITests.swift
+      - StoreKitTests/FeiNotes.storekit
+    dependencies:
+      - target: FeiNotesEditorProbe
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: app.feinotes.ipad.editorprobe.storekit-tests
+  FeiNotesStoreKitServiceTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - StoreKitTests/SubscriptionServiceTests.swift
+      - StoreKitTests/FeiNotes.storekit
+    dependencies:
+      - target: FeiNotesEditorProbe
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: app.feinotes.ipad.editorprobe.storekit-service-tests
+schemes:
+  FeiNotesTestFlight:
+    build:
+      targets:
+        FeiNotesEditorProbe: all
+    archive:
+      config: TestFlight
+  FeiNotesEditorProbe:
+    build:
+      targets:
+        FeiNotesEditorProbe: all
+    test:
+      targets:
+        - FeiNotesEditorProbeUITests
+  FeiNotesStoreKitTests:
+    build:
+      targets:
+        FeiNotesEditorProbe: all
+    run:
+      config: StoreKitTesting
+      storeKitConfiguration: StoreKitTests/FeiNotes.storekit
+    test:
+      config: StoreKitTesting
+      testPlans:
+        - path: StoreKit.xctestplan
+          defaultPlan: true
+      environmentVariables:
+        FEI_NOTES_MODE: local
+      targets:
+        - FeiNotesStoreKitServiceTests
+        - FeiNotesStoreKitUITests

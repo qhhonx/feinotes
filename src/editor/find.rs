@@ -17,6 +17,12 @@ pub struct Find {
     /// Hits in document order.
     pub matches: Vec<(BlockId, Range<usize>)>,
     pub current: Option<usize>,
+    #[cfg(target_os = "ios")]
+    pub native_serial: u64,
+    #[cfg(target_os = "ios")]
+    pub native_published: Vec<u8>,
+    #[cfg(target_os = "ios")]
+    pub native_viewport: Option<Size<Pixels>>,
 }
 
 /// Case-insensitive, non-overlapping hits of `q` in `text`, skipping inline objects.
@@ -58,7 +64,13 @@ impl Editor {
                 self.find_field.update(cx, |f, cx| f.set_text(&s, cx));
             }
         }
-        self.find = Some(Find { replace, matches: vec![], current: None });
+        #[cfg(target_os = "ios")]
+        if let Some(find) = &self.find { super::find_mobile::dismiss(find.native_serial); }
+        self.find = Some(Find { replace, matches: vec![], current: None,
+            #[cfg(target_os = "ios")] native_serial: super::find_mobile::next_serial(),
+            #[cfg(target_os = "ios")] native_published: vec![],
+            #[cfg(target_os = "ios")] native_viewport: None,
+        });
         self.slash = None;
         self.menu = None;
         // 13pt inputs (the fields are made with the 14pt default).
@@ -70,21 +82,26 @@ impl Editor {
         }
         self.refresh_find(true, cx);
         let field = self.find_field.clone();
-        window.focus(&field.focus_handle(cx));
+        #[cfg(not(target_os = "ios"))]
+        crate::gpui_compat::focus(window, &field.focus_handle(cx), cx);
         field.update(cx, |f, cx| f.select_all_text(cx));
         self.scroll_to_current(window);
+        #[cfg(target_os = "ios")]
+        self.present_native_find(cx);
         cx.notify();
     }
 
     pub fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(f) = self.find.take() else { return };
+        #[cfg(target_os = "ios")]
+        super::find_mobile::dismiss(f.native_serial);
         // Leave the current hit selected.
         if let Some((id, r)) = f.current.and_then(|i| f.matches.get(i).cloned()) {
             self.core.block_sel = None;
             self.core.sel = Selection { anchor: Pos::new(id, r.start), head: Pos::new(id, r.end) };
             self.toolbar_hidden = true;
         }
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         cx.notify();
     }
 
@@ -112,7 +129,11 @@ impl Editor {
                 .and_then(|a| matches.iter().position(|(id, r)| (order(*id), r.start) >= a))
                 .unwrap_or(0)
         });
-        self.find = Some(Find { replace: old.replace, matches, current });
+        self.find = Some(Find { replace: old.replace, matches, current,
+            #[cfg(target_os = "ios")] native_serial: old.native_serial,
+            #[cfg(target_os = "ios")] native_published: old.native_published,
+            #[cfg(target_os = "ios")] native_viewport: old.native_viewport,
+        });
     }
 
     /// Hits inside one text line, for painting.
@@ -126,7 +147,7 @@ impl Editor {
             .collect()
     }
 
-    fn step_find(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn step_find(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(f) = &mut self.find else { return };
         let n = f.matches.len();
         if n == 0 {
@@ -142,7 +163,7 @@ impl Editor {
     }
 
     /// Bring the current hit into view (centered when it was off screen).
-    fn scroll_to_current(&mut self, window: &mut Window) {
+    pub(super) fn scroll_to_current(&mut self, window: &mut Window) {
         let Some((id, r)) = self.find.as_ref().and_then(|f| f.matches.get(f.current?).cloned()) else { return };
         self.reveal = Some((super::render::Reveal::Find(Pos::new(id, r.start)), 0));
         window.refresh();
@@ -171,7 +192,7 @@ impl Editor {
         cx.notify();
     }
 
-    fn replace_one(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn replace_one(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, r)) = self.find.as_ref().and_then(|f| f.matches.get(f.current?).cloned()) else { return };
         let with = self.replace_field.read(cx).text.clone();
         self.core.checkpoint(EditKind::Other);
@@ -190,7 +211,7 @@ impl Editor {
         self.after_replace(window, cx);
     }
 
-    fn replace_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn replace_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(f) = &self.find else { return };
         if f.matches.is_empty() {
             return;
@@ -220,6 +241,7 @@ impl Editor {
     }
 
     pub(super) fn find_box(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if cfg!(target_os = "ios") { return None; }
         let f = self.find.as_ref()?;
         let n = f.matches.len();
         let counter = match f.current {
@@ -249,7 +271,7 @@ impl Editor {
                         f.replace = to_replace;
                     }
                     let field = e.find_field.clone();
-                    window.focus(&field.focus_handle(cx));
+                    crate::gpui_compat::focus(window, &field.focus_handle(cx), cx);
                     cx.notify();
                 }))
         };

@@ -1,0 +1,8 @@
+Fei Notes 1.0.8 aligns the Mac and iPhone/iPad beta source.
+
+• Includes the latest original-note sharing, shared-folder organization and cloud checkpoint fixes.
+• Preserves checkpoint retention metadata when an already-received cloud edit is received again after the cursor resets.
+• Uses the same document and cloud formats as the 1.0.8 iPhone/iPad beta.
+• Updates the bilingual website with native Notes and Feishu theme captures and looping sync and real-time editing demonstrations.
+
+Test writing, reopening, offline merging and shared-folder permissions with synthetic notes. Update all devices participating in this cloud beta to the latest compatible build. Earlier checkpoint-protocol builds must not write to the same library. Cloud access is included in TestFlight without a subscription. Boards still merge at scene/block-property level; real multi-account and physical-device acceptance remain separate checks.

@@ -332,7 +332,7 @@ fn font_picker(me: &BoardView, current: Option<u32>, window: &mut Window, cx: &m
         // the search field takes the keyboard (`onOpenAutoFocus`)
         if !focused {
             let fh = field.read(cx).focus_handle(cx);
-            window.focus(&fh);
+            crate::gpui_compat::focus(window, &fh, cx);
             FONT_LIST.with(|m| if let Some(l) = m.borrow_mut().get_mut(&cx.entity_id()) { l.focused = true; });
         }
         field.update(cx, |t, _| t.color = style::text());

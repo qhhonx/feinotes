@@ -213,12 +213,12 @@ fn faded(shadows: Vec<BoxShadow>, a: f32) -> Vec<BoxShadow> {
 
 impl Workspace {
     pub(crate) fn with_sidebar<R>(&mut self, shared: bool, f: impl FnOnce(&mut Self) -> R) -> R {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if shared { std::mem::swap(&mut self.folder_drag, &mut self.sharing.sidebar); }
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let _ = shared;
         let result = f(self);
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if shared { std::mem::swap(&mut self.folder_drag, &mut self.sharing.sidebar); }
         result
     }
@@ -254,7 +254,7 @@ impl Workspace {
             self.folder_drag.icon_press = false;
             self.folder_drag.icon_alt = false;
             self.row_menu = None; self.create_menu = None;
-            window.focus(&self.focus);
+            crate::gpui_compat::focus(window, &self.focus, cx);
         }
         self.project_folder_drop();
         cx.notify();
@@ -343,7 +343,7 @@ impl Workspace {
         let b = self.list_scroll.bounds();
         let cancel = cancel || d.at.x < b.left() || d.at.x > b.right() || d.at.y < b.top() || d.at.y > b.bottom();
         let before = rows.get(d.index).filter(|r| r.entry.meta.parent == d.parent).map(|r| r.entry.id.clone());
-        let mut movement = PendingMove { id: d.id.clone(), parent: d.parent.clone(), before, history: 0 };
+        let movement = PendingMove { id: d.id.clone(), parent: d.parent.clone(), before, history: 0 };
         let depth = if cancel { d.original_depth } else { d.depth };
         let index = if cancel { d.original_index } else { d.index };
         // Drop the overlay immediately: normal row color and hit testing resume this frame.
@@ -364,32 +364,31 @@ impl Workspace {
         self.folder_drag.active = None;
         // The card covers the slot as it lands; the slot goes at once instead of stacking under it.
         self.folder_drag.slot = None;
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.folder_drag.shared_rows.is_some() {
             if !cancel { self.reorder_shared_sidebar(&movement.id, movement.parent.as_deref(), movement.before.as_deref(), cx); }
             cx.notify(); return;
         }
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if !cancel && self.confirm_shared_move(std::slice::from_ref(&movement.id), movement.parent.as_deref(), cx) { return; }
         // A folder carried open comes back open: its rows open out under it.
         if self.expanded.contains(&movement.id) { self.folder_drag.reopen = Some(movement.id.clone()); }
         if !cancel {
             if let Some(parent) = &movement.parent { self.expanded.insert(parent.clone()); }
-            let file_before = self.entries.clone();
-            self.apply_tree_move(&movement);
-            movement.history = self.remember_tree_move(file_before, crate::settings::tr("拖拽移动", "Drag move"));
-            self.folder_drag.pending.push_back(movement);
-            self.save_next_tree_move(cx);
-            self.sync_sub_pages(cx);
+            self.queue_tree_move(&movement.id,movement.parent.clone(),movement.before.clone(),cx);
         }
         cx.notify();
     }
 
     /// Put `id` last in `folder` (a drop on 主页's folder card), saved like a sidebar drop.
     pub(crate) fn move_into_folder(&mut self, id: &str, folder: &str, cx: &mut Context<Self>) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        if self.confirm_shared_move(&[id.into()], Some(folder), cx) { return; }
-        let mut movement = PendingMove { id: id.to_string(), parent: Some(folder.to_string()), before: None, history: 0 };
+        self.queue_tree_move(id,Some(folder.to_string()),None,cx);
+    }
+
+    pub(crate) fn queue_tree_move(&mut self, id: &str, parent: Option<String>, before: Option<String>, cx: &mut Context<Self>) {
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if self.confirm_shared_move(&[id.into()], parent.as_deref(), cx) { return; }
+        let mut movement = PendingMove { id:id.to_string(),parent,before,history:0 };
         let file_before = self.entries.clone();
         self.apply_tree_move(&movement);
         movement.history = self.remember_tree_move(file_before, crate::settings::tr("拖拽移动", "Drag move"));
@@ -440,6 +439,8 @@ impl Workspace {
                 w.folder_drag.pending.pop_front();
                 w.folder_drag.saving = false;
                 if let Err(ref e) = result {
+                    #[cfg(target_os = "ios")]
+                    if let Some(session) = &mut w.mobile_reorder { session.error = Some(crate::settings::diagnostic(&e.to_string())); }
                     w.forget_file_change(history);
                     // Restore only hierarchy, preserving edits made while the write was pending.
                     {
@@ -464,7 +465,7 @@ impl Workspace {
 
     /// The row the selection pill sits on: the open doc, or the open folder.
     fn sidebar_pick(&self) -> Option<String> {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.folder_drag.shared_rows.is_some() {
             return match self.view {
                 crate::app::View::Doc if self.is_shared() => self.current.clone(),
@@ -841,9 +842,9 @@ impl Workspace {
                 .when(fx.glow.unit() > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(Theme::sidebar_landed().opacity(fx.glow.unit()))))
                 .when(hover > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(crate::sidebar::hover().opacity(hover))))
                 .child({
-                    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                     if shared { self.shared_sidebar_row(&r.entry, cx).into_any_element() } else { self.doc_row(&r.entry, "doc", 0, r.entry.meta.folder.is_some(), cx).into_any_element() }
-                    #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                    #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                     self.doc_row(&r.entry, "doc", 0, r.entry.meta.folder.is_some(), cx).into_any_element()
                 });
             // Revealed rows settle the last few pixels as they fade in.
@@ -891,7 +892,7 @@ impl Workspace {
         if self.folder_drag.active.as_ref().is_some_and(|d| d.started) { self.end_folder_drag(false, cx); return; }
         let click = self.folder_drag.active.as_ref().filter(|d| !d.started).map(|d| d.id.clone());
         if let Some(id) = click { self.folder_drag.active = None;
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             if self.folder_drag.shared_rows.is_some() { if id.starts_with("collection-") {
                 let icon_press = std::mem::take(&mut self.folder_drag.icon_press);
                 let recursive = std::mem::take(&mut self.folder_drag.icon_alt);

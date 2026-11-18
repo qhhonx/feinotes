@@ -1,0 +1,16 @@
+<title>QA49 Theme containers</title>
+<p>Body English gyjpq 中文。Compact code follows.</p>
+<pre lang="Plain Text"><code>let value = 42;</code></pre>
+<h1>Heading one 标题</h1>
+<h2>Heading two 小标题</h2>
+<p><b>Bold</b> <em>Italic gyjpq</em> <u>Underline</u> <del>Strike</del> <code>inline_code()</code></p>
+<blockquote><p>Quote with English and 中文。</p></blockquote>
+<ul><li>First item<ul><li>Nested item</li></ul></li></ul>
+<ol><li>Numbered item</li></ol>
+<pre lang="Rust"><code>fn synthetic() {
+    let long_value = "A long line which must scroll inside the code container without taking the page sideways.";
+    println!("{}", long_value);
+}</code></pre>
+<p>After code, the page remains scrollable.</p>
+<table><tr><td><p>Column one</p></td><td><p>Column two</p></td></tr><tr><td><p>English gyjpq</p></td><td><p>中文内容</p></td></tr></table>
+<p>THEME49_END</p>

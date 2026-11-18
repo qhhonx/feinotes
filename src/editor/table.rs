@@ -141,7 +141,7 @@ impl Editor {
     /// extends) and follow the pointer along the bar. On an already selected
     /// segment it picks the selected lines up to move them instead.
     fn bar_down(&mut self, table: BlockId, cols: bool, i: usize, p: Point<Pixels>, shift: bool, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         self.menu = None;
         self.slash = None;
         self.toolbar_hidden = false;
@@ -341,11 +341,7 @@ impl Editor {
     }
 
     fn table_insert_at(&mut self, table: BlockId, cols: bool, at: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.core.block_sel = None;
-        self.core.table_insert(table, cols, at);
-        self.tables.insert = None;
-        window.focus(&self.focus);
-        self.changed(window, cx);
+        self.table_action(super::table_actions::TableAction::Insert { table,cols,at },window,cx);
     }
 }
 
@@ -506,13 +502,13 @@ impl R<'_> {
         // The whole table selected as a block (or inside a text range).
         let whole = self.selected.contains(&id)
             || (!ed.core.in_block_mode() && !ed.core.sel.is_collapsed() && ed.core.atomic_selected(id, &self.units));
-        let active = !ed.read_only && (whole || (self.focused && caret_in) || sel.is_some() || busy || insert.is_some() || (ed.hover == Some(id) && !ed.dragging));
+        let active = !cfg!(target_os = "ios") && !ed.read_only && (whole || (self.focused && caret_in) || sel.is_some() || busy || insert.is_some() || (ed.hover == Some(id) && !ed.dragging));
         let key = |kind: u64, i: usize| id.0.wrapping_mul(8192).wrapping_add(kind * 2048 + i as u64);
         let x_of = |c: usize| widths[..c].iter().sum::<f32>();
 
         let mut cols_tpl = vec![BAR];
         cols_tpl.extend(&widths);
-        let mut grid = div().relative().grid().grid_col_widths(cols_tpl).w(px(BAR + total));
+        let mut grid = crate::gpui_compat::grid_columns(div().relative().grid(), cols_tpl).w(px(BAR + total));
 
         // A header row whose cells all end in it stays in view while the
         // table scrolls under it; painted after the body so it covers it.
@@ -727,7 +723,7 @@ impl R<'_> {
             Some(Drag::Resize { table, col, .. }) if *table == id => Some(*col),
             _ => None,
         };
-        for c in 0..n {
+        for c in 0..if cfg!(target_os = "ios") { 0 } else { n } {
             let bx = BAR + x_of(c + 1);
             let group = SharedString::from(format!("tres-{}", key(5, c)));
             let w0 = widths[c];
@@ -817,12 +813,12 @@ impl R<'_> {
                             .pt(px(16.))
                             .pr(px(reach_r - br))
                             .pb(px(12.))
-                            .overflow_x_scroll()
+                            .overflow_x_scroll().map(|d| { #[cfg(target_os="ios")] let d=d.restrict_scroll_to_axis(); d })
                             .track_scroll(&scroll)
                             .child(grid),
                     )
                     .child(edges.absolute().top_0().left_0().size_full())
-                    // In the 12 below the cells, under the text column.
+                    // Below the cells, under the text column; touch gets a full hit area.
                     .child(super::scrollbar::table_scrollbar(scroll, bar).absolute().left(px(reach)).right(px(reach_r)).bottom_0().h(px(12.))),
             )
             .into_any_element()

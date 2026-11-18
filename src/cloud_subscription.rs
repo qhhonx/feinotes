@@ -71,11 +71,11 @@ pub(crate) fn watch(cx: &mut App) {
     if !available() { return; }
     let (sender, receiver) = async_channel::bounded(1);
     if PURCHASE_EVENTS.set(sender).is_err() { return; }
-    // AppKit starts the StoreKit observer on the main thread.
+    // Start the shared StoreKit observer on the platform's main thread.
     unsafe { quiet_cloud_watch_subscription(purchase_changed) };
     cx.spawn(async move |cx| {
         while receiver.recv().await.is_ok() {
-            if cx.update(|cx| {
+            if crate::gpui_compat::async_update(cx, |cx| {
                 crate::cloud_sync::access_changed(cx);
                 cx.set_global(PurchaseChanged);
             }).is_err() { break; }
@@ -96,6 +96,8 @@ pub(crate) async fn request(action: Action) -> Result<Reply> {
         Action::Restore => 3, Action::Status => 4 };
     let (sender, receiver) = async_channel::bounded(1);
     let context = Box::into_raw(Box::new(sender)) as usize;
+    #[cfg(all(target_os = "ios", debug_assertions))]
+    log::info!("StoreKit request action={action}");
     unsafe { quiet_cloud_subscription(action, context, complete) };
     receiver.recv().await.context("The StoreKit request was interrupted")?
 }

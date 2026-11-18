@@ -32,7 +32,13 @@ impl Editor {
         let list2 = list.clone();
         canvas(
             move |bounds, window, _| {
+                #[cfg(not(target_os = "ios"))]
                 let (offset, content, view) = list.estimated_scroll_metrics();
+                #[cfg(target_os = "ios")]
+                let (offset, content, view) = {
+                    let view = list.viewport_bounds().size.height;
+                    (-list.scroll_px_offset_for_scrollbar().y, view + list.max_offset_for_scrollbar().y, view)
+                };
                 let (content, h) = match sb.grab.get() {
                     Some((_, content, h)) => (content, h),
                     None => (content, (view * (view / content)).max(px(MIN_H)).min(bounds.size.height)),
@@ -89,7 +95,11 @@ impl Editor {
                                 let f = ((ev.position.y - dy - bounds.top()) / travel).clamp(0., 1.);
                                 // At the end, go to the real bottom: the rows there may not
                                 // be measured yet, so the estimate can stop short.
+                                #[cfg(not(target_os = "ios"))]
                                 list.scroll_to_estimated_offset(if f >= 1. { px(f32::MAX) } else { (content - view) * f });
+                                #[cfg(target_os = "ios")]
+                                if f >= 1. { list.scroll_to_end(); }
+                                else { list.set_offset_from_scrollbar(point(px(0.), -(content - view) * f)); }
                                 window.refresh();
                             }
                             // The button went up somewhere we didn't see.
@@ -123,11 +133,12 @@ impl Editor {
 /// A wide table's scrollbar: the page thumb turned sideways, along the top
 /// of its box (`HIT_W` tall), for the scroller that `handle` tracks.
 pub(super) fn table_scrollbar(handle: ScrollHandle, sb: std::rc::Rc<Scrollbar>) -> Canvas<Option<(Pixels, Pixels, Hitbox)>> {
+    let hit_w = crate::mobile::control(HIT_W);
     let sb2 = sb.clone();
     let list = handle.clone();
     canvas(
         move |bounds, window, _| {
-            let max = list.max_offset().width;
+            let max = crate::gpui_compat::max_scroll_x(&list);
             if max <= px(1.) {
                 return None;
             }
@@ -138,7 +149,7 @@ pub(super) fn table_scrollbar(handle: ScrollHandle, sb: std::rc::Rc<Scrollbar>) 
                 None => (view * (view / content)).max(px(MIN_H)).min(view),
             };
             let left = bounds.left() + (view - w) * (-list.offset().x / max).clamp(0., 1.);
-            let zone = Bounds::new(point(left, bounds.top()), size(w, px(HIT_W)));
+            let zone = Bounds::new(point(left, bounds.top()), size(w, px(hit_w)));
             Some((left, w, window.insert_hitbox(zone, HitboxBehavior::BlockMouseExceptScroll)))
         },
         move |bounds, state, window, _| {
@@ -182,7 +193,7 @@ pub(super) fn table_scrollbar(handle: ScrollHandle, sb: std::rc::Rc<Scrollbar>) 
                         Some((dx, _, w)) if ev.pressed_button == Some(MouseButton::Left) => {
                             let travel = (bounds.size.width - w).max(px(1.));
                             let f = ((ev.position.x - dx - bounds.left()) / travel).clamp(0., 1.);
-                            list.set_offset(point(-list.max_offset().width * f, list.offset().y));
+                            list.set_offset(point(-crate::gpui_compat::max_scroll_x(&list) * f, list.offset().y));
                             window.refresh();
                         }
                         Some(_) => {

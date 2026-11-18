@@ -45,6 +45,32 @@ Shell properties are optional. Their borders and corner radii affect painting wh
 Navigation emphasis tracks the last content-region click and subsequent editor keyboard input without moving the existing keyboard focus or caret. Focused colors apply only while the window is active; editing and inactive windows retain the neutral selection. Folder and document rows share the existing tree, not an additional note-list pane. Toolbar groups paint behind existing hit areas and preserve their order and sizes. Themes without group colors retain independent control surfaces.
 
 The Notes insets follow native Notes 4.13 screenshots captured on 2026-11-16: 28 pt minimum right inset and a 66 pt minimum left editing gutter for the existing block handle and fold control, 36 pt above the title, no additional title-to-body gap, and no extra gap after a second-level heading. The Standard column allows up to 1200 pt, Wide up to 1400 pt; explicit full-width settings and pinned outlines still use the existing geometry rules. The title hover actions sit above the title with a 4 pt gap and follow the configured top inset. Task-type indicators follow the document’s circular or square task style. Interaction surfaces and selections resolve the active theme in both appearances. These measurements include neither the native date label nor a new toolbar row.
+
+## Mobile native shell roles
+
+On iOS, the selected theme projects its resolved accent, document paper and folder
+color into UIKit. Native tables, navigation, search and editor toolbars keep system
+materials and geometry. Optional overrides apply to the mobile shell only:
+
+| Selector | Supported properties |
+| --- | --- |
+| `.mobile-chrome` | `color` (accent), `background-color` (native bar override) |
+| `.mobile-list` | `color`, `background-color` |
+| `.mobile-row` | `background-color` |
+| `.mobile-row.is-selected` | `color`, `background-color` |
+| `.mobile-page` | `font-size`, `line-height` |
+| `.mobile-title` | `font-size`, `line-height` |
+
+The selected-text role is projected for future persistent iPad selection; current
+stack rows use the ordinary ink color and transient native highlight. Absent mobile
+color overrides retain the native system appearance. Notes opts into
+its existing ink/gold tokens and a mobile body/title scale of 17/26 pt, with 24/32 pt
+line heights before Dynamic Type. These are product choices, not measured Apple
+Notes font metadata. Other themes receive readable mobile metric floors. Desktop
+metrics remain unchanged. Preferred content-size changes invalidate presentation
+and update the editor/preview without changing the document or stored theme CSS.
+CSS editing remains subject to the existing product gate.
+
 ## Native rich-text compatibility
 
 The macOS clipboard reader prefers HTML and falls back to AppKit's RTF/RTFD decoder. Local tag/class stylesheet rules emitted by AppKit are resolved before importing run marks. No external stylesheet is loaded. Native default ink follows the destination appearance; imported highlight pairs retain their colours when legible and receive a contrasting foreground otherwise.
@@ -82,3 +108,8 @@ of independently positioning the arrow above the caption.
 The references footer uses the active body font and caps its existing text
 sizes and line heights at the document's body metrics. Notes reference titles
 therefore use its 13pt body size rather than the legacy 15pt document-link size.
+
+
+### Mobile container metrics
+
+Native mobile rendering uses the common parsed theme, including Feishu, rather than a separate desktop-only block renderer. `.mobile-code` and `.mobile-table` accept `font-size` and `line-height`, complementing `.mobile-page` and `.mobile-title`. Without overrides, code uses a 15-point/22-point floor and table cells a 16-point/24-point floor before the system text-scale multiplier. Desktop values are unchanged. Touch-target minimums apply to interactive controls, not to code-header or table-scrollbar padding.

@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use std::io::Write;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
+#[cfg(not(feature = "sqlite-store"))]
 use std::sync::OnceLock;
 use std::path::{Path, PathBuf};
 use crate::time::now;
@@ -23,9 +24,14 @@ use layout::{parent_rel, base_name, stem_of, join_rel};
 #[path = "migrate.rs"] mod migrate;
 pub use migrate::{MigrationState, ConsentReason, DeviceHint, MigrationReport, RestoreReport, SyncService, sync_of, set_ubiquity_probe};
 
+#[cfg(not(feature = "sqlite-store"))]
 static SESSION_ROOT: OnceLock<PathBuf> = OnceLock::new();
 #[cfg(feature = "sqlite-store")]
-static SESSION_SQLITE: OnceLock<bool> = OnceLock::new();
+mod session;
+#[cfg(feature = "sqlite-store")]
+pub use session::SessionLease;
+#[cfg(feature = "sqlite-store")]
+static SESSION: session::Registry = session::Registry::new();
 #[cfg(feature = "sqlite-store")]
 mod sqlite;
 #[cfg(feature = "sqlite-store")]
@@ -671,14 +677,21 @@ impl Store {
 
     /// Select the account-owned library before opening any Store.
     pub fn set_session_root(root: PathBuf) -> Result<()> {
-        SESSION_ROOT.set(root).map_err(|_| anyhow::anyhow!("Library already selected"))
+        #[cfg(feature = "sqlite-store")]
+        { SESSION.select(root, false) }
+        #[cfg(not(feature = "sqlite-store"))]
+        { SESSION_ROOT.set(root).map_err(|_| anyhow::anyhow!("Library already selected")) }
     }
 
     /// `QUIET_MD_HOME`, else the folder picked at first launch (`library.json`
     /// outside the library, since everything else lives inside it), else a
     /// folder of its own in the user's Documents, where they can see and back it up.
     pub fn root_dir() -> PathBuf {
-        if let Some(root) = SESSION_ROOT.get() { return root.clone(); }
+        #[cfg(feature = "sqlite-store")]
+        let selected = SESSION.root();
+        #[cfg(not(feature = "sqlite-store"))]
+        let selected = SESSION_ROOT.get().cloned();
+        if let Some(root) = selected { return root; }
 
         if let Some(p) = ROOT.read().unwrap().clone() { return p }
         std::env::var_os("QUIET_MD_HOME").map(PathBuf::from)
@@ -737,7 +750,11 @@ impl Store {
     /// Use `root` for the rest of this run, and from now on unless
     /// `QUIET_MD_HOME` says otherwise. The default location needs no pointer.
     pub fn set_root_dir(root: PathBuf) -> Result<()> {
-        anyhow::ensure!(SESSION_ROOT.get().is_none(), "The account-selected library cannot be changed as a file folder");
+        #[cfg(not(feature = "sqlite-store"))]
+        let selected = SESSION_ROOT.get().is_some();
+        #[cfg(feature = "sqlite-store")]
+        let selected = SESSION.root().is_some();
+        anyhow::ensure!(!selected, "The account-selected library cannot be changed as a file folder");
 
         let file = Self::location_file();
         // Test runs (`QUIET_MD_HOME`) never move the real library.

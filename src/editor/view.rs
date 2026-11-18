@@ -20,7 +20,7 @@ use std::time::Duration;
 
 pub enum EditorEvent {
     Changed,
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     CloudUndo { redo: bool },
     /// ⌘S: write to disk now instead of waiting for the autosave debounce.
     Save,
@@ -91,6 +91,10 @@ pub enum Menu {
     /// Toolbar 更多.
     TbMore,
     Lang { block: BlockId, selected: usize },
+    #[cfg(target_os = "ios")]
+    NativeCode { block: BlockId, language: bool },
+    #[cfg(target_os = "ios")]
+    NativeImage { block: BlockId },
     CodeTools { block: BlockId },
     CalloutColor { block: BlockId, section: usize },
     /// Emoji picker; `selected` is the highlighted search result.
@@ -149,11 +153,20 @@ pub struct Editor {
     /// Last-frame layout lookups the overlays were positioned from.
     pub probes: RefCell<Vec<(super::overlays::Probe, Option<Bounds<Pixels>>)>>,
     pub marked: Option<(BlockId, Range<usize>)>,
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    /// Keep the committed document and selection for a background save.
+    #[cfg(target_os = "ios")]
+    composition_start: Option<Core>,
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub cloud_history: bool,
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub remote_selections: Vec<crate::cloud_sync::presence::RemoteSelection>,
     pub dragging: bool,
+    #[cfg(target_os = "ios")]
+    pub(super) touch: super::touch::TouchState,
+    #[cfg(target_os = "ios")]
+    pub(super) table_menu: Option<super::table_mobile::MenuStamp>,
+    #[cfg(target_os = "ios")]
+    pub(super) format_menu: Option<super::format_mobile::SelectionStamp>,
     /// Text drag: the pointer's last position and when the page last scrolled
     /// under it (`text_autoscroll`).
     drag_at: Option<Point<Pixels>>,
@@ -182,6 +195,7 @@ pub struct Editor {
     pub menu_hovered: bool,
     /// Toolbar suppressed after typing / Esc until the selection changes.
     pub toolbar_hidden: bool,
+    pub(super) mobile_format: bool,
     /// Typing hides the mouse pointer until it moves, as browsers do, so the
     /// I-beam left where the user clicked doesn't sit on top of the new text.
     pub pointer_hidden: bool,
@@ -364,12 +378,11 @@ impl Editor {
             cx.subscribe_in(&link_field, window, |this, _, ev: &TextFieldEvent, window, cx| this.on_link_field(ev, false, window, cx)),
             cx.subscribe_in(&link_text_field, window, |this, _, ev: &TextFieldEvent, window, cx| this.on_link_field(ev, true, window, cx)),
             cx.subscribe_in(&eq_field, window, |this, field, ev: &TextFieldEvent, window, cx| {
-                let Some(Menu::Equation { block, offset }) = this.menu.clone() else { return };
+                if !matches!(this.menu, Some(Menu::Equation { .. })) { return; }
                 match ev {
                     TextFieldEvent::Changed => {
                         let src = field.read(cx).text.clone();
-                        this.core.set_equation_source(Pos::new(block, offset), &src);
-                        this.changed(window, cx);
+                        this.update_equation_source(&src, window, cx);
                     }
                     TextFieldEvent::Cancel | TextFieldEvent::RightEdge => this.close_equation_editor(true, window, cx),
                     TextFieldEvent::LeftEdge => this.close_equation_editor(false, window, cx),
@@ -425,11 +438,19 @@ impl Editor {
             content_origin: Rc::new(Cell::new(Point::default())),
             probes: RefCell::new(vec![]),
             marked: None,
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(target_os = "ios")]
+            composition_start: None,
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             cloud_history: false,
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             remote_selections: vec![],
             dragging: false,
+            #[cfg(target_os = "ios")]
+            touch: Default::default(),
+            #[cfg(target_os = "ios")]
+            table_menu: None,
+            #[cfg(target_os = "ios")]
+            format_menu: None,
             drag_at: None,
             drag_scrolled: None,
             drag_active: None,
@@ -447,6 +468,7 @@ impl Editor {
             menu: None,
             menu_hovered: false,
             toolbar_hidden: false,
+            mobile_format: false,
             pointer_hidden: false,
             autoscroll: false,
             last_color: (None, Some(ColorName("light-yellow".into()))),
@@ -514,10 +536,6 @@ impl Editor {
         e
     }
 
-    pub fn focus(&self, window: &mut Window) {
-        window.focus(&self.focus);
-    }
-
     // ---- bookkeeping
 
     /// 阅读位置: the top row and how far into it the page sits. `None` at the
@@ -559,6 +577,8 @@ impl Editor {
     pub(crate) fn receive_document_at(&mut self, core: &Core, sel: Selection, cx: &mut Context<Self>) {
         self.discard_open_board();
         let generation = self.core.generation;
+        #[cfg(target_os = "ios")]
+        self.reset_touch_selection();
         self.core = core.clone();
         self.core.sel = sel;
         self.core.block_sel = None;
@@ -567,7 +587,7 @@ impl Editor {
         self.core.generation = generation.wrapping_add(1);
         self.core.fix_selection();
         self.core.break_coalescing();
-        self.marked = None;
+        self.take_marked_text();
         self.caret_row_end = None;
         self.menu = None;
         self.slash = None;
@@ -577,8 +597,25 @@ impl Editor {
         cx.notify();
     }
 
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub fn composing(&self) -> bool { self.marked.is_some() }
+
+    fn take_marked_text(&mut self) -> Option<(BlockId, Range<usize>)> {
+        #[cfg(target_os = "ios")]
+        { self.composition_start = None; }
+        self.marked.take()
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn cancel_background_composition(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(mut core) = self.composition_start.take() else { return false };
+        self.marked = None;
+        core.generation = self.core.generation.wrapping_add(1);
+        self.core = core;
+        self.refresh_find(false, cx);
+        cx.notify();
+        true
+    }
 
     pub fn changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.changed_with_scroll(ScrollIntent::RevealCaret, window, cx);
@@ -671,7 +708,7 @@ impl Editor {
         }
         self.core.pending_marks = None;
         self.core.break_coalescing();
-        self.marked = None;
+        self.take_marked_text();
         if extend {
             self.toolbar_hidden = false;
         }
@@ -680,7 +717,7 @@ impl Editor {
     pub fn close_menu_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         self.menu_hovered = false;
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         cx.notify();
     }
 
@@ -741,6 +778,7 @@ impl Editor {
     /// The "+" panel, and the slash menu before anything is typed after "/",
     /// pack the basic group into one icon grid; a filtered list stays flat.
     pub fn slash_grid(&self) -> bool {
+        if cfg!(target_os="ios") { return false; }
         match &self.slash {
             Some(_) => self.slash_query().is_empty(),
             None => matches!(self.menu, Some(Menu::Add { .. }) | Some(Menu::Block { sub: Some(BlockSub::Add(_)), .. })),
@@ -1037,17 +1075,35 @@ impl Editor {
     }
 
     fn pick_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "ios")]
+        let stamp = super::format_mobile::SelectionStamp::capture(self,"image-picker");
+        #[cfg(target_os = "ios")]
+        let background = cx.background_executor().clone();
+        #[cfg(target_os = "ios")]
+        let library_root = self.library_root.clone();
+        #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+        let session = crate::store::Store::session_lease(&crate::store::Store::root_dir());
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
             prompt: Some(crate::settings::text("插入图片").into()),
-            extensions: None,
+            #[cfg(not(target_os = "ios"))] extensions: None,
         });
         cx.spawn_in(window, async move |this, cx| {
+            #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+            let _session = session;
             if let Ok(Ok(Some(paths))) = rx.await
                 && let Some(p) = paths.into_iter().next()
             {
+                #[cfg(target_os = "ios")]
+                {
+                    let block = background.spawn(async move { super::image::image_block_from_file(&library_root,&p) }).await;
+                    let _ = this.update_in(cx,|e,window,cx| {
+                        e.finish_mobile_image(stamp,block,window,cx);
+                    });
+                }
+                #[cfg(not(target_os = "ios"))]
                 let _ = this.update_in(cx, |e, window, cx| {
                     let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("png").to_string();
                     if let Ok(bytes) = std::fs::read(&p) {
@@ -1059,11 +1115,52 @@ impl Editor {
         .detach();
     }
 
+    #[cfg(target_os = "ios")]
+    fn finish_mobile_image(&mut self, stamp: super::format_mobile::SelectionStamp, block: Result<Block,&str>, window: &mut Window, cx: &mut Context<Self>) {
+        if !stamp.matches(self,stamp.serial,"image-picker") || self.read_only || !crate::cloud_sync::shared::can_edit_in(&self.library_root,cx) {
+            self.toast(crate::settings::tr("笔记已更新，请重新插入。","The note changed. Please insert again."),cx); return;
+        }
+        match block { Ok(block)=>self.insert_image_block(block,window,cx),Err(message)=>self.toast(message,cx) }
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(super) fn pick_photo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only || !crate::cloud_sync::shared::can_edit_in(&self.library_root,cx) { return; }
+        let stamp = super::format_mobile::SelectionStamp::capture(self,"image-picker");
+        let background = cx.background_executor().clone();
+        #[cfg(target_os = "ios")]
+        let library_root = self.library_root.clone();
+        #[cfg(feature = "cloudkit-sync")]
+        let session = crate::store::Store::session_lease(&crate::store::Store::root_dir());
+        let receiver = gpui_mobile::packages::image_picker::pick_gallery_image();
+        cx.spawn_in(window,async move |this,cx| {
+            #[cfg(feature = "cloudkit-sync")]
+            let _session = session;
+            match receiver.await {
+                Ok(Ok(Some(file)))=>{
+                    let block = background.spawn(async move {
+                        let path = std::path::Path::new(&file.path);
+                        let block = super::image::image_block_from_file(&library_root,path);
+                        if path.parent() == Some(std::env::temp_dir().join("gpui-picked-images").as_path()) { let _ = std::fs::remove_file(path); }
+                        block
+                    }).await;
+                    let _ = this.update_in(cx,|e,window,cx|e.finish_mobile_image(stamp,block,window,cx));
+                }
+                Ok(Ok(None))=>{},
+                _=>{ let _ = this.update_in(cx,|e,_,cx|e.toast(crate::settings::tr("照片暂不可用，请重试。","The photo is unavailable. Please try again."),cx)); }
+            }
+        }).detach();
+    }
+
     fn insert_image_bytes(&mut self, bytes: &[u8], ext: &str, window: &mut Window, cx: &mut Context<Self>) {
         let b = match super::image::image_block_from(&self.library_root, bytes, ext) {
             Ok(b) => b,
             Err(msg) => return self.toast(msg, cx),
         };
+        self.insert_image_block(b,window,cx);
+    }
+
+    fn insert_image_block(&mut self, b: Block, window: &mut Window, cx: &mut Context<Self>) {
         let nid = self.core.insert_block(b);
         let p = self.core.ensure_paragraph_after(nid);
         self.core.sel = Selection::caret(Pos::new(p, 0));
@@ -1073,7 +1170,7 @@ impl Editor {
     // ---- links, languages, colors
 
     /// Open the LaTeX editor of the equation at `p` (its source selected).
-    pub fn open_equation_editor(&mut self, p: Pos, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_equation_editor(&mut self, p: Pos, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(src) = self.core.equation_source(p) else { return };
         self.eq_field.update(cx, |f, cx| {
             f.set_text(&src, cx);
@@ -1084,18 +1181,31 @@ impl Editor {
         self.core.sel = Selection { anchor: p, head: Pos::new(p.block, p.offset + core::EQUATION.len()) };
         self.dragging = false;
         self.menu = Some(Menu::Equation { block: p.block, offset: p.offset });
+        #[cfg(target_os = "ios")]
+        self.present_native_object(cx);
+        #[cfg(not(target_os = "ios"))]
+        {
         let fh = self.eq_field.read(cx).focus_handle(cx);
-        window.focus(&fh);
+        crate::gpui_compat::focus(_window, &fh, cx);
+        }
         cx.notify();
     }
 
+    pub(super) fn update_equation_source(&mut self, source: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Menu::Equation { block, offset }) = self.menu else { return };
+        self.core.set_equation_source(Pos::new(block, offset), source);
+        self.changed(window, cx);
+    }
+
     /// Leave the equation editor with the caret after (or before) it.
-    fn close_equation_editor(&mut self, after: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_equation_editor(&mut self, after: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Menu::Equation { block, offset }) = self.menu.take() else { return };
+        #[cfg(target_os = "ios")]
+        super::object_mobile::dismiss_form();
         self.core.break_coalescing();
         let o = if after { offset + core::EQUATION.len() } else { offset };
         self.core.sel = Selection::caret(Pos::new(block, o));
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         self.restart_blink(window, cx);
         cx.notify();
     }
@@ -1110,7 +1220,7 @@ impl Editor {
                     let f = if text { &self.link_field } else { &self.link_text_field };
                     let fh = f.read(cx).focus_handle(cx);
                     f.update(cx, |f, cx| f.select_all_text(cx));
-                    window.focus(&fh);
+                    crate::gpui_compat::focus(window, &fh, cx);
                 }
                 cx.notify();
             }
@@ -1131,11 +1241,16 @@ impl Editor {
     }
 
     pub fn open_lang_menu(&mut self, block: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        self.lang_field.update(cx, |f, cx| f.set_text("", cx));
-        self.menu = Some(Menu::Lang { block, selected: 0 });
-        let fh = self.lang_field.read(cx).focus_handle(cx);
-        window.focus(&fh);
-        cx.notify();
+        #[cfg(target_os = "ios")]
+        { let _ = window; self.open_native_code(block,true,cx); }
+        #[cfg(not(target_os = "ios"))]
+        {
+            self.lang_field.update(cx, |f, cx| f.set_text("", cx));
+            self.menu = Some(Menu::Lang { block, selected: 0 });
+            let fh = self.lang_field.read(cx).focus_handle(cx);
+            crate::gpui_compat::focus(window, &fh, cx);
+            cx.notify();
+        }
     }
 
     /// Text color / background from the color panel (None = default).
@@ -2045,8 +2160,8 @@ impl Editor {
         }
         self.cancel_crop(cx);
         self.slash = None;
-        self.marked = None;
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        self.take_marked_text();
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.cloud_history {
             cx.emit(EditorEvent::CloudUndo { redo: false });
             return;
@@ -2061,8 +2176,8 @@ impl Editor {
         }
         self.cancel_crop(cx);
         self.slash = None;
-        self.marked = None;
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        self.take_marked_text();
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.cloud_history {
             cx.emit(EditorEvent::CloudUndo { redo: true });
             return;
@@ -2327,9 +2442,12 @@ impl Editor {
 
     // ---- mouse
 
+    #[cfg(target_os = "ios")]
+    pub(super) fn pos_at(&self, p: Point<Pixels>) -> Option<Pos> { self.pos_at_row(p).map(|(pos,_)|pos) }
+
     /// The text position under `p`, and whether it is the end of a wrapped row
     /// (the caret is drawn there rather than at the next row's start).
-    fn pos_at(&self, p: Point<Pixels>) -> Option<(Pos, bool)> {
+    fn pos_at_row(&self, p: Point<Pixels>) -> Option<(Pos, bool)> {
         let us = self.core.units();
         let atomic = {
             let bb = self.block_bounds.borrow();
@@ -2370,13 +2488,15 @@ impl Editor {
     }
 
     pub fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&self.focus);
+        #[cfg(target_os = "ios")]
+        self.dismiss_touch_menu();
+        crate::gpui_compat::focus(window, &self.focus, cx);
         self.reminder_blur(window, cx);
         self.menu = None;
         self.menu_hovered = false;
         self.slash = None;
         self.toolbar_hidden = false;
-        self.marked = None;
+        self.take_marked_text();
         self.tables.danger = false;
         self.hide_link_card(cx);
         self.link_ui.target = None;
@@ -2394,7 +2514,7 @@ impl Editor {
             self.core.clear_block_sel();
             return cx.notify();
         }
-        let Some((pos, at_row_end)) = self.pos_at(ev.position) else { return };
+        let Some((pos, at_row_end)) = self.pos_at_row(ev.position) else { return };
         let eq = self.cache.borrow().get(&pos.block).and_then(|l| l.equation_at(ev.position));
         if let Some(ix) = eq
             && !ev.modifiers.shift
@@ -2427,6 +2547,8 @@ impl Editor {
         }
         self.dragging = ev.click_count == 1;
         self.restart_blink(window, cx);
+        #[cfg(target_os = "ios")]
+        if !self.read_only { gpui_mobile::show_keyboard(); }
         cx.notify();
     }
 
@@ -2435,7 +2557,7 @@ impl Editor {
         if self.cell_drag_to(p, cx) {
             return;
         }
-        if let Some((pos, at_row_end)) = self.pos_at(p)
+        if let Some((pos, at_row_end)) = self.pos_at_row(p)
             && pos != self.core.sel.head
         {
             self.core.sel.head = pos;
@@ -2564,7 +2686,7 @@ impl Editor {
 
     /// Click in the empty area below the content: focus a trailing empty paragraph.
     pub fn on_click_below(&mut self, _: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         if self.read_only {
             return;
         }
@@ -2573,13 +2695,15 @@ impl Editor {
         self.core.clear_block_sel();
         let id = self.core.trailing_line();
         self.set_caret(Pos::new(id, 0), false);
+        #[cfg(target_os = "ios")]
+        gpui_mobile::show_keyboard();
         cx.stop_propagation();
         self.changed(window, cx);
     }
 
     /// Handle (⋮⋮) click: select the block and open its menu; "+" opens the add panel.
     pub fn open_block_menu(&mut self, block: BlockId, add: bool, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         self.slash = None;
         self.menu_hovered = false;
         if add {
@@ -2653,7 +2777,7 @@ impl Editor {
             BlockAct::HeaderCol => self.core.table_toggle_header_col(block),
             BlockAct::DistributeCols => self.core.table_distribute(block),
         }
-        window.focus(&self.focus);
+        crate::gpui_compat::focus(window, &self.focus, cx);
         self.changed(window, cx);
     }
 
@@ -2780,7 +2904,7 @@ impl EntityInputHandler for Editor {
     }
 
     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.marked = None;
+        self.take_marked_text();
     }
 
     fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2789,7 +2913,7 @@ impl EntityInputHandler for Editor {
             return;
         }
         let head = self.core.sel.head.block;
-        if let Some((b, r)) = self.marked.take() {
+        if let Some((b, r)) = self.take_marked_text() {
             self.core.sel = Selection { anchor: Pos::new(b, r.start), head: Pos::new(b, r.end) };
         } else if let Some(r16) = range
             && let Some(t) = self.head_text()
@@ -2815,6 +2939,10 @@ impl EntityInputHandler for Editor {
         if self.core.in_block_mode() {
             return;
         }
+        #[cfg(target_os = "ios")]
+        if self.marked.is_none() && !text.is_empty() {
+            self.composition_start = Some(self.core.clone());
+        }
         if self.core.text_of(self.core.sel.head.block).is_none() || self.core.sel.head.block != self.core.sel.anchor.block {
             // Atomic caret or a cross-block selection: clear it first.
             if !self.core.sel.is_collapsed() {
@@ -2832,7 +2960,11 @@ impl EntityInputHandler for Editor {
             _ => self.reported_range(&t).0,
         };
         self.core.replace_in_block(head, r.clone(), text);
-        self.marked = (!text.is_empty()).then(|| (head, r.start..r.start + text.len()));
+        if text.is_empty() {
+            self.take_marked_text();
+        } else {
+            self.marked = Some((head, r.start..r.start + text.len()));
+        }
         if let Some(ns) = new_sel {
             let t2 = self.core.text_of(head).map(|t| t.text.clone()).unwrap_or_default();
             let base = to16(&t2, r.start);

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Copyright 2026 Fei Notes contributors. See LICENSES.md.
+#if os(macOS)
 import AppKit
+typealias CloudPurchaseWindow = NSWindow
+#elseif os(iOS)
+import UIKit
+typealias CloudPurchaseWindow = UIViewController
+#endif
 import Foundation
 import StoreKit
 
@@ -46,7 +52,13 @@ struct CloudSubscriptionStore {
     private func id(for plan: CloudPlan) -> String { plan == .annual ? annualID : monthlyID }
 
     func products() async throws -> [CloudPlan: Product] {
+        #if FEI_STOREKIT_TESTING
+        NSLog("Fei Notes StoreKit: loading local products")
+        #endif
         let products = try await Product.products(for: [annualID, monthlyID])
+        #if FEI_STOREKIT_TESTING
+        NSLog("Fei Notes StoreKit: loaded %d local products", products.count)
+        #endif
         var matched: [CloudPlan: Product] = [:]
         for plan in CloudPlan.allCases {
             if let product = products.first(where: { $0.id == id(for: plan) }),
@@ -88,6 +100,7 @@ struct CloudSubscriptionStore {
         return CloudPlan.allCases.first { id(for: $0) == transaction.productID }
     }
 
+    #if os(macOS) || os(iOS)
     @MainActor func listenForUpdates(onChange: @escaping @MainActor @Sendable () -> Void) {
         guard subscriptionUpdates == nil else { return }
         subscriptionUpdates = Task {
@@ -100,6 +113,8 @@ struct CloudSubscriptionStore {
             }
         }
     }
+
+    #endif
 
     func activeSubscription(now: Date = Date()) async -> CloudActiveSubscription? {
         var monthly: CloudActiveSubscription?
@@ -125,15 +140,32 @@ struct CloudSubscriptionStore {
         return nil
     }
 
-    @MainActor func purchase(_ plan: CloudPlan, in window: NSWindow?) async throws -> CloudPurchaseOutcome {
+    #if os(macOS) || os(iOS)
+    @MainActor func purchase(_ plan: CloudPlan, in window: CloudPurchaseWindow?) async throws -> CloudPurchaseOutcome {
         guard let product = try await products()[plan] else { throw CloudSubscriptionError.unavailable }
         let result: Product.PurchaseResult
+        #if os(macOS)
         if #available(macOS 15.2, *) {
             guard let window else { throw CloudSubscriptionError.missingWindow }
             result = try await product.purchase(confirmIn: window)
         } else {
             result = try await product.purchase()
         }
+        #elseif os(iOS)
+        guard let window else { throw CloudSubscriptionError.missingWindow }
+        #if FEI_STOREKIT_TESTING
+        NSLog("Fei Notes StoreKit: presenter %@ attached=%d active=%d transition=%d", String(describing: type(of: window)),
+            window.viewIfLoaded?.window != nil, window.viewIfLoaded?.window?.windowScene?.activationState == .foregroundActive,
+            window.transitionCoordinator != nil)
+        #endif
+        guard window.viewIfLoaded?.window != nil else { throw CloudSubscriptionError.missingWindow }
+        window.view.window?.endEditing(true)
+        if #available(iOS 18.2, *) { result = try await product.purchase(confirmIn: window) }
+        else {
+            guard let scene = window.view.window?.windowScene else { throw CloudSubscriptionError.missingWindow }
+            result = try await product.purchase(confirmIn: scene)
+        }
+        #endif
         switch result {
         case .success(.verified(let transaction)):
             guard self.plan(for: transaction) == plan else { throw CloudSubscriptionError.unverified }
@@ -146,8 +178,10 @@ struct CloudSubscriptionStore {
         @unknown default: throw CloudSubscriptionError.unavailable
         }
     }
+    #endif
 }
 
+#if os(macOS) || os(iOS)
 enum CloudPurchaseOutcome: String, Encodable { case loaded, purchased, pending, cancelled, restored }
 
 private enum CloudSubscriptionError: LocalizedError {
@@ -186,6 +220,9 @@ public func quietCloudWatchSubscription(_ onChange: @escaping @Sendable @convent
 public func quietCloudSubscription(_ action: Int32, _ context: UInt,
     _ complete: @escaping @Sendable @convention(c) (UInt, UnsafePointer<CChar>?) -> Void) {
     Task { @MainActor in
+        #if FEI_STOREKIT_TESTING
+        NSLog("Fei Notes StoreKit: action %d entered", action)
+        #endif
         var reply = CloudSubscriptionReply()
         do {
             guard let store = CloudSubscriptionStore(bundle: .main) else { throw CloudSubscriptionError.unavailable }
@@ -195,14 +232,23 @@ public func quietCloudSubscription(_ action: Int32, _ context: UInt,
                 subscriptionActionInProgress = true
             }
             defer { if interactive { subscriptionActionInProgress = false } }
+            #if os(macOS)
+            let window = NSApp.keyWindow
+            #elseif os(iOS)
+            let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive && $0.windows.contains { $0.isKeyWindow } }
+            var window = scene?.windows.first { $0.isKeyWindow }?.rootViewController
+            while let presented = window?.presentedViewController { window = presented }
+            if let navigation = window as? UINavigationController { window = navigation.topViewController }
+            #endif
             switch action {
             case 0:
                 do {
                     reply.offers = try await store.offers()
                     reply.outcome = .loaded
                 } catch { reply.error = error.localizedDescription }
-            case 1: reply.outcome = try await store.purchase(.annual, in: NSApp.keyWindow)
-            case 2: reply.outcome = try await store.purchase(.monthly, in: NSApp.keyWindow)
+            case 1: reply.outcome = try await store.purchase(.annual, in: window)
+            case 2: reply.outcome = try await store.purchase(.monthly, in: window)
             case 3:
                 try await AppStore.sync()
                 await CloudAccess.shared.invalidate()
@@ -213,6 +259,10 @@ public func quietCloudSubscription(_ action: Int32, _ context: UInt,
             reply.active = await store.activeSubscription()
         } catch { reply.error = error.localizedDescription }
         guard let data = try? JSONEncoder().encode(reply) else { complete(context, nil); return }
+        #if FEI_STOREKIT_TESTING
+        NSLog("Fei Notes StoreKit: action %d completed", action)
+        #endif
         String(decoding: data, as: UTF8.self).withCString { complete(context, $0) }
     }
 }
+#endif

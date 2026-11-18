@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Copyright 2026 Fei Notes contributors. See LICENSES.md.
+#if os(macOS)
 import AppKit
+#endif
 import CloudKit
 import CryptoKit
 import Foundation
@@ -293,6 +295,10 @@ private func startupFixture(_ root: String?) -> String? {
 
 private func accountStatus(_ container: CKContainer, startupTestRoot: String?) async throws -> CKAccountStatus {
     #if FEI_CLOUD_QA
+    if ProcessInfo.processInfo.environment["FEI_QA_SLOW_SIGN_OUT"] == "1" {
+        try await Task.sleep(for: .seconds(15))
+        return .noAccount
+    }
     if let state = startupFixture(startupTestRoot) {
         switch state {
         case "signed-out": return .noAccount
@@ -539,6 +545,7 @@ public func quietCloudRestore(_ action: Int32, _ path: UnsafePointer<CChar>?, _ 
 @_cdecl("quiet_cloud_restore_free")
 public func quietCloudRestoreFree(_ reply: UnsafeMutablePointer<CChar>?) { free(reply) }
 
+#if os(macOS)
 @MainActor
 @_cdecl("quiet_cloud_restore_alert")
 public func quietCloudRestoreAlert(_ message: UnsafePointer<CChar>) {
@@ -547,3 +554,4 @@ public func quietCloudRestoreAlert(_ message: UnsafePointer<CChar>) {
     alert.informativeText = String(cString: message)
     alert.runModal()
 }
+#endif

@@ -44,6 +44,11 @@ if [[ "$operation" == testflight || "$operation" == public-testflight ]]; then
     package_mode=$operation
     if [[ "$operation" == public-testflight ]]; then : "${FEI_PUBLIC_BETA_GROUP_ID:?Set the external beta group}"; fi
     unset FEI_STOREKIT_ANNUAL_PRODUCT FEI_STOREKIT_MONTHLY_PRODUCT
+    if [[ -d "docs/releases/$version/macos" ]]; then
+        export FEI_BETA_NOTES_DIR="$repo/docs/releases/$version/macos"
+        test -s "$FEI_BETA_NOTES_DIR/en-US.txt"
+        test -s "$FEI_BETA_NOTES_DIR/zh-Hans.txt"
+    fi
 else
     package_mode=app-store
     : "${FEI_STOREKIT_ANNUAL_PRODUCT:?}" "${FEI_STOREKIT_MONTHLY_PRODUCT:?}"

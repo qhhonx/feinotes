@@ -12,6 +12,8 @@ use crate::editor_theme::{self as theme, Theme, craft};
 use crate::editor_ui::{ROW_RADIUS, TipExt, icon, menu, menu_glyph, menu_row, panel};
 use super::image::picture;
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -219,7 +221,7 @@ impl Editor {
     }
 
     fn upload_cover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some(crate::settings::text("上传图片").into()), extensions: None });
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some(crate::settings::text("上传图片").into()), #[cfg(not(target_os = "ios"))] extensions: None });
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await
                 && let Some(p) = paths.into_iter().next()

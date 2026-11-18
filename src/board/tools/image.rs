@@ -15,7 +15,7 @@ use std::path::PathBuf;
 /// The image tool: pick files, insert them at the view's center.
 pub fn pick_images(me: &mut BoardView, window: &mut Window, cx: &mut Context<BoardView>) {
     let picked = crate::devtools::take_pick();
-    let rx = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(crate::settings::text("插入图片").into()), extensions: None }));
+    let rx = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(crate::settings::text("插入图片").into()), #[cfg(not(target_os = "ios"))] extensions: None }));
     let _ = me;
     cx.spawn_in(window, async move |this, cx| {
         let paths = match rx { Some(rx) => rx.await.ok().and_then(Result::ok).flatten(), None => picked };

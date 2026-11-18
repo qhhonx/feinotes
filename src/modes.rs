@@ -80,7 +80,7 @@ impl Workspace {
     }
 
     pub fn set_mode(&mut self, reading: bool, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if !reading && (crate::cloud_sync::shared::editing_paused(&self.store, cx)
             || crate::cloud_sync::shared::access(&self.store, cx).is_some_and(|access| !access.can_write())) { return; }
         self.mode_menu = false;
@@ -99,7 +99,9 @@ impl Workspace {
         let _ = self.store.update_meta(&id, |m| m.reading = reading);
         if let Some(ed) = &self.editor {
             ed.update(cx, |e, cx| e.set_read_only(reading, cx));
-            ed.read(cx).focus(window);
+            crate::gpui_compat::focus(window, &ed.read(cx).focus_handle(cx), cx);
+            #[cfg(target_os = "ios")]
+            if !reading { gpui_mobile::show_keyboard(); }
         }
         self.show_toast_kind(ToastKind::Info, if reading { crate::settings::text("已切换为阅读模式") } else { crate::settings::text("已切换为编辑模式") }, cx);
     }

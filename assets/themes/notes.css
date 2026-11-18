@@ -489,3 +489,15 @@ th {
 .token.function {
   color: var(--notes-code-ink);
 }
+
+/* Native mobile chrome inherits system materials; document and action colors follow this theme. */
+.mobile-chrome { color: var(--notes-link); }
+.mobile-list { color: var(--notes-ink); }
+.mobile-row.is-selected {
+  background-color: var(--notes-accent);
+  color: light-dark(#454545, #191919);
+}
+
+/* Mobile values are product tuning; desktop Notes measurements above remain unchanged. */
+.mobile-page { font-size: 17px; line-height: 24px; }
+.mobile-title { font-size: 26px; line-height: 32px; }

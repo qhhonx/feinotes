@@ -1,0 +1,143 @@
+--- a/src/packages/image_picker/mod.rs
++++ b/src/packages/image_picker/mod.rs
+@@ -12,6 +12,8 @@
+ mod android;
+ #[cfg(target_os = "ios")]
+ mod ios;
++#[cfg(target_os = "ios")]
++mod ios_gallery;
+ 
+ /// Source for picking an image or video.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -131,3 +133,10 @@
+         Err("image_picker is only available on iOS and Android".into())
+     }
+ }
++
++
++/// Pick one image with PHPicker without blocking the GPUI/UIKit event loop.
++/// The receiver resolves to cancellation, an owned temporary file or an error.
++/// Callers must remove the returned temporary file after importing it.
++#[cfg(target_os = "ios")]
++pub fn pick_gallery_image() -> futures::channel::oneshot::Receiver<Result<Option<PickedFile>,String>> { ios_gallery::pick() }
+--- /dev/null
++++ b/src/packages/image_picker/ios_gallery.rs
+@@ -0,0 +1,118 @@
++//! Non-blocking, owned PHPicker result for the GPUI event loop.
++use super::PickedFile;
++use futures::channel::oneshot;
++use objc2::{class,msg_send,sel,rc::Retained,runtime::{AnyClass,AnyObject,AnyProtocol,Bool,ClassBuilder,Sel}};
++use std::{cell::RefCell,ffi::{CStr,c_void},sync::{OnceLock,atomic::{AtomicU64,Ordering}}};
++use crate::ios::util::nsstring;
++
++type Result = std::result::Result<Option<PickedFile>,String>;
++struct Pending { serial: u64, sender: oneshot::Sender<Result>, picker: Retained<AnyObject>, _delegate: Retained<AnyObject>, loading: bool }
++static SERIAL: AtomicU64 = AtomicU64::new(1);
++thread_local! { static PENDING: RefCell<Option<Pending>> = const { RefCell::new(None) }; }
++unsafe extern "C" {
++    static _dispatch_main_q: c_void;
++    fn dispatch_async_f(queue: *mut c_void,context: *mut c_void,work: Option<unsafe extern "C" fn(*mut c_void)>);
++}
++fn on_main(f: impl FnOnce()+Send+'static) {
++    unsafe extern "C" fn call(context: *mut c_void) { let f: Box<Box<dyn FnOnce()+Send>> = Box::from_raw(context.cast()); f(); }
++    let f: Box<Box<dyn FnOnce()+Send>> = Box::new(Box::new(f));
++    unsafe { dispatch_async_f(std::ptr::addr_of!(_dispatch_main_q).cast_mut(),Box::into_raw(f).cast(),Some(call)); }
++}
++
++pub fn pick() -> oneshot::Receiver<Result> {
++    let (sender,receiver) = oneshot::channel();
++    on_main(move || {
++        if PENDING.with(|p|p.borrow().is_some()) { let _ = sender.send(Err("An image picker is already open".into())); return; }
++        match unsafe { create_picker() } {
++            Ok((picker,delegate,presenter))=>{
++                let pointer = Retained::as_ptr(&picker);
++                PENDING.with(|p|*p.borrow_mut() = Some(Pending { serial:SERIAL.fetch_add(1,Ordering::Relaxed),sender,picker,_delegate:delegate,loading:false }));
++                unsafe { let _: () = msg_send![presenter,presentViewController:pointer,animated:Bool::YES,completion:std::ptr::null::<AnyObject>()]; }
++            }
++            Err(error)=>{ let _ = sender.send(Err(error)); }
++        }
++    });
++    receiver
++}
++
++fn complete(id: u64,result: Result) {
++    on_main(move || {
++        let pending = PENDING.with(|p| {
++            let mut p = p.borrow_mut();
++            if p.as_ref().is_some_and(|p|p.serial == id) { p.take() } else { None }
++        });
++        if let Some(pending) = pending {
++            unsafe { let _: () = msg_send![&*pending.picker,dismissViewControllerAnimated:Bool::YES,completion:std::ptr::null::<AnyObject>()]; }
++            if let Err(Ok(Some(file))) = pending.sender.send(result) { let _ = std::fs::remove_file(file.path); }
++        } else if let Ok(Some(file)) = result { let _ = std::fs::remove_file(file.path); }
++    });
++}
++
++fn delegate_class() -> &'static AnyClass {
++    static CLASS: OnceLock<&'static AnyClass> = OnceLock::new();
++    CLASS.get_or_init(|| {
++        let mut builder = ClassBuilder::new(c"GpuiAsyncGalleryDelegate",class!(NSObject)).unwrap();
++        if let Some(protocol) = AnyProtocol::get(c"PHPickerViewControllerDelegate") { builder.add_protocol(protocol); }
++        unsafe { builder.add_method(sel!(picker:didFinishPicking:),did_finish as unsafe extern "C" fn(*mut AnyObject,Sel,*mut AnyObject,*mut AnyObject)); }
++        builder.register()
++    })
++}
++
++unsafe extern "C" fn did_finish(_: *mut AnyObject,_: Sel,picker: *mut AnyObject,results: *mut AnyObject) {
++    let count: usize = msg_send![results,count];
++    let id = PENDING.with(|p| {
++        let mut p = p.borrow_mut();
++        let p = p.as_mut().filter(|p|Retained::as_ptr(&p.picker) == picker && (!p.loading || count == 0))?;
++        p.loading = true; Some(p.serial)
++    });
++    let Some(id) = id else { return };
++    if count == 0 { complete(id,Ok(None)); return; }
++    let result: *mut AnyObject = msg_send![results,objectAtIndex:0usize];
++    let provider: *mut AnyObject = msg_send![result,itemProvider];
++    // Preserve a supported original representation; ask Photos for compatible
++    // JPEG when the original format cannot be rendered by the shared editor.
++    let candidates = [("public.png","png"),("com.compuserve.gif","gif"),("public.jpeg","jpg"),("org.webmproject.webp","webp"),("com.microsoft.bmp","bmp")];
++    let (uti,extension) = candidates.into_iter().find(|(uti,_)| {
++        let supported: Bool = msg_send![provider,hasItemConformingToTypeIdentifier:nsstring(uti)]; supported.as_bool()
++    }).unwrap_or(("public.jpeg","jpg"));
++    let callback = block2::RcBlock::new(move |url: *mut AnyObject,_error: *mut AnyObject| {
++        if url.is_null() { complete(id,Err("The photo representation is unavailable".into())); return; }
++        let result = (|| -> std::result::Result<PickedFile,String> {
++            let path: *mut AnyObject = msg_send![url,path];
++            let path: *const std::ffi::c_char = msg_send![path,UTF8String];
++            if path.is_null() { return Err("The photo path is unavailable".into()); }
++            let source = CStr::from_ptr(path).to_string_lossy();
++            let folder = std::env::temp_dir().join("gpui-picked-images");
++            std::fs::create_dir_all(&folder).map_err(|_|"Could not prepare the photo import")?;
++            let name = format!("photo-{}.{extension}",uuid::Uuid::new_v4());
++            let destination = folder.join(&name);
++            std::fs::copy(source.as_ref(),&destination).map_err(|_|"Could not copy the selected photo")?;
++            Ok(PickedFile { path:destination.to_string_lossy().into_owned(),name })
++        })();
++        complete(id,result.map(Some));
++    });
++    let _: *mut AnyObject = msg_send![provider,loadFileRepresentationForTypeIdentifier:nsstring(uti),completionHandler:&*callback];
++}
++
++unsafe fn create_picker() -> std::result::Result<(Retained<AnyObject>,Retained<AnyObject>,*mut AnyObject),String> {
++    let app: *mut AnyObject = msg_send![class!(UIApplication),sharedApplication];
++    let window: *mut AnyObject = msg_send![app,keyWindow];
++    if window.is_null() { return Err("No active iOS window".into()); }
++    let mut presenter: *mut AnyObject = msg_send![window,rootViewController];
++    if presenter.is_null() { return Err("No active view controller".into()); }
++    loop { let next: *mut AnyObject = msg_send![presenter,presentedViewController]; if next.is_null() { break; } presenter = next; }
++    let config: *mut AnyObject = msg_send![class!(PHPickerConfiguration),new];
++    let config = Retained::from_raw(config).ok_or("Could not create photo configuration")?;
++    let filter: *mut AnyObject = msg_send![class!(PHPickerFilter),imagesFilter];
++    let _: () = msg_send![&*config,setFilter:filter];
++    let _: () = msg_send![&*config,setSelectionLimit:1isize];
++    let _: () = msg_send![&*config,setPreferredAssetRepresentationMode:2isize];
++    let picker: *mut AnyObject = msg_send![class!(PHPickerViewController),alloc];
++    let picker: *mut AnyObject = msg_send![picker,initWithConfiguration:&*config];
++    let picker = Retained::from_raw(picker).ok_or("Could not create photo picker")?;
++    let delegate: *mut AnyObject = msg_send![delegate_class(),new];
++    let delegate = Retained::from_raw(delegate).ok_or("Could not create photo delegate")?;
++    let _: () = msg_send![&*picker,setDelegate:&*delegate];
++    let _: () = msg_send![&*picker,setModalPresentationStyle:0isize];
++    Ok((picker,delegate,presenter))
++}

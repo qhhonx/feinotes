@@ -13,6 +13,8 @@ use crate::editor_theme::{self as theme, Theme, craft};
 use crate::editor_ui::{ROW_RADIUS, TipExt, icon, popover};
 use super::image::picture;
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -128,7 +130,7 @@ pub fn type_icon(k: Kind, s: f32) -> Div {
 /// The same icon painted into `b` (the inline chip).
 pub fn paint_type_icon(k: Kind, b: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
     for (path, color) in [("editor-icons/file-page.svg", theme::c(kind_color(k))), ("editor-icons/file-fold.svg", theme::rgbaf(255, 255, 255, 0.45)), (glyph(k), gpui::white())] {
-        let _ = window.paint_svg(b, path.into(), TransformationMatrix::unit(), color, cx);
+        let _ = crate::gpui_compat::paint_svg(window, b, path.into(), TransformationMatrix::unit(), color, cx);
     }
 }
 
@@ -256,24 +258,24 @@ fn first_png(dir: &Path) -> Option<PathBuf> {
 }
 
 fn make_thumb(root: &Path, p: &Path) -> Option<PathBuf> {
-    let dir = thumb_dir(root, p);
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = thumb_dir(root,p);
+    std::fs::create_dir_all(&dir).ok()?;
     if let Some(cached) = first_png(&dir) { return Some(cached); }
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(target_os = "ios")]
     {
+        unsafe extern "C" { fn fei_ios_thumbnail(path: *const std::ffi::c_char, destination: *const std::ffi::c_char) -> bool; }
         let output = dir.join("preview.png");
-        crate::cloud_sync::thumbnail(p, &output).then_some(output)
+        let path = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).ok()?;
+        let destination = std::ffi::CString::new(output.as_os_str().as_encoded_bytes()).ok()?;
+        unsafe { fei_ios_thumbnail(path.as_ptr(),destination.as_ptr()) }.then_some(output)
     }
-    #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    { let output = dir.join("preview.png"); crate::cloud_sync::thumbnail(p,&output).then_some(output) }
+    #[cfg(not(any(target_os = "ios", all(target_os = "macos", feature = "cloudkit-sync"))))]
     {
         let _ = std::process::Command::new("qlmanage")
-            .args(["-t", "-s", "1200", "-o"])
-            .arg(&dir)
-            .arg(p)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+            .args(["-t","-s","1200","-o"]).arg(&dir).arg(p)
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
         first_png(&dir)
     }
 }
@@ -284,13 +286,21 @@ pub fn quick_look(p: &Path) {
         eprintln!("quicklook {}", p.display());
         return;
     }
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(target_os = "ios")]
+    {
+        unsafe extern "C" { fn fei_ios_preview_file(path: *const std::ffi::c_char); }
+        if let Ok(path) = std::ffi::CString::new(p.to_string_lossy().as_bytes()) { unsafe { fei_ios_preview_file(path.as_ptr()); } }
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     if crate::cloud_sync::preview(p) { return; }
     let mut cmd = std::process::Command::new("qlmanage");
     cmd.arg("-p").arg(p).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     std::thread::spawn(move || {
         let _ = cmd.status();
     });
+    }
 }
 
 /// A new attachment for `p`, copied into `assets/files/<uuid>/<name>`.
@@ -659,6 +669,25 @@ impl Editor {
     /// 下载: a copy where the save panel says (Downloads first).
     pub(super) fn download_file(&mut self, f: &FileBlock, cx: &mut Context<Self>) {
         let Some(src) = local_path(&self.library_root, f).filter(|p| p.is_file()) else { return self.toast(crate::settings::text("文件不存在"), cx) };
+        #[cfg(target_os = "ios")]
+        {
+            let name = Path::new(&f.name).file_name().map(|v|v.to_owned()).unwrap_or_else(||"Attachment".into());
+            let session = Store::session_lease(&Store::root_dir());
+            let task = cx.background_executor().spawn(async move {
+                let _session = session;
+                let dest = crate::ipad::export_folder()?.join(name);
+                std::fs::copy(src,&dest)?;
+                anyhow::Ok(dest)
+            });
+            cx.spawn(async move |this,cx| {
+                match task.await {
+                    Ok(path)=>crate::ipad::present_export(&path),
+                    Err(_)=>{ let _ = this.update(cx,|e,cx|e.toast(crate::settings::text("文件读取失败"),cx)); }
+                }
+            }).detach();
+        }
+        #[cfg(not(target_os = "ios"))]
+        {
         let picked = crate::devtools::take_pick().and_then(|p| p.into_iter().next());
         let dir = dirs::download_dir().or_else(dirs::home_dir).unwrap_or_default();
         let rx = picked.is_none().then(|| cx.prompt_for_new_path(&dir, Some(&f.name)));
@@ -675,6 +704,7 @@ impl Editor {
             .await;
         })
         .detach();
+        }
     }
 
     // ---- audio
@@ -906,7 +936,7 @@ impl Editor {
                     window.prevent_default();
                     if e.core.inline_to_file(p, v).is_some() {
                         e.hide_button_card(cx);
-                        window.focus(&e.focus);
+                        crate::gpui_compat::focus(window, &e.focus, cx);
                         e.changed(window, cx);
                     }
                 }),
@@ -931,15 +961,27 @@ impl Editor {
 
     /// 视频或文件: the picked files become attachments at the caret.
     pub(super) fn pick_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "ios")]
+        let stamp = super::format_mobile::SelectionStamp::capture(self,"file-picker");
+        #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+        let session = Store::session_lease(&Store::root_dir());
         let picked = crate::devtools::take_pick();
-        let rx = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(crate::settings::text("插入视频或文件").into()), extensions: None }));
+        let rx = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(crate::settings::text("插入视频或文件").into()), #[cfg(not(target_os = "ios"))] extensions: None }));
         cx.spawn_in(window, async move |this, cx| {
+            #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+            let _session = session;
             let paths = match rx {
                 Some(rx) => rx.await.ok().and_then(Result::ok).flatten(),
                 None => picked,
             };
             let Some(paths) = paths.filter(|p| !p.is_empty()) else { return };
-            let _ = this.update_in(cx, |e, window, cx| e.import_files(paths, None, window, cx));
+            let _ = this.update_in(cx, |e, window, cx| {
+                #[cfg(target_os = "ios")]
+                if !stamp.matches(e,stamp.serial,"file-picker") || e.read_only || !crate::cloud_sync::shared::can_edit_in(&e.library_root,cx) {
+                    e.toast(crate::settings::tr("笔记已更新，请重新插入。","The note changed. Please insert again."),cx); return;
+                }
+                e.import_files(paths,None,window,cx);
+            });
         })
         .detach();
     }
@@ -947,11 +989,21 @@ impl Editor {
     /// Copies `paths` into the library off the main thread, then inserts
     /// them at `target` (or the caret).
     pub(super) fn import_files(&mut self, paths: Vec<PathBuf>, target: Option<(BlockId, DropPlace)>, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "ios")]
+        let stamp = super::format_mobile::SelectionStamp::capture(self,"file-import");
+        #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+        let session = Store::session_lease(&Store::root_dir());
         let root = self.library_root.clone();
         let task = cx.background_executor().spawn(async move { paths.iter().map(|p| file_block_from_path(&root, p)).collect::<Vec<_>>() });
         cx.spawn_in(window, async move |this, cx| {
+            #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+            let _session = session;
             let blocks = task.await;
             let _ = this.update_in(cx, |e, window, cx| {
+                #[cfg(target_os = "ios")]
+                if !stamp.matches(e,stamp.serial,"file-import") || e.read_only || !crate::cloud_sync::shared::can_edit_in(&e.library_root,cx) {
+                    e.toast(crate::settings::tr("笔记已更新，请重新插入。","The note changed. Please insert again."),cx); return;
+                }
                 let failed = blocks.iter().any(Option::is_none);
                 let blocks: Vec<Block> = blocks.into_iter().flatten().collect();
                 if failed {
@@ -977,7 +1029,7 @@ impl Editor {
                         e.core.sel = Selection::caret(Pos::new(p, 0));
                     }
                 }
-                window.focus(&e.focus);
+                crate::gpui_compat::focus(window, &e.focus, cx);
                 e.changed(window, cx);
             });
         })

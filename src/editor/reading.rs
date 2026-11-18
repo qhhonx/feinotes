@@ -34,6 +34,8 @@ impl Editor {
         if self.read_only == on {
             return;
         }
+        #[cfg(target_os = "ios")]
+        self.reset_touch_selection();
         self.read_only = on;
         if on { self.discard_open_board(); }
         self.ro_doc = on.then(|| self.core.doc.clone());

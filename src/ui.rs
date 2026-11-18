@@ -10,18 +10,24 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
     svg().path(SharedString::from(format!("icons/{name}.svg"))).size(px(size)).flex_none().text_color(color)
 }
 
-#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 pub(crate) fn share_toolbar_icon() -> AnyElement {
     let color = toolbar_color("toolbar.button.color").unwrap_or_else(Theme::icon);
+    #[cfg(target_os = "ios")]
+    return icon("share",20.,color).into_any_element();
+    #[cfg(target_os = "macos")]
     match system_toolbar_symbol(c"square.and.arrow.up", color) {
         Some(image) => img(image).size(px(20.)).object_fit(ObjectFit::Contain).flex_none().into_any_element(),
         None => icon("share", 20., color).into_any_element(),
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 pub(crate) fn participants_icon() -> AnyElement {
     let color = toolbar_color("toolbar.button.color").unwrap_or_else(Theme::icon);
+    #[cfg(target_os = "ios")]
+    return svg().path("editor-icons/user.svg").size(px(20.)).text_color(color).into_any_element();
+    #[cfg(target_os = "macos")]
     match system_toolbar_symbol(c"person.2.circle", color) {
         Some(image) => img(image).size(px(22.)).object_fit(ObjectFit::Contain).flex_none().into_any_element(),
         None => svg().path("editor-icons/user.svg").size(px(20.)).text_color(color).into_any_element(),
@@ -746,7 +752,11 @@ impl Element for UiText {
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line_height = style.line_height.to_pixels(font_size.into(), window.rem_size());
         let runs = if self.text.is_empty() { vec![] } else { self.runs(&style) };
-        let ellipsis = style.text_overflow.as_ref().map(|TextOverflow::Truncate(s)| s.clone());
+        let ellipsis = style.text_overflow.as_ref().map(|overflow| match overflow {
+            TextOverflow::Truncate(s) => s.clone(),
+            #[cfg(target_os = "ios")]
+            TextOverflow::TruncateStart(s) | TextOverflow::TruncateMiddle(s) => s.clone(),
+        });
         let full = Rc::new(RefCell::new(None));
         let (text, r, f, clip) = (self.text.clone(), runs.clone(), full.clone(), ellipsis.is_some());
         let id = window.request_measured_layout(Style::default(), move |known, avail, window, _| {
@@ -796,7 +806,7 @@ impl Element for UiText {
         cx: &mut App,
     ) {
         if let Some(line) = line {
-            let _ = line.paint(bounds.origin, layout.line_height, window, cx);
+            let _ = crate::gpui_compat::paint_line(line, bounds.origin, layout.line_height, window, cx);
         }
     }
 }

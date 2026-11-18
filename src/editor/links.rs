@@ -13,6 +13,8 @@ use crate::model::{BlockId, DocLink};
 use crate::editor_theme::Theme;
 use crate::editor_ui::{TipExt, icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DocRef {

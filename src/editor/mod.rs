@@ -1,6 +1,7 @@
 mod board;
 mod button;
 mod caption;
+mod code;
 mod catalogue;
 mod countdown;
 mod cover;
@@ -10,6 +11,8 @@ pub mod emoji;
 mod emoji_picker;
 mod file;
 mod find;
+#[cfg(target_os = "ios")]
+mod find_mobile;
 mod gap;
 mod grid;
 pub mod image;
@@ -26,7 +29,18 @@ pub mod reminder;
 mod render;
 pub(crate) use render::equation_numbers;
 mod subpages;
+#[cfg(target_os = "ios")]
+mod touch;
 pub mod table;
+mod table_actions;
+#[cfg(target_os = "ios")]
+mod table_mobile;
+#[cfg(target_os = "ios")]
+mod format_mobile;
+#[cfg(target_os = "ios")]
+mod media_mobile;
+#[cfg(target_os = "ios")]
+mod object_mobile;
 pub use fdl_core::editor::table_ops;
 pub mod text;
 pub mod view;

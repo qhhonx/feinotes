@@ -9,7 +9,7 @@ use std::path::PathBuf;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::time::Duration;
 
-pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows"));
+pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows", target_os = "ios"));
 
 pub enum Job {
     #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))] // No backend elsewhere.
@@ -28,10 +28,50 @@ pub async fn run(html: String, title: String, job: Job, parent: usize, cx: &mut 
     {
         webview2::run(html, title, job, parent, cx).await
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "ios")]
+    {
+        let _ = parent;
+        ios::run(html, title, job, cx).await
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
     {
         let _ = (html, title, job, parent, cx);
         Err(crate::settings::text("当前系统不支持").into())
+    }
+}
+
+#[cfg(target_os = "ios")]
+mod ios {
+    use super::*;
+    use std::{ffi::{CStr, CString, c_char, c_void}, sync::{Arc, Mutex}, time::Duration};
+
+    type Pending = Mutex<Option<Result<bool, String>>>;
+    unsafe extern "C" {
+        fn fei_ios_print_begin(json: *const c_char, completion: extern "C" fn(i32, *const c_char, *const c_void), context: *const c_void);
+    }
+
+    extern "C" fn completed(status: i32, message: *const c_char, context: *const c_void) {
+        // UIKit calls once, including cancellation and preparation failures. The
+        // callback owns a separate reference if the requesting view has closed.
+        let pending = unsafe { Arc::<Pending>::from_raw(context.cast()) };
+        let result = match status {
+            1 => Ok(true), 0 => Ok(false),
+            _ => Err(if message.is_null() { crate::settings::text("导出失败，请重试").into() }
+                else { unsafe { CStr::from_ptr(message) }.to_string_lossy().into_owned() }),
+        };
+        *pending.lock().expect("print completion lock") = Some(result);
+    }
+
+    pub async fn run(html: String, title: String, job: Job, cx: &mut AsyncApp) -> Result<bool, String> {
+        let path = match job { Job::Pdf(path) => Some(path), Job::Print => None };
+        let json = CString::new(serde_json::to_vec(&serde_json::json!({ "html": html, "title": title, "path": path }))
+            .map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+        let pending = Arc::new(Pending::new(None));
+        unsafe { fei_ios_print_begin(json.as_ptr(),completed,Arc::into_raw(pending.clone()).cast()); }
+        loop {
+            if let Some(result) = pending.lock().expect("print completion lock").take() { return result; }
+            cx.background_executor().timer(Duration::from_millis(50)).await;
+        }
     }
 }
 

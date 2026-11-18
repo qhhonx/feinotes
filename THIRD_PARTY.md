@@ -838,6 +838,7 @@ rough.js、hachure-fill、points-on-curve、points-on-path、path-data-parser、
 | `assets/editor-icons/`（编辑器与文档里的 173 个图标） | 包括 Lucide 图标（ISC，其中源自 Feather 的部分保留 MIT 许可），其余按同一 24px / 2px 描边规格绘制。见同目录 `LICENSE-lucide`。 |
 | `assets/icons/`（界面外壳的 79 个图标） | 68 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，包含接受邀请入口的 `mail-check.svg` 和画板入口的 `whiteboard.svg`；各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 11 个项目自绘的 MIT 图标（包含共享文件夹 `folder-shared.svg` 和 `folder-shared-open.svg`、`globe.svg` 与共享按钮的后备图标 `share.svg`）。 |
 | macOS 共享按钮的 `square.and.arrow.up` | 通过 AppKit 的 [系统符号 API](https://developer.apple.com/documentation/appkit/nsimage/init(systemsymbolname:accessibilitydescription:)) 在运行时获取；不随仓库或发行包分发 Apple 图形素材。 |
+| Native iPhone/iPad controls and shared-documents badge | UIKit obtains SF Symbols at runtime using `UIImage(systemName:)`. The badge background is drawn by this project. No Apple symbol artwork is stored in the repository or bundled as a resource. |
 | `packaging/macos/fei-notes.png` | 飞记的应用图标，随飞记构建嵌入。 |
 | `assets/branding/` | 上游 Quiet.md 品牌资源，未嵌入飞记构建。 |
 | `assets/icons/excalidraw/`（画板界面的 96 个图标：工具栏、属性面板、菜单、页脚，含 6 个工具激活时的填充版 `*-filled.svg`） | 取自 Excalidraw `packages/excalidraw/components/icons.tsx` @ 3a317b5（MIT，© Excalidraw），其中多数由 tabler-icons（MIT，© Paweł Kuna）改来；每个文件开头注明对应的上游图标。由 `icons.tsx` 原样渲染成 SVG，只把 `var(--icon-fill-color)` 换成 `currentColor`、根元素上的 CSS 旋转换成 SVG 变换，编组 / 取消编组图标的白色手柄改成蒙版镂空（界面按单色绘制图标）。不属于上述 Nucleo 图标 |
@@ -853,5 +854,15 @@ rough.js、hachure-fill、points-on-curve、points-on-path、path-data-parser、
 ## 内置文档
 
 `shared-mock/library/` 里的「开始指南」是上游 Quiet.md 的示例文档，随上游按 MIT 分发。飞记的应用构建不嵌入这套指南及其照片和截图。
+
+The iOS AppIcon derives from the existing Fei Notes artwork in packaging/macos/fei-notes.png. Its full-bleed square background was extended with the built-in imagegen tool and normalized to an opaque 1024-pixel PNG; the source and prompt are retained in docs/design/mobile-feedback-20261117/icon/.
+
+The Longbridge GPUI Mobile source for iOS remains pinned to
+`7548ebc4b24f00494af9976af8852c7163ded9ce`. The local font-compatibility and
+clipboard, URL-opening, software-Return and asynchronous gallery adaptations are recorded in
+`packaging/ios/patches` and
+`vendor/PATCHES.md`; the original dependency license files remain alongside the
+staged sources. Touch selection uses GPUI gesture events and the existing Fei
+Notes Core; UIKit supplies the system edit menu.
 
 `notes-todo-check.svg` in both icon directories is original Fei Notes artwork (MIT), drawn for the Notes circular task control.

@@ -90,8 +90,8 @@ pub fn begin(me: &mut BoardView, id: &str, existing: bool, caret_at: Option<[f64
     });
     // after the press that started the edit is done with focus
     let fh = field.read(cx).focus_handle(cx);
-    window.focus(&fh);
-    window.defer(cx, move |window, _| window.focus(&fh));
+    crate::gpui_compat::focus(window, &fh, cx);
+    window.defer(cx, move |window, cx| crate::gpui_compat::focus(window, &fh, cx));
     me.text = Some(TextEditing { session, field, _sub: sub, layout, restyle: false });
     me.commit(None, cx);
 }
@@ -145,7 +145,7 @@ pub fn submit(me: &mut BoardView, via_keyboard: bool, window: &mut Window, cx: &
     if !me.app.active_tool.locked && me.app.active_tool.ty == ToolType::Text {
         me.app.active_tool = super::actions::update_active_tool(&me.app, ToolType::Selection);
     }
-    me.focus(window);
+    me.focus(window, cx);
     me.commit(Some(if capture { CaptureUpdateAction::Immediately } else { CaptureUpdateAction::Eventually }), cx);
 }
 

@@ -8,6 +8,8 @@ use crate::model::*;
 use crate::editor_theme::{self as theme, Theme, craft};
 use crate::editor_ui::{ROW_RADIUS, TipExt, ToastKind, icon, menu, menu_glyph, menu_row, panel, popover};
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 use regex::Regex;
 use std::ops::Range;
 use std::sync::LazyLock;
@@ -188,6 +190,10 @@ impl Editor {
         self.link_text_field.update(cx, |f, cx| f.set_text(&text, cx));
         self.link_field.update(cx, |f, cx| f.set_text(&link, cx));
         self.menu = Some(Menu::Link { block, range, only_link });
+        #[cfg(target_os = "ios")]
+        { let _ = window; self.present_native_link(only_link,cx); }
+        #[cfg(not(target_os = "ios"))]
+        {
         let field = if !only_link && text.is_empty() {
             &self.link_text_field
         } else if !only_link && text == link {
@@ -197,8 +203,9 @@ impl Editor {
             &self.link_field
         };
         let fh = field.read(cx).focus_handle(cx);
-        window.focus(&fh);
+        crate::gpui_compat::focus(window, &fh, cx);
         cx.notify();
+        }
     }
 
     /// ⌘K / the toolbar / slash 链接: a selection asks for a URL only; a
@@ -264,13 +271,16 @@ impl Editor {
         if matches!(self.menu, Some(Menu::Link { .. })) {
             self.menu = None;
         }
-        window.focus(&self.focus);
+        #[cfg(target_os = "ios")]
+        { self.format_menu = None; super::media_mobile::dismiss_link_form(); }
+        crate::gpui_compat::focus(window, &self.focus, cx);
         self.restart_blink(window, cx);
         cx.notify();
     }
 
     /// The link panel: 文本 / 链接 rows, or just the URL, and 确认.
     pub(super) fn link_panel(&self, block: BlockId, range: Range<usize>, only_link: bool, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if cfg!(target_os = "ios") { return None; }
         let (x, bottom) = {
             let cache = self.cache.borrow();
             let l = cache.get(&block)?;
@@ -430,7 +440,7 @@ impl Editor {
         self.sync_card(cx);
     }
 
-    fn remove_link(&mut self, (block, range): LinkRef, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn remove_link(&mut self, (block, range): LinkRef, window: &mut Window, cx: &mut Context<Self>) {
         self.hide_link_card(cx);
         self.core.checkpoint(EditKind::Other);
         if let Some(t) = self.core.text_mut(block) {

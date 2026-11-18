@@ -8,14 +8,33 @@ pub(crate) const APP_ID: &str = env!("FEI_BUNDLE_ID");
 
 #[cfg(all(target_os = "macos", feature = "cloudkit-restore"))]
 mod cloud_restore;
-#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 mod cloud_sync;
-#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 mod cloud_subscription;
-#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+#[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+#[path = "ipad_cloud.rs"]
+mod cloud_restore;
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 mod cloud_trial;
 
 mod app;
+mod mobile;
+#[cfg(target_os = "ios")]
+mod mobile_batch;
+#[cfg(target_os = "ios")]
+mod mobile_reorder;
+mod gpui_compat;
+#[cfg(target_os = "ios")]
+mod ipad;
+#[cfg(target_os = "ios")]
+mod ipad_browser;
+#[cfg(target_os = "ios")]
+mod ipad_notifications;
+#[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+mod ipad_session;
+#[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+mod ipad_import;
 #[cfg(unix)]
 mod big_alloc;
 mod board;
@@ -65,7 +84,7 @@ mod home_folder;
 mod folders;
 mod file_history;
 mod settings;
-#[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 mod sharing;
 mod l10n;
 mod themes;
@@ -87,7 +106,7 @@ use fdl_core::{docxml, lang, markdown, model, palette, paste, store, time, white
 
 use gpui::*;
 
-pub(crate) const FEI_NOTES: bool = cfg!(all(target_os = "macos", feature = "cloudkit-sync"));
+pub(crate) const FEI_NOTES: bool = cfg!(any(target_os = "ios", all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")));
 
 pub(crate) fn app_name() -> &'static str {
     if FEI_NOTES { settings::tr("飞记", "Fei Notes") } else { "Quiet.md" }
@@ -102,9 +121,9 @@ pub(crate) fn app_window_title(quick: bool) -> String {
 }
 
 pub(crate) fn in_shared_note() -> bool {
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     { cloud_sync::shared::active().is_some() }
-    #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+    #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
     { false }
 }
 
@@ -162,7 +181,7 @@ pub(crate) fn open_main_window(scripted: bool, at: Option<Bounds<Pixels>>, cx: &
     cx.open_window(options, |window, cx| {
         devtools::start(window, cx);
         cx.new(|cx| {
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             if let Some(room) = cloud_sync::shared::active() { return app::Workspace::new_document_window(Some(room.note.clone()), window, cx); }
             app::Workspace::new(window, cx)
         })
@@ -174,6 +193,7 @@ pub(crate) fn open_main_window(scripted: bool, at: Option<Bounds<Pixels>>, cx: &
 /// existing one, after first launch's pages for a new one). The main view
 /// opens in a new window, or takes over `into` — first launch's own window,
 /// so the pages give way to the notes without a second window.
+#[cfg(not(target_os = "ios"))]
 pub(crate) fn start(existed: bool, scripted: bool, into: Option<&mut Window>, incoming: local_files::Incoming, cx: &mut App) -> Option<Entity<app::Workspace>> {
     if !FEI_NOTES { changelog::startup(existed); }
     shortcuts::init(cx);
@@ -182,9 +202,9 @@ pub(crate) fn start(existed: bool, scripted: bool, into: Option<&mut Window>, in
         Err(err) => logging::fatal("无法打开文档库 / Could not open the library", &err),
     }
     if let Some(r) = cx.global::<shared_store::SharedStore>().with(|s| s.migrated.take()) { changelog::migrated(&r); }
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     if !cloud_restore::local_only() && let Err(err) = cloud_sync::start(cx) { logging::fatal("无法打开同步测试库 / Could not open the sync test library", &err); }
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     cloud_subscription::watch(cx);
     if !scripted && !in_shared_note() { quick_note::install(cx); }
     app::set_menus(cx);
@@ -204,6 +224,7 @@ pub(crate) fn start(existed: bool, scripted: bool, into: Option<&mut Window>, in
     took
 }
 
+#[cfg(not(target_os = "ios"))]
 fn main() {
     logging::init();
     #[cfg(all(target_os = "macos", feature = "cloudkit-restore"))]

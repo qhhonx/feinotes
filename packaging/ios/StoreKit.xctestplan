@@ -1,0 +1,44 @@
+{
+  "configurations": [
+    {
+      "id": "5c4609ee-65b7-4e16-a062-5e64bf6b020e",
+      "name": "Local StoreKit",
+      "options": {}
+    }
+  ],
+  "defaultOptions": {
+    "environmentVariableEntries": [
+      {
+        "key": "FEI_NOTES_MODE",
+        "value": "local"
+      }
+    ],
+    "storeKitConfiguration": {
+      "identifier": "StoreKitTests/FeiNotes.storekit"
+    },
+    "targetForVariableExpansion": {
+      "containerPath": "container:FeiNotesEditorProbe.xcodeproj",
+      "identifier": "5173A3CF94BDA6CF19DBB696",
+      "name": "FeiNotesEditorProbe"
+    }
+  },
+  "testTargets": [
+    {
+      "parallelizable": false,
+      "target": {
+        "containerPath": "container:FeiNotesEditorProbe.xcodeproj",
+        "identifier": "E781735F9DF3CB9298DB9794",
+        "name": "FeiNotesStoreKitServiceTests"
+      }
+    },
+    {
+      "parallelizable": false,
+      "target": {
+        "containerPath": "container:FeiNotesEditorProbe.xcodeproj",
+        "identifier": "BA52F651F735AAB1DF6BBA84",
+        "name": "FeiNotesStoreKitUITests"
+      }
+    }
+  ],
+  "version": 1
+}

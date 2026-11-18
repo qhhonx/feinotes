@@ -1,0 +1,74 @@
+{
+  "identifier": "95a6651e-69ee-45ef-85a3-53542ab2bd7a",
+  "nonRenewingSubscriptions": [],
+  "products": [],
+  "settings": {
+    "_failTransactionsEnabled": false,
+    "_locale": "en_US",
+    "_storefront": "USA",
+    "_storeKitErrors": []
+  },
+  "subscriptionGroups": [
+    {
+      "id": "86066dba-9e47-4f8c-9340-9898cd581d74",
+      "localizations": [
+        {
+          "description": "Local subscription acceptance only",
+          "displayName": "Fei Notes Cloud",
+          "locale": "en_US"
+        }
+      ],
+      "name": "Fei Notes Cloud",
+      "subscriptions": [
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "59.99",
+          "familyShareable": false,
+          "groupNumber": 1,
+          "internalID": "a4e134c2-ebfa-46d3-8eef-0861572d4d80",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "Local StoreKit test product. No real charge.",
+              "displayName": "Fei Notes Annual",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "app.feinotes.testing.cloud.annual",
+          "recurringSubscriptionPeriod": "P1Y",
+          "referenceName": "Fei Notes Annual",
+          "subscriptionGroupID": "86066dba-9e47-4f8c-9340-9898cd581d74",
+          "type": "RecurringSubscription",
+          "winbackOffers": []
+        },
+        {
+          "adHocOffers": [],
+          "codeOffers": [],
+          "displayPrice": "5.99",
+          "familyShareable": false,
+          "groupNumber": 2,
+          "internalID": "598b562c-c00c-49e2-a8f3-1a02ff835922",
+          "introductoryOffer": null,
+          "localizations": [
+            {
+              "description": "Local StoreKit test product. No real charge.",
+              "displayName": "Fei Notes Monthly",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "app.feinotes.testing.cloud.monthly",
+          "recurringSubscriptionPeriod": "P1M",
+          "referenceName": "Fei Notes Monthly",
+          "subscriptionGroupID": "86066dba-9e47-4f8c-9340-9898cd581d74",
+          "type": "RecurringSubscription",
+          "winbackOffers": []
+        }
+      ]
+    }
+  ],
+  "version": {
+    "major": 3,
+    "minor": 0
+  }
+}

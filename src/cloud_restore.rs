@@ -185,7 +185,7 @@ pub fn select_library(selection: LibrarySelection) -> Result<usize> {
     let reply = request(if cloud { 4 } else { 5 }, test.as_deref(), scope.as_deref())?;
     if !cloud { return Ok(0); }
     let root = reply.path.context("Missing iCloud library path")?;
-    let parent = root.parent().context("Missing iCloud library folder")?;
+    root.parent().context("Missing iCloud library folder")?;
     let key = root.file_name().and_then(|key| key.to_str()).context("Missing iCloud account key")?;
     ensure!(key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit()), "Invalid iCloud account key");
     let lock = lock_library(&root)?;
@@ -194,18 +194,7 @@ pub fn select_library(selection: LibrarySelection) -> Result<usize> {
         drop(lock);
         crate::cloud_sync::copy_local_library(&root, &crate::store::Store::root_dir(), scope)?
     } else { 0 };
-    // A failed or timed-out CloudKit preparation never changes the selected library.
-    let staged = parent.join(format!(".active-account-{}", uuid::Uuid::new_v4()));
-    std::fs::write(&staged, key)?;
-    if let Err(error) = std::fs::rename(&staged, parent.join("active-account")) {
-        let _ = std::fs::remove_file(&staged);
-        return Err(error.into());
-    }
-    match std::fs::remove_file(parent.join("use-local-library")) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
+    crate::cloud_sync::library::commit(&root)?;
     Ok(copied)
 }
 

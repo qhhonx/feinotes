@@ -1,0 +1,66 @@
+diff --git a/src/ios/document_picker.rs b/src/ios/document_picker.rs
+--- a/src/ios/document_picker.rs
++++ b/src/ios/document_picker.rs
+@@ -34,6 +34,9 @@
+         if let Some(protocol) = AnyProtocol::get(c"UIDocumentPickerDelegate") {
+             builder.add_protocol(protocol);
+         }
++        if let Some(protocol) = AnyProtocol::get(c"UIAdaptivePresentationControllerDelegate") {
++            builder.add_protocol(protocol);
++        }
+         unsafe {
+             builder.add_method(
+                 sel!(documentPicker:didPickDocumentsAtURLs:),
+@@ -43,6 +46,10 @@
+             builder.add_method(
+                 sel!(documentPickerWasCancelled:),
+                 did_cancel as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
++            );
++            builder.add_method(
++                sel!(presentationControllerDidDismiss:),
++                did_dismiss as unsafe extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
+             );
+         }
+         builder.register()
+@@ -106,6 +113,11 @@
+     complete(controller, Ok(None));
+ }
+ 
++unsafe extern "C" fn did_dismiss(_: *mut AnyObject, _: Sel, presentation: *mut AnyObject) {
++    let controller: *mut AnyObject = msg_send![presentation, presentedViewController];
++    complete(controller, Ok(None));
++}
++
+ pub(super) fn prompt(options: PathPromptOptions) -> oneshot::Receiver<PickerResult> {
+     let (sender, receiver) = oneshot::channel();
+     // Platform prompts run on GPUI's foreground (UIKit main) thread.
+@@ -116,6 +128,7 @@
+     match unsafe { create_picker(&options) } {
+         Ok((picker, delegate, presenter)) => {
+             let picker_ptr = Retained::as_ptr(&picker);
++            let delegate_ptr = Retained::as_ptr(&delegate);
+             PENDING.with(|pending| {
+                 *pending.borrow_mut() = Some(PendingPicker {
+                     sender,
+@@ -126,6 +139,10 @@
+             unsafe {
+                 let _: () = msg_send![presenter, presentViewController: picker_ptr,
+                     animated: Bool::YES, completion: std::ptr::null::<AnyObject>()];
++                let presentation: *mut AnyObject = msg_send![picker_ptr, presentationController];
++                if !presentation.is_null() {
++                    let _: () = msg_send![presentation, setDelegate: delegate_ptr];
++                }
+             }
+         }
+         Err(error) => {
+@@ -183,8 +200,8 @@
+         .ok_or_else(|| anyhow!("Could not create document picker delegate"))?;
+     let _: () = msg_send![&*picker, setDelegate: &*delegate];
+     let _: () = msg_send![&*picker, setAllowsMultipleSelection: Bool::from(options.multiple)];
+-    // Full screen requires explicit cancel, ensuring the receiver always resolves.
+-    let _: () = msg_send![&*picker, setModalPresentationStyle: 0_isize];
++    // Single-file mode may omit Cancel. Sheet dismissal resolves the receiver too.
++    let _: () = msg_send![&*picker, setModalPresentationStyle: 1_isize];
+     if let Some(prompt) = &options.prompt {
+         let _: () = msg_send![&*picker, setTitle: super::util::nsstring(prompt)];
+     }

@@ -26,7 +26,7 @@ class AppleReleaseTest(TestCase):
         def get(method, path):
             identifier = path.split('/')[3]
             attributes = {'externalBuildState': states[identifier]} if path.endswith('buildBetaDetail') else {
-                'version': {'new': '1.0.1', 'old': '1.0.0'}[identifier]}
+                'version': {'new': '1.0.1', 'old': '1.0.0'}[identifier], 'platform': 'MAC_OS'}
             return {'data': {'attributes': attributes}}
         with TemporaryDirectory() as directory, mock.patch.dict(os.environ, FEI_PUBLIC_BETA_GROUP_ID='public-group'), \
              mock.patch.object(release, 'beta_group', return_value=group), \
@@ -50,7 +50,7 @@ class AppleReleaseTest(TestCase):
         status, request = self.beta_status(self.beta_builds(), {'new': 'IN_BETA_TESTING', 'old': 'IN_BETA_REVIEW'})
         self.assertEqual((status['state'], status['version'], status['build']), ('available', '1.0.1', '1007'))
         self.assertNotIn('pending', status)
-        self.assertFalse(any('/old/' in call.args[1] for call in request.call_args_list))
+        self.assertFalse(any('/old/buildBetaDetail' in call.args[1] for call in request.call_args_list))
 
     def test_rejection_does_not_hide_an_older_available_build(self):
         status, _ = self.beta_status(self.beta_builds(), {'new': 'BETA_REJECTED', 'old': 'READY_FOR_BETA_TESTING'})
@@ -101,6 +101,59 @@ class AppleReleaseTest(TestCase):
             })
             with self.assertRaisesRegex(ValueError, "audience"):
                 release.accepted_build("store", "1.0.0", "3", 0)
+
+    def test_ios_upload_is_scoped_and_mac_default_is_unchanged(self):
+        with mock.patch.object(release, 'request', return_value={'data': []}) as call:
+            self.assertEqual(release.exact_upload('1.0.7', '1015', 'IOS'), (None, None))
+            self.assertEqual(call.call_args.kwargs['query']['filter[platform]'], 'IOS')
+            release.exact_upload('1.0.7', '1015')
+            self.assertEqual(call.call_args.kwargs['query']['filter[platform]'], 'MAC_OS')
+            with self.assertRaises(ValueError):
+                release.exact_upload('1.0.7', '1015', 'TV_OS')
+
+    def test_new_ios_approval_does_not_replace_mac_availability(self):
+        builds = self.beta_builds()
+        group = record('betaGroups', 'public-group', publicLink='https://testflight.apple.com/join/example', publicLinkEnabled=True)
+        def get(method, path):
+            identifier = path.split('/')[3]
+            attributes = {'externalBuildState': 'IN_BETA_TESTING'} if path.endswith('buildBetaDetail') else {
+                'version': '2.0.0' if identifier == 'new' else '1.0.0',
+                'platform': 'IOS' if identifier == 'new' else 'MAC_OS'}
+            return {'data': {'attributes': attributes}}
+        with TemporaryDirectory() as directory, mock.patch.dict(os.environ, FEI_PUBLIC_BETA_GROUP_ID='public-group'), \
+             mock.patch.object(release, 'beta_group', return_value=group), \
+             mock.patch.object(release, 'rows', return_value=iter(builds)), mock.patch.object(release, 'request', side_effect=get):
+            output = Path(directory) / 'status.json'
+            release.public_beta_status(output)
+            status = json.loads(output.read_text())
+            self.assertEqual((status['version'], status['build']), ('1.0.0', '1006'))
+            self.assertEqual(status['platforms']['IOS']['version'], '2.0.0')
+            self.assertEqual(status['platforms']['MAC_OS']['build'], '1006')
+
+    def test_release_specific_notes_are_preserved_for_both_locales(self):
+        build = record('builds', 'mobile', usesNonExemptEncryption=False)
+        with TemporaryDirectory() as directory, mock.patch.dict(os.environ, FEI_BETA_NOTES_DIR=directory, FEI_SUPPORT_URL=''), \
+             mock.patch.object(release, 'rows', return_value=[]), mock.patch.object(release, 'create') as create:
+            for locale in ('zh-Hans', 'en-US'):
+                (Path(directory) / f'{locale}.txt').write_text(f'{locale} exact mobile notes')
+            release.beta_notes(build)
+            self.assertEqual([call.args[2]['whatsNew'] for call in create.call_args_list],
+                             ['en-US exact mobile notes', 'zh-Hans exact mobile notes'])
+
+    def test_ios_does_not_finish_until_upload_and_processing_are_both_complete(self):
+        build = record('builds', 'ios', version='1015', expired=False, processingState='VALID', buildAudienceType='APP_STORE_ELIGIBLE')
+        upload = record('buildUploads', 'upload', state={'state': 'PROCESSING'})
+        with mock.patch.object(release, 'exact_upload', return_value=(upload, build)):
+            with self.assertRaisesRegex(ValueError, 'not finished processing'):
+                release.accepted_build('public-testflight', '1.0.7', '1015', 0, 'IOS')
+
+    def test_ios_store_operation_stops_before_apple_mutations(self):
+        import sys
+        with mock.patch.object(sys, 'argv', ['apple-release.py', 'finish', '1.0.7', '1015', 'store', '--platform', 'IOS']), \
+             mock.patch.object(release, 'request') as request:
+            with self.assertRaisesRegex(ValueError, 'only the externally eligible beta'):
+                release.main()
+            request.assert_not_called()
 
     def test_internal_build_cannot_go_to_an_external_group(self):
         group = record("betaGroups", "external", isInternalGroup=False)

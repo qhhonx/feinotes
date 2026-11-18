@@ -165,7 +165,7 @@ fn row(personal: &Path, mut room: Room) -> Result<Option<SharedRow>> {
     Ok(Some(SharedRow { room, unread, summary, body, modified: meta.modified, created: meta.created, opened: meta.opened, icon }))
 }
 
-pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Option<PathBuf>) {
+pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Option<PathBuf>, generation: uuid::Uuid) {
     cx.set_global(ActivityView::default());
     cx.spawn(async move |cx| {
         let mut index = 0usize;
@@ -173,8 +173,11 @@ pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Opt
         let mut last_error = None;
         loop {
             cx.background_executor().timer(delay).await;
+            if !crate::gpui_compat::async_update(cx, |cx| super::current(&personal, generation, cx)).unwrap_or(false) { break; }
             let (root, key, pause) = (personal.clone(), account.clone(), pause.clone());
+            let lease = crate::store::Store::session_lease(&personal);
             let (view, next, more, error) = cx.background_executor().spawn(async move {
+                let _lease = lease;
                 let rooms = shared::rooms(&root).unwrap_or_default();
                 let current = if rooms.is_empty() { 0 } else { index % rooms.len() };
                 let result = if pause.as_ref().is_some_and(|path| path.exists()) { Ok(false) }
@@ -192,7 +195,8 @@ pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Opt
             index = if more { next - 1 } else { next };
             delay = if more { Duration::from_secs(1) } else if view.0.is_empty() { Duration::from_secs(8) }
                 else { Duration::from_secs(4) };
-            if cx.update(|cx| {
+            if !crate::gpui_compat::async_update(cx, |cx| {
+                if !super::current(&personal, generation, cx) { return false; }
                 let mut view = ActivityView(view.0, list_error);
                 // A disk poll must not put an older title back over an unsaved edit.
                 for window in cx.windows().into_iter().filter_map(|window| window.downcast::<crate::app::Workspace>()) {
@@ -208,7 +212,8 @@ pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Opt
                 }
                 sort_rows(&mut view.0);
                 if cx.global::<ActivityView>() != &view { cx.set_global(view); }
-            }).is_err() { break; }
+                true
+            }).unwrap_or(false) { break; }
         }
     }).detach();
 }

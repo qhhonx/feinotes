@@ -19,6 +19,8 @@ use crate::theme::{self, Theme};
 use crate::trash::{empty_state, list_header_text, list_line, menu_label, page_header, row_hover};
 use crate::ui::{ROW_RADIUS, TipExt, icon, menu_glyph, menu_row, popover, ui_text};
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 use std::cell::RefCell;
 use std::collections::{HashMap};
 use std::rc::Rc;
@@ -28,7 +30,7 @@ pub enum HomeTab {
     #[default]
     Recent,
     Starred,
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     Shared,
 }
 
@@ -218,7 +220,7 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
         }
         BlockKind::Table(table) => {
             let widths: Vec<f32> = table.col_widths.iter().map(|w| w * s).collect();
-            let mut table_el = div().grid().grid_col_widths(widths.clone()).w(px(widths.iter().sum())).max_w_full();
+            let mut table_el = crate::gpui_compat::grid_columns(div().grid(), widths.clone()).w(px(widths.iter().sum())).max_w_full();
             for (r, c, value) in table.cells() {
                 let (rs, cs) = (value.rowspan as usize, value.colspan as usize);
                 let header = r < table.header_rows || (table.header_col && c == 0);
@@ -333,7 +335,7 @@ pub struct Home {
     /// The 搜索 dialog's results (`search.rs`).
     pub(crate) search_scrollbar: Rc<scrollbar::Scrollbar>,
     sort: HomeSort,
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     shared_sort: HomeSort,
     folders_first: bool,
     pub sort_menu: bool,
@@ -358,7 +360,7 @@ impl Default for Home {
             search_scrollbar: Default::default(),
             // Manual: the sidebar's order (`Meta::place`), so both lists read the same.
             sort: HomeSort::Manual,
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             shared_sort: HomeSort::Modified,
             folders_first: false,
             sort_menu: false,
@@ -385,14 +387,14 @@ impl Home {
     }
 
     fn shared(&self) -> bool {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         { self.tab == HomeTab::Shared }
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         { false }
     }
 
     fn order(&self) -> HomeSort {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.shared() { return self.shared_sort; }
         self.sort
     }
@@ -401,7 +403,7 @@ impl Home {
         match self.tab {
             HomeTab::Recent => RECENT_COLS.to_vec(),
             HomeTab::Starred => STARRED_COLS.to_vec(),
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             HomeTab::Shared => RECENT_COLS.to_vec(),
         }
     }
@@ -448,13 +450,13 @@ fn entry_icon(e: &Entry, cx: &App) -> AnyElement {
 impl Workspace {
     /// In 批量管理 a click checks or unchecks; otherwise it opens.
     pub(crate) fn home_click(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if id.starts_with("collection-") { self.sharing.collection = Some(id.into()); cx.notify(); return; }
         if self.batch.is_some() { self.toggle_check(id); cx.notify(); return; }
         if self.is_shared() && self.view == crate::app::View::Folder { self.open(id, window, cx); return; }
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if let Some(room) = self.shared_list_room(id, cx) { self.open_shared_note(&room, window, cx); return; }
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.home.tab == HomeTab::Shared {
             if let Some(room) = self.shared_list_room(id, cx) { self.open_shared_note(&room, window, cx); }
             return;
@@ -479,13 +481,24 @@ impl Workspace {
         match self.home.tab {
             // 我的文档 is the library's top level.
             HomeTab::Recent => self.level_entries(None),
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             HomeTab::Shared => self.sorted_entries(self.shared_entries(cx)),
             HomeTab::Starred => self.sorted_entries({ let entries = self.entries.iter().filter(|e| e.meta.folder.is_none() && e.meta.starred > 0).cloned().collect::<Vec<_>>();
-                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 let entries = entries.into_iter().chain(self.shared_entries(cx).into_iter().filter(|entry| entry.meta.starred > 0)).collect();
                 entries }),
         }
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn mobile_sort(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        let sort = HomeSort::of(key);
+        if self.home.shared() { self.home.shared_sort = sort; cx.notify(); return true; }
+        if sort == HomeSort::Manual && !self.prepare_manual_order(cx) { return false; }
+        self.home.sort = sort;
+        self.save_home();
+        cx.notify();
+        true
     }
 
     /// One level of the tree as 主页 shows it (a folder's page uses it too).
@@ -501,6 +514,9 @@ impl Workspace {
         self.remember_files(previous, crate::settings::tr("初始化手动排序", "Initialize manual order"));
         true
     }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn mobile_manual_sort(&self) -> bool { self.home.sort == HomeSort::Manual }
 
     pub(crate) fn manual_home_sort(&self) -> bool { self.home.order() == HomeSort::Manual && self.home.tab == HomeTab::Recent }
 
@@ -558,7 +574,7 @@ impl Workspace {
         #[allow(unused_mut)]
         let mut loaded_root = self.store.root().to_path_buf();
         let loaded = self.store.load(&e.id);
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let loaded = loaded.or_else(|error| {
             if let Ok(root) = crate::cloud_sync::shared::room_root(&crate::store::Store::root_dir(), &e.id) { loaded_root = root.clone(); return crate::store::Store::read_cached_note(&root, &e.id); }
             Err(error)
@@ -698,14 +714,14 @@ impl Workspace {
             .child(self.place_button("home-more", None, cx))
             .child(self.import_button("home-import", None, cx))
             .children({
-                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 { (!crate::cloud_restore::local_only()).then(|| crate::ui::header_icon("home-shared-accept", "mail-check")
                     .child(self.home.track("accept-home"))
                     .when(self.accept_invitation_open(), |d| d.bg(Theme::fill_hover()))
                     .tip(crate::settings::tr("接受邀请", "Accept invitation"), None)
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|w, _, window, cx| w.open_accept_invitation_from("accept-home", window, cx)))) }
-                #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { None::<Stateful<Div>> }
             })
             .child(
@@ -716,9 +732,9 @@ impl Workspace {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(|w, ev: &ClickEvent, _, cx| { let pos = w.home.anchor("create-home").map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.))); w.create_menu = if w.create_menu.is_some() { None } else { Some((crate::folders::CreateTarget::Library(None), pos)) }; cx.notify(); })).into_any_element()
         );
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let shared_tab = self.home.tab == HomeTab::Shared;
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let shared_tab = false;
         // Tabs as segmented items: the current one on a quiet fill, no accent.
         let tab = |id: &'static str, label: &'static str, t: HomeTab| {
@@ -788,14 +804,14 @@ impl Workspace {
             .child(tab("home-tab-recent", crate::settings::text("我的文档"), HomeTab::Recent))
             .child(tab("home-tab-star", crate::settings::text("收藏"), HomeTab::Starred))
             .children({
-                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 { (!crate::cloud_restore::local_only()).then(|| tab("home-tab-shared", crate::settings::tr("共享文档", "Shared documents"), HomeTab::Shared)) }
-                #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { None::<Stateful<Div>> }
             })
             .child(div().flex_1())
             .map(|d| d.child(text_btn("home-batch", "batch", crate::settings::text("批量管理"), true).text_color(Theme::text_caption()).mr(px(8.))
-                .on_click(cx.listener(move |w, _, _, cx| { if shared_tab { w.batch = Some(vec![]); #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))] { w.sharing.batch = true; } } else { w.begin_personal_batch(); } w.row_menu = None; w.home.sort_menu = false; cx.notify(); }))))
+                .on_click(cx.listener(move |w, _, _, cx| { if shared_tab { w.batch = Some(vec![]); #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))] { w.sharing.batch = true; } } else { w.begin_personal_batch(); } w.row_menu = None; w.home.sort_menu = false; cx.notify(); }))))
             .child(
                 div().id("home-sort").relative().h(px(28.)).px(px(10.)).flex().items_center().gap(px(6.))
                     .rounded(px(9.)).text_size(px(13.)).text_color(Theme::text_caption()).cursor_pointer()
@@ -807,9 +823,9 @@ impl Workspace {
             .child(self.view_switch(cx).ml(px(16.))) };
 
         let entries = self.home_entries(cx);
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let shared_body = shared_tab.then(|| self.render_shared_documents(window, cx));
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let shared_body = None::<AnyElement>;
         let body = if let Some(body) = shared_body { body } else if entries.is_empty() && (self.home.grid || self.home.tab == HomeTab::Recent) {
             empty_state("illus/empty-list.svg", crate::settings::text("当前列表暂无内容")).into_any_element()
@@ -835,8 +851,8 @@ impl Workspace {
         let cols = self.home.cols();
         let sort = self.home.sort_col();
         // The title is sized at about three times a column.
-        let title_cell = || div().flex_grow().flex_shrink().flex_basis(relative(0.)).min_w(px(200.));
-        let col_cell = || div().flex_grow().flex_shrink().flex_basis(relative(0.)).max_w(px(240.)).min_w(px(120.));
+        let title_cell = || div().flex_1().flex_basis(relative(0.)).min_w(px(200.));
+        let col_cell = || div().flex_1().flex_basis(relative(0.)).max_w(px(240.)).min_w(px(120.));
         // The list: 13pt tertiary headers over a hairline; the
         // sorted column in the text colour, semibold, with its arrow.
         let mut header = div()
@@ -919,10 +935,10 @@ impl Workspace {
                         .child(div().min_w_0().text_size(px(15.)).line_height(px(22.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(display_title(&e.title))))
                         .when(e.meta.pinned, |d| d.child(icon("pin-filled", 14., Theme::pinned()).ml(px(6.))))
                         .children({
-                            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                             { (self.home.tab == HomeTab::Shared && cx.try_global::<crate::cloud_sync::activity::ActivityView>().is_some_and(|view| view.0.iter().any(|row| row.room.scope.note == e.id && row.unread)))
                                 .then(|| div().size(px(6.)).ml(px(8.)).rounded_full().bg(Theme::primary())) }
-                            #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                            #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                             { None::<Div> }
                         }),
                 );
@@ -971,11 +987,11 @@ impl Workspace {
         // list view's 24 and clear of the window's rounded corner.
         // The top padding sits inside the list's clip, so a folder's papers can
         // rise above the first row without being cut off.
-        .flex_1().min_h_0().pt(px(14.)).pb(px(16.)).track_scroll(grid_scroll.clone());
+        .flex_1().min_h_0().pt(px(14.)).pb(px(16.));
         let scroll = grid_scroll.0.borrow().base_handle.clone();
         div().relative().flex_1().min_h_0().mt(px(-4.)).flex().flex_col()
             .on_mouse_move(cx.listener(|w, ev: &MouseMoveEvent, _, cx| w.track_home_press(ev, cx)))
-            .child(grid).child(self.home.grid_scrollbar.render(&scroll)).into_any_element()
+            .child(crate::gpui_compat::track_scroll(grid, grid_scroll)).child(self.home.grid_scrollbar.render(&scroll)).into_any_element()
     }
 
     /// A document's first page in miniature: a card's face, and the papers
@@ -1024,9 +1040,9 @@ impl Workspace {
             let menu_on = self.row_menu.as_ref().is_some_and(|m| m.id == e.id);
             let check = self.home_check(e);
             let arm = e.id.clone();
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             let draggable = self.shared_list_room(&e.id, cx).is_none();
-            #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+            #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
             let draggable = true;
             // Carried away as a paper: its place stays as an empty slot of the
             // card's shape (no page, no cover), so nothing half-shows through.
@@ -1091,7 +1107,7 @@ impl Workspace {
                         .child(menu_label(order.label(), g.clone(), gpui::white()).flex_1())
                         .when(self.home.order() == order, |d| d.child(menu_glyph("check", 14., g)))
                         .on_click(cx.listener(move |w, _, _, cx| {
-                            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                             if w.home.shared() {
                                 w.home.shared_sort = order; w.home.sort_menu = false;
                                 w.home.list_scroll.set_offset(point(px(0.), px(0.))); cx.notify(); return;

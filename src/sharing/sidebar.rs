@@ -52,7 +52,7 @@ impl Workspace {
         let organization = cx.global::<Organization>(); let order = &cx.global::<SharedOrder>().0;
         cx.try_global::<ActivityView>().into_iter().flat_map(|view| &view.0).map(|row| Entry {
             id: row.room.scope.note.clone(), title: row.room.title.clone(), icon: row.icon.clone(), body: row.body.clone(),
-            meta: crate::store::Meta { created: row.created, modified: row.modified, opened: row.opened,
+            meta: crate::store::Meta { folder: row.room.scope.folder.then(|| row.room.title.clone()), created: row.created, modified: row.modified, opened: row.opened,
                 pinned: organization.pinned.contains(&row.room.scope.note), starred: organization.starred.get(&row.room.scope.note).copied().unwrap_or(0),
                 root_order: order.iter().position(|id| id == &row.room.scope.note).map(|i| i as u64 + 1), ..Default::default() }, reminders: vec![], links: vec![],
         }).collect()

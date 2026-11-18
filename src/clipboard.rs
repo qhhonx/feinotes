@@ -110,7 +110,17 @@ mod tests {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "ios")]
+pub fn clipboard_html() -> Option<String> {
+    unsafe extern "C" { fn fei_ios_clipboard_html() -> *mut std::ffi::c_char; fn free(value: *mut std::ffi::c_void); }
+    let value = unsafe { fei_ios_clipboard_html() };
+    if value.is_null() { return None; }
+    let html = unsafe { std::ffi::CStr::from_ptr(value) }.to_string_lossy().into_owned();
+    unsafe { free(value.cast()); }
+    Some(html)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 pub fn clipboard_html() -> Option<String> {
     None
 }

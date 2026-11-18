@@ -183,7 +183,7 @@ pub(crate) fn extra_line(e: &Entry, shared: bool, received_share: bool) -> Div {
         else { crate::localized_format!("我在 {}修改过", "Modified {}", modified) }));
     let last = extra.len() - 1;
     let extra = extra.into_iter().enumerate().flat_map(|(i, seg)| {
-        let seg = if i == last { seg.flex_shrink().min_w_0().overflow_hidden() } else { seg };
+        let seg = if i == last { seg.map(crate::gpui_compat::flex_shrink).min_w_0().overflow_hidden() } else { seg };
         [(i > 0).then(|| div().flex_none().child(" · ")), Some(seg)].into_iter().flatten()
     });
     div()
@@ -239,7 +239,7 @@ impl Workspace {
             s.line_height = 22.;
             s.set_text("", cx)
         });
-        window.focus(&search.focus_handle(cx));
+        crate::gpui_compat::focus(window, &search.focus_handle(cx), cx);
         self.search_scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
     }
@@ -250,7 +250,7 @@ impl Workspace {
         }
         self.search_open = false;
         if let Some(ed) = &self.editor {
-            ed.read(cx).focus(window);
+            crate::gpui_compat::focus(window, &ed.read(cx).focus_handle(cx), cx);
         }
         cx.notify();
     }
@@ -263,11 +263,11 @@ impl Workspace {
     pub(crate) fn pick_search(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.search_results(cx).get(row).map(|e| e.id.clone()) else { return };
         self.close_search(window, cx);
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if let Some(room) = self.shared_list_room(&id, cx) { self.open_shared_note(&room, window, cx); return; }
         self.personal_action(window, cx, move |w, window, cx| w.open(&id, window, cx));
         if let Some(ed) = &self.editor {
-            ed.read(cx).focus(window);
+            crate::gpui_compat::focus(window, &ed.read(cx).focus_handle(cx), cx);
         }
     }
 
@@ -289,7 +289,7 @@ impl Workspace {
     pub fn search_results(&self, cx: &App) -> Vec<Entry> {
         let q = self.query(cx);
         let mut entries = self.personal_navigation_entries(cx);
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         {
             let shared = self.shared_entries(cx);
             let shared_ids: std::collections::HashSet<_> = shared.iter().map(|e| &e.id).collect();
@@ -333,14 +333,14 @@ impl Workspace {
             .on_click(cx.listener(move |w, _, window, cx| w.pick_search(row, window, cx)))
             .child(entry_icon(e, cx))
             .child(result_info(e, {
-                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 { self.shared_list_room(&e.id, cx).is_some() }
-                #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { false }
             }, {
-                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 { self.shared_list_room(&e.id, cx).is_some_and(|room| room.scope.owner.is_some()) }
-                #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { false }
             }, q, summary, info_w, window))
     }
@@ -378,7 +378,7 @@ impl Workspace {
                 d.child(input_button("search-clear", "search-clear", 18., Theme::text_disabled()).ml(px(8.)).on_click(cx.listener(
                     |w, _, window, cx| {
                         w.search.update(cx, |s, cx| s.set_text("", cx));
-                        window.focus(&w.search.focus_handle(cx));
+                        crate::gpui_compat::focus(window, &w.search.focus_handle(cx), cx);
                         w.search_sel = Some(0);
                         w.search_scroll.set_offset(point(px(0.), px(0.)));
                         cx.notify();

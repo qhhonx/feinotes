@@ -11,6 +11,8 @@ use crate::theme::Theme;
 use crate::trash::{close_button, dialog, primary_button, scrim, secondary_button};
 use crate::ui::{TipExt, ToastKind};
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 use std::path::{Path, PathBuf};
 
 /// The open 导出 Markdown 设置 dialog: the page, and 所有内容 picked.
@@ -122,8 +124,9 @@ fn save_path(name: &str, cx: &mut App) -> impl std::future::Future<Output = Opti
 /// scripted answer.
 fn open_paths(cx: &mut App) -> impl std::future::Future<Output = Option<Vec<PathBuf>>> + use<> {
     let picked = crate::devtools::take_pick();
+    #[cfg(not(target_os = "ios"))]
     let extensions = Some(MARKDOWN_EXTS.iter().chain(&["xml"]).map(|e| SharedString::from(*e)).collect());
-    let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(crate::settings::text("导入").into()), extensions }));
+    let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(crate::settings::text("导入").into()), #[cfg(not(target_os = "ios"))] extensions }));
     async move {
         match prompt {
             Some(p) => p.await.ok().and_then(Result::ok).flatten(),
@@ -233,6 +236,28 @@ pub fn markdown_document(path: &Path) -> std::io::Result<Document> {
     Ok(Document { title: RichText::plain(stem), icon: None, cover: None, blocks })
 }
 
+fn write_markdown_export(root: &Path, doc: &Document, subs: &[String], path: &Path, all: bool) -> anyhow::Result<usize> {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("doc");
+    let assets = format!("{stem}.assets");
+    let out = crate::markdown::export(doc, &crate::markdown::Options { library_root: Some(root), sub_pages: subs, assets: all.then_some(assets.as_str()), ..Default::default() });
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut missing = out.missing;
+    std::fs::write(path, &out.text)?;
+    for (rel, text) in &out.generated {
+        let to = dir.join(rel);
+        if let Some(parent) = to.parent() { std::fs::create_dir_all(parent)?; }
+        std::fs::write(to, text)?;
+    }
+    for (src, rel) in &out.files {
+        let to = dir.join(rel);
+        if let Some(parent) = to.parent() { std::fs::create_dir_all(parent)?; }
+        if crate::store::export_path_in(root, &src.to_string_lossy()).ok_or_else(|| anyhow::anyhow!("Asset outside library"))
+            .and_then(|p| crate::store::read_bounded(&p, crate::store::EXPORT_FILE_LIMIT))
+            .and_then(|bytes| Ok(std::fs::write(&to, bytes)?)).is_err() { missing += 1; }
+    }
+    Ok(missing)
+}
+
 impl Workspace {
     fn close_menus(&mut self) {
         self.doc_menu = false;
@@ -259,36 +284,12 @@ impl Workspace {
         cx.notify();
         let Some(doc) = self.doc_of(&id, cx) else { return };
         let subs = self.sub_page_titles(&id);
-        let library_root = self.store.root().to_path_buf();
+        let root = self.store.root().to_path_buf();
         let path = save_path(&format!("{}.md", file_name(&doc)), cx);
         cx.spawn_in(window, async move |this, cx| {
             let Some(path) = path.await else { return };
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("doc").to_string();
-            let assets = format!("{stem}.assets");
-            let out = crate::markdown::export(&doc, &crate::markdown::Options { library_root: Some(&library_root), sub_pages: &subs, assets: all.then_some(assets.as_str()), ..Default::default() });
-            let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-            let mut missing = out.missing;
-            let written = std::fs::write(&path, &out.text).and_then(|_| {
-                // a 画板's SVG and .excalidraw
-                for (rel, text) in &out.generated {
-                    let to = dir.join(rel);
-                    if let Some(p) = to.parent() { std::fs::create_dir_all(p)?; }
-                    std::fs::write(&to, text)?;
-                }
-                for (src, rel) in &out.files {
-                    let to = dir.join(rel);
-                    if let Some(p) = to.parent() {
-                        std::fs::create_dir_all(p)?;
-                    }
-                    // A missing image only loses itself, but is reported.
-                    if crate::store::export_path_in(&library_root, &src.to_string_lossy()).ok_or_else(|| anyhow::anyhow!("Asset outside library"))
-                        .and_then(|p| crate::store::read_bounded(&p, crate::store::EXPORT_FILE_LIMIT))
-                        .and_then(|bytes| Ok(std::fs::write(&to, bytes)?)).is_err() {
-                        missing += 1;
-                    }
-                }
-                Ok(())
-            });
+            let written = write_markdown_export(&root, &doc, &subs, &path, all);
+            let missing = written.as_ref().copied().unwrap_or_default();
             if written.is_err() {
                 let _ = this.update(cx, |w, cx| w.show_toast_kind(ToastKind::Error, crate::settings::text("导出失败，请重试"), cx));
             } else if missing > 0 {
@@ -298,8 +299,35 @@ impl Workspace {
         .detach();
     }
 
+    #[cfg(target_os = "ios")]
+    pub(crate) fn mobile_export(&mut self, id: &str, all: bool, cx: &mut Context<Self>) {
+        if !self.save_before(cx, { let id = id.to_owned(); move |w, _, cx| w.mobile_export(&id, all, cx) }) { return; }
+        let Some(doc) = self.doc_of(id, cx) else { return };
+        let subs = self.sub_page_titles(id);
+        let root = crate::store::Store::root_dir();
+        let session = crate::store::Store::session_lease(&root);
+        cx.spawn(async move |this,cx| {
+            let result = cx.background_executor().spawn(async move {
+                let _session = session;
+                let folder = crate::ipad::export_folder()?;
+                let path = folder.join(format!("{}.md", file_name(&doc)));
+                let missing = write_markdown_export(&root, &doc, &subs, &path, all)?;
+                anyhow::ensure!(missing == 0, "{}", crate::localized_format!("有 {missing} 个附件未能导出", "{missing} attachments could not be exported"));
+                Ok::<_,anyhow::Error>(if all { folder } else { path })
+            }).await;
+            let _ = this.update(cx, |workspace,cx| match result {
+                Ok(path) => crate::ipad::present_export(&path),
+                Err(error) => workspace.show_toast_kind(ToastKind::Error,&error.to_string(),cx),
+            });
+        }).detach();
+    }
+
     /// 下载为 → PDF: the page laid out on A4 by WebKit, saved where the user picks.
     pub fn export_pdf(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "ios")]
+        { let _ = window; self.mobile_export_pdf(id,cx); return; }
+        #[cfg(not(target_os = "ios"))]
+        {
         self.close_menus();
         if !printing::SUPPORTED {
             self.show_toast_kind(ToastKind::Error, crate::settings::text("当前系统不支持"), cx);
@@ -341,6 +369,34 @@ impl Workspace {
             });
         })
         .detach();
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn mobile_export_pdf(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.close_menus();
+        let selected = id.to_owned();
+        if !self.save_before(cx,move |workspace,_,cx| workspace.mobile_export_pdf(&selected,cx)) { return; }
+        let Some(doc) = self.doc_of(id,cx) else { return };
+        let subs = self.sub_page_titles(id);
+        let name = file_name(&doc);
+        let html = crate::html::to_html(&doc,&crate::html::Options { sub_pages: &subs, library_root: self.store.root() });
+        let folder = match crate::ipad::export_folder() {
+            Ok(folder) => folder,
+            Err(error) => { self.show_toast_kind(ToastKind::Error,&error.to_string(),cx); return; }
+        };
+        let path = folder.join(format!("{name}.pdf"));
+        self.show_toast_kind(ToastKind::Info,crate::settings::text("正在导出文档"),cx);
+        cx.spawn(async move |this,cx| {
+            let result = printing::run(html,name,Job::Pdf(path.clone()),0,cx).await;
+            let ok = matches!(result,Ok(true)) && path.is_file();
+            let updated = this.update(cx,|workspace,cx| {
+                if ok { workspace.toast = None; cx.notify(); crate::ipad::present_export(&path); }
+                else { workspace.show_toast_kind(ToastKind::Error,result.as_ref().err().map(String::as_str)
+                    .unwrap_or_else(|| crate::settings::text("导出失败，请重试")),cx); }
+            });
+            if !ok || updated.is_err() { let _ = std::fs::remove_dir_all(folder); }
+        }).detach();
     }
 
     /// 打印: the system print panel over the same A4 layout as PDF.
@@ -443,7 +499,7 @@ impl Workspace {
         };
         let options = PathPromptOptions {
             files: !folders, directories: folders, multiple: !folders, prompt: Some(crate::settings::text("导入").into()),
-            extensions: (!folders).then(|| extensions.iter().map(|e| SharedString::from(*e)).collect()),
+            #[cfg(not(target_os = "ios"))] extensions: (!folders).then(|| extensions.iter().map(|e| SharedString::from(*e)).collect()),
         };
         let prompt = picked.is_none().then(|| cx.prompt_for_paths(options));
         cx.spawn_in(window, async move |this, cx| {

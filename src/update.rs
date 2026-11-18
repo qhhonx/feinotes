@@ -72,7 +72,10 @@ pub fn init(cx: &mut App) {
     cx.spawn(async |cx| {
         cx.background_executor().timer(Duration::from_secs(10)).await;
         loop {
+            #[cfg(not(target_os = "ios"))]
             if cx.update(|cx| if crate::settings::prefs().auto_update { check(false, cx) }).is_err() { break }
+            #[cfg(target_os = "ios")]
+            cx.update(|cx| if crate::settings::prefs().auto_update { check(false, cx) });
             cx.background_executor().timer(Duration::from_secs(12 * 3600)).await;
         }
     }).detach();
@@ -141,7 +144,10 @@ pub fn download(cx: &mut App) {
     // Redraw the progress (read off the partial file) while the download runs.
     cx.spawn(async |cx| loop {
         cx.background_executor().timer(Duration::from_millis(300)).await;
-        if !cx.update(|cx| if matches!(state(cx), State::Downloading(_)) { cx.refresh_windows(); true } else { false }).unwrap_or(false) { break }
+        let downloading = cx.update(|cx| if matches!(state(cx), State::Downloading(_)) { cx.refresh_windows(); true } else { false });
+        #[cfg(not(target_os = "ios"))]
+        let downloading = downloading.unwrap_or(false);
+        if !downloading { break }
     }).detach();
     let task = cx.background_executor().spawn({ let m = m.clone(); async move { fetch_package(&m) } });
     cx.spawn(async move |cx| {

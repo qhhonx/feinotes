@@ -226,8 +226,8 @@ pub(super) fn start(cx: &mut App, root: PathBuf, generation: uuid::Uuid, pause: 
         let mut last: Option<(Instant, Vec<u8>)> = None;
         loop {
             cx.background_executor().timer(delay).await;
-            if !cx.update(|cx| super::current(&root, generation, cx)).unwrap_or(false) { break; }
-            let Ok(request) = cx.update(|cx| {
+            if !crate::gpui_compat::async_update(cx, |cx| super::current(&root, generation, cx)).unwrap_or(false) { break; }
+            let Ok(request) = crate::gpui_compat::async_update(cx, |cx| {
                 let status = super::status(&root, cx).unwrap();
                 if status.access_paused || matches!(status.phase, super::SyncPhase::AccountChecking
                     | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut) {
@@ -255,7 +255,7 @@ pub(super) fn start(cx: &mut App, root: PathBuf, generation: uuid::Uuid, pause: 
             let revision = super::account_revision();
             match cx.background_executor().spawn(async move { exchange(request) }).await {
                 Ok(page) if super::account_revision() == revision => {
-                    if !cx.update(|cx| super::current(&root, generation, cx)).unwrap_or(false) { break; }
+                    if !crate::gpui_compat::async_update(cx, |cx| super::current(&root, generation, cx)).unwrap_or(false) { break; }
                     if let Some(state) = update { last = Some((Instant::now(), state)); }
                     if page.replay { online.clear(); }
                     token = page.token;
@@ -278,7 +278,7 @@ pub(super) fn start(cx: &mut App, root: PathBuf, generation: uuid::Uuid, pause: 
                                 until: Instant::now() + TTL - Duration::from_secs_f64(device.age) });
                         }
                     }
-                    if cx.update(|cx| publish(&root, &mut online, room_note, cx)).is_err() { break; }
+                    if crate::gpui_compat::async_update(cx, |cx| publish(&root, &mut online, room_note, cx)).is_err() { break; }
                     delay = if page.more { Duration::ZERO } else { POLL };
                 }
                 _ => delay = (delay * 2).clamp(POLL, Duration::from_secs(8)),

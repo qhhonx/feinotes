@@ -1,0 +1,9 @@
+Fei Notes comes to iPhone and iPad.
+
+• Native note lists, folders, search, settings, sharing controls and iPad workspace navigation.
+• The same iCloud library as the latest Mac app, including original-note sharing, shared folders, offline merging and attachments.
+• Notes and Feishu themes, with improvements to titles, text selection, formatting controls, document outlines and file-preview navigation.
+• Improved search clearing, note-to-note back navigation and table scrolling on iPad.
+• Cloud features are available in TestFlight without starting a trial or purchasing a subscription.
+
+Update all Macs, iPhones and iPads participating in this cloud beta to the latest compatible release. Earlier checkpoint-protocol builds must not write to the same library.

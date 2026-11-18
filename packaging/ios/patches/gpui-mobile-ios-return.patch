@@ -1,0 +1,15 @@
+--- a/src/ios/window.rs
++++ b/src/ios/window.rs
+@@ -1085,6 +1085,12 @@
+ 
+             // Try the input handler (for GPUI's built-in text fields)
+             if !dispatched {
++                // GPUI editors handle Return as an action, not committed text.
++                if matches!(text_str.as_str(), "\n" | "\r" | "\r\n") {
++                    self.handle_key_event(0x28, 0, true);
++                    self.handle_key_event(0x28, 0, false);
++                    return;
++                }
+                 if let Some(handler) = self.input_handler.borrow_mut().as_mut() {
+                     handler.replace_text_in_range(None, &text_str);
+                     return;

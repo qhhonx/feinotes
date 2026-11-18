@@ -511,7 +511,7 @@ impl R<'_> {
         let env = Env { cell: true, root: false, ..TOP };
         let widths = self.ed.table_widths(b.id, t);
         let n = widths.len();
-        let mut grid = div().grid().grid_col_widths(widths.clone()).w(px(widths.iter().sum()));
+        let mut grid = crate::gpui_compat::grid_columns(div().grid(), widths.clone()).w(px(widths.iter().sum()));
         for (r, c, cell) in t.cells() {
             let (rs, cs) = (cell.rowspan.max(1) as usize, cell.colspan.max(1) as usize);
             let header = r < t.header_rows || (t.header_col && c == 0);

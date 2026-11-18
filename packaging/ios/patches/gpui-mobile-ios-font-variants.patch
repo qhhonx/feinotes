@@ -1,0 +1,68 @@
+--- a/src/ios/text_system.rs
++++ b/src/ios/text_system.rs
+@@ -19,7 +19,7 @@
+ use core_text::{
+     font::CTFont,
+     font_descriptor::{
+-        kCTFontSlantTrait, kCTFontSymbolicTrait, kCTFontWeightTrait, kCTFontWidthTrait,
++        kCTFontBoldTrait, kCTFontItalicTrait, kCTFontSlantTrait, kCTFontSymbolicTrait, kCTFontWeightTrait, kCTFontWidthTrait,
+         SymbolicTraitAccessors,
+     },
+     line::CTLine,
+@@ -172,7 +172,18 @@
+                 },
+             )?;
+ 
+-            let font_id = candidates[ix];
++            let mut font_id = candidates[ix];
++            // Some iOS system families expose only the regular face. Ask Core Text
++            // for the requested traits instead of rendering every weight as regular.
++            let traits = (if font.weight.0 >= 600. { kCTFontBoldTrait } else { 0 })
++                | (if font.style == FontStyle::Italic { kCTFontItalicTrait } else { 0 });
++            if traits != 0 {
++                let native = if font.weight.0 >= 600. && gpui::font_name_with_fallbacks(&font.family,".AppleSystemUIFont") == ".AppleSystemUIFont" {
++                    core_text::font::new_ui_font_for_language(core_text::font::kCTFontEmphasizedSystemFontType,16.,None)
++                } else { lock.fonts[font_id.0].native_font() };
++                let face = native.clone_with_symbolic_traits(traits,kCTFontBoldTrait | kCTFontItalicTrait).unwrap_or(native);
++                font_id = lock.id_for_native_font(face);
++            }
+             lock.font_selections.insert(font.clone(), font_id);
+             Ok(font_id)
+         }
+@@ -291,8 +302,8 @@
+             let font_id = FontId(self.fonts.len());
+             font_ids.push(font_id);
+             let postscript_name = font.postscript_name().unwrap();
+-            self.font_ids_by_postscript_name
+-                .insert(postscript_name.clone(), font_id);
++            let key = format!("{}:{:x}",postscript_name,font.native_font().symbolic_traits());
++            self.font_ids_by_postscript_name.insert(key, font_id);
+             self.postscript_names_by_font_id
+                 .insert(font_id, postscript_name);
+             self.fonts.push(font);
+@@ -306,18 +317,18 @@
+ 
+     fn id_for_native_font(&mut self, requested_font: CTFont) -> FontId {
+         let postscript_name = requested_font.postscript_name();
+-        if let Some(font_id) = self.font_ids_by_postscript_name.get(&postscript_name) {
++        // Variable system faces can share a PostScript name across traits.
++        let key = format!("{}:{:x}",postscript_name,requested_font.symbolic_traits());
++        if let Some(font_id) = self.font_ids_by_postscript_name.get(&key) {
+             *font_id
+         } else {
+             let font_id = FontId(self.fonts.len());
+-            self.font_ids_by_postscript_name
+-                .insert(postscript_name.clone(), font_id);
++            self.font_ids_by_postscript_name.insert(key, font_id);
+             self.postscript_names_by_font_id
+                 .insert(font_id, postscript_name);
+-            self.fonts
+-                .push(font_kit::font::Font::from_core_graphics_font(
+-                    requested_font.copy_to_CGFont(),
+-                ));
++            // Keep Core Text's variable weight/italic traits. Copying only the
++            // CGFont discards them for iOS system faces.
++            self.fonts.push(unsafe { font_kit::font::Font::from_core_text_font_no_path(requested_font) });
+             font_id
+         }
+     }

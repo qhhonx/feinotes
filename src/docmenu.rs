@@ -7,6 +7,8 @@ use crate::store::PageWidth;
 use crate::theme::{self, Theme, craft};
 use crate::ui::popover;
 use gpui::{prelude::FluentBuilder, *};
+#[cfg(target_os = "ios")]
+use gpui::Anchor as Corner;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DocSub {
@@ -121,8 +123,8 @@ impl Workspace {
         }
     }
 
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    fn recover_cloud_version(&mut self, id: String, cx: &mut Context<Self>) {
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) fn recover_cloud_version(&mut self, id: String, cx: &mut Context<Self>) {
         self.close_doc_menu(cx);
         let versions = match crate::cloud_sync::versions(self.store.root(), &id, cx) {
             Ok(versions) if !versions.is_empty() => versions,
@@ -139,7 +141,7 @@ impl Workspace {
         cx.notify();
     }
 
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub(crate) fn restore_cloud_version(&mut self, id: &str, sequence: i64, window: &mut Window, cx: &mut Context<Self>) {
         let made = crate::cloud_sync::version(self.store.root(), id, sequence, cx).and_then(|(mut doc, front)| {
             let title = crate::localized_format!("{} · 恢复副本", "{} · recovered", display_title(&doc.title.text));
@@ -157,13 +159,22 @@ impl Workspace {
         }
     }
 
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     fn copy_to_local_library(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_shared() { return; }
         self.close_doc_menu(cx);
         if !self.flush(cx) { return; }
+        #[cfg(target_os = "ios")]
+        let source = self.store.root().to_path_buf();
+        #[cfg(target_os = "ios")]
+        let lease = crate::store::Store::session_lease(&source);
         cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { crate::cloud_restore::copy_note_to_local(&id) }).await;
+            let result = cx.background_executor().spawn(async move {
+                #[cfg(target_os = "ios")]
+                { let _lease = lease; crate::cloud_restore::copy_note_to_local(&source,&id) }
+                #[cfg(not(target_os = "ios"))]
+                crate::cloud_restore::copy_note_to_local(&id)
+            }).await;
             let _ = this.update_in(cx, |w, _, cx| match result {
                 Ok(_) => w.show_toast(crate::settings::tr("已复制到本机文档库。可在 iCloud 同步设置中切换到本机。",
                     "Copied to your local library. Switch to it in iCloud Sync settings."), cx),
@@ -188,13 +199,13 @@ impl Workspace {
         }
         let Some(id) = self.current.clone() else { return vec![] };
         let entry = self.entries.iter().find(|e| e.id == id);
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let show_share = !crate::cloud_restore::local_only() && entry.is_some_and(|entry| !entry.meta.local());
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let show_share = false;
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let show_local_copy = show_share && !self.is_shared() && crate::cloud_trial::available();
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let show_local_copy = false;
         let pinned = entry.is_some_and(|e| e.meta.pinned);
         let starred = entry.is_some_and(|e| e.meta.starred > 0);
@@ -273,17 +284,17 @@ impl Workspace {
                     .on_click(cx.listener(move |w, _, window, cx| w.duplicate_doc(&dup_id, window, cx))),
             )
             .children({
-                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 {
                     let note = id.clone();
                     show_local_copy.then(|| menu_item("dm-copy-local", "copy", crate::settings::tr("复制到本机文档库", "Copy to Local Library"), false, false)
                         .on_hover(hover_sub(None)).on_click(cx.listener(move |w, _, window, cx| w.copy_to_local_library(note.clone(), window, cx))))
                 }
-                #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { None::<Stateful<Div>> }
             })
             .children({
-                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 {
                     let note = id.clone();
                     show_share.then(|| {
@@ -295,7 +306,7 @@ impl Workspace {
                             }))
                     })
                 }
-                #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { None::<Stateful<Div>> }
             })
             .child(
@@ -417,10 +428,10 @@ impl Workspace {
                             })),
                     )
                     .children({
-                        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                         { (!crate::cloud_restore::local_only()).then(|| sub_item("dm-sync-history", crate::settings::tr("iCloud 历史版本", "iCloud Version History"))
                             .on_click(cx.listener(move |w, _, _, cx| w.recover_cloud_version(id.clone(), cx)))) }
-                        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+                        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                         { None::<Stateful<Div>> }
                     })
                     .into_any_element(),
