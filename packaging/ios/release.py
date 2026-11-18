@@ -35,11 +35,13 @@ def validate_profile(profile, signer, uuid, now=None):
     require(ent.get('application-identifier') == TEAM + '.' + BUNDLE, 'Wrong iOS application identifier')
     require(ent.get('get-task-allow') is False, 'Development signing is forbidden')
     require(ent.get('beta-reports-active') is True, 'Expected an App Store distribution profile')
-    require(ent.get('com.apple.developer.icloud-container-environment') == 'Production', 'Expected Production CloudKit')
+    environments = ent.get('com.apple.developer.icloud-container-environment')
+    require(environments == 'Production' or isinstance(environments, list) and 'Production' in environments, 'Profile does not authorize Production CloudKit')
     require(ent.get('com.apple.developer.icloud-container-identifiers') == [CONTAINER], 'Wrong iCloud container')
-    require('CloudKit' in ent.get('com.apple.developer.icloud-services', []), 'Missing CloudKit service')
+    services = ent.get('com.apple.developer.icloud-services', [])
+    require(services in ('*', 'CloudKit') if isinstance(services, str) else 'CloudKit' in services or '*' in services, 'Missing CloudKit service')
     domains = ent.get('com.apple.developer.associated-domains', [])
-    require(domains == '*' or DOMAIN in domains, 'iOS profile does not allow the invitation domain')
+    require(domains == '*' or DOMAIN in domains or isinstance(domains, list) and '*' in domains, 'iOS profile does not allow the invitation domain')
     fingerprints = {hashlib.sha1(cert).hexdigest().upper() for cert in profile['DeveloperCertificates']}
     require(signer.upper() in fingerprints, 'iOS certificate is not in this profile')
     return profile
@@ -61,6 +63,15 @@ def validate_info(info, version, build):
     require(info.get('ITSAppUsesNonExemptEncryption') is False, 'Export compliance must be explicitly configured')
 
 
+def validate_signed_entitlements(ent):
+    require(ent.get('get-task-allow') in (None, False), 'Development signed app')
+    require(ent.get('application-identifier') == TEAM + '.' + BUNDLE, 'Signed app identity mismatch')
+    require(ent.get('com.apple.developer.icloud-container-environment') == 'Production', 'Signed app uses Development CloudKit')
+    require(ent.get('com.apple.developer.icloud-container-identifiers') == [CONTAINER], 'Signed container mismatch')
+    require(ent.get('com.apple.developer.icloud-services') == ['CloudKit'], 'Signed app must select only CloudKit')
+    require(DOMAIN in ent.get('com.apple.developer.associated-domains', []), 'Signed invitation domain missing')
+
+
 def verify_app(app, version, build, signer, uuid):
     info = plistlib.loads((app / 'Info.plist').read_bytes())
     validate_info(info, version, build)
@@ -76,11 +87,7 @@ def verify_app(app, version, build, signer, uuid):
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
     result = subprocess.run(['codesign', '-d', '--entitlements', ':-', str(app)], capture_output=True, check=True)
     ent = plistlib.loads(result.stdout)
-    require(ent.get('get-task-allow') in (None, False), 'Development signed app')
-    require(ent.get('application-identifier') == TEAM + '.' + BUNDLE, 'Signed app identity mismatch')
-    require(ent.get('com.apple.developer.icloud-container-environment') == 'Production', 'Signed app uses Development CloudKit')
-    require(ent.get('com.apple.developer.icloud-container-identifiers') == [CONTAINER], 'Signed container mismatch')
-    require(DOMAIN in ent.get('com.apple.developer.associated-domains', []), 'Signed invitation domain missing')
+    validate_signed_entitlements(ent)
     executable = app / info['CFBundleExecutable']
     require(subprocess.check_output(['lipo', '-archs', str(executable)], text=True).split() == ['arm64'],
             'Expected a device arm64 executable')

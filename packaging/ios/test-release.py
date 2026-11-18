@@ -32,6 +32,24 @@ class IOSReleaseTest(TestCase):
         value = profile(); value['Entitlements']['com.apple.developer.associated-domains'] = '*'
         self.check_profile(value)
 
+    def test_apple_distribution_allowlists_do_not_select_the_app_environment(self):
+        value = profile()
+        value['Entitlements']['com.apple.developer.icloud-container-environment'] = ['Production', 'Development']
+        value['Entitlements']['com.apple.developer.icloud-services'] = '*'
+        value['Entitlements']['com.apple.developer.associated-domains'] = ['*']
+        self.check_profile(value)
+        value['Entitlements']['com.apple.developer.icloud-container-environment'] = ['Development']
+        with self.assertRaises(ValueError): self.check_profile(value)
+
+    def test_app_selects_production_cloudkit_even_with_broad_profile_permissions(self):
+        ent = profile()['Entitlements'].copy()
+        release.validate_signed_entitlements(ent)
+        ent['com.apple.developer.icloud-container-environment'] = 'Development'
+        with self.assertRaises(ValueError): release.validate_signed_entitlements(ent)
+        ent['com.apple.developer.icloud-container-environment'] = 'Production'
+        ent['com.apple.developer.icloud-services'] = '*'
+        with self.assertRaises(ValueError): release.validate_signed_entitlements(ent)
+
     def test_rejects_development_enterprise_mac_and_expired_profiles(self):
         invalid = [('ProvisionedDevices', ['device']), ('ProvisionsAllDevices', True),
                    ('Platform', ['OSX']), ('ExpirationDate', datetime.datetime(2000, 1, 1)),
