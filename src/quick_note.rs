@@ -60,6 +60,8 @@ pub fn open_document(document: Option<String>, cx: &mut App) {
             if next.x + bounds.size.width <= screen.right() - px(8.) && next.y + bounds.size.height <= screen.bottom() - px(8.) { bounds.origin = next; }
         }
     }
+    // Whole points: see `main_window_options`.
+    bounds.origin = bounds.origin.map(|v| v.round());
     persist(cx);
     let result = cx.open_window(WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -72,6 +74,7 @@ pub fn open_document(document: Option<String>, cx: &mut App) {
             traffic_light_position: Some(point(px(20.), px(crate::app::HEADER_H / 2. - 7.))),
         }),
         window_min_size: Some(size(px(480.), px(480.))),
+        app_owns_titlebar_drag: true,
         ..Default::default()
     }, |window, cx| cx.new(|cx| crate::app::Workspace::new_document_window(document, window, cx)));
     match result {
@@ -105,7 +108,7 @@ mod hotkey {
         if release || repeated { return 0; }
         APP.with(|app| {
             if let Some(cx) = app.borrow().clone() {
-                cx.foreground_executor().clone().spawn(async move { let _ = cx.update(|cx| if id.id == 2 { super::open_last(cx) } else { super::open(cx) }); }).detach();
+                cx.foreground_executor().clone().spawn(async move { cx.update(|cx| if id.id == 2 { super::open_last(cx) } else { super::open(cx) }); }).detach();
             }
         });
         0
@@ -200,7 +203,7 @@ pub fn set_last_hotkey(combo: &str, cx: &mut App) -> anyhow::Result<()> { set(2,
 #[cfg(target_os = "macos")]
 fn set(id: u32, combo: &str, cx: &mut App) -> anyhow::Result<()> {
     if combo.is_empty() { let _ = hotkey::install(cx, id, 0, 0, ""); HOTKEY_ERROR.lock().unwrap()[id as usize - 1] = None; return Ok(()); }
-    let key = Keystroke::parse(combo)?;
+    let key = crate::shortcuts::parse_key(combo)?;
     let keys = [("a",0),("s",1),("d",2),("f",3),("h",4),("g",5),("z",6),("x",7),("c",8),("v",9),("b",11),("q",12),("w",13),("e",14),("r",15),("y",16),("t",17),("1",18),("2",19),("3",20),("4",21),("6",22),("5",23),("9",25),("7",26),("8",28),("0",29),("o",31),("u",32),("i",34),("p",35),("l",37),("j",38),("k",40),("n",45),("m",46),("space",49)];
     let code = keys.iter().find(|(k,_)| *k == key.key).map(|(_,v)| *v).ok_or_else(|| anyhow::anyhow!(crate::settings::tr("全局快捷键请使用字母、数字或空格", "Use a letter, digit or Space for the global shortcut")))?;
     let m = key.modifiers;

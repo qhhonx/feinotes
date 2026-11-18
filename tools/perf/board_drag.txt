@@ -1,7 +1,9 @@
 # 画板拖拽延迟（board_gen.py perf 场景，100%）：按住一个带两条绑定箭头的矩形
 # 拖（每步 4pt，来回各 30 步），再全选拖动全部元素。X Y 是 100% 视图里某个矩形内
-# 不压文字的一点，按场景替换：n=1000 910 230，3000 794 350，10000 656 355。
-#   sed 's/X Y/656 355/' tools/perf/board_drag.txt > /tmp/d.txt; python3 tools/harness/run.py /tmp/d.txt <lib> <work>
+# 不压文字的一点，按场景替换：n=1000 873 256，3000 756 373，10000 615 376（2026-11-17
+# 按当前布局重新取的；画面布局变了就重取，并看 drag-one 截图里矩形确实被选中、移动了，
+# 落在格子之间时测到的是框选，10000 时一步约 4ms）。
+#   sed 's/X Y/615 376/' tools/perf/board_drag.txt > /tmp/d.txt; python3 tools/harness/run.py /tmp/d.txt <lib> <work>
 move 640 760
 wait 2500
 key cmd-0

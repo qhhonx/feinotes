@@ -1,0 +1,253 @@
+WindowTextSystem::glyph_outline and GlyphOutlineCmd: a glyph's outline in font units, y up, from font-kit (macOS, synthetic italics sheared), DirectWrite (Windows), swash (Linux, web); gpui_platform::test_text_system for tests; macOS loads the board's CJK-only Xiaolai although it lacks an m glyph (old patches 37, 38)
+
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index 81ac2468ba3ed2e42dfdbc2947238428ba7d5b00..e1e50a7b0ad0a39e55142795ac4e50fe1bbf488d 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -1615,6 +1615,12 @@ pub trait PlatformTextSystem: Send + Sync {
+     fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId>;
+     /// Get raster bounds for a glyph.
+     fn glyph_raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>>;
++    /// quiet.md: a glyph's outline in font units, y up, for drawing text with
++    /// another rasterizer (the board's CPU renderer). None for bitmap glyphs
++    /// and where a platform can't tell.
++    fn glyph_outline(&self, _font_id: FontId, _glyph_id: GlyphId) -> Option<Vec<crate::GlyphOutlineCmd>> {
++        None
++    }
+     /// Rasterize a glyph.
+     fn rasterize_glyph(
+         &self,
+diff --git a/crates/gpui/src/text_system.rs b/crates/gpui/src/text_system.rs
+index 0b75b980e6e440682a78db3e8b8ef94d71189026..d8653ab0142726d92e6582714644766d9b24c292 100644
+--- a/crates/gpui/src/text_system.rs
++++ b/crates/gpui/src/text_system.rs
+@@ -629,6 +629,18 @@ impl TextSystem {
+     }
+ }
+ 
++/// quiet.md: one step of a glyph outline ([`WindowTextSystem::glyph_outline`]),
++/// in font units, y up.
++#[allow(missing_docs)]
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub enum GlyphOutlineCmd {
++    MoveTo([f32; 2]),
++    LineTo([f32; 2]),
++    QuadTo([f32; 2], [f32; 2]),
++    CubicTo([f32; 2], [f32; 2], [f32; 2]),
++    Close,
++}
++
+ /// The GPUI text layout subsystem.
+ #[derive(Deref)]
+ pub struct WindowTextSystem {
+@@ -639,6 +651,12 @@ pub struct WindowTextSystem {
+ }
+ 
+ impl WindowTextSystem {
++    /// quiet.md: a glyph's outline in font units, y up, for drawing text with
++    /// another rasterizer (the board's CPU renderer).
++    pub fn glyph_outline(&self, font_id: FontId, glyph_id: GlyphId) -> Option<Vec<GlyphOutlineCmd>> {
++        self.text_system.platform_text_system.glyph_outline(font_id, glyph_id)
++    }
++
+     /// Create a new WindowTextSystem with the given TextSystem.
+     pub fn new(text_system: Arc<TextSystem>) -> Self {
+         Self {
+diff --git a/crates/gpui_apple/src/text_system.rs b/crates/gpui_apple/src/text_system.rs
+index ccd90c5f4141946768335d38eb8b843db2adbd81..430f37fa336d7149a5e1d8797952d254108d8708 100644
+--- a/crates/gpui_apple/src/text_system.rs
++++ b/crates/gpui_apple/src/text_system.rs
+@@ -112,6 +112,47 @@ impl Default for AppleTextSystem {
+ }
+ 
+ impl PlatformTextSystem for AppleTextSystem {
++    // quiet.md: outlines for the board's CPU renderer (synthetic italics
++    // sheared like their raster).
++    fn glyph_outline(&self, font_id: FontId, glyph_id: GlyphId) -> Option<Vec<gpui::GlyphOutlineCmd>> {
++        use font_kit::{hinting::HintingOptions, outline::OutlineSink};
++        use gpui::GlyphOutlineCmd as C;
++        use pathfinder_geometry::line_segment::LineSegment2F;
++        struct Sink(Vec<C>, f32);
++        impl Sink {
++            fn p(&self, v: Vector2F) -> [f32; 2] {
++                [v.x() + v.y() * self.1, v.y()]
++            }
++        }
++        impl OutlineSink for Sink {
++            fn move_to(&mut self, to: Vector2F) {
++                let p = self.p(to);
++                self.0.push(C::MoveTo(p));
++            }
++            fn line_to(&mut self, to: Vector2F) {
++                let p = self.p(to);
++                self.0.push(C::LineTo(p));
++            }
++            fn quadratic_curve_to(&mut self, ctrl: Vector2F, to: Vector2F) {
++                let (a, b) = (self.p(ctrl), self.p(to));
++                self.0.push(C::QuadTo(a, b));
++            }
++            fn cubic_curve_to(&mut self, ctrl: LineSegment2F, to: Vector2F) {
++                let (a, b, c) = (self.p(ctrl.from()), self.p(ctrl.to()), self.p(to));
++                self.0.push(C::CubicTo(a, b, c));
++            }
++            fn close(&mut self) {
++                self.0.push(C::Close);
++            }
++        }
++        let state = self.0.read();
++        let font = state.fonts.get(font_id.0)?;
++        let skew = if state.oblique.contains(&font_id) { OBLIQUE_SKEW } else { 0. };
++        let mut sink = Sink(vec![], skew);
++        font.outline(glyph_id.0, HintingOptions::None, &mut sink).ok()?;
++        Some(sink.0)
++    }
++
+     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
+         self.0.write().add_fonts(fonts)
+     }
+@@ -323,8 +364,10 @@ impl AppleTextSystemState {
+                 // quiet.md: KaTeX's symbol faces (Size1-4, AMS, Caligraphic,
+                 // Script) have no lowercase letters.
+                 let is_katex = font.full_name().starts_with("KaTeX_");
++                // quiet.md: nor does the board's CJK-only Xiaolai.
++                let is_xiaolai = font.full_name().starts_with("Xiaolai");
+ 
+-                if !has_m_glyph && !is_segoe_fluent_icons && !is_katex {
++                if !has_m_glyph && !is_segoe_fluent_icons && !is_katex && !is_xiaolai {
+                     // I spent far too long trying to track down why a font missing the 'm'
+                     // character wasn't loading. This log statement will hopefully save
+                     // someone else from suffering the same fate.
+diff --git a/crates/gpui_web/src/text_system.rs b/crates/gpui_web/src/text_system.rs
+index e8ce869a8025a14852c64f5fa9f7d48c6d9aafb8..dafbe027daf4646c20e4da9d010ac75cb92a5a2c 100644
+--- a/crates/gpui_web/src/text_system.rs
++++ b/crates/gpui_web/src/text_system.rs
+@@ -247,6 +247,15 @@ impl WebTextSystem {
+ }
+ 
+ impl PlatformTextSystem for WebTextSystem {
++    // quiet.md: fonts loaded into GPUI have outlines; the browser's canvas
++    // fallback fonts don't.
++    fn glyph_outline(&self, font_id: FontId, glyph_id: GlyphId) -> Option<Vec<gpui::GlyphOutlineCmd>> {
++        if font_id.0 & CANVAS_FONT_BIT != 0 {
++            return None;
++        }
++        self.native.glyph_outline(font_id, glyph_id)
++    }
++
+     fn set_missing_glyph_sink(&self, sink: Option<Arc<dyn MissingGlyphSink>>) {
+         // Cosmic must not report missing glyphs before Canvas has a chance to replace them.
+         self.state.write().missing_glyph_sink = sink;
+diff --git a/crates/gpui_wgpu/src/cosmic_text_system.rs b/crates/gpui_wgpu/src/cosmic_text_system.rs
+index 3a7c4214541e459b95439012a2d89bda482dd488..9fc86c31ca00df8ee8c7a0513ff0f2ba127bfdd6 100644
+--- a/crates/gpui_wgpu/src/cosmic_text_system.rs
++++ b/crates/gpui_wgpu/src/cosmic_text_system.rs
+@@ -165,6 +165,31 @@ impl CosmicTextSystem {
+ }
+ 
+ impl PlatformTextSystem for CosmicTextSystem {
++    // quiet.md: swash's unscaled outline (font units, y up); like the
++    // rasterizer here, no synthetic oblique or bold.
++    fn glyph_outline(&self, font_id: FontId, glyph_id: GlyphId) -> Option<Vec<gpui::GlyphOutlineCmd>> {
++        use gpui::GlyphOutlineCmd as C;
++        use swash::zeno::{Command, PathData};
++        let state = self.0.read();
++        let font = &state.loaded_font(font_id).font;
++        let mut ctx = swash::scale::ScaleContext::new();
++        let outline = ctx.builder(font.as_swash()).build().scale_outline(glyph_id.0 as u16)?;
++        let p = |v: swash::zeno::Vector| [v.x, v.y];
++        Some(
++            outline
++                .path()
++                .commands()
++                .map(|c| match c {
++                    Command::MoveTo(a) => C::MoveTo(p(a)),
++                    Command::LineTo(a) => C::LineTo(p(a)),
++                    Command::QuadTo(a, b) => C::QuadTo(p(a), p(b)),
++                    Command::CurveTo(a, b, c) => C::CubicTo(p(a), p(b), p(c)),
++                    Command::Close => C::Close,
++                })
++                .collect(),
++        )
++    }
++
+     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
+         self.0.write().add_fonts(fonts)
+     }
+diff --git a/crates/gpui_windows/Cargo.toml b/crates/gpui_windows/Cargo.toml
+index 83e2d2d02d863e16b4d32129a844660dee57e76a..bc86191201ce0de55be5dd925951488cc3230c7f 100644
+--- a/crates/gpui_windows/Cargo.toml
++++ b/crates/gpui_windows/Cargo.toml
+@@ -46,6 +46,7 @@ windows = { workspace = true, features = [
+     "Win32_Graphics_Direct3D_Fxc",
+     "Win32_Graphics_DirectComposition",
+     "Win32_Graphics_DirectManipulation",
++    "Win32_Graphics_Direct2D_Common",
+     "Win32_Graphics_DirectWrite",
+     "Win32_Graphics_Dwm",
+     "Win32_Graphics_Dxgi_Common",
+diff --git a/crates/gpui_windows/src/direct_write.rs b/crates/gpui_windows/src/direct_write.rs
+index 82ff963c1d7136af3d387f05169f9f3fcbcc0455..d7037da57e4c5a993c60dfd2ed2f1679003f2d5c 100644
+--- a/crates/gpui_windows/src/direct_write.rs
++++ b/crates/gpui_windows/src/direct_write.rs
+@@ -122,6 +122,25 @@ impl DirectWriteTextSystem {
+ }
+ 
+ impl PlatformTextSystem for DirectWriteTextSystem {
++    // quiet.md: DirectWrite's outline at the design size (font units), y
++    // flipped up; simulated oblique and bold come with the font face.
++    fn glyph_outline(&self, font_id: FontId, glyph_id: GlyphId) -> Option<Vec<GlyphOutlineCmd>> {
++        let state = self.state.read();
++        let face = &state.fonts.get(font_id.0)?.font_face;
++        let cmds = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
++        let sink: windows::Win32::Graphics::Direct2D::Common::ID2D1SimplifiedGeometrySink =
++            OutlineSink { cmds: cmds.clone() }.into();
++        unsafe {
++            let mut metrics = std::mem::zeroed();
++            face.GetMetrics(&mut metrics);
++            let glyph = glyph_id.0 as u16;
++            face.GetGlyphRunOutline(metrics.Base.designUnitsPerEm as f32, &glyph, None, None, 1, false, false, &sink)
++                .ok()?;
++        }
++        drop(sink);
++        Some(std::rc::Rc::try_unwrap(cmds).ok()?.into_inner())
++    }
++
+     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
+         self.state.write().add_fonts(&self.components, fonts)
+     }
+@@ -2074,3 +2093,35 @@ mod tests {
+         assert_eq!(next, None);
+     }
+ }
++
++/// quiet.md: collects `GetGlyphRunOutline`'s figures (y down) as
++/// `GlyphOutlineCmd`s (y up).
++#[implement(windows::Win32::Graphics::Direct2D::Common::ID2D1SimplifiedGeometrySink)]
++struct OutlineSink {
++    cmds: std::rc::Rc<std::cell::RefCell<Vec<GlyphOutlineCmd>>>,
++}
++
++#[allow(non_snake_case)]
++impl windows::Win32::Graphics::Direct2D::Common::ID2D1SimplifiedGeometrySink_Impl for OutlineSink_Impl {
++    fn SetFillMode(&self, _: windows::Win32::Graphics::Direct2D::Common::D2D1_FILL_MODE) {}
++    fn SetSegmentFlags(&self, _: windows::Win32::Graphics::Direct2D::Common::D2D1_PATH_SEGMENT) {}
++    fn BeginFigure(&self, p: &Vector2, _: windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_BEGIN) {
++        self.cmds.borrow_mut().push(GlyphOutlineCmd::MoveTo([p.X, -p.Y]));
++    }
++    fn AddLines(&self, points: *const Vector2, count: u32) {
++        let points = unsafe { std::slice::from_raw_parts(points, count as usize) };
++        self.cmds.borrow_mut().extend(points.iter().map(|p| GlyphOutlineCmd::LineTo([p.X, -p.Y])));
++    }
++    fn AddBeziers(&self, beziers: *const windows::Win32::Graphics::Direct2D::Common::D2D1_BEZIER_SEGMENT, count: u32) {
++        let beziers = unsafe { std::slice::from_raw_parts(beziers, count as usize) };
++        self.cmds.borrow_mut().extend(beziers.iter().map(|b| {
++            GlyphOutlineCmd::CubicTo([b.point1.X, -b.point1.Y], [b.point2.X, -b.point2.Y], [b.point3.X, -b.point3.Y])
++        }));
++    }
++    fn EndFigure(&self, _: windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_END) {
++        self.cmds.borrow_mut().push(GlyphOutlineCmd::Close);
++    }
++    fn Close(&self) -> windows::core::Result<()> {
++        Ok(())
++    }
++}

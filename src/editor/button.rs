@@ -3,8 +3,6 @@
 
 use crate::editor_theme::{c, craft};
 use gpui::*;
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 
 /// A button colour's text and fill at rest, hovered, pressed and disabled
 /// (`light-x` / `deep-x` names, painted from the palette).
@@ -358,7 +356,7 @@ impl Editor {
                     .child(icon("pen-line", 18., Theme::icon()))
                     .on_click(cx.listener(move |e, _, window, cx| e.open_button_panel(at_, window, cx))),
             );
-        Some(at(self.rel(point(r.center().x - px(w / 2.), r.top() - px(4.))), Corner::BottomLeft, el))
+        Some(at(self.rel(point(r.center().x - px(w / 2.), r.top() - px(4.))), Anchor::BottomLeft, el))
     }
 
     // ---- 按钮设置
@@ -663,7 +661,7 @@ impl Editor {
             }))
             .child(content)
             .child(footer);
-        let (pos, corner) = if up { (point(r.left(), r.top() - px(4.)), Corner::BottomLeft) } else { (point(r.left(), r.bottom() + px(4.)), Corner::TopLeft) };
+        let (pos, corner) = if up { (point(r.left(), r.top() - px(4.)), Anchor::BottomLeft) } else { (point(r.left(), r.bottom() + px(4.)), Anchor::TopLeft) };
         Some(at(self.rel(pos), corner, el))
     }
 

@@ -5,6 +5,7 @@
 //! belongs to this computer only (recently opened, window sizes, 本机文件)
 //! is kept outside the library.
 
+use crate::vfs::{PathExt as _, KindExt as _};
 use crate::docxml;
 use crate::model::Document;
 use anyhow::{Context, Result};
@@ -15,7 +16,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 use std::path::{Path, PathBuf};
 use crate::time::now;
-use std::time::UNIX_EPOCH;
+use web_time::UNIX_EPOCH;
 #[path = "file_history.rs"] mod file_history;
 pub use file_history::{FileState, FileDelta, FileChanges};
 #[path = "layout.rs"] mod layout;
@@ -328,12 +329,16 @@ pub struct Store {
     /// What `list` parsed from each file, kept while its mtime and size stay
     /// the same: re-reading every document on each window activation stalled
     /// the main thread for seconds on big or iCloud-evicted libraries.
-    parsed: HashMap<String, (std::time::SystemTime, u64, Parsed)>,
+    parsed: HashMap<String, (web_time::SystemTime, u64, Parsed)>,
     root: PathBuf,
     /// Every document and folder by its id. Ids are handed out per library
     /// and remembered in `.quiet/index.json`, but nothing in a file refers
     /// to them: links are relative paths.
     index: HashMap<String, Meta>,
+    /// Index entries for files this build does not know (a newer build's
+    /// document kinds), written back unchanged so their ids and settings
+    /// survive this build's writes (an older build dropped 画板 this way).
+    foreign: DiskIndex,
     trash: HashMap<String, Trashed>,
     /// The old layout (FORMAT 3: `docs/<id>.xml`, folders only in the index,
     /// the app's files at the top), kept until the user agrees to the move.
@@ -363,7 +368,7 @@ struct ParsedCache { version: String, docs: HashMap<PathBuf, CachedDoc> }
 
 #[derive(Serialize, Deserialize)]
 struct CachedDoc {
-    modified: std::time::SystemTime,
+    modified: web_time::SystemTime,
     len: u64,
     title: String,
     icon: Option<String>,
@@ -376,7 +381,7 @@ fn parsed_cache_version() -> String { format!("{}-{PARSED_CACHE}", env!("CARGO_P
 
 /// Beside the other things this computer keeps about `root`, in the cache folder.
 fn parsed_cache_path(root: &Path) -> PathBuf {
-    let tmp = std::env::temp_dir();
+    let tmp = crate::vfs::temp_dir();
     let base = if cfg!(test) || root.starts_with(&tmp) { tmp.join("quiet-md-local") } else { dirs::cache_dir().unwrap_or(tmp).join("quiet-md") };
     base.join("list").join(format!("{}.json", library_key(root)))
 }
@@ -385,7 +390,7 @@ fn parsed_cache_path(root: &Path) -> PathBuf {
 /// (builds tested side by side), so this is a short mutex, not a
 /// single-instance guard. Released when the write is done.
 /// `None`: the lock a batch already holds.
-struct WriteLock(Option<std::fs::File>);
+struct WriteLock(Option<crate::vfs::File>);
 
 impl Drop for WriteLock {
     fn drop(&mut self) { if let Some(f) = &self.0 { let _ = f.unlock(); } }
@@ -393,8 +398,8 @@ impl Drop for WriteLock {
 
 #[cfg(feature = "sqlite-store")]
 fn lock_root(root: &Path) -> Result<WriteLock> {
-    std::fs::create_dir_all(root)?;
-    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(root.join(".lock"))?;
+    crate::vfs::create_dir_all(root)?;
+    let file = crate::vfs::OpenOptions::new().create(true).truncate(false).write(true).open(root.join(".lock"))?;
     file.lock()?;
     Ok(WriteLock(Some(file)))
 }
@@ -498,18 +503,18 @@ fn write_atomic_then(path: &std::path::Path, bytes: &[u8], sync_dir: bool) -> Re
     tmp.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
     let tmp = PathBuf::from(tmp);
     let result = (|| -> Result<()> {
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        let mut file = crate::vfs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        std::fs::rename(&tmp, path)?;
+        crate::vfs::rename(&tmp, path)?;
         #[cfg(unix)]
-        if sync_dir && let Some(parent) = path.parent() { std::fs::File::open(parent)?.sync_all()?; }
+        if sync_dir && let Some(parent) = path.parent() { crate::vfs::File::open(parent)?.sync_all()?; }
         // Windows has no directory fsync; the rename is as far as it goes.
         #[cfg(not(unix))]
         let _ = sync_dir;
         Ok(())
     })();
-    if result.is_err() { let _ = std::fs::remove_file(&tmp); }
+    if result.is_err() { let _ = crate::vfs::remove_file(&tmp); }
     result
 }
 
@@ -523,7 +528,7 @@ fn with_suffix(path: &std::path::Path, suffix: &str) -> PathBuf {
 /// parse is set aside as `<name>.corrupt-<time>` (never overwritten) and the
 /// previous version, `<name>.bak`, is used instead.
 fn load_json<T: serde::de::DeserializeOwned + Default>(path: &std::path::Path, what: &str, warnings: &mut Vec<String>) -> T {
-    let bytes = match std::fs::read(path) {
+    let bytes = match crate::vfs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return T::default(),
         Err(e) => {
@@ -535,9 +540,9 @@ fn load_json<T: serde::de::DeserializeOwned + Default>(path: &std::path::Path, w
         return v;
     }
     let aside = with_suffix(path, &format!(".corrupt-{}", now()));
-    let _ = std::fs::rename(path, &aside);
+    let _ = crate::vfs::rename(path, &aside);
     let name = aside.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    match std::fs::read(with_suffix(path, ".bak")).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+    match crate::vfs::read(with_suffix(path, ".bak")).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
         Some(v) => {
             warnings.push(format!("{what}已损坏，已从备份恢复（原文件保留为 {name}）"));
             v
@@ -550,8 +555,14 @@ fn load_json<T: serde::de::DeserializeOwned + Default>(path: &std::path::Path, w
 }
 
 /// A JSON file as another copy of the app left it, if it can be read right now.
+/// The entries of `.quiet/index.json` for files of kinds this build does not know.
+fn foreign_of(disk: &DiskIndex) -> DiskIndex {
+    disk.iter().filter(|(k, _)| !k.ends_with('/') && !k.split('/').any(|p| p.is_empty() || p.starts_with('.')) && DocKind::of_name(k).is_none())
+        .map(|(k, a)| (k.clone(), a.clone())).collect()
+}
+
 fn reread<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    serde_json::from_slice(&crate::vfs::read(path).ok()?).ok()
 }
 
 /// Atomically replace a JSON index, keeping the version it replaces as
@@ -559,7 +570,7 @@ fn reread<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
 /// synced library would upload every rewrite).
 fn save_json<T: Serialize>(path: &std::path::Path, v: &T) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(v)?;
-    match std::fs::read(path) {
+    match crate::vfs::read(path) {
         Ok(old) if old == bytes => return Ok(()),
         Ok(old) => write_atomic(&with_suffix(path, ".bak"), &old)?,
         Err(_) => {}
@@ -586,7 +597,7 @@ pub fn image_path(src: &str) -> Option<PathBuf> { image_path_in(&Store::root_dir
 
 pub fn image_path_in(root: &Path, src: &str) -> Option<PathBuf> {
     let p = PathBuf::from(src.strip_prefix("file://").unwrap_or(src));
-    if p.is_absolute() {
+    if p.fs_is_absolute() {
         return Some(moved_asset(root, &p).unwrap_or(p));
     }
     // Relative to the library (`.assets/…`); not a URI or a cloud token.
@@ -599,14 +610,14 @@ pub fn image_path_in(root: &Path, src: &str) -> Option<PathBuf> {
 /// moved. The same file in this library's images folder, when it is there.
 fn moved_asset(root: &Path, p: &Path) -> Option<PathBuf> {
     use std::path::Component;
-    if p.exists() { return None; }
+    if p.fs_exists() { return None; }
     let parts: Vec<Component> = p.components().collect();
     let dir = Store::assets_in(root);
     // The last folder so named that leads to a file; a file may be named `assets` itself.
     (0..parts.len()).rev().filter(|&i| matches!(parts[i].as_os_str().to_str(), Some("assets" | ".assets"))).find_map(|i| {
         let rest = &parts[i + 1..];
         if rest.is_empty() || !rest.iter().all(|c| matches!(c, Component::Normal(_))) { return None; }
-        Some(dir.join(rest.iter().collect::<PathBuf>())).filter(|q| q.exists())
+        Some(dir.join(rest.iter().collect::<PathBuf>())).filter(|q| q.fs_exists())
     })
 }
 
@@ -616,10 +627,10 @@ pub fn export_path(src: &str) -> Option<PathBuf> {
 }
 
 pub fn export_path_in(root: &std::path::Path, src: &str) -> Option<PathBuf> {
-    let root = root.canonicalize().ok()?;
+    let root = root.fs_canonicalize().ok()?;
     let raw = std::path::Path::new(src.strip_prefix("file://").unwrap_or(src));
-    let path = if raw.is_absolute() { moved_asset(&root, raw).unwrap_or_else(|| raw.to_path_buf()) } else { root.join(raw) }.canonicalize().ok()?;
-    (path.starts_with(root) && path.is_file()).then_some(path)
+    let path = if raw.fs_is_absolute() { moved_asset(&root, raw).unwrap_or_else(|| raw.to_path_buf()) } else { root.join(raw) }.fs_canonicalize().ok()?;
+    (path.starts_with(root) && path.fs_is_file()).then_some(path)
 }
 
 pub const EXPORT_FILE_LIMIT: u64 = 256 * 1024 * 1024;
@@ -627,7 +638,7 @@ pub const EXPORT_FILE_LIMIT: u64 = 256 * 1024 * 1024;
 /// Bound the actual read as well as metadata: files can grow after inspection.
 pub fn read_bounded(path: &std::path::Path, limit: u64) -> Result<Vec<u8>> {
     use std::io::Read;
-    let file = std::fs::File::open(path)?;
+    let file = crate::vfs::File::open(path)?;
     anyhow::ensure!(file.metadata()?.len() <= limit, "文件超过导出大小限制");
     let mut bytes = Vec::new();
     file.take(limit + 1).read_to_end(&mut bytes)?;
@@ -647,9 +658,9 @@ fn library_key(root: &Path) -> String {
 /// folder, by library; a temporary one for tests and libraries in the
 /// temporary folder (scripted runs), which never touch the real one.
 fn local_file_for(root: &Path) -> PathBuf {
-    let tmp = std::env::temp_dir();
-    let base = if cfg!(test) || root.starts_with(&tmp) || tmp.canonicalize().is_ok_and(|t| root.starts_with(t)) { tmp.join("quiet-md-local") }
-        else { dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("quiet-md") };
+    let tmp = crate::vfs::temp_dir();
+    let base = if cfg!(test) || root.starts_with(&tmp) || tmp.fs_canonicalize().is_ok_and(|t| root.starts_with(t)) { tmp.join("quiet-md-local") }
+        else { dirs::data_local_dir().unwrap_or_else(crate::vfs::temp_dir).join("quiet-md") };
     base.join("libraries").join(format!("{}.json", library_key(root)))
 }
 
@@ -695,11 +706,13 @@ impl Store {
 
         if let Some(p) = ROOT.read().unwrap().clone() { return p }
         std::env::var_os("QUIET_MD_HOME").map(PathBuf::from)
-            .or_else(|| std::fs::read(Self::location_file()).ok().and_then(|b| serde_json::from_slice::<Location>(&b).ok()).map(|l| l.path).filter(|p| p.is_absolute()))
+            .or_else(|| crate::vfs::read(Self::location_file()).ok().and_then(|b| serde_json::from_slice::<Location>(&b).ok()).map(|l| l.path).filter(|p| p.fs_is_absolute()))
             .unwrap_or_else(Self::default_root)
     }
 
     pub fn default_root() -> PathBuf {
+        // The web build's library lives in memory (vfs).
+        if cfg!(target_family = "wasm") { return PathBuf::from("/Quiet.md") }
         dirs::document_dir().or_else(|| dirs::home_dir().map(|h| h.join("Documents"))).unwrap_or_else(|| PathBuf::from(".")).join("Quiet.md")
     }
 
@@ -713,12 +726,12 @@ impl Store {
         // The old layout keeps them at the top, where older builds look.
         if Self::flat_at(&root) { return root; }
         let d = root.join(INTERNAL);
-        let _ = std::fs::create_dir_all(&d);
+        let _ = crate::vfs::create_dir_all(&d);
         d
     }
 
     /// Whether `root` is (still) in the old layout.
-    pub fn flat_at(root: &Path) -> bool { !root.join(INTERNAL).join("format.json").is_file() && migrate::legacy(root) }
+    pub fn flat_at(root: &Path) -> bool { !root.join(INTERNAL).join("format.json").fs_is_file() && migrate::legacy(root) }
 
     /// Where images and attachments are in library `root`.
     pub fn assets_in(root: &Path) -> PathBuf {
@@ -739,12 +752,12 @@ impl Store {
 
     /// Whether `dir` holds a library, of this layout or an older one.
     pub fn is_library(dir: &Path) -> bool {
-        dir.join(INTERNAL).join("format.json").is_file() || migrate::legacy(dir)
+        dir.join(INTERNAL).join("format.json").fs_is_file() || migrate::legacy(dir)
     }
 
     /// The pointer to a library outside Documents; per user, never synced.
     pub fn location_file() -> PathBuf {
-        dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("quiet-md").join("library.json")
+        dirs::data_local_dir().unwrap_or_else(crate::vfs::temp_dir).join("quiet-md").join("library.json")
     }
 
     /// Use `root` for the rest of this run, and from now on unless
@@ -759,9 +772,9 @@ impl Store {
         let file = Self::location_file();
         // Test runs (`QUIET_MD_HOME`) never move the real library.
         if std::env::var_os("QUIET_MD_HOME").is_some() {}
-        else if root == Self::default_root() { let _ = std::fs::remove_file(&file); }
+        else if root == Self::default_root() { let _ = crate::vfs::remove_file(&file); }
         else {
-            std::fs::create_dir_all(file.parent().unwrap())?;
+            crate::vfs::create_dir_all(file.parent().unwrap())?;
             write_atomic(&file, &serde_json::to_vec_pretty(&Location { path: root.clone() })?)?;
         }
         *ROOT.write().unwrap() = Some(root);
@@ -771,7 +784,7 @@ impl Store {
     /// Where pasted / inserted images are copied to (`.assets/`).
     pub fn assets_dir() -> PathBuf {
         let d = Self::assets_in(&Self::root_dir());
-        let _ = std::fs::create_dir_all(&d);
+        let _ = crate::vfs::create_dir_all(&d);
         d
     }
 
@@ -816,14 +829,14 @@ impl Store {
     pub fn prune_backups(root: &Path) { migrate::prune(root) }
 
     /// The backup of the old layout, while there is one.
-    pub fn backup_dir(root: &Path) -> Option<PathBuf> { Some(root.join(INTERNAL).join(migrate::BACKUP)).filter(|p| p.is_dir()) }
+    pub fn backup_dir(root: &Path) -> Option<PathBuf> { Some(root.join(INTERNAL).join(migrate::BACKUP)).filter(|p| p.fs_is_dir()) }
 
     /// Open the library at `root` in the layout it has; never moves it.
     pub fn open_at(root: PathBuf) -> Result<Self> {
         #[cfg(feature = "sqlite-store")]
         if root.join(SQLITE_FILE).is_file() { return Self::open_sqlite_at(root); }
 
-        std::fs::create_dir_all(&root)?;
+        crate::vfs::create_dir_all(&root)?;
         let mut warnings = vec![];
         let internal = root.join(INTERNAL);
         let marker = internal.join("format.json");
@@ -831,14 +844,14 @@ impl Store {
         if flat {
             let format = reread::<FormatMarker>(&root.join("format.json")).map_or(0, |m| m.format);
             anyhow::ensure!(format <= FORMAT, "这个文档库由更新版本的 Quiet.md 创建，请升级后再打开");
-            if !root.join("format.json").exists() { write_atomic(&root.join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format })?)?; }
+            if !root.join("format.json").fs_exists() { write_atomic(&root.join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format })?)?; }
         } else {
-            match std::fs::read(&marker).ok().and_then(|b| serde_json::from_slice::<FormatMarker>(&b).ok()) {
+            match crate::vfs::read(&marker).ok().and_then(|b| serde_json::from_slice::<FormatMarker>(&b).ok()) {
                 Some(m) if m.format > FORMAT => anyhow::bail!("这个文档库由更新版本的 Quiet.md 创建，请升级后再打开"),
                 // Moved to the new layout; what was left of the old one is set aside.
                 Some(_) => if migrate::legacy(&root) { migrate::finish(&root, &mut warnings); },
                 None => {
-                    std::fs::create_dir_all(&internal)?;
+                    crate::vfs::create_dir_all(&internal)?;
                     write_atomic(&marker, &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?;
                 }
             }
@@ -848,7 +861,7 @@ impl Store {
         let mut store = Store {
             #[cfg(feature = "sqlite-store")]
             sqlite: None,
-            file_changes: vec![], root, index: HashMap::new(), trash, flat, warnings, migrated: None, loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
+            file_changes: vec![], root, index: HashMap::new(), foreign: DiskIndex::new(), trash, flat, warnings, migrated: None, loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
         if flat {
             store.index = load_json(&base.join("index.json"), "文档索引", &mut store.warnings);
             store.flat_folders()?;
@@ -856,6 +869,7 @@ impl Store {
             let disk: DiskIndex = load_json(&internal.join("index.json"), "文档索引", &mut store.warnings);
             let local = store.read_local();
             store.index = store.from_disk(&disk, &local);
+            store.foreign = foreign_of(&disk);
             store.load_parsed();
         }
         store.restore_recoveries();
@@ -918,6 +932,13 @@ impl Store {
         index
     }
 
+    /// What `.quiet/index.json` holds: this build's entries and the ones it keeps for others.
+    fn disk_index(&self) -> DiskIndex {
+        let mut disk = self.to_disk();
+        for (k, a) in &self.foreign { disk.entry(k.clone()).or_insert_with(|| a.clone()); }
+        disk
+    }
+
     fn to_disk(&self) -> DiskIndex {
         self.index.iter().filter(|(_, m)| !m.local() && !m.rel.is_empty())
             .map(|(id, m)| (if m.folder.is_some() { format!("{}/", m.rel) } else { m.rel.clone() }, Attached::of(id, m))).collect()
@@ -934,21 +955,21 @@ impl Store {
     fn save_local(&self, local: &Local) -> Result<()> {
         let path = self.local_file();
         let bytes = serde_json::to_vec_pretty(local)?;
-        if std::fs::read(&path).is_ok_and(|b| b == bytes) { return Ok(()); }
-        std::fs::create_dir_all(path.parent().unwrap())?;
+        if crate::vfs::read(&path).is_ok_and(|b| b == bytes) { return Ok(()); }
+        crate::vfs::create_dir_all(path.parent().unwrap())?;
         write_atomic(&path, &bytes)
     }
 
     fn restore_recoveries(&mut self) {
-        if let Ok(entries) = std::fs::read_dir(self.recovery_dir()) {
+        if let Ok(entries) = crate::vfs::read_dir(self.recovery_dir()) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().is_none_or(|x| x != "xml") { continue; }
                 let restored = (|| -> Result<()> {
-                    let mut doc = docxml::parse(&std::fs::read_to_string(&path)?)?;
+                    let mut doc = docxml::parse(&crate::vfs::read_to_string(&path)?)?;
                     doc.title = crate::model::RichText::plain(format!("{} (recovered copy)", doc.title.text));
                     self.create_from(&doc)?;
-                    std::fs::remove_file(&path)?;
+                    crate::vfs::remove_file(&path)?;
                     Ok(())
                 })();
                 self.warnings.push(match restored {
@@ -964,13 +985,13 @@ impl Store {
     }
 
     pub fn recovery_directory(root: &Path) -> PathBuf {
-        dirs::data_local_dir().unwrap_or_else(std::env::temp_dir)
+        dirs::data_local_dir().unwrap_or_else(crate::vfs::temp_dir)
             .join("quiet-md/recovery").join(library_key(root))
     }
 
     pub fn recover_later(&self, doc: &Document) -> Result<()> {
         let dir = self.recovery_dir();
-        std::fs::create_dir_all(&dir)?;
+        crate::vfs::create_dir_all(&dir)?;
         write_atomic(&dir.join(format!("{}.xml", uuid::Uuid::new_v4())), docxml::serialize(doc).as_bytes())
     }
 
@@ -1006,7 +1027,7 @@ impl Store {
     fn read_body(&self, id: &str) -> Result<String> {
         #[cfg(feature = "sqlite-store")]
         if self.sqlite_manages(id) { let d = self.load_sqlite_doc(id, false)?; return Ok(if self.is_markdown(id) { crate::markdown::write_file(&d, &self.sqlite_front(id)?, None) } else { docxml::serialize(&d) }); }
-        Ok(std::fs::read_to_string(self.path(id))?)
+        Ok(crate::vfs::read_to_string(self.path(id))?)
     }
 
     pub fn is_markdown(&self, id: &str) -> bool { self.index.get(id).is_some_and(|m| m.markdown) }
@@ -1111,24 +1132,47 @@ impl Store {
 
         // Inside a batch the lock is held and memory is what the disk will be.
         if self.batch.lock.is_some() { return Ok(WriteLock(None)); }
-        std::fs::create_dir_all(self.internal())?;
-        let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(self.internal().join(".lock"))?;
+        crate::vfs::create_dir_all(self.internal())?;
+        let f = crate::vfs::OpenOptions::new().create(true).truncate(false).write(true).open(self.internal().join(".lock"))?;
         f.lock()?;
         let lock = WriteLock(Some(f));
         // Another copy moved it to the new layout meanwhile: nothing more is written here.
-        anyhow::ensure!(!self.flat || !self.root.join(INTERNAL).join("format.json").exists(), "文档库已升级到新格式，请重新打开 Quiet.md");
-        let marker: FormatMarker = serde_json::from_slice(&std::fs::read(self.internal().join("format.json"))?)?;
+        anyhow::ensure!(!self.flat || !self.root.join(INTERNAL).join("format.json").fs_exists(), "文档库已升级到新格式，请重新打开 Quiet.md");
+        let marker: FormatMarker = serde_json::from_slice(&crate::vfs::read(self.internal().join("format.json"))?)?;
         anyhow::ensure!(marker.format <= FORMAT, "这个文档库由更新版本的 Quiet.md 创建，请升级后再打开");
         // An unreadable index is not judged here (that is `open`'s job): the
         // version in memory is written back unchanged.
         if self.flat {
             if let Some(index) = reread(&self.index_file()) { self.index = index; }
         } else if let Some(disk) = reread::<DiskIndex>(&self.index_file()) {
+            let before = std::mem::take(&mut self.index);
             let local = self.read_local();
             self.index = self.from_disk(&disk, &local);
+            self.foreign = foreign_of(&disk);
+            self.reclaim_open(before);
         }
         if let Some(trash) = reread(&self.trash_index_file()) { self.trash = trash; }
         Ok(lock)
+    }
+
+    /// An editor still open on a document whose entry another copy of the app
+    /// dropped (an older build that does not know its kind) keeps its id while
+    /// its file is where it was: the index re-read gave the file a new id, or none.
+    fn reclaim_open(&mut self, before: HashMap<String, Meta>) {
+        let open: Vec<String> = self.loaded.borrow().keys().filter(|id| !self.index.contains_key(*id)).cloned().collect();
+        let mut changed = false;
+        for id in open {
+            let Some(old) = before.get(&id).filter(|m| !m.local() && m.folder.is_none() && !m.rel.is_empty()) else { continue };
+            let other = self.index.iter().find(|(_, m)| !m.local() && m.folder.is_none() && m.rel == old.rel).map(|(k, _)| k.clone());
+            match other {
+                Some(other) => { self.index.remove(&other); }
+                None if self.abs(&old.rel).fs_exists() => {}
+                None => continue,
+            }
+            self.index.insert(id, old.clone());
+            changed = true;
+        }
+        if changed { derive_tree(&mut self.index); }
     }
 
     fn save_index(&self) -> Result<()> {
@@ -1139,7 +1183,7 @@ impl Store {
         if self.batch.lock.is_some() { self.batch.index.set(true); return Ok(()); }
         // The old layout keeps everything in its index, as older builds expect.
         if self.flat { return save_json(&self.index_file(), &self.index); }
-        save_json(&self.index_file(), &self.to_disk())?;
+        save_json(&self.index_file(), &self.disk_index())?;
         self.save_local(&self.local_state())
     }
 
@@ -1177,7 +1221,7 @@ impl Store {
         let mut r: Result<()> = Ok(());
         #[cfg(unix)]
         for dir in self.batch.dirs.take() {
-            if let Err(e) = std::fs::File::open(&dir).and_then(|f| f.sync_all()) { r = Err(e.into()); }
+            if let Err(e) = crate::vfs::File::open(&dir).and_then(|f| f.sync_all()) { r = Err(e.into()); }
         }
         #[cfg(not(unix))]
         self.batch.dirs.take();
@@ -1210,7 +1254,7 @@ impl Store {
             let low = rel.to_lowercase();
             if own_rel.as_deref() == Some(low.as_str()) { return name; }
             let path = self.abs(&rel);
-            let on_disk = path.symlink_metadata().is_ok() || layout::placeholder(&path).is_some_and(|p| p.exists());
+            let on_disk = path.fs_symlink_metadata().is_ok() || layout::placeholder(&path).is_some_and(|p| p.fs_exists());
             if !taken.contains(&low) && !on_disk { return name; }
         }
         unreachable!()
@@ -1234,10 +1278,10 @@ impl Store {
         if format >= 2 { return Ok(()); }
         let _lock = self.begin_write()?;
         let backup = self.root.join("index.before-folders.json");
-        if !backup.exists() { write_atomic(&backup, &serde_json::to_vec_pretty(&self.index)?)?; }
+        if !backup.fs_exists() { write_atomic(&backup, &serde_json::to_vec_pretty(&self.index)?)?; }
         let docs = self.root.join("docs");
         let mut index = self.index.clone();
-        migrate::pages_to_folders(&mut index, |id| docs.join(format!("{id}.xml")).is_file(), |id| std::fs::read_to_string(docs.join(format!("{id}.xml"))).ok().and_then(|x| docxml::parse(&x).ok()).map(|d| d.title.text));
+        migrate::pages_to_folders(&mut index, |id| docs.join(format!("{id}.xml")).fs_is_file(), |id| crate::vfs::read_to_string(docs.join(format!("{id}.xml"))).ok().and_then(|x| docxml::parse(&x).ok()).map(|d| d.title.text));
         self.index = index;
         self.save_index()?;
         write_atomic(&self.internal().join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: 2 })?)
@@ -1251,13 +1295,13 @@ impl Store {
 
         let mut out = vec![];
         let mut dirty = false;
-        let files: Vec<(String, PathBuf, bool)> = std::fs::read_dir(self.root.join("docs")).map(|rd| rd.flatten().map(|e| e.path()).filter_map(|p| {
+        let files: Vec<(String, PathBuf, bool)> = crate::vfs::read_dir(self.root.join("docs")).map(|rd| rd.flatten().map(|e| e.path()).filter_map(|p| {
             let markdown = match p.extension().and_then(|s| s.to_str()) { Some("xml") => false, Some("md") => true, _ => return None };
             Some((p.file_stem()?.to_str()?.to_string(), p, markdown))
         }).collect()).unwrap_or_default();
         let local: Vec<(String, PathBuf, bool)> = self.index.iter().filter_map(|(id, m)| Some((id.clone(), PathBuf::from(m.path.as_ref()?), true))).collect();
         for (id, p, markdown) in files.into_iter().chain(local) {
-            let md = std::fs::metadata(&p).ok();
+            let md = crate::vfs::metadata(&p).ok();
             if md.is_none() && self.index.get(&id).is_some_and(Meta::local) { continue; }
             if markdown && !self.index.get(&id).is_some_and(|m| m.markdown) && locked && self.require_markdown_format().is_ok() {
                 let t = now();
@@ -1270,7 +1314,7 @@ impl Store {
             let parsed = match self.parsed.get(&id).filter(|c| stamp == Some((c.0, c.1))) {
                 Some(c) => c.2.clone(),
                 None => {
-                    let Ok(text) = std::fs::read_to_string(&p) else { continue };
+                    let Ok(text) = crate::vfs::read_to_string(&p) else { continue };
                     let doc = self.parse_doc(&id, &text).unwrap_or_default();
                     let parsed = Parsed { title: doc.title.text.clone(), icon: doc.icon.clone(), body: doc.plain_text().into(), reminders: doc.reminders(), links: doc.doc_links() };
                     if let Some((t, len)) = stamp { self.parsed.insert(id.clone(), (t, len, parsed.clone())); }
@@ -1303,6 +1347,7 @@ impl Store {
     fn relocate(&mut self, moves: &[(String, String)]) -> Result<()> {
         anyhow::ensure!(!self.flat, "旧格式的文档库没有真实文件夹");
         let mut new_rel: HashMap<String, String> = HashMap::new();
+        let mut dirs: Vec<(String, &str)> = vec![];
         for (id, to) in moves {
             let m = self.index.get(id).ok_or_else(|| anyhow::anyhow!("文档或文件夹不存在"))?;
             anyhow::ensure!(!m.local(), "本机文件不能移入文档库的文件夹");
@@ -1312,6 +1357,7 @@ impl Store {
                 for (k, c) in &self.index {
                     if let Some(rest) = c.rel.strip_prefix(&prefix) && !c.local() { new_rel.insert(k.clone(), format!("{to}/{rest}")); }
                 }
+                dirs.push((prefix, to));
             }
             new_rel.insert(id.clone(), to.clone());
         }
@@ -1323,7 +1369,7 @@ impl Store {
             if m.folder.is_some() || m.local() || m.named_by_file() { continue; }
             let mentions = self.parsed.get(k).is_none_or(|p| p.2.links.iter().any(|l| affected.contains(l.target.as_str())));
             if !affected.contains(k.as_str()) && !mentions { continue; }
-            let Ok(text) = std::fs::read_to_string(self.path(k)) else { continue };
+            let Ok(text) = crate::vfs::read_to_string(self.path(k)) else { continue };
             if !text.contains("type=\"doc\"") { continue; }
             let Ok(doc) = self.parse_doc(k, &text) else { continue };
             docs.push((k.clone(), text, doc));
@@ -1333,20 +1379,23 @@ impl Store {
             let from = self.abs(&self.index[id].rel);
             let dest = self.abs(to);
             let r = (|| -> Result<()> {
-                if let Some(p) = dest.parent() { std::fs::create_dir_all(p)?; }
+                if let Some(p) = dest.parent() { crate::vfs::create_dir_all(p)?; }
                 // A change of case only is the same file on macOS and Windows.
                 let same = from.to_string_lossy().to_lowercase() == dest.to_string_lossy().to_lowercase();
-                anyhow::ensure!(same || dest.symlink_metadata().is_err(), "已存在同名文件：{to}");
-                std::fs::rename(&from, &dest)?;
+                anyhow::ensure!(same || dest.fs_symlink_metadata().is_err(), "已存在同名文件：{to}");
+                crate::vfs::rename(&from, &dest)?;
                 Ok(())
             })();
             if let Err(e) = r {
-                for (a, b) in done.iter().rev() { let _ = std::fs::rename(b, a); }
+                for (a, b) in done.iter().rev() { let _ = crate::vfs::rename(b, a); }
                 return Err(e);
             }
             done.push((from, dest));
         }
         for (k, rel) in &new_rel { if let Some(m) = self.index.get_mut(k) { m.rel = rel.clone(); } }
+        // Files of kinds this build does not know went with their folders.
+        self.foreign = std::mem::take(&mut self.foreign).into_iter()
+            .map(|(k, a)| (dirs.iter().find_map(|(p, to)| k.strip_prefix(p.as_str()).map(|rest| format!("{to}/{rest}"))).unwrap_or(k), a)).collect();
         derive_tree(&mut self.index);
         for (k, text, doc) in docs {
             let out = self.serialize_doc(&k, &doc, None);
@@ -1373,8 +1422,8 @@ impl Store {
             if name.is_empty() { return Ok(()); }
             let ext = old.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "md".into());
             let new = old.with_file_name(format!("{name}.{ext}"));
-            if new == old || new.try_exists()? { return Ok(()); }
-            std::fs::rename(&old, &new)?;
+            if new == old || new.fs_try_exists()? { return Ok(()); }
+            crate::vfs::rename(&old, &new)?;
             self.index.get_mut(id).unwrap().path = Some(new.to_string_lossy().into_owned());
             return Ok(());
         }
@@ -1421,7 +1470,7 @@ impl Store {
         let mut dirty = disk.len() != before;
         for key in &keys {
             if disk.contains_key(key) { continue; }
-            let t = std::fs::metadata(self.abs(key.trim_end_matches('/'))).ok().and_then(|m| m.modified().ok())
+            let t = crate::vfs::metadata(self.abs(key.trim_end_matches('/'))).ok().and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or_else(now);
             disk.insert(key.clone(), Attached { id: String::new(), created: t, modified: t, ..Attached::of("", &Meta::default()) });
             dirty = true;
@@ -1440,20 +1489,20 @@ impl Store {
         for id in ids {
             let m = &self.index[&id];
             let p = self.path(&id);
-            if m.local() && !p.exists() { continue; }
-            if !m.local() && pending.contains(m.rel.as_str()) && !p.exists() {
+            if m.local() && !p.fs_exists() { continue; }
+            if !m.local() && pending.contains(m.rel.as_str()) && !p.fs_exists() {
                 // Not downloaded yet: listed by its name, read once it is here.
                 if let Some(ph) = layout::placeholder(&p) { layout::download(&ph); }
                 let title = stem_of(base_name(&m.rel)).to_string();
                 out.push(Entry { id: id.clone(), meta: m.clone(), title, icon: None, body: Default::default(), reminders: vec![], links: vec![] });
                 continue;
             }
-            let md = std::fs::metadata(&p).ok();
+            let md = crate::vfs::metadata(&p).ok();
             let stamp = md.as_ref().and_then(|m| Some((m.modified().ok()?, m.len())));
             let parsed = match self.parsed.get(&id).filter(|c| stamp == Some((c.0, c.1))) {
                 Some(c) => c.2.clone(),
                 None => {
-                    let Ok(text) = std::fs::read_to_string(&p) else { continue };
+                    let Ok(text) = crate::vfs::read_to_string(&p) else { continue };
                     let doc = self.parse_doc(&id, &text).unwrap_or_default();
                     let parsed = Parsed { title: doc.title.text.clone(), icon: doc.icon.clone(), body: doc.plain_text().into(), reminders: doc.reminders(), links: doc.doc_links() };
                     if let Some((t, len)) = stamp { self.parsed.insert(id.clone(), (t, len, parsed.clone())); reparsed = true; }
@@ -1484,7 +1533,7 @@ impl Store {
     /// What `list` parsed last launch, for the files still where they were.
     fn load_parsed(&mut self) {
 
-        let Some(c) = std::fs::read(parsed_cache_path(&self.root)).ok().and_then(|b| serde_json::from_slice::<ParsedCache>(&b).ok()) else { return };
+        let Some(c) = crate::vfs::read(parsed_cache_path(&self.root)).ok().and_then(|b| serde_json::from_slice::<ParsedCache>(&b).ok()) else { return };
         if c.version != parsed_cache_version() { return }
         let mut docs = c.docs;
         let ids: Vec<String> = self.index.iter().filter(|(_, m)| m.folder.is_none()).map(|(k, _)| k.clone()).collect();
@@ -1503,14 +1552,14 @@ impl Store {
             links: p.links.iter().map(|l| (l.target.clone(), l.block, l.line.clone())).collect(),
         })).collect();
         let path = parsed_cache_path(&self.root);
-        if let Some(dir) = path.parent() { std::fs::create_dir_all(dir)?; }
+        if let Some(dir) = path.parent() { crate::vfs::create_dir_all(dir)?; }
         write_atomic(&path, &serde_json::to_vec(&ParsedCache { version: parsed_cache_version(), docs })?)
     }
 
     fn read_doc_text(&self, id: &str) -> Result<String> {
         let p = self.path(id);
-        match std::fs::read_to_string(&p) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && layout::placeholder(&p).is_some_and(|ph| ph.exists()) => {
+        match crate::vfs::read_to_string(&p) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && layout::placeholder(&p).is_some_and(|ph| ph.fs_exists()) => {
                 if let Some(ph) = layout::placeholder(&p) { layout::download(&ph); }
                 anyhow::bail!("这篇文档还在从 iCloud 下载，请稍后再打开")
             }
@@ -1568,10 +1617,10 @@ impl Store {
     }
 
     fn write_doc(&mut self, id: &str, doc: &Document) -> Result<Meta> {
-        let disk = if self.is_markdown(id) || self.loaded.borrow().contains_key(id) { std::fs::read_to_string(self.path(id)).ok() } else { None };
+        let disk = if self.is_markdown(id) || self.loaded.borrow().contains_key(id) { crate::vfs::read_to_string(self.path(id)).ok() } else { None };
         let (xml, copies) = self.serialize_with_copies(id, doc, disk.as_deref());
         if let Some(previous) = self.loaded.borrow().get(id) {
-            let disk = disk.as_deref().ok_or_else(|| anyhow::anyhow!("无法读取文档"))?;
+            let disk = disk.as_deref().ok_or_else(|| anyhow::anyhow!("文档文件已不在原处，可能已被移动或删除"))?;
             let message = if self.index.get(id).is_some_and(Meta::local) { "文件已在别处被修改，未覆盖磁盘内容。请另存副本或重新打开文件" } else { "文档已被另一个实例修改，未覆盖磁盘内容。请另存副本或重新载入磁盘版本" };
             anyhow::ensure!(disk == previous || disk == xml, "{message}");
         }
@@ -1583,9 +1632,9 @@ impl Store {
             if let Some(base) = self.base(id) {
                 for (src, rel) in &copies {
                     let to = base.join(rel);
-                    if !to.exists() {
-                        if let Some(dir) = to.parent() { std::fs::create_dir_all(dir)?; }
-                        std::fs::copy(src, &to)?;
+                    if !to.fs_exists() {
+                        if let Some(dir) = to.parent() { crate::vfs::create_dir_all(dir)?; }
+                        crate::vfs::copy(src, &to)?;
                     }
                     self.copied.borrow_mut().entry(id.to_string()).or_default().insert(src.clone(), rel.clone());
                 }
@@ -1742,7 +1791,7 @@ impl Store {
         if !self.is_markdown(id) { return String::new(); }
         #[cfg(feature = "sqlite-store")]
         if self.sqlite_manages(id) { return self.sqlite_front(id).unwrap_or_default(); }
-        let text = std::fs::read_to_string(self.path(id)).unwrap_or_default();
+        let text = crate::vfs::read_to_string(self.path(id)).unwrap_or_default();
         crate::markdown::front_matter(text.trim_start_matches('\u{feff}')).0.to_string()
     }
 
@@ -1753,13 +1802,13 @@ impl Store {
     /// it already has when it was opened before. A file inside the library
     /// is the library's document.
     pub fn open_local(&mut self, path: &std::path::Path) -> Result<String> {
-        let path = path.canonicalize()?;
+        let path = path.fs_canonicalize()?;
         // Windows canonical paths are `\\?\C:\…`: keep the ordinary form, which
         // the Explorer and the title show.
         let path = match path.to_str().and_then(|p| p.strip_prefix(r"\\?\")).filter(|p| !p.starts_with("UNC\\")) { Some(p) => PathBuf::from(p), None => path };
-        anyhow::ensure!(path.is_file(), "文件不存在");
+        anyhow::ensure!(path.fs_is_file(), "文件不存在");
         let _lock = self.begin_write()?;
-        if let Some(rel) = self.root.canonicalize().ok().and_then(|r| path.strip_prefix(r).ok().map(|p| p.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")))
+        if let Some(rel) = self.root.fs_canonicalize().ok().and_then(|r| path.strip_prefix(r).ok().map(|p| p.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")))
             && let Some((id, _)) = self.index.iter().find(|(_, m)| !m.local() && m.rel == rel) {
             let id = id.clone();
             self.index.get_mut(&id).unwrap().opened = now();
@@ -1785,12 +1834,12 @@ impl Store {
     pub fn size_of(&self, id: &str, doc: &Document) -> u64 {
         #[cfg(feature = "sqlite-store")]
         let mut n = if self.sqlite_manages(id) { self.sqlite_size(id).unwrap_or(0) }
-            else { std::fs::metadata(self.path(id)).map_or(0, |m| m.len()) };
+            else { crate::vfs::metadata(self.path(id)).map_or(0, |m| m.len()) };
         #[cfg(not(feature = "sqlite-store"))]
-        let mut n = std::fs::metadata(self.path(id)).map_or(0, |m| m.len());
+        let mut n = crate::vfs::metadata(self.path(id)).map_or(0, |m| m.len());
         for src in doc.asset_sources() {
             if let Some(p) = image_path(&src) {
-                n += std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                n += crate::vfs::metadata(p).map(|m| m.len()).unwrap_or(0);
             }
         }
         n
@@ -1840,12 +1889,12 @@ impl Store {
         let mut targets = vec![];
         for (id, root) in items {
             let target = self.trash_path(id);
-            anyhow::ensure!(!target.try_exists()? && !targets.contains(&target), "回收站已存在同名文档，未覆盖：{id}");
+            anyhow::ensure!(!target.fs_try_exists()? && !targets.contains(&target), "回收站已存在同名文档，未覆盖：{id}");
             let meta = self.index.get(id).cloned().unwrap_or_default();
             trash.insert(id.clone(), Trashed { meta, deleted: now(), root: root.clone() });
             targets.push(target);
         }
-        std::fs::create_dir_all(self.trash_dir())?;
+        crate::vfs::create_dir_all(self.trash_dir())?;
         // Persist destination metadata before moving content. An interrupted
         // move leaves extra index entries, never an unindexed trashed file.
         save_json(&self.trash_index_file(), &trash)?;
@@ -1855,7 +1904,7 @@ impl Store {
             let before = if record { self.file_state(id) } else { None };
             let from = self.path(id);
             let folder = self.index.get(id).is_some_and(|m| m.folder.is_some());
-            if (!folder || from.is_dir()) && let Err(e) = std::fs::rename(&from, target) { failed = Some((n, e)); break; }
+            if (!folder || from.fs_is_dir()) && let Err(e) = crate::vfs::rename(&from, target) { failed = Some((n, e)); break; }
             if !folder { crate::versions::move_to_trash(&self.history_base(), id); }
             self.index.remove(id);
             self.loaded.borrow_mut().remove(id);
@@ -1875,7 +1924,7 @@ impl Store {
 
     pub fn trash_dir(&self) -> PathBuf {
         let d = self.internal().join("trash");
-        let _ = std::fs::create_dir_all(&d);
+        let _ = crate::vfs::create_dir_all(&d);
         d
     }
 
@@ -1893,7 +1942,7 @@ impl Store {
         #[cfg(feature = "sqlite-store")]
         if self.sqlite.is_some() { return self.save_sqlite_index(); }
 
-        std::fs::create_dir_all(self.trash_dir())?;
+        crate::vfs::create_dir_all(self.trash_dir())?;
         save_json(&self.trash_index_file(), &self.trash)
     }
 
@@ -1916,11 +1965,11 @@ impl Store {
             Err(e) => { self.warnings.push(format!("无法锁定文档库：{e}")); None }
         };
         let dir = self.internal().join("trash");
-        let _ = std::fs::create_dir_all(&dir);
+        let _ = crate::vfs::create_dir_all(&dir);
         let mut dirty = false;
         let mut on_disk = HashSet::new();
         // Unreadable folder: list what the index knows, and leave it alone.
-        let listed = std::fs::read_dir(&dir);
+        let listed = crate::vfs::read_dir(&dir);
         let mut readable = listed.is_ok();
         if let Ok(rd) = listed {
             for entry in rd {
@@ -1933,7 +1982,7 @@ impl Store {
                     }
                 };
                 let p = e.path();
-                if p.is_dir() {
+                if p.fs_is_dir() {
                     if let Some(id) = p.file_name().and_then(|s| s.to_str()) { on_disk.insert(id.to_string()); }
                     continue;
                 }
@@ -1965,7 +2014,7 @@ impl Store {
         let expired: Vec<String> = self.trash.iter().filter(|(_, t)| t.deleted <= cutoff).map(|(k, _)| k.clone()).collect();
         for id in expired.into_iter().filter(|_| _lock.is_some()) {
             let p = self.trash_path(&id);
-            let r = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+            let r = if p.fs_is_dir() { crate::vfs::remove_dir_all(&p) } else { crate::vfs::remove_file(&p) };
             match r {
                 Ok(()) => { self.trash.remove(&id); dirty = true; crate::versions::purge(&self.history_base(), &id); }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => { self.trash.remove(&id); dirty = true; crate::versions::purge(&self.history_base(), &id); }
@@ -1980,7 +2029,7 @@ impl Store {
             .iter()
             .filter(|(_, t)| t.root.as_ref().is_none_or(|r| !self.trash.contains_key(r)))
             .map(|(id, t)| {
-                let doc = if t.meta.named_by_file() || t.meta.folder.is_some() { Document::default() } else { std::fs::read_to_string(self.trash_path(id)).ok().and_then(|x| docxml::parse(&x).ok()).unwrap_or_default() };
+                let doc = if t.meta.named_by_file() || t.meta.folder.is_some() { Document::default() } else { crate::vfs::read_to_string(self.trash_path(id)).ok().and_then(|x| docxml::parse(&x).ok()).unwrap_or_default() };
                 TrashEntry {
                     id: id.clone(),
                     title: t.meta.folder.clone().or_else(|| t.meta.name.clone()).unwrap_or_else(|| doc.title.text.clone()),
@@ -2034,8 +2083,8 @@ impl Store {
             self.index.insert(id.to_string(), meta);
             if !folder {
                 let to = self.path(id);
-                anyhow::ensure!(!to.try_exists()? , "文档库已存在同名文档，未覆盖：{id}");
-                if let Err(e) = std::fs::rename(&src, &to) { self.index.remove(id); return Err(e.into()); }
+                anyhow::ensure!(!to.fs_try_exists()? , "文档库已存在同名文档，未覆盖：{id}");
+                if let Err(e) = crate::vfs::rename(&src, &to) { self.index.remove(id); return Err(e.into()); }
             }
             let _ = markdown;
             self.trash.remove(id);
@@ -2046,7 +2095,7 @@ impl Store {
         }
         let dir = parent.as_ref().and_then(|p| self.index.get(p)).map(|m| m.rel.clone()).unwrap_or_default();
         let mut meta = t.meta.clone();
-        let text = if meta.folder.is_none() && !meta.named_by_file() { std::fs::read_to_string(&src).ok() } else { None };
+        let text = if meta.folder.is_none() && !meta.named_by_file() { crate::vfs::read_to_string(&src).ok() } else { None };
         // Read where it was, so relative links resolve as they did.
         let doc = text.as_deref().filter(|x| x.contains("type=\"doc\"")).and_then(|x| {
             let mut d = docxml::parse(x).ok()?;
@@ -2055,14 +2104,14 @@ impl Store {
         });
         let rel = if let Some(name) = &meta.folder {
             let rel = join_rel(&dir, &self.free_name(&dir, &file_name_for(name), None, None));
-            if src.is_dir() { std::fs::rename(&src, self.abs(&rel))?; } else { std::fs::create_dir_all(self.abs(&rel))?; }
+            if src.fs_is_dir() { crate::vfs::rename(&src, self.abs(&rel))?; } else { crate::vfs::create_dir_all(self.abs(&rel))?; }
             rel
         } else {
             let base = if !t.meta.rel.is_empty() { layout::unnumbered(stem_of(base_name(&t.meta.rel))).to_string() }
                 else if meta.named_by_file() { file_name_for(meta.name.as_deref().unwrap_or("")) }
                 else { file_name_for(&text.as_deref().and_then(|x| docxml::parse(x).ok()).map(|d| d.title.text).unwrap_or_default()) };
             let rel = join_rel(&dir, &self.free_name(&dir, &base, Some(ext_of(&meta)), None));
-            std::fs::rename(&src, self.abs(&rel))?;
+            crate::vfs::rename(&src, self.abs(&rel))?;
             rel
         };
         meta.rel = rel;
@@ -2087,7 +2136,7 @@ impl Store {
         #[cfg(feature = "sqlite-store")]
         if self.sqlite_manages(id) { return self.index.contains_key(id); }
 
-        self.index.get(id).is_some_and(|m| if m.folder.is_some() { self.flat || self.abs(&m.rel).is_dir() } else { self.path(id).exists() })
+        self.index.get(id).is_some_and(|m| if m.folder.is_some() { self.flat || self.abs(&m.rel).fs_is_dir() } else { self.path(id).fs_exists() })
     }
 
     /// 彻底删除 a page from the 回收站, with the pages that went with it.
@@ -2098,7 +2147,7 @@ impl Store {
 
         for k in self.trash_group(id) {
             let p = self.trash_path(&k);
-            let r = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+            let r = if p.fs_is_dir() { crate::vfs::remove_dir_all(&p) } else { crate::vfs::remove_file(&p) };
             match r {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -2115,7 +2164,7 @@ impl Store {
 
     /// `import` into folder `parent`.
     pub fn import_into(&mut self, path: &std::path::Path, parent: Option<&str>) -> Result<String> {
-        let xml = std::fs::read_to_string(path)?;
+        let xml = crate::vfs::read_to_string(path)?;
         self.create_from_in(&docxml::parse(&xml)?, parent)
     }
 
@@ -2221,7 +2270,7 @@ impl Store {
         (local.window_size, local.quick_note_size) = (s.window_size, s.quick_note_size);
         self.save_local(&local)?;
         let shared = Settings { window_size: None, quick_note_size: None, ..s.clone() };
-        std::fs::create_dir_all(self.internal())?;
+        crate::vfs::create_dir_all(self.internal())?;
         write_atomic(&self.internal().join("settings.json"), &serde_json::to_vec_pretty(&shared)?)
     }
 
@@ -2330,7 +2379,7 @@ mod tests {
 
     impl Lib {
         fn new(name: &str) -> Self {
-            let d = std::env::temp_dir().join(format!("fdl-test-{name}-{}", uuid::Uuid::new_v4()));
+            let d = crate::vfs::temp_dir().join(format!("fdl-test-{name}-{}", uuid::Uuid::new_v4()));
             Lib(d)
         }
         fn open(&self) -> Store {
@@ -2345,8 +2394,8 @@ mod tests {
 
     impl Drop for Lib {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-            let _ = std::fs::remove_file(super::parsed_cache_path(&self.0));
+            let _ = crate::vfs::remove_dir_all(&self.0);
+            let _ = crate::vfs::remove_file(super::parsed_cache_path(&self.0));
         }
     }
 
@@ -2411,7 +2460,7 @@ mod tests {
     #[test]
     fn reading_position_preserves_sqlite_document_and_window_settings() {
         let lib = Lib::new("sqlite-reading-state");
-        std::fs::create_dir_all(&lib.0).unwrap();
+        crate::vfs::create_dir_all(&lib.0).unwrap();
         Store::initialize_local_sqlite(&lib.0).unwrap();
         check_reading_position_state(Store::open_sqlite_at(lib.0.clone()).unwrap());
     }
@@ -2444,7 +2493,7 @@ mod tests {
         assert_eq!(s.versions(&id).len(), 1);
         // Snapshots stay in `.quiet/`: never a folder in the sidebar or the Finder,
         // and still found after the retitle renamed the file.
-        assert!(lib.0.join(".quiet").join("history").join(&id).is_dir());
+        assert!(lib.0.join(".quiet").join("history").join(&id).fs_is_dir());
         assert_eq!(s.list().iter().map(|e| e.id.clone()).collect::<Vec<_>>(), std::slice::from_ref(&id));
         let name = s.versions(&id)[0].name.clone();
         assert_eq!(s.version_text(&id, &name).unwrap(), docxml::serialize(&doc_with("first", "alpha")));
@@ -2476,7 +2525,7 @@ mod tests {
         assert!(s.versions(&id).len() >= 2);
         s.delete(&id, None).unwrap();
         assert!(s.versions(&id).is_empty());
-        assert!(lib.0.join(".quiet").join("history-trash").join(&id).is_dir());
+        assert!(lib.0.join(".quiet").join("history-trash").join(&id).fs_is_dir());
         s.restore(&id).unwrap();
         assert!(!s.versions(&id).is_empty());
         s.delete(&id, None).unwrap();
@@ -2526,7 +2575,7 @@ mod tests {
         let b = crate::whiteboard::Board::from_file(include_str!("../tests/fixtures/board/all-elements.excalidraw")).unwrap();
         let id = s.create_board_in("流程", &b, Some(&folder)).unwrap();
         let file = lib.0.join("草图/流程.excalidraw");
-        let text = std::fs::read_to_string(&file).unwrap();
+        let text = crate::vfs::read_to_string(&file).unwrap();
         assert!(text.starts_with("{\n  \"type\": \"excalidraw\""));
         let e = s.list().into_iter().find(|e| e.id == id).unwrap();
         assert_eq!((e.meta.kind, e.title.as_str(), e.meta.parent.as_deref()), (DocKind::Board, "流程", Some(folder.as_str())));
@@ -2538,8 +2587,8 @@ mod tests {
         d.title = crate::model::RichText::plain("流程图");
         s.save(&id, &d).unwrap();
         let file = lib.0.join("草图/流程图.excalidraw");
-        assert!(file.is_file() && !lib.0.join("草图/流程.excalidraw").exists());
-        assert!(!std::fs::read_to_string(&file).unwrap().contains("流程图"));
+        assert!(file.fs_is_file() && !lib.0.join("草图/流程.excalidraw").fs_exists());
+        assert!(!crate::vfs::read_to_string(&file).unwrap().contains("流程图"));
         // Reopened from disk, it reads back the same.
         let mut s = lib.open();
         let e = s.list().into_iter().find(|e| e.id == id).unwrap();
@@ -2547,14 +2596,62 @@ mod tests {
         let again = s.load(&id).unwrap();
         let kinds = |d: &Document| d.blocks.iter().map(|b| b.kind.clone()).collect::<Vec<_>>();
         assert_eq!(kinds(&again), kinds(&d));
-        assert_eq!(crate::whiteboard::write_file(&again), std::fs::read_to_string(&file).unwrap());
+        assert_eq!(crate::whiteboard::write_file(&again), crate::vfs::read_to_string(&file).unwrap());
         // Through the 回收站 and back as a 画板.
         s.delete(&id, None).unwrap();
-        assert!(lib.0.join(".quiet/trash").join(format!("{id}.excalidraw")).is_file());
+        assert!(lib.0.join(".quiet/trash").join(format!("{id}.excalidraw")).fs_is_file());
         assert_eq!(s.list_trash()[0].title, "流程图");
         s.restore(&id).unwrap();
-        assert!(file.is_file());
+        assert!(file.fs_is_file());
         assert_eq!(kinds(&s.load(&id).unwrap()), kinds(&d));
+    }
+
+    #[test]
+    fn index_keeps_entries_of_unknown_kinds() {
+        // A newer build's file kind: this build neither lists it nor drops its entry.
+        let lib = Lib::new("foreign");
+        let mut s = lib.open();
+        let (id, doc) = s.create().unwrap();
+        let folder = s.create_folder("草图", None).unwrap();
+        crate::vfs::write(lib.0.join("草图/新东西.future"), "{}").unwrap();
+        let index = lib.0.join(".quiet/index.json");
+        let mut disk: DiskIndex = serde_json::from_slice(&crate::vfs::read(&index).unwrap()).unwrap();
+        disk.insert("草图/新东西.future".into(), Attached { id: "keep-me".into(), pinned: true, ..Attached::of("", &Meta::default()) });
+        crate::vfs::write(&index, serde_json::to_vec(&disk).unwrap()).unwrap();
+        let entry = |key: &str| serde_json::from_slice::<DiskIndex>(&crate::vfs::read(&index).unwrap()).unwrap().get(key).map(|a| (a.id.clone(), a.pinned));
+        assert!(s.list().iter().all(|e| e.id != "keep-me"));
+        s.save(&id, &doc).unwrap();
+        assert_eq!(entry("草图/新东西.future"), Some(("keep-me".into(), true)));
+        // Renaming its folder takes the entry along.
+        s.rename(&folder, "图").unwrap();
+        assert_eq!((entry("草图/新东西.future"), entry("图/新东西.future")), (None, Some(("keep-me".into(), true))));
+    }
+
+    #[test]
+    fn an_open_board_survives_a_build_that_drops_it() {
+        // An older build rewrites the index without the 画板; the open editor still saves.
+        let lib = Lib::new("dropped");
+        let mut s = lib.open();
+        let b = crate::whiteboard::Board::from_file(include_str!("../tests/fixtures/board/all-elements.excalidraw")).unwrap();
+        let id = s.create_board_in("流程", &b, None).unwrap();
+        let mut d = s.load_for_edit(&id, false).unwrap();
+        let index = lib.0.join(".quiet/index.json");
+        let rewrite = |f: &dyn Fn(&mut DiskIndex)| {
+            let mut disk: DiskIndex = serde_json::from_slice(&crate::vfs::read(&index).unwrap()).unwrap();
+            f(&mut disk);
+            crate::vfs::write(&index, serde_json::to_vec(&disk).unwrap()).unwrap();
+        };
+        let edit = |d: &mut Document, o: f64| { let crate::model::BlockKind::Board(bd) = &mut d.blocks[0].kind else { panic!("not a board") }; std::sync::Arc::make_mut(bd).elements[0].opacity = o; };
+        rewrite(&|disk| { disk.remove("流程.excalidraw"); });
+        edit(&mut d, 50.);
+        s.save(&id, &d).unwrap();
+        // Or found again by a later `list`, under a new id.
+        rewrite(&|disk| { disk.get_mut("流程.excalidraw").unwrap().id = "found-again".into(); });
+        edit(&mut d, 40.);
+        s.save(&id, &d).unwrap();
+        let ids: Vec<String> = s.list().into_iter().filter(|e| e.meta.kind == DocKind::Board).map(|e| e.id).collect();
+        assert_eq!(ids, vec![id.clone()]);
+        assert_eq!(crate::whiteboard::write_file(&s.load(&id).unwrap()), crate::vfs::read_to_string(lib.0.join("流程.excalidraw")).unwrap());
     }
 
     #[test]
@@ -2564,7 +2661,7 @@ mod tests {
         let mut d = crate::markdown::parse_file("Hello *there*\n", "Note", None);
         let id = s.create_markdown(&d, "---\na: 1\n---\n").unwrap();
         let file = lib.0.join("Note.md");
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "---\na: 1\n---\nHello *there*\n");
+        assert_eq!(crate::vfs::read_to_string(&file).unwrap(), "---\na: 1\n---\nHello *there*\n");
         let e = s.list().into_iter().find(|e| e.id == id).unwrap();
         assert!(e.meta.markdown);
         assert_eq!(e.title, "Note");
@@ -2572,21 +2669,21 @@ mod tests {
         let mut loaded = s.load_for_edit(&id, false).unwrap();
         loaded.blocks.push(crate::model::Block::text("more"));
         s.save(&id, &loaded).unwrap();
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "---\na: 1\n---\nHello *there*\n\nmore\n");
+        assert_eq!(crate::vfs::read_to_string(&file).unwrap(), "---\na: 1\n---\nHello *there*\n\nmore\n");
         // A title change is the file's name, not its contents.
         d = s.load(&id).unwrap();
         d.title = crate::model::RichText::plain("Renamed");
         s.save(&id, &d).unwrap();
         assert_eq!(s.load(&id).unwrap().title.text, "Renamed");
         let file = lib.0.join("Renamed.md");
-        assert!(!lib.0.join("Note.md").exists());
-        assert!(!std::fs::read_to_string(&file).unwrap().contains("Renamed"));
+        assert!(!lib.0.join("Note.md").fs_exists());
+        assert!(!crate::vfs::read_to_string(&file).unwrap().contains("Renamed"));
         // Through the 回收站 and back as Markdown.
         s.delete(&id, None).unwrap();
-        assert!(lib.0.join(".quiet/trash").join(format!("{id}.md")).is_file());
+        assert!(lib.0.join(".quiet/trash").join(format!("{id}.md")).fs_is_file());
         assert_eq!(s.list_trash()[0].title, "Renamed");
         s.restore(&id).unwrap();
-        assert!(file.is_file());
+        assert!(file.fs_is_file());
         assert_eq!(s.load(&id).unwrap().title.text, "Renamed");
     }
 
@@ -2611,7 +2708,7 @@ mod tests {
         let before = Store::shape_at(&lib.0);
         s.save(&id, &doc).unwrap();
         assert_eq!(before, Store::shape_at(&lib.0), "saving is not a change of shape");
-        std::fs::write(lib.0.join("model.md"), "# Written by a model\n").unwrap();
+        crate::vfs::write(lib.0.join("model.md"), "# Written by a model\n").unwrap();
         assert_ne!(before, Store::shape_at(&lib.0), "a new file is");
         let e = s.list().into_iter().find(|e| e.meta.rel == "model.md").unwrap();
         assert!(e.meta.markdown);
@@ -2622,9 +2719,9 @@ mod tests {
     fn local_files_are_edited_in_place_and_never_trashed() {
         let lib = Lib::new("local");
         let dir = lib.0.join("outside");
-        std::fs::create_dir_all(&dir).unwrap();
+        crate::vfs::create_dir_all(&dir).unwrap();
         let file = dir.join("todo.md");
-        std::fs::write(&file, "* star bullet\n\n![x](pics/x.png)\n").unwrap();
+        crate::vfs::write(&file, "* star bullet\n\n![x](pics/x.png)\n").unwrap();
         let mut s = lib.open();
         let id = s.open_local(&file).unwrap();
         assert_eq!(s.open_local(&file).unwrap(), id);
@@ -2634,22 +2731,22 @@ mod tests {
         let mut d = s.load_for_edit(&id, false).unwrap();
         // Saving untouched content leaves the user's formatting alone.
         s.save(&id, &d).unwrap();
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "* star bullet\n\n![x](pics/x.png)\n");
+        assert_eq!(crate::vfs::read_to_string(&file).unwrap(), "* star bullet\n\n![x](pics/x.png)\n");
         d.blocks.push(crate::model::Block::text("added"));
         s.save(&id, &d).unwrap();
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "* star bullet\n\n![x](pics/x.png)\n\nadded\n");
+        assert_eq!(crate::vfs::read_to_string(&file).unwrap(), "* star bullet\n\n![x](pics/x.png)\n\nadded\n");
         // Changed elsewhere: not overwritten.
-        std::fs::write(&file, "edited elsewhere\n").unwrap();
+        crate::vfs::write(&file, "edited elsewhere\n").unwrap();
         d.blocks.push(crate::model::Block::text("again"));
         assert!(s.save(&id, &d).is_err());
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited elsewhere\n");
+        assert_eq!(crate::vfs::read_to_string(&file).unwrap(), "edited elsewhere\n");
         // Renaming renames the file beside it.
         s.rename(&id, "done").unwrap();
-        let renamed = dir.canonicalize().unwrap().join("done.md");
-        assert!(renamed.is_file() && !file.exists());
+        let renamed = dir.fs_canonicalize().unwrap().join("done.md");
+        assert!(renamed.fs_is_file() && !file.fs_exists());
         // Removing it from the list keeps the file.
         s.delete(&id, None).unwrap();
-        assert!(renamed.is_file());
+        assert!(renamed.fs_is_file());
         assert!(s.list().iter().all(|e| e.id != id));
         assert!(s.list_trash().is_empty());
     }
@@ -2661,33 +2758,33 @@ mod tests {
     fn local_files_get_their_images_beside_them() {
         let lib = Lib::new("local-images");
         let dir = lib.0.join("outside");
-        std::fs::create_dir_all(&dir).unwrap();
+        crate::vfs::create_dir_all(&dir).unwrap();
         let file = dir.join("Plan.md");
-        std::fs::write(&file, "text\n").unwrap();
+        crate::vfs::write(&file, "text\n").unwrap();
         let mut s = lib.open();
-        std::fs::create_dir_all(lib.0.join(ASSETS)).unwrap();
+        crate::vfs::create_dir_all(lib.0.join(ASSETS)).unwrap();
         let pasted = lib.0.join(".assets/3e5c9916-7c1f-4f7d-af25-74dd4a8a241e.png");
         let picked = lib.0.join(".assets/1a2b3c4d-截图说明.png");
-        std::fs::write(&pasted, b"p").unwrap();
-        std::fs::write(&picked, b"q").unwrap();
+        crate::vfs::write(&pasted, b"p").unwrap();
+        crate::vfs::write(&picked, b"q").unwrap();
         // Something already there keeps its name.
-        std::fs::create_dir_all(dir.join("Plan.assets")).unwrap();
-        std::fs::write(dir.join("Plan.assets/Plan-1.png"), b"old").unwrap();
+        crate::vfs::create_dir_all(dir.join("Plan.assets")).unwrap();
+        crate::vfs::write(dir.join("Plan.assets/Plan-1.png"), b"old").unwrap();
         let id = s.open_local(&file).unwrap();
         let mut d = s.load_for_edit(&id, false).unwrap();
         let image = |src: &std::path::Path| crate::model::Block::new(crate::model::BlockKind::Image { src_kind: "src".into(), src: src.to_string_lossy().into(), width: None, height: None, caption: None, crop: None }, Default::default());
         d.blocks.push(image(&pasted));
         d.blocks.push(image(&picked));
         s.save(&id, &d).unwrap();
-        let text = std::fs::read_to_string(dir.canonicalize().unwrap().join("Plan.md")).unwrap();
+        let text = crate::vfs::read_to_string(dir.fs_canonicalize().unwrap().join("Plan.md")).unwrap();
         assert_eq!(text, "text\n\n![](Plan.assets/Plan-2.png)\n\n![](Plan.assets/截图说明.png)\n");
-        assert_eq!(std::fs::read(dir.join("Plan.assets/Plan-2.png")).unwrap(), b"p");
-        assert_eq!(std::fs::read(dir.join("Plan.assets/Plan-1.png")).unwrap(), b"old");
+        assert_eq!(crate::vfs::read(dir.join("Plan.assets/Plan-2.png")).unwrap(), b"p");
+        assert_eq!(crate::vfs::read(dir.join("Plan.assets/Plan-1.png")).unwrap(), b"old");
         // The next autosave (the editor still points at the library copy) makes no new copy.
         d.blocks.push(crate::model::Block::text("more"));
         s.save(&id, &d).unwrap();
-        assert_eq!(std::fs::read_dir(dir.join("Plan.assets")).unwrap().count(), 3);
-        assert!(std::fs::read_to_string(dir.join("Plan.md")).unwrap().contains("Plan.assets/Plan-2.png"));
+        assert_eq!(crate::vfs::read_dir(dir.join("Plan.assets")).unwrap().count(), 3);
+        assert!(crate::vfs::read_to_string(dir.join("Plan.md")).unwrap().contains("Plan.assets/Plan-2.png"));
         // Reopened, the links point at the copies.
         let again = s.load(&id).unwrap();
         assert!(again.blocks.iter().any(|b| matches!(&b.kind, crate::model::BlockKind::Image { src, .. } if src.ends_with("Plan.assets/截图说明.png"))));
@@ -2729,8 +2826,8 @@ mod tests {
         let lib = Lib::new("lock-failure");
         let mut s = lib.open();
         let id = s.create_from(&doc("original")).unwrap();
-        std::fs::remove_file(lib.0.join(".quiet/.lock")).unwrap();
-        std::fs::create_dir(lib.0.join(".quiet/.lock")).unwrap();
+        crate::vfs::remove_file(lib.0.join(".quiet/.lock")).unwrap();
+        crate::vfs::create_dir(lib.0.join(".quiet/.lock")).unwrap();
         assert!(s.save(&id, &doc("lost")).is_err());
         assert_eq!(s.load(&id).unwrap().title.text, "original");
         assert!(s.create_from(&doc("new")).is_err());
@@ -2752,25 +2849,25 @@ mod tests {
         assert_eq!(s.list().len(), 2);
         drop(s);
         assert_eq!(lib.open().list().len(), 2);
-        std::fs::remove_dir_all(recovery).unwrap();
+        crate::vfs::remove_dir_all(recovery).unwrap();
     }
 
     #[test]
     fn atomic_write_cleans_failed_temporary_files() {
         let lib = Lib::new("atomic-failure");
-        std::fs::create_dir_all(lib.0.join("target")).unwrap();
+        crate::vfs::create_dir_all(lib.0.join("target")).unwrap();
         assert!(write_atomic(&lib.0.join("target"), b"new").is_err());
-        assert_eq!(std::fs::read_dir(&lib.0).unwrap().count(), 1);
+        assert_eq!(crate::vfs::read_dir(&lib.0).unwrap().count(), 1);
     }
 
     #[test]
     fn exports_stay_in_library_and_reads_are_bounded() {
         let lib = Lib::new("export");
         let outside = Lib::new("outside");
-        std::fs::create_dir_all(lib.0.join("assets")).unwrap();
-        std::fs::create_dir_all(&outside.0).unwrap();
-        std::fs::write(lib.0.join("assets/good"), b"1234").unwrap();
-        std::fs::write(outside.0.join("secret"), b"secret").unwrap();
+        crate::vfs::create_dir_all(lib.0.join("assets")).unwrap();
+        crate::vfs::create_dir_all(&outside.0).unwrap();
+        crate::vfs::write(lib.0.join("assets/good"), b"1234").unwrap();
+        crate::vfs::write(outside.0.join("secret"), b"secret").unwrap();
         assert!(export_path_in(&lib.0, "assets/good").is_some());
         assert!(export_path_in(&lib.0, &outside.0.join("secret").to_string_lossy()).is_none());
         let traversal = format!("../{}/secret", outside.0.file_name().unwrap().to_string_lossy());
@@ -2795,9 +2892,9 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "一");
         assert!(list[0].meta.pinned);
-        assert!(lib.0.join(".quiet/format.json").is_file());
+        assert!(lib.0.join(".quiet/format.json").fs_is_file());
         // The library holds the note and its own hidden folder, nothing else.
-        let names: Vec<String> = std::fs::read_dir(&lib.0).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let names: Vec<String> = crate::vfs::read_dir(&lib.0).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         assert_eq!({ let mut n = names; n.sort(); n }, [".quiet", "一.xml"]);
     }
 
@@ -2817,9 +2914,9 @@ mod tests {
         drop(s);
         // … and drops a cache written by another version.
         let path = parsed_cache_path(&lib.0);
-        let mut c: ParsedCache = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut c: ParsedCache = serde_json::from_slice(&crate::vfs::read(&path).unwrap()).unwrap();
         c.version = "0.0.0-0".into();
-        std::fs::write(&path, serde_json::to_vec(&c).unwrap()).unwrap();
+        crate::vfs::write(&path, serde_json::to_vec(&c).unwrap()).unwrap();
         assert!(lib.open().parsed.is_empty());
     }
 
@@ -2832,17 +2929,17 @@ mod tests {
         assert_eq!(s.list().len(), 2);
         // Another app edits b. a is unchanged on disk, so list keeps what it
         // parsed before (marked here to tell it from a re-read).
-        std::fs::write(s.path(&b), docxml::serialize(&doc("二改"))).unwrap();
+        crate::vfs::write(s.path(&b), docxml::serialize(&doc("二改"))).unwrap();
         let ap = s.path(&a);
-        let stamp = std::fs::metadata(&ap).unwrap().modified().unwrap();
+        let stamp = crate::vfs::metadata(&ap).unwrap().modified().unwrap();
         s.parsed.get_mut(&a).unwrap().2.title = "缓存".into();
-        assert_eq!(std::fs::metadata(&ap).unwrap().modified().unwrap(), stamp);
+        assert_eq!(crate::vfs::metadata(&ap).unwrap().modified().unwrap(), stamp);
         let titles = |s: &mut Store| { let mut t: Vec<_> = s.list().into_iter().map(|e| e.title).collect(); t.sort(); t };
         assert_eq!(titles(&mut s), ["二改", "缓存"]);
         // Saving through the store, or deleting the file, is seen too.
         s.save(&a, &doc("一改")).unwrap();
         assert_eq!(titles(&mut s), ["一改", "二改"]);
-        std::fs::remove_file(s.path(&b)).unwrap();
+        crate::vfs::remove_file(s.path(&b)).unwrap();
         assert_eq!(titles(&mut s), ["一改"]);
         assert_eq!(s.parsed.len(), 1);
     }
@@ -2854,14 +2951,14 @@ mod tests {
         let id = s.create_from(&doc("initial")).unwrap();
         s.load_for_edit(&id, false).unwrap();
         s.forget_loaded(&id);
-        std::fs::write(s.path(&id), docxml::serialize(&doc("external before reopen"))).unwrap();
+        crate::vfs::write(s.path(&id), docxml::serialize(&doc("external before reopen"))).unwrap();
         let reopened = s.load_for_edit(&id, false).unwrap();
         assert_eq!(reopened.title.text, "external before reopen");
         s.save(&id, &reopened).unwrap();
         let external = docxml::serialize(&doc("external after reopen"));
-        std::fs::write(s.path(&id), &external).unwrap();
+        crate::vfs::write(s.path(&id), &external).unwrap();
         assert!(s.save(&id, &doc("local edit")).is_err());
-        assert_eq!(std::fs::read_to_string(s.path(&id)).unwrap(), external);
+        assert_eq!(crate::vfs::read_to_string(s.path(&id)).unwrap(), external);
     }
 
     #[test]
@@ -2873,13 +2970,13 @@ mod tests {
         // The second write left the first (pinned: false) as the backup;
         // one more makes the backup pinned too.
         s.set_starred(&id, true).unwrap();
-        std::fs::write(lib.0.join(".quiet/index.json"), b"{ not json").unwrap();
+        crate::vfs::write(lib.0.join(".quiet/index.json"), b"{ not json").unwrap();
         let mut s = lib.open();
         assert_eq!(s.warnings.len(), 1, "{:?}", s.warnings);
         assert!(s.warnings[0].contains("已从备份恢复"));
         assert!(s.list()[0].meta.pinned);
         // The damaged file is kept for inspection, not overwritten.
-        let kept = std::fs::read_dir(lib.0.join(".quiet")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("index.json.corrupt-")).count();
+        let kept = crate::vfs::read_dir(lib.0.join(".quiet")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("index.json.corrupt-")).count();
         assert_eq!(kept, 1);
     }
 
@@ -2888,8 +2985,8 @@ mod tests {
         let lib = Lib::new("nobak");
         let mut s = lib.open();
         s.create_from(&doc("一")).unwrap();
-        std::fs::write(lib.0.join(".quiet/index.json"), b"garbage").unwrap();
-        let _ = std::fs::remove_file(lib.0.join(".quiet/index.json.bak"));
+        crate::vfs::write(lib.0.join(".quiet/index.json"), b"garbage").unwrap();
+        let _ = crate::vfs::remove_file(lib.0.join(".quiet/index.json.bak"));
         let mut s = lib.open();
         assert!(s.warnings[0].contains("没有可用备份"));
         assert_eq!(s.list().len(), 1);
@@ -2913,7 +3010,7 @@ mod tests {
         let titles: Vec<&str> = inside.iter().map(|e| e.title.as_str()).collect();
         assert_eq!(titles, ["父", "子一", "子二"], "the page first, then its children oldest first");
         assert_eq!(inside.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), [p.as_str(), a.as_str(), b.as_str()]);
-        assert!(lib.0.join("父/父.xml").is_file() && lib.0.join("父/子一.xml").is_file());
+        assert!(lib.0.join("父/父.xml").fs_is_file() && lib.0.join("父/子一.xml").fs_is_file());
     }
 
     #[test]
@@ -2922,7 +3019,7 @@ mod tests {
         // opening it here could misread and then rewrite it, so it is refused.
         let lib = Lib::new("format");
         drop(lib.open());
-        std::fs::write(lib.0.join(".quiet/format.json"), format!("{{\"format\": {}}}", FORMAT + 1)).unwrap();
+        crate::vfs::write(lib.0.join(".quiet/format.json"), format!("{{\"format\": {}}}", FORMAT + 1)).unwrap();
         let err = Store::open_at(lib.0.clone()).err().expect("a newer library must not open");
         assert!(err.to_string().contains("更新版本"));
     }
@@ -2957,13 +3054,13 @@ mod tests {
         s.delete(&a, None).unwrap();
         // Swap the folder for a file: read_dir fails.
         let trash = lib.0.join(".quiet/trash");
-        let index = std::fs::read(trash.join("index.json")).unwrap();
-        std::fs::rename(&trash, lib.0.join(".quiet/trash-away")).unwrap();
-        std::fs::write(&trash, b"").unwrap();
+        let index = crate::vfs::read(trash.join("index.json")).unwrap();
+        crate::vfs::rename(&trash, lib.0.join(".quiet/trash-away")).unwrap();
+        crate::vfs::write(&trash, b"").unwrap();
         let mut s = Store {
             #[cfg(feature = "sqlite-store")]
             sqlite: None,
-            file_changes: vec![], root: lib.0.clone(), index: HashMap::new(), flat: false, migrated: None, trash: serde_json::from_slice(&index).unwrap(), warnings: vec![], loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
+            file_changes: vec![], root: lib.0.clone(), index: HashMap::new(), foreign: DiskIndex::new(), flat: false, migrated: None, trash: serde_json::from_slice(&index).unwrap(), warnings: vec![], loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
         assert_eq!(s.list_trash().len(), 1);
         assert_eq!(s.trash.len(), 1);
     }
@@ -3006,7 +3103,7 @@ mod tests {
         let lib = Lib::new("savefail");
         let mut s = lib.open();
         let id = s.create_from(&doc("旧")).unwrap();
-        std::fs::create_dir(with_suffix(&s.path(&id), ".tmp")).unwrap();
+        crate::vfs::create_dir(with_suffix(&s.path(&id), ".tmp")).unwrap();
         s.save(&id, &doc("新")).unwrap();
         assert_eq!(s.load(&id).unwrap().title.text, "新");
     }
@@ -3016,25 +3113,25 @@ mod tests {
 
     impl<'a> Old<'a> {
         fn new(lib: &'a Lib, format: u32) -> Self {
-            std::fs::create_dir_all(lib.0.join("docs")).unwrap();
+            crate::vfs::create_dir_all(lib.0.join("docs")).unwrap();
             Old { lib, format, index: HashMap::new(), trash: HashMap::new() }
         }
         fn put(&mut self, d: &Document, meta: Meta) -> String {
             let id = uuid::Uuid::new_v4().to_string();
-            std::fs::write(self.lib.0.join("docs").join(format!("{id}.xml")), docxml::serialize(d)).unwrap();
+            crate::vfs::write(self.lib.0.join("docs").join(format!("{id}.xml")), docxml::serialize(d)).unwrap();
             self.index.insert(id.clone(), Meta { created: meta.created.max(1), modified: 1, ..meta });
             id
         }
         fn doc(&mut self, title: &str, meta: Meta) -> String { self.put(&doc(title), meta) }
         fn raw(&mut self, xml: &str, meta: Meta) -> String {
             let id = uuid::Uuid::new_v4().to_string();
-            std::fs::write(self.lib.0.join("docs").join(format!("{id}.xml")), xml).unwrap();
+            crate::vfs::write(self.lib.0.join("docs").join(format!("{id}.xml")), xml).unwrap();
             self.index.insert(id.clone(), Meta { created: 1, modified: 1, ..meta });
             id
         }
         fn md(&mut self, name: &str, body: &str, meta: Meta) -> String {
             let id = uuid::Uuid::new_v4().to_string();
-            std::fs::write(self.lib.0.join("docs").join(format!("{id}.md")), body).unwrap();
+            crate::vfs::write(self.lib.0.join("docs").join(format!("{id}.md")), body).unwrap();
             self.index.insert(id.clone(), Meta { created: 1, modified: 1, markdown: true, name: Some(name.into()), ..meta });
             id
         }
@@ -3045,16 +3142,16 @@ mod tests {
         }
         fn trashed(&mut self, title: &str) -> String {
             let id = uuid::Uuid::new_v4().to_string();
-            std::fs::create_dir_all(self.lib.0.join("trash")).unwrap();
-            std::fs::write(self.lib.0.join("trash").join(format!("{id}.xml")), docxml::serialize(&doc(title))).unwrap();
+            crate::vfs::create_dir_all(self.lib.0.join("trash")).unwrap();
+            crate::vfs::write(self.lib.0.join("trash").join(format!("{id}.xml")), docxml::serialize(&doc(title))).unwrap();
             self.trash.insert(id.clone(), Trashed { meta: Meta { created: 1, modified: 1, ..Default::default() }, deleted: now(), root: None });
             id
         }
         fn write(&self) {
-            std::fs::write(self.lib.0.join("index.json"), serde_json::to_vec(&self.index).unwrap()).unwrap();
-            std::fs::create_dir_all(self.lib.0.join("trash")).unwrap();
-            std::fs::write(self.lib.0.join("trash/index.json"), serde_json::to_vec(&self.trash).unwrap()).unwrap();
-            std::fs::write(self.lib.0.join("format.json"), format!("{{\"format\": {}}}", self.format)).unwrap();
+            crate::vfs::write(self.lib.0.join("index.json"), serde_json::to_vec(&self.index).unwrap()).unwrap();
+            crate::vfs::create_dir_all(self.lib.0.join("trash")).unwrap();
+            crate::vfs::write(self.lib.0.join("trash/index.json"), serde_json::to_vec(&self.trash).unwrap()).unwrap();
+            crate::vfs::write(self.lib.0.join("format.json"), format!("{{\"format\": {}}}", self.format)).unwrap();
         }
     }
 
@@ -3091,8 +3188,8 @@ mod tests {
     fn format_3_moves_to_real_folders() {
         let lib = Lib::new("to-folders");
         let outside = Lib::new("to-folders-outside");
-        std::fs::create_dir_all(&outside.0).unwrap();
-        std::fs::write(outside.0.join("外面.md"), "外面的笔记\n").unwrap();
+        crate::vfs::create_dir_all(&outside.0).unwrap();
+        crate::vfs::write(outside.0.join("外面.md"), "外面的笔记\n").unwrap();
         let mut old = Old::new(&lib, 3);
         let work = old.folder("工作", None);
         let sub = old.folder("子", Some(&work));
@@ -3114,7 +3211,7 @@ mod tests {
         let back = old.put(&linking("回链", &[(&index_doc, "索引"), (&w2, "周报")]), Meta { parent: Some(deep.clone()), ..Default::default() });
         let pic = old.raw("<title>图</title>\n<img src=\"assets/p.png\"/>\n<p>=\"assets/x\"</p>\n", Meta { parent: Some(same2.clone()), ..Default::default() });
         let local = uuid::Uuid::new_v4().to_string();
-        let local_file = outside.0.canonicalize().unwrap().join("外面.md");
+        let local_file = outside.0.fs_canonicalize().unwrap().join("外面.md");
         old.index.insert(local.clone(), Meta { created: 1, modified: 1, markdown: true, path: Some(local_file.to_string_lossy().into()), opened: 5, ..Default::default() });
         // An entry whose file is gone is dropped.
         old.index.insert(uuid::Uuid::new_v4().to_string(), Meta { created: 1, modified: 1, ..Default::default() });
@@ -3123,17 +3220,17 @@ mod tests {
         let away = uuid::Uuid::new_v4().to_string();
         old.index.insert(away.clone(), Meta { created: 1, modified: 1, markdown: true, path: Some("/no/such/notes.md".into()), ..Default::default() });
         old.write();
-        std::fs::create_dir_all(lib.0.join("assets")).unwrap();
-        std::fs::write(lib.0.join("assets/p.png"), b"png").unwrap();
-        std::fs::create_dir_all(lib.0.join("themes")).unwrap();
-        std::fs::write(lib.0.join("themes/mine.json"), b"{}").unwrap();
-        std::fs::write(lib.0.join("preferences.json"), b"{\"a\":1}").unwrap();
-        std::fs::write(lib.0.join("settings.json"), b"{\"window_size\":[800.0,600.0],\"sidebar_width\":250.0}").unwrap();
+        crate::vfs::create_dir_all(lib.0.join("assets")).unwrap();
+        crate::vfs::write(lib.0.join("assets/p.png"), b"png").unwrap();
+        crate::vfs::create_dir_all(lib.0.join("themes")).unwrap();
+        crate::vfs::write(lib.0.join("themes/mine.json"), b"{}").unwrap();
+        crate::vfs::write(lib.0.join("preferences.json"), b"{\"a\":1}").unwrap();
+        crate::vfs::write(lib.0.join("settings.json"), b"{\"window_size\":[800.0,600.0],\"sidebar_width\":250.0}").unwrap();
         // What the old layout says, to compare with.
-        let before: HashMap<String, (String, String)> = std::fs::read_dir(lib.0.join("docs")).unwrap().flatten().map(|e| {
+        let before: HashMap<String, (String, String)> = crate::vfs::read_dir(lib.0.join("docs")).unwrap().flatten().map(|e| {
             let p = e.path();
             let id = p.file_stem().unwrap().to_string_lossy().into_owned();
-            let text = std::fs::read_to_string(&p).unwrap();
+            let text = crate::vfs::read_to_string(&p).unwrap();
             let d = if p.extension().unwrap() == "md" { crate::markdown::parse_file(&text, "", None) } else { docxml::parse(&text).unwrap() };
             (id, (d.title.text.clone(), d.plain_text()))
         }).collect();
@@ -3171,40 +3268,40 @@ mod tests {
         for (id, rel) in [(&w1, "工作/周报.xml"), (&w2, "工作/周报 2.xml"), (&top, "周报.xml"), (&odd, "工作/子/x：y？＜z＞.xml"), (&empty, "a／b/未命名文档.xml"),
             (&con, "CON_.xml"), (&dot, "孤儿/hidden.xml"), (&md, "工作/子/深/随手记.md"), (&index_doc, "索引.xml"), (&back, "工作/子/深/回链.xml"), (&pic, "同名 2/图.xml")] {
             assert_eq!(s.file_path(id).unwrap(), s.abs(rel), "{rel}");
-            assert!(s.abs(rel).is_file(), "{rel}");
+            assert!(s.abs(rel).fs_is_file(), "{rel}");
         }
         // Links: the same targets, written as relative paths.
         assert_eq!(targets(by[index_doc.as_str()]), { let mut t = vec![w1.clone(), md.clone(), "gone-id".into()]; t.sort(); t });
         assert_eq!(targets(by[back.as_str()]), { let mut t = vec![index_doc.clone(), w2.clone()]; t.sort(); t });
-        let text = std::fs::read_to_string(s.abs("索引.xml")).unwrap();
+        let text = crate::vfs::read_to_string(s.abs("索引.xml")).unwrap();
         assert!(text.contains("href=\"工作/周报.xml\"") && text.contains("href=\"工作/子/深/随手记.md\"") && text.contains("doc-id=\"gone-id\""), "{text}");
-        let text = std::fs::read_to_string(s.abs("工作/子/深/回链.xml")).unwrap();
+        let text = crate::vfs::read_to_string(s.abs("工作/子/深/回链.xml")).unwrap();
         assert!(text.contains("href=\"../../../索引.xml\"") && text.contains("href=\"../../周报 2.xml\""), "{text}");
         // No id is written in any document.
-        for id in before.keys() { for e in &list { if let Some(p) = s.file_path(&e.id) && !e.meta.local() { assert!(!std::fs::read_to_string(p).unwrap().contains(id.as_str())); } } }
+        for id in before.keys() { for e in &list { if let Some(p) = s.file_path(&e.id) && !e.meta.local() { assert!(!crate::vfs::read_to_string(p).unwrap().contains(id.as_str())); } } }
         // Images: `.assets/`, the sources with them.
-        assert!(lib.0.join(".assets/p.png").is_file() && !lib.0.join("assets").exists());
-        assert_eq!(std::fs::read_to_string(s.abs("同名 2/图.xml")).unwrap(), "<title>图</title>\n<img src=\".assets/p.png\"/>\n<p>=\"assets/x\"</p>\n");
-        assert_eq!(std::fs::read_to_string(s.abs("工作/子/深/随手记.md")).unwrap(), "看图 ![](.assets/p.png)\n");
+        assert!(lib.0.join(".assets/p.png").fs_is_file() && !lib.0.join("assets").fs_exists());
+        assert_eq!(crate::vfs::read_to_string(s.abs("同名 2/图.xml")).unwrap(), "<title>图</title>\n<img src=\".assets/p.png\"/>\n<p>=\"assets/x\"</p>\n");
+        assert_eq!(crate::vfs::read_to_string(s.abs("工作/子/深/随手记.md")).unwrap(), "看图 ![](.assets/p.png)\n");
         // Attached and local information.
         assert!(by[w1.as_str()].meta.pinned);
         assert_eq!(by[w1.as_str()].meta.opened, 77);
-        let index = std::fs::read_to_string(lib.0.join(".quiet/index.json")).unwrap();
+        let index = crate::vfs::read_to_string(lib.0.join(".quiet/index.json")).unwrap();
         assert!(!index.contains("opened") && !index.contains("外面") && index.contains("\"工作/子/\""));
         assert!(by[local.as_str()].meta.local());
         assert_eq!(s.load(&local).unwrap().plain_text(), "外面的笔记");
-        assert!(local_file.is_file());
+        assert!(local_file.fs_is_file());
         assert_eq!(s.settings().window_size, Some([800., 600.]));
         assert_eq!(s.settings().sidebar_width, Some(250.));
-        assert!(lib.0.join(".quiet/preferences.json").is_file() && lib.0.join(".quiet/themes/mine.json").is_file());
+        assert!(lib.0.join(".quiet/preferences.json").fs_is_file() && lib.0.join(".quiet/themes/mine.json").fs_is_file());
         // What the user sees: their folders and notes only.
-        let mut top_names: Vec<String> = std::fs::read_dir(&lib.0).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let mut top_names: Vec<String> = crate::vfs::read_dir(&lib.0).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         top_names.sort();
         assert_eq!(top_names, [".assets", ".quiet", "CON_.xml", "a／b", "同名", "同名 2", "周报.xml", "孤儿", "工作", "索引.xml"]);
         // The old layout, whole, as a backup.
         let backup = lib.0.join(".quiet").join(migrate::BACKUP);
-        for id in before.keys() { assert!(backup.join("docs").join(format!("{id}.xml")).is_file() || backup.join("docs").join(format!("{id}.md")).is_file()); }
-        assert!(backup.join("index.json").is_file() && backup.join("format.json").is_file() && backup.join("trash/index.json").is_file());
+        for id in before.keys() { assert!(backup.join("docs").join(format!("{id}.xml")).fs_is_file() || backup.join("docs").join(format!("{id}.md")).fs_is_file()); }
+        assert!(backup.join("index.json").fs_is_file() && backup.join("format.json").fs_is_file() && backup.join("trash/index.json").fs_is_file());
         // The 回收站 came along.
         let t = s.list_trash();
         assert_eq!(t.len(), 1);
@@ -3219,13 +3316,13 @@ mod tests {
         // Saving what was loaded writes the same bytes: the new layout round-trips.
         for e in again.iter().filter(|e| e.meta.folder.is_none()) {
             let p = s.file_path(&e.id).unwrap();
-            let bytes = std::fs::read(&p).unwrap();
+            let bytes = crate::vfs::read(&p).unwrap();
             let d = s.load_for_edit(&e.id, false).unwrap();
             s.save(&e.id, &d).unwrap();
             assert_eq!(s.file_path(&e.id).unwrap(), p, "{}", e.title);
             // (图 was written by hand, not in the canonical form: stable from its first save.)
-            if e.id == pic { let d = s.load_for_edit(&e.id, false).unwrap(); let once = std::fs::read(&p).unwrap(); s.save(&e.id, &d).unwrap(); assert_eq!(std::fs::read(&p).unwrap(), once); continue; }
-            assert_eq!(std::fs::read(&p).unwrap(), bytes, "{}", e.title);
+            if e.id == pic { let d = s.load_for_edit(&e.id, false).unwrap(); let once = crate::vfs::read(&p).unwrap(); s.save(&e.id, &d).unwrap(); assert_eq!(crate::vfs::read(&p).unwrap(), once); continue; }
+            assert_eq!(crate::vfs::read(&p).unwrap(), bytes, "{}", e.title);
         }
         s.restore(&trashed).unwrap();
         assert_eq!(s.file_path(&trashed).unwrap(), s.abs("删掉的.xml"));
@@ -3240,14 +3337,14 @@ mod tests {
         let f = old.folder("夹", None);
         for i in 0..4 { old.doc(&format!("文{i}"), Meta { parent: Some(f.clone()), ..Default::default() }); }
         old.write();
-        std::fs::create_dir_all(lib.0.join("assets")).unwrap();
-        let snapshot = |root: &Path| { let mut v = vec![]; fn walk(d: &Path, v: &mut Vec<(PathBuf, Vec<u8>)>) { for e in std::fs::read_dir(d).unwrap().flatten() { let p = e.path(); if p.is_dir() { v.push((p.clone(), vec![])); walk(&p, v); } else { v.push((p.clone(), std::fs::read(&p).unwrap())); } } } walk(root, &mut v); v.sort(); v };
+        crate::vfs::create_dir_all(lib.0.join("assets")).unwrap();
+        let snapshot = |root: &Path| { let mut v = vec![]; fn walk(d: &Path, v: &mut Vec<(PathBuf, Vec<u8>)>) { for e in crate::vfs::read_dir(d).unwrap().flatten() { let p = e.path(); if p.fs_is_dir() { v.push((p.clone(), vec![])); walk(&p, v); } else { v.push((p.clone(), crate::vfs::read(&p).unwrap())); } } } walk(root, &mut v); v.sort(); v };
         let before: Vec<_> = snapshot(&lib.0).into_iter().filter(|(p, _)| !p.starts_with(lib.0.join(".quiet")) && !p.ends_with(".lock")).collect();
         let err = Store::migrate(&lib.0).expect_err("the injected failure");
         assert!(err.to_string().contains("已保持原样"), "{err}");
         let after: Vec<_> = snapshot(&lib.0).into_iter().filter(|(p, _)| !p.starts_with(lib.0.join(".quiet")) && !p.ends_with(".lock")).collect();
         assert_eq!(after, before);
-        assert!(!lib.0.join(".quiet/format.json").exists() && !lib.0.join(".quiet/index.json").exists());
+        assert!(!lib.0.join(".quiet/format.json").fs_exists() && !lib.0.join(".quiet/index.json").fs_exists());
         // It still opens and works, in the old layout.
         let mut s = lib.open();
         assert_eq!(s.list().len(), 5);
@@ -3259,22 +3356,22 @@ mod tests {
         let mut old = Old::new(&crashed, 3);
         let a = old.doc("甲", Meta::default());
         old.write();
-        std::fs::create_dir_all(crashed.0.join(".quiet")).unwrap();
-        std::fs::create_dir_all(crashed.0.join("半路")).unwrap();
-        std::fs::write(crashed.0.join("甲.xml"), b"half").unwrap();
-        std::fs::write(crashed.0.join(".quiet/migration.json"), b"{\"files\":[\"\xe7\x94\xb2.xml\"],\"dirs\":[\"\xe5\x8d\x8a\xe8\xb7\xaf\"],\"internal\":[],\"assets\":false}").unwrap();
+        crate::vfs::create_dir_all(crashed.0.join(".quiet")).unwrap();
+        crate::vfs::create_dir_all(crashed.0.join("半路")).unwrap();
+        crate::vfs::write(crashed.0.join("甲.xml"), b"half").unwrap();
+        crate::vfs::write(crashed.0.join(".quiet/migration.json"), b"{\"files\":[\"\xe7\x94\xb2.xml\"],\"dirs\":[\"\xe5\x8d\x8a\xe8\xb7\xaf\"],\"internal\":[],\"assets\":false}").unwrap();
         let mut s = crashed.migrated();
-        assert!(!crashed.0.join("半路").exists());
+        assert!(!crashed.0.join("半路").fs_exists());
         assert_eq!(s.load(&a).unwrap().title.text, "甲");
         assert_eq!(s.file_path(&a).unwrap(), s.abs("甲.xml"));
         assert_eq!(s.list().len(), 1);
         // Committed but not cleaned up: the old layout is set aside on open.
-        std::fs::write(crashed.0.join("format.json"), b"{\"format\": 3}").unwrap();
-        std::fs::create_dir_all(crashed.0.join("docs")).unwrap();
+        crate::vfs::write(crashed.0.join("format.json"), b"{\"format\": 3}").unwrap();
+        crate::vfs::create_dir_all(crashed.0.join("docs")).unwrap();
         drop(s);
         let mut s = crashed.open();
-        assert!(!crashed.0.join("format.json").exists() && !crashed.0.join("docs").exists());
-        assert!(crashed.0.join(".quiet").join(migrate::BACKUP).join("format.json.2").is_file());
+        assert!(!crashed.0.join("format.json").fs_exists() && !crashed.0.join("docs").fs_exists());
+        assert!(crashed.0.join(".quiet").join(migrate::BACKUP).join("format.json.2").fs_is_file());
         assert_eq!(s.list().len(), 1);
     }
 
@@ -3288,22 +3385,22 @@ mod tests {
         let b = s.create_from(&linking("乙", &[(&a, "甲")])).unwrap();
         let a_doc = linking("甲", &[(&b, "乙")]);
         s.save(&a, &a_doc).unwrap();
-        assert!(std::fs::read_to_string(s.abs("甲.xml")).unwrap().contains("href=\"乙.xml\""));
+        assert!(crate::vfs::read_to_string(s.abs("甲.xml")).unwrap().contains("href=\"乙.xml\""));
         s.load_for_edit(&a, false).unwrap();
         let f = s.create_folder("夹", None).unwrap();
-        assert!(lib.0.join("夹").is_dir());
+        assert!(lib.0.join("夹").fs_is_dir());
         s.set_parent(&b, Some(&f)).unwrap();
-        assert!(s.abs("夹/乙.xml").is_file() && !s.abs("乙.xml").exists());
-        assert!(std::fs::read_to_string(s.abs("甲.xml")).unwrap().contains("href=\"夹/乙.xml\""));
-        assert!(std::fs::read_to_string(s.abs("夹/乙.xml")).unwrap().contains("href=\"../甲.xml\""));
+        assert!(s.abs("夹/乙.xml").fs_is_file() && !s.abs("乙.xml").fs_exists());
+        assert!(crate::vfs::read_to_string(s.abs("甲.xml")).unwrap().contains("href=\"夹/乙.xml\""));
+        assert!(crate::vfs::read_to_string(s.abs("夹/乙.xml")).unwrap().contains("href=\"../甲.xml\""));
         // The open editor of 甲 saves without a conflict.
         s.save(&a, &a_doc).unwrap();
         s.rename(&f, "新夹").unwrap();
-        assert!(std::fs::read_to_string(s.abs("甲.xml")).unwrap().contains("href=\"新夹/乙.xml\""));
+        assert!(crate::vfs::read_to_string(s.abs("甲.xml")).unwrap().contains("href=\"新夹/乙.xml\""));
         // A title typed in the editor renames the file; a taken name is numbered.
         s.save(&a, &linking("丙", &[(&b, "乙")])).unwrap();
-        assert!(s.abs("丙.xml").is_file() && !s.abs("甲.xml").exists());
-        assert!(std::fs::read_to_string(s.abs("新夹/乙.xml")).unwrap().contains("href=\"../丙.xml\""));
+        assert!(s.abs("丙.xml").fs_is_file() && !s.abs("甲.xml").fs_exists());
+        assert!(crate::vfs::read_to_string(s.abs("新夹/乙.xml")).unwrap().contains("href=\"../丙.xml\""));
         let c = s.create_from(&doc("丙")).unwrap();
         assert_eq!(s.file_path(&c).unwrap(), s.abs("丙 2.xml"));
         s.save(&c, &doc("丙")).unwrap();
@@ -3314,10 +3411,10 @@ mod tests {
         let journal = s.track_file_changes();
         s.set_parent(&b, None).unwrap();
         let changes = journal.take();
-        assert!(s.abs("乙.xml").is_file());
+        assert!(s.abs("乙.xml").fs_is_file());
         s.apply_file_history(&changes, false).unwrap();
-        assert!(s.abs("新夹/乙.xml").is_file() && !s.abs("乙.xml").exists());
-        assert!(std::fs::read_to_string(s.abs("丙.xml")).unwrap().contains("href=\"新夹/乙.xml\""));
+        assert!(s.abs("新夹/乙.xml").fs_is_file() && !s.abs("乙.xml").fs_exists());
+        assert!(crate::vfs::read_to_string(s.abs("丙.xml")).unwrap().contains("href=\"新夹/乙.xml\""));
     }
 
     /// What is done in the Finder shows: new folders and files, removed ones,
@@ -3332,11 +3429,11 @@ mod tests {
         let b = s.create_from(&linking("乙", &[(&a, "甲")])).unwrap();
         s.set_parent(&b, Some(&f)).unwrap();
         s.set_pinned(&a, true).unwrap();
-        std::fs::create_dir_all(lib.0.join("外部/更深")).unwrap();
-        std::fs::write(lib.0.join("外部/更深/新.md"), "从访达放进来\n").unwrap();
-        std::fs::write(lib.0.join("外部/.隐藏.md"), "x").unwrap();
-        std::fs::write(lib.0.join("外部/.云端.xml.icloud"), "").unwrap();
-        std::fs::write(lib.0.join("外部/图.png"), "").unwrap();
+        crate::vfs::create_dir_all(lib.0.join("外部/更深")).unwrap();
+        crate::vfs::write(lib.0.join("外部/更深/新.md"), "从访达放进来\n").unwrap();
+        crate::vfs::write(lib.0.join("外部/.隐藏.md"), "x").unwrap();
+        crate::vfs::write(lib.0.join("外部/.云端.xml.icloud"), "").unwrap();
+        crate::vfs::write(lib.0.join("外部/图.png"), "").unwrap();
         let list = s.list();
         let new = list.iter().find(|e| e.title == "新").expect("a file from the Finder");
         assert!(new.meta.markdown);
@@ -3346,10 +3443,10 @@ mod tests {
         assert_eq!(list.len(), 7, "{:?}", list.iter().map(|e| &e.title).collect::<Vec<_>>());
         let new_id = new.id.clone();
         assert_eq!(s.list().iter().find(|e| e.title == "新").unwrap().id, new_id, "ids stay");
-        std::fs::remove_dir_all(lib.0.join("外部")).unwrap();
+        crate::vfs::remove_dir_all(lib.0.join("外部")).unwrap();
         assert_eq!(s.list().len(), 3);
         drop(s);
-        std::fs::remove_dir_all(lib.0.join(".quiet")).unwrap();
+        crate::vfs::remove_dir_all(lib.0.join(".quiet")).unwrap();
         let mut s = lib.open();
         let list = s.list();
         assert_eq!(list.len(), 3);
@@ -3371,23 +3468,23 @@ mod tests {
         let g = s.create_folder("里", Some(&f)).unwrap();
         let a = s.create_from(&doc("甲")).unwrap();
         s.set_parent(&a, Some(&g)).unwrap();
-        std::fs::write(lib.0.join("夹/里/附件.pdf"), b"pdf").unwrap();
+        crate::vfs::write(lib.0.join("夹/里/附件.pdf"), b"pdf").unwrap();
         let journal = s.track_file_changes();
         s.delete(&f, None).unwrap();
         s.delete(&g, Some(&f)).unwrap();
         s.delete(&a, Some(&f)).unwrap();
         let changes = journal.take();
         assert_eq!(changes.len(), 3);
-        assert!(!lib.0.join("夹").exists());
+        assert!(!lib.0.join("夹").fs_exists());
         assert!(s.list().is_empty());
         assert_eq!(s.list_trash().len(), 1);
         s.restore(&f).unwrap();
-        assert!(s.abs("夹/里/甲.xml").is_file() && s.abs("夹/里/附件.pdf").is_file());
+        assert!(s.abs("夹/里/甲.xml").fs_is_file() && s.abs("夹/里/附件.pdf").fs_is_file());
         let list = s.list();
         assert_eq!(folders_of(&list, &a), ["夹", "里"]);
         s.delete(&f, None).unwrap();
         s.apply_file_history(&changes, false).unwrap();
-        assert!(s.abs("夹/里/甲.xml").is_file() && s.abs("夹/里/附件.pdf").is_file());
+        assert!(s.abs("夹/里/甲.xml").fs_is_file() && s.abs("夹/里/附件.pdf").fs_is_file());
         assert_eq!(s.list().len(), 3);
     }
 
@@ -3403,15 +3500,15 @@ mod tests {
         let mut s = lib.open();
         assert!(s.flat);
         let b = s.create_from(&linking("乙", &[(&a, "甲")])).unwrap();
-        assert!(lib.0.join("docs").join(format!("{b}.xml")).is_file());
-        assert!(std::fs::read_to_string(lib.0.join("docs").join(format!("{b}.xml"))).unwrap().contains(&format!("doc-id=\"{a}\"")));
+        assert!(lib.0.join("docs").join(format!("{b}.xml")).fs_is_file());
+        assert!(crate::vfs::read_to_string(lib.0.join("docs").join(format!("{b}.xml"))).unwrap().contains(&format!("doc-id=\"{a}\"")));
         let g = s.create_folder("新夹", None).unwrap();
         s.set_parent(&b, Some(&g)).unwrap();
         s.rename(&g, "改名夹").unwrap();
         let md = s.create_markdown(&doc("记"), "").unwrap();
-        assert!(lib.0.join("docs").join(format!("{md}.md")).is_file());
+        assert!(lib.0.join("docs").join(format!("{md}.md")).fs_is_file());
         s.delete(&a, None).unwrap();
-        assert!(lib.0.join("trash").join(format!("{a}.xml")).is_file());
+        assert!(lib.0.join("trash").join(format!("{a}.xml")).fs_is_file());
         s.restore(&a).unwrap();
         s.set_pinned(&a, true).unwrap();
         s.touch(&a);
@@ -3421,10 +3518,10 @@ mod tests {
         let list = s.list();
         assert_eq!(list.len(), 5);
         assert_eq!(folders_of(&list, &b), ["改名夹"]);
-        assert!(!lib.0.join(".quiet").exists() && !lib.0.join("改名夹").exists(), "nothing of the new layout yet");
-        let index: HashMap<String, Meta> = serde_json::from_slice(&std::fs::read(lib.0.join("index.json")).unwrap()).unwrap();
+        assert!(!lib.0.join(".quiet").fs_exists() && !lib.0.join("改名夹").fs_exists(), "nothing of the new layout yet");
+        let index: HashMap<String, Meta> = serde_json::from_slice(&crate::vfs::read(lib.0.join("index.json")).unwrap()).unwrap();
         assert!(index[&a].pinned && index[&a].opened > 0 && index[&md].markdown);
-        assert_eq!(serde_json::from_slice::<FormatMarker>(&std::fs::read(lib.0.join("format.json")).unwrap()).unwrap().format, 3);
+        assert_eq!(serde_json::from_slice::<FormatMarker>(&crate::vfs::read(lib.0.join("format.json")).unwrap()).unwrap().format, 3);
         drop(s);
         let report = Store::migrate(&lib.0).unwrap();
         assert_eq!((report.docs, report.folders), (3, 2));
@@ -3432,8 +3529,8 @@ mod tests {
         assert!(!s.flat);
         let list = s.list();
         assert_eq!(folders_of(&list, &b), ["改名夹"]);
-        assert!(s.abs("改名夹/乙.xml").is_file() && s.abs("夹/甲.xml").is_file() && s.abs("记.md").is_file());
-        assert!(std::fs::read_to_string(s.abs("改名夹/乙.xml")).unwrap().contains("href=\"../夹/甲.xml\""));
+        assert!(s.abs("改名夹/乙.xml").fs_is_file() && s.abs("夹/甲.xml").fs_is_file() && s.abs("记.md").fs_is_file());
+        assert!(crate::vfs::read_to_string(s.abs("改名夹/乙.xml")).unwrap().contains("href=\"../夹/甲.xml\""));
         assert!(list.iter().find(|e| e.id == a).unwrap().meta.pinned);
         assert_eq!(s.settings().window_size, Some([1., 2.]));
     }
@@ -3449,31 +3546,31 @@ mod tests {
         let mut old = Old::new(&lib, 3);
         let abs = |rel: &str| lib.0.join(rel).to_string_lossy().into_owned();
         let image = |src: String| Block::new(BlockKind::Image { src_kind: "src".into(), src, width: None, height: None, caption: None, crop: None }, RichText::default());
-        let moved = std::env::temp_dir().join("elsewhere/Quiet.md/assets/p.png").to_string_lossy().into_owned();
+        let moved = crate::vfs::temp_dir().join("elsewhere/Quiet.md/assets/p.png").to_string_lossy().into_owned();
         let d = Document { title: RichText::plain("图"), blocks: vec![
             image(abs("assets/p.png")),
             Block::new(BlockKind::File(FileBlock { src_kind: "path".into(), src: abs("assets/files/1234/报告.pdf"), name: "报告.pdf".into(), view: FileView::Card }), RichText::default()),
             image(moved.clone()),
             image(abs("assets/gone.png")),
             // Only through `.assets/x/` once moved: the fallback must not follow it.
-            image(std::env::temp_dir().join("elsewhere/Quiet.md/assets/x/../../secret.png").to_string_lossy().into_owned()),
+            image(crate::vfs::temp_dir().join("elsewhere/Quiet.md/assets/x/../../secret.png").to_string_lossy().into_owned()),
         ], ..Default::default() };
         let id = old.put(&d, Meta::default());
         old.write();
-        std::fs::create_dir_all(lib.0.join("assets/files/1234")).unwrap();
-        std::fs::write(lib.0.join("assets/p.png"), b"png").unwrap();
-        std::fs::write(lib.0.join("assets/files/1234/报告.pdf"), b"pdf").unwrap();
-        std::fs::write(lib.0.join("secret.png"), b"s").unwrap();
+        crate::vfs::create_dir_all(lib.0.join("assets/files/1234")).unwrap();
+        crate::vfs::write(lib.0.join("assets/p.png"), b"png").unwrap();
+        crate::vfs::write(lib.0.join("assets/files/1234/报告.pdf"), b"pdf").unwrap();
+        crate::vfs::write(lib.0.join("secret.png"), b"s").unwrap();
         let s = lib.migrated();
-        assert!(!lib.0.join("assets").exists());
-        std::fs::create_dir_all(lib.0.join(".assets/x")).unwrap();
+        assert!(!lib.0.join("assets").fs_exists());
+        crate::vfs::create_dir_all(lib.0.join(".assets/x")).unwrap();
         let srcs = s.load(&id).unwrap().asset_sources();
-        let found: Vec<Option<PathBuf>> = srcs.iter().map(|src| image_path_in(&lib.0, src).filter(|p| p.is_file())).collect();
+        let found: Vec<Option<PathBuf>> = srcs.iter().map(|src| image_path_in(&lib.0, src).filter(|p| p.fs_is_file())).collect();
         assert_eq!(found, [Some(lib.0.join(".assets/p.png")), Some(lib.0.join(".assets/files/1234/报告.pdf")), Some(lib.0.join(".assets/p.png")), None, None]);
         assert!(export_path_in(&lib.0, &srcs[0]).is_some() && export_path_in(&lib.0, &srcs[1]).is_some());
         assert!(export_path_in(&lib.0, &srcs[3]).is_none() && export_path_in(&lib.0, &srcs[4]).is_none());
         // A path that still exists is used as it is.
-        std::fs::write(lib.0.join("here.png"), b"h").unwrap();
+        crate::vfs::write(lib.0.join("here.png"), b"h").unwrap();
         assert_eq!(image_path_in(&lib.0, &abs("here.png")), Some(lib.0.join("here.png")));
     }
 
@@ -3487,17 +3584,17 @@ mod tests {
         let f = old.folder("夹", None);
         let a = old.doc("甲", Meta { parent: Some(f.clone()), ..Default::default() });
         old.write();
-        std::fs::create_dir_all(lib.0.join("assets")).unwrap();
-        std::fs::write(lib.0.join("assets/p.png"), b"p").unwrap();
-        std::fs::write(lib.0.join("preferences.json"), b"{\"old\":1}").unwrap();
-        let original = std::fs::read(lib.0.join("docs").join(format!("{a}.xml"))).unwrap();
+        crate::vfs::create_dir_all(lib.0.join("assets")).unwrap();
+        crate::vfs::write(lib.0.join("assets/p.png"), b"p").unwrap();
+        crate::vfs::write(lib.0.join("preferences.json"), b"{\"old\":1}").unwrap();
+        let original = crate::vfs::read(lib.0.join("docs").join(format!("{a}.xml"))).unwrap();
         let mut s = lib.migrated();
         // Edits are told from the move by modification time; some file
         // systems stamp a little behind the clock, so leave a gap.
         std::thread::sleep(std::time::Duration::from_millis(50));
         s.save(&a, &doc("甲改")).unwrap();
         s.create_from(&doc("新的")).unwrap();
-        std::fs::write(lib.0.join(".quiet/preferences.json"), b"{\"new\":1}").unwrap();
+        crate::vfs::write(lib.0.join(".quiet/preferences.json"), b"{\"new\":1}").unwrap();
         drop(s);
         // Pruning: not before both 30 days and three launches.
         let info = lib.0.join(".quiet").join(migrate::BACKUP).with_extension("json");
@@ -3505,11 +3602,11 @@ mod tests {
         assert!(Store::backup_dir(&lib.0).is_some());
         let report = Store::restore_backup(&lib.0).unwrap();
         assert_eq!(report.changed, 2);
-        assert!(report.kept.join("夹/甲改.xml").is_file() && report.kept.join("新的.xml").is_file());
-        assert_eq!(std::fs::read(lib.0.join("docs").join(format!("{a}.xml"))).unwrap(), original);
-        assert!(lib.0.join("assets/p.png").is_file() && !lib.0.join(".assets").exists());
-        assert_eq!(std::fs::read(lib.0.join("preferences.json")).unwrap(), b"{\"new\":1}");
-        assert!(!lib.0.join("夹").exists() && !lib.0.join(".quiet/format.json").exists());
+        assert!(report.kept.join("夹/甲改.xml").fs_is_file() && report.kept.join("新的.xml").fs_is_file());
+        assert_eq!(crate::vfs::read(lib.0.join("docs").join(format!("{a}.xml"))).unwrap(), original);
+        assert!(lib.0.join("assets/p.png").fs_is_file() && !lib.0.join(".assets").fs_exists());
+        assert_eq!(crate::vfs::read(lib.0.join("preferences.json")).unwrap(), b"{\"new\":1}");
+        assert!(!lib.0.join("夹").fs_exists() && !lib.0.join(".quiet/format.json").fs_exists());
         assert_eq!(Store::migration_state(&lib.0), MigrationState::NeedsConsent(ConsentReason::Restored));
         let mut s = lib.open();
         assert!(s.flat);
@@ -3521,11 +3618,11 @@ mod tests {
         assert_eq!(report.docs, 1);
         assert_eq!(Store::migration_state(&lib.0), MigrationState::NotNeeded);
         // An old backup is pruned after 30 days and three launches.
-        std::fs::write(&info, b"{\"created\": 1, \"launches\": 0}").unwrap();
+        crate::vfs::write(&info, b"{\"created\": 1, \"launches\": 0}").unwrap();
         for _ in 0..3 { Store::prune_backups(&lib.0); }
         assert!(Store::backup_dir(&lib.0).is_some());
         Store::prune_backups(&lib.0);
-        assert!(Store::backup_dir(&lib.0).is_none() && !info.exists());
+        assert!(Store::backup_dir(&lib.0).is_none() && !info.fs_exists());
     }
 
     #[test]
@@ -3533,13 +3630,13 @@ mod tests {
         let home = dirs::home_dir().unwrap();
         assert_eq!(sync_of(&home.join("Library/Mobile Documents/com~apple~CloudDocs/Quiet.md")), SyncService::ICloud);
         assert_eq!(sync_of(&home.join("Library/CloudStorage/OneDrive-Personal/Quiet.md")), SyncService::Provider("OneDrive".into()));
-        assert_eq!(sync_of(&std::env::temp_dir().join("x")), SyncService::Local);
+        assert_eq!(sync_of(&crate::vfs::temp_dir().join("x")), SyncService::Local);
         // An old library with a conflict copy left by syncing asks first.
         let lib = Lib::new("conflict");
         let mut old = Old::new(&lib, 3);
         old.doc("甲", Meta::default());
         old.write();
-        std::fs::write(lib.0.join("index 2.json"), b"{}").unwrap();
+        crate::vfs::write(lib.0.join("index 2.json"), b"{}").unwrap();
         assert!(matches!(Store::migration_state(&lib.0), MigrationState::NeedsConsent(ConsentReason::OtherDevice(_))));
     }
 
@@ -3563,13 +3660,13 @@ mod tests {
                 // A failure midway leaves the rest of the batch alone.
                 assert!(s.create_from_in(&doc("无处"), Some("不存在")).is_err());
                 // Nothing reached the index yet.
-                assert!(!std::fs::read_to_string(&index).unwrap_or_default().contains(&ids[0]));
+                assert!(!crate::vfs::read_to_string(&index).unwrap_or_default().contains(&ids[0]));
                 assert_eq!(s.batch(|s| s.create_markdown_in(&doc("嵌套"), "", Some(&f)).unwrap()).map(|_| ()).ok(), Some(()));
                 (f, ids)
             }).unwrap();
-            assert!(std::fs::read_to_string(&index).unwrap().contains(&ids[0]));
+            assert!(crate::vfs::read_to_string(&index).unwrap().contains(&ids[0]));
             if !flat {
-                assert!(lib.0.join("导入/笔记 4.md").is_file() && lib.0.join("导入/子/深处.xml").is_file());
+                assert!(lib.0.join("导入/笔记 4.md").fs_is_file() && lib.0.join("导入/子/深处.xml").fs_is_file());
             }
             assert_eq!(journal.take().iter().filter(|d| d.before.is_none()).count(), 9);
             let mut again = lib.open();
@@ -3599,7 +3696,7 @@ mod tests {
             let mut again = lib.open();
             let list = again.list();
             for e in &list {
-                if e.meta.folder.is_none() { assert!(again.path(&e.id).is_file(), "{} has no file", e.title); }
+                if e.meta.folder.is_none() { assert!(again.path(&e.id).fs_is_file(), "{} has no file", e.title); }
             }
             let mut titles: Vec<&str> = list.iter().filter(|e| e.meta.folder.is_none()).map(|e| e.title.as_str()).collect();
             titles.sort();
@@ -3641,7 +3738,7 @@ mod tests {
     #[ignore]
     fn import_speed() {
         let notes = |s: &mut Store, f: &str, batch: bool| {
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             let run = |s: &mut Store| for i in 0..120 {
                 let mut d = doc(&format!("笔记 {i}"));
                 d.blocks.push(crate::model::Block::text("正文"));
@@ -3660,25 +3757,25 @@ mod tests {
             let b = s.create_folder("批量", None).unwrap();
             let slow = notes(&mut s, &a, false);
             let fast = notes(&mut s, &b, true);
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             s.batch(|s| s.delete(&b, None)).unwrap().unwrap();
             eprintln!("flat {flat}: one by one {slow:?}, batch {fast:?}, delete {:?}", t.elapsed());
         }
         // What 导入文件夹 does, from Markdown files on disk to the list shown.
         let src = Lib::new("import-src");
-        std::fs::create_dir_all(src.0.join("子")).unwrap();
+        crate::vfs::create_dir_all(src.0.join("子")).unwrap();
         for i in 0..120 {
             let body = format!("---\ntags: [a]\n---\n# 笔记 {i}\n\n{}\n\n- 一\n- 二\n\n```rust\nfn main() {{}}\n```\n", "一段正文，带 **加粗** 和 [链接](https://example.com)。".repeat(20));
-            std::fs::write(src.0.join(if i % 3 == 0 { format!("子/笔记 {i}.md") } else { format!("笔记 {i}.md") }), body).unwrap();
+            crate::vfs::write(src.0.join(if i % 3 == 0 { format!("子/笔记 {i}.md") } else { format!("笔记 {i}.md") }), body).unwrap();
         }
         let lib = Lib::new("import-real");
         let mut s = lib.open();
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         s.batch(|s| {
             let top = s.create_folder("导入", None).unwrap();
             let sub = s.create_folder("子", Some(&top)).unwrap();
             for (dir, parent) in [(src.0.clone(), &top), (src.0.join("子"), &sub)] {
-                for e in std::fs::read_dir(dir).unwrap().flatten().filter(|e| e.path().is_file()) {
+                for e in crate::vfs::read_dir(dir).unwrap().flatten().filter(|e| e.path().fs_is_file()) {
                     let p = e.path();
                     let text = String::from_utf8_lossy(&read_bounded(&p, 1 << 24).unwrap()).into_owned();
                     let stem = p.file_stem().unwrap().to_string_lossy().into_owned();

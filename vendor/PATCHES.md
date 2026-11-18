@@ -1,145 +1,200 @@
 # vendor 补丁
 
-`vendor/gpui` 是 crates.io 的 gpui 0.2.2，`vendor/taffy` 是 taffy 0.9.0，`vendor/xattr` 是 xattr 0.2.3，都打了本地补丁。项目通过 `Cargo.toml` 的 `[patch.crates-io]` 使用这些目录。补丁处都带 `quiet.md:` 注释；完整列表以下表和 diff 为准。
+GPUI 来自 [Zed 仓库](https://github.com/zed-industries/zed)：`vendor/zed` 是 Zed 某个固定提交的快照加上本项目的补丁序列。快照的提交和要复制的 crate 写在 `vendor/zed/upstream.toml`；补丁在 `vendor/zed/patches`，按编号依次打；`vendor/zed/crates` 是打完补丁的结果，应用通过 `Cargo.toml` 里的路径依赖使用它。补丁处的代码都带 `quiet.md:` 注释。
 
-和上游对比：
+不用 git 依赖直接指向 Zed 仓库：整个仓库太大，会拖慢 CI 和贡献者的首次构建。
+
+## 目录
+
+| 路径 | 内容 |
+|---|---|
+| `vendor/zed/upstream.toml` | Zed 仓库地址、提交、要复制的 crate、丢掉的目录（`examples`、`benches`），以及 Zed 用 git 依赖、我们改用 crates.io 版本的包 |
+| `vendor/zed/patches/NNNN-名字.patch` | 一个补丁一个文件。开头是说明（改了什么、为什么），后面是 `git diff`，路径相对 Zed 仓库根目录 |
+| `vendor/zed/crates/…` | 生成的结果，目录结构和 Zed 仓库相同（`crates/gpui`、`crates/refineable/derive_refineable`…） |
+| `vendor/zed/crates/*/Cargo.toml.orig` | 打完补丁的上游 manifest（补丁改的是这一份） |
+| `vendor/zed/crates/*/Cargo.toml` | 由 `.orig` 生成的独立 manifest：展开 Zed workspace 继承的字段和依赖，去掉 dev-dependencies、没带的 Zed crate 及引用它们的 feature，git 依赖换成 crates.io 版本，`[lints]` 换成 Zed 的规则 |
+| `vendor/zed/LICENSE-APACHE` | Zed 的许可（这些 crate 都是 Apache-2.0） |
+| `tools/vendor-sync` | 同步工具 |
+
+这些 crate 不是本项目 workspace 的成员（根 `Cargo.toml` 的 `exclude`），所以 `cargo test --workspace`、clippy 不检查它们。`vendor/zed/crates` 不要直接改了不管：改完要存成补丁（见下面），`check` 会报出没存的改动。
+
+## 同步工具
 
 ```sh
-R=~/.cargo/registry/src/index.crates.io-*/
-diff -ru $R/gpui-0.2.2/src vendor/gpui/src
-diff -ru $R/taffy-0.9.0/src vendor/taffy/src
+V="cargo run -q --manifest-path tools/vendor-sync/Cargo.toml --"
+$V check                      # vendor/zed/crates 是否等于 上游快照 + 全部补丁
+$V save <名字> -m "<说明>"     # 把 vendor/zed/crates 里的改动存成新补丁（编号排在最后）
+$V save <已有名字>             # 重新生成这个补丁（说明不变，挪到序列末尾）
+$V sync                       # 按 upstream.toml 重建 vendor/zed/crates
+$V sync --rev <提交|main>     # 换上游提交：写回 upstream.toml，打不上的补丁会逐个报出
+$V sync --rev main --keep-going   # 打不上的跳过，其余照常写出
+$V refresh                    # 用当前快照重写所有补丁的 diff（只更新行号和上下文）
 ```
 
-升级上游时，按下表逐条重新打补丁，并在补丁处保留注释。
+工具在 `~/.cache/quiet-md/zed`（或 `QUIET_MD_ZED_DIR`）放一份不带文件内容的 Zed 克隆，只稀疏检出需要的 crate；中间结果在 `target/vendor-sync`。补丁按 `git apply --3way` 依次打，每个补丁一次提交。
 
-## GPUI 0.2.2
+新增补丁的做法：直接改 `vendor/zed/crates` 里的文件（manifest 改 `Cargo.toml.orig`），`$V save 名字 -m "说明"`，再 `$V sync` 重新生成 `Cargo.toml`，最后 `$V check`。一次只存一组相关改动：`save` 会把 `vendor/zed/crates` 里所有没存的改动收进同一个补丁。
 
-- `platform/windows/events.rs`: `VK_PROCESSKEY` 始终交给 IME，不在组合结束后重新派发成编辑快捷键，避免小狼毫退格、回车被处理两次。
+升级上游：
 
-| # | 文件 | 改动 | 用途 |
+1. `$V sync --rev main --keep-going`，记下没打上的补丁；
+2. 对每个没打上的补丁，按它开头的说明在 `vendor/zed/crates` 里重新改，`$V save <它的名字>`（每次只修一个）；上游已经有等价实现的，删掉补丁文件并在下面的表里写明；
+3. `$V refresh`、`$V check`，然后 `cargo build`，修应用这边的编译错误；
+4. 按下面的「验证」截图对比、跑测试，更新本文件。
+
+## 补丁
+
+快照：Zed `e2f00a41ac67`（2026-11-15）。「旧 #」是 0.2.2 时代本文件表格里的编号。
+
+| 补丁 | 旧 # | 文件 | 改动与用途 |
 |---|---|---|---|
-| 1 | `platform/mac/text_system.rs` | 光栅化时显式打开字体平滑（`set_allows_font_smoothing(true)`、`set_should_smooth_fonts(true)`） | 与原生 AppKit / Catalyst 文字一致（笔画墨量 5.73 vs 5.74 / 像素宽）；关闭时少约 15% |
-| 2 | `platform/mac/text_system.rs` | 字形边界改用和光栅化相同字号的 CTFont 来量 | 系统字体会随字号切换光学尺寸（SF Text → SF Display），原来大标题字形左侧会被切掉一条 |
-| 3 | `platform/mac/text_system.rs` | 名字以 `KaTeX_` 开头的字体，即使没有 `m` 字形也允许加载 | KaTeX 的符号字体（Size1–4、AMS、Caligraphic、Script）没有小写字母，原来会被拒绝加载 |
-| 4 | `text_system/line_wrapper.rs`、`line_layout.rs` | 中文避头尾：`is_no_break_before`（闭合标点不在行首）、`is_no_break_after`（开标点不在行尾），两处换行算法都使用 | 正文、搜索摘要的中文换行符合中文避头尾规则 |
-| 5 | `text_system/line.rs` | `paint_rows` / `paint_background_rows`：按显式给出的每行顶部位置绘制 | 行内含公式或按钮时各行高度不同 |
-| 6 | `style.rs`、`styled.rs`、`taffy.rs` | `grid_col_widths(Vec<f32>)`：以像素给出网格列宽，覆盖 `grid_cols`；`repeat` 的字面量补上类型 | 表格列宽 |
-| 7 | `elements/list.rs` | `ListState::estimated_scroll_metrics` / `scroll_to_estimated_offset`：未量过的行按平均行高估算 | 长文档的滚动条和拖动滚动条 |
-| 8 | `platform.rs`、`platform/mac/platform.rs` | `PathPromptOptions.extensions`：限制 NSOpenPanel 可选的文件类型 | 导入对话框只列出 Markdown / 文本和 .xml 文件 |
-| 9 | `platform/mac/window.rs` | `mouseDownCanMoveWindow` 返回 NO，新增 `start_window_move`（延后执行 `performWindowDragWithEvent`） | 透明标题栏不再自己拖动窗口，也不再盖住应用按钮；应用自己标出可拖动区域 |
-| 10 | `platform/mac/metal_renderer.rs`、`window.rs`、`platform.rs` | `render_to_bgra` / `Window::render_offscreen`：把场景渲染到离屏纹理再读回；`Window::needs_draw` | 脚本截图和录屏，窗口被遮挡或锁屏时也能用（devtools） |
-| 11 | `window.rs` | `DispatchEventResult` 改为 `pub`（`Window::dispatch_event` 的返回类型） | devtools 回放事件时调用 `dispatch_event` |
-| 12 | `platform/mac/text_system.rs` | 合成斜体：要斜体而字体没有斜体字面时（含 CoreText 回退到的字体），换成一个「倾斜孪生」FontId，光栅化时错切 14°（WebKit 的合成倾斜角），字形边界相应加宽 | 中文斜体像浏览器一样倾斜；原来苹方没有斜体，中文斜体显示为正体 |
-| 13 | `text_system/line.rs` | 文字与背景装饰的场景排序边界包含居中、右对齐后的字形位置及超宽文字 | 图片描述不再穿透浮动工具栏，避免工具栏看起来透明 |
-| 14 | `platform/mac/text_system.rs`、`platform/mac.rs`、`platform.rs` | `font_ids_by_postscript_name` 一个名字对应多个 FontId，CoreText 回退来的字体按字形数挑出同一份字体；新增 `check_fallback_glyphs` 供测试调用（`editor::text::tests`） | 系统回退用的苹方（PingFangUI.ttc）和下载的 PingFang.ttc 都叫 `PingFangSC-Regular`，字形表不同；原来按名字查到另一份，编辑器里的中文画成错字 |
-| 15 | `platform/windows/directx_renderer.rs` | 调试构建编译着色器时，路径按宽字符串传给 `D3DCompileFromFile`（原来 `to_str().unwrap()`） | 仓库放在含中文等非 ASCII 字符的目录下也能跑调试构建 |
-| 16 | `platform/windows/clipboard.rs` | 读剪贴板时文字、图片、复制的文件一起读（原来只取第一个认得的格式）；新增位图（`CF_DIB`，转成 PNG）；复制的图片文件读成图片，其他文件的路径按行分开（原来连成一串） | 截图工具放进剪贴板的位图能粘贴，不再贴出截图文件的路径；从资源管理器复制的图片能粘贴 |
-| 17 | `elements/div.rs` | `paint_scroll_listener`：只在一个方向上可滚动的容器，只接收偏向这个方向的滚动（横向量大于竖向量才横滚，反之才竖滚）。原来竖向滚轮在只能横滚的容器上会被转成横滚，触控板竖滑带的少量横向分量也会照单全收；原有的方向锁只在两个方向都有量时才生效，单向容器另一方向恒为 0，所以从不触发 | 竖着滚动经过宽表格时，表格不再跟着左右滑动；在表格上横向滑动仍然能横滚 |
+| 0001 glyph-bounds-at-size | 2 | `gpui_apple/text_system.rs` | 字形边界用和光栅化相同字号的 CTFont 量。系统字体随字号切换光学尺寸（SF Text → SF Display），原来大标题字形左侧会被切掉一条 |
+| 0002 katex-fonts | 3 | 同上 | 名字以 `KaTeX_` 开头的字体没有 `m` 字形也允许加载（Size1–4、AMS、Caligraphic、Script） |
+| 0003 fallback-font-identity | 14 | 同上 | 一个 PostScript 名对应多个 FontId，CoreText 回退来的字体按字形数挑。系统回退的苹方（PingFangUI.ttc）和 PingFang.ttc 都叫 `PingFangSC-Regular`，字形表不同；原来按名字查到另一份，中文画成错字。测试在 `editor::text::tests::cjk_fallback_glyphs` |
+| 0004 synthetic-italic | 12 | 同上 | 合成斜体：要斜体而字体（含回退字体）没有斜体字面时换成「倾斜孪生」FontId，光栅化时错切 14°（WebKit 的角度），字形边界相应加宽。中文斜体像浏览器一样倾斜 |
+| 0005 grid-col-widths | 6 | `gpui/style.rs`、`styled.rs`、`taffy.rs` | `grid_col_widths(Vec<f32>)`：以像素给出网格列宽，覆盖 `grid_cols`。表格列宽 |
+| 0006 paint-rows | 5 | `gpui/text_system/line.rs` | `WrappedLine::paint_rows` / `paint_background_rows`：按给出的每行顶部位置绘制。行内有公式或按钮时各行高度不同 |
+| 0007 list-scroll-estimates | 7 | `gpui/elements/list.rs` | `ListState::estimated_scroll_metrics` / `scroll_to_estimated_offset`：没量过的行按平均行高估算。长文档的滚动条和拖动滚动条 |
+| 0008 path-prompt-extensions | 8 | `gpui/platform.rs`、`gpui_macos/platform.rs` | `PathPromptOptions.extensions`：限制 NSOpenPanel 可选的文件类型。导入对话框只列出 Markdown / 文本和 .xml |
+| 0009 offscreen-capture | 10 | `gpui/window.rs`、`platform.rs`、`gpui_macos/window.rs`、`gpui_apple/metal_renderer.rs` | 上游的离屏渲染（`Window::render_to_image`）原来只在 `test-support` 下编译，改为总是编译；新增 `Window::render_offscreen`（跑下一帧回调、绘制、离屏渲染、不上屏）和 `Window::needs_draw`。脚本截图，窗口被遮挡或锁屏时也能用（devtools） |
+| 0010 replace-root-type | 26 | `gpui/window.rs` | `Window::replace_root` 同时更新窗口句柄记录的根视图类型。首次启动的引导页走完后在同一窗口换成主界面，之后 `downcast::<Workspace>()` 才找得到 |
+| 0011 window-min-size | 27 | `gpui/window.rs`、`platform.rs`、`gpui_macos/window.rs`、`gpui_windows/window.rs`、`events.rs` | `Window::set_window_min_size`：创建后改最小内容尺寸（macOS `setContentMinSize`，Windows 改 `WM_GETMINMAXINFO` 用的 `min_size`）。最小宽度随侧栏开合和拖宽变化 |
+| 0012 present-in-transaction | 28 | `gpui/window.rs`、`platform.rs`、`gpui_macos/window.rs` | `Window::present_next_frame_in_transaction`：下一帧走 `PlatformWindow::draw_in_transaction`，macOS 上这一帧 `presentsWithTransaction`，和渲染期间改的原生视图同一个 Core Animation 事务上屏。侧栏玻璃变化的那一帧和画面同时出现 |
+| 0013 hollow-images | 24 | `gpui/assets.rs`、`window.rs` | `RenderImage::hollow`（同 id、同尺寸、不带像素的空壳）、`is_hollow`、`with_scale_factor`；`paint_image` 遇到 atlas 里没有的空壳时跳过、记下并请求下一帧，由 `Window::take_missing_images` 取走。已上传的文档图片不在内存里留像素（docs/MEMORY.md） |
+| 0014 load-visible-only | 20 | `gpui/elements/img.rs`、`image_cache.rs` | `ImageCache::peek`（不触发加载、不算使用）；`Img::load_visible_only`：给了宽高的图片到在可见区域内绘制时才解码。卡片裁剪范围外的图片不预先解码 |
+| 0015 hide-cursor | 新 | `gpui/app.rs` | `App::hide_cursor_until_mouse_moves`。上游删了 `CursorStyle::None`，改为自己在打字时隐藏指针（`CursorHideMode`）；应用把 `CursorHideMode` 设为 `Never`，在原来用 `CursorStyle::None` 的地方（编辑器和输入框打字、看图界面空闲）调用它 |
+| 0016 font-smoothing | 1 | `gpui_apple/text_system.rs` | 所有颜色的文字都按最深一级打开字体平滑（stem darkening），`glyph_dilation_for_color` 恒为 0。上游按文字颜色选平滑程度（深色文字不平滑、浅色文字填色更浅）；应用的文字是对照原生 AppKit 调的（关掉平滑笔画少约 15% 墨量），保持升级前的样子。用户关了 AppleFontSmoothing 时不平滑 |
+| 0017 fallback-by-name | 新 | `gpui_apple/open_type.rs` | `FontFallbacks` 里的回退字体按名字建描述符（`CTFontDescriptorCreateWithNameAndSize`，0.2 的做法）。上游按「家族名 + 字重/倾斜」建，`PingFang SC` 会落到 PingFang.ttc 里的家族（49533 个字形），而不是系统 UI 用的那份（47098 个），轮廓略有不同，中文整体淡约 2% |
+| 0018 clipboard-text-and-image | 22 | `gpui_macos/pasteboard.rs` | 读剪贴板时同时返回文字和一种图片（PNG 优先于 TIFF），跳过空图片数据。截图工具同时给文字和图片时，正文可以取图片、输入框仍读文字。测试在 `pasteboard::tests`（私有剪贴板） |
+| 0019 korean-word-wrap | 23 | `gpui/text_system/line_wrapper.rs` | 上游换行改用 UAX #14（icu_segmenter），它允许在任意两个谚文音节之间断行；去掉谚文和字母连成的词内部的断行机会（`Quiet.md를` 也不拆）。韩文按词（어절）换行，超出一行的长词仍按字符断开。`test_break_indices_quiet_md` 同时覆盖中文避头尾和阿拉伯文、希伯来文整词 |
+| 0020 rtl-wrap | 30 | `gpui/text_system/line_layout.rs` | 含从右到左文字的段落需要折行时（`wrap_bidi`）：按阅读顺序取每个字符的宽度定折行点，每行单独交给平台排版，再首尾相接拼成一个布局，每行第一个字形处放折行点，行尾空格不参与排版。原来按显示顺序切行，阿拉伯文多行时行序颠倒 |
+| 0021 rtl-align | 32 | `gpui/text_system/line.rs` | 折成多行、第一个字母属于从右到左文字的段落，默认左对齐改成右对齐；单行、显式对齐和 `paint_rows` 不变 |
+| 0022 single-axis-scroll | 17 | `gpui/elements/div.rs` | 只能在一个方向滚动的容器只接收偏向这个方向的滚动。竖着滚过宽表格时表格不再跟着左右滑；在表格上横向滑动仍能横滚。上游的 `restrict_scroll_to_axis` 要逐个开启，而且只对跟踪了滚动句柄的容器锁定触控板手势，不等价 |
+| 0023 windows-clipboard | 16 | `gpui_windows/clipboard.rs` | 上游已经一次读出文字、一种图片（含 `CF_DIB`）和复制的文件。在此之上：有 PNG 时优先取 PNG，否则把位图转成 PNG（文档要存它，BMP 很大）；上游的 DIB 转换对 V4/V5 头也多加 12 字节掩码，图像错位，改用我们的转换；复制的文件全是图片时读成图片，否则在没有文字时把路径按行粘贴 |
+| 0024 windows-device-lost | 25 | `gpui_windows/directx_renderer.rs`、`events.rs`、`platform.rs`、`window.rs` | 上游已重写设备丢失恢复（资源用 Option、错误向上传、resize 失败时作废设备、atlas 查不到纹理返回 None），但恢复失败时 `panic!`。改为：平台层记日志、下一次 vsync 再试；窗口渲染器恢复失败时留着新设备、下一次绘制再试（期间不绘制，按窗口当前大小建交换链）；恢复后重新设置亚克力模糊（驱动重启后会丢；先关再开，同样的设置可能被忽略） |
+| 0025 windows-shader-path | 15 | `gpui_windows/directx_renderer.rs` | 调试构建编译着色器时路径按宽字符串传给 `D3DCompileFromFile`（原来 `to_str().unwrap()`） |
+| 0026 linux-appearance-reborrow | 18 | `gpui_linux/wayland/client.rs`、`x11/client.rs` | 外观变化时先复制窗口句柄、释放 client 的借用，再调窗口回调。回调会查询平台、更新菜单，原来重复借用 panic |
+| 0027 wgpu-30-crates-io | 新 | `gpui_wgpu/wgpu_context.rs`、`wgpu_renderer.rs` | Zed 用 gfx-rs/wgpu 的一个 git 提交，我们用 crates.io 的 30.0.2（`upstream.toml` 的 `[git-to-crates-io]`）。两处 API 差异：`DeviceDescriptor` 还没有 `default_queue`，`has_srgb_suffix` 在 30.0.2 里叫 `is_srgb`。只影响 Linux |
+| 0028 keybinding-load-unmapped | 新 | `gpui/keymap/binding.rs` | `KeyBinding::load_unmapped`：不需要 `App`，按给定系统解析按键，不按键盘布局映射（0.2 的 `load` 配 `DummyKeyboardMapper`）。上游的 `load` 要 `&App` 并用真实的键盘映射，Windows 上会改写按键；应用的 Windows / Linux 键位和用户自定义快捷键照旧不映射 |
+| 0029 web-system-font | 新 | `gpui_web/platform.rs` | `WebPlatform::new_with_system_font`：网页版 `.SystemUIFont` 对应的字族（上游写死 IBM Plex Sans）。网页版加载 Inter（`src/web.rs`） |
+| 0030 web-diagonal-cursors | 新 | `gpui_web/platform.rs` | 两个斜向缩放光标对调：`ResizeUpLeftDownRight` 是 CSS 的 `nwse-resize`。网页版图片四角的光标原来方向相反 |
+| 0031 board-paths | 34、35 | `gpui/path_builder.rs`、`window.rs` | `Path::transformed`（等比缩放加平移，对单调二次曲线是精确的）、`empty`、`is_empty`、`from_polygons`；`PathBuilder::build_polygons`（轮廓按容差展平成多边形，保留每条轮廓）；`Window::with_element_opacity` 改为 `pub`。画板按元素缓存路径、随视图平移缩放复用；框架裁剪和箭头标签挖空在展平的轮廓上做（`src/board/render_geom.rs`），上游的 `Path` 不再保留轮廓顺序，也没有三角形 |
+| 0032 cosmic-bundled-fonts | 43、38 | `gpui_wgpu/cosmic_text_system.rs` | `add_fonts` 加入的字形替换系统里同字族、同样式的已有字形（Fedora 的 COLRv1 Noto Color Emoji 让位给内置的 CBDT 版）；Xiaolai 没有 `m` 字形也加载。Linux 和网页 |
+| 0033 glyph-outline | 37、38 | `gpui/platform.rs`、`text_system.rs`、`gpui_apple/text_system.rs`、`gpui_windows/direct_write.rs`（加 `Win32_Graphics_Direct2D_Common`）、`gpui_wgpu/cosmic_text_system.rs`、`gpui_web/text_system.rs` | `WindowTextSystem::glyph_outline` 和 `GlyphOutlineCmd`：字形轮廓（字体单位、y 向上）。macOS 用 font-kit（合成斜体同样错切），Windows 用 DirectWrite `GetGlyphRunOutline`，Linux 和网页用 swash；网页的画布回退字体没有。画板的 CPU 渲染（vello）和旋转文字用它。macOS 加载没有 `m` 字形的 Xiaolai |
+| 0034 image-into-frames | 新 | `gpui/assets.rs` | `RenderImage::into_frames`：取回图片的帧。画板的 vello 帧每次画面变化新建一张图片，上一张 `drop_image` 后把它的缓冲取回，下一帧 vello 直接画进去（`src/board/render_vello.rs`），省掉每帧新分配和拷贝 12 MB |
 
-| 18 | `platform/linux/wayland/client.rs`、`platform/linux/x11/client.rs` | 外观变化时先复制窗口句柄，释放 client 的 RefCell 借用后再触发窗口回调 | 避免回调重新访问平台、更新菜单时触发重复借用 panic |
-| 19 | `platform/mac/metal_renderer.rs`、`platform/mac/shaders.metal`、`platform/windows/directx_renderer.rs` | 画路径用的两张纹理（中间纹理和 4× MSAA 纹理）改为某一帧有路径时才创建，后续无路径帧距最后使用超过 1 秒时释放；窗口尺寸变化时丢掉，下次用到再建。Apple GPU 上 MSAA 纹理用 `Memoryless`（采样只在片上 tile 内存里，渲染过程里清空、只存 resolve 结果）。mac 上纹理不再按整窗建，而是按每批路径覆盖的范围（`fit_path_textures`，按 128 px 增长、不超过窗口）：路径平移到纹理原点光栅化，`path_sprite_vertex` 多收一个 `texture_rect`（批次在屏幕上的原点和纹理尺寸），`path_sprite_fragment` 按像素直接 `read` 纹素 | 原来每个窗口常驻这两张纹理，2560×1600 时约 80MB；路径只用于连续圆角、文件夹图标、进度波浪和提示箭头，编辑器里平时一条都不画。主页和文件夹页一直有路径，整窗中间纹理会常驻约 16MB，按批次范围后只剩一两张卡片大小。抗锯齿不变；渐变填充按平移后的坐标计算，边缘个别像素可能差 1/255 |
-| 20 | `elements/img.rs`、`elements/image_cache.rs` | 图片缓存增加不触发加载的 `peek`；显式尺寸图片可选择延迟到可见区域绘制时才解码 | 卡片裁剪范围之外的图片不再预先解码；原始像素、尺寸和动图播放保持不变 |
-| 21 | `platform/mac/metal_atlas.rs` | 删除图片时立即移除 tile 索引，再递减所属纹理的引用计数 | 避免共享纹理仍被使用时残留旧索引，导致重复删除或复用失效 tile |
-| 22 | `platform/mac/platform.rs` | 读取剪贴板时同时保留文字和一种图片格式（优先 PNG），跳过空图片数据 | 截图工具同时提供文字和图片时，正文可选择图片，文本输入框仍可读取文字 |
-| 23 | `text_system/line_wrapper.rs` | `is_word_char` 把韩文（谚文字母、兼容字母、音节及半角谚文）算作单词字符；上游测试原本断言它不是 | 韩文用空格分词，界面文字按词（어절）换行，不再在词中间断开；超出一行的长词仍按字符断开 |
-| 24 | `assets.rs`、`window.rs` | `RenderImage::with_scale_factor`；`RenderImage::hollow` 生成同 id、同尺寸、不带像素的空壳；`paint_image` 遇到 atlas 里没有的空壳时跳过、记下并请求下一帧，由 `Window::take_missing_images` 取走 | 文档图片按显示尺寸解码后，布局仍按原图尺寸；已上传到 atlas 的图片不再在内存里留一份像素（docs/MEMORY.md） |
-| 25 | `platform/windows/directx_renderer.rs`、`directx_atlas.rs`、`platform.rs`、`events.rs`、`window.rs` | GPU 设备丢失时：resize 失败后 render target 为 `None`，绘制前先重做（原来 `pre_draw` 直接 unwrap 崩溃，旧 back buffer 还会被二次释放）；渲染器恢复失败可重试，已释放的设备和资源只释放一次，期间不绘制、不 resize，恢复时按窗口当前大小建交换链，下一帧再试；atlas 查不到纹理时跳过这批 sprite；重建 DirectX 设备失败时不再把丢失的设备当新设备发给窗口，下一次 vsync 重试；恢复后重新设置窗口的亚克力模糊（驱动重启后会丢，侧栏后面的窗口不再被模糊） | 显卡驱动重启、睡眠唤醒、驱动更新后应用不崩溃，恢复后正常显示 |
-| 26 | `window.rs` | `Window::replace_root` 同时更新窗口句柄记录的根视图类型（`handle.state_type` 和 `App::window_handles` 里那一份） | 首次启动的引导页走完后，在同一个窗口里换成主界面；原来换了根视图后 `downcast::<新类型>()` 仍然失败，按主界面找窗口的地方找不到它 |
+## 没有再带的旧补丁
 
-| 27 | `platform.rs`、`platform/mac/window.rs`、`platform/windows/window.rs`、`window.rs` | `Window::set_window_min_size`：创建后改窗口最小内容尺寸（macOS `setContentMinSize`，Windows 改 `WM_GETMINMAXINFO` 用的 `min_size`；其他平台不变） | 最小宽度 = 文档区最小宽度 + 侧栏宽度，随侧栏开合和拖宽变化 |
-| 28 | `platform.rs`、`platform/mac/window.rs`、`window.rs` | `Window::present_next_frame_in_transaction`：下一帧走 `PlatformWindow::draw_in_transaction`，macOS 上这一帧 `presentsWithTransaction`，和渲染期间改的原生视图在同一个 Core Animation 事务里上屏；其他平台照常 `draw` | 侧栏玻璃（`NSGlassEffectView`）大小或显隐变化的那一帧和 GPUI 画面同时出现；原来画面异步上屏、晚一个刷新，开关侧栏时玻璃先没（先出来），看着像顿了一下 |
-| 29 | `scene.rs` | `insert_primitive` 判断阴影是否落在裁剪区外时，按着色器实际画到的范围（四周各多 3 倍模糊半径）算，原来只看阴影本身的矩形 | 阴影的模糊部分落进裁剪区、矩形本身在区外时不再被丢掉（主页拖入文件时，按连续圆角逐行裁剪的内侧光晕） |
-| 30 | `text_system/line_layout.rs` | `layout_wrapped_line`：文字含从右到左的字符（希伯来、阿拉伯等）且需要折行时，改走 `wrap_bidi`：按阅读顺序取每个字符的宽度来定折行点，每行单独交给平台排版（行内由平台重排），再把各行首尾相接拼成一个布局，折行点放在每行第一个字形上；每行末尾的空格不参与排版 | 整段一次排版后字形是显示顺序，原来按显示顺序切行，阿拉伯文多行时行序颠倒、从词中间断开；其他文字不走这条路 |
-| 31 | `text_system/line_wrapper.rs` | `is_word_char` 把希伯来、阿拉伯、叙利亚、它拿、N'Ko 字母及阿拉伯/希伯来表现形式算作单词字符，并加了测试 | 这些文字用空格分词，按词换行，不再在词中间断开 |
-| 32 | `text_system/line.rs` | `WrappedLine::paint` / `paint_background`：折成多行、且第一个字母属于从右到左文字的段落，默认的左对齐改成右对齐（`rtl_align`）；单行文字、显式指定的对齐和编辑器用的 `paint_rows` 不变 | 阿拉伯文等的多行说明文字贴右边排，符合这些文字的阅读习惯 |
-| 33 | `platform/mac/metal_renderer.rs` | `CAMetalLayer` 的 `maximumDrawableCount` 从 3 改为 2 | 每张 drawable 是一整窗 BGRA（2560×1600 时 16MB），第三张只在帧堆积时才会建出来并一直留着。我们每帧的 GPU 时间只有一两毫秒，滚动文件夹页时 `nextDrawable` 等待最长 0.17ms，和 3 张时一样 |
-| 34 | `scene.rs`、`window.rs`、`path_builder.rs` | `Path::transformed(scale, offset)`：把已经三角化的路径整体缩放、平移成一条新路径；`Window::with_element_opacity` 改为 `pub`；再导出 lyon 的 `LineCap`、`LineJoin` | 画板按元素缓存三角化结果，平移和小幅缩放时直接搬用，不重新三角化；画板里半透明的图片 |
-| 35 | `scene.rs` | `Path::triangles()`：读出路径三角化后的三角形 | 画板按旋转、圆角的框架裁剪路径，并在箭头标签处挖空（`src/board/render_geom.rs` 逐个三角形裁） |
-| 36 | `assets.rs`、`window.rs`、`platform.rs`、`platform/mac/metal_atlas.rs`、`platform/windows/directx_atlas.rs`、`platform/blade/blade_atlas.rs`、`platform/test/window.rs` | `PixelFrame`、`ImageId::next`、`Window::paint_pixels` / `drop_pixels`：CPU 画好的 BGRA 帧当作图片精灵 1:1 显示（左上角对齐设备像素），每帧一个图集块，`generation` 变了就用新的 `PlatformAtlas::update` 原地重写（Metal `replace_region`、DirectX `UpdateSubresource`、blade 经上传缓冲）；连续 120 次绘制没画的帧自动交还图集块（再画时重新上传），所以不要在 cached view 里画 | 画板的 vello_cpu 后端在三个平台上用同一条路显示画面（`src/board/render_vello.rs`）；原来是只有 macOS 的 BGRA `CVPixelBuffer` surface 管线 |
-| 37 | `platform.rs`、`text_system.rs`、`platform/mac/text_system.rs`、`platform/windows/direct_write.rs`、`platform/linux/text_system.rs`、`Cargo.toml` | `WindowTextSystem::glyph_outline(font_id, glyph_id)` 和 `GlyphOutlineCmd`：字形轮廓（字体单位、y 向上）。macOS：font-kit / CoreText（合成斜体同样错切 14°）；Windows：DirectWrite `GetGlyphRunOutline`（新增 `Win32_Graphics_Direct2D_Common` feature，`OutlineSink` 实现 `ID2D1SimplifiedGeometrySink`，合成斜体/粗体随字体 face）；Linux：swash 不缩放的轮廓（新增可选依赖 `swash`，随 `wayland` / `x11` 启用）。默认 None | vello 后端和画板旋转文字用 GPUI 排好的字形（含 CJK 回退字体）按轮廓画 |
-| 38 | `platform.rs`、`platform/mac.rs`、`platform/mac/text_system.rs`、`platform/linux/text_system.rs` | `load_family` 不再拒绝没有 `m` 字形的 Xiaolai（macOS 同 KaTeX 的例外，Linux 按 PostScript 名 `XiaolaiSC`）；`test_text_system()`（macOS，`#[doc(hidden)]`）：不建窗口、不起应用，直接拿一个 CoreText 的 `WindowTextSystem` | 画板的 CJK 手写字体 Xiaolai 只有 CJK 字符；画板字体的测试在 `cargo test` 里注册内置字体、量字宽（`src/board/fonts.rs`） |
-| 39 | `text_system.rs` | `WindowTextSystem::layout_line`（`shape_line` 也走它）合并相邻 run 时比较字体，同 `shape_text`；原来只要颜色、下划线相同就并进上一个 run 的字体 | 画板一行文字按字体分 run（Excalifont 后接 Xiaolai），后面的 run 原来被排成前一个字体，CJK 落到系统回退字体 |
-| 40 | `platform/mac/metal_renderer.rs` | 路径光栅化的顶点直接写进 instance buffer（先算总数、超出缓冲区照旧返回 false）；原来先在一个从空开始逐个扩容的 `Vec` 里攒好再整块拷过去 | 画板每帧大量路径顶点；原来每帧在这里反复 realloc 和拷贝，约占 Metal 提交一帧的四分之三（3 万元素场景拖动时每帧约 0.8ms，现在约 0.2ms） |
-| 41 | `elements/div.rs` | 有 `active` 样式的元素总是监听松开（capture 阶段，按下过才清掉并刷新）；原来只有「画的时候已是按下状态」的那一帧才注册松开监听 | 按下和松开在同一帧之前到达（触控板轻点、脚本点击）时，按钮的按下样式一直留着，直到下一次松开 |
-| 42 | `platform/mac/window.rs` | 视图类注册 `rightMouseDragged:`、`otherMouseDragged:`（同 `mouseDragged:` 交给 `handle_view_event`，`events.rs` 原本就会转换这两种事件） | 原来只注册了左键拖动，按住滚轮键或右键移动时 AppKit 不把事件交给视图，画板按住滚轮键平移画布不动 |
-
-| 34 | `platform/mac/platform.rs` | Forward `NSUserActivityTypeBrowsingWeb` to the existing open-URL callback. | Fei Notes Universal Links use the same invitation queue as custom-scheme URLs; no change to file-open handling. |
-
-## taffy 0.9.0
-
-| 文件 | 改动 | 用途 |
+| 旧 # | 原来的改动 | 现在 |
 |---|---|---|
-| `compute/grid/track_sizing.rs` | 「超出限制」阶段只对受影响的轨道分配空间，增长上限只看 `fit-content()` 参数。这是从 taffy 0.13 移植的修复 | 跨多个 auto 行的合并单元格在 min-content 约束下原来不会撑高这些行 |
+| 4 | 中文避头尾 | 上游换行改用 UAX #14，闭合标点不在行首、开标点不在行尾已经是默认规则（`test_break_indices_quiet_md`） |
+| 9 | `mouseDownCanMoveWindow` 返回 NO，延后执行 `start_window_move` | 上游有 `WindowOptions::app_owns_titlebar_drag`（整个视图算应用自己的标题栏，AppKit 不拖动也不等双击判定）和 `Window::start_window_move`；应用的主窗口和快速笔记窗口开启它 |
+| 11 | `DispatchEventResult` 改为 `pub` | 上游已是 `pub` |
+| 13 | 文字场景排序边界包含对齐后的字形 | 上游的绘制层边界改为由层内实际绘制的图元求出，不再依赖调用方给的边界 |
+| 19 | 路径纹理按需创建、按批次范围 | 上游的路径改为解析式分块（tile）直接画进目标纹理，没有中间纹理和 MSAA 纹理；深度纹理在 Apple GPU 上是 Memoryless |
+| 21 | 删除图片时先移除 tile 索引 | 上游的通用 atlas 先从 `tiles_by_key` 移除再释放 |
+| 29 | 阴影按模糊范围判断是否在裁剪区外 | 上游的阴影图元边界已含 3 倍模糊半径 |
+| 31 | 希伯来、阿拉伯等字母算单词字符 | UAX #14 把这些字母归为 AL，词内不断行 |
+| 33 | `CAMetalLayer` 最多 2 张 drawable | 没有带。上游改用 `CAMetalDisplayLink` 提前分发 drawable，限为 2 张有掉帧风险；脚本场景下实测内存占用没有差别（升级前后都约 95 MB）。以后要省这 16 MB 时在真窗口上测帧率再定 |
+| 36 | `PixelFrame`、`Window::paint_pixels`：CPU 画好的帧直接写进图集块 | 画板的 vello 帧改为普通的 `RenderImage`，每次画面变化新建一张、上一张在下次显示时 `drop_image`（`src/board/render_vello.rs`） |
+| 39 | `layout_line` 合并 run 时比较字体 | 上游已比较字体 |
+| 40 | Metal 路径光栅化的顶点直接写进 instance buffer | 上游的路径改为分块绘制，没有这一步 |
+| 41 | 有 `active` 样式的元素总是监听松开 | 上游已无条件注册松开监听 |
+| 42 | 视图注册 `rightMouseDragged:`、`otherMouseDragged:` | 上游已注册 |
+| —（Windows `VK_PROCESSKEY`） | 输入法正在处理的按键始终交给 IME | 上游的 `VK_PROCESSKEY` 解析不出按键，不再作为 GPUI 按键派发，直接交给 `TranslateMessage` 和 IME。需在 Windows 上用小狼毫确认退格、回车不会处理两次 |
 
-## xattr 0.2.3
+## 升级后和 0.2.2 不同、没有改回去的地方
 
-| 文件 | 改动 | 用途 |
-|---|---|---|
-| `src/sys/mod.rs` | Linux/Android 下 `ENOATTR` 映射为 `::libc::ENODATA` | 解决现代 libc crate 在 Linux GNU 下没有 `ENOATTR` 常量导致的编译错误 |
+- 像素对齐：上游把元素边界（taffy 布局后的绝对坐标）、边框粗细、裁剪区对齐到设备像素，字形纵向不再分子像素位置、横向取最近的 1/4 像素（原来向下取）。截图对比里文字、图标边缘有亚像素差异；高度不是整设备像素的块（比如含行内公式的段落）下面的内容可能整体差一个设备像素。
+- 静止指针下的 hover：上游在内容变化后重新计算 hover，打开搜索框后，被遮罩盖住的搜索按钮不再保持 hover 背景和提示（原来要等鼠标移动才更新）。
+- `uniform_list` 的内边距：0.2.2 先按内边距缩小内容区，摆放子项和算内容高度时又各加一次（子项下移一个上内边距，可滚动范围多出上下内边距之和），上游修掉了。应用照旧的位置改：主页卡片网格 `pt(14)`/`pb(16)` → `pt(28)`/`pb(32)`；目录列表能滚动时 `pb(22)` → `pb(44)`（列表放得下时 0.2.2 还能多滚 22pt，这个不再复现）。
+- 窗口原点在半点上时，上游创建窗口会多出 1pt 高；应用打开主窗口和快速笔记窗口时把原点取整。
 
-## 删掉的上游文件
+## 验证
 
-`gpui/examples/image/black-cat-typing.gif`（4.3 MB）只在 `examples/gif_viewer.rs` 和 `examples/opacity.rs` 里用到，这两个示例不参与本项目的构建；为了减小仓库体积删掉了。
+升级上游后按这一节逐项验证。每次运行都用临时文档库（`QUIET_MD_HOME`），不碰真实剪贴板，不弹系统对话框，不抢焦点。
 
-## GPUI Mobile 7548ebc (iOS)
+```sh
+cargo build --release --features devtools            # 新版；旧版按 tools/harness/README.md 另编一份
+FDL_BIN=target/release/quiet_md FDL_REF_BIN=<旧版> python3 tools/harness/gpui_patches.py
+for f in table_paste table_resize clipboard_images checkbox_toggle scroll_intent pointer_properties; do
+  FDL_BIN=target/release/quiet_md python3 tools/harness/$f.py; done
+scripts/check.sh
+```
 
-The staged dependency in `packaging/ios/.gpui-mobile` is reconstructed by
-`packaging/ios/prepare-gpui.sh`. Its tracked patches are kept under
-`packaging/ios/patches`, rather than editing an unrecorded dependency copy.
+- `tools/harness/gpui_patches.py`：对每个补丁影响的行为跑一个场景。新旧两个版本各跑一遍，比较「排版」：文档区每一行文字的上下左右位置要在 3 个设备像素以内，墨量（暗度之和）要在 4% 以内。所以亚像素差异不算失败，换行、对齐、行高、滚动位置的变化会算。
+  - 有的场景还带不需要旧版的绝对检查：斜体确实倾斜、表格列宽是 85/300/150、滚动条跟着拖动、图片真的画出来了、自定义快捷键生效、⌘Q 前输入的内容已保存。
+  - 内存在运行时每 0.1 秒采一次 RSS。
+- 6 个 harness 脚本（README 里列的那些）是功能回归，它们不依赖旧版。
+- 截图逐像素对比（`compare.py`）和旧补丁 #13、#29 的菜单、阴影检查，用的是升级时临时写的巡检脚本（文档、菜单、斜杠菜单、搜索、主页、设置、滚动、窄窗口、深色 + 中文），没有留在仓库里。
+- `gpui` 自己的单元测试（`test_break_indices_quiet_md` 等）需要 Zed 仓库里的字体、示例图片和 `util_macros`，在 vendor 副本里编译不了。`gpui_macos` 的测试可以跑：把 `vendor/zed/crates` 复制出去，给 `gpui_macos/Cargo.toml` 加一个空的 `[workspace]`，再 `cargo test --features test-support --lib pasteboard`。
+- Windows 和 Linux 在 macOS 上能做类型检查：
+  - Windows：`cargo check --target x86_64-pc-windows-msvc`，需要一个假的 `rc.exe` / `llvm-rc`，只写空的输出文件。
+  - Linux：`--target x86_64-unknown-linux-gnu`，需要能编 C 的交叉编译器包装，并设 `RUST_FONTCONFIG_DLOPEN=on`。
 
-- `gpui-mobile-ios17-font-traits.patch`: preserve the existing iPadOS 17 font
-  trait compatibility adaptation.
-- `gpui-mobile-ios-clipboard.patch`: use length-aware NSString construction,
-  preserve GPUI JSON metadata as a private pasteboard flavor, and transfer
-  supported encoded images. This keeps the shared editor's rich fragment copy
-  path usable on iOS. Reads copy data while UIKit owns it and bound binary data
-  to 64 MiB. No editor/model/format code is forked into the platform backend.
-- `gpui-mobile-ios-url.patch`: construct URLs through the backend's length-aware
-  NSString helper and use a valid empty UIKit options dictionary. Reject an
-  invalid NSURL before requesting the system open action.
+### 逐项结果（2026-11-15，macOS arm64，旧版 = main `a15b5a7`）
 
-- `gpui-mobile-ios-return.patch`: forward a committed software-keyboard Return
-  through the existing GPUI Enter key event path before the platform input
-  handler. Keep the legacy global text callback and marked-text commit path
-  unchanged. This preserves shared paragraph/list/code and single-line Submit
-  behavior without adding a second editor command implementation.
+汇总：40 项。macOS 上通过 28 项（含 0028 的 macOS 部分），部分验证 2 项（0011 macOS、旧 #9），未验证 3 项（0008、0012、0015，需要在真窗口里手动看），等 sida-windows 5 项（0011 Windows、0023、0024、0025、`VK_PROCESSKEY`），只验证了能编译、等 CI 2 项（0026、0027）。没有失败项。
 
-- `gpui-mobile-ios-gallery.patch`: add an iOS `pick_gallery_image` receiver for
-  the existing image-picker package. Schedule presentation and completion on the
-  UIKit main queue, keep picker/delegate ownership until completion, reject an
-  overlapping picker and copy the selected provider representation before its
-  temporary URL expires. Preserve supported PNG/GIF/JPEG/WebP/BMP representations
-  and request compatible JPEG for other photo formats. Cancellation and errors
-  resolve the receiver without blocking GPUI. Logical request serials isolate late
-  callbacks; stale or uncollected copied results are removed. The legacy synchronous APIs remain
-  unchanged; Fei Notes uses only the new receiver for Photo Library selection.
+「旧版 / 新版」都是实测结果。「场景」指 `gpui_patches.py` 里的场景名。
 
+| 项 | 不打补丁会怎样 | 怎么验证 | 结果 |
+|---|---|---|---|
+| 0001 glyph-bounds-at-size | 大标题字形左边被切掉一条 | 场景 `title`：标题 + 一级、二级标题（`Wj`、`fjord` 等左侧外伸的字形），窗口宽 1280/1000/760 | 通过：3 个宽度的排版都和旧版一致 |
+| 0002 katex-fonts | 花体、黑板粗体、大号括号回退成别的字体 | 场景 `katex`：`\mathcal`、`\mathscr`、`\mathbb`、`\mathfrak`、`\left( \right)`、`\Bigg\{` 等，3 个宽度 | 通过 |
+| 0003 fallback-font-identity | 中文画成错字 | 场景 `cjk`（3 个宽度）；`check.sh` 里的 `editor::text::tests::cjk_fallback_glyphs` | 通过 |
+| 0004 synthetic-italic | 中文斜体画成正体 | 场景 `italic`：比较同一行中文的斜体和正体，斜体上半部的墨迹要偏右；3 个宽度和旧版比 | 通过：新旧版都倾斜，排版一致 |
+| 0005 grid-col-widths | 表格忽略存下的列宽 | 场景 `table`：列宽 85/300/150，量竖线间距；3 个宽度 | 通过：间距在 ±2pt 内，新旧版一致 |
+| 0006 paint-rows | 含行内公式的行和其它行一样高，公式压住上下行 | 场景 `rows`：两处行内公式（分式、根号）的长段落，3 个宽度 | 通过 |
+| 0007 list-scroll-estimates | 长文档滚动条大小和位置不对，拖动跳动 | 场景 `scrollbar`：400 段长短不一的文档，滚动后把滑块从 y=68 拖下 280pt，记下滑块位置和高度 | 通过：新旧版都是 (52, 32) → (340, 32) → 滚动后 (344, 32)，拖完后页面内容一致 |
+| 0008 path-prompt-extensions | 导入对话框列出所有文件 | 没有实测：脚本用 `pick` 绕过系统面板，规则也不允许弹真面板。只核对了代码：导入时传了扩展名，补丁设置 `allowedContentTypes` | 未验证（要在预览版里手动打开「导入」看一眼） |
+| 0009 offscreen-capture | 窗口被挡住或锁屏时脚本截不了图 | 所有场景和 harness 脚本的截图都走 `render_offscreen`，窗口在屏幕外或被遮挡 | 通过（几百张截图） |
+| 0010 replace-root-type | 首次启动走完引导页后找不到主窗口：⌘Q 不保存、Finder 打开的文件没地方去 | 场景 `first-launch`：空文档库加 `QUIET_MD_ONBOARDING`，按 8 次回车走完引导，新建文档、输入、马上 ⌘Q；`app::quit` 用 `downcast::<Workspace>()` 找窗口保存 | 通过：新旧版都换成主界面，文档已保存 |
+| 0011 window-min-size（macOS） | 侧栏开合、拖宽后窗口最小宽度不变 | 想直接读 `contentMinSize`：辅助功能接口不提供 GPUI 窗口的尺寸（-25205），lldb 附加要系统授权，都放弃了。脚本里开合侧栏，代码路径能跑通 | 部分：没量到最小尺寸本身 |
+| 0011 window-min-size（Windows） | 同上，`WM_GETMINMAXINFO` | — | 等 sida-windows |
+| 0012 present-in-transaction | 侧栏玻璃比画面早或晚一帧变化（闪一下） | 只能看真窗口上屏的那一帧，离屏截图拍不到。脚本里开合侧栏不报错 | 未验证（要在真窗口里用肉眼或录屏看侧栏开合、拖宽） |
+| 0013 hollow-images | 文档图片的像素一直留在内存里 | 场景 `images`：30 张 2400×1600 的图片，滚到底再滚回顶，采 RSS，确认图片画出来了 | 通过：峰值 新 366–378 / 旧 365–377 MB，稳定后 新 300–306 / 旧 299 MB（各跑 3 次） |
+| 0014 load-visible-only | 主页卡片裁剪范围外的图片也解码 | 场景 `home-images`：12 篇文档，每篇 4 张大图（卡片里只看得到前两张），打开主页、滚到底 | 通过：峰值 新 135–145 / 旧 142–150 MB，稳定后 新 129–130 / 旧 134–135 MB，卡片画面一致 |
+| 0015 hide-cursor | 编辑器、输入框打字时指针不隐藏 | 窗口在屏幕外时观察不到，`CGCursorIsVisible` 已不可用（结果不可信）。harness 里打字不报错 | 未验证（要在真窗口里打字看指针） |
+| 0016 font-smoothing | 深色文字不加粗、浅色文字更淡，全文比升级前细 | 场景 `cjk`（浅色）和 `cjk-dark`（深色主题）：比较墨量 | 通过：正文每行墨量和旧版差 ≤0.5% |
+| 0017 fallback-by-name | 中文整体淡约 2% | 场景 `cjk`：每行墨量阈值 4%，实测正文差 ≤0.5% | 通过 |
+| 0018 clipboard-text-and-image | 截图工具给的「图片 + 文字」只读到文字，图片贴不进来 | `gpui_macos` 的 `pasteboard::tests`（私有剪贴板，9 项，其中 3 项是本补丁的）；harness `clipboard_images.py` 走的是模拟剪贴板，只测应用这一侧 | 通过：9/9 |
+| 0019 korean-word-wrap | 韩文在音节之间断行 | 场景 `korean`：3 个宽度和旧版比（旧版按词换行） | 通过（上游测试在 vendor 里编译不了，见上） |
+| 0020 rtl-wrap | 阿拉伯文多行时行序颠倒、词被拆开 | 场景 `rtl`：阿拉伯文、希伯来文长段落，3 个宽度 | 通过 |
+| 0021 rtl-align | 多行的从右到左摘要靠左 | 场景 `home-rtl`：主页卡片上的阿拉伯文、希伯来文摘要 | 通过 |
+| 0022 single-axis-scroll | 竖向滚轮（带一点横向漂移）经过宽表格时，表格也跟着左右滑 | 场景 `wide-table`：10 列 × 220pt 的表格。在表格上竖向滚动并带 4pt 横向分量，再横向滚动 ±300/120 | 通过：竖向滚动只滚页面，横向滚动只滚表格，3 张截图新旧版一致 |
+| 0023 windows-clipboard | 位图存成 BMP、V4/V5 头图像错位、复制的图片文件贴不进 | — | 等 sida-windows |
+| 0024 windows-device-lost | 驱动重启、睡眠唤醒后 panic | — | 等 sida-windows |
+| 0025 windows-shader-path | 中文路径下调试构建崩溃 | — | 等 sida-windows |
+| 0026 linux-appearance-reborrow | 切换明暗时 panic | 在 macOS 上交叉跑 clippy | 只验证了能编译；等 CI |
+| 0027 wgpu-30-crates-io | 用 crates.io 的 wgpu 编译不过 | 同上 | 只验证了能编译；等 CI |
+| 0028 keybinding-load-unmapped | 自定义快捷键、Windows/Linux 键位被键盘映射改写 | 场景 `shortcuts`：`.quiet/shortcuts.json` 把加粗设成 `cmd-shift-k`，全选后按它，检查保存的 `<b>` | macOS 通过（新旧版都生效）；Windows 等 sida-windows |
+| 旧 #4 中文避头尾 | 闭合标点出现在行首 | 场景 `kinsoku`：各种中文标点密集的段落，3 个宽度和旧版比 | 通过 |
+| 旧 #31 RTL 整词 | 阿拉伯文、希伯来文在词中断行 | 场景 `rtl` | 通过 |
+| 旧 #9 标题栏拖动 | 标题栏上的按钮点不到，或拖动、双击不灵 | harness 的点击（搜索、「…」、侧栏开关、主页）都正常；真实指针拖动窗口、双击缩放要真鼠标，脚本做不到 | 部分：按钮通过，拖动和双击未验证 |
+| 旧 #11 `DispatchEventResult` 公开 | 编译不过 | 编译 | 通过 |
+| 旧 #13 文字层边界 | 部分字形被裁掉或不画 | 所有文字场景的排版一致；升级时的截图巡检 | 通过 |
+| 旧 #19 路径纹理 | 路径（卡片圆角、复选框等）占用大块纹理 | 主页、表格、复选框截图一致（场景 `home-images`、harness `checkbox_toggle`）；内存见 0013/0014 | 通过 |
+| 旧 #21 atlas 删除 | 删除图片 tile 时崩溃 | 场景 `images`：滚过 30 张图再滚回，空壳图片丢掉又重新上传 | 通过：没有崩溃，图片都画出来了 |
+| 旧 #29 阴影裁剪 | 贴边的阴影被裁掉 | 升级时的截图巡检：菜单、斜杠菜单、弹出框贴边时的阴影和旧版一致 | 通过 |
+| 旧 #33 2 张 drawable | 多占一张 drawable（2560×1600 时 16 MB） | 没有移植。实测新旧版的 RSS 都在 2 张和 3 张 drawable 之间跳（相差正好 16 MB，比如无图文档 110/126 MB） | 通过：新旧版分布相同 |
+| Windows `VK_PROCESSKEY` | 输入法处理中的退格、回车被处理两次 | — | 等 sida-windows（用小狼毫测） |
+| `uniform_list` 内边距 | 主页网格滚到底、长目录滚到底时，底部留白比升级前少 16 / 22pt | 场景 `home-images`（滚到底）和 `catalogue`（80 个标题，滚到底） | 通过：修正后和旧版一致 |
 
-The mobile platform also applies `gpui-mobile-ios-picker-dismissal.patch` after
-the patches listed above. File prompts use a native page sheet so single-file
-mode can be dismissed even when UIKit omits a Cancel button. An adaptive
-presentation delegate resolves dismissal as cancellation through the existing
-one-shot receiver. Explicit cancel, selection and late dismissal share the
-same pending-picker identity check; no importer/model code is forked.
+## 没带的上游 crate
 
+`gpui_ios` 暂不复制：`upstream.toml` 的 `crates` 里加上即可。`gpui_web` 已带上，网页版（官网的实时笔记本）用它，见 `web/README.md`。
 
-## Fei Notes iOS GPUI core image-cache extension
+## 上游带来的、暂未启用的能力
 
-The iOS target uses gpui-pre 0.3.10 through a generated `.gpui-core` directory,
-not this desktop GPUI fork. `packaging/ios/prepare-gpui-core.py` verifies the
-crates.io archive and applies `patches/gpui-pre-image-cache.patch`. The extension
-ports natural-size thumbnail scaling, static-image buffer release, missing-atlas
-recovery and visible-only custom-cache loading to the pinned mobile core. Its
-source and patch checksums are in `gpui-pre-image-cache.json`. Existing licenses
-from the archive are retained. This is not an upstream-version upgrade.
+- 无障碍（AccessKit）：各平台的适配器已接好，元素用 `.id(...).role(...)` 标出角色、自定义元素实现 `a11y_role` 等才会暴露给读屏软件（见 `gpui/src/_accessibility.rs`）。应用现在没有标注。
+- 编译时间和体积（macOS arm64，从零构建，2026-11-15）：`release` 66.8 秒 → 45.3 秒，二进制 36.6 MB → 35.1 MB；`dist`（LTO）210 秒 → 161 秒，24.97 MB → 24.27 MB。脚本场景的内存占用不变（约 95 MB）。
 
-### Mobile board compatibility
+## 删掉的 vendor
 
-The pinned iOS GPUI core patch also exposes path transforms and triangle iteration,
-line cap/join types, glyph outlines and element opacity used by the current board
-renderer. Mobile CPU frames use the existing image atlas with generation-based
-replacement, a six-frame cache bound and explicit eviction; desktop GPU upload code is unchanged. Image IDs
-share one allocator. Dynamic explicit-modifier key bindings own parsed keystrokes.
-The mobile CoreText platform supplies FontKit outlines in
-`packaging/ios/patches/gpui-mobile-ios-board-outlines.patch`. The complete prepared
-core tree and patch checksums remain verified by `prepare-gpui-core.py`.
+- `vendor/taffy`（0.9.0 加「超出限制」阶段修复）：上游 GPUI 用 taffy 0.15，已包含这个修复（它就是从 0.13 移植的）。
+- `vendor/xattr`（Linux `ENOATTR`）：新的依赖树里已经没有 xattr。
+
+## Fei Notes additions
+
+Patch `0035-feinotes-universal-links` ports the previous product `application:continueUserActivity:restorationHandler:` delegate callback to `gpui_macos`. Browsing activities enter the same URL handler as explicit URL opens, preserving CloudKit invitation handling. The old `vendor/gpui` layout is retired with upstream.

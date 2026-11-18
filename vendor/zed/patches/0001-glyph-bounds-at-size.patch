@@ -1,0 +1,67 @@
+quiet.md #2: measure glyph bounds with the CTFont that draws them
+
+font-kit takes raster bounds at its base size and scales them, but the system
+font switches optical size (SF Text -> SF Display) with the point size, so the
+bounds of large title glyphs did not match their bitmap and a sliver on the
+left was cut off. Measure with the same sized CTFont rasterize_glyph uses.
+
+diff --git a/crates/gpui_apple/src/text_system.rs b/crates/gpui_apple/src/text_system.rs
+index d51ad19b87e55de01d12cb576fdf1058cd4daf0d..63dd0fc62fb3dd21c87826842e9eb2c137c9f01f 100644
+--- a/crates/gpui_apple/src/text_system.rs
++++ b/crates/gpui_apple/src/text_system.rs
+@@ -17,7 +17,7 @@ use core_text::{
+     font::CTFont,
+     font_collection::CTFontCollectionRef,
+     font_descriptor::{
+-        CTFontDescriptor, kCTFontSlantTrait, kCTFontSymbolicTrait, kCTFontWeightTrait,
++        CTFontDescriptor, kCTFontDefaultOrientation, kCTFontSlantTrait, kCTFontSymbolicTrait, kCTFontWeightTrait,
+         kCTFontWidthTrait,
+     },
+     line::CTLine,
+@@ -26,7 +26,6 @@ use core_text::{
+ use font_kit::{
+     font::Font as FontKitFont,
+     handle::Handle,
+-    hinting::HintingOptions,
+     metrics::Metrics,
+     properties::{Style as FontkitStyle, Weight as FontkitWeight},
+     source::SystemSource,
+@@ -41,7 +40,6 @@ use gpui::{
+ use parking_lot::{RwLock, RwLockUpgradableReadGuard};
+ use pathfinder_geometry::{
+     rect::{RectF, RectI},
+-    transform2d::Transform2F,
+     vector::Vector2F,
+ };
+ use smallvec::SmallVec;
+@@ -427,15 +425,21 @@ impl AppleTextSystemState {
+     }
+ 
+     fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+-        let font = &self.fonts[params.font_id.0];
+-        let scale = Transform2F::from_scale(params.scale_factor);
+-        let bounds: Bounds<DevicePixels> = bounds_from_rect_i(font.raster_bounds(
+-            params.glyph_id.0,
+-            params.font_size.into(),
+-            scale,
+-            HintingOptions::None,
+-            font_kit::canvas::RasterizationOptions::GrayscaleAa,
+-        )?);
++        // quiet.md: measure with the same sized CTFont that rasterize_glyph
++        // draws with. font-kit scales bounds taken at its base size, but the
++        // system font switches optical size (SF Text → SF Display) with the
++        // point size, so large title glyphs came out wider than their bitmap
++        // and lost a sliver on the left.
++        let rect = self.fonts[params.font_id.0]
++            .native_font()
++            .clone_with_font_size(f32::from(params.font_size) as CGFloat)
++            .get_bounding_rects_for_glyphs(kCTFontDefaultOrientation, &[params.glyph_id.0 as CGGlyph]);
++        // Flip to "origin is top left", as font-kit does.
++        let rect = RectF::new(
++            Vector2F::new(rect.origin.x as f32, -(rect.origin.y + rect.size.height) as f32),
++            Vector2F::new(rect.size.width as f32, rect.size.height as f32),
++        );
++        let bounds: Bounds<DevicePixels> = bounds_from_rect_i((rect * params.scale_factor).round_out().to_i32());
+ 
+         // Expand the bounds by 1 pixel on each side to give CG room for anti-aliasing.
+         Ok(bounds.dilate(DevicePixels(1)))

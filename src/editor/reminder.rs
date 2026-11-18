@@ -13,8 +13,6 @@ use crate::input::{TextField, TextFieldEvent};
 use crate::editor_theme::{Theme, c, craft};
 use crate::editor_ui::{ROW_RADIUS, icon, panel, popover};
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 pub const DAY: i64 = 86_400_000;
@@ -513,7 +511,7 @@ impl Editor {
                 ),
             );
         let x = rect.center().x - px(CARD_W / 2.);
-        Some(if up { at(self.rel(point(x, rect.top())), Corner::BottomLeft, el) } else { at(self.rel(point(x, rect.bottom())), Corner::TopLeft, el) })
+        Some(if up { at(self.rel(point(x, rect.top())), Anchor::BottomLeft, el) } else { at(self.rel(point(x, rect.bottom())), Anchor::TopLeft, el) })
     }
 
     /// The editor (`intact` popover): calendar, 设置时间, 提醒.
@@ -732,7 +730,7 @@ impl Editor {
         let above = f32::from(rect.top()) - view_top;
         let up = below < h && above > below;
         let x = rect.center().x - px(POPOVER_W / 2.);
-        Some(if up { at(self.rel(point(x, rect.top())), Corner::BottomLeft, el) } else { at(self.rel(point(x, rect.bottom())), Corner::TopLeft, el) })
+        Some(if up { at(self.rel(point(x, rect.top())), Anchor::BottomLeft, el) } else { at(self.rel(point(x, rect.bottom())), Anchor::TopLeft, el) })
     }
 
     /// The open select's list.

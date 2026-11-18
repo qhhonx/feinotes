@@ -3,8 +3,6 @@ use crate::settings::{display_title, tr};
 use crate::theme::Theme;
 use crate::ui::{TipExt, TitleBarExt, icon, popover, ui_text};
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 
 #[derive(Clone, PartialEq)]
 pub(crate) enum CreateTarget {
@@ -209,7 +207,7 @@ impl Workspace {
                 .child(row("create-folder", "folder", tr("文件夹", "Folder")).on_click(cx.listener(move |w, _, window, cx| w.new_folder(folder_parent.clone(), window, cx))))
             }
         };
-        Some(deferred(anchored().anchor(Corner::TopLeft).position(pos).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3).into_any_element())
+        Some(deferred(anchored().anchor(Anchor::TopLeft).position(pos).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3).into_any_element())
     }
 
     /// A folder's page: one header row (the path on the left, the actions on

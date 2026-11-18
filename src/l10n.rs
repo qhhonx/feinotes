@@ -132,6 +132,7 @@ fn plural(lang: Lang, forms: &str, value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use fdl_core::vfs::PathExt as _;
     use super::*;
 
     #[test]
@@ -195,10 +196,10 @@ mod tests {
     #[test]
     fn every_key_is_in_the_source() {
         fn walk(dir: &std::path::Path, out: &mut String) {
-            for entry in std::fs::read_dir(dir).unwrap() {
+            for entry in fdl_core::vfs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
-                if path.is_dir() { if path.file_name().is_some_and(|n| n != "l10n") { walk(&path, out); } }
-                else if path.extension().is_some_and(|e| e == "rs") { out.push_str(&std::fs::read_to_string(path).unwrap()); }
+                if path.fs_is_dir() { if path.file_name().is_some_and(|n| n != "l10n") { walk(&path, out); } }
+                else if path.extension().is_some_and(|e| e == "rs") { out.push_str(&fdl_core::vfs::read_to_string(path).unwrap()); }
             }
         }
         let mut source = String::new();

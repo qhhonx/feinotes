@@ -1,0 +1,41 @@
+# Upstream snapshot of Zed's GPUI crates. `tools/vendor-sync` reads this file;
+# see vendor/PATCHES.md for the workflow.
+repo = "https://github.com/zed-industries/zed"
+rev = "e2f00a41ac6789f0ae52b229567ad5715266e400"
+
+# Crate directories copied from the Zed repository, at their upstream paths.
+# macOS needs the first 15; Windows and Linux add gpui_windows, gpui_linux and
+# gpui_wgpu (checked with `cargo metadata --filter-platform` for each target).
+# gpui_web and gpui_ios are left out for now.
+crates = [
+    "crates/gpui",
+    "crates/gpui_platform",
+    "crates/gpui_macos",
+    "crates/gpui_apple",
+    "crates/gpui_macros",
+    "crates/gpui_util",
+    "crates/gpui_shared_string",
+    "crates/collections",
+    "crates/refineable",
+    "crates/refineable/derive_refineable",
+    "crates/sum_tree",
+    "crates/scheduler",
+    "crates/http_client",
+    "crates/ztracing",
+    "crates/ztracing_macro",
+    "crates/gpui_windows",
+    "crates/gpui_linux",
+    "crates/gpui_wgpu",
+    "crates/gpui_web",
+]
+
+# Directories dropped from every copied crate (not built for a non-member path
+# dependency, and gpui's examples alone are 5 MB).
+drop = ["examples", "benches"]
+
+# Zed takes these from git. We use the crates.io release instead, so that a
+# build never clones another repository. Git dependencies that also name a
+# `version` use that version without an entry here.
+[git-to-crates-io]
+wgpu = "30.0.2"
+naga = "30.0.2"

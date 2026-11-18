@@ -1,0 +1,145 @@
+quiet.md #24: hollow RenderImages and RenderImage::with_scale_factor
+
+RenderImage::hollow makes a copy with the same id and size but no pixels, for
+an image already uploaded to the windows' atlases; paint_image skips a hollow
+image a window's atlas does not have, records it and asks for another frame,
+and Window::take_missing_images hands those ids to the owner, which decodes
+them again. with_scale_factor lets a downscaled decode keep the original's
+layout size. Document images are decoded at their display size and drop their
+pixels once uploaded (docs/MEMORY.md).
+
+diff --git a/crates/gpui/src/assets.rs b/crates/gpui/src/assets.rs
+index cb8b47ed0166ba1bf67842766cd50cdd30e8a6d2..e752722a886d7c53597824e331de511a89c57680 100644
+--- a/crates/gpui/src/assets.rs
++++ b/crates/gpui/src/assets.rs
+@@ -46,6 +46,8 @@ pub struct RenderImage {
+     /// The scale factor of this image on render.
+     pub(crate) scale_factor: f32,
+     data: SmallVec<[Frame; 1]>,
++    /// quiet.md: the size of a still image whose pixels were let go (`hollow`).
++    hollow: Option<Size<DevicePixels>>,
+ }
+ 
+ impl PartialEq for RenderImage {
+@@ -65,9 +67,35 @@ impl RenderImage {
+             id: ImageId(NEXT_ID.fetch_add(1, SeqCst)),
+             scale_factor: 1.0,
+             data: data.into(),
++            hollow: None,
+         }
+     }
+ 
++    /// quiet.md: the same image (id, size) without its pixels, for one already
++    /// in the windows' atlases: they never read the pixels again. A window
++    /// that still needs them lists the image in `Window::take_missing_images`.
++    /// Animated images stay whole.
++    pub fn hollow(&self) -> Option<Self> {
++        (self.data.len() == 1).then(|| Self {
++            id: self.id,
++            scale_factor: self.scale_factor,
++            data: SmallVec::new(),
++            hollow: Some(self.size(0)),
++        })
++    }
++
++    /// quiet.md: whether `hollow` made this.
++    pub fn is_hollow(&self) -> bool {
++        self.hollow.is_some()
++    }
++
++    /// quiet.md: pixels per display pixel, so a downscaled decode keeps the
++    /// original's natural size (`render_size`).
++    pub fn with_scale_factor(mut self, scale_factor: f32) -> Self {
++        self.scale_factor = scale_factor;
++        self
++    }
++
+     /// Convert this image into a byte slice.
+     pub fn as_bytes(&self, frame_index: usize) -> Option<&[u8]> {
+         self.data
+@@ -77,6 +105,9 @@ impl RenderImage {
+ 
+     /// Get the size of this image, in pixels.
+     pub fn size(&self, frame_index: usize) -> Size<DevicePixels> {
++        if let Some(size) = self.hollow {
++            return size;
++        }
+         self.data
+             .get(frame_index)
+             .map(|frame| {
+@@ -102,6 +133,9 @@ impl RenderImage {
+ 
+     /// Get the number of frames for this image.
+     pub fn frame_count(&self) -> usize {
++        if self.hollow.is_some() {
++            return 1;
++        }
+         self.data.len()
+     }
+ }
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 27a6ef7381113e724cc3704ca8c1bb533b3fe339..c1408f0aec3a641d71296b1184b393625029518f 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -1237,6 +1237,8 @@ pub struct Window {
+     is_minimizable: bool,
+     last_window_bounds: WindowBounds,
+     sprite_atlas: Arc<dyn PlatformAtlas>,
++    /// quiet.md: hollow images painted without a tile since the last take.
++    missing_images: Vec<crate::ImageId>,
+     text_system: Rc<WindowTextSystem>,
+     text_rendering_mode: Rc<Cell<TextRenderingMode>>,
+     rem_size: Pixels,
+@@ -2402,6 +2404,7 @@ impl Window {
+             is_minimizable,
+             last_window_bounds: window_bounds,
+             sprite_atlas,
++            missing_images: Vec::new(),
+             text_system,
+             text_rendering_mode: cx.text_rendering_mode.clone(),
+             rem_size: px(16.),
+@@ -3235,6 +3238,12 @@ impl Window {
+         image
+     }
+ 
++    /// quiet.md: hollow images (`RenderImage::hollow`) this window could not
++    /// draw since the last call: their owner should decode them again.
++    pub fn take_missing_images(&mut self) -> Vec<crate::ImageId> {
++        std::mem::take(&mut self.missing_images)
++    }
++
+     /// quiet.md: whether something was invalidated since the last frame was drawn.
+     pub fn needs_draw(&self) -> bool {
+         self.invalidator.is_dirty()
+@@ -5557,18 +5566,22 @@ impl Window {
+             frame_index,
+         };
+ 
+-        let tile = self
++        // quiet.md: a hollow image not in this atlas is skipped and listed.
++        let Some(tile) = self
+             .sprite_atlas
+             .get_or_insert_with(params.into(), &mut || {
+-                Ok(Some((
+-                    data.size(frame_index),
+-                    Cow::Borrowed(
+-                        data.as_bytes(frame_index)
+-                            .expect("It's the caller's job to pass a valid frame index"),
+-                    ),
+-                )))
++                Ok(data
++                    .as_bytes(frame_index)
++                    .map(|bytes| (data.size(frame_index), Cow::Borrowed(bytes))))
+             })?
+-            .expect("Callback above only returns Some");
++        else {
++            // Ask for one more frame: the owner decodes it again when it next renders.
++            if self.missing_images.is_empty() {
++                self.on_next_frame(|window, _| window.refresh());
++            }
++            self.missing_images.push(data.id);
++            return Ok(());
++        };
+ 
+         let visible_bounds_snapped = self.snap_bounds(visible_bounds);
+ 

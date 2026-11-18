@@ -14,6 +14,7 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
+from hlib import as_migrated, doc_file, docs
 from PIL import Image, ImageChops
 
 here = Path(__file__).resolve().parent
@@ -63,11 +64,12 @@ def stable(folder):
 
 
 def read_doc(folder):
-    return ET.fromstring("<doc>" + (folder / "lib/docs" / (doc_id + ".xml")).read_text() + "</doc>")
+    return ET.fromstring("<doc>" + doc_file(folder / "lib").read_text() + "</doc>")
 
 
 def same_doc(folder, expected, saved=None):
     saved = read_doc(folder) if saved is None else saved
+    as_migrated(expected)
     for tree in (expected, saved):
         for time in tree.findall('.//time'):
             time.text = None  # The serializer derives the displayed date label.
@@ -77,7 +79,8 @@ def same_doc(folder, expected, saved=None):
 
 
 def setup(activate=""):
-    return ("key cmd-f\ntype CARET_ANCHOR\nkey escape\nkey left\n"
+    # The wheel waits for the find bar to close; earlier it is sometimes dropped.
+    return ("key cmd-f\ntype CARET_ANCHOR\nkey escape\nkey left\nwait 500\n"
             "wheel 1100 500 700\nwait 500\n" + activate
             + "move 1150 820\nwait 200\nshot before\n")
 

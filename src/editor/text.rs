@@ -654,7 +654,10 @@ fn span_color(spec: &TextSpec, m: &Marks) -> Hsla {
 
 use crate::editor_ui::{CJK_PUNCT_FONT, is_cjk_punct};
 
+#[cfg(not(target_family = "wasm"))]
 const QUOTE_FONT: &str = "Helvetica Neue";
+#[cfg(target_family = "wasm")]
+const QUOTE_FONT: &str = crate::theme::UI_FONT;
 
 /// Shaped in place of an equation's U+FFFC: same UTF-8 length, a glyph of
 /// the text font (so the line's ascent is unchanged).
@@ -767,13 +770,6 @@ pub fn build_runs(
         }
     }
     runs
-}
-
-impl IntoElement for RichTextElement {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
 }
 
 impl Element for RichTextElement {
@@ -1601,9 +1597,29 @@ mod tests {
     /// Editor text shapes CJK through CoreText's PingFang fallback, while CJK
     /// punctuation loads the PingFang SC family (`CJK_PUNCT_FONT`): both must
     /// keep drawing the right glyphs.
+    ///
+    /// CoreText's fallback copy of PingFang SC shares its PostScript name with
+    /// the PingFang SC family but not its glyph table (vendor patch
+    /// fallback-font-identity). Shapes the text in the system font before and
+    /// after loading that family, and checks every glyph against its face.
     #[test]
     fn cjk_fallback_glyphs() {
-        gpui::check_fallback_glyphs("周末规划一背景本季度目标").unwrap();
+        use gpui::{FontFallbacks, FontRun, PlatformTextSystem, px};
+        let text = "周末规划一背景本季度目标";
+        let fonts = gpui_apple::AppleTextSystem::new();
+        let mut ui = gpui::font(".SystemUIFont");
+        ui.fallbacks = Some(FontFallbacks::from_fonts(vec!["PingFang SC".into()]));
+        let font_id = fonts.font_id(&ui).unwrap();
+        for pass in 0..2 {
+            if pass == 1 { fonts.font_id(&gpui::font("PingFang SC")).unwrap(); }
+            let layout = fonts.layout_line(text, px(16.), &[FontRun { font_id, len: text.len() }]);
+            for run in &layout.runs {
+                for g in &run.glyphs {
+                    let ch = text[g.index..].chars().next().unwrap_or_default();
+                    assert_eq!(fonts.glyph_for_char(run.font_id, ch), Some(g.id), "{ch:?} drawn from the wrong face (pass {pass})");
+                }
+            }
+        }
     }
 
     #[test]
@@ -1620,4 +1636,10 @@ mod tests {
         // Shorter text clamps the old offset.
         assert_eq!(hscroll(px(120.), px(120.), w, px(208.)), px(28.));
     }
+}
+
+#[cfg(target_os = "ios")]
+impl IntoElement for RichTextElement {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
 }

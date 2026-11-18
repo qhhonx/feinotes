@@ -3,7 +3,8 @@ use crate::store::Entry;
 use crate::theme::{self, Theme};
 use crate::ui::{icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
-use std::{cell::Cell, collections::{HashMap, HashSet, VecDeque}, rc::Rc, time::Instant};
+use std::{cell::Cell, collections::{HashMap, HashSet, VecDeque}, rc::Rc};
+use web_time::Instant;
 
 const PITCH: f32 = 31.;
 /// Whether clicking a folder open or shut animates (the drawer below): 外观 ›

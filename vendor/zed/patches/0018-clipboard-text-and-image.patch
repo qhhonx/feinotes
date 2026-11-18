@@ -1,0 +1,99 @@
+quiet.md #22: read text and one image from the macOS pasteboard
+
+Upstream returns the first kind it recognises (files, then a string, then an
+image). Screenshot tools put both an image and a text fallback on the
+pasteboard; return the string and one image (PNG before TIFF) so the document
+can take the image while text fields still read the text. Empty image data is
+skipped. Tested on private pasteboards (pasteboard::tests).
+
+diff --git a/crates/gpui_macos/src/pasteboard.rs b/crates/gpui_macos/src/pasteboard.rs
+index e9565b7b0daec21e6b32a42f4afe6610636f91a7..95fafd41ad2568b7c277fbf265c808e29341b7ed 100644
+--- a/crates/gpui_macos/src/pasteboard.rs
++++ b/crates/gpui_macos/src/pasteboard.rs
+@@ -92,22 +92,22 @@ impl Pasteboard {
+                 }
+             }
+ 
+-            // Next, check for a plain string.
++            // quiet.md: screenshot tools can supply both an image and a text
++            // fallback. Keep both, so the receiving view can choose: a plain
++            // string, then one image representation (the most likely format
++            // first: PNG before TIFF).
++            let mut entries = Vec::new();
+             if let Some(string_entry) = self.read_string_from_pasteboard() {
+-                return Some(ClipboardItem {
+-                    entries: vec![string_entry],
+-                });
++                entries.push(string_entry);
+             }
+-
+-            // Finally, try the various supported image types.
+             for format in ImageFormat::iter() {
+                 if let Some(item) = self.read_image(format) {
+-                    return Some(item);
++                    entries.extend(item.entries);
++                    break;
+                 }
+             }
++            (!entries.is_empty()).then_some(ClipboardItem { entries })
+         }
+-
+-        None
+     }
+ 
+     fn read_image(&self, format: ImageFormat) -> Option<ClipboardItem> {
+@@ -115,7 +115,8 @@ impl Pasteboard {
+ 
+         let types = self.inner.types()?;
+         if types.containsObject(ut_type.inner()) {
+-            self.data_for_type(ut_type.inner()).map(|bytes| {
++            // quiet.md: an empty image representation is skipped.
++            self.data_for_type(ut_type.inner()).filter(|bytes| !bytes.is_empty()).map(|bytes| {
+                 let id = hash(&bytes);
+ 
+                 ClipboardItem {
+@@ -310,6 +311,44 @@ mod tests {
+ 
+     use super::*;
+ 
++    // quiet.md: a private pasteboard, never the user's clipboard.
++    fn add_image(pasteboard: &Pasteboard, image: &Image) {
++        let bytes = NSData::with_bytes(&image.bytes);
++        pasteboard.inner.setData_forType(Some(&bytes), UTType::from(image.format).inner());
++    }
++
++    #[test]
++    fn test_image_with_text_fallback() {
++        let pasteboard = Pasteboard::unique();
++        let text = ClipboardItem::new_string("screenshot.png".into());
++        pasteboard.write(text.clone());
++        let image = Image::from_bytes(ImageFormat::Png, vec![1, 2, 3]);
++        add_image(&pasteboard, &image);
++        let mut expected = text.entries;
++        expected.push(ClipboardEntry::Image(image));
++        assert_eq!(pasteboard.read(), Some(ClipboardItem { entries: expected }));
++    }
++
++    #[test]
++    fn test_png_preferred_over_tiff() {
++        let pasteboard = Pasteboard::unique();
++        let tiff = Image::from_bytes(ImageFormat::Tiff, vec![4, 5, 6]);
++        pasteboard.write(ClipboardItem { entries: vec![ClipboardEntry::Image(tiff.clone())] });
++        assert_eq!(pasteboard.read(), Some(ClipboardItem { entries: vec![ClipboardEntry::Image(tiff)] }));
++        let png = Image::from_bytes(ImageFormat::Png, vec![1, 2, 3]);
++        add_image(&pasteboard, &png);
++        assert_eq!(pasteboard.read(), Some(ClipboardItem { entries: vec![ClipboardEntry::Image(png)] }));
++    }
++
++    #[test]
++    fn test_empty_image_falls_back_to_text() {
++        let pasteboard = Pasteboard::unique();
++        let text = ClipboardItem::new_string("text".into());
++        pasteboard.write(text.clone());
++        add_image(&pasteboard, &Image::from_bytes(ImageFormat::Png, vec![]));
++        assert_eq!(pasteboard.read(), Some(text));
++    }
++
+     #[test]
+     fn test_string() {
+         let pasteboard = Pasteboard::unique();

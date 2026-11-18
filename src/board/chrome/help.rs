@@ -126,14 +126,14 @@ fn modal(id: &'static str, max_w: f32, title: &'static str, body: impl IntoEleme
     let dialog = div().id(id).occlude().w_full().max_w(px(max_w)).max_h(relative(1.)).overflow_y_scroll()
         .bg(style::island_bg()).border_1().border_color(style::dialog_border()).shadow(style::shadow_modal()).rounded(px(12.)).p(px(40.)).text_color(style::text())
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .on_scroll(|_, _, cx| cx.stop_propagation())
         .child(div().pb(px(12.)).mb(px(24.)).border_b_1().border_color(style::dialog_border()).text_size(px(20.)).line_height(style::lh(20.)).font_weight(FontWeight::BOLD).child(title))
         .child(body);
     deferred(div().id((id, 1usize)).occlude().absolute().top_0().left_0().size_full().p(px(40.)).bg(style::overlay_bg()).flex().items_center().justify_center()
         .font_family(style::UI_FONT)
         .on_mouse_down(MouseButton::Left, cx.listener(move |me, _, _, cx| close(me, cx)))
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .on_scroll(|_, _, cx| cx.stop_propagation())
         .child(dialog)).with_priority(5)
 }
 

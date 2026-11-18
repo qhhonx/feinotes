@@ -29,6 +29,8 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 - `python3 tools/harness/scroll_intent.py` 验证标题折叠/展开保留视口和文字选区、隐藏光标迁到标题后仍可见、输入/方向键仍跟随光标，以及分栏调整与两种主题代码换行的保存和位置保持；需要 Pillow。`SCROLL_CASES` 可指定逗号分隔的场景名。
 - `python3 tools/harness/pointer_properties.py` 逐项验证图片对齐、附件卡片/预览、提示块颜色/图标/默认设置、倒计时、日期提醒和单元格背景/垂直对齐，核对视口、编辑位置、保存及撤销重做；需要 Pillow。`PROPERTY_CASES` 可指定逗号分隔的场景名；单独运行撤销场景时，会先验证对应基础操作确实生效。
 - `python3 tools/harness/clipboard_images.py` 用模拟剪贴板验证 TIFF 截图、图片附带文字、多图、光标处插入、保存、撤销重做，以及纯文本和富文本粘贴；需要 Pillow。
+- `python3 tools/harness/gpui_patches.py` 逐项检查 vendor 里 GPUI 补丁给应用带来的行为（文字排版、滚动条、单轴滚动、图片内存、自定义快捷键、首次启动等，见 vendor/PATCHES.md 的「验证」）。`FDL_REF_BIN` 给出升级前的二进制时，每个场景两边都跑，比较各行文字的位置和墨量；需要 Pillow。可以在命令行上指定场景（`text`、`scrollbar`、`images`…）。
+- 这些脚本按旧的布局（`docs/<id>.xml` + `index.json`）写文档库，应用打开时会迁移成 FORMAT 4（按标题命名的文件、真实文件夹，`assets/` 变成 `.assets/`）。读回保存结果用 `hlib.py` 里的 `doc_file`，预期内容里的资源路径用 `as_migrated` 换过来。
 - `python3 tools/harness/paste_remote_images.py` 用本机 HTTP 服务和模拟剪贴板验证从网页粘贴的网络图片下载后变成文档库自己的图片（#220），覆盖撤销重做、关闭「自动下载网络图片」时不联网、已过期链接保持原样；需要 Pillow。
 - 比较时光标不闪烁（`FDL_NOBLINK`）。脚本开头要先把指针移到空白处，否则真实鼠标的位置会以 hover 的形式出现在截图里。
 - 旧版二进制可以这样编：`git worktree add /tmp/old <提交>`，在那里用 `CARGO_TARGET_DIR=<本仓库>/target cargo build --release --features devtools`，再把二进制复制出来。

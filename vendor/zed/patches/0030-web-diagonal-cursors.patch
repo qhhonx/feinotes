@@ -1,0 +1,17 @@
+gpui_web: the diagonal resize cursors were swapped (ResizeUpLeftDownRight is CSS nwse-resize, upper-left to lower-right). Image corner handles in the web demo pointed the wrong way
+
+diff --git a/crates/gpui_web/src/platform.rs b/crates/gpui_web/src/platform.rs
+index e9ef2de91c21df56395cc5eb8acc1c8f037a4db9..3aaf65c8a6b4e89c5fbb0049525a945dfc698168 100644
+--- a/crates/gpui_web/src/platform.rs
++++ b/crates/gpui_web/src/platform.rs
+@@ -592,8 +592,8 @@ impl Platform for WebPlatform {
+             CursorStyle::ResizeUp | CursorStyle::ResizeDown | CursorStyle::ResizeUpDown => {
+                 "ns-resize"
+             }
+-            CursorStyle::ResizeUpLeftDownRight => "nesw-resize",
+-            CursorStyle::ResizeUpRightDownLeft => "nwse-resize",
++            CursorStyle::ResizeUpLeftDownRight => "nwse-resize",
++            CursorStyle::ResizeUpRightDownLeft => "nesw-resize",
+             CursorStyle::ResizeColumn => "col-resize",
+             CursorStyle::ResizeRow => "row-resize",
+             CursorStyle::IBeamCursorForVerticalLayout => "vertical-text",

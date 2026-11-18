@@ -1248,14 +1248,14 @@ mod tests {
     #[ignore]
     fn parse_and_serialize_speed() {
         let path = std::env::var("FDL_PERF_DOC").expect("FDL_PERF_DOC");
-        let xml = std::fs::read_to_string(path).unwrap();
-        let t = std::time::Instant::now();
+        let xml = crate::vfs::read_to_string(path).unwrap();
+        let t = web_time::Instant::now();
         let doc = parse(&xml).unwrap();
         let parsed = t.elapsed();
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let out = serialize(&doc);
         let serialized = t.elapsed();
-        let t = std::time::Instant::now();
+        let t = web_time::Instant::now();
         let copy = doc.clone();
         let cloned = t.elapsed();
         eprintln!("{} bytes: parse {parsed:?}, serialize {serialized:?}, clone {cloned:?}", out.len());
@@ -1424,7 +1424,7 @@ mod tests {
     #[ignore]
     fn library_round_trips() {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            for e in std::fs::read_dir(dir).unwrap() {
+            for e in crate::vfs::read_dir(dir).unwrap() {
                 let path = e.unwrap().path();
                 if path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) { continue; }
                 if path.is_dir() { walk(&path, out); } else if path.extension().is_some_and(|x| x == "xml") { out.push(path); }
@@ -1435,7 +1435,7 @@ mod tests {
         walk(std::path::Path::new(&dir), &mut files);
         assert!(!files.is_empty(), "no documents under {dir}");
         for path in files {
-            let src = std::fs::read_to_string(&path).unwrap();
+            let src = crate::vfs::read_to_string(&path).unwrap();
             let doc = parse(&src).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             let x = serialize(&doc);
             let again = parse(&x).unwrap();

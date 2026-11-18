@@ -85,7 +85,7 @@ pub mod ud {
 
 fn shadow(a: f32, y: f32, blur: f32, spread: f32) -> BoxShadow {
     let a = if crate::theme::dark() { (a * 3.).min(0.6) } else { a };
-    BoxShadow { #[cfg(target_os = "ios")] inset: false, color: rgbaf(31, 35, 41, a), offset: point(px(0.), px(y)), blur_radius: px(blur), spread_radius: px(spread) }
+    BoxShadow { inset: false, color: rgbaf(31, 35, 41, a), offset: point(px(0.), px(y)), blur_radius: px(blur), spread_radius: px(spread) }
 }
 
 /// Dropdowns and the slash / block menus (`shadow.popover`: 0 4 8).
@@ -109,9 +109,9 @@ pub fn shadow_s4_down() -> Vec<BoxShadow> {
 }
 
 pub const UI_FONT: &str = crate::theme::UI_FONT;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_family = "wasm")))]
 pub const MONO_FONT: &str = "Menlo";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_family = "wasm"))]
 pub const MONO_FONT: &str = crate::theme::MONO_FONT;
 
 pub struct Theme;

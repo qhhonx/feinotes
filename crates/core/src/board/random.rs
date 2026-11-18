@@ -25,14 +25,14 @@ struct State {
 
 fn entropy_seed() -> u64 {
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    h.write_u128(web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
     h.finish() | 1
 }
 
 thread_local! {
     static STATE: RefCell<State> = RefCell::new({
         let entropy = entropy_seed();
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(1);
+        let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(1);
         State { seed: now as i32, test_id: None, entropy }
     });
 }

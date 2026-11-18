@@ -2,6 +2,7 @@
 //! (see `sidebar.rs`) and the editor on the right, with the
 //! 64px top bar (breadcrumb title + save status) above the page.
 
+use fdl_core::vfs::PathExt as _;
 use crate::docinfo::DocInfo;
 use crate::docmenu::DocSub;
 use crate::editor::view::{Editor, EditorEvent};
@@ -12,12 +13,11 @@ use crate::shared_store::SharedStore;
 use crate::theme::{self, Theme, craft};
 use crate::ui::{TipExt, TipSide, TitleBarExt, ToastKind, icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 /// Autosave waits for this pause in editing, but never longer than
 /// SAVE_MAX_DELAY after the oldest change not yet on disk.
@@ -46,10 +46,8 @@ pub fn set_menus(cx: &mut App) {
         MenuItem::action(format!("{} {name}", tr("退出", "Quit")), Quit),
     ]);
     cx.set_menus(vec![
-        Menu { #[cfg(target_os = "ios")] disabled: false, name: name.into(), items: app_items },
+        Menu { disabled: false, name: name.into(), items: app_items },
         Menu {
-            #[cfg(target_os = "ios")]
-            disabled: false,
             name: tr("文件", "File").into(),
             items: vec![
                 MenuItem::action(tr("新建文档", "New Document"), NewDoc),
@@ -60,12 +58,11 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::separator(),
                 MenuItem::action(tr("关闭窗口", "Close Window"), CloseWindow),
             ],
+            disabled: false,
         },
         // The standard Edit menu: its items act on the focused editor, and
         // macOS adds 听写 and 表情与符号 to it.
         Menu {
-            #[cfg(target_os = "ios")]
-            disabled: false,
             name: tr("编辑", "Edit").into(),
             items: {
                 use crate::editor::keymap as k;
@@ -80,10 +77,9 @@ pub fn set_menus(cx: &mut App) {
                     MenuItem::os_action(tr("全选", "Select All"), k::SelectAll, OsAction::SelectAll),
                 ]
             },
+            disabled: false,
         },
         Menu {
-            #[cfg(target_os = "ios")]
-            disabled: false,
             name: tr("窗口", "Window").into(),
             items: vec![
                 MenuItem::action(tr("最小化", "Minimize"), Minimize),
@@ -91,6 +87,7 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::separator(),
                 MenuItem::action(tr("进入 / 退出全屏幕", "Enter / Exit Full Screen"), ToggleFullScreen),
             ],
+            disabled: false,
         },
     ]);
 }
@@ -98,15 +95,15 @@ pub fn set_menus(cx: &mut App) {
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         #[cfg(not(target_os = "ios"))]
-        KeyBinding::new("secondary-z", crate::editor::keymap::Undo, Some("Workspace")),
+        KeyBinding::new("cmd-z", crate::editor::keymap::Undo, Some("Workspace")),
         #[cfg(target_os = "ios")]
         KeyBinding::new("cmd-z", crate::editor::keymap::Undo, Some("Workspace")),
         #[cfg(not(target_os = "ios"))]
-        KeyBinding::new("secondary-shift-z", crate::editor::keymap::Redo, Some("Workspace")),
+        KeyBinding::new("cmd-shift-z", crate::editor::keymap::Redo, Some("Workspace")),
         #[cfg(target_os = "ios")]
         KeyBinding::new("cmd-shift-z", crate::editor::keymap::Redo, Some("Workspace")),
         #[cfg(not(target_os = "ios"))]
-        KeyBinding::new("secondary-y", crate::editor::keymap::Redo, Some("Workspace")),
+        KeyBinding::new("cmd-y", crate::editor::keymap::Redo, Some("Workspace")),
         #[cfg(target_os = "ios")]
         KeyBinding::new("cmd-y", crate::editor::keymap::Redo, Some("Workspace")),
         KeyBinding::new("cmd-n", NewDoc, None),
@@ -227,7 +224,7 @@ pub fn switch_library(root: std::path::PathBuf, cx: &mut App) {
         return;
     }
     let mine = crate::store::Store::internal_dir().join("preferences.json");
-    if !mine.exists() { let _ = std::fs::create_dir_all(mine.parent().unwrap()).and_then(|_| std::fs::copy(&prefs, &mine)); }
+    if !mine.fs_exists() { let _ = fdl_core::vfs::create_dir_all(mine.parent().unwrap()).and_then(|_| fdl_core::vfs::copy(&prefs, &mine)); }
     cx.restart();
 }
 
@@ -246,7 +243,7 @@ pub struct RowMenu {
     pub id: String,
     pub pos: Point<Pixels>,
     /// Which corner of the menu sits at `pos`.
-    pub corner: Corner,
+    pub corner: Anchor,
     /// 下载 submenu open.
     pub sub: bool,
     /// The 批量操作 menu for the checked rows.
@@ -423,7 +420,7 @@ pub struct Workspace {
     /// 回收站 rows, refreshed when the page opens or changes.
     pub trash: Vec<crate::store::TrashEntry>,
     /// A 回收站 row's menu: the page and where it opens.
-    pub trash_menu: Option<(String, Point<Pixels>, Corner)>,
+    pub trash_menu: Option<(String, Point<Pixels>, Anchor)>,
     /// The toast and when it appeared.
     pub toast: Option<(ToastKind, SharedString, Instant)>,
     toast_task: Option<Task<()>>,
@@ -466,7 +463,7 @@ pub struct Workspace {
 /// A macOS notification (only logged when scripted).
 #[cfg(not(target_os = "ios"))]
 fn notify_system(title: &str, body: &str) {
-    if crate::devtools::scripted() {
+    if crate::devtools::scripted() || cfg!(target_family = "wasm") {
         return eprintln!("notification: {title} / {body}");
     }
     let q = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
@@ -2206,7 +2203,8 @@ impl Render for Workspace {
             self.min_w = min_w;
             window.set_window_min_size(size(px(min_w), px(480.)));
             let vs = window.viewport_size();
-            if f32::from(vs.width) < min_w - 0.5 && !window.is_fullscreen() { window.resize(size(px(min_w), vs.height)); }
+            // The web build's window is the page: never resized from here.
+            if f32::from(vs.width) < min_w - 0.5 && !window.is_fullscreen() && !cfg!(target_family = "wasm") { window.resize(size(px(min_w), vs.height)); }
         }
         }
         let sidebar = if self.sidebar_open { Some(if matches!(self.view, View::Settings | View::Trash) { self.render_settings_sidebar(window, cx) } else { self.render_sidebar(window, cx) }) } else { None };
@@ -2410,7 +2408,7 @@ pub(crate) fn check_save_safety(phase: &str, cx: &mut App) {
                 ws.unsaved = true;
             }).unwrap();
             if name != "C" {
-                std::fs::write(store.file_path(&id).unwrap(), crate::docxml::serialize(&doc(&format!("disk-{name}")))).unwrap();
+                fdl_core::vfs::write(store.file_path(&id).unwrap(), crate::docxml::serialize(&doc(&format!("disk-{name}")))).unwrap();
             }
             windows.push((handle, id));
         }
@@ -2533,7 +2531,11 @@ impl Workspace {
                 }
             }))
             // Esc leaves 批量操作 (closing its menu or confirmation first), even from the editor.
-            .capture_key_down(cx.listener(|w, ev: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|w, ev: &KeyDownEvent, _window, cx| {
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                if ev.keystroke.key == "escape" && w.sharing.sheet.is_some() {
+                    w.close_sharing(_window, cx); cx.stop_propagation(); return;
+                }
                 let undo = crate::gpui_compat::secondary(ev.keystroke.modifiers,cx) && matches!(ev.keystroke.key.as_str(), "z" | "y");
                 if w.store.file_task_busy() || (w.file_history.busy && !undo) { cx.stop_propagation(); return; }
                 if ev.keystroke.key == "escape" && w.preview.is_some() { w.exit_preview(cx); cx.stop_propagation(); return; }

@@ -1,0 +1,136 @@
+quiet.md #12: synthetic italics for faces without an italic
+
+When italic text asks for a family with no italic face (PingFang), or CoreText
+falls back to such a face, use an "oblique twin" FontId of the upright face
+that is rasterized with WebKit's synthetic 14° shear; its glyph bounds are
+widened to match. Chinese italics now lean as they do in a browser; before
+they were drawn upright.
+
+diff --git a/crates/gpui_apple/src/text_system.rs b/crates/gpui_apple/src/text_system.rs
+index 36cbf9291af2ef06bee2a026c790832d28987bd5..854947b305ba781d65f84ccaedf248509620b6d4 100644
+--- a/crates/gpui_apple/src/text_system.rs
++++ b/crates/gpui_apple/src/text_system.rs
+@@ -78,8 +78,16 @@ struct AppleTextSystemState {
+     font_ids_by_postscript_name: HashMap<String, SmallVec<[FontId; 2]>>,
+     font_ids_by_font_key: HashMap<FontKey, SmallVec<[FontId; 4]>>,
+     postscript_names_by_font_id: HashMap<FontId, String>,
++    /// quiet.md: synthetic italics. Twins of upright faces that draw sheared,
++    /// for italic text in a family without an italic face (PingFang), as
++    /// browsers do.
++    oblique: HashSet<FontId>,
++    oblique_twins: HashMap<FontId, FontId>,
+ }
+ 
++/// WebKit's synthetic oblique, 14°.
++const OBLIQUE_SKEW: f32 = 0.2493;
++
+ impl AppleTextSystem {
+     /// Create a new AppleTextSystem.
+     pub fn new() -> Self {
+@@ -91,6 +99,8 @@ impl AppleTextSystem {
+             font_ids_by_postscript_name: HashMap::default(),
+             font_ids_by_font_key: HashMap::default(),
+             postscript_names_by_font_id: HashMap::default(),
++            oblique: HashSet::default(),
++            oblique_twins: HashMap::default(),
+         }))
+     }
+ }
+@@ -174,7 +184,10 @@ impl PlatformTextSystem for AppleTextSystem {
+                 },
+             )?;
+ 
+-            let font_id = candidates[ix];
++            let mut font_id = candidates[ix];
++            if font.style != FontStyle::Normal && candidate_properties[ix].style == FontkitStyle::Normal {
++                font_id = lock.oblique_twin(font_id);
++            }
+             lock.font_selections.insert(font.clone(), font_id);
+             Ok(font_id)
+         }
+@@ -431,6 +444,24 @@ impl AppleTextSystemState {
+         }
+     }
+ 
++    fn oblique_twin(&mut self, font_id: FontId) -> FontId {
++        if let Some(&twin) = self.oblique_twins.get(&font_id) {
++            return twin;
++        }
++        let twin = FontId(self.fonts.len());
++        self.fonts.push(self.fonts[font_id.0].clone());
++        if let Some(name) = self.postscript_names_by_font_id.get(&font_id).cloned() {
++            self.postscript_names_by_font_id.insert(twin, name);
++        }
++        self.oblique.insert(twin);
++        self.oblique_twins.insert(font_id, twin);
++        twin
++    }
++
++    fn is_italic(&self, font_id: FontId) -> bool {
++        self.oblique.contains(&font_id) || self.fonts[font_id.0].properties().style != FontkitStyle::Normal
++    }
++
+     fn is_emoji(&self, font_id: FontId) -> bool {
+         self.postscript_names_by_font_id
+             .get(&font_id)
+@@ -449,6 +480,14 @@ impl AppleTextSystemState {
+             .native_font()
+             .clone_with_font_size(f32::from(params.font_size) as CGFloat)
+             .get_bounding_rects_for_glyphs(kCTFontDefaultOrientation, &[params.glyph_id.0 as CGGlyph]);
++        // A sheared glyph reaches further right at the top, left below the baseline.
++        let mut rect = rect;
++        if self.oblique.contains(&params.font_id) {
++            let k = OBLIQUE_SKEW as CGFloat;
++            let (x0, x1) = (rect.origin.x + k * rect.origin.y, rect.origin.x + rect.size.width + k * (rect.origin.y + rect.size.height));
++            rect.origin.x = x0;
++            rect.size.width = x1 - x0;
++        }
+         // Flip to "origin is top left", as font-kit does.
+         let rect = RectF::new(
+             Vector2F::new(rect.origin.x as f32, -(rect.origin.y + rect.size.height) as f32),
+@@ -541,6 +580,9 @@ impl AppleTextSystemState {
+             } else {
+                 cx.set_gray_fill_color(0.0, 1.0);
+             }
++            if self.oblique.contains(&params.font_id) {
++                cx.concat_ctm(core_graphics::geometry::CGAffineTransform::new(1., 0., OBLIQUE_SKEW as CGFloat, 1., 0., 0.));
++            }
+             self.fonts[params.font_id.0]
+                 .native_font()
+                 .clone_with_font_size(f32::from(params.font_size) as CGFloat)
+@@ -565,6 +607,8 @@ impl AppleTextSystemState {
+     }
+ 
+     fn layout_line(&mut self, text: &str, font_size: Pixels, font_runs: &[FontRun]) -> LineLayout {
++        // UTF-16 ends of the runs that ask for italics.
++        let mut italic_ranges: SmallVec<[(isize, isize); 4]> = SmallVec::new();
+         // Construct the attributed string, converting UTF8 ranges to UTF16 ranges.
+         let mut string = CFMutableAttributedString::new();
+         let mut max_ascent = 0.0f32;
+@@ -589,6 +633,9 @@ impl AppleTextSystemState {
+ 
+                 let length = utf16_end - utf16_start;
+                 let cf_range = CFRange::init(utf16_start, length);
++                if self.is_italic(run.font_id) {
++                    italic_ranges.push((utf16_start, utf16_end));
++                }
+                 let font = &self.fonts[run.font_id.0];
+ 
+                 let font_metrics = font.metrics();
+@@ -626,7 +673,15 @@ impl AppleTextSystemState {
+                     .downcast::<CTFont>()
+                     .unwrap()
+             };
+-            let font_id = self.id_for_native_font(font);
++            let mut font_id = self.id_for_native_font(font);
++            // A fallback face for italic text that has no italic of its own.
++            let first = run.string_indices().first().copied().unwrap_or(-1);
++            if !self.is_italic(font_id)
++                && !self.is_emoji(font_id)
++                && italic_ranges.iter().any(|&(a, b)| (a..b).contains(&first))
++            {
++                font_id = self.oblique_twin(font_id);
++            }
+ 
+             let glyphs = match runs.last_mut() {
+                 Some(run) if run.font_id == font_id => &mut run.glyphs,

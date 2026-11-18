@@ -8,8 +8,6 @@ use crate::store::Entry;
 use crate::theme::{self, Theme, craft};
 use crate::ui::{TipExt, TitleBarExt, icon, popover, ui_text};
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 
 /// Row "…" menu geometry: 32pt rows, 11pt dividers, 6pt padding inside
 /// a 1pt border.
@@ -611,7 +609,7 @@ impl Workspace {
                     if batch && !w.batch.as_ref().is_some_and(|b| b.contains(&id2)) && !w.toggle_check(&id2) {
                         return;
                     }
-                    w.row_menu = Some(RowMenu { id: id2.clone(), pos, corner: Corner::TopLeft, sub: false, batch });
+                    w.row_menu = Some(RowMenu { id: id2.clone(), pos, corner: Anchor::TopLeft, sub: false, batch });
                     cx.notify();
                     });
                 }),
@@ -651,8 +649,8 @@ impl Workspace {
                     let b = lookup.borrow().get(&slot2).copied();
                     let pos = b.map_or(ev.position, |b| point(-b.left() - px(1.), b.top()));
                     let id = id.clone();
-                    if shared || id.starts_with("collection-") { w.row_menu = Some(RowMenu { id, pos, corner: Corner::TopLeft, sub: false, batch: false }); cx.notify(); }
-                    else { w.personal_action(window, cx, move |w, _, cx| { w.row_menu = Some(RowMenu { id, pos, corner: Corner::TopLeft, sub: false, batch: false }); cx.notify(); }); }
+                    if shared || id.starts_with("collection-") { w.row_menu = Some(RowMenu { id, pos, corner: Anchor::TopLeft, sub: false, batch: false }); cx.notify(); }
+                    else { w.personal_action(window, cx, move |w, _, cx| { w.row_menu = Some(RowMenu { id, pos, corner: Anchor::TopLeft, sub: false, batch: false }); cx.notify(); }); }
                 }),
             )
     }
@@ -966,15 +964,15 @@ impl Workspace {
         let (origin, corner) = if m.pos.x < px(0.) {
             let (left, top) = (-m.pos.x, f32::from(m.pos.y));
             if top + 20. + 2. + menu_h > vh - 8. {
-                (point(left, px(top - 2.)), Corner::BottomLeft)
+                (point(left, px(top - 2.)), Anchor::BottomLeft)
             } else {
-                (point(left, px(top + 22.)), Corner::TopLeft)
+                (point(left, px(top + 22.)), Anchor::TopLeft)
             }
         } else {
             (m.pos, m.corner)
         };
         let menu_top = match corner {
-            Corner::BottomLeft | Corner::BottomRight => f32::from(origin.y) - menu_h,
+            Anchor::BottomLeft | Anchor::BottomRight => f32::from(origin.y) - menu_h,
             _ => f32::from(origin.y),
         };
         let mut out = vec![
@@ -988,13 +986,13 @@ impl Workspace {
             // Level the submenu's first item with 下载.
             let top = row_sub_top(menu_top);
             let left = match corner {
-                Corner::TopRight | Corner::BottomRight => origin.x - px(ROW_MENU_W),
+                Anchor::TopRight | Anchor::BottomRight => origin.x - px(ROW_MENU_W),
                 _ => origin.x,
             };
             let x = left + px(ROW_MENU_W + 4.);
             out.push(
                 deferred(
-                    anchored().anchor(Corner::TopLeft).position(point(x, px(top))).snap_to_window_with_margin(px(8.)).child(
+                    anchored().anchor(Anchor::TopLeft).position(point(x, px(top))).snap_to_window_with_margin(px(8.)).child(
                         popover()
                             .id("rm-download-menu")
                             .occlude()

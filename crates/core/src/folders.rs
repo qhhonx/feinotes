@@ -6,7 +6,7 @@ impl Store {
         Self {
             #[cfg(feature = "sqlite-store")]
             sqlite: self.sqlite.clone(),
-            file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: self.trash.clone(), flat: self.flat,
+            file_changes: vec![], root: self.root.clone(), index: self.index.clone(), foreign: self.foreign.clone(), trash: self.trash.clone(), flat: self.flat,
             loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), warnings: vec![], migrated: None, batch: Default::default() }
     }
 
@@ -52,10 +52,10 @@ impl Store {
         // A folder is a folder on disk, named after its title.
         let dir = parent.and_then(|p| self.index.get(p)).map(|m| m.rel.clone()).unwrap_or_default();
         let rel = join_rel(&dir, &self.free_name(&dir, &file_name_for(title), None, None));
-        std::fs::create_dir_all(self.abs(&rel))?;
+        crate::vfs::create_dir_all(self.abs(&rel))?;
         self.index.insert(id.clone(), Meta { folder: Some(String::new()), rel: rel.clone(), created: t, modified: t, ..Default::default() });
         derive_tree(&mut self.index);
-        if let Err(e) = self.save_index() { self.index.remove(&id); let _ = std::fs::remove_dir(self.abs(&rel)); return Err(e); }
+        if let Err(e) = self.save_index() { self.index.remove(&id); let _ = crate::vfs::remove_dir(self.abs(&rel)); return Err(e); }
         self.record_file_change(&id, None);
         Ok(id)
     }

@@ -5,6 +5,7 @@
 //! complete files (`assets/themes/*.css`); the user's own live in
 //! `<library>/themes/*.css`, and one named after a built-in replaces it.
 
+use fdl_core::vfs::PathExt as _;
 use crate::editor_theme::TOKENS;
 use gpui::Hsla;
 use std::collections::HashMap;
@@ -67,9 +68,9 @@ pub struct Prop {
 
 /// The system families generic CSS names resolve to.
 pub const SYSTEM: &str = crate::theme::UI_FONT;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_family = "wasm")))]
 pub const SYSTEM_MONO: &str = ".AppleSystemUIFontMonospaced";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_family = "wasm"))]
 pub const SYSTEM_MONO: &str = crate::theme::MONO_FONT;
 
 pub static PROPS: LazyLock<Vec<Prop>> = LazyLock::new(|| {
@@ -779,17 +780,17 @@ pub fn load(selected: &str, all: bool, font_source: impl FnOnce() -> Vec<String>
     }
     let mut errors = vec![];
     let mut files: Vec<PathBuf> = if all {
-        std::fs::read_dir(dir()).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "css")).collect()).unwrap_or_default()
+        fdl_core::vfs::read_dir(dir()).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "css")).collect()).unwrap_or_default()
     } else if !selected.is_empty() && std::path::Path::new(selected).file_name().is_some_and(|n| n == selected) {
         vec![dir().join(format!("{selected}.css"))]
     } else { vec![] };
     files.sort();
     for p in files {
-        if !all && !p.exists() { continue; }
+        if !all && !p.fs_exists() { continue; }
         let id = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         if supported_id(&id) != id { continue; }
         let file = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| parse_with_fonts(&t, &mut resolve_fonts).map(|parsed| (t, parsed))) {
+        match fdl_core::vfs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| parse_with_fonts(&t, &mut resolve_fonts).map(|parsed| (t, parsed))) {
             Ok((text, parsed)) => {
                 let bundled = BUNDLED.iter().find(|(b, _)| *b == id).map(|(_, css)| *css);
                 let t = theme_of(id.clone(), &text, Some(p), bundled, parsed);
@@ -805,8 +806,8 @@ pub fn load(selected: &str, all: bool, font_source: impl FnOnce() -> Vec<String>
         if let Ok(p) = parse(css, &[]) { list.push(theme_of(id.into(), css, None, Some(css), p)); }
         // Preserve the user's craft.css override when the selected theme disappeared.
         let p = dir().join("craft.css");
-        if selected != "craft" && p.exists() {
-            match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| parse_with_fonts(&t, &mut resolve_fonts).map(|parsed| (t, parsed))) {
+        if selected != "craft" && p.fs_exists() {
+            match fdl_core::vfs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| parse_with_fonts(&t, &mut resolve_fonts).map(|parsed| (t, parsed))) {
                 Ok((text, parsed)) => list[0] = theme_of(id.into(), &text, Some(p), Some(css), parsed),
                 Err(e) => errors.push(format!("craft.css: {e}")),
             }
@@ -830,8 +831,8 @@ pub fn select(id: &str) -> String {
 }
 
 /// Modification stamps of the user's theme files (live reload compares them).
-pub fn stamp() -> Vec<(PathBuf, std::time::SystemTime, u64)> {
-    let mut v: Vec<_> = std::fs::read_dir(dir()).map(|rd| rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "css"))
+pub fn stamp() -> Vec<(PathBuf, web_time::SystemTime, u64)> {
+    let mut v: Vec<_> = fdl_core::vfs::read_dir(dir()).map(|rd| rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "css"))
         .filter_map(|e| { let m = e.metadata().ok()?; Some((e.path(), m.modified().ok()?, m.len())) }).collect()).unwrap_or_default();
     v.sort();
     v
@@ -844,9 +845,9 @@ pub fn editable_file(id: &str) -> std::io::Result<PathBuf> {
     let t = list.iter().find(|t| t.id == id).ok_or_else(|| std::io::Error::other("no such theme"))?;
     if let Some(p) = &t.path { return Ok(p.clone()) }
     let d = dir();
-    std::fs::create_dir_all(&d)?;
+    fdl_core::vfs::create_dir_all(&d)?;
     let p = d.join(format!("{id}.css"));
-    std::fs::write(&p, t.bundled.unwrap_or_default())?;
+    fdl_core::vfs::write(&p, t.bundled.unwrap_or_default())?;
     Ok(p)
 }
 
@@ -854,11 +855,11 @@ pub fn editable_file(id: &str) -> std::io::Result<PathBuf> {
 pub fn duplicate(id: &str) -> std::io::Result<(String, PathBuf)> {
     let list = THEMES.read().unwrap();
     let t = list.iter().find(|t| t.id == id).ok_or_else(|| std::io::Error::other("no such theme"))?;
-    let src = match &t.path { Some(p) => std::fs::read_to_string(p)?, None => t.bundled.unwrap_or_default().to_string() };
+    let src = match &t.path { Some(p) => fdl_core::vfs::read_to_string(p)?, None => t.bundled.unwrap_or_default().to_string() };
     let d = dir();
-    std::fs::create_dir_all(&d)?;
+    fdl_core::vfs::create_dir_all(&d)?;
     let (new_id, p) = (1..).map(|n| { let s = if n == 1 { format!("{id}-copy") } else { format!("{id}-copy-{n}") }; let p = d.join(format!("{s}.css")); (s, p) })
-        .find(|(s, p)| !p.exists() && !BUNDLED.iter().any(|(b, _)| b == s)).unwrap();
+        .find(|(s, p)| !p.fs_exists() && !BUNDLED.iter().any(|(b, _)| b == s)).unwrap();
     let name = format!("{} {}", t.name, crate::settings::tr("副本", "copy"));
     let mut out = String::with_capacity(src.len());
     for line in src.lines() {
@@ -868,14 +869,14 @@ pub fn duplicate(id: &str) -> std::io::Result<(String, PathBuf)> {
         out.push_str(line);
         out.push('\n');
     }
-    std::fs::write(&p, out)?;
+    fdl_core::vfs::write(&p, out)?;
     Ok((new_id, p))
 }
 
 /// Drop the user's copy of a built-in theme (or delete a theme of their own).
 pub fn remove(id: &str) -> std::io::Result<()> {
     let p = THEMES.read().unwrap().iter().find(|t| t.id == id).and_then(|t| t.path.clone());
-    match p { Some(p) => std::fs::remove_file(p), None => Ok(()) }
+    match p { Some(p) => fdl_core::vfs::remove_file(p), None => Ok(()) }
 }
 
 // ---- writing a complete stylesheet
@@ -1017,8 +1018,8 @@ mod tests {
     #[ignore]
     fn write_base_css() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/themes");
-        std::fs::write(format!("{dir}/craft.css"), base_css(false, "Craft", "Craft", CRAFT_DESCRIPTION)).unwrap();
-        std::fs::write(format!("{dir}/feishu.css"), base_css(true, "飞书", "Feishu", FEISHU_DESCRIPTION)).unwrap();
+        fdl_core::vfs::write(format!("{dir}/craft.css"), base_css(false, "Craft", "Craft", CRAFT_DESCRIPTION)).unwrap();
+        fdl_core::vfs::write(format!("{dir}/feishu.css"), base_css(true, "飞书", "Feishu", FEISHU_DESCRIPTION)).unwrap();
     }
 
     #[test]

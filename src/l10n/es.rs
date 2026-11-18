@@ -529,6 +529,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("刚刚", "ahora mismo"),
     ("文档不存在", "No se encontró el documento"),
     ("文档已被另一个实例修改，未覆盖磁盘内容。请另存副本或重新载入磁盘版本", "Otra instancia ha modificado este documento, así que no se ha sobrescrito el archivo en disco. Guarda una copia o vuelve a cargar la versión del disco"),
+    ("文档文件已不在原处，可能已被移动或删除", "El archivo del documento ya no está en su sitio. Puede que se haya movido o eliminado"),
     ("这个文档库由更新版本的 Quiet.md 创建，部分内容可能无法正确显示，请升级后再编辑", "Esta biblioteca se creó con una versión más reciente de Quiet.md y parte del contenido puede no mostrarse bien. Actualiza la app antes de editar"),
     ("通用", "General"),
     ("外观", "Apariencia"),

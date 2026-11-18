@@ -1,0 +1,42 @@
+Fei Notes: preserve CloudKit invitation universal-link delivery after the GPUI migration.
+
+diff --git a/crates/gpui_macos/src/platform.rs b/crates/gpui_macos/src/platform.rs
+index 1e53d12ce6fb44fb4346b7eccdcddee8aefc9add..1ef24413220661abddc5510cd124a2214ff023ce 100644
+--- a/crates/gpui_macos/src/platform.rs
++++ b/crates/gpui_macos/src/platform.rs
+@@ -140,6 +140,12 @@
+                 open_urls as extern "C-unwind" fn(_, Sel, *mut AnyObject, *mut AnyObject),
+             );
+ 
++            // Fei Notes: deliver browsing activities through the shared URL handler.
++            decl.add_method(
++                sel!(application:continueUserActivity:restorationHandler:),
++                continue_user_activity as extern "C-unwind" fn(_, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject) -> Bool,
++            );
++
+             decl.add_method(
+                 sel!(onKeyboardLayoutChange:),
+                 on_keyboard_layout_change as extern "C-unwind" fn(_, Sel, *mut AnyObject),
+@@ -1536,6 +1542,22 @@
+     }
+ }
+ 
++// Fei Notes: CloudKit invitation links can arrive as universal-link activities.
++extern "C-unwind" fn continue_user_activity(this: &AnyObject, _: Sel, app: *mut AnyObject, activity: *mut AnyObject, _: *mut AnyObject) -> Bool {
++    unsafe {
++        if activity.is_null() { return Bool::NO; }
++        let kind: *mut AnyObject = msg_send![activity, activityType];
++        if kind.is_null() { return Bool::NO; }
++        let kind: *const std::ffi::c_char = msg_send![kind, UTF8String];
++        if kind.is_null() || CStr::from_ptr(kind).to_bytes() != b"NSUserActivityTypeBrowsingWeb" { return Bool::NO; }
++        let url: *mut AnyObject = msg_send![activity, webpageURL];
++        if url.is_null() { return Bool::NO; }
++        let urls: *mut AnyObject = msg_send![class!(NSArray), arrayWithObject: url];
++        open_urls(this, sel!(application:openURLs:), app, urls);
++        Bool::YES
++    }
++}
++
+ extern "C-unwind" fn open_urls(this: &AnyObject, _: Sel, _: *mut AnyObject, urls: *mut AnyObject) {
+     let urls = unsafe {
+         urls.cast::<NSArray<NSURL>>()

@@ -8,8 +8,6 @@ use crate::model::*;
 use crate::editor_theme::{self as theme, Theme, craft};
 use crate::editor_ui::{ROW_RADIUS, TipExt, ToastKind, icon, menu, menu_glyph, menu_row, panel, popover};
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 use regex::Regex;
 use std::ops::Range;
 use std::sync::LazyLock;
@@ -333,7 +331,7 @@ impl Editor {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(rows)
             .child(button);
-        Some(at(self.rel(point(x, bottom)), Corner::TopLeft, el))
+        Some(at(self.rel(point(x, bottom)), Anchor::TopLeft, el))
     }
 
     // ---- hover card
@@ -468,7 +466,7 @@ impl Editor {
         let view_top = self.list.viewport_bounds().top();
         let x = union.center().x - px(CARD_W / 2.);
         let above = first.top() - px(7. + CARD_H) >= view_top;
-        let (pos, corner) = if above { (point(x, first.top() - px(7.)), Corner::BottomLeft) } else { (point(x, union.bottom() + px(7.)), Corner::TopLeft) };
+        let (pos, corner) = if above { (point(x, first.top() - px(7.)), Anchor::BottomLeft) } else { (point(x, union.bottom() + px(7.)), Anchor::TopLeft) };
         let btn = |id: &'static str| {
             div()
                 .id(id)

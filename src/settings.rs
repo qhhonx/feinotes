@@ -3,12 +3,11 @@
 //! each page a column of grouped rows. Only what a
 //! user really needs to change lives here.
 
+use fdl_core::vfs::PathExt as _;
 use crate::{app::{View, Workspace}, theme::{self, craft, Theme}, themes, ui};
 use crate::ui::{TitleBarExt, TipExt};
 use crate::sidebar as sb;
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -90,7 +89,7 @@ pub fn browsers() -> Vec<&'static str> {
         .into_iter()
         .filter(|name| {
             let app = format!("{name}.app");
-            Path::new("/Applications").join(&app).exists() || user.as_ref().is_some_and(|u| u.join(&app).exists())
+            Path::new("/Applications").join(&app).fs_exists() || user.as_ref().is_some_and(|u| u.join(&app).fs_exists())
         })
         .take(BROWSERS_SHOWN)
         .collect()
@@ -157,7 +156,7 @@ pub struct Preferences {
 
 /// A week between asks to move the library to real folders.
 const MIGRATE_ASK_EVERY: u64 = 7 * 24 * 3600;
-fn unix_now() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
+fn unix_now() -> u64 { web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
 
 /// 稍后 on the move to real folders: remember when.
 pub fn migrate_later() {
@@ -212,13 +211,13 @@ pub fn load() {
     let bytes = if crate::store::Store::sqlite_session() {
         crate::store::Store::sqlite_setting("preferences").ok().flatten().or({
             #[cfg(target_os = "ios")]
-            { std::fs::read(path()).ok() }
+            { fdl_core::vfs::read(path()).ok() }
             #[cfg(not(target_os = "ios"))]
             { None }
         })
-    } else { std::fs::read(path()).ok() };
+    } else { fdl_core::vfs::read(path()).ok() };
     #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-    let bytes = std::fs::read(path()).ok();
+    let bytes = fdl_core::vfs::read(path()).ok();
     let p = bytes.and_then(|b| serde_json::from_slice::<Preferences>(&b).ok()).unwrap_or_default();
     apply(p);
 }
@@ -278,12 +277,12 @@ pub(crate) fn save(p: &Preferences) -> anyhow::Result<()> {
     }
     use std::io::Write;
     let root = crate::store::Store::internal_dir();
-    std::fs::create_dir_all(&root)?;
+    fdl_core::vfs::create_dir_all(&root)?;
     let tmp = root.join("preferences.json.tmp");
-    let mut f = std::fs::File::create(&tmp)?;
+    let mut f = fdl_core::vfs::File::create(&tmp)?;
     f.write_all(&serde_json::to_vec_pretty(p)?)?;
     f.sync_all()?;
-    std::fs::rename(tmp, path())?;
+    fdl_core::vfs::rename(tmp, path())?;
     apply(p.clone());
     Ok(())
 }
@@ -334,7 +333,7 @@ fn open_in_editor(p: &std::path::Path, cx: &mut App) {
 
 /// Theme files are watched: saving one in an editor redraws at once.
 pub(crate) fn watch_themes(cx: &mut Context<Workspace>) {
-    static LAST: Mutex<Option<Vec<(std::path::PathBuf, std::time::SystemTime, u64)>>> = Mutex::new(None);
+    static LAST: Mutex<Option<Vec<(std::path::PathBuf, web_time::SystemTime, u64)>>> = Mutex::new(None);
     *LAST.lock().unwrap() = Some(themes::stamp());
     cx.spawn(async |this, cx| loop {
         cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
@@ -678,7 +677,7 @@ impl Workspace {
                 cx.notify();
             }))
             .child(div().id("theme-menu-list").w(px(200.)).max_h(px(302.)).overflow_y_scroll().py(px(ui::MENU_PAD_Y)).flex().flex_col().children(rows));
-        Some(deferred(anchored().anchor(Corner::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
+        Some(deferred(anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
     /// A choice as a dropdown button, like 界面语言's: the picked label, a menu of the rest.
@@ -719,7 +718,7 @@ impl Workspace {
                 cx.notify();
             }))
             .child(div().min_w(px(160.)).py(px(ui::MENU_PAD_Y)).flex().flex_col().children(rows));
-        Some(deferred(anchored().anchor(Corner::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
+        Some(deferred(anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
     fn pick_pref(&mut self, i: usize, cx: &mut Context<Self>) {
@@ -767,7 +766,7 @@ impl Workspace {
             }))
             .child(div().id("lang-menu-list").w(px(160.)).py(px(ui::MENU_PAD_Y)).flex().flex_col()
                 .when(cfg!(target_os = "ios"), |d| d.max_h(px(360.)).overflow_y_scroll()).children(rows));
-        Some(deferred(anchored().anchor(Corner::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
+        Some(deferred(anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
     /// Keys while the language dropdown is open; true when used.
@@ -1475,14 +1474,14 @@ impl Workspace {
         self.library_switching = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            if !cx.update(|cx| crate::app::save_windows_before(cx, |_| {})).unwrap_or(false) {
+            if !cx.update(|cx| crate::app::save_windows_before(cx, |_| {})) {
                 let _ = this.update(cx, |w, cx| { w.library_switching = false; cx.notify(); });
                 return;
             }
-            let _ = cx.update(crate::cloud_sync::release_unused);
+            cx.update(crate::cloud_sync::release_unused);
             let result = cx.background_executor().spawn(async move { prepared.schedule(&crate::store::Store::root_dir()) }).await;
             match result {
-                Ok(()) => { let _ = cx.update(crate::app::restart); }
+                Ok(()) => { cx.update(crate::app::restart); }
                 Err(error) => {
                     let _ = this.update(cx, |w, cx| {
                         w.library_switching = false;
@@ -1569,12 +1568,12 @@ impl Workspace {
         self.library_switching = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            if !cx.update(|cx| crate::app::save_windows_before(cx, |_| {})).unwrap_or(false) {
+            if !cx.update(|cx| crate::app::save_windows_before(cx, |_| {})) {
                 let _ = this.update(cx, |w, cx| { w.library_switching = false; cx.notify(); });
                 return;
             }
             match cx.background_executor().spawn(async move { crate::cloud_restore::select_library(selection) }).await {
-                Ok(_) => { let _ = cx.update(crate::app::restart); }
+                Ok(_) => { cx.update(crate::app::restart); }
                 Err(error) => {
                     let _ = this.update(cx, |w, cx| {
                         w.library_switching = false;
@@ -2317,6 +2316,7 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "关注文档更新" => "Follow document updates",
         "刚刚" => "just now",
         "文档不存在" => "Document not found",
+        "文档文件已不在原处，可能已被移动或删除" => "The document's file is no longer where it was. It may have been moved or deleted.",
         "文档已被另一个实例修改，未覆盖磁盘内容。请另存副本或重新载入磁盘版本" => "Another instance modified this document. The file was not overwritten. Save a copy or reload the version on disk.",
         "这个文档库由更新版本的 Quiet.md 创建，部分内容可能无法正确显示，请升级后再编辑" => "These documents were created by a newer version of Quiet.md. Update the app before editing them.",
         _ => text,
@@ -2390,6 +2390,7 @@ fn diagnostic_for(message: &str, english: bool) -> String {
 
 #[cfg(test)]
 mod localization_tests {
+    use fdl_core::vfs::PathExt as _;
     use super::{localize, diagnostic_for, display_title};
 
     #[test]
@@ -2401,11 +2402,11 @@ mod localization_tests {
             }
         }
         fn walk(dir: &std::path::Path, pattern: &regex::Regex) {
-            for entry in std::fs::read_dir(dir).unwrap() {
+            for entry in fdl_core::vfs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
-                if path.is_dir() { walk(&path, pattern); }
+                if path.fs_is_dir() { walk(&path, pattern); }
                 else if path.extension().is_some_and(|ext| ext == "rs") {
-                    let source = std::fs::read_to_string(path).unwrap();
+                    let source = fdl_core::vfs::read_to_string(path).unwrap();
                     for hit in pattern.captures_iter(source.split("#[cfg(test)]").next().unwrap()) { check(&hit[1]); }
                 }
             }

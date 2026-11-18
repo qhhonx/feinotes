@@ -12,8 +12,6 @@ use crate::feishu_theme as theme;
 use crate::editor_theme::Theme;
 use crate::editor_ui::{MENU_RADIUS, ROW_RADIUS, TipExt, icon};
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EmojiTarget {
@@ -404,7 +402,7 @@ impl Editor {
             .shadow(theme::shadow_s4_down())
             .font_family(theme::UI_FONT)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+            .on_scroll(cx.listener(|_, _, _, cx| cx.notify()))
             .when(tabs, |d| {
                 d.child(
                     div().flex_none().h(px(TABS_H)).pl(px(24.)).flex().child(
@@ -446,7 +444,7 @@ impl Editor {
         let (x, y) = if over_below <= over_right { (l, b + OFFSET) } else { (r + OFFSET, t) };
         let x = x.min(vw - BOUNDARY - W).max(BOUNDARY);
         let y = y.min(vh - BOUNDARY - h).max(BOUNDARY);
-        Some(at(self.rel(point(px(x), px(y))), Corner::TopLeft, el))
+        Some(at(self.rel(point(px(x), px(y))), Anchor::TopLeft, el))
     }
 }
 

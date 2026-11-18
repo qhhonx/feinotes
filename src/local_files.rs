@@ -146,7 +146,7 @@ impl Incoming {
         cx.spawn(async move |cx| loop {
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             if !self.1.borrow().is_empty() {
-                let _ = cx.update(|cx| {
+                cx.update(|cx| {
                     let target = cx.active_window().and_then(|w| w.downcast::<Workspace>())
                         .or_else(|| cx.windows().into_iter().find_map(|w| w.downcast::<Workspace>()));
                     let target = match target {
@@ -162,7 +162,7 @@ impl Incoming {
                 });
             }
             if !self.0.borrow().is_empty() {
-                let _ = cx.update(|cx| {
+                cx.update(|cx| {
                     let personal = |w: &WindowHandle<Workspace>| w.read(cx).is_ok_and(|ws| !ws.is_shared());
                     let target = cx.active_window().and_then(|w| w.downcast::<Workspace>()).filter(personal)
                         .or_else(|| cx.windows().into_iter().filter_map(|w| w.downcast::<Workspace>()).find(personal));

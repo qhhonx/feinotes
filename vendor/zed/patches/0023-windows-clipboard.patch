@@ -1,0 +1,130 @@
+quiet.md #16: Windows clipboard: PNG for bitmaps, copied files as images
+
+Upstream now reads text, one image (CF_DIB included) and copied files in one
+pass. On top of that: a bitmap tool may list CF_DIB before its PNG, so prefer
+the PNG and otherwise turn the bitmap into a PNG (the document stores it; a
+BMP is large). Upstream's DIB conversion adds the 12 bytes of BI_BITFIELDS
+masks for V4/V5 headers too, which hold them inside the header, and shifts
+the picture: use our conversion. Copied files that are all images (Explorer)
+paste as those images; other copied files paste as their paths, one per
+line, when there is no text.
+
+diff --git a/crates/gpui_windows/src/clipboard.rs b/crates/gpui_windows/src/clipboard.rs
+index 11eb2a8129bdd2aef5c9bf9ebfa4608d82f6c564..096caf018dae1fb3bd443532f8b83f1e3f6dcebe 100644
+--- a/crates/gpui_windows/src/clipboard.rs
++++ b/crates/gpui_windows/src/clipboard.rs
+@@ -8,8 +8,8 @@ use windows::Win32::{
+     System::{
+         DataExchange::{
+             CloseClipboard, CountClipboardFormats, EmptyClipboard, EnumClipboardFormats,
+-            GetClipboardData, GetClipboardFormatNameW, OpenClipboard, RegisterClipboardFormatW,
+-            SetClipboardData,
++            GetClipboardData, GetClipboardFormatNameW, IsClipboardFormatAvailable, OpenClipboard,
++            RegisterClipboardFormatW, SetClipboardData,
+         },
+         Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
+         Ole::{CF_DIB, CF_HDROP, CF_UNICODETEXT},
+@@ -120,6 +120,7 @@ pub(crate) fn read_from_clipboard() -> Option<ClipboardItem> {
+         }
+     }
+ 
++    quiet_md_adjust(&mut entries);
+     if entries.is_empty() {
+         log_unsupported_clipboard_formats();
+         return None;
+@@ -127,6 +128,95 @@ pub(crate) fn read_from_clipboard() -> Option<ClipboardItem> {
+     Some(ClipboardItem { entries })
+ }
+ 
++/// quiet.md: what the document can paste. A bitmap tool may list CF_DIB
++/// before its PNG: take the PNG, or turn the bitmap into one (a document
++/// stores it, and BMP files are large). Copied files that are all images
++/// paste as those images; other copied files paste as their paths, one per
++/// line, when there is no text.
++fn quiet_md_adjust(entries: &mut Vec<ClipboardEntry>) {
++    let available = |f: u32| unsafe { IsClipboardFormatAvailable(f) }.is_ok();
++    let image_ix = entries.iter().position(|e| matches!(e, ClipboardEntry::Image(_)));
++    if let Some(ix) = image_ix
++        && let ClipboardEntry::Image(image) = &entries[ix]
++        && image.format == ImageFormat::Bmp
++    {
++        let png = [*CLIPBOARD_PNG_FORMAT, *CLIPBOARD_JPG_FORMAT, *CLIPBOARD_GIF_FORMAT, *CLIPBOARD_SVG_FORMAT]
++            .into_iter()
++            .filter(|f| available(*f))
++            .find_map(read_image)
++            .or_else(|| {
++                let bytes = convert_to_png(&dib_to_bmp(get_clipboard_data(CF_DIB.0 as u32)?.as_bytes())?, ImageFormat::Bmp)?;
++                let id = hash(&bytes);
++                Some(ClipboardEntry::Image(Image { format: ImageFormat::Png, bytes, id }))
++            });
++        match png {
++            Some(png) => entries[ix] = png,
++            None => { entries.remove(ix); }
++        }
++    }
++    let has_image = entries.iter().any(|e| matches!(e, ClipboardEntry::Image(_)));
++    let has_text = entries.iter().any(|e| matches!(e, ClipboardEntry::String(_)));
++    let files: Vec<std::path::PathBuf> = entries.iter().find_map(|e| match e {
++        ClipboardEntry::ExternalPaths(paths) => Some(paths.paths().to_vec()),
++        _ => None,
++    }).unwrap_or_default();
++    if !has_image && !files.is_empty() {
++        let images: Vec<_> = files.iter().map_while(|f| read_image_file(f)).collect();
++        if images.len() == files.len() {
++            entries.extend(images);
++        } else if !has_text {
++            let text = files.iter().map(|f| f.to_string_lossy()).join("\n");
++            entries.push(ClipboardEntry::String(ClipboardString::new(text)));
++        }
++    }
++}
++
++/// quiet.md: a copied image file, read as the image it holds.
++fn read_image_file(path: &std::path::Path) -> Option<ClipboardEntry> {
++    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
++    let format = match ext.as_str() {
++        "png" => ImageFormat::Png,
++        "jpg" | "jpeg" => ImageFormat::Jpeg,
++        "gif" => ImageFormat::Gif,
++        "webp" => ImageFormat::Webp,
++        "bmp" => ImageFormat::Bmp,
++        "svg" => ImageFormat::Svg,
++        _ => return None,
++    };
++    let bytes = std::fs::read(path).map_err(|e| log::warn!("Failed to read copied image {path:?}: {e}")).ok()?;
++    let id = hash(&bytes);
++    Some(ClipboardEntry::Image(Image { format, bytes, id }))
++}
++
++/// quiet.md: a device-independent bitmap as a BMP file. Only a 40-byte
++/// BITMAPINFOHEADER keeps BI_BITFIELDS / BI_ALPHABITFIELDS masks after the
++/// header; V4 and V5 headers hold them inside (upstream's
++/// convert_dib_to_bmp adds 12 bytes for those too and shifts the picture).
++fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
++    let u32_at = |i: usize| Some(u32::from_le_bytes(dib.get(i..i + 4)?.try_into().ok()?));
++    let header = u32_at(0)?;
++    if header < 40 || dib.len() < header as usize {
++        return None;
++    }
++    let bits = u16::from_le_bytes(dib.get(14..16)?.try_into().ok()?);
++    let compression = u32_at(16)?;
++    let used = u32_at(32)?;
++    let masks = match (header, compression) {
++        (40, 3) => 12,
++        (40, 6) => 16,
++        _ => 0,
++    };
++    let colors = if used > 0 { used } else if bits <= 8 { 1 << bits } else { 0 };
++    let offset = 14 + header + masks + colors * 4;
++    let mut bmp = Vec::with_capacity(14 + dib.len());
++    bmp.extend_from_slice(b"BM");
++    bmp.extend_from_slice(&(14 + dib.len() as u32).to_le_bytes());
++    bmp.extend_from_slice(&[0; 4]);
++    bmp.extend_from_slice(&offset.to_le_bytes());
++    bmp.extend_from_slice(dib);
++    Some(bmp)
++}
++
+ pub(crate) fn with_file_names<F>(hdrop: HDROP, mut f: F)
+ where
+     F: FnMut(String),

@@ -175,7 +175,7 @@ mod tests {
     /// CJK takes Xiaolai's full-width glyphs.
     #[test]
     fn fonts_register_and_measure() {
-        let ts = gpui::test_text_system();
+        let ts = std::rc::Rc::new(gpui::WindowTextSystem::new(Arc::new(gpui::TextSystem::new(Arc::new(gpui_apple::AppleTextSystem::new())))));
         ts.add_fonts(BUNDLED.iter().map(|b| Cow::Borrowed(bytes(b.0).unwrap())).collect()).unwrap();
         XIAOLAI_ADDED.with(|a| a.set(Some(true)));
         let m = super::super::render::GpuiMeasure(ts.clone());

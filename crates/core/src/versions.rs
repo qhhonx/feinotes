@@ -3,6 +3,7 @@
 //! index: no global manifest to merge, back up or corrupt. Older builds do
 //! not read this directory, so the layout needs no FORMAT bump.
 
+use crate::vfs::PathExt as _;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -42,7 +43,7 @@ fn base(root: &Path, trashed: bool) -> PathBuf { if trashed { trash_root(root) }
 fn label_path(dir: &Path, name: &str) -> PathBuf { dir.join(format!("{name}.name")) }
 
 fn label_of(dir: &Path, name: &str) -> Option<String> {
-    let text = std::fs::read_to_string(label_path(dir, name)).ok()?;
+    let text = crate::vfs::read_to_string(label_path(dir, name)).ok()?;
     let label = text.lines().next().unwrap_or("").trim().to_string();
     (!label.is_empty()).then_some(label)
 }
@@ -55,13 +56,13 @@ pub fn set_label(root: &Path, id: &str, name: &str, label: Option<&str>, trashed
     let path = label_path(&dir, name);
     let text: String = label.unwrap_or("").lines().next().unwrap_or("").trim().chars().take(MAX_LABEL).collect();
     if text.is_empty() {
-        match std::fs::remove_file(&path) {
+        match crate::vfs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
         }
     } else {
-        std::fs::create_dir_all(&dir)?;
+        crate::vfs::create_dir_all(&dir)?;
         crate::store::write_atomic(&path, text.as_bytes())
     }
 }
@@ -82,7 +83,7 @@ fn is_label(name: &str) -> bool { name.ends_with(".name") && safe_name(name.trim
 pub fn list(root: &Path, id: &str, trashed: bool) -> Vec<Version> {
     let mut out = vec![];
     let dir = base(root, trashed).join(id);
-    let Ok(entries) = std::fs::read_dir(&dir) else { return out };
+    let Ok(entries) = crate::vfs::read_dir(&dir) else { return out };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let Some(ms) = stamp(&name) else { continue };
@@ -97,7 +98,7 @@ pub fn list(root: &Path, id: &str, trashed: bool) -> Vec<Version> {
 
 pub fn read(root: &Path, id: &str, name: &str, trashed: bool) -> Result<String> {
     anyhow::ensure!(safe_name(name), "无效的历史版本文件名");
-    std::fs::read_to_string(base(root, trashed).join(id).join(name))
+    crate::vfs::read_to_string(base(root, trashed).join(id).join(name))
         .with_context(|| format!("读取历史版本 {name} 失败"))
 }
 
@@ -105,8 +106,8 @@ pub fn remove(root: &Path, id: &str, name: &str, trashed: bool) -> Result<()> {
     anyhow::ensure!(safe_name(name), "无效的历史版本文件名");
     let dir = base(root, trashed).join(id);
     let p = dir.join(name);
-    let _ = std::fs::remove_file(label_path(&dir, name));
-    match std::fs::remove_file(&p) {
+    let _ = crate::vfs::remove_file(label_path(&dir, name));
+    match crate::vfs::remove_file(&p) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.into()),
@@ -127,7 +128,7 @@ pub fn snapshot(root: &Path, id: &str, ext: &str, previous: &str, ms: u64, limit
         if !force && ms.saturating_sub(last.ms) < MIN_INTERVAL * 1000 { return Ok(()) }
     }
     let dir = history_root(root).join(id);
-    std::fs::create_dir_all(&dir)?;
+    crate::vfs::create_dir_all(&dir)?;
     let name = format!("{ms:013}-{}.{ext}", &uuid::Uuid::new_v4().to_string()[..8]);
     crate::store::write_atomic(&dir.join(&name), previous.as_bytes())?;
     versions.insert(0, Version { name, ms, size: previous.len() as u64, label: None });
@@ -141,10 +142,10 @@ fn trim(root: &Path, id: &str, versions: &mut Vec<Version>, limit: u32) {
     if versions.len() <= keep { return }
     let dir = history_root(root).join(id);
     for v in versions.drain(keep..) {
-        let _ = std::fs::remove_file(label_path(&dir, &v.name));
-        let _ = std::fs::remove_file(dir.join(&v.name));
+        let _ = crate::vfs::remove_file(label_path(&dir, &v.name));
+        let _ = crate::vfs::remove_file(dir.join(&v.name));
     }
-    if versions.is_empty() { let _ = std::fs::remove_dir(&dir); }
+    if versions.is_empty() { let _ = crate::vfs::remove_dir(&dir); }
 }
 
 /// Global ceiling: drop the oldest snapshots across all documents until the
@@ -152,9 +153,9 @@ fn trim(root: &Path, id: &str, versions: &mut Vec<Version>, limit: u32) {
 /// long note cannot starve the rest.
 fn trim_library(root: &Path) {
     let mut all: Vec<(u64, u64, PathBuf)> = vec![];
-    let Ok(dirs) = std::fs::read_dir(history_root(root)) else { return };
+    let Ok(dirs) = crate::vfs::read_dir(history_root(root)) else { return };
     for d in dirs.flatten() {
-        let Ok(files) = std::fs::read_dir(d.path()) else { continue };
+        let Ok(files) = crate::vfs::read_dir(d.path()) else { continue };
         for f in files.flatten() {
             let name = f.file_name().to_string_lossy().into_owned();
             let Some(ms) = stamp(&name) else { continue };
@@ -170,23 +171,23 @@ fn trim_library(root: &Path) {
     for (_, size, path) in all {
         if over == 0 { break }
         let label = PathBuf::from(format!("{}.name", path.display()));
-        let _ = std::fs::remove_file(label);
-        if std::fs::remove_file(&path).is_ok() { over = over.saturating_sub(size) }
+        let _ = crate::vfs::remove_file(label);
+        if crate::vfs::remove_file(&path).is_ok() { over = over.saturating_sub(size) }
     }
 }
 
 /// Follow the document into the 回收站, then back, then away for good.
 /// Files are moved one by one so a pre-existing directory is never replaced.
 fn move_dir(src: &Path, dst: &Path) {
-    if !src.is_dir() { return }
-    if std::fs::create_dir_all(dst).is_err() { return }
-    let Ok(entries) = std::fs::read_dir(src) else { return };
+    if !src.fs_is_dir() { return }
+    if crate::vfs::create_dir_all(dst).is_err() { return }
+    let Ok(entries) = crate::vfs::read_dir(src) else { return };
     for e in entries.flatten() {
         let name = e.file_name();
         let name = name.to_string_lossy();
-        if safe_name(&name) || is_label(&name) { let _ = std::fs::rename(e.path(), dst.join(name.as_ref())); }
+        if safe_name(&name) || is_label(&name) { let _ = crate::vfs::rename(e.path(), dst.join(name.as_ref())); }
     }
-    let _ = std::fs::remove_dir(src);
+    let _ = crate::vfs::remove_dir(src);
 }
 
 pub fn move_to_trash(root: &Path, id: &str) {
@@ -199,13 +200,13 @@ pub fn restore_from_trash(root: &Path, id: &str) {
 
 pub fn purge(root: &Path, id: &str) {
     let dir = trash_root(root).join(id);
-    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    let Ok(entries) = crate::vfs::read_dir(&dir) else { return };
     for e in entries.flatten() {
         let name = e.file_name();
         let name = name.to_string_lossy();
-        if safe_name(&name) || is_label(&name) { let _ = std::fs::remove_file(e.path()); }
+        if safe_name(&name) || is_label(&name) { let _ = crate::vfs::remove_file(e.path()); }
     }
-    let _ = std::fs::remove_dir(&dir);
+    let _ = crate::vfs::remove_dir(&dir);
 }
 
 #[cfg(test)]
@@ -213,8 +214,8 @@ mod tests {
     use super::*;
 
     fn lib() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("quiet-versions-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::vfs::temp_dir().join(format!("quiet-versions-{}", uuid::Uuid::new_v4()));
+        crate::vfs::create_dir_all(&d).unwrap();
         d
     }
 
@@ -234,7 +235,7 @@ mod tests {
         snapshot(&root, "a", "xml", "body 24", base + 25 * MIN_INTERVAL * 1000, 20, false).unwrap();
         snapshot(&root, "a", "xml", "body 24", base + 26 * MIN_INTERVAL * 1000, 20, true).unwrap();
         assert_eq!(list(&root, "a", false).len(), 20);
-        std::fs::remove_dir_all(&root).unwrap();
+        crate::vfs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -246,7 +247,7 @@ mod tests {
         assert_eq!(list(&root, "a", false).len(), 1);
         snapshot(&root, "a", "xml", "three", ms + MIN_INTERVAL * 1000, 20, false).unwrap();
         assert_eq!(list(&root, "a", false).len(), 2);
-        std::fs::remove_dir_all(&root).unwrap();
+        crate::vfs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -261,7 +262,7 @@ mod tests {
         move_to_trash(&root, "a");
         purge(&root, "a");
         assert!(list(&root, "a", true).is_empty());
-        std::fs::remove_dir_all(&root).unwrap();
+        crate::vfs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -303,6 +304,6 @@ mod tests {
         move_to_trash(&root, "a");
         purge(&root, "a");
         assert!(list(&root, "a", true).is_empty());
-        std::fs::remove_dir_all(&root).unwrap();
+        crate::vfs::remove_dir_all(&root).unwrap();
     }
 }

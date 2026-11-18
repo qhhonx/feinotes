@@ -8,7 +8,8 @@ use crate::model::*;
 use std::cell::{Cell, RefCell};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::ops::Range;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 use unicode_segmentation::UnicodeSegmentation;
 
 pub const TITLE: BlockId = BlockId(0);
@@ -2467,6 +2468,34 @@ impl Core {
     /// Nearest enclosing table, if any (block navigation stays inside it).
     /// Tab / Shift+Tab inside a table: caret to the end of the next / previous
     /// cell; Tab in the last cell appends a row. False outside tables.
+    /// ↑/↓ out of a 表格 cell: the stop in the cell above / below, same
+    /// column, or the first stop past the table. `None` when `us[i]` is in no
+    /// table or the step stays inside its cell; `Some(None)` when nothing
+    /// follows the table.
+    pub fn cell_vertical(&self, us: &[Unit], i: usize, down: bool) -> Option<Option<usize>> {
+        let p = self.path(us[i].id)?;
+        let ci = p.iter().rposition(|s| matches!(s, Seg::Cell(..)))?;
+        let Seg::Cell(r, c, _) = p[ci] else { return None };
+        let BlockKind::Table(t) = &block_at(&self.doc.blocks, &p[..ci])?.kind else { return None };
+        // In this table, and in cell `rc` when one is given.
+        let inside = |id: BlockId, rc: Option<(usize, usize)>| {
+            self.path(id).is_some_and(|q| q.len() > ci && q[..ci] == p[..ci] && matches!(q[ci], Seg::Cell(qr, qc, _) if rc.is_none_or(|x| x == (qr, qc))))
+        };
+        let next = if down { Some(i + 1) } else { i.checked_sub(1) };
+        if next.and_then(|n| us.get(n)).is_some_and(|u| inside(u.id, Some((r, c)))) {
+            return None;
+        }
+        let tr = if down { Some(r + (t.rows[r][c].rowspan as usize).max(1)).filter(|&x| x < t.rows.len()) } else { r.checked_sub(1) };
+        let mut order: Box<dyn Iterator<Item = usize>> = if down { Box::new(i + 1..us.len()) } else { Box::new((0..i).rev()) };
+        Some(match tr {
+            Some(tr) => {
+                let to = t.origin(tr, c);
+                order.find(|&k| inside(us[k].id, Some(to)))
+            }
+            None => order.find(|&k| !inside(us[k].id, None)),
+        })
+    }
+
     pub fn cell_step(&mut self, forward: bool) -> bool {
         let h = self.sel.head;
         let Some(p) = self.path(h.block) else { return false };
@@ -3809,6 +3838,29 @@ mod tests {
         let p = c.units().last().unwrap().id;
         c.sel = Selection::caret(Pos::new(p, 0));
         assert!(!c.cell_step(true));
+    }
+
+    #[test]
+    fn up_down_keep_the_table_column() {
+        let row = |r: usize| format!("<tr>{}</tr>", ["A", "B", "C"].map(|k| format!("<td><p>{k}{r}</p></td>")).concat());
+        let c = doc(&format!("<title>T</title><p>before</p><table>{}{}{}</table><p>after</p>", row(1), row(2), row(3)));
+        let us = c.units();
+        let at = |name: &str| us.iter().position(|u| c.text_of(u.id).is_some_and(|t| t.text == name)).unwrap();
+        let name = |k: Option<usize>| k.map(|k| c.text_of(us[k].id).unwrap().text.clone());
+        assert_eq!(name(c.cell_vertical(&us, at("B2"), false).unwrap()).as_deref(), Some("B1"));
+        assert_eq!(name(c.cell_vertical(&us, at("B2"), true).unwrap()).as_deref(), Some("B3"));
+        assert_eq!(name(c.cell_vertical(&us, at("C1"), false).unwrap()).as_deref(), Some("before"));
+        assert_eq!(name(c.cell_vertical(&us, at("A3"), true).unwrap()).as_deref(), Some("after"));
+        assert_eq!(c.cell_vertical(&us, at("before"), true), None);
+        let c = doc("<title>T</title><table><tr><td><p>a</p></td><td><p>b</p></td></tr></table>");
+        let us = c.units();
+        assert_eq!(c.cell_vertical(&us, 1, true), Some(None));
+        // A cell holding two paragraphs steps between them first.
+        let c = doc("<title>T</title><table><tr><td><p>x</p><p>y</p></td></tr><tr><td><p>z</p></td></tr></table>");
+        let us = c.units();
+        assert_eq!(c.cell_vertical(&us, 1, true), None);
+        assert_eq!(c.cell_vertical(&us, 2, true), Some(Some(3)));
+        assert_eq!(c.cell_vertical(&us, 3, false), Some(Some(2)));
     }
 
     #[test]

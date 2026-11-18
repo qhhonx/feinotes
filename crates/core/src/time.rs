@@ -3,7 +3,7 @@
 
 /// Wall-clock unix seconds.
 pub fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 /// Local (fixed +08:00 fallback when TZ unknown) civil time from a unix timestamp.
@@ -59,14 +59,18 @@ pub fn weekday(y: i64, m: u32, d: u32) -> u32 {
 
 /// Wall-clock unix milliseconds.
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
 pub fn local_offset() -> i64 {
     use std::sync::OnceLock;
     static OFF: OnceLock<i64> = OnceLock::new();
     *OFF.get_or_init(|| {
+        // The browser knows the zone; there is no `date` to run.
+        #[cfg(target_family = "wasm")]
+        return -(js_sys::Date::new_0().get_timezone_offset() as i64) * 60;
         // `date +%z` prints e.g. +0800.
+        #[cfg(not(target_family = "wasm"))]
         std::process::Command::new("date")
             .arg("+%z")
             .output()

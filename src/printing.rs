@@ -170,7 +170,7 @@ mod native {
             let _: () = msg_send![holder, close];
             let _: () = msg_send![holder, release];
         };
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         loop {
             cx.background_executor().timer(Duration::from_millis(50)).await;
             let loading: BOOL = unsafe { msg_send![web, isLoading] };
@@ -241,7 +241,7 @@ mod webview2 {
     use std::cell::RefCell;
     use std::fmt::Write as _;
     use std::rc::Rc;
-    use std::time::Instant;
+    use web_time::Instant;
     use webview2_com::Microsoft::Web::WebView2::Win32::*;
     use webview2_com::{
         CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler, NavigationCompletedEventHandler,
@@ -382,7 +382,7 @@ mod webview2 {
             },
             Job::Pdf(_) => None,
         };
-        let page = std::env::temp_dir().join(format!("quiet-md-print-{}.html", std::process::id()));
+        let page = fdl_core::vfs::temp_dir().join(format!("quiet-md-print-{}.html", fdl_core::vfs::process_id()));
         std::fs::write(&page, html).map_err(|_| fail())?;
         let host = unsafe {
             CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, w!("STATIC"), PCWSTR::null(), WS_POPUP, -20000, -20000, 800, 1000, (parent != 0).then_some(owner), None, None, None)
@@ -402,7 +402,7 @@ mod webview2 {
     /// `Err(None)` is a plain failure, `Err(Some(_))` one with its own message.
     async fn print_in(host: HWND, page: &std::path::Path, job: Job, choice: Option<Choice>, cx: &mut AsyncApp) -> Result<bool, Option<String>> {
         // The profile can't live next to the exe (Program Files is read-only).
-        let data = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("quiet.md").join("WebView2");
+        let data = dirs::data_local_dir().unwrap_or_else(fdl_core::vfs::temp_dir).join("quiet.md").join("WebView2");
         let env_slot: Slot<windows::core::Result<ICoreWebView2Environment>> = Rc::default();
         let s = env_slot.clone();
         let made = unsafe {

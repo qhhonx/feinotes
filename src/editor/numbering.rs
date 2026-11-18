@@ -2,8 +2,6 @@ use super::view::{Editor, Menu};
 use crate::model::BlockId;
 use crate::editor_theme::Theme;
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 
 impl Editor {
     pub(super) fn open_ordered_number(&mut self, block: BlockId, depth: usize, pos: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
@@ -57,7 +55,7 @@ impl Editor {
                     }))));
             }
         }
-        Some(super::overlays::at(pos, Corner::TopLeft, panel))
+        Some(super::overlays::at(pos, Anchor::TopLeft, panel))
     }
 }
 

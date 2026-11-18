@@ -655,7 +655,7 @@ impl R<'_> {
                         e.core.toggle_fold(id);
                         e.core.fix_selection();
                         e.keep_read_only_fold();
-                        e.fold_anim = Some((id, std::time::Instant::now()));
+                        e.fold_anim = Some((id, web_time::Instant::now()));
                         if selection == (e.core.sel, e.core.block_sel) {
                             e.changed_preserving_viewport(window, cx);
                         } else {
@@ -1567,7 +1567,7 @@ impl Editor {
                     }
                 }
                 if pointer_hidden {
-                    window.set_window_cursor_style(crate::gpui_compat::NO_CURSOR);
+                    crate::gpui_compat::hide_cursor(cx);
                     let e = entity.clone();
                     window.on_mouse_event(move |_: &MouseMoveEvent, phase, _, cx| {
                         if phase == DispatchPhase::Bubble {

@@ -1,0 +1,23 @@
+quiet.md #26: replace_root updates the window handle's root type
+
+Window::replace_root swapped the root view but left the handle (and the copy
+in App::window_handles) recording the old root type, so downcast::<New>()
+kept failing. First launch replaces the onboarding view with the workspace in
+the same window, and code that looks for the workspace window could not find
+it.
+
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 7331f559c749a73d8b6451127519c379f27c509d..2b654aae7caee7ba1606d434f1ab0f0a07d4cb63 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -2670,6 +2670,10 @@ impl Window {
+     {
+         let view = cx.new(|cx| build_view(self, cx));
+         self.root = Some(view.clone().into());
++        // quiet.md: the window's handle says what its root is: `downcast` to
++        // the new type must find it.
++        self.handle.state_type = TypeId::of::<E>();
++        cx.window_handles.insert(self.handle.id, self.handle);
+         self.refresh();
+         view
+     }

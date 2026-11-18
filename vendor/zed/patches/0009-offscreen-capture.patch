@@ -1,0 +1,132 @@
+quiet.md #10: offscreen captures outside tests
+
+Upstream can render a window's scene into an offscreen texture and read it
+back (Window::render_to_image), but only with `test-support`. Build it always
+on macOS, and add Window::render_offscreen (run next-frame callbacks, draw,
+render without presenting) and Window::needs_draw. The devtools script driver
+takes its screenshots this way, so they work while the window is occluded or
+the screen is locked.
+
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index 3f087d54d31f9e3e7d9785460d4a53a0f0ffc4eb..6adc3f9fa734cef24c595baa1906283c488e531d 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -51,7 +51,6 @@ use anyhow::{Context as _, Result};
+ use async_task::Runnable;
+ use collections::FxHashMap;
+ use futures::channel::oneshot;
+-#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+ use image::RgbaImage;
+ use image::codecs::{gif::GifDecoder, webp::WebPDecoder};
+ use image::{DynamicImage, Frame, Rgba};
+@@ -1497,7 +1496,7 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+     /// Renders the given scene to a texture and returns the pixel data as an RGBA image.
+     /// This does not present the frame to screen - useful for visual testing where we want
+     /// to capture what would be rendered without displaying it or requiring the window to be visible.
+-    #[cfg(any(test, feature = "test-support"))]
++    // quiet.md: also outside tests, for scripted captures (devtools).
+     fn render_to_image(&self, _scene: &Scene) -> Result<RgbaImage> {
+         anyhow::bail!("render_to_image not implemented for this platform")
+     }
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 9432b5db092e14f21ad9f311eaef9ab57d273054..7331f559c749a73d8b6451127519c379f27c509d 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -3208,12 +3208,31 @@ impl Window {
+     /// Renders the current frame's scene to a texture and returns the pixel data as an RGBA image.
+     /// This does not present the frame to screen - useful for visual testing where we want
+     /// to capture what would be rendered without displaying it or requiring the window to be visible.
+-    #[cfg(any(test, feature = "test-support"))]
++    // quiet.md: also outside tests, for scripted captures (devtools).
+     pub fn render_to_image(&self) -> anyhow::Result<image::RgbaImage> {
+         self.platform_window
+             .render_to_image(&self.rendered_frame.scene)
+     }
+ 
++    /// quiet.md: runs pending next-frame callbacks, draws a frame and renders
++    /// it offscreen without presenting. Works while the display link is
++    /// stopped (occluded window, locked screen). For scripted captures.
++    pub fn render_offscreen(&mut self, cx: &mut App) -> anyhow::Result<image::RgbaImage> {
++        let callbacks = self.next_frame_callbacks.take();
++        for callback in callbacks {
++            callback(self, cx);
++        }
++        let arena_clear_needed = self.draw(cx);
++        let image = self.render_to_image();
++        arena_clear_needed.clear(cx);
++        image
++    }
++
++    /// quiet.md: whether something was invalidated since the last frame was drawn.
++    pub fn needs_draw(&self) -> bool {
++        self.invalidator.is_dirty()
++    }
++
+     /// Borrows the most recently rendered frame's scene, so benchmarks can validate their
+     /// output and report batch counts without cloning it.
+     #[cfg(feature = "bench-support")]
+diff --git a/crates/gpui_apple/src/metal_renderer.rs b/crates/gpui_apple/src/metal_renderer.rs
+index 86eff3d48b59752c6d001931b88b153d311ee48e..69de435fc3b53b5fe84cd50f118c82fd4c25007a 100644
+--- a/crates/gpui_apple/src/metal_renderer.rs
++++ b/crates/gpui_apple/src/metal_renderer.rs
+@@ -5,7 +5,6 @@ use gpui::{
+     AtlasTextureId, Bounds, ContentMask, DevicePixels, PaintSurface, PaintedPath, PrimitiveBatch,
+     ScaledPixels, Scene, Size, quad_depth, quad_depth_scale, size,
+ };
+-#[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+ use image::RgbaImage;
+ use objc2::{Message, rc::Retained, runtime::ProtocolObject};
+ use objc2_core_foundation::{CFRetained, CGSize};
+@@ -27,7 +26,6 @@ use objc2_metal::{
+     MTLResourceOptions, MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor,
+     MTLTextureUsage, MTLViewport,
+ };
+-#[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+ use objc2_metal::{MTLBlitCommandEncoder, MTLOrigin, MTLRegion, MTLSize};
+ use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
+ use parking_lot::Mutex;
+@@ -604,7 +602,7 @@ impl MetalRenderer {
+     ///
+     /// Note: This requires a layer-backed renderer. For headless rendering,
+     /// use `render_scene_to_image()` instead.
+-    #[cfg(any(test, feature = "test-support"))]
++    // quiet.md: also outside tests, for scripted captures (devtools).
+     pub fn render_to_image(&mut self, scene: &Scene) -> Result<RgbaImage> {
+         let layer = self
+             .layer
+@@ -640,7 +638,6 @@ impl MetalRenderer {
+ 
+     /// Renders a scene into a new offscreen texture of `size` and reads it
+     /// back, without presenting anything.
+-    #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+     fn render_offscreen(&mut self, scene: &Scene, size: Size<DevicePixels>) -> Result<RgbaImage> {
+         if size.width.0 <= 0 || size.height.0 <= 0 {
+             anyhow::bail!("Invalid size for render_offscreen: {:?}", size);
+@@ -1324,7 +1321,6 @@ fn new_command_encoder_for_texture(
+     Ok(command_encoder)
+ }
+ 
+-#[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+ fn read_texture_to_image(texture: &ProtocolObject<dyn MTLTexture>) -> Result<RgbaImage> {
+     let width = texture.width() as u32;
+     let height = texture.height() as u32;
+diff --git a/crates/gpui_macos/src/window.rs b/crates/gpui_macos/src/window.rs
+index b3492c084c172083449076cfe68d6b300177df33..5fb128c485007a76379a31c9cf896a2d831e764b 100644
+--- a/crates/gpui_macos/src/window.rs
++++ b/crates/gpui_macos/src/window.rs
+@@ -16,7 +16,6 @@ use gpui::{
+     SharedString, Size, SystemWindowTab, WindowAppearance, WindowBackgroundAppearance,
+     WindowBounds, WindowControlArea, WindowKind, WindowParams, WindowVisibility, point, px, size,
+ };
+-#[cfg(any(test, feature = "test-support"))]
+ use image::RgbaImage;
+ 
+ use core_foundation::base::{CFRelease, CFTypeRef};
+@@ -2503,7 +2502,6 @@ impl PlatformWindow for MacWindow {
+         NSBeep()
+     }
+ 
+-    #[cfg(any(test, feature = "test-support"))]
+     fn render_to_image(&self, scene: &gpui::Scene) -> Result<RgbaImage> {
+         let mut this = self.0.lock();
+         this.renderer.render_to_image(scene)

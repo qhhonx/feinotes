@@ -2,6 +2,7 @@
 //! (the first page or frame from Quick Look's thumbnailer, the inline audio
 //! player), its toolbar, and inserting picked or dropped files.
 
+use fdl_core::vfs::{PathExt as _, KindExt as _};
 use super::core::{DropPlace, Pos, Selection, TITLE};
 use super::overlays::{Probe, at};
 use super::render::{Env, R};
@@ -13,8 +14,6 @@ use crate::editor_theme::{self as theme, Theme, craft};
 use crate::editor_ui::{ROW_RADIUS, TipExt, icon, popover};
 use super::image::picture;
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -202,7 +201,7 @@ impl FileUi {
         if let Some(s) = self.sizes.borrow().get(p) {
             return *s;
         }
-        let s = std::fs::metadata(p).ok().filter(|m| m.is_file()).map(|m| m.len());
+        let s = fdl_core::vfs::metadata(p).ok().filter(|m| m.fs_is_file()).map(|m| m.len());
         self.sizes.borrow_mut().insert(p.to_path_buf(), s);
         s
     }
@@ -246,7 +245,7 @@ impl FileUi {
 fn thumb_dir(root: &Path, p: &Path) -> PathBuf {
     let mut h = rustc_hash::FxHasher::default();
     p.hash(&mut h);
-    if let Ok(m) = std::fs::metadata(p) {
+    if let Ok(m) = fdl_core::vfs::metadata(p) {
         m.len().hash(&mut h);
         m.modified().ok().hash(&mut h);
     }
@@ -254,12 +253,12 @@ fn thumb_dir(root: &Path, p: &Path) -> PathBuf {
 }
 
 fn first_png(dir: &Path) -> Option<PathBuf> {
-    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "png"))
+    fdl_core::vfs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "png"))
 }
 
 fn make_thumb(root: &Path, p: &Path) -> Option<PathBuf> {
     let dir = thumb_dir(root,p);
-    std::fs::create_dir_all(&dir).ok()?;
+    fdl_core::vfs::create_dir_all(&dir).ok()?;
     if let Some(cached) = first_png(&dir) { return Some(cached); }
     #[cfg(target_os = "ios")]
     {
@@ -282,7 +281,7 @@ fn make_thumb(root: &Path, p: &Path) -> Option<PathBuf> {
 
 /// Opens the file in Quick Look (scripted runs only log it).
 pub fn quick_look(p: &Path) {
-    if crate::devtools::scripted() {
+    if crate::devtools::scripted() || cfg!(target_family = "wasm") {
         eprintln!("quicklook {}", p.display());
         return;
     }
@@ -306,11 +305,11 @@ pub fn quick_look(p: &Path) {
 /// A new attachment for `p`, copied into `assets/files/<uuid>/<name>`.
 fn file_block_from_path(root: &Path, p: &Path) -> Option<Block> {
     let name = p.file_name()?.to_string_lossy().to_string();
-    let size = std::fs::metadata(p).ok().filter(|m| m.is_file())?.len();
+    let size = fdl_core::vfs::metadata(p).ok().filter(|m| m.is_file())?.len();
     let dir = Store::assets_in(root).join("files").join(uuid::Uuid::new_v4().to_string());
-    std::fs::create_dir_all(&dir).ok()?;
+    fdl_core::vfs::create_dir_all(&dir).ok()?;
     let dest = dir.join(&name);
-    std::fs::copy(p, &dest).ok()?;
+    fdl_core::vfs::copy(p, &dest).ok()?;
     let view = match preview_of(&name) {
         Some(Kind::Audio) => FileView::Preview,
         Some(Kind::Video) if size < VIDEO_PREVIEW_MAX => FileView::Preview,
@@ -660,7 +659,7 @@ impl Editor {
     }
 
     pub(super) fn open_file(&mut self, p: Option<&Path>, cx: &mut Context<Self>) {
-        match p.filter(|p| p.is_file()) {
+        match p.filter(|p| p.fs_is_file()) {
             Some(p) => quick_look(p),
             None => self.toast(crate::settings::text("文件不存在"), cx),
         }
@@ -676,7 +675,7 @@ impl Editor {
             let task = cx.background_executor().spawn(async move {
                 let _session = session;
                 let dest = crate::ipad::export_folder()?.join(name);
-                std::fs::copy(src,&dest)?;
+                fdl_core::vfs::copy(src,&dest)?;
                 anyhow::Ok(dest)
             });
             cx.spawn(async move |this,cx| {
@@ -699,7 +698,7 @@ impl Editor {
             };
             let Some(dest) = dest else { return };
             bg.spawn(async move {
-                let _ = std::fs::copy(&src, &dest);
+                let _ = fdl_core::vfs::copy(&src, &dest);
             })
             .await;
         })
@@ -894,7 +893,7 @@ impl Editor {
                 window.prevent_default();
             })
             .child(bar);
-        Some(at(self.rel(point(px(x), px(y))), Corner::TopLeft, el))
+        Some(at(self.rel(point(px(x), px(y))), Anchor::TopLeft, el))
     }
 
     /// The hover card of an inline attachment: 下载 | 文本视图 · 卡片视图 ·
@@ -954,7 +953,7 @@ impl Editor {
                 window.prevent_default();
             })
             .child(bar);
-        Some(at(self.rel(point(r.center().x - px(w / 2.), r.top() - px(4.))), Corner::BottomLeft, el))
+        Some(at(self.rel(point(r.center().x - px(w / 2.), r.top() - px(4.))), Anchor::BottomLeft, el))
     }
 
     // ---- inserting

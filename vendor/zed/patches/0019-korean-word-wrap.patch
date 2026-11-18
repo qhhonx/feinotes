@@ -1,0 +1,64 @@
+quiet.md #23: wrap Korean by word
+
+Upstream finds line breaks with UAX #14 (icu_segmenter), which already keeps
+Chinese closing punctuation off the start of a line and opening punctuation
+off the end (what patch #4 did) and keeps Hebrew/Arabic words whole (#31).
+It allows a break between any two Hangul syllables, though; Korean puts
+spaces between words, so drop the break opportunities inside a run of Hangul
+and letters ("Quiet.md를"). A word longer than the line still breaks between
+characters. test_break_indices_quiet_md covers the rules.
+
+diff --git a/crates/gpui/src/text_system/line_wrapper.rs b/crates/gpui/src/text_system/line_wrapper.rs
+index fea2c7921ceb70786c8929ef43cd9854b2cb4eb0..848f5ca9518c617fdac34898a46bf3ff6d4300fd 100644
+--- a/crates/gpui/src/text_system/line_wrapper.rs
++++ b/crates/gpui/src/text_system/line_wrapper.rs
+@@ -545,6 +545,25 @@ impl LineWrapper {
+     pub(crate) fn break_indices(text: &str) -> impl Iterator<Item = usize> {
+         icu_segmenter::LineSegmenter::new_for_non_complex_scripts(Default::default())
+             .segment_str(text)
++            .filter(move |&ix| !Self::inside_hangul_word(text, ix))
++    }
++
++    /// quiet.md: Korean puts spaces between words, so it wraps by word (어절)
++    /// like Latin: no break inside a run of Hangul and letters ("Quiet.md를").
++    /// UAX #14 allows one between any two Hangul syllables. A word longer than
++    /// the line still breaks between characters.
++    fn inside_hangul_word(text: &str, ix: usize) -> bool {
++        fn hangul(c: char) -> bool {
++            matches!(c, '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}' | '\u{A960}'..='\u{A97F}' | '\u{AC00}'..='\u{D7FF}' | '\u{FFA0}'..='\u{FFDC}')
++        }
++        // Letters and digits of alphabetic scripts (below the CJK blocks).
++        fn wordish(c: char) -> bool {
++            hangul(c) || (c.is_alphanumeric() && (c as u32) < 0x2E80) || matches!(c, '.' | '_' | '-' | '\'')
++        }
++        let (Some(prev), Some(next)) = (text[..ix].chars().next_back(), text[ix..].chars().next()) else {
++            return false;
++        };
++        (hangul(prev) || hangul(next)) && wordish(prev) && wordish(next)
+     }
+ 
+     #[inline(always)]
+@@ -1109,6 +1128,23 @@ mod tests {
+         );
+     }
+ 
++    // quiet.md: Korean wraps by word; Chinese by character, keeping closing
++    // punctuation with what precedes it; right-to-left words stay whole.
++    #[test]
++    fn test_break_indices_quiet_md() {
++        let breaks = |text: &str| -> Vec<usize> {
++            LineWrapper::break_indices(text).filter(|&ix| ix > 0 && ix < text.len()).collect()
++        };
++        assert_eq!(breaks("한국어 문서를 편집합니다"), ["한국어 ".len(), "한국어 문서를 ".len()]);
++        assert_eq!(breaks("Quiet.md를 써요"), ["Quiet.md를 ".len()]);
++        assert_eq!(breaks("ㅋㅋㅋ 좋아요"), ["ㅋㅋㅋ ".len()]);
++        assert_eq!(breaks("你好世界"), [3, 6, 9]);
++        assert_eq!(breaks("中文。한국어"), [3, "中文。".len()]);
++        assert_eq!(breaks("（注意）你好！"), ["（注".len(), "（注意）".len(), "（注意）你".len()]);
++        assert_eq!(breaks("تحديث البرنامج"), ["تحديث ".len()]);
++        assert_eq!(breaks("שלום עולם"), ["שלום ".len()]);
++    }
++
+     #[test]
+     fn test_wrap_line_break_opportunities() {
+         let mut wrapper = build_wrapper();

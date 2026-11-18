@@ -101,6 +101,8 @@ mod trash;
 mod tree;
 mod ui;
 mod update;
+#[cfg(target_family = "wasm")]
+mod web;
 
 use fdl_core::{docxml, lang, markdown, model, palette, paste, store, time, whiteboard};
 
@@ -158,7 +160,10 @@ fn set_app_icon() {
 pub(crate) fn main_window_options(scripted: bool, at: Option<Bounds<Pixels>>, cx: &mut App) -> WindowOptions {
     // Scripted dev runs must not steal keyboard focus from whatever the
     // user is typing into.
-    let bounds = at.unwrap_or_else(|| Bounds::centered(None, quick_note::main_window_size(cx), cx));
+    let mut bounds = at.unwrap_or_else(|| Bounds::centered(None, quick_note::main_window_size(cx), cx));
+    // A half-point origin (an odd leftover height) makes AppKit grow the
+    // window by a point when it aligns the frame to pixels.
+    bounds.origin = bounds.origin.map(|v| v.round());
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_background: crate::theme::window_background(),
@@ -170,6 +175,9 @@ pub(crate) fn main_window_options(scripted: bool, at: Option<Bounds<Pixels>>, cx
             traffic_light_position: Some(point(px(20.), px(app::HEADER_H / 2. - 7.))),
         }),
         window_min_size: Some(size(px(app::DOC_MIN_W), px(480.))),
+        // AppKit does not drag from the transparent title bar: the app marks its
+        // own drag areas (ui::TitleBarExt) and moves the window itself.
+        app_owns_titlebar_drag: true,
         focus: !scripted,
         ..Default::default()
     }
@@ -206,7 +214,7 @@ pub(crate) fn start(existed: bool, scripted: bool, into: Option<&mut Window>, in
     if !cloud_restore::local_only() && let Err(err) = cloud_sync::start(cx) { logging::fatal("无法打开同步测试库 / Could not open the sync test library", &err); }
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     cloud_subscription::watch(cx);
-    if !scripted && !in_shared_note() { quick_note::install(cx); }
+    if !scripted && !in_shared_note() && !cfg!(target_family = "wasm") { quick_note::install(cx); }
     app::set_menus(cx);
     if !cfg!(all(target_os = "macos", feature = "cloudkit-restore")) { update::init(cx); }
     let took = into.map(|window| window.replace_root(cx, app::Workspace::new));
@@ -224,7 +232,30 @@ pub(crate) fn start(existed: bool, scripted: bool, into: Option<&mut Window>, in
     took
 }
 
-#[cfg(not(target_os = "ios"))]
+pub(crate) fn init_app(cx: &mut App) {
+    // The editor and fields hide the pointer themselves while typing
+    // (`pointer_hidden`); GPUI would also hide it for shortcuts.
+    cx.set_cursor_hide_mode(CursorHideMode::Never);
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    editor::emoji::load_font(cx);
+    editor::math::load_fonts(cx);
+    board::fonts::load(cx);
+    editor::image::init_pictures(cx);
+    input::bind_keys(cx);
+    editor::keymap::bind_keys(cx);
+    editor::image::bind_keys(cx);
+    board::bind_keys(cx);
+    settings::load();
+    settings::apply_appearance(&settings::prefs().appearance);
+    settings::sync_dark(cx);
+    themes::load(&settings::prefs().theme_id(), false, || cx.text_system().all_font_names());
+}
+
+
+#[cfg(target_family = "wasm")]
+fn main() { web::main() }
+
+#[cfg(not(any(target_os = "ios", target_family = "wasm")))]
 fn main() {
     logging::init();
     #[cfg(all(target_os = "macos", feature = "cloudkit-restore"))]
@@ -261,9 +292,9 @@ fn main() {
     run_app(false);
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_family = "wasm")))]
 fn run_app(_discover: bool) {
-    let app = Application::new().with_assets(assets::Assets);
+    let app = gpui_platform::application().with_assets(assets::Assets);
     // Markdown files opened from the Finder or the command line are edited in place.
     let incoming = local_files::Incoming::from_args();
     let urls = incoming.clone();
@@ -283,11 +314,11 @@ fn run_app(_discover: bool) {
                 devtools::start(window,cx);
                 cx.new(|cx| {
                     let focus = cx.focus_handle();
-                    window.focus(&focus);
+                    window.focus(&focus, cx);
                     StartupHome { incoming: incoming.clone(), notes: Vec::new(), focus }
                 })
             }).expect("open window");
-            cx.on_window_closed(|cx| {
+            cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() && !cx.has_global::<shared_store::SharedStore>() { cx.quit(); }
             }).detach();
             if !scripted { cx.activate(true); }
@@ -307,7 +338,7 @@ fn run_app(_discover: bool) {
     });
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_family = "wasm")))]
 fn finish_launch(incoming: local_files::Incoming, into: Option<&mut Window>, cx: &mut App) {
     let scripted = devtools::scripted();
     // No single-instance guard: copies may share a library (builds tested
@@ -331,20 +362,10 @@ fn finish_launch(incoming: local_files::Incoming, into: Option<&mut Window>, cx:
     }
     #[cfg(target_os = "macos")]
     set_app_icon();
-    editor::math::load_fonts(cx);
-    board::fonts::load(cx);
-    editor::image::init_pictures(cx);
-    input::bind_keys(cx);
-    editor::keymap::bind_keys(cx);
-    editor::image::bind_keys(cx);
-    board::bind_keys(cx);
-    settings::load();
-    settings::apply_appearance(&settings::prefs().appearance);
-    settings::sync_dark(cx);
-    themes::load(&settings::prefs().theme_id(), false, || cx.text_system().all_font_names());
+    init_app(cx);
     let quick_enabled = !scripted && !in_shared_note();
     if onboard { onboarding::open(scripted, incoming, cx); } else { start(existed, scripted, into, incoming, cx); }
-    cx.on_window_closed(move |cx| {
+    cx.on_window_closed(move |cx, _| {
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         cx.defer(cloud_sync::release_unused);
         // Closing first launch's window before it finished quits: there is no library yet.

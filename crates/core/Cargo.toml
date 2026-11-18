@@ -2,7 +2,7 @@
 # disk, import and export. No GPUI, so it builds and tests on its own.
 [package]
 name = "fdl_core"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2024"
 description = "The document engine behind Quiet.md: model, DocxXML, editing core, library"
 license = "MIT"
@@ -22,6 +22,7 @@ unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 uuid = { version = "1.28.0", features = ["v4"] }
 rustc-hash = "2.1"
+web-time = { version = "1", features = ["serde"] }
 html5ever = "0.27"
 markup5ever_rcdom = "0.3"
 miniz_oxide = "0.9"
@@ -30,6 +31,10 @@ rusqlite = { version = ">=0.40.2, <=0.41.1", optional = true }
 
 [features]
 sqlite-store = ["dep:rusqlite"]
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+uuid = { version = "1.28.0", features = ["v4", "js"] }
+js-sys = "0.3"
 
 [lints]
 workspace = true

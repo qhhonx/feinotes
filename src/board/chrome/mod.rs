@@ -103,7 +103,7 @@ pub fn render(me: &BoardView, window: &mut Window, cx: &mut Context<BoardView>) 
 pub(crate) fn eat<E: InteractiveElement>(e: E) -> E {
     e.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .on_scroll(|_, _, cx| cx.stop_propagation())
 }
 
 /// `Island`: island background, `--shadow-island`, radius 8, padding

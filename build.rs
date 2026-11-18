@@ -9,7 +9,9 @@ fn main() {
     let root = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios") {
         manifest.join("../..").canonicalize().expect("find Fei Notes project root")
     } else { manifest };
-    embed(&root, "assets", "assets.rs", SKIP);
+    let linux = matches!(std::env::var("CARGO_CFG_TARGET_OS").as_deref(), Ok("linux" | "freebsd"));
+    let skip: Vec<&str> = SKIP.iter().copied().chain((!linux).then_some("fonts/emoji/")).collect();
+    embed(&root, "assets", "assets.rs", &skip);
     embed(&root, "shared-mock/library", "guides.rs", &[]);
     println!("cargo:rustc-env=FEI_TESTFLIGHT_BETA=0");
     let revision = std::process::Command::new("git").arg("-C").arg(&root).args(["rev-parse", "--short=12", "HEAD"])

@@ -1,0 +1,213 @@
+quiet.md #25: survive GPU device loss on Windows
+
+Upstream reworked device-lost handling (resources are Options, errors are
+propagated, a failed resize invalidates the devices, atlas lookups of dropped
+textures return None) but still panics when recovery fails after its five
+quick retries; a driver restart, sleep/wake or driver update can take longer.
+Instead: the platform logs the failure and tries again on the next vsync; a
+window renderer that could not recover keeps the new devices and retries on
+its next draw (drawing nothing meanwhile, building the swap chain at the
+window's current size); and after recovery the window's acrylic blur, which
+the driver restart drops, is applied again (switched off first: the same
+accent again may be ignored).
+
+diff --git a/crates/gpui_windows/src/directx_renderer.rs b/crates/gpui_windows/src/directx_renderer.rs
+index 8573fe4030997708a98ca8f1755bff434aef997f..b921dc7bf35f4f87e86863560da3d28ad7937237 100644
+--- a/crates/gpui_windows/src/directx_renderer.rs
++++ b/crates/gpui_windows/src/directx_renderer.rs
+@@ -53,6 +53,11 @@ pub(crate) struct DirectXRenderer {
+     /// In that case we want to discard the first frame that we draw as we got reset in the middle of a frame
+     /// meaning we lost all the allocated gpu textures and scene resources.
+     skip_draws: bool,
++
++    /// quiet.md: the devices a failed device-lost recovery was given; the
++    /// next draw tries again with them (at the window's current size) instead
++    /// of the app crashing, and draws nothing until it works.
++    pending_recovery: Option<DirectXDevices>,
+ }
+ 
+ /// Direct3D objects
+@@ -194,6 +199,7 @@ impl DirectXRenderer {
+             width: 1,
+             height: 1,
+             skip_draws: false,
++            pending_recovery: None,
+         })
+     }
+ 
+@@ -273,10 +279,13 @@ impl DirectXRenderer {
+     }
+ 
+     pub(crate) fn handle_device_lost(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
+-        try_to_recover_from_device_lost(|| {
++        let result = try_to_recover_from_device_lost(|| {
+             self.handle_device_lost_impl(directx_devices)
+                 .context("DirectXRenderer handling device lost")
+-        })
++        });
++        // quiet.md: retry on the next draw instead of giving up.
++        self.pending_recovery = result.is_err().then(|| directx_devices.clone());
++        result
+     }
+ 
+     fn handle_device_lost_impl(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
+@@ -352,7 +361,14 @@ impl DirectXRenderer {
+         scene: &Scene,
+         background_appearance: WindowBackgroundAppearance,
+     ) -> Result<()> {
+-        if self.skip_draws {
++        if let Some(devices) = self.pending_recovery.take() {
++            if let Err(err) = self.handle_device_lost_impl(&devices) {
++                log::error!("DirectXRenderer still recovering from device lost: {err:#}");
++                self.pending_recovery = Some(devices);
++            }
++            return Ok(());
++        }
++        if self.skip_draws || self.devices.is_none() || self.resources.is_none() {
+             // skip drawing this frame, we just recovered from a device lost event
+             // and so likely do not have the textures anymore that are required for drawing
+             return Ok(());
+@@ -574,6 +590,11 @@ impl DirectXRenderer {
+         }
+         self.width = width;
+         self.height = height;
++        // quiet.md: while recovering from device lost there is no swap chain;
++        // recovery builds one at this size.
++        if self.pending_recovery.is_some() || self.devices.is_none() || self.resources.is_none() {
++            return Ok(());
++        }
+ 
+         // Clear the render target before resizing
+         let devices = self.devices.as_ref().context("devices missing")?;
+diff --git a/crates/gpui_windows/src/events.rs b/crates/gpui_windows/src/events.rs
+index 5e3c68eb3c09815dd326d4a51dfa5b438cb3f3fd..2db07fd02be3c2f0575f9477bef3b3d04cf92c6e 100644
+--- a/crates/gpui_windows/src/events.rs
++++ b/crates/gpui_windows/src/events.rs
+@@ -1325,24 +1325,34 @@ impl WindowsWindowInner {
+         match message {
+             WM_GPUI_CURSOR_STYLE_CHANGED => self.handle_cursor_changed(lparam),
+             WM_GPUI_FORCE_UPDATE_WINDOW => self.draw_window(handle, true),
+-            WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
++            WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(handle, lparam),
+             _ => unreachable!(),
+         }
+     }
+ 
+-    fn handle_device_lost(&self, lparam: LPARAM) -> Option<isize> {
++    fn handle_device_lost(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
+         if lparam.0 == 0 {
+             return None;
+         }
+         let devices = lparam.0 as *const DirectXDevices;
+         let devices = unsafe { &*devices };
++        // quiet.md: a renderer that could not recover tries again on its next
++        // draw (DirectXRenderer::pending_recovery) instead of crashing the app.
+         if let Err(err) = self
+             .state
+             .renderer
+             .borrow_mut()
+             .handle_device_lost(&devices)
+         {
+-            panic!("Device lost: {err}");
++            log::error!("Device lost: {err:#}");
++        }
++        // quiet.md: the blur behind the window is gone after the driver
++        // restarts. Switch it off first; setting the same accent again may be
++        // ignored.
++        let appearance = self.state.background_appearance.get();
++        if appearance != WindowBackgroundAppearance::Opaque {
++            crate::window::apply_background_appearance(handle, WindowBackgroundAppearance::Opaque);
++            crate::window::apply_background_appearance(handle, appearance);
+         }
+         // Make sure the first `draw_window` after recovery (whether it comes
+         // from the forced WM_GPUI_FORCE_UPDATE_WINDOW or a stray WM_PAINT in
+diff --git a/crates/gpui_windows/src/platform.rs b/crates/gpui_windows/src/platform.rs
+index a5f0d49e704515bf798c7aff3430e6ebbfa7e308..c8ac22db9261d156b865a749c5740be229362f72 100644
+--- a/crates/gpui_windows/src/platform.rs
++++ b/crates/gpui_windows/src/platform.rs
+@@ -451,13 +451,16 @@ impl WindowsPlatform {
+                     if check_device_lost(&directx_device.device)
+                         || invalidate_devices.fetch_and(false, Ordering::Acquire)
+                     {
++                        // quiet.md: the device is still lost (a driver restart can take
++                        // longer than the retries): the next vsync tries again.
+                         if let Err(err) = handle_gpu_device_lost(
+                             &mut directx_device,
+                             platform_window.as_raw(),
+                             validation_number,
+                             &all_windows,
+                         ) {
+-                            panic!("Device lost: {err}");
++                            log::error!("Device lost: {err:#}");
++                            invalidate_devices.store(true, Ordering::Release);
+                         }
+                     }
+                     let Some(all_windows) = all_windows.upgrade() else {
+diff --git a/crates/gpui_windows/src/window.rs b/crates/gpui_windows/src/window.rs
+index 4247866dacc492dee8cb00eee6926c443a015978..3f70e9b132c1ac73af2e8167e188092de353cd80 100644
+--- a/crates/gpui_windows/src/window.rs
++++ b/crates/gpui_windows/src/window.rs
+@@ -921,29 +921,7 @@ impl PlatformWindow for WindowsWindow {
+ 
+     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
+         self.state.background_appearance.set(background_appearance);
+-        let hwnd = self.0.hwnd;
+-
+-        // using Dwm APIs for Mica and MicaAlt backdrops.
+-        // others follow the set_window_composition_attribute approach
+-        match background_appearance {
+-            WindowBackgroundAppearance::Opaque => {
+-                set_window_composition_attribute(hwnd, None, 0);
+-            }
+-            WindowBackgroundAppearance::Transparent => {
+-                set_window_composition_attribute(hwnd, None, 2);
+-            }
+-            WindowBackgroundAppearance::Blurred => {
+-                set_window_composition_attribute(hwnd, Some((0, 0, 0, 0)), 4);
+-            }
+-            WindowBackgroundAppearance::MicaBackdrop => {
+-                // DWMSBT_MAINWINDOW => MicaBase
+-                dwm_set_window_composition_attribute(hwnd, 2);
+-            }
+-            WindowBackgroundAppearance::MicaAltBackdrop => {
+-                // DWMSBT_TABBEDWINDOW => MicaAlt
+-                dwm_set_window_composition_attribute(hwnd, 4);
+-            }
+-        }
++        apply_background_appearance(self.0.hwnd, background_appearance);
+     }
+ 
+     fn minimize(&self) {
+@@ -1631,6 +1609,32 @@ fn dwm_set_window_composition_attribute(hwnd: HWND, backdrop_type: u32) {
+     }
+ }
+ 
++// quiet.md: split out of `set_background_appearance` so device-lost recovery
++// can apply it again.
++pub(crate) fn apply_background_appearance(hwnd: HWND, background_appearance: WindowBackgroundAppearance) {
++    // using Dwm APIs for Mica and MicaAlt backdrops.
++    // others follow the set_window_composition_attribute approach
++    match background_appearance {
++        WindowBackgroundAppearance::Opaque => {
++            set_window_composition_attribute(hwnd, None, 0);
++        }
++        WindowBackgroundAppearance::Transparent => {
++            set_window_composition_attribute(hwnd, None, 2);
++        }
++        WindowBackgroundAppearance::Blurred => {
++            set_window_composition_attribute(hwnd, Some((0, 0, 0, 0)), 4);
++        }
++        WindowBackgroundAppearance::MicaBackdrop => {
++            // DWMSBT_MAINWINDOW => MicaBase
++            dwm_set_window_composition_attribute(hwnd, 2);
++        }
++        WindowBackgroundAppearance::MicaAltBackdrop => {
++            // DWMSBT_TABBEDWINDOW => MicaAlt
++            dwm_set_window_composition_attribute(hwnd, 4);
++        }
++    }
++}
++
+ fn set_window_composition_attribute(hwnd: HWND, color: Option<Color>, state: u32) {
+     let mut version = unsafe { std::mem::zeroed() };
+     let status = unsafe { windows::Wdk::System::SystemServices::RtlGetVersion(&mut version) };

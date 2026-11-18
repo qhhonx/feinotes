@@ -1,5 +1,8 @@
 //! Small shared UI pieces: icons, tooltips, popover shells.
 
+#[cfg(target_os = "ios")]
+type Path = gpui::Path<gpui::Pixels>;
+
 use crate::theme::{self, Theme, craft};
 use crate::time::civil;
 use gpui::{prelude::FluentBuilder, *};
@@ -83,7 +86,7 @@ pub enum ToastKind {
 /// Toast: a white rounded card 32px below the top, centred, with a filled
 /// status circle (green check / red x / accent i). It lasts 3s and fades over
 /// its last .3s; None once it is over.
-pub fn toast_el(kind: ToastKind, msg: &SharedString, t0: std::time::Instant, window: &mut Window) -> Option<AnyElement> {
+pub fn toast_el(kind: ToastKind, msg: &SharedString, t0: web_time::Instant, window: &mut Window) -> Option<AnyElement> {
     let e = t0.elapsed().as_secs_f32();
     if e >= 3. {
         return None;
@@ -722,13 +725,6 @@ fn truncated(line: &ShapedLine, runs: &[TextRun], suffix: &str, font_size: Pixel
     window.text_system().shape_line(s, font_size, &out, None)
 }
 
-impl IntoElement for UiText {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
 impl Element for UiText {
     type RequestLayoutState = UiTextLayout;
     type PrepaintState = Option<ShapedLine>;
@@ -752,11 +748,7 @@ impl Element for UiText {
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line_height = style.line_height.to_pixels(font_size.into(), window.rem_size());
         let runs = if self.text.is_empty() { vec![] } else { self.runs(&style) };
-        let ellipsis = style.text_overflow.as_ref().map(|overflow| match overflow {
-            TextOverflow::Truncate(s) => s.clone(),
-            #[cfg(target_os = "ios")]
-            TextOverflow::TruncateStart(s) | TextOverflow::TruncateMiddle(s) => s.clone(),
-        });
+        let ellipsis = style.text_overflow.as_ref().map(|(TextOverflow::Truncate(s) | TextOverflow::TruncateStart(s) | TextOverflow::TruncateMiddle(s))| s.clone());
         let full = Rc::new(RefCell::new(None));
         let (text, r, f, clip) = (self.text.clone(), runs.clone(), full.clone(), ellipsis.is_some());
         let id = window.request_measured_layout(Style::default(), move |known, avail, window, _| {
@@ -822,13 +814,6 @@ pub struct UiPara {
     inner: Option<StyledText>,
 }
 
-impl IntoElement for UiPara {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
 impl Element for UiPara {
     type RequestLayoutState = ();
     type PrepaintState = ();
@@ -891,7 +876,7 @@ fn squircle_points(b: Bounds<Pixels>, radius: f32, i: f32) -> Vec<Point<Pixels>>
     let r = (radius - i).max(0.).min(w / 2.).min(h / 2.);
     const N: usize = 24;
     let mut out = Vec::with_capacity(4 * (N + 1));
-    // Corner centres with the directions to the corner's start and end edges.
+    // Anchor centres with the directions to the corner's start and end edges.
     for (cx, cy, ax, ay, bx, by) in [(x + w - r, y + r, 0., -1., 1., 0.), (x + w - r, y + h - r, 1., 0., 0., 1.), (x + r, y + h - r, 0., 1., -1., 0.), (x + r, y + r, -1., 0., 0., -1.)] {
         for k in 0..=N {
             let t = std::f32::consts::FRAC_PI_2 * k as f32 / N as f32;
@@ -902,7 +887,7 @@ fn squircle_points(b: Bounds<Pixels>, radius: f32, i: f32) -> Vec<Point<Pixels>>
     out
 }
 
-pub(crate) fn squircle_path(b: Bounds<Pixels>, radius: f32, i: f32, mut pb: PathBuilder) -> Option<Path<Pixels>> {
+pub(crate) fn squircle_path(b: Bounds<Pixels>, radius: f32, i: f32, mut pb: PathBuilder) -> Option<Path> {
     // lyon panics on a collapsed outline (a box not laid out yet).
     if f32::from(b.size.width) <= 2. * i + 1. || f32::from(b.size.height) <= 2. * i + 1. || radius <= i { return None }
     let pts = squircle_points(b, radius, i);
@@ -929,8 +914,8 @@ pub fn squircle_outline(radius: f32, width: f32, color: Hsla) -> impl IntoElemen
 /// A capsule filled to `fraction` from the left, its edge a moving wave (the
 /// update pill's download progress). Redraws every frame while shown.
 pub fn wave_fill(fraction: f32, color: Hsla) -> impl IntoElement {
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    let t = START.get_or_init(std::time::Instant::now).elapsed().as_secs_f32();
+    static START: std::sync::OnceLock<web_time::Instant> = std::sync::OnceLock::new();
+    let t = START.get_or_init(web_time::Instant::now).elapsed().as_secs_f32();
     canvas(|bounds, _, _| bounds, move |_, b, window, _| {
         window.request_animation_frame();
         let f = fraction.clamp(0., 1.);
@@ -1037,4 +1022,16 @@ pub(crate) fn checkbox(on: bool) -> Div {
         .rounded(px(4.))
         .when(on, |d| d.bg(Theme::primary()).child(icon("todo-check", 12., Theme::bg_body())))
         .when(!on, |d| d.border_1().border_color(Theme::todo_box()).bg(crate::theme::raised(Theme::bg_body())))
+}
+
+#[cfg(target_os = "ios")]
+impl IntoElement for UiText {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
+}
+
+#[cfg(target_os = "ios")]
+impl IntoElement for UiPara {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
 }

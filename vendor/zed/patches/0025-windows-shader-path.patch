@@ -1,0 +1,21 @@
+quiet.md #15: pass the shader path to D3DCompileFromFile as a wide string
+
+Debug builds compile the HLSL shaders at run time from the source tree; the
+path went through to_str().unwrap(), which fails for a checkout under a
+directory with Chinese or other non-ASCII characters on some systems. Pass it
+as an HSTRING built from the path.
+
+diff --git a/crates/gpui_windows/src/directx_renderer.rs b/crates/gpui_windows/src/directx_renderer.rs
+index b921dc7bf35f4f87e86863560da3d28ad7937237..26718a007b1a06986ce17a05a09a3e98643c3dba 100644
+--- a/crates/gpui_windows/src/directx_renderer.rs
++++ b/crates/gpui_windows/src/directx_renderer.rs
+@@ -1873,7 +1873,8 @@ pub(crate) mod shader_resources {
+             );
+ 
+             let ret = D3DCompileFromFile(
+-                &HSTRING::from(shader_path.to_str().unwrap()),
++                // quiet.md: as a wide string; the checkout may sit under a non-ASCII path.
++                &HSTRING::from(shader_path.as_path()),
+                 None,
+                 include_handler,
+                 entry_point,

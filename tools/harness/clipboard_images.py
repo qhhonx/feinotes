@@ -11,6 +11,7 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
+from hlib import doc_file, docs
 from PIL import Image
 
 here = Path(__file__).resolve().parent
@@ -60,7 +61,7 @@ shot result
 """)
     subprocess.run([sys.executable, str(here / "run.py"), str(script), str(source), str(folder)],
                    env=dict(os.environ, FDL_NOBLINK="1"), check=True, timeout=60)
-    saved = (folder / "lib" / "docs" / f"{doc_id}.xml").read_text()
+    saved = doc_file(folder / "lib").read_text()
     doc = ET.fromstring("<doc>" + saved + "</doc>")
     images = doc.findall(".//img")
     assert len(images) == expected_images, f"{name}: expected {expected_images} images; {saved}; see {folder}"

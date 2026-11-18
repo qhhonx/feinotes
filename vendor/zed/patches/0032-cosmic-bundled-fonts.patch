@@ -1,0 +1,38 @@
+cosmic-text (Linux, web): add_fonts replaces the system's faces of the same family and style (the bundled CBDT Noto Color Emoji over Fedora's COLRv1 one), and the board's CJK-only Xiaolai loads although it lacks an m glyph (old patches 43, 38)
+
+diff --git a/crates/gpui_wgpu/src/cosmic_text_system.rs b/crates/gpui_wgpu/src/cosmic_text_system.rs
+index f01cc525c45580a4662cceeb137a85bb7f89f85f..9fc86c31ca00df8ee8c7a0513ff0f2ba127bfdd6 100644
+--- a/crates/gpui_wgpu/src/cosmic_text_system.rs
++++ b/crates/gpui_wgpu/src/cosmic_text_system.rs
+@@ -355,7 +355,23 @@ impl CosmicTextSystemState {
+         self.font_ids_by_family_cache.clear();
+         let db = self.font_system.db_mut();
+         for bytes in fonts {
++            // quiet.md: a bundled face replaces the system's faces of the same
++            // family and style (Fedora's COLRv1 Noto Color Emoji, which swash
++            // draws blank, gives way to the bundled CBDT one).
++            let before: std::collections::HashSet<_> = db.faces().map(|f| f.id).collect();
+             db.load_font_source(cosmic_text::fontdb::Source::Binary(Arc::new(bytes)));
++            let key = |f: &cosmic_text::fontdb::FaceInfo| {
++                (f.families.first().map(|x| x.0.clone()), f.style, f.weight, f.stretch)
++            };
++            let added: Vec<_> = db.faces().filter(|f| !before.contains(&f.id)).map(key).collect();
++            let stale: Vec<_> = db
++                .faces()
++                .filter(|f| before.contains(&f.id) && added.contains(&key(f)))
++                .map(|f| f.id)
++                .collect();
++            for id in stale {
++                db.remove_face(id);
++            }
+         }
+         Ok(())
+     }
+@@ -440,6 +456,7 @@ impl CosmicTextSystemState {
+             let allowed_bad_font_names = [
+                 "SegoeFluentIcons", // NOTE: Segoe fluent icons postscript name is inconsistent
+                 "Segoe Fluent Icons",
++                "XiaolaiSC", // quiet.md: the board's CJK-only font
+             ];
+ 
+             // This only decides whether a face can be a primary font. The

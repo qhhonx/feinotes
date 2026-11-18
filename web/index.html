@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quiet.md — live demo</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f5f4; }
+  canvas { display: block; width: 100%; height: 100%; outline: none; }
+  #status { position: fixed; inset: 0; display: grid; place-items: center; font: 500 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; color: #6b716e; pointer-events: none; }
+  #status:empty { display: none; }
+</style>
+</head>
+<body>
+<div id="status">Loading…</div>
+<script>
+  // The first panic of this page load (later ones are its fallout), for debugging.
+  window.quietErrors = [];
+  const err = console.error.bind(console);
+  console.error = (...a) => { window.quietErrors.push(a.map(String).join(" ").slice(0, 600)); err(...a); };
+</script>
+<script type="module">
+  import init from "./quiet_md.js";
+  init().catch(e => { document.getElementById("status").textContent = "This browser could not start the demo (" + e + ")."; console.error(e); });
+</script>
+</body>
+</html>

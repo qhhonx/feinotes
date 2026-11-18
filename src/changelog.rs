@@ -17,6 +17,15 @@ const REAL_FOLDERS: &str = "文档库改为真实文件夹，以标题命名，�
 /// Each version's notes: (version, [(中文, English)]). Only the running
 /// version's are shown; a version without notes shows nothing.
 const NOTES: &[(&str, &[(&str, &str)])] = &[
+    ("0.1.13", &[
+        ("画板：在文档里插入，或直接打开 .excalidraw 文件", "Boards: add one to a note, or open .excalidraw files"),
+        ("版本历史：「…」›「版本历史」查看以前保存的版本", "Version history: … › Version history shows earlier saves"),
+        ("新增法语和阿拉伯语界面", "French and Arabic interfaces"),
+        ("复制为 Markdown（⌘⇧C），侧栏可复制文件路径", "Copy as Markdown (⌘⇧C); copy a file's path from the sidebar"),
+        ("设置 › 文档库可以更换文档库文件夹", "Settings › Documents can switch to another library folder"),
+        ("从网页或飞书粘贴的图片会存进文档库，不再因链接过期失效", "Pasted web images are saved into the library, so they never expire"),
+        ("大图页面更省内存，导入和删除在后台进行，侧栏滚动更顺", "Less memory on picture-heavy pages, imports and deletes in the background, smoother sidebar"),
+    ]),
     ("0.1.12", &[
         ("把文件或「本机文件」直接拖进侧栏的文件夹或两行之间", "Drag files, or Files on this computer, into a sidebar folder or between rows"),
         ("拖入时整个页面都是放置区，导入前先确认", "The whole page is a drop target; importing into the sidebar asks first"),

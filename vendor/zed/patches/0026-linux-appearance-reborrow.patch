@@ -1,0 +1,50 @@
+quiet.md #18: Linux: release the client borrow before appearance callbacks
+
+When the desktop's light/dark appearance changes, the Wayland and X11
+clients called every window's appearance callback while holding a mutable
+borrow of the client. The app's callback queries the platform and rebuilds
+menus, which borrows the client again and panicked. Copy the window handles
+out and release the borrow first.
+
+diff --git a/crates/gpui_linux/src/linux/wayland/client.rs b/crates/gpui_linux/src/linux/wayland/client.rs
+index 1cfb2e9478608476ec4a2e4c7c350764d1c138af..1dab4516b009d122a8d0490a8fdddd2548e4fc4c 100644
+--- a/crates/gpui_linux/src/linux/wayland/client.rs
++++ b/crates/gpui_linux/src/linux/wayland/client.rs
+@@ -1162,11 +1162,14 @@ impl WaylandConnection {
+                 move |event, _, _| match event {
+                     XDPEvent::WindowAppearance(appearance) => {
+                         if let Some(client) = client.0.upgrade() {
+-                            let mut client = client.borrow_mut();
+-
+-                            client.common.borrow_mut().appearance = appearance;
+-
+-                            for window in client.windows.values_mut() {
++                            let windows = {
++                                let client = client.borrow();
++                                client.common.borrow_mut().appearance = appearance;
++                                client.windows.values().cloned().collect::<Vec<_>>()
++                            };
++                            // quiet.md: appearance callbacks can query the platform and
++                            // update menus: release the client borrow before running them.
++                            for mut window in windows {
+                                 window.set_appearance(appearance);
+                             }
+                         }
+diff --git a/crates/gpui_linux/src/linux/x11/client.rs b/crates/gpui_linux/src/linux/x11/client.rs
+index e21f019c6493666b344ef6c8537e00ff7d29f543..b8492bf199853ff2f233ff668c5c83d17b8c0d10 100644
+--- a/crates/gpui_linux/src/linux/x11/client.rs
++++ b/crates/gpui_linux/src/linux/x11/client.rs
+@@ -609,8 +609,11 @@ impl X11Client {
+                     match event {
+                         XDPEvent::WindowAppearance(appearance) => {
+                             client.with_common(|common| common.appearance = appearance);
+-                            for window in client.0.borrow_mut().windows.values_mut() {
+-                                window.window.set_appearance(appearance);
++                            // quiet.md: application callbacks may re-enter the platform:
++                            // release the client borrow before running them.
++                            let windows = client.0.borrow().windows.values().map(|window| window.window.clone()).collect::<Vec<_>>();
++                            for mut window in windows {
++                                window.set_appearance(appearance);
+                             }
+                         }
+                         XDPEvent::ButtonLayout(layout_str) => {

@@ -1180,12 +1180,13 @@ dependencies = [
 
 [[package]]
 name = "fdl_core"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "base64",
  "dirs 7.0.0",
  "html5ever",
+ "js-sys",
  "markup5ever_rcdom",
  "miniz_oxide 0.9.1",
  "quick-xml",
@@ -1199,6 +1200,7 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "uuid",
+ "web-time",
 ]
 
 [[package]]
@@ -1245,6 +1247,7 @@ dependencies = [
  "unicode-segmentation",
  "uuid",
  "vello_cpu",
+ "web-time",
 ]
 
 [[package]]
@@ -5555,6 +5558,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
+ "serde",
  "wasm-bindgen",
 ]
 

@@ -11,7 +11,8 @@ use crate::editor_ui::TipExt;
 use gpui::{prelude::FluentBuilder, *};
 use rustc_hash::FxHasher;
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 /// Visual gap between two column boxes.
 const GAP: f32 = 20.;

@@ -17,4 +17,5 @@ pub mod paste;
 pub mod store;
 pub mod time;
 pub mod versions;
+pub mod vfs;
 pub mod whiteboard;

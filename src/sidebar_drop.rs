@@ -1,6 +1,7 @@
 //! Dropping onto the sidebar's 我的文档: files from the Finder are imported
 //! into the folder under the pointer (a document row: its folder; elsewhere:
 //! the top), and a 本机文件 row carried up into the tree is imported there.
+use fdl_core::vfs::PathExt as _;
 use crate::app::Workspace;
 use crate::settings::tr;
 use crate::theme::{self, Theme};
@@ -34,7 +35,7 @@ impl SidebarDropAt {
 }
 
 fn importable(p: &std::path::Path) -> bool {
-    p.is_dir() || crate::local_files::is_markdown_path(p) || p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml"))
+    p.fs_is_dir() || crate::local_files::is_markdown_path(p) || p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml"))
 }
 
 impl Workspace {
@@ -92,7 +93,7 @@ impl Workspace {
     }
 
     fn import_dropped_files(&mut self, paths: Vec<PathBuf>, target: SidebarDropAt, window: &mut Window, cx: &mut Context<Self>) {
-        let (dirs, files): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| p.is_dir());
+        let (dirs, files): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| p.fs_is_dir());
         let known: std::collections::HashSet<String> = self.entries.iter().map(|e| e.id.clone()).collect();
         let parent = target.parent.clone();
         self.landed_in(parent.as_deref());

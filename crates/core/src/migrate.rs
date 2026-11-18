@@ -105,12 +105,12 @@ pub fn sync_of(path: &Path) -> SyncService {
 /// Signs that another computer uses the old library at `root`.
 fn other_device(root: &Path) -> Option<DeviceHint> {
     let index: HashMap<String, Meta> = reread(&root.join("index.json")).unwrap_or_default();
-    if let Some(p) = index.values().filter_map(|m| m.path.as_deref()).find(|p| !Path::new(p).exists()) {
+    if let Some(p) = index.values().filter_map(|m| m.path.as_deref()).find(|p| !Path::new(p).fs_exists()) {
         return Some(DeviceHint::MissingFile(p.to_string()));
     }
     let conflict = |n: &str| { let l = n.to_lowercase(); l.contains("conflict") || n.contains("冲突") || l.ends_with(".icloud") };
     for dir in [root.to_path_buf(), root.join("docs")] {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = crate::vfs::read_dir(&dir) else { continue };
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
             // iCloud names a clash `index 2.json`.
@@ -123,7 +123,7 @@ fn other_device(root: &Path) -> Option<DeviceHint> {
 
 pub(super) fn state(root: &Path) -> MigrationState {
     if !Store::flat_at(root) { return MigrationState::NotNeeded; }
-    if root.join(INTERNAL).join(RESTORED).exists() { return MigrationState::NeedsConsent(ConsentReason::Restored); }
+    if root.join(INTERNAL).join(RESTORED).fs_exists() { return MigrationState::NeedsConsent(ConsentReason::Restored); }
     match sync_of(root) {
         SyncService::Local => {}
         s => return MigrationState::NeedsConsent(ConsentReason::Synced(s)),
@@ -138,17 +138,17 @@ pub(super) fn state(root: &Path) -> MigrationState {
 struct BackupInfo { created: u64, #[serde(default)] launches: u32, /// The move's end, in milliseconds: files changed after it are the user's.
     #[serde(default)] done_ms: u128 }
 
-fn now_ms() -> u128 { std::time::SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis()) }
+fn now_ms() -> u128 { web_time::SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis()) }
 
 pub(super) fn prune(root: &Path) {
     let internal = root.join(INTERNAL);
     let info_path = internal.join(BACKUP_INFO);
     let Some(mut info) = reread::<BackupInfo>(&info_path) else { return };
     let backup = internal.join(BACKUP);
-    if !backup.exists() { let _ = std::fs::remove_file(&info_path); return; }
+    if !backup.fs_exists() { let _ = crate::vfs::remove_file(&info_path); return; }
     info.launches += 1;
     if info.launches > BACKUP_LAUNCHES && now().saturating_sub(info.created) >= BACKUP_DAYS * 86_400 {
-        if std::fs::remove_dir_all(&backup).is_ok() { let _ = std::fs::remove_file(&info_path); }
+        if crate::vfs::remove_dir_all(&backup).is_ok() { let _ = crate::vfs::remove_file(&info_path); }
         return;
     }
     if let Ok(bytes) = serde_json::to_vec_pretty(&info) { let _ = write_atomic(&info_path, &bytes); }
@@ -157,21 +157,21 @@ pub(super) fn prune(root: &Path) {
 pub(super) fn restore(root: &Path) -> Result<RestoreReport> {
     let internal = root.join(INTERNAL);
     let backup = internal.join(BACKUP);
-    anyhow::ensure!(internal.join("format.json").is_file() && (backup.join("format.json").is_file() || backup.join("index.json").is_file()), "没有可恢复的迁移前备份");
-    let new = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(internal.join(".lock"))?;
+    anyhow::ensure!(internal.join("format.json").fs_is_file() && (backup.join("format.json").fs_is_file() || backup.join("index.json").fs_is_file()), "没有可恢复的迁移前备份");
+    let new = crate::vfs::OpenOptions::new().create(true).truncate(false).write(true).open(internal.join(".lock"))?;
     new.lock()?;
     let _new = WriteLock(Some(new));
     let since = reread::<BackupInfo>(&internal.join(BACKUP_INFO)).map_or(0, |i| if i.done_ms > 0 { i.done_ms } else { i.created as u128 * 1000 });
     let kept = internal.join(format!("{AFTER}-{}", now()));
-    std::fs::create_dir_all(&kept)?;
+    crate::vfs::create_dir_all(&kept)?;
     // What the new layout holds now: changed since the move?
     let mut changed = 0;
     fn count(dir: &Path, since: u128, n: &mut usize) {
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let Ok(rd) = crate::vfs::read_dir(dir) else { return };
         for e in rd.flatten() {
             let p = e.path();
             if e.file_name().to_string_lossy().starts_with('.') { continue; }
-            if p.is_dir() { count(&p, since, n); continue; }
+            if p.fs_is_dir() { count(&p, since, n); continue; }
             let ext = p.extension().and_then(|x| x.to_str());
             let t = e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis());
             if matches!(ext, Some("xml" | "md")) && t > since { *n += 1; }
@@ -179,41 +179,41 @@ pub(super) fn restore(root: &Path) -> Result<RestoreReport> {
     }
     count(root, since, &mut changed);
     // Set aside: the notes and folders, then the new layout's own files.
-    for e in std::fs::read_dir(root)?.flatten() {
+    for e in crate::vfs::read_dir(root)?.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
         if n.starts_with('.') { continue; }
-        std::fs::rename(e.path(), kept.join(&n))?;
+        crate::vfs::rename(e.path(), kept.join(&n))?;
     }
     let inner = kept.join(INTERNAL);
-    std::fs::create_dir_all(&inner)?;
+    crate::vfs::create_dir_all(&inner)?;
     for name in ["format.json", "index.json", "index.json.bak", "trash", "settings.json"] {
         let p = internal.join(name);
-        if p.symlink_metadata().is_ok() { std::fs::rename(&p, inner.join(name))?; }
+        if p.fs_symlink_metadata().is_ok() { crate::vfs::rename(&p, inner.join(name))?; }
     }
     // The backup comes back, with the preferences, shortcuts and themes as they are now.
-    for e in std::fs::read_dir(&backup)?.flatten() {
+    for e in crate::vfs::read_dir(&backup)?.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
         let to = root.join(&n);
         // (Copies numbered when set aside twice stay in the backup.)
-        if !(OLD.contains(&n.as_str()) || n.starts_with("index.json.corrupt-")) || to.symlink_metadata().is_ok() { continue; }
-        std::fs::rename(e.path(), to)?;
+        if !(OLD.contains(&n.as_str()) || n.starts_with("index.json.corrupt-")) || to.fs_symlink_metadata().is_ok() { continue; }
+        crate::vfs::rename(e.path(), to)?;
     }
     for name in KEPT {
         let (from, to) = (internal.join(name), root.join(name));
-        if !from.exists() { continue; }
-        if to.is_dir() { let _ = std::fs::remove_dir_all(&to); } else if to.exists() { let _ = std::fs::remove_file(&to); }
-        std::fs::rename(&from, &to)?;
+        if !from.fs_exists() { continue; }
+        if to.fs_is_dir() { let _ = crate::vfs::remove_dir_all(&to); } else if to.fs_exists() { let _ = crate::vfs::remove_file(&to); }
+        crate::vfs::rename(&from, &to)?;
     }
-    if root.join(ASSETS).is_dir() && !root.join("assets").exists() { std::fs::rename(root.join(ASSETS), root.join("assets"))?; }
-    let _ = std::fs::remove_dir(&backup);
-    let _ = std::fs::remove_file(internal.join(BACKUP_INFO));
+    if root.join(ASSETS).fs_is_dir() && !root.join("assets").fs_exists() { crate::vfs::rename(root.join(ASSETS), root.join("assets"))?; }
+    let _ = crate::vfs::remove_dir(&backup);
+    let _ = crate::vfs::remove_file(internal.join(BACKUP_INFO));
     write_atomic(&internal.join(RESTORED), &serde_json::to_vec_pretty(&BackupInfo { created: now(), launches: 0, done_ms: now_ms() })?)?;
     Ok(RestoreReport { kept, changed })
 }
 
 /// Whether `root` holds a library of the old layout (FORMAT 3 and older).
 pub(super) fn legacy(root: &Path) -> bool {
-    root.join("format.json").is_file() || (root.join("index.json").is_file() && root.join("docs").is_dir())
+    root.join("format.json").fs_is_file() || (root.join("index.json").fs_is_file() && root.join("docs").fs_is_dir())
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -232,30 +232,30 @@ struct Plan {
 /// Move the library at `root` to FORMAT 4, or leave it as it was.
 pub(super) fn run(root: &Path, warnings: &mut Vec<String>) -> Result<MigrationReport> {
     let internal = root.join(INTERNAL);
-    std::fs::create_dir_all(&internal)?;
+    crate::vfs::create_dir_all(&internal)?;
     // Old builds take the lock at the top, this one in `.quiet/`: hold both.
-    let old = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(root.join(".lock"))?;
+    let old = crate::vfs::OpenOptions::new().create(true).truncate(false).write(true).open(root.join(".lock"))?;
     old.lock()?;
     let _old = WriteLock(Some(old));
-    let new = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(internal.join(".lock"))?;
+    let new = crate::vfs::OpenOptions::new().create(true).truncate(false).write(true).open(internal.join(".lock"))?;
     new.lock()?;
     let _new = WriteLock(Some(new));
     // Another copy may have finished while this one waited.
     let report = |docs, folders| MigrationReport { docs, folders, backup: internal.join(BACKUP) };
-    if internal.join("format.json").is_file() { finish(root, warnings); return Ok(report(0, 0)); }
+    if internal.join("format.json").fs_is_file() { finish(root, warnings); return Ok(report(0, 0)); }
     let format = reread::<FormatMarker>(&root.join("format.json")).map_or(0, |m| m.format);
     anyhow::ensure!(format <= 3, "这个文档库由更新版本的 Quiet.md 创建，请升级后再打开");
     if let Some(plan) = reread::<Plan>(&internal.join(PLAN)) {
         undo(root, &plan);
-        let _ = std::fs::remove_file(internal.join(PLAN));
+        let _ = crate::vfs::remove_file(internal.join(PLAN));
     }
     // A backup of an earlier move (the user went back since) is kept apart.
-    if internal.join(BACKUP).exists() { std::fs::rename(internal.join(BACKUP), internal.join(format!("{BACKUP}-{}", now())))?; }
+    if internal.join(BACKUP).fs_exists() { crate::vfs::rename(internal.join(BACKUP), internal.join(format!("{BACKUP}-{}", now())))?; }
     let mut plan = Plan::default();
     match migrate(root, format, &mut plan, warnings) {
         Ok((docs, folders)) => {
-            let _ = std::fs::remove_file(internal.join(PLAN));
-            let _ = std::fs::remove_file(internal.join(RESTORED));
+            let _ = crate::vfs::remove_file(internal.join(PLAN));
+            let _ = crate::vfs::remove_file(internal.join(RESTORED));
             let _ = write_atomic(&internal.join(BACKUP_INFO), &serde_json::to_vec_pretty(&BackupInfo { created: now(), launches: 0, done_ms: now_ms() })?);
             drop(_old);
             finish(root, warnings);
@@ -263,7 +263,7 @@ pub(super) fn run(root: &Path, warnings: &mut Vec<String>) -> Result<MigrationRe
         }
         Err(e) => {
             undo(root, &plan);
-            let _ = std::fs::remove_file(internal.join(PLAN));
+            let _ = crate::vfs::remove_file(internal.join(PLAN));
             Err(anyhow::anyhow!("文档库升级到新格式失败，已保持原样：{e}"))
         }
     }
@@ -272,35 +272,35 @@ pub(super) fn run(root: &Path, warnings: &mut Vec<String>) -> Result<MigrationRe
 /// Remove what an unfinished move wrote; the old layout was never touched.
 fn undo(root: &Path, plan: &Plan) {
     let abs = |rel: &str| rel.split('/').fold(root.to_path_buf(), |p, s| p.join(s));
-    for f in &plan.files { let _ = std::fs::remove_file(abs(f)); }
-    for d in plan.dirs.iter().rev() { let _ = std::fs::remove_dir(abs(d)); }
+    for f in &plan.files { let _ = crate::vfs::remove_file(abs(f)); }
+    for d in plan.dirs.iter().rev() { let _ = crate::vfs::remove_dir(abs(d)); }
     let internal = root.join(INTERNAL);
     for name in &plan.internal {
         let p = internal.join(name);
-        let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        let _ = if p.fs_is_dir() { crate::vfs::remove_dir_all(&p) } else { crate::vfs::remove_file(&p) };
     }
-    if plan.assets && !root.join("assets").exists() && root.join(ASSETS).is_dir() { let _ = std::fs::rename(root.join(ASSETS), root.join("assets")); }
+    if plan.assets && !root.join("assets").fs_exists() && root.join(ASSETS).fs_is_dir() { let _ = crate::vfs::rename(root.join(ASSETS), root.join("assets")); }
 }
 
 /// Set the old layout aside, whole, in `.quiet/before-folders-4/`.
 pub(super) fn finish(root: &Path, warnings: &mut Vec<String>) {
     let backup = root.join(INTERNAL).join(BACKUP);
     let mut names: Vec<String> = OLD.iter().map(|s| s.to_string()).collect();
-    if let Ok(rd) = std::fs::read_dir(root) {
+    if let Ok(rd) = crate::vfs::read_dir(root) {
         names.extend(rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("index.json.corrupt-")));
     }
     for name in names {
         let from = root.join(&name);
-        if from.symlink_metadata().is_err() { continue; }
-        let r = std::fs::create_dir_all(&backup).and_then(|_| {
+        if from.fs_symlink_metadata().is_err() { continue; }
+        let r = crate::vfs::create_dir_all(&backup).and_then(|_| {
             let mut to = backup.join(&name);
             let mut n = 2;
-            while to.symlink_metadata().is_ok() { to = backup.join(format!("{name}.{n}")); n += 1; }
-            std::fs::rename(&from, to)
+            while to.fs_symlink_metadata().is_ok() { to = backup.join(format!("{name}.{n}")); n += 1; }
+            crate::vfs::rename(&from, to)
         });
         if let Err(e) = r { warnings.push(format!("旧格式的 {name} 未能移入 .quiet/{BACKUP}：{e}")); }
     }
-    let _ = std::fs::remove_file(root.join(".lock"));
+    let _ = crate::vfs::remove_file(root.join(".lock"));
 }
 
 /// Pages that had pages under them (FORMAT 1) become folders of the same
@@ -339,7 +339,7 @@ impl Names {
     fn take(&mut self, root: &Path, dir: &str, base: &str, ext: Option<&str>) -> String {
         let used = self.0.entry(dir.to_string()).or_insert_with(|| {
             let path = dir.split('/').filter(|s| !s.is_empty()).fold(root.to_path_buf(), |p, s| p.join(s));
-            std::fs::read_dir(path).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_lowercase()).collect()).unwrap_or_default()
+            crate::vfs::read_dir(path).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_lowercase()).collect()).unwrap_or_default()
         });
         for n in 1.. {
             let stem = if n == 1 { base.to_string() } else { format!("{base} {n}") };
@@ -355,13 +355,13 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     let docs_dir = root.join("docs");
     let mut index: HashMap<String, Meta> = load_json(&root.join("index.json"), "文档索引", warnings);
     let trash: HashMap<String, Trashed> = load_json(&root.join("trash").join("index.json"), "回收站索引", warnings);
-    let file_of = |id: &str| -> Option<PathBuf> { ["xml", "md"].iter().map(|x| docs_dir.join(format!("{id}.{x}"))).find(|p| p.is_file()) };
+    let file_of = |id: &str| -> Option<PathBuf> { ["xml", "md"].iter().map(|x| docs_dir.join(format!("{id}.{x}"))).find(|p| p.fs_is_file()) };
     if format < 2 {
-        pages_to_folders(&mut index, |id| file_of(id).is_some(), |id| file_of(id).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|x| docxml::parse(&x).ok()).map(|d| d.title.text));
+        pages_to_folders(&mut index, |id| file_of(id).is_some(), |id| file_of(id).and_then(|p| crate::vfs::read_to_string(p).ok()).and_then(|x| docxml::parse(&x).ok()).map(|d| d.title.text));
     }
     // The documents: every file in docs/, indexed or dropped there by hand.
     let mut docs: Vec<(String, PathBuf, bool)> = vec![];
-    if let Ok(rd) = std::fs::read_dir(&docs_dir) {
+    if let Ok(rd) = crate::vfs::read_dir(&docs_dir) {
         for e in rd {
             let p = e?.path();
             let markdown = match p.extension().and_then(|s| s.to_str()) { Some("xml") => false, Some("md") => true, _ => continue };
@@ -371,11 +371,11 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
         }
     }
     docs.sort_by_key(|(id, p, _)| {
-        let created = index.get(id).map(|m| m.created).or_else(|| std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()));
+        let created = index.get(id).map(|m| m.created).or_else(|| crate::vfs::metadata(p).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()));
         (created.unwrap_or(0), id.clone())
     });
     let assets = root.join("assets");
-    let hide = !(assets.exists() && root.join(ASSETS).exists());
+    let hide = !(assets.fs_exists() && root.join(ASSETS).fs_exists());
     if !hide { warnings.push(format!("文档库里已有 {ASSETS} 文件夹，图片仍保留在 assets 中")); }
     // Folders, outermost first, each named after its title in its parent.
     let mut names = Names(HashMap::new());
@@ -401,8 +401,8 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     // Documents, in the folder they were in.
     let mut written: Vec<(String, String, Meta, String)> = vec![]; // id, rel, meta, old text
     for (id, path, markdown) in &docs {
-        let text = std::fs::read_to_string(path).with_context(|| format!("无法读取 {}", path.display()))?;
-        let t = std::fs::metadata(path).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or_else(now);
+        let text = crate::vfs::read_to_string(path).with_context(|| format!("无法读取 {}", path.display()))?;
+        let t = crate::vfs::metadata(path).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or_else(now);
         let mut meta = index.get(id).cloned().filter(|m| m.folder.is_none() && !m.local()).unwrap_or(Meta { created: t, modified: t, ..Default::default() });
         meta.markdown = *markdown;
         let title = if *markdown { meta.name.clone().unwrap_or_else(|| "未命名".into()) } else { docxml::parse(&text).map(|d| d.title.text).unwrap_or_default() };
@@ -437,28 +437,28 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     plan.dirs = dirs.clone();
     plan.files = contents.iter().map(|(r, _)| r.clone()).collect();
     plan.internal = ["index.json", "trash", "settings.json", "preferences.json", "shortcuts.json", "emoji.json", "themes"].iter()
-        .filter(|n| !internal.join(n).exists()).map(|n| n.to_string()).collect();
-    plan.assets = hide && assets.is_dir();
+        .filter(|n| !internal.join(n).fs_exists()).map(|n| n.to_string()).collect();
+    plan.assets = hide && assets.fs_is_dir();
     write_atomic(&internal.join(PLAN), &serde_json::to_vec_pretty(plan)?)?;
     let abs = |rel: &str| rel.split('/').fold(root.to_path_buf(), |p, s| p.join(s));
-    for d in &dirs { std::fs::create_dir(abs(d)).with_context(|| format!("无法创建文件夹 {d}"))?; }
+    for d in &dirs { crate::vfs::create_dir(abs(d)).with_context(|| format!("无法创建文件夹 {d}"))?; }
     for (n, (rel, text)) in contents.iter().enumerate() {
         // Tests break a move half way through in a library named so.
         #[cfg(test)]
         anyhow::ensure!(n < 2 || !root.to_string_lossy().contains("fail-migration"), "测试注入的失败");
         let _ = n;
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(abs(rel)).with_context(|| format!("无法写入 {rel}"))?;
+        let mut f = crate::vfs::OpenOptions::new().write(true).create_new(true).open(abs(rel)).with_context(|| format!("无法写入 {rel}"))?;
         f.write_all(text.as_bytes())?;
         f.sync_all()?;
     }
     // The 回收站: same files under `.quiet/trash/`, same index.
     let trash_dir = internal.join("trash");
-    std::fs::create_dir_all(&trash_dir)?;
-    if let Ok(rd) = std::fs::read_dir(root.join("trash")) {
+    crate::vfs::create_dir_all(&trash_dir)?;
+    if let Ok(rd) = crate::vfs::read_dir(root.join("trash")) {
         for e in rd {
             let p = e?.path();
             let md = match p.extension().and_then(|s| s.to_str()) { Some("xml") => false, Some("md") => true, _ => continue };
-            let text = std::fs::read_to_string(&p)?;
+            let text = crate::vfs::read_to_string(&p)?;
             let text = if !hide { text } else if md { layout::hide_assets_md(&text) } else { layout::hide_assets_xml(&text) };
             write_atomic(&trash_dir.join(p.file_name().unwrap()), text.as_bytes())?;
         }
@@ -466,8 +466,8 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     write_atomic(&trash_dir.join("index.json"), &serde_json::to_vec_pretty(&trash)?)?;
     for name in KEPT {
         let (from, to) = (root.join(name), internal.join(name));
-        if to.exists() || !from.exists() { continue; }
-        if from.is_dir() { copy_dir(&from, &to)?; } else { std::fs::copy(&from, &to)?; }
+        if to.fs_exists() || !from.fs_exists() { continue; }
+        if from.fs_is_dir() { copy_dir(&from, &to)?; } else { crate::vfs::copy(&from, &to)?; }
     }
     // The new index, by path; ids stay, so open windows and links agree.
     let mut disk = DiskIndex::new();
@@ -480,19 +480,19 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     local.opened = index.iter().filter(|(_, m)| m.opened > 0).map(|(k, m)| (k.clone(), m.opened)).collect();
     local.files = index.iter().filter(|(_, m)| m.local()).map(|(k, m)| (k.clone(), m.clone())).collect();
     if let Some(s) = reread::<Settings>(&root.join("settings.json")) { local.window_size = s.window_size; local.quick_note_size = s.quick_note_size; }
-    std::fs::create_dir_all(local_path.parent().unwrap())?;
+    crate::vfs::create_dir_all(local_path.parent().unwrap())?;
     write_atomic(&local_path, &serde_json::to_vec_pretty(&local)?)?;
-    if plan.assets { std::fs::rename(&assets, root.join(ASSETS))?; }
+    if plan.assets { crate::vfs::rename(&assets, root.join(ASSETS))?; }
     write_atomic(&internal.join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?;
     Ok((written.len(), folders.len()))
 }
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for e in std::fs::read_dir(from)? {
+    crate::vfs::create_dir_all(to)?;
+    for e in crate::vfs::read_dir(from)? {
         let e = e?;
         let dest = to.join(e.file_name());
-        if e.file_type()?.is_dir() { copy_dir(&e.path(), &dest)?; } else { std::fs::copy(e.path(), dest)?; }
+        if e.file_type()?.fs_is_dir() { copy_dir(&e.path(), &dest)?; } else { crate::vfs::copy(e.path(), dest)?; }
     }
     Ok(())
 }

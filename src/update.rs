@@ -56,7 +56,7 @@ pub enum State {
 }
 
 /// `last`: when the latest automatic check started.
-pub struct Updater { pub state: State, told: Option<String>, last: Option<std::time::Instant> }
+pub struct Updater { pub state: State, told: Option<String>, last: Option<web_time::Instant> }
 impl Global for Updater {}
 
 pub fn state(cx: &App) -> State { cx.try_global::<Updater>().map_or(State::Idle, |u| u.state.clone()) }
@@ -72,9 +72,6 @@ pub fn init(cx: &mut App) {
     cx.spawn(async |cx| {
         cx.background_executor().timer(Duration::from_secs(10)).await;
         loop {
-            #[cfg(not(target_os = "ios"))]
-            if cx.update(|cx| if crate::settings::prefs().auto_update { check(false, cx) }).is_err() { break }
-            #[cfg(target_os = "ios")]
             cx.update(|cx| if crate::settings::prefs().auto_update { check(false, cx) });
             cx.background_executor().timer(Duration::from_secs(12 * 3600)).await;
         }
@@ -100,11 +97,11 @@ pub fn check(manual: bool, cx: &mut App) {
         State::Unsupported if !manual => return,
         _ => {}
     }
-    if manual { set(State::Checking, cx); } else { cx.global_mut::<Updater>().last = Some(std::time::Instant::now()); }
+    if manual { set(State::Checking, cx); } else { cx.global_mut::<Updater>().last = Some(web_time::Instant::now()); }
     let task = cx.background_executor().spawn(async { fetch_manifest() });
     cx.spawn(async move |cx| {
         let result = task.await;
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             let state = match result {
                 Ok(Some(m)) => State::Available(m),
                 Ok(None) => State::Current,
@@ -145,14 +142,12 @@ pub fn download(cx: &mut App) {
     cx.spawn(async |cx| loop {
         cx.background_executor().timer(Duration::from_millis(300)).await;
         let downloading = cx.update(|cx| if matches!(state(cx), State::Downloading(_)) { cx.refresh_windows(); true } else { false });
-        #[cfg(not(target_os = "ios"))]
-        let downloading = downloading.unwrap_or(false);
         if !downloading { break }
     }).detach();
     let task = cx.background_executor().spawn({ let m = m.clone(); async move { fetch_package(&m) } });
     cx.spawn(async move |cx| {
         let result = task.await;
-        let _ = cx.update(|cx| set(match result { Ok(path) => State::Ready(m, path), Err(e) => State::Failed(e) }, cx));
+        cx.update(|cx| set(match result { Ok(path) => State::Ready(m, path), Err(e) => State::Failed(e) }, cx));
     }).detach();
 }
 
@@ -244,9 +239,9 @@ fn signed(bytes: &[u8], signature: &str, name: &str, key: &minisign_verify::Publ
 }
 
 fn updates_dir() -> PathBuf {
-    let base = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
+    let base = dirs::cache_dir().unwrap_or_else(fdl_core::vfs::temp_dir);
     if cfg!(target_os = "macos") { base.join("com.s1dashu.quietmd").join("updates") }
-    else if cfg!(target_os = "linux") { base.join("quiet.md").join("updates").join(std::process::id().to_string()) }
+    else if cfg!(target_os = "linux") { base.join("quiet.md").join("updates").join(fdl_core::vfs::process_id().to_string()) }
     else { base.join("quiet.md").join("updates") }
 }
 
@@ -359,16 +354,16 @@ fn start_installer(new: &Path) -> Result<(), String> {
         return Err(crate::settings::tr("请先把 Quiet.md 移到「应用程序」文件夹，再更新", "Move Quiet.md to the Applications folder first, then update").into());
     }
     // The folder must take the new bundle (a standard user cannot write to /Applications).
-    let probe = parent.join(format!(".quiet.md-update-{}", std::process::id()));
+    let probe = parent.join(format!(".quiet.md-update-{}", fdl_core::vfs::process_id()));
     if std::fs::create_dir(&probe).is_err() {
         return Err(crate::localized_format!("没有写入 {} 的权限，请从网站下载新版本", "No permission to write to {}. Download the new version from the website instead.", parent.display()));
     }
     let _ = std::fs::remove_dir(&probe);
-    let old = parent.join(format!(".quiet.md-old-{}.app", std::process::id()));
+    let old = parent.join(format!(".quiet.md-old-{}.app", fdl_core::vfs::process_id()));
     let env = ["QUIET_MD_HOME", "QUIET_MD_UPDATE_URL"].into_iter()
         .filter_map(|k| std::env::var(k).ok().map(|v| ["--env".to_string(), format!("{k}={v}")])).flatten();
     Command::new("/bin/sh").arg("-c").arg(SWAP).arg("sh")
-        .arg(std::process::id().to_string()).arg(&app).arg(new).arg(&old).args(env)
+        .arg(fdl_core::vfs::process_id().to_string()).arg(&app).arg(new).arg(&old).args(env)
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .process_group(0).spawn().map(drop).map_err(|e| e.to_string())
 }
@@ -380,7 +375,7 @@ fn start_installer(setup: &Path) -> Result<(), String> {
     let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
     let script = format!(
         "Wait-Process -Id {} -ErrorAction SilentlyContinue; Start-Process -FilePath {} -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS','/UPDATE=1'",
-        std::process::id(), quote(&setup.to_string_lossy()));
+        fdl_core::vfs::process_id(), quote(&setup.to_string_lossy()));
     command("powershell.exe").args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .spawn().map(drop).map_err(|e| e.to_string())
@@ -441,7 +436,7 @@ fn start_installer(new: &Path) -> Result<(), String> {
         std::fs::hard_link(&app, stage.join("previous.AppImage")).map_err(|e| e.to_string())?;
         std::fs::hard_link(&staged, stage.join("installed.AppImage")).map_err(|e| e.to_string())?;
         Command::new("/bin/sh").arg("-c").arg(SWAP_APPIMAGE).arg("sh")
-            .arg(std::process::id().to_string()).arg(&app).arg(&stage).arg(identity).args(std::env::args_os().skip(1))
+            .arg(fdl_core::vfs::process_id().to_string()).arg(&app).arg(&stage).arg(identity).args(std::env::args_os().skip(1))
             .env_remove("APPIMAGE").env_remove("APPDIR").env_remove("ARGV0").env_remove("OWD").env_remove("XLOCALEDIR")
             .current_dir(parent).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
             .process_group(0).spawn().map(drop).map_err(|e| e.to_string())
@@ -534,7 +529,7 @@ mod linux_tests {
     #[test]
     fn appimage_swap_waits_preserves_arguments_and_recovers() {
         for case in ["success", "failed-launch", "concurrent", "missing-stage"] {
-            let root = std::env::temp_dir().join(format!("quiet update 中文 {}", uuid::Uuid::new_v4()));
+            let root = fdl_core::vfs::temp_dir().join(format!("quiet update 中文 {}", uuid::Uuid::new_v4()));
             let stage = root.join("stage with spaces");
             std::fs::create_dir_all(&stage).unwrap();
             let app = root.join("quiet $name.AppImage");

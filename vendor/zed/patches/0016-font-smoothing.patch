@@ -1,0 +1,67 @@
+quiet.md #1: smooth glyphs of every colour at the darkest level
+
+CoreGraphics thickens glyph stems (font smoothing) by an amount that depends
+on the text colour. Upstream replicates that through `dilation`: no smoothing
+for dark text, a lighter fill (less darkening) for light text. The app tuned
+its text against native AppKit / Catalyst views with smoothing on at the
+darkest level for every colour (with smoothing off, strokes carry about 15%
+less ink); keep that, so text looks as it did before the upgrade in both
+themes. One level also lets glyphs of any colour share a rasterization. Only
+the user's AppleFontSmoothing = 0 turns smoothing off.
+
+diff --git a/crates/gpui_apple/src/text_system.rs b/crates/gpui_apple/src/text_system.rs
+index a24e38e4888668f6d63dfa85f82749b95de066f4..ccd90c5f4141946768335d38eb8b843db2adbd81 100644
+--- a/crates/gpui_apple/src/text_system.rs
++++ b/crates/gpui_apple/src/text_system.rs
+@@ -48,7 +48,7 @@ use std::{borrow::Cow, char, convert::TryFrom, sync::Arc};
+ #[cfg(target_os = "macos")]
+ use {
+     core_foundation::base::CFType,
+-    gpui::{Hsla, Rgba},
++    gpui::Hsla,
+     std::sync::OnceLock,
+ };
+ 
+@@ -236,17 +236,10 @@ impl PlatformTextSystem for AppleTextSystem {
+     }
+ 
+     #[cfg(target_os = "macos")]
+-    fn glyph_dilation_for_color(&self, color: Hsla) -> u8 {
+-        // When font smoothing is enabled, CoreGraphics thickens glyph strokes by an amount that
+-        // depends on the foreground color's luminance. We replicate the logic used by CoreGraphics
+-        // to select between the different levels of dilation.
+-        if !font_smoothing_allowed_by_user() {
+-            return 0;
+-        }
+-        let rgba: Rgba = color.into();
+-        let luminance = 0.2126 * rgba.r + 0.7152 * rgba.g + 0.0722 * rgba.b;
+-        let level = ((4.0 * luminance) + 0.5).floor() as i32;
+-        level.clamp(0, 4) as u8
++    fn glyph_dilation_for_color(&self, _color: Hsla) -> u8 {
++        // quiet.md: one darkening level for every colour (see rasterize_glyph),
++        // so glyphs of any colour share one rasterization.
++        0
+     }
+ }
+ 
+@@ -565,13 +558,15 @@ impl AppleTextSystemState {
+             cx.set_allows_font_subpixel_quantization(false);
+             cx.set_should_subpixel_quantize_fonts(false);
+ 
+-            if cfg!(target_os = "macos") && params.dilation > 0 {
+-                let luminance = params.dilation as f64 * 0.25;
++            // quiet.md: every colour is smoothed (stem darkening) at the
++            // darkest level, as the app measured against native AppKit /
++            // Catalyst text; only the user's AppleFontSmoothing = 0 turns it off.
++            #[cfg(target_os = "macos")]
++            if font_smoothing_allowed_by_user() {
++                cx.set_allows_font_smoothing(true);
+                 cx.set_should_smooth_fonts(true);
+-                cx.set_gray_fill_color(luminance, 1.0);
+-            } else {
+-                cx.set_gray_fill_color(0.0, 1.0);
+             }
++            cx.set_gray_fill_color(0.0, 1.0);
+             if self.oblique.contains(&params.font_id) {
+                 cx.concat_ctm(core_graphics::geometry::CGAffineTransform::new(1., 0., OBLIQUE_SKEW as CGFloat, 1., 0., 0.));
+             }

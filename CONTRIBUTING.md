@@ -14,7 +14,7 @@ QUIET_MD_HOME=/tmp/lib ./target/release/quiet_md   # uses another library
 
 While developing, point `QUIET_MD_HOME` at a scratch directory; don't test against your real library.
 
-The repository is a Cargo workspace: `crates/core` is the document engine (`fdl_core`), which does not depend on GPUI, and the root crate is the app. GPUI, taffy and xattr are locally patched copies in `vendor/`; the changes are listed in [vendor/PATCHES.md](vendor/PATCHES.md). `target/debug` can grow past 10 GB; if you only build release, `cargo clean --profile dev` clears it.
+The repository is a Cargo workspace: `crates/core` is the document engine (`fdl_core`), which does not depend on GPUI, and the root crate is the app. GPUI is vendored from the Zed repository in `vendor/zed`: a snapshot of one upstream commit plus a series of local patches, kept in sync by `tools/vendor-sync`; [vendor/PATCHES.md](vendor/PATCHES.md) lists the patches and the workflow. `target/debug` can grow past 10 GB; if you only build release, `cargo clean --profile dev` clears it.
 
 ## Testing
 

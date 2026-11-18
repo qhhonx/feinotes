@@ -71,7 +71,6 @@ fn widen(line: &mut WrappedLine, equations: &[Rc<Equation>], start: usize, width
     *target = Arc::new(WrappedLineLayout { unwrapped_layout: Arc::new(layout), wrap_boundaries: boundaries.into(), wrap_width: Some(width) });
 }
 
-impl IntoElement for PreviewText { type Element = Self; fn into_element(self) -> Self { self } }
 impl Element for PreviewText {
     type RequestLayoutState = Rc<RefCell<Option<Prepared>>>;
     type PrepaintState = ();
@@ -160,4 +159,10 @@ impl Element for PreviewText {
             }
         });
     }
+}
+
+#[cfg(target_os = "ios")]
+impl IntoElement for PreviewText {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
 }

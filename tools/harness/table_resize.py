@@ -11,6 +11,7 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
+from hlib import doc_file, docs
 from PIL import Image, ImageChops
 
 here = Path(__file__).resolve().parent
@@ -75,7 +76,7 @@ wait 700
         assert diff.getbbox() is None, f"{name}: page moved {frame} resize; see {folder}"
     # Verify that the gesture hit the resizer, persisted only its width, and
     # left all document content intact (also catches no-op / undo regressions).
-    saved = ET.fromstring("<doc>" + (folder / "lib" / "docs" / f"{doc_id}.xml").read_text() + "</doc>")
+    saved = ET.fromstring("<doc>" + doc_file(folder / "lib").read_text() + "</doc>")
     original = ET.fromstring("<doc>" + xml + "</doc>")
     widths = [int(c.get("width")) for c in saved.findall(".//col")]
     assert widths == [width, 240], f"{name}: expected {[width, 240]}, saved {widths}; see {folder}"
