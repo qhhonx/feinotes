@@ -76,6 +76,7 @@ fn cloudkit_restore() {
     println!("cargo:rerun-if-env-changed=FEI_CLOUD_CONTAINER");
     println!("cargo:rerun-if-env-changed=FEI_CLOUD_ENVIRONMENT");
     println!("cargo:rerun-if-env-changed=FEI_BUNDLE_ID");
+    println!("cargo:rerun-if-env-changed=FEI_MAC_UPSTREAM_PREVIEW");
     println!("cargo:rerun-if-env-changed=FEI_TESTFLIGHT_BETA");
     let container = std::env::var("FEI_CLOUD_CONTAINER").unwrap_or_else(|_| "iCloud.app.quietmd.cloudlab".into());
     let environment = std::env::var("FEI_CLOUD_ENVIRONMENT").unwrap_or_else(|_| "Development".into());
@@ -97,6 +98,10 @@ fn cloudkit_restore() {
     assert!(!testflight || (!qa && environment == "Production"
         && bundle == "app.feinotes.mac" && container == "iCloud.app.feinotes.mac"),
         "TestFlight requires the Fei Notes production bundle and container without QA");
+    let preview = std::env::var("FEI_MAC_UPSTREAM_PREVIEW").as_deref() == Ok("1");
+    assert!(!preview || (qa && !testflight && environment == "Development" && bundle == "app.quietmd.cloudlab"
+        && container == "iCloud.app.quietmd.cloudlab"), "Use the Development CloudLab identity for upstream cloud previews");
+    if preview { println!("cargo:rustc-env=FEI_UPSTREAM_PREVIEW=1"); }
     println!("cargo:rustc-env=FEI_TESTFLIGHT_BETA={}", if testflight { "1" } else { "0" });
     println!("cargo:rustc-env=FEI_CLOUD_NAMESPACE={environment}:{container}");
     println!("cargo:rustc-env=FEI_BUNDLE_ID={bundle}");

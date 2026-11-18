@@ -1914,7 +1914,7 @@
   ],
   "inputs": {
     "LICENSE": "b8f39925b1c36ca531c5e663aeb7ba427f94a526495785b4d1b2797fae8f2546",
-    "LICENSES.md": "924b91a0f01ab30c016d0612d5995e2192e69df417bbd193748965bdc5114087",
+    "LICENSES.md": "e2104e293a54f175700641f6629845a1f1f2f1c84e7230f03d7e1b170ea55b14",
     "LICENSE-FEINOTES.md": "ffcca38841adb694b6f380647e15f17c446a4d1656fed51a1e2041d064c94cc8",
     "THIRD_PARTY.md": "b6f1c1b75682fd64efbd3209cc8082ab52ca8d04d123a9e5cab44e4a91ce48fb",
     "assets/icons/LICENSE-lucide": "09d08e8c10d6fd7f8f2e782b93b526c5d3429795147a950f1fb9a43d35ebe5b0",
@@ -1933,7 +1933,7 @@
     "packaging/ios/.gpui-core/Cargo.toml": "17c581884c21901f604eec93d32171dd17518606ce726fd7e59f9a442abc07de",
     "packaging/ios/.gpui-core/LICENSE-APACHE": "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a"
   },
-  "output_sha256": "0845649152b4e196ea279b3cea7c8a77315518e2739d2969933a4d1ce4ea4c1a",
+  "output_sha256": "8d55d41adff6f62716415eb1e891ebe9e9f0c621360215008aec4a36b1629df2",
   "file_list_sha256": "b20887e64609116e2c8dc18ae4f8e4d38df232a1e9ab62348846b440805a8b29",
-  "catalogue_sha256": "a8f27ad3e5244e78d29cc1ae9ae115d7b8cde94da274539a1f9f99acab20a68a"
+  "catalogue_sha256": "ac18b2713cede3b58fb1bd8caefc26dc135afb17087e921910c23255f0e3e31f"
 }

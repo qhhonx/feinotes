@@ -111,7 +111,8 @@ use gpui::*;
 pub(crate) const FEI_NOTES: bool = cfg!(any(target_os = "ios", all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")));
 
 pub(crate) fn app_name() -> &'static str {
-    if APP_ID == "local.feinotes.upstream-preview" || env!("FEI_UPSTREAM_PREVIEW") == "1" { return settings::tr("飞记 · 上游体验", "Fei Notes Upstream Preview") }
+    if APP_ID == "local.feinotes.upstream-preview" { return settings::tr("飞记 · 上游体验", "Fei Notes Upstream Preview") }
+    if env!("FEI_UPSTREAM_PREVIEW") == "1" { return settings::tr("飞记 · 上游云体验", "Fei Notes Upstream Cloud Preview") }
     if FEI_NOTES { settings::tr("飞记", "Fei Notes") } else { "Quiet.md" }
 }
 
@@ -264,7 +265,8 @@ fn main() {
         #[cfg(feature = "cloudkit-sync")]
         let interactive = !std::env::args().skip(1).any(|arg| arg.starts_with("--cloud-") || arg == "--shared-note-room")
             && cloud_sync::test_root().is_ok_and(|root| if root.is_some() {
-                devtools::scripted() && std::env::var_os("QUIET_SYNC_QA_STARTUP").is_some()
+                env!("FEI_UPSTREAM_PREVIEW") == "1" && !devtools::scripted()
+                    || devtools::scripted() && std::env::var_os("QUIET_SYNC_QA_STARTUP").is_some()
             } else { !devtools::scripted() });
         #[cfg(not(feature = "cloudkit-sync"))]
         let interactive = false;

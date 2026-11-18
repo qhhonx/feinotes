@@ -122,7 +122,8 @@ targets:
         UpstreamPreview:
           PRODUCT_BUNDLE_IDENTIFIER: app.quietmd.cloudlab
           INFOPLIST_KEY_CFBundleDisplayName: 飞记·上游云体验
-          CURRENT_PROJECT_VERSION: "50"
+          CURRENT_PROJECT_VERSION: "51"
+          PROVISIONING_PROFILE: $(FEI_UPSTREAM_DEVICE_PROFILE)
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: FEI_CLOUD_QA FEI_UPSTREAM_PREVIEW
           CODE_SIGN_ENTITLEMENTS: DevCloud.entitlements
           INFOPLIST_FILE: UpstreamPreview-Info.plist
@@ -158,6 +159,10 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: app.feinotes.ipad.editorprobe.tests
+      configs:
+        UpstreamPreview:
+          PRODUCT_BUNDLE_IDENTIFIER: app.quietmd.cloudlab.live-tests
+          PROVISIONING_PROFILE: $(FEI_UPSTREAM_TEST_PROFILE)
   FeiNotesStoreKitUITests:
     type: bundle.ui-testing
     platform: iOS
