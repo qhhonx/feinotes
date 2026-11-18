@@ -14,10 +14,14 @@ unsafe extern "C" {
 }
 
 impl Workspace {
+    pub(crate) fn mobile_can_select(&self,cx:&App) -> bool {
+        let ipad = !unsafe { crate::ipad::fei_ios_is_phone() };
+        !self.library_switching && (!self.is_shared() || ipad && self.mobile_personal_browser(cx))
+            && (matches!(self.view,View::Home | View::Folder) || ipad && self.view==View::Doc)
+    }
+
     pub(crate) fn open_mobile_batch(&mut self, cx: &mut Context<Self>) {
-        if !(matches!(self.view,View::Home | View::Folder) || self.view==View::Doc && !unsafe { crate::ipad::fei_ios_is_phone() }) || self.is_shared() { return; }
-        #[cfg(feature = "cloudkit-sync")]
-        if self.library_switching { return; }
+        if !self.mobile_can_select(cx) || self.is_shared() { return; }
         let candidates = self.mobile_visible_entries(cx).into_iter().map(|entry|entry.id).collect();
         self.mobile_batch = Some(BatchSession { serial: SERIAL.fetch_add(1,Ordering::Relaxed),root: Store::root_dir(),view: self.view,folder: self.folder_current.clone(),tab: self.home.tab,query: self.query(cx),candidates,moving: None });
         self.begin_personal_batch();

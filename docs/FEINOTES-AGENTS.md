@@ -8,7 +8,9 @@ Common editor, style, testing and user-data rules remain governed by the upstrea
 
 ## Product and scope
 
-Fei Notes is a native macOS Markdown notes app maintained by the Fei Notes contributors. Optional iCloud sync and collaboration use CloudKit and Loro. Source is public and self-builds are supported under the applicable licenses; preserve the upstream MIT permissions and the reserved commercial rights of the designated Fei Notes modules.
+Fei Notes is a native Markdown document app for Mac, iPhone, and iPad maintained by the Fei Notes contributors. Optional iCloud sync and collaboration use CloudKit and Loro. Source is public and self-builds are supported under the applicable licenses; preserve the upstream MIT permissions and the reserved commercial rights of the designated Fei Notes modules.
+
+In user-facing copy, call the content people create, edit, and share “文档” or “document.” Use Fei Notes as the English product name and retain the established theme names. In Chinese product introductions, use “多人实时协作” or say that people can “一起编辑.”
 
 Preserve the existing editor layout, keyboard shortcuts and interaction patterns. Use the existing Theme tokens, popover containers and controls. The Notes theme changes appearance through the theme system. Chinese and English are supported UI languages. Write new developer documentation and comments in English.
 

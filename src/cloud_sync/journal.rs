@@ -8,12 +8,16 @@ use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 use loro::{ExportMode, Frontiers, LoroDoc, VersionVector};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use rusqlite::types::{Value, ValueRef};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::{collections::{HashMap, HashSet}, fs::{File, OpenOptions}, io::{Read, Write}, path::{Path, PathBuf}, time::Duration};
 use crate::{editor::core::{Core, Pos, keep_outside_history}, model::Document, shared_store::SharedStore, store::{Meta, Store, SQLITE_FILE}};
 use super::{AttachmentIssue, Changes, Edit, Exchange, NoteChange, SyncIssue, activity, assets, catalogue, content};
 use super::history::History;
 use super::retention;
 use super::shared::{self, Access};
+
+#[cfg(panic = "abort")]
+compile_error!("CloudKit journal recovery requires panic unwinding");
 
 pub struct Journal {
     db: Connection,
@@ -27,6 +31,7 @@ pub struct Journal {
     access: Option<Access>,
     next_collection: std::cell::Cell<Option<std::time::Instant>>,
     merged_data_version: Option<i64>,
+    retry_catalogue: bool,
     history: HashMap<String, History>,
 }
 
@@ -53,9 +58,13 @@ fn checkpoint_note(db: &Connection, id: &str, note: &Note) -> Result<()> {
     Ok(())
 }
 
+fn note_updates(db: &Connection, id: &str) -> Result<Vec<Vec<u8>>> {
+    Ok(db.prepare("SELECT data FROM note_local_updates WHERE note = ?1 ORDER BY rowid")?
+        .query_map([id], |row| row.get::<_, Vec<u8>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 fn import_note_updates(db: &Connection, id: &str, loro: &LoroDoc) -> Result<()> {
-    let updates = db.prepare("SELECT data FROM note_local_updates WHERE note = ?1 ORDER BY rowid")?
-        .query_map([id], |row| row.get::<_, Vec<u8>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let updates = note_updates(db, id)?;
     if !updates.is_empty() {
         ensure!(loro.import_batch(&updates)?.pending.is_none(), "Incomplete local iCloud edit history");
     }
@@ -63,8 +72,11 @@ fn import_note_updates(db: &Connection, id: &str, loro: &LoroDoc) -> Result<()> 
 }
 
 fn open_note(db: &Connection, id: &str, snapshot: &[u8]) -> Result<LoroDoc> {
-    let loro = if snapshot.is_empty() { content::configured() } else { content::open(snapshot)? };
-    import_note_updates(db, id, &loro)?;
+    let loro = open_replay_snapshot(snapshot)?;
+    let updates = note_updates(db, id)?;
+    if updates.is_empty() { return Ok(loro); }
+    let (loro, status) = with_replay_candidate(loro, |doc| doc.import_batch(&updates))?;
+    ensure!(status.pending.is_none(), "Incomplete local iCloud edit history");
     Ok(loro)
 }
 
@@ -78,6 +90,16 @@ fn needs_note_checkpoint(db: &Connection, id: &str, update_bytes: usize) -> Resu
     Ok(count + 1 >= NOTE_CHECKPOINT_EDITS || size as usize + update_bytes >= NOTE_CHECKPOINT_BYTES)
 }
 
+pub(super) fn has_conflict(db: &Connection, id: &str) -> Result<bool> {
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM sync_document_conflicts WHERE note = ?1)", [id], |row| row.get(0))?)
+}
+
+fn block_document(db: &Connection, id: &str) -> Result<()> {
+    db.execute("INSERT INTO sync_document_conflicts (note, retry) VALUES (?1, 0)
+        ON CONFLICT(note) DO UPDATE SET retry = 0", [id])?;
+    Ok(())
+}
+
 fn get_state(db: &Connection, key: &str) -> Result<Option<Vec<u8>>> {
     Ok(db.query_row("SELECT value FROM state WHERE key = ?1", [key], |row| row.get(0)).optional()?)
 }
@@ -85,6 +107,76 @@ fn get_state(db: &Connection, key: &str) -> Result<Option<Vec<u8>>> {
 fn put_state(db: &Connection, key: &str, data: &[u8]) -> Result<()> {
     db.execute("INSERT OR REPLACE INTO state VALUES (?1, ?2)", params![key, data])?;
     Ok(())
+}
+
+const CATALOGUE_PAUSED: &str = "catalogue_replay_paused";
+
+#[derive(Debug)]
+enum ReplayFailure { Rejected, Panicked }
+
+impl std::fmt::Display for ReplayFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Rejected => "Loro rejected the sync replay",
+            Self::Panicked => "Loro panicked during sync replay",
+        })
+    }
+}
+
+impl std::error::Error for ReplayFailure {}
+
+fn with_replay_candidate<T>(candidate: LoroDoc, run: impl FnOnce(&LoroDoc) -> Result<T, loro::LoroError>)
+    -> Result<(LoroDoc, T), ReplayFailure>
+{
+    let failure = match catch_unwind(AssertUnwindSafe(|| run(&candidate))) {
+        Ok(Ok(value)) => return Ok((candidate, value)),
+        Ok(Err(_)) => ReplayFailure::Rejected,
+        Err(_) => ReplayFailure::Panicked,
+    };
+    // Loro 1.17 can panic again when disposing of the last reference to a
+    // poisoned document. Drop it only after the import unwind has finished.
+    if catch_unwind(AssertUnwindSafe(|| drop(candidate))).is_err() {
+        return Err(ReplayFailure::Panicked);
+    }
+    Err(failure)
+}
+
+fn open_replay_snapshot(snapshot: &[u8]) -> Result<LoroDoc, ReplayFailure> {
+    let doc = content::configured();
+    if snapshot.is_empty() { return Ok(doc); }
+    with_replay_candidate(doc, |doc| doc.import(snapshot)).map(|(doc, _)| doc)
+}
+
+fn stage_catalogue(db: &Connection, peer: u64, personal: bool, writable: bool, paused: bool,
+    local: &catalogue::Catalogue, seen: &catalogue::Catalogue) -> Result<Option<(LoroDoc, VersionVector)>>
+{
+    let snapshot = get_state(db, "catalogue")?.context("Missing catalogue snapshot")?;
+    let (catalogue, before) = with_replay_candidate(LoroDoc::new(), |doc| {
+        doc.import(&snapshot)?;
+        doc.set_peer_id(peer)?;
+        Ok(doc.oplog_vv())
+    })?;
+    if personal { super::organizer::capture(db, &catalogue)?; }
+    if writable { catalogue::capture(db, &catalogue, seen, local)?; }
+    catalogue.commit();
+    if catalogue.oplog_vv() != before {
+        enqueue(db, catalogue::SCOPE, catalogue.export(ExportMode::updates(&before))?)?;
+    }
+
+    let edits = incoming(db, catalogue::SCOPE)?;
+    if edits.is_empty() {
+        return Ok(Some((catalogue, before)));
+    }
+    let snapshot = catalogue.export(ExportMode::Snapshot)?;
+    let (candidate, pending) = with_replay_candidate(LoroDoc::new(), |doc| {
+        doc.import(&snapshot)?;
+        let pending = doc.import_batch(&edits)?.pending.is_some();
+        doc.set_peer_id(peer)?;
+        Ok(pending)
+    })?;
+    if pending { return Ok((!paused).then_some((catalogue, before))); }
+    db.execute("DELETE FROM inbox WHERE note = ?1", [catalogue::SCOPE])?;
+    Ok(Some((candidate, before)))
 }
 
 pub fn enqueue(db: &Connection, scope: &str, update: Vec<u8>) -> Result<()> {
@@ -95,8 +187,14 @@ pub fn enqueue(db: &Connection, scope: &str, update: Vec<u8>) -> Result<()> {
 }
 
 fn incoming(db: &Connection, scope: &str) -> Result<Vec<Vec<u8>>> {
-    Ok(db.prepare("SELECT data FROM inbox WHERE note = ?1 ORDER BY rowid")?
-        .query_map([scope], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
+    let records = db.prepare("SELECT id, data FROM inbox WHERE note = ?1 ORDER BY rowid")?
+        .query_map([scope], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    records.into_iter().map(|(id, mut data)| {
+        // Existing libraries can have complete checkpoint envelopes in the inbox.
+        normalize_checkpoint(db, &id, scope, &mut data)?;
+        Ok(data)
+    }).collect()
 }
 
 fn front(loro: &LoroDoc) -> String {
@@ -147,6 +245,26 @@ fn trim_recent_versions(db: &Connection, id: &str) -> Result<()> {
     db.execute("DELETE FROM sync_history WHERE note = ?1 AND recovery = 0 AND sequence IN (
         SELECT sequence FROM sync_history WHERE note = ?1 AND recovery = 0
         ORDER BY sequence DESC LIMIT -1 OFFSET ?2)", params![id, RECENT_VERSIONS])?;
+    Ok(())
+}
+
+fn normalize_checkpoint(db: &Connection, record: &str, scope: &str, data: &mut Vec<u8>) -> Result<()> {
+    let (index, body) = retention::unpack(data)?;
+    let header_size = data.len() - body.len();
+    if !index.versions.is_empty() {
+        let doc = open_replay_snapshot(body)?;
+        for anchor in index.versions {
+            ensure!(doc.oplog_vv().includes_vv(&anchor.version), "Checkpoint is missing a protected version");
+            let branch = doc.fork_at(&doc.vv_to_frontiers(&anchor.version))?;
+            let archived = content::render(&branch)?;
+            for path in content::local_assets(&archived) {
+                db.execute("INSERT OR IGNORE INTO cloud_checkpoint_paths VALUES (?1,?2)", params![record,path])?;
+            }
+            archive(db, scope, &archived, &front(&branch), anchor.recovery)?;
+        }
+        trim_recent_versions(db, scope)?;
+    }
+    if header_size != 0 { data.drain(..header_size); }
     Ok(())
 }
 
@@ -278,6 +396,60 @@ fn capture_note(db: &Connection, root: &Path, peer: u64, id: &str, doc: &Documen
     Ok(finish_capture(db, root, id, doc, (seen, markdown), Capture { old, loro: &loro, before })?.0)
 }
 
+fn apply_document(db: &Connection, root: &Path, id: &str, shared: bool, positions: &[Pos]) -> Result<(bool, Option<NoteChange>)> {
+    let old = note(db, id)?;
+    if old.as_ref().is_some_and(|note| note.held) { return Ok((false, None)); }
+    let updates = incoming(db, id)?;
+    if updates.is_empty() { return Ok((true, None)); }
+    let loro = open_note(db, id, old.as_ref().map_or(&[], |note| note.snapshot.as_slice()))?;
+    let before = loro.oplog_vv();
+    let anchors: Vec<_> = positions.iter().filter_map(|&pos| content::anchor(&loro, pos).map(|anchor| (pos, anchor))).collect();
+    let (loro, status) = with_replay_candidate(loro, |doc| doc.import_batch(&updates))?;
+    if status.pending.is_some() { return Ok((false, None)); }
+    let changed = if loro.oplog_vv() != before {
+        let doc = content::render(&loro).context("Render merged cloud document")?;
+        let merged_front = front(&loro);
+        let mut paths = content::local_assets(&doc);
+        if shared {
+            for path in &paths { assets::path(root, path)?; }
+        }
+        let local_only = loro.get_map("local-only-attachments");
+        let total = paths.len();
+        paths.retain(|source| local_only.get(source).is_none());
+        if !db.query_row("SELECT EXISTS(SELECT 1 FROM cloud_inventory_state)", [], |r| r.get::<_,bool>(0))?
+            && paths.iter().any(|source| !assets::present(root, source)) { return Ok((false, None)); }
+        attachment_warnings(db, id, total - paths.len())?;
+        let (tips, has_fork) = archive_frontiers(&loro, &before, &updates)?;
+        let trashed = db.query_row("SELECT trashed FROM library_documents WHERE id = ?1", [id],
+            |row| row.get::<_, bool>(0)).optional()?;
+        if let Some(trashed) = trashed {
+            let (current, _, front) = Store::read_sync_body(db, id, trashed)?;
+            if current != doc || front != merged_front { archive(db, id, &current, &front, has_fork)?; }
+        }
+        // Preserve the sender's branch as well as our previous view.
+        // A split or deleted block can hide text in the merged view.
+        for tips in tips {
+            if tips == loro.oplog_frontiers() { continue; }
+            let branch = loro.fork_at(&tips)?;
+            let candidate = content::render(&branch)?;
+            let candidate_front = front(&branch);
+            if candidate != doc || candidate_front != merged_front {
+                archive(db, id, &candidate, &candidate_front, has_fork)?;
+            }
+        }
+        trim_recent_versions(db, id)?;
+        let seen = Store::write_sync_body(db, id, trashed.unwrap_or(false), &doc, &merged_front)
+            .context("Save merged cloud document")?;
+        checkpoint_note(db, id, &Note { assets: paths, snapshot: loro.export(ExportMode::Snapshot)?, seen, held: false })?;
+        let positions = anchors.iter().filter_map(|(pos, anchor)|
+            content::resolve(&loro, pos.block, anchor).map(|resolved| (*pos, resolved))).collect();
+        Some(NoteChange { id: id.into(), document: doc, positions })
+    } else { None };
+    if shared { activity::mark_projected(db, id)?; }
+    db.execute("DELETE FROM inbox WHERE note = ?1", [id])?;
+    Ok((true, changed))
+}
+
 fn revision(db: &Connection, id: &str) -> Result<(i64, String)> {
     Ok(db.query_row("SELECT revision, front FROM library_documents WHERE id = ?1",
         [id], |row| Ok((row.get(0)?, row.get(1)?)))?)
@@ -296,7 +468,7 @@ impl Journal {
         let account = marker.lines().next().filter(|a| a.len() == 64).context("Invalid library account")?.to_string();
         let room = shared::descriptor(root)?.map(|room| room.scope);
         ensure!(room.is_some() == (marker.lines().nth(1) == Some("shared")) && (room.is_none() || channel.is_none()),
-            "Shared note and personal library cannot use the same sync journal");
+            "Shared document and personal library cannot use the same sync journal");
         let mut db = Connection::open(root.join(SQLITE_FILE))?;
         db.busy_timeout(Duration::from_secs(5))?;
         db.execute_batch("
@@ -308,6 +480,7 @@ impl Journal {
             CREATE INDEX IF NOT EXISTS note_local_updates_by_note ON note_local_updates (note);
             CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, note TEXT NOT NULL, data BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, note TEXT NOT NULL, data BLOB NOT NULL);
+            CREATE TABLE IF NOT EXISTS sync_document_conflicts (note TEXT PRIMARY KEY, retry INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS sync_assets (path TEXT PRIMARY KEY, digest TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS sync_asset_repairs (path TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS sync_attachment_warnings (note TEXT PRIMARY KEY, count INTEGER NOT NULL);
@@ -330,7 +503,7 @@ impl Journal {
         let tx = db.transaction()?;
         let scope = room.as_ref().map(serde_json::to_vec).transpose()?;
         match get_state(&tx, "shared_scope")? {
-            Some(saved) => ensure!(scope.as_ref() == Some(&saved), "Shared note scope changed"),
+            Some(saved) => ensure!(scope.as_ref() == Some(&saved), "Shared document scope changed"),
             None => if let Some(scope) = &scope { put_state(&tx, "shared_scope", scope)?; },
         }
         let access = if let Some(room) = &room {
@@ -376,7 +549,7 @@ impl Journal {
         };
         tx.commit()?;
         let mut journal = Self { db, _lock: lock, _session: session, root: root.to_path_buf(), peer: peer as u64, account, channel, room, access,
-            next_collection: Default::default(), merged_data_version: None, history: HashMap::new() };
+            next_collection: Default::default(), merged_data_version: None, retry_catalogue: false, history: HashMap::new() };
         if let Err(error) = journal.collect_local() { crate::logging::write(&format!("Deferred local attachment cleanup: {error:#}")); }
         Ok(journal)
     }
@@ -386,21 +559,21 @@ impl Journal {
     pub fn access(&self) -> Option<Access> { self.access }
 
     pub fn seed_shared(&mut self, doc: &Document, front: &str) -> Result<()> {
-        let room = self.room.as_ref().context("Not a shared note")?;
-        ensure!(self.access == Some(Access::Owner), "Only the owner can seed a shared note");
+        let room = self.room.as_ref().context("Not a shared document")?;
+        ensure!(self.access == Some(Access::Owner), "Only the owner can seed a shared document");
         let tx = self.db.transaction()?;
-        ensure!(note(&tx, &room.note)?.is_none(), "Shared note is already initialized");
+        ensure!(note(&tx, &room.note)?.is_none(), "Shared document is already initialized");
         let seen = Store::write_sync_body(&tx, &room.note, false, doc, front)?;
-        Store::show_shared_note(&tx, &room.note, front)?;
+        Store::show_shared_note(&tx, &room.note, front, shared::registered_at(&self.root))?;
         ensure!(!capture_note(&tx, &self.root, self.peer, &room.note, doc, seen, front)?,
-            "The shared note or one of its attachments is unavailable or too large");
+            "The shared document or one of its attachments is unavailable or too large");
         tx.commit()?;
         Ok(())
     }
 
     fn ensure_writable(&self, id: &str) -> Result<()> {
         if let Some(room) = &self.room {
-            ensure!((id == room.note || room.folder && room.permits(id)) && self.access.is_some_and(Access::can_write), "This shared note is read-only");
+            ensure!((id == room.note || room.folder && room.permits(id)) && self.access.is_some_and(Access::can_write), "This shared document is read-only");
         }
         Ok(())
     }
@@ -449,7 +622,13 @@ impl Journal {
             }
         });
         if !matches!(&result, Ok((_, (_, false)))) { self.history.remove(id); }
-        result.map(|(meta, (warning, _))| (meta, warning))
+        match result {
+            Err(error) if error.is::<content::ConflictingBlockShapes>() => {
+                let (meta, ()) = store.save_sqlite_with(id, doc, |tx, _| block_document(tx, id))?;
+                Ok((meta, true))
+            }
+            result => result.map(|(meta, (warning, _))| (meta, warning)),
+        }
     }
 
     pub fn undo(&mut self, store: &mut SharedStore, id: &str, core: &Core, peers: &[Pos], redo: bool) -> Result<Option<(NoteChange, Option<crate::editor::core::Selection>)>> {
@@ -558,8 +737,9 @@ impl Journal {
     // A new session has no editor undo stack. Only consider immutable bytes
     // previously acknowledged by the cloud, under this specific library root.
     fn collect_local(&mut self) -> Result<()> {
-        if !retention::ready(&self.db)? || !self.db.query_row("SELECT EXISTS(SELECT 1 FROM cloud_release_candidates)
-            AND NOT EXISTS(SELECT 1 FROM inbox) AND NOT EXISTS(SELECT 1 FROM outbox)", [], |r| r.get::<_,bool>(0))?
+        if self.catalogue_paused()? || !retention::ready(&self.db)? || !self.db.query_row("SELECT EXISTS(SELECT 1 FROM cloud_release_candidates)
+            AND NOT EXISTS(SELECT 1 FROM inbox) AND NOT EXISTS(SELECT 1 FROM outbox)
+            AND NOT EXISTS(SELECT 1 FROM sync_document_conflicts)", [], |r| r.get::<_,bool>(0))?
         { return Ok(()); }
         let retained = self.retained_paths()?;
         let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -584,9 +764,9 @@ impl Journal {
     }
 
     fn maintenance(&self) -> Result<Option<retention::Maintenance>> {
-        if self.access.is_some_and(|a| a != Access::Owner) || !retention::ready(&self.db)? ||
+        if self.access.is_some_and(|a| a != Access::Owner) || self.catalogue_paused()? || !retention::ready(&self.db)? ||
             self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox) OR EXISTS(SELECT 1 FROM outbox)
-                OR EXISTS(SELECT 1 FROM notes WHERE held<>0)", [], |r| r.get::<_,bool>(0))? { return Ok(None); }
+                OR EXISTS(SELECT 1 FROM notes WHERE held<>0) OR EXISTS(SELECT 1 FROM sync_document_conflicts)", [], |r| r.get::<_,bool>(0))? { return Ok(None); }
         if let Some(plan)=retention::verified_cleanup(&self.db)? { return Ok(Some(plan)); }
         if self.room.is_none() {
             let missing = self.db.query_row("SELECT count(*) FROM cloud_inventory c WHERE vv IS NOT NULL AND scope<>?1
@@ -633,16 +813,31 @@ impl Journal {
         retention::stale_assets(&self.db,&protected)
     }
 
-    fn ensure_dependencies(&self, edits: &[Edit]) -> Result<Option<bool>> {
+    fn ensure_dependencies(&self, edits: &mut Vec<Edit>) -> Result<Option<bool>> {
         let tx = self.db.unchecked_transaction()?;
-        let mut paths = HashSet::new();
+        let mut paths_by_note = HashMap::<&str, HashSet<String>>::new();
+        let mut conflicts = HashSet::new();
         for edit in edits.iter().filter(|e| e.note != catalogue::SCOPE && e.note != assets::SCOPE) {
+            if conflicts.contains(&edit.note) { continue; }
             let state = self.text_state(&edit.note)?.context("Missing local history for pending edit")?;
             let end = LoroDoc::decode_import_blob_meta(&edit.data.0, true)?.partial_end_vv;
             let branch = state.fork_at(&state.vv_to_frontiers(&end))?;
+            let doc = match content::render(&branch) {
+                Ok(doc) => doc,
+                Err(error) if error.is::<content::ConflictingBlockShapes>() => {
+                    block_document(&tx, &edit.note)?;
+                    paths_by_note.remove(edit.note.as_str());
+                    conflicts.insert(edit.note.clone());
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let excluded = branch.get_map("local-only-attachments");
-            paths.extend(content::local_assets(&content::render(&branch)?).into_iter().filter(|p| excluded.get(p).is_none()));
+            paths_by_note.entry(&edit.note).or_default()
+                .extend(content::local_assets(&doc).into_iter().filter(|path| excluded.get(path).is_none()));
         }
+        let paths: HashSet<_> = paths_by_note.into_values().flatten().collect();
+        edits.retain(|edit| !conflicts.contains(&edit.note));
         let mut added = false;
         for path in paths {
             match assets::ensure_upload(&tx, &self.root,&path) {
@@ -661,13 +856,16 @@ impl Journal {
 
     pub fn request_with_uploads(&self, allow_upload: bool) -> Result<Exchange> {
         let allow_upload = allow_upload && self.access.is_none_or(Access::can_write);
-        let mut stmt = self.db.prepare("SELECT id, note, length(data), data FROM outbox WHERE ?1 ORDER BY (note=?2) DESC,rowid LIMIT 20")?;
-        let mut rows = stmt.query(params![allow_upload,assets::SCOPE])?;
+        let mut stmt = self.db.prepare("SELECT id, note, length(data), data FROM outbox WHERE ?1
+            AND note NOT IN (SELECT note FROM sync_document_conflicts)
+            AND (note <> ?3 OR NOT ?4)
+            ORDER BY (note=?2) DESC,rowid LIMIT 20")?;
+        let mut rows = stmt.query(params![allow_upload, assets::SCOPE, catalogue::SCOPE, self.catalogue_paused()?])?;
         let mut edits = vec![];
         let mut bytes = 0i64;
         while let Some(row) = rows.next()? {
             let note: String = row.get(1)?;
-            ensure!(self.room.as_ref().is_none_or(|room| room.permits(&note)), "Unrelated content was queued in a shared note");
+            ensure!(self.room.as_ref().is_none_or(|room| room.permits(&note)), "Unrelated content was queued in a shared document");
             let size: i64 = row.get(2)?;
             // Allow a large record by itself, while batching small note edits.
             if !edits.is_empty() && bytes + size > 8 * 1024 * 1024 { break; }
@@ -678,7 +876,7 @@ impl Journal {
         drop(stmt);
         if allow_upload && retention::ready(&self.db)? && !edits.is_empty() {
             if edits[0].note == assets::SCOPE { edits.retain(|e| e.note == assets::SCOPE); }
-            else { match self.ensure_dependencies(&edits)? {
+            else { match self.ensure_dependencies(&mut edits)? {
                 Some(true) => return self.request_with_uploads(true),
                 Some(false) => {},
                 None => edits.clear(),
@@ -694,13 +892,34 @@ impl Journal {
     }
 
     pub fn legacy_request(&self) -> Result<Exchange> {
-        ensure!(self.room.is_none(), "A shared note cannot access the personal sync zone");
+        ensure!(self.room.is_none(), "A shared document cannot access the personal sync zone");
         Ok(Exchange { downloads: vec![], maintenance: None, account: self.account.clone(), channel: self.channel.clone(),
             token: get_state(&self.db, "legacy_token")?.map(super::Bytes), edits: vec![], legacy: true, room: None, activity_only: false,
             #[cfg(feature = "devtools")]
             expire_cursor_for_qa: false,
             #[cfg(feature = "devtools")]
             upload_fault_for_qa: None })
+    }
+
+    pub(super) fn inbox_count(&self) -> Result<u32> {
+        Ok(self.db.query_row("SELECT count(*) FROM inbox", [], |row| row.get(0))?)
+    }
+
+    pub(super) fn attachment_downloads(&self) -> Result<Vec<String>> {
+        retention::downloads(&self.db, &self.root)
+    }
+
+    fn success_key(&self) -> Result<String> {
+        // The account and scope also protect metadata when a library is copied.
+        Ok(format!("sync_success:{}", serde_json::to_string(&(&self.account, &self.channel, &self.room))?))
+    }
+
+    pub(super) fn last_success(&self) -> Result<Option<u64>> {
+        Ok(get_state(&self.db, &self.success_key()?)?.map(|value| serde_json::from_slice(&value)).transpose()?)
+    }
+
+    pub(super) fn record_success(&self, time: u64) -> Result<()> {
+        put_state(&self.db, &self.success_key()?, &serde_json::to_vec(&time)?)
     }
 
     pub fn counts(&self) -> Result<(u32, u32, u32, u32)> {
@@ -713,22 +932,48 @@ impl Journal {
             [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?)
     }
 
+    pub(super) fn catalogue_paused(&self) -> Result<bool> {
+        Ok(get_state(&self.db, CATALOGUE_PAUSED)?.is_some())
+    }
+
+    pub(super) fn pending_work(&self) -> Result<(u32, u32, u32)> {
+        Ok(self.db.query_row("SELECT
+            (SELECT count(*) FROM outbox WHERE note NOT IN (SELECT note FROM sync_document_conflicts)
+                AND (note <> ?2 OR NOT ?1)),
+            (SELECT count(*) FROM inbox i WHERE note NOT IN (SELECT note FROM sync_document_conflicts)
+                AND (NOT ?1 OR note = ?3 OR (note <> ?2 AND (
+                    EXISTS(SELECT 1 FROM library_entries WHERE id = i.note)
+                    OR EXISTS(SELECT 1 FROM library_trash WHERE id = i.note))))),
+            (SELECT count(*) FROM sync_document_conflicts)",
+            params![self.catalogue_paused()?, catalogue::SCOPE, assets::SCOPE],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?)
+    }
+
+    pub(super) fn retry_conflicts(&mut self) -> Result<()> {
+        self.db.execute("UPDATE sync_document_conflicts SET retry = 1 WHERE retry = 0", [])?;
+        self.retry_catalogue = true;
+        Ok(())
+    }
+
     pub fn issues(&self) -> Result<Vec<SyncIssue>> {
         let repairs: HashSet<String> = self.db.prepare("SELECT path FROM sync_asset_repairs")?
             .query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
-        let mut stmt = self.db.prepare("SELECT d.id, d.title, d.trashed, coalesce(n.held, 0), coalesce(w.count, 0)
+        let mut stmt = self.db.prepare("SELECT d.id, d.title, d.trashed, coalesce(n.held, 0), coalesce(w.count, 0), c.note IS NOT NULL
             FROM library_documents d LEFT JOIN notes n ON n.id = d.id
             LEFT JOIN sync_attachment_warnings w ON w.note = d.id
-            WHERE n.held <> 0 OR w.count > 0 OR EXISTS (
+            LEFT JOIN sync_document_conflicts c ON c.note = d.id
+            WHERE c.note IS NOT NULL OR n.held <> 0 OR w.count > 0 OR EXISTS (
                 SELECT 1 FROM json_each(n.assets) ref JOIN sync_asset_repairs r ON r.path = ref.value)
-            ORDER BY d.trashed, d.title, d.id LIMIT 30")?;
+            UNION ALL SELECT c.note, NULL, 0, 0, 0, 1 FROM sync_document_conflicts c
+                WHERE NOT EXISTS(SELECT 1 FROM library_documents d WHERE d.id = c.note)
+            ORDER BY 6 DESC, 3, 2, 1 LIMIT 30")?;
         let mut rows = stmt.query([])?;
         let mut issues = Vec::new();
         while let Some(row) = rows.next()? {
-            let (id, title, trashed, held, warnings): (String, String, bool, bool, u32) =
-                (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?);
+            let (id, title, trashed, held, warnings, conflict): (String, Option<String>, bool, bool, u32, bool) =
+                (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?);
             let mut attachments = Vec::new();
-            if warnings != 0 || !repairs.is_empty() {
+            if title.is_some() && (warnings != 0 || !repairs.is_empty()) {
                 let (doc, _, _) = Store::read_sync_body(&self.db, &id, trashed)?;
                 let loro = note(&self.db, &id)?.filter(|note| !note.snapshot.is_empty())
                     .map(|note| open_note(&self.db, &id, &note.snapshot)).transpose()?;
@@ -746,7 +991,7 @@ impl Journal {
                     attachments.push(AttachmentIssue { source, reason, stored_here, recovering });
                 }
             }
-            issues.push(SyncIssue { id, title, trashed, held, attachments });
+            issues.push(SyncIssue { id, title, trashed, held, conflict, attachments });
         }
         Ok(issues)
     }
@@ -757,7 +1002,7 @@ impl Journal {
 
     pub fn account_verification_marker(&self) -> Result<PathBuf> {
         let personal = if self.room.is_some() {
-            self.root.parent().and_then(Path::parent).context("Missing personal library for shared note")?
+            self.root.parent().and_then(Path::parent).context("Missing personal library for shared document")?
         } else { &self.root };
         ensure!(personal.file_name().and_then(|name| name.to_str()) == Some(self.account.as_str()), "Unexpected iCloud library directory");
         Ok(personal.join("require-account-verification"))
@@ -809,14 +1054,18 @@ impl Journal {
         Ok(replay)
     }
 
-    pub fn receive(&mut self, mut page: Changes) -> Result<bool> {
+    pub fn receive(&mut self, page: Changes) -> Result<bool> {
+        self.receive_page(page).map(|(access_changed, _)| access_changed)
+    }
+
+    pub(super) fn receive_page(&mut self, page: Changes) -> Result<(bool, bool)> {
         let tx = self.db.transaction()?;
         let cursor = if page.legacy { "legacy_token" } else { "token" };
         ensure!(!page.legacy || page.uploaded.is_empty(), "The previous sync zone is read-only");
         ensure!(page.room_access.is_some() == self.room.is_some(), "Incorrect CloudKit sharing scope");
         if let (Some(room), Some(access)) = (&self.room, page.room_access) {
             ensure!(page.edits.iter().all(|edit| room.permits(&edit.note))
-                && (access.can_write() || page.uploaded.is_empty()), "Invalid shared note changes");
+                && (access.can_write() || page.uploaded.is_empty()), "Invalid shared document changes");
             put_state(&tx, "shared_access", &serde_json::to_vec(&access)?)?;
             activity::observe(&tx, &room.note, &page.edits)?;
             activity::remember_access(&tx, access)?;
@@ -829,28 +1078,16 @@ impl Journal {
             ensure!(!page.legacy && page.room_access != Some(Access::Revoked), "Incorrect inventory scope");
             retention::received(&tx, receipt, &page.edits)?;
         }
-        for edit in &mut page.edits {
-            if edit.note==assets::SCOPE { continue; }
-            let (index,body)=retention::unpack(&edit.data.0)?;
-            if body.len()==edit.data.0.len() { continue; }
-            if !index.versions.is_empty() {
-                let doc=content::open(body)?;
-                for a in index.versions {
-                    ensure!(doc.oplog_vv().includes_vv(&a.version), "Checkpoint is missing a protected version");
-                    let branch=doc.fork_at(&doc.vv_to_frontiers(&a.version))?;
-                    let archived=content::render(&branch)?;
-                    for path in content::local_assets(&archived) {
-                        tx.execute("INSERT OR IGNORE INTO cloud_checkpoint_paths VALUES (?1,?2)",params![edit.id,path])?;
-                    }
-                    archive(&tx,&edit.note,&archived,&front(&branch),a.recovery)?;
-                }
-                trim_recent_versions(&tx,&edit.note)?;
-            }
-            edit.data.0=body.to_vec();
-        }
-        for id in page.uploaded { tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?; }
+        let mut uploaded = false;
+        for id in page.uploaded { uploaded |= tx.execute("DELETE FROM outbox WHERE id = ?1", [id])? != 0; }
+        let mut catalogue_received = false;
         for edit in page.edits {
-            tx.execute("INSERT OR IGNORE INTO inbox VALUES (?1, ?2, ?3)", params![edit.id, edit.note, edit.data.0])?;
+            // Save the full CloudKit payload before advancing the cursor. A
+            // checkpoint may contain an unrenderable protected version.
+            if tx.execute("INSERT OR IGNORE INTO inbox VALUES (?1, ?2, ?3)", params![edit.id, edit.note, edit.data.0])? != 0 {
+                tx.execute("UPDATE sync_document_conflicts SET retry = 1 WHERE note = ?1", [&edit.note])?;
+                catalogue_received |= edit.note == catalogue::SCOPE;
+            }
         }
         if let Some(token) = page.token { put_state(&tx, cursor, &token.0)?; }
         else {
@@ -859,13 +1096,14 @@ impl Journal {
             tx.execute("DELETE FROM state WHERE key = ?1", [cursor])?;
         }
         tx.commit()?;
+        self.retry_catalogue |= catalogue_received;
         let changed = self.access != page.room_access;
         self.access = page.room_access;
         if changed {
             self.merged_data_version = None;
             if self.access.is_some_and(|access| !access.can_write()) { self.history.clear(); }
         }
-        Ok(changed)
+        Ok((changed, uploaded))
     }
 
     pub fn merge(&mut self, open_positions: &HashMap<String, Vec<Pos>>) -> Result<(bool, Vec<NoteChange>)> {
@@ -874,128 +1112,124 @@ impl Journal {
         // Store writes through a separate connection. A quiet poll needn't
         // decode the entire library index again just to fetch a CloudKit page.
         let version: i64 = self.db.pragma_query_value(None, "data_version", |row| row.get(0))?;
-        if self.merged_data_version == Some(version)
-            && !self.db.query_row("SELECT EXISTS(SELECT 1 FROM inbox)", [], |row| row.get::<_, bool>(0))?
+        let paused = self.catalogue_paused()?;
+        let retry = self.retry_catalogue;
+        if self.merged_data_version == Some(version) && !(paused && retry)
+            && self.pending_work()?.1 == 0
+            && !self.db.query_row("SELECT EXISTS(SELECT 1 FROM sync_document_conflicts WHERE retry = 1)",
+                [], |row| row.get::<_, bool>(0))?
         { return Ok((false, vec![])); }
-        let tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let has_catalogue = self.room.as_ref().is_none_or(|room| room.folder);
         let writable = self.access.is_none_or(Access::can_write);
         let local = if has_catalogue { catalogue::local(&tx)? } else { Default::default() };
-        let catalogue_doc = LoroDoc::new();
-        catalogue_doc.import(&get_state(&tx, "catalogue")?.context("Missing catalogue snapshot")?)?;
-        catalogue_doc.set_peer_id(self.peer)?;
-        let before = catalogue_doc.oplog_vv();
         let seen = serde_json::from_slice(&get_state(&tx, "catalogue_seen")?.context("Missing catalogue projection")?)?;
-        if self.room.is_none() { super::organizer::capture(&tx, &catalogue_doc)?; }
-        if writable { catalogue::capture(&tx, &catalogue_doc, &seen, &local)?; }
-        catalogue_doc.commit();
-        if catalogue_doc.oplog_vv() != before {
-            enqueue(&tx, catalogue::SCOPE, catalogue_doc.export(ExportMode::updates(&before))?)?;
-        }
+        let catalogue = if !paused || retry {
+            let mut candidate = tx.savepoint()?;
+            match stage_catalogue(&candidate, self.peer, self.room.is_none(), writable, paused, &local, &seen) {
+                Ok(Some(ready)) => {
+                    candidate.execute("DELETE FROM state WHERE key = ?1", [CATALOGUE_PAUSED])?;
+                    candidate.commit()?;
+                    Some(ready)
+                }
+                Ok(None) => None,
+                Err(error) if error.is::<ReplayFailure>() => {
+                    candidate.rollback()?;
+                    candidate.commit()?;
+                    if !paused { crate::logging::write(&format!("CloudKit sync: {error}; catalogue paused")); }
+                    put_state(&tx, CATALOGUE_PAUSED, error.to_string().as_bytes())?;
+                    None
+                }
+                Err(error) => return Err(error),
+            }
+        } else { None };
+        let catalogue_paused = has_catalogue && catalogue.is_none();
 
-        let ids = tx.prepare("SELECT d.id, d.trashed FROM library_documents d LEFT JOIN notes n ON n.id = d.id
-            WHERE n.id IS NULL OR d.revision <> n.seen OR n.held <> 0")?
+        let mut work: std::collections::BTreeMap<String, Option<bool>> = tx.prepare(
+            "SELECT DISTINCT note FROM inbox WHERE note NOT IN (?1, ?2)
+                AND note NOT IN (SELECT note FROM sync_document_conflicts WHERE retry = 0)
+             UNION SELECT note FROM sync_document_conflicts WHERE retry = 1")?
+            .query_map([catalogue::SCOPE, assets::SCOPE], |row| Ok((row.get(0)?, None)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let local_edits = tx.prepare("SELECT d.id, d.trashed FROM library_documents d LEFT JOIN notes n ON n.id = d.id
+            WHERE (n.id IS NULL OR d.revision <> n.seen OR n.held <> 0)
+                AND d.id NOT IN (SELECT note FROM sync_document_conflicts WHERE retry = 0)")?
             .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let local_bodies_changed = !ids.is_empty() && has_catalogue;
-        for (id, trashed) in ids.into_iter().filter(|(id, _)| writable && local.contains_key(id)
-            || self.room.as_ref().is_some_and(|room| room.note == *id && self.access.is_some_and(Access::can_write))) {
-            let (doc, seen, front) = Store::read_sync_body(&tx, &id, trashed)?;
-            capture_note(&tx, &self.root, self.peer, &id, &doc, seen, &front).context("Capture local document for sync")?;
+        let local_bodies_changed = !local_edits.is_empty() && has_catalogue;
+        for (id, trashed) in local_edits.into_iter().filter(|(id, _)| writable && local.contains_key(id)
+            || self.room.as_ref().is_some_and(|room| room.note == *id && writable)) {
+            work.insert(id, Some(trashed));
         }
-
-        let edits = incoming(&tx, catalogue::SCOPE)?;
-        let catalogue_doc = if edits.is_empty() { catalogue_doc } else {
-            let candidate = LoroDoc::new();
-            candidate.import(&catalogue_doc.export(ExportMode::Snapshot)?)?;
-            if candidate.import_batch(&edits)?.pending.is_some() { catalogue_doc } else {
-                tx.execute("DELETE FROM inbox WHERE note = ?1", [catalogue::SCOPE])?;
-                candidate.set_peer_id(self.peer)?;
-                candidate
-            }
-        };
 
         assets::ingest(&tx, &self.root)?;
-        let ids: Vec<String> = tx.prepare("SELECT DISTINCT note FROM inbox WHERE note <> ?1 AND note <> ?2")?
-            .query_map([catalogue::SCOPE, assets::SCOPE], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
         let mut changed = vec![];
-        for id in ids {
-            if has_catalogue && catalogue::permanently_deleted(&catalogue_doc, &id) {
-                tx.execute("DELETE FROM inbox WHERE note = ?1", [&id])?;
-                continue;
-            }
-            let old = note(&tx, &id)?;
-            if old.as_ref().is_some_and(|note| note.held) { continue; }
-            let loro = open_note(&tx, &id, old.as_ref().map_or(&[], |note| note.snapshot.as_slice()))?;
-            let before = loro.oplog_vv();
-            let anchors: Vec<_> = open_positions.get(&id).into_iter().flatten()
-                .filter_map(|&pos| content::anchor(&loro, pos).map(|anchor| (pos, anchor))).collect();
-            let updates = incoming(&tx, &id)?;
-            let status = loro.import_batch(&updates)?;
-            if status.pending.is_some() { continue; }
-            if loro.oplog_vv() != before {
-                let doc = content::render(&loro).context("Render merged cloud document")?;
-                let merged_front = front(&loro);
-                let mut paths = content::local_assets(&doc);
-                if self.room.is_some() {
-                    for path in &paths { assets::path(&self.root, path)?; }
-                }
-                let local_only = loro.get_map("local-only-attachments");
-                let total = paths.len();
-                paths.retain(|source| local_only.get(source).is_none());
-                if !tx.query_row("SELECT EXISTS(SELECT 1 FROM cloud_inventory_state)", [], |r| r.get::<_,bool>(0))?
-                    && paths.iter().any(|source| !assets::present(&self.root, source)) { continue; }
-                attachment_warnings(&tx, &id, total - paths.len())?;
-                let (tips, has_fork) = archive_frontiers(&loro, &before, &updates)?;
-                let trashed = tx.query_row("SELECT trashed FROM library_documents WHERE id = ?1", [&id],
-                    |row| row.get::<_, bool>(0)).optional()?;
+        for (id, trashed) in work {
+            // Keep bodies for unknown entries pending until their catalogue
+            // metadata can be applied. Never project a rejected tombstone.
+            if catalogue_paused && !local.contains_key(&id) { continue; }
+            let mut candidate = tx.savepoint()?;
+            let result = (|| {
                 if let Some(trashed) = trashed {
-                    let (current, _, front) = Store::read_sync_body(&tx, &id, trashed)?;
-                    if current != doc || front != merged_front { archive(&tx, &id, &current, &front, has_fork)?; }
+                    let (doc, seen, front) = Store::read_sync_body(&candidate, &id, trashed)?;
+                    capture_note(&candidate, &self.root, self.peer, &id, &doc, seen, &front)
+                        .context("Capture local document for sync")?;
                 }
-                // Preserve the sender's branch as well as our previous view.
-                // A split or deleted block can hide text in the merged view.
-                for tips in tips {
-                    if tips == loro.oplog_frontiers() { continue; }
-                    let branch = loro.fork_at(&tips)?;
-                    let candidate = content::render(&branch)?;
-                    let candidate_front = front(&branch);
-                    if candidate != doc || candidate_front != merged_front {
-                        archive(&tx, &id, &candidate, &candidate_front, has_fork)?;
+                if catalogue.as_ref().is_some_and(|(doc, _)| catalogue::permanently_deleted(doc, &id)) {
+                    // Keep the quarantined data available for recovery even if
+                    // the catalogue carries a permanent deletion.
+                    if has_conflict(&candidate, &id)? {
+                        candidate.execute("UPDATE sync_document_conflicts SET retry = 0 WHERE note = ?1", [&id])?;
+                    } else {
+                        candidate.execute("DELETE FROM inbox WHERE note = ?1", [&id])?;
                     }
+                    return Ok((false, None));
                 }
-                trim_recent_versions(&tx, &id)?;
-                let seen = Store::write_sync_body(&tx, &id, trashed.unwrap_or(false), &doc, &merged_front)
-                    .context("Save merged cloud document")?;
-                checkpoint_note(&tx, &id, &Note { assets: paths, snapshot: loro.export(ExportMode::Snapshot)?, seen, held: false })?;
-                let positions = anchors.iter().filter_map(|(pos, anchor)|
-                    content::resolve(&loro, pos.block, anchor).map(|resolved| (*pos, resolved))).collect();
-                changed.push(NoteChange { id: id.clone(), document: doc, positions });
+                apply_document(&candidate, &self.root, &id, self.room.is_some(),
+                    open_positions.get(&id).map_or(&[], Vec::as_slice))
+            })();
+            match result {
+                Ok((complete, change)) => {
+                    if complete {
+                        candidate.execute("DELETE FROM sync_document_conflicts WHERE note = ?1", [&id])?;
+                    }
+                    candidate.commit()?;
+                    changed.extend(change);
+                }
+                Err(error) if error.is::<content::ConflictingBlockShapes>() || error.is::<ReplayFailure>() => {
+                    candidate.rollback()?;
+                    candidate.commit()?;
+                    block_document(&tx, &id)?;
+                    if error.is::<ReplayFailure>() { self.history.remove(&id); }
+                }
+                Err(error) => return Err(error),
             }
-            if self.room.is_some() { activity::mark_projected(&tx, &id)?; }
-            tx.execute("DELETE FROM inbox WHERE note = ?1", [&id])?;
         }
 
-        let before_projection = catalogue_doc.oplog_vv();
-        let catalogue_changed = before_projection != before;
-        let dirty = tx.execute("DELETE FROM state WHERE key = 'catalogue_dirty'", [])? != 0;
         let library_changed = if let Some(room) = self.room.as_ref().filter(|room| !room.folder) {
             let front: Option<String> = tx.query_row("SELECT front FROM library_documents WHERE id = ?1",
                 [&room.note], |row| row.get(0)).optional()?;
             let front = front.unwrap_or_default();
-            Store::show_shared_note(&tx, &room.note, &front)?
-        } else if catalogue_changed || local_bodies_changed || dirty || !changed.is_empty() || !writable && local != seen {
-            if self.room.is_none() { super::organizer::project(&tx, &catalogue_doc)?; }
-            let changed = catalogue::project(&tx, &catalogue_doc, self.room.as_ref().is_some_and(|room| room.folder))? || catalogue_changed;
-            put_state(&tx, "catalogue_seen", &serde_json::to_vec(&catalogue::local(&tx)?)?)?;
-            changed
+            Store::show_shared_note(&tx, &room.note, &front, shared::registered_at(&self.root))?
+        } else if let Some((catalogue_doc, before)) = catalogue {
+            let before_projection = catalogue_doc.oplog_vv();
+            let catalogue_changed = before_projection != before;
+            let dirty = tx.execute("DELETE FROM state WHERE key = 'catalogue_dirty'", [])? != 0;
+            let projected = if catalogue_changed || local_bodies_changed || dirty || !changed.is_empty() || !writable && local != seen {
+                if self.room.is_none() { super::organizer::project(&tx, &catalogue_doc)?; }
+                let result = catalogue::project(&tx, &catalogue_doc, self.room.as_ref().is_some_and(|room| room.folder))? || catalogue_changed;
+                put_state(&tx, "catalogue_seen", &serde_json::to_vec(&catalogue::local(&tx)?)?)?;
+                result
+            } else { false };
+            catalogue_doc.commit();
+            if writable && catalogue_doc.oplog_vv() != before_projection {
+                enqueue(&tx, catalogue::SCOPE, catalogue_doc.export(ExportMode::updates(&before_projection))?)?;
+            }
+            if catalogue_doc.oplog_vv() != before { put_state(&tx, "catalogue", &catalogue_doc.export(ExportMode::Snapshot)?)?; }
+            projected
         } else { false };
-        catalogue_doc.commit();
-        if writable && catalogue_doc.oplog_vv() != before_projection {
-            enqueue(&tx, catalogue::SCOPE, catalogue_doc.export(ExportMode::updates(&before_projection))?)?;
-        }
-        if catalogue_doc.oplog_vv() != before { put_state(&tx, "catalogue", &catalogue_doc.export(ExportMode::Snapshot)?)?; }
         tx.commit()?;
+        self.retry_catalogue = false;
         self.merged_data_version = Some(version);
         Ok((library_changed, changed))
     }
@@ -1023,6 +1257,128 @@ impl HistoryFixture {
 #[cfg(test)]
 impl Drop for HistoryFixture {
     fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
+#[cfg(test)]
+#[test]
+fn sync_success_reopens_with_only_the_matching_account_and_scope() -> Result<()> {
+    let fixture = HistoryFixture::new()?;
+    let marker = fixture.0.join(".cloud-restore-ready");
+    let account_a = std::fs::read_to_string(&marker)?;
+    let account_b = "b".repeat(64);
+    let personal = Journal::open(&fixture.0, None)?;
+    assert_eq!(personal.last_success()?, None);
+    personal.record_success(123)?;
+    drop(personal);
+    assert_eq!(Journal::open(&fixture.0, None)?.last_success()?, Some(123));
+
+    // Even a copy of the original journal must not expose another account's timestamp.
+    std::fs::write(&marker, &account_b)?;
+    let other = Journal::open(&fixture.0, None)?;
+    assert_eq!(other.last_success()?, None);
+    other.record_success(456)?;
+    drop(other);
+    std::fs::write(&marker, &account_a)?;
+    assert_eq!(Journal::open(&fixture.0, None)?.last_success()?, Some(123));
+
+    let room_fixture = HistoryFixture::new()?;
+    let room = shared::Room { scope: shared::Scope { note: uuid::Uuid::new_v4().to_string(),
+        owner: Some("synthetic-owner".into()), folder: false }, title: "Synthetic share".into() };
+    std::fs::write(room_fixture.0.join(".cloud-restore-ready"), format!("{account_a}shared\n"))?;
+    std::fs::write(room_fixture.0.join(shared::MARKER), serde_json::to_vec(&room)?)?;
+    let shared = Journal::open(&room_fixture.0, None)?;
+    assert_eq!(shared.last_success()?, None);
+    shared.record_success(789)?;
+    drop(shared);
+    assert_eq!(Journal::open(&room_fixture.0, None)?.last_success()?, Some(789));
+    assert_eq!(Journal::open(&fixture.0, None)?.last_success()?, Some(123));
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn sync_progress_uses_durable_receipts_even_when_the_outbox_length_stays_fixed() -> Result<()> {
+    use super::{Bytes, SyncPhase, progress::{Monitor, Round}};
+    let fixture = HistoryFixture::new()?;
+    let mut journal = Journal::open(&fixture.0, None)?;
+    let mut raw = Store::open_sqlite_at(fixture.0.clone())?;
+    let id = raw.create_from(&crate::docxml::parse("<title>Sync status</title><p>Initial text</p>")?)?;
+    let mut store = SharedStore::for_test(raw);
+    journal.merge(&Default::default())?;
+    let acknowledge = |uploaded| Changes { retention: None, uploaded, edits: vec![], token: Some(Bytes(vec![1])),
+        more: false, legacy: false, room_access: None, upload_quota_exceeded: false,
+        #[cfg(feature = "devtools")] cursor_replayed: false };
+    let baseline = journal.request_with_uploads(true)?.edits.into_iter().map(|edit| edit.id).collect();
+    assert!(journal.receive_page(acknowledge(baseline))?.1);
+
+    let mut doc = store.load_for_edit(&id, false)?;
+    doc.blocks[0].text = crate::model::RichText::plain("Changed text");
+    journal.db.execute_batch("CREATE TRIGGER reject_test_outbox BEFORE INSERT ON outbox
+        BEGIN SELECT RAISE(ABORT, 'injected durable queue failure'); END;")?;
+    assert!(journal.save(&mut store, &id, &Core::new(doc.clone())).is_err());
+    assert_ne!(store.load(&id)?, doc);
+    assert_eq!(journal.counts()?.0, 0);
+    assert_eq!(journal.last_success()?, None);
+    journal.db.execute_batch("DROP TRIGGER reject_test_outbox;")?;
+
+    journal.save(&mut store, &id, &Core::new(doc.clone()))?;
+    let start = std::time::Instant::now();
+    let mut monitor = Monitor::default();
+    let queue = journal.counts()?.0;
+    assert!(queue > 0);
+    for seconds in [0, 35, 70, 105] {
+        let batch = journal.request_with_uploads(true)?.edits.into_iter().map(|edit| edit.id).collect::<Vec<_>>();
+        assert!(journal.receive_page(acknowledge(batch.clone()))?.1);
+        assert!(!journal.receive_page(acknowledge(batch))?.1);
+        doc.blocks[0].text = crate::model::RichText::plain(format!("Edit at {seconds}"));
+        journal.save(&mut store, &id, &Core::new(doc.clone()))?;
+        assert_eq!(journal.counts()?.0, queue);
+        monitor.completed(start + Duration::from_secs(seconds), Round { uploading: true, uploaded: true, ..Round::default() });
+        assert_eq!(monitor.stalled(), None);
+    }
+    for seconds in [135, 165, 195] {
+        let (_, uploaded) = journal.receive_page(acknowledge(vec![]))?;
+        monitor.completed(start + Duration::from_secs(seconds), Round { uploading: true, uploaded, ..Round::default() });
+    }
+    assert_eq!(monitor.stalled(), Some(SyncPhase::Uploading));
+    let batch = journal.request_with_uploads(true)?.edits.into_iter().map(|edit| edit.id).collect();
+    let (_, uploaded) = journal.receive_page(acknowledge(batch))?;
+    monitor.completed(start + Duration::from_secs(196), Round { uploaded, ..Round::default() });
+    assert_eq!(monitor.stalled(), None);
+    assert_eq!(journal.counts()?.0, 0);
+    assert_eq!(store.load(&id)?, doc);
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn merge_recovers_a_checkpoint_envelope_already_in_the_inbox() -> Result<()> {
+    let fixture = HistoryFixture::new()?;
+    let mut store = Store::open_sqlite_at(fixture.0.clone())?;
+    let mut journal = Journal::open(&fixture.0, None)?;
+    let id = store.create_from(&crate::docxml::parse("<title>Unsynced local document</title><p>Keep me</p>")?)?;
+    journal.merge(&Default::default())?;
+    let document = store.load(&id)?;
+    let outbox = journal.request_with_uploads(true)?.edits;
+    assert!(!outbox.is_empty());
+    let catalogue = content::open(&get_state(&journal.db, "catalogue")?.context("Missing catalogue snapshot")?)?;
+    let checkpoint = retention::pack(&retention::Index { versions: vec![], records: vec![outbox[0].id.clone()] },
+        &catalogue.export(ExportMode::Snapshot)?)?;
+    let cursor = b"saved cloud cursor";
+    put_state(&journal.db, "token", cursor)?;
+    journal.db.execute("INSERT INTO inbox VALUES (?1, ?2, ?3)",
+        params![uuid::Uuid::new_v4().to_string(), catalogue::SCOPE, checkpoint])?;
+    drop(journal);
+
+    let mut reopened = Journal::open(&fixture.0, None)?;
+    reopened.merge(&Default::default())?;
+    reopened.merge(&Default::default())?;
+    assert_eq!(reopened.counts()?.1, 0);
+    assert_eq!(get_state(&reopened.db, "token")?.as_deref(), Some(cursor.as_slice()));
+    assert_eq!(reopened.request_with_uploads(true)?.edits.iter().map(|edit| &edit.id).collect::<Vec<_>>(),
+        outbox.iter().map(|edit| &edit.id).collect::<Vec<_>>());
+    assert_eq!(store.load(&id)?, document);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1236,7 +1592,7 @@ fn attachment_issues_identify_files_and_clear_after_retry() -> Result<()> {
     let issues = journal.issues()?;
     let [issue] = issues.as_slice() else { anyhow::bail!("Expected one affected note") };
     assert_eq!(issue.id, id);
-    assert_eq!(issue.title, "附件检查");
+    assert_eq!(issue.title.as_deref(), Some("附件检查"));
     assert!(!issue.held);
     assert_eq!(issue.attachments, [
         AttachmentIssue { source: "assets/missing.bin".into(), reason: Some(assets::AssetProblem::Missing), stored_here: false, recovering: false },
@@ -1690,3 +2046,82 @@ fn cloud_checkpoint_cursor_reset_preserves_retention_metadata() -> Result<()> {
     assert_eq!(results[0], results[1], "Cursor reset must retain the checkpoint's verified coverage, version anchors and attachment pins");
     Ok(())
 }
+
+#[cfg(test)]
+#[test]
+fn shared_personal_preferences_sync_only_through_the_personal_catalogue() -> Result<()> {
+    use crate::sharing::preferences::{KEY, Preferences};
+    let device_a = HistoryFixture::new()?;
+    let device_b = HistoryFixture::new()?;
+    let other_account = HistoryFixture::new()?;
+    std::fs::write(other_account.0.join(".cloud-restore-ready"), format!("{}\n", "b".repeat(64)))?;
+    let shared_cache = HistoryFixture::new()?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let other_doc = uuid::Uuid::new_v4().to_string();
+    let room = shared::Room { scope: shared::Scope { note: id.clone(), owner: None, folder: false }, title: "Synthetic share".into() };
+    std::fs::write(shared_cache.0.join(shared::MARKER), serde_json::to_vec(&room)?)?;
+    std::fs::write(shared_cache.0.join(".cloud-restore-ready"), format!("{}\nshared\n", "a".repeat(64)))?;
+    let read = |db: &Connection| -> Result<Preferences> {
+        let raw: Vec<u8> = db.query_row("SELECT value FROM library_values WHERE key=?1", [KEY], |row| row.get(0))?;
+        Ok(serde_json::from_slice(&raw)?)
+    };
+    let write = |db: &Connection, prefs: &Preferences| -> Result<()> {
+        db.execute("INSERT OR REPLACE INTO library_values VALUES (?1,?2)", params![KEY, serde_json::to_vec(prefs)?])?;
+        Ok(())
+    };
+    let page = |edits: Vec<Edit>, uploaded| Changes {
+        retention: None, uploaded, edits, token: Some(super::Bytes(vec![1])), more: false, legacy: false,
+        room_access: None, upload_quota_exceeded: false, #[cfg(feature = "devtools")] cursor_replayed: false,
+    };
+    let a_db = Connection::open(device_a.0.join(crate::store::SQLITE_FILE))?;
+    let b_db = Connection::open(device_b.0.join(crate::store::SQLITE_FILE))?;
+    let legacy = serde_json::json!({"pinned":[&id],"starred":{(id.clone()): 123}});
+    a_db.execute("INSERT INTO library_values VALUES ('shared-organization', ?1)", [serde_json::to_vec(&legacy)?])?;
+    a_db.execute("INSERT INTO library_values VALUES ('shared-sidebar-order', ?1)", [serde_json::to_vec(&[&id, &other_doc])?])?;
+    let mut a = Journal::open(&device_a.0, None)?;
+    let mut b = Journal::open(&device_b.0, None)?;
+    a.merge(&Default::default())?;
+    let first = a.request()?.edits;
+    assert!(first.iter().all(|edit| edit.note == catalogue::SCOPE));
+    assert!(!first.is_empty());
+    a.receive(page(vec![], first.iter().map(|edit| edit.id.clone()).collect()))?;
+    b.receive(page(first, vec![]))?;
+    b.merge(&Default::default())?;
+    let mut left = read(&a_db)?;
+    let mut right = read(&b_db)?;
+    assert!(left == right);
+    assert_eq!((right.get("pin", &id), right.get("star", &id)), (1, 123));
+    assert!(right.get("rank", &id) < right.get("rank", &other_doc));
+
+    // Concurrent changes to different fields survive in the same account.
+    left.toggle(&id, true);
+    left.toggle(&id, false);
+    right.move_item(vec![id.as_str(), other_doc.as_str()], &other_doc, Some(&id));
+    write(&a_db, &left)?;
+    write(&b_db, &right)?;
+    a.merge(&Default::default())?;
+    b.merge(&Default::default())?;
+    let from_a = a.request()?.edits;
+    let from_b = b.request()?.edits;
+    a.receive(page(from_b, vec![]))?;
+    b.receive(page(from_a, vec![]))?;
+    a.merge(&Default::default())?;
+    b.merge(&Default::default())?;
+    let left = read(&a_db)?;
+    let right = read(&b_db)?;
+    assert!(left == right);
+    assert_eq!((right.get("pin", &id), right.get("star", &id)), (0, 0));
+    assert!(right.get("rank", &other_doc) < right.get("rank", &id));
+
+    let mut unrelated = Journal::open(&other_account.0, None)?;
+    unrelated.merge(&Default::default())?;
+    assert!(read(&unrelated.db).is_err());
+    let mut shared_journal = Journal::open(&shared_cache.0, None)?;
+    write(&shared_journal.db, &right)?;
+    shared_journal.merge(&Default::default())?;
+    assert!(shared_journal.request()?.edits.is_empty());
+    Ok(())
+}
+
+#[cfg(test)]
+mod conflict_tests;

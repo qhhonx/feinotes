@@ -89,8 +89,8 @@ pub(crate) fn backup_confirmation(prepared: &crate::cloud_sync::backup::Prepared
     let info = &prepared.summary;
     (crate::settings::tr("恢复已校验的备份？", "Restore this verified backup?").into(),
         crate::localized_format!(
-            "备份包含 {} 篇笔记、{} 个文件夹、回收站 {} 项、共享笔记 {} 篇和 {} 条待上传改动。恢复前的文档库会保留。",
-            "The backup contains {} notes, {} folders, {} items in Trash, {} shared notes and {} pending uploads. The library before restoration will be kept.",
+            "备份包含 {} 篇文档、{} 个文件夹、回收站 {} 项、共享文档 {} 篇和 {} 条待上传改动。恢复前的文档库会保留。",
+            "The backup contains {} documents, {} folders, {} items in Trash, {} shared documents and {} pending uploads. The library before restoration will be kept.",
             info.notes,info.folders,info.trash,info.shared,info.pending),crate::settings::tr("恢复","Restore"),false)
 }
 
@@ -226,13 +226,13 @@ impl Workspace {
             .border_1().border_color(list_line())
             .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(tr("离线恢复副本", "Offline Recovery Copies")))
             .child(div().mt(px(4.)).text_size(px(13.)).text_color(Theme::text_caption()).child(ui_para(tr(
-                "原笔记已删除。这台 Mac 保留了删除时未包含的改动。",
-                "The original notes were deleted. This Mac kept changes that were missing at deletion."))))
+                "原文档已删除。这台 Mac 保留了删除时未包含的改动。",
+                "The original document was deleted. This Mac kept changes that had not synced."))))
             .children(recoveries.into_iter().map(|(id, title)| {
                 let discard = id.clone();
                 div().mt(px(10.)).flex().flex_wrap().items_center().gap(px(8.))
                     .child(div().flex_1().min_w(px(120.)).max_w_full().text_size(px(14.)).child(ui_para(display_title(&title))))
-                    .child(button(SharedString::from(format!("keep-recovery-{id}")), tr("另存为新笔记", "Save as New Note"))
+                    .child(button(SharedString::from(format!("keep-recovery-{id}")), tr("另存为新文档", "Save as New Document"))
                         .on_click(cx.listener(move |w, _, window, cx| {
                             w.resolve_offline_recovery(&id, true, window, cx);
                         })))
@@ -508,28 +508,28 @@ impl Workspace {
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::StartCloudTrial => (
                 crate::settings::tr("开始 7 天试用？", "Start a 7-day trial?").into(),
-                crate::settings::tr("确认后开始计时。同一 iCloud 账户的设备共用这 7 天。试用不会自动续费，本机笔记始终免费。",
-                    "The trial starts when you confirm and is shared across devices on this iCloud account. It won’t renew automatically. Local notes stay free.").into(),
+                crate::settings::tr("确认后开始计时。同一 iCloud 账户的设备共用这 7 天。试用不会自动续费，本机文档库始终免费使用。",
+                    "The trial starts when you confirm and is shared across devices on this iCloud account. It won’t renew automatically. The local library stays free to use.").into(),
                 crate::settings::tr("开始试用", "Start Trial"),
                 false,
             ),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::SwitchCloudLibrary { cloud: true, .. } => (
                 crate::settings::tr("开启 iCloud 同步？", "Enable iCloud sync?").into(),
-                if cfg!(target_os = "ios") { crate::settings::tr("飞记将打开 iCloud 文档库，本机笔记会保留。",
-                    "Fei Notes will open your iCloud library and keep your local notes.").into() }
-                else { crate::settings::tr("飞记将自动重启并打开 iCloud 文档库。本机笔记会保留。",
-                    "Fei Notes will restart and open your iCloud library. Your local notes will be kept on this Mac.").into() },
+                if cfg!(target_os = "ios") { crate::settings::tr("飞记将打开 iCloud 文档库，本机文档会保留。",
+                    "Fei Notes will open your iCloud library and keep your local documents.").into() }
+                else { crate::settings::tr("飞记将自动重启并打开 iCloud 文档库。本机文档会保留。",
+                    "Fei Notes will restart and open your iCloud library. Your local documents will be kept on this Mac.").into() },
                 crate::settings::tr("开启同步", "Enable Sync"),
                 false,
             ),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::SwitchCloudLibrary { cloud: false, .. } => (
                 crate::settings::tr("打开本机文档库？", "Open the local library?").into(),
-                if cfg!(target_os = "ios") { crate::settings::tr("飞记将打开本机文档库，iCloud 笔记和待上传的改动会保留。",
-                    "Fei Notes will open your local library and keep your iCloud notes and pending changes.").into() }
-                else { crate::settings::tr("飞记将自动重启并打开本机文档库。iCloud 笔记和待上传的改动会保留。",
-                    "Fei Notes will restart and open your local library. Your iCloud notes and pending changes are kept.").into() },
+                if cfg!(target_os = "ios") { crate::settings::tr("飞记将打开本机文档库，iCloud 文档和待上传的改动会保留。",
+                    "Fei Notes will open your local library and keep your iCloud documents and pending changes.").into() }
+                else { crate::settings::tr("飞记将自动重启并打开本机文档库。iCloud 文档和待上传的改动会保留。",
+                    "Fei Notes will restart and open your local library. Your iCloud documents and pending changes are kept.").into() },
                 crate::settings::tr("切换到本机", "Switch to Local"),
                 false,
             ),
@@ -538,7 +538,7 @@ impl Workspace {
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::CloudVersions { .. } => (
                 crate::settings::tr("iCloud 历史版本", "iCloud Version History").into(),
-                crate::settings::tr("选择一个版本，恢复为一篇新的笔记。", "Choose a version to restore as a new note.").into(),
+                crate::settings::tr("选择一个版本，恢复为一篇新的文档。", "Choose a version to restore as a new document.").into(),
                 crate::settings::tr("恢复副本", "Restore a Copy"),
                 false,
             ),
@@ -556,7 +556,7 @@ impl Workspace {
             Some(div().id("confirm-copy-local").mt(px(14.)).flex().items_center().gap(px(8.))
                 .cursor_pointer().text_size(px(13.)).line_height(px(20.))
                 .child(crate::ui::checkbox(*copy_local))
-                .child(ui_para(crate::settings::tr("同时复制本机笔记到 iCloud", "Also copy local notes to iCloud")))
+                .child(ui_para(crate::settings::tr("同时复制本机文档到 iCloud", "Also copy local documents to iCloud")))
                 .on_click(cx.listener(|w, _, _, cx| {
                     if let Some(Confirm::SwitchCloudLibrary { copy_local, .. }) = &mut w.confirm { *copy_local = !*copy_local; }
                     cx.notify();

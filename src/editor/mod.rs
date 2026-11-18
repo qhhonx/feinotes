@@ -1,4 +1,6 @@
 mod board;
+#[cfg(target_os = "ios")]
+mod block_mobile;
 mod button;
 mod caption;
 mod code;

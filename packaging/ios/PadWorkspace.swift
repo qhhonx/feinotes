@@ -2,42 +2,64 @@ import UIKit
 
 /// Home and document columns around the existing, single Rust workspace.
 @MainActor
-final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControllerDelegate {
+final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControllerDelegate, UIGestureRecognizerDelegate {
     private let editor: EditorHost
-    private let browser = FeiRouteController()
+    private let browserRoot: FeiRouteController
+    private var browser: FeiRouteController { browserNavigation.topViewController as? FeiRouteController ?? browserRoot }
     private let browserNavigation: UINavigationController
     private let editorNavigation: UINavigationController
     private var state: FeiNavigationState?
-    private var focused = false
     private var previousTheme: FeiMobileTheme?
     private var previousAppearance = ""
-    private var previousFocusIcon: Bool?
+    private var focusSymbol: String?
+    private var sidebarMode: DisplayMode?
+    private var usesOverlay = false
     private var browserButtonsScope: String?
-    private var browserMore: UIBarButtonItem?
     private lazy var focusItem: UIBarButtonItem = {
-        let item = UIBarButtonItem(image: nil,primaryAction: UIAction { [weak self] _ in self?.toggleFocus() })
+        let item = UIBarButtonItem(image: nil,primaryAction: UIAction { [weak self] _ in self?.toggleSidebar() })
         item.accessibilityIdentifier = "fei.ipad.focus"; return item
     }()
+    private func sidebarDismissButton() -> UIBarButtonItem {
+        let item = UIBarButtonItem(image: UIImage(systemName: "sidebar.left"),primaryAction: UIAction { [weak self] _ in self?.hide(.primary) })
+        item.accessibilityIdentifier = "fei.ipad.dismiss-sidebar"
+        item.accessibilityLabel = state?.labels["hide-browser"]
+        return item
+    }
     private lazy var composeItem: UIBarButtonItem = {
         let item = UIBarButtonItem(systemItem: .compose,primaryAction: UIAction { [weak self] _ in self?.editor.navigationCoordinator?.composeNote() })
         item.accessibilityIdentifier = "fei.new"; return item
     }()
     private lazy var settingsItem: UIBarButtonItem = {
-        let item = UIBarButtonItem(image: UIImage(systemName: "gearshape"),primaryAction: UIAction { [weak self] _ in self?.editor.navigationCoordinator?.send("settings") })
+        let item = UIBarButtonItem(image: UIImage(systemName: "gearshape"),primaryAction: UIAction { [weak self] _ in guard let self else { return }
+            if self.state?.kind == "settings" {
+                self.editor.navigationCoordinator?.send(self.state?.settings?.page == "Shared" ? "back" : "close-settings")
+            } else {
+                self.editor.navigationCoordinator?.send("settings")
+            } })
         item.accessibilityIdentifier = "fei.settings"; return item
     }()
     private var lastFit: DisplayMode?
+    private lazy var sidebarBackGesture: UIPanGestureRecognizer = {
+        let gesture = UIPanGestureRecognizer(target: self,action: #selector(swipedToParent(_:)))
+        gesture.delegate = self
+        gesture.maximumNumberOfTouches = 1
+        return gesture
+    }()
+    private var sidebarSwipeScope: String?
     private var metricsScale: CGFloat = 0
     private var lastBrowserScope: String?
     private let empty = UILabel()
 
     init(host: EditorHost) {
         editor = host
-        browserNavigation = UINavigationController(rootViewController: browser)
+        let root = FeiRouteController()
+        browserRoot = root
+        browserNavigation = UINavigationController(rootViewController: root)
         editorNavigation = UINavigationController(rootViewController: host)
         super.init(style: .doubleColumn)
         host.padWorkspace = self
-        browser.isWorkspaceBrowser = true
+        root.isWorkspaceBrowser = true
+        root.routeKey = "ipad-browser"
         delegate = self
         primaryEdge = .leading
         preferredSplitBehavior = .tile
@@ -55,6 +77,7 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         super.viewDidLoad()
         view.accessibilityIdentifier = "fei.ipad.workspace"
         browser.view.accessibilityIdentifier = "fei.ipad.browser"
+        view.addGestureRecognizer(sidebarBackGesture)
         editor.view.accessibilityIdentifier = "fei.ipad.detail"
         empty.font = .preferredFont(forTextStyle: .title2)
         empty.adjustsFontForContentSizeCategory = true
@@ -84,6 +107,12 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
     func beginBrowserReorder() { browser.notesList?.beginReordering() }
     var browserTitle: String { state?.browser?.title ?? "" }
     var browserIsExpanded: Bool { !isCollapsed }
+    var visibleBrowserController: FeiRouteController? { primaryVisible ? browser : nil }
+    private var primaryVisible: Bool {
+        if isCollapsed { return browser.viewIfLoaded?.window != nil }
+        let mode = sidebarMode ?? displayMode
+        return mode == .oneBesideSecondary || mode == .oneOverSecondary
+    }
 
     func detailRoutes(_ next: FeiNavigationState) -> [FeiNavigationState.Route] {
         let routes = next.routes.filter { $0.key != "notes" && $0.key != "shared" && !$0.key.hasPrefix("folder:") }
@@ -110,30 +139,47 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         }
         previousTheme = next.theme; previousAppearance = next.appearance
         }
+        let path = next.browser?.path ?? []
+        updateSidebarGestures()
+        let existing = Dictionary(uniqueKeysWithValues: browserNavigation.viewControllers.compactMap { ($0 as? FeiRouteController).map { ($0.routeKey,$0) } })
+        let controllers = [browserRoot] + path.map { route in
+            let page = existing[route.key] ?? FeiRouteController()
+            page.routeKey = route.key
+            page.isWorkspaceBrowser = true
+            page.title = route.title
+            return page
+        }
+        if let destination = controllers.last, browserNavigation.viewControllers.map(ObjectIdentifier.init) != controllers.map(ObjectIdentifier.init) {
+            destination.updateListing(next.browser?.listing,labels: next.labels,busy: next.busy,coordinator: coordinator)
+            let animated = previous != nil && next.browser?.personal == previous?.browser?.personal && primaryVisible && !UIAccessibility.isReduceMotionEnabled
+            browserNavigation.setViewControllers(controllers,animated: animated)
+            browserNavigation.interactivePopGestureRecognizer?.isEnabled = false
+        }
         browser.title = next.browser?.title ?? next.labels["sharing"]
         browser.navigationItem.title = browser.title
         browser.navigationItem.largeTitleDisplayMode = .always
-        browser.routeKey = "ipad-browser"
         browser.updateListing(next.browser?.listing,labels: next.labels,busy: next.busy,coordinator: coordinator)
         if let list = browser.notesList {
             list.browsesWorkspace = true
             list.selectNote(["note","history","history-preview"].contains(next.kind) ? next.current : nil)
-            list.applyTheme(theme)
             list.configureSearch(in: browser,expanded: !isCollapsed)
         }
-        settingsItem.accessibilityLabel = next.labels["settings"]; settingsItem.isEnabled = !next.busy
+        settingsItem.accessibilityLabel = next.labels[next.kind == "settings" ? "close-settings" : "settings"]; settingsItem.isEnabled = !next.busy
         var leading = [settingsItem]
         let browserScope = next.browser?.listing.scope
-        if let folder = next.browser?.folder {
-            let parent = next.items.first(where: { $0.id == folder })?.parent
-            let back = UIBarButtonItem(image: UIImage(systemName: "chevron.left"),primaryAction: UIAction { [weak coordinator] _ in coordinator?.send("browse-scope",value: parent.map { "folder:"+$0 } ?? (next.browser?.shared == true ? "shared" : "all"),scope: next.browser?.listing.scope) })
+        if next.browser?.folder != nil {
+            let back = UIBarButtonItem(image: UIImage(systemName: "chevron.backward"),primaryAction: UIAction { [weak self] _ in self?.returnToBrowserParent() })
             back.accessibilityIdentifier = "fei.browser.parent"; back.accessibilityLabel = next.labels["back"]; leading = [back]
         }
+        browser.navigationItem.hidesBackButton = true
         if browser.notesList?.isSelecting != true && (browserButtonsScope != browserScope || browser.navigationItem.leftBarButtonItems?.map({ $0.accessibilityIdentifier }) != leading.map({ $0.accessibilityIdentifier })) { browser.navigationItem.leftBarButtonItems = leading }
         browserButtonsScope = browserScope
-        let close = (browser.navigationItem.rightBarButtonItems ?? []).filter { $0.accessibilityIdentifier == "fei.notes.search-close" }
-        if browserMore == nil { browserMore = coordinator.browserActionsItem() }
-        let trailing = close+[browserMore!]
+        let items = browser.navigationItem.rightBarButtonItems ?? []
+        let close = items.filter { $0.accessibilityIdentifier == "fei.notes.search-close" }
+        let more = items.first { $0.accessibilityIdentifier == "fei.library-actions" } ?? coordinator.browserActionsItem()
+        more.isEnabled = !next.busy
+        let dismiss = items.first { $0.accessibilityIdentifier == "fei.ipad.dismiss-sidebar" }
+        let trailing = close+[more]+(usesOverlay && !isCollapsed ? [dismiss ?? sidebarDismissButton()] : [])
         if browser.notesList?.isSelecting != true && browser.notesList?.tableView.isEditing != true && browser.navigationItem.rightBarButtonItems?.map(ObjectIdentifier.init) != trailing.map(ObjectIdentifier.init) { browser.navigationItem.rightBarButtonItems = trailing }
         browser.notesList?.configureSearch(in: browser,expanded: !isCollapsed)
         empty.text = next.labels["select-note"]
@@ -141,26 +187,30 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         if !empty.isHidden { editor.view.bringSubviewToFront(empty) }
         updateFit()
         let detailChanged = next.routes.last?.key != previous?.routes.last?.key
-        if !isCollapsed,view.bounds.height > view.bounds.width,!showsEmptyDetail,detailChanged { hide(.primary); show(.secondary) }
+        if !isCollapsed,usesOverlay,detailChanged,
+           next.kind == "settings" && previous?.kind != "settings" || ["note","shared-opening"].contains(next.kind) && next.editor_scope != previous?.editor_scope {
+            hide(.primary); show(.secondary)
+        }
         if isCollapsed {
             if !showsEmptyDetail && detailChanged { show(.secondary) }
-            else if showsEmptyDetail && next.browser?.listing.scope != lastBrowserScope { show(.primary) }
+            else if showsEmptyDetail && (next.browser?.listing.scope != lastBrowserScope || previous?.kind == "shared-opening") { show(.primary) }
         } else if ["notes","folder"].contains(next.kind) && (previous?.kind == "settings" || view.bounds.height > view.bounds.width && previous?.kind != next.kind) { show(.primary) }
         lastBrowserScope = next.browser?.listing.scope
         editor.refreshEditorLayout()
     }
 
     func configureDetailButtons(_ controller: UIViewController,state: FeiNavigationState,coordinator: FeiNavigationCoordinator) {
-        guard ["note","notes","folder"].contains(state.kind) else { return }
-        if ["notes","folder"].contains(state.kind) { controller.navigationItem.rightBarButtonItems = [] }
-        if previousFocusIcon != focused {
-            focusItem.image = UIImage(systemName: focused ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-            previousFocusIcon = focused
+        let ordinaryDetail = ["note","notes","folder"].contains(state.kind)
+        let settingsRoot = state.kind == "settings" && state.settings?.page == "root"
+        guard ordinaryDetail || settingsRoot else {
+            if controller.navigationItem.leftBarButtonItem === focusItem { controller.navigationItem.leftBarButtonItems = nil }
+            return
         }
-        focusItem.accessibilityLabel = state.labels[focused ? "show-browser" : "focus-note"]
-        controller.navigationItem.leftItemsSupplementBackButton=controller.navigationController?.viewControllers.count ?? 0 > 1
-        if controller.navigationItem.leftBarButtonItems?.first !== focusItem { controller.navigationItem.leftBarButtonItems = [focusItem] }
-        if state.can_create {
+        if ["notes","folder"].contains(state.kind) { controller.navigationItem.rightBarButtonItems = [] }
+        updateSidebarButton(state)
+        controller.navigationItem.leftItemsSupplementBackButton = !settingsRoot && (controller.navigationController?.viewControllers.count ?? 0) > 1
+        if controller.navigationItem.leftBarButtonItem !== focusItem { controller.navigationItem.leftBarButtonItems = [focusItem] }
+        if ordinaryDetail && state.can_create {
             composeItem.tintColor=(state.theme ?? .system).accentColor
             composeItem.accessibilityLabel = state.labels["new"]; composeItem.isEnabled = coordinator.allowsCompose
             var items = (controller.navigationItem.rightBarButtonItems ?? []).filter { $0.accessibilityIdentifier != "fei.new" }
@@ -170,11 +220,70 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         }
     }
 
-    private func toggleFocus() {
+    private func updateSidebarButton(_ state: FeiNavigationState) {
+        let symbol = usesOverlay || isCollapsed ? "sidebar.left" : primaryVisible ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left"
+        if focusSymbol != symbol { focusSymbol = symbol; focusItem.image = UIImage(systemName: symbol) }
+        focusItem.accessibilityLabel = state.labels[primaryVisible ? "hide-browser" : "show-browser"]
+        focusItem.accessibilityValue = state.labels[primaryVisible ? "sidebar-open" : "sidebar-closed"]
+    }
+
+    private func returnToBrowserParent() {
+        guard let browser = state?.browser,browser.folder != nil,state?.busy == false,browser.listing.selection == nil else { return }
+        let target = browser.path.dropLast().last?.key ?? (browser.shared ? "shared" : "all")
+        editor.navigationCoordinator?.send("browse-scope",value: target,scope: browser.listing.scope)
+    }
+
+    private var backDirection: CGFloat { browserNavigation.view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? -1 : 1 }
+
+    private func updateSidebarGestures() {
+        let showingSidebar: Bool
+        if #available(iOS 26.0,*) { showingSidebar = isShowing(.primary) }
+        else { showingSidebar = primaryVisible }
+        let nestedSidebar = showingSidebar && state?.browser?.folder != nil
+        // The split controller keeps its edge-open gesture while the sidebar is hidden.
+        // A visible folder owns swipes originating inside its actual view.
+        if presentsWithGesture == nestedSidebar { presentsWithGesture = !nestedSidebar }
+        // Check the live hierarchy on touch-down. Disabling during a split transition
+        // could cancel a swipe whose browser and scope are still valid.
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === sidebarBackGesture,state?.busy == false,
+              state?.browser?.folder != nil,state?.browser?.listing.selection == nil,
+              browser.notesList?.allowsFolderBackGesture == true,
+              let column = browserNavigation.viewIfLoaded,column.window != nil,
+              let touched = touch.view,touched === column || touched.isDescendant(of: column) else { return false }
+        return column.bounds.contains(touch.location(in: column))
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        let velocity = sidebarBackGesture.velocity(in: view)
+        return velocity.x*backDirection > abs(velocity.y)*1.35
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        // A short swipe still exposes row actions. Those actions do not commit on a full swipe.
+        gestureRecognizer === sidebarBackGesture && other is UIPanGestureRecognizer &&
+            other.view?.isDescendant(of: browserNavigation.view) == true
+    }
+
+    @objc private func swipedToParent(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .began: sidebarSwipeScope = state?.browser?.listing.scope
+        case .ended:
+            defer { sidebarSwipeScope = nil }
+            guard let scope = sidebarSwipeScope,scope == state?.browser?.listing.scope else { return }
+            let travel = gesture.translation(in: view)
+            let minimum = min(96,max(56,browserNavigation.view.bounds.width*0.23))
+            if travel.x*backDirection >= minimum && abs(travel.y) < abs(travel.x)*0.55 { returnToBrowserParent() }
+        case .cancelled,.failed: sidebarSwipeScope = nil
+        default: break
+        }
+    }
+
+    private func toggleSidebar() {
         editor.settleEditorComposition()
-        focused.toggle(); lastFit = nil
-        updateFit(animated: true)
-        editor.navigationCoordinator?.refreshPadButtons()
+        if primaryVisible && !isCollapsed { hide(.primary) } else { show(.primary) }
     }
     func beginEditorInput() {
         if !isCollapsed,displayMode == .oneOverSecondary { hide(.primary) }
@@ -183,39 +292,52 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         updateFit()
+        updateSidebarGestures()
         browser.notesList?.configureSearch(in: browser,expanded: !isCollapsed)
     }
     @objc private func contentSizeChanged() { lastFit = nil; updateFit() }
-    private func updateFit(animated: Bool = false) {
+    private func updateFit() {
         guard isViewLoaded,view.bounds.width > 0 else { return }
         // Product tuning, not measurements of Apple's column widths.
         let scale = min(1.45,max(1,UIFont.preferredFont(forTextStyle: .body).pointSize/17))
-        let listMinimum = 300*scale, detailMinimum = 400*min(scale,1.2)
-        if metricsScale != scale {
-        metricsScale = scale
-        minimumPrimaryColumnWidth = listMinimum
-        maximumPrimaryColumnWidth = max(440,listMinimum)
-        preferredPrimaryColumnWidth = max(400,listMinimum)
-        if #available(iOS 26.0,*) { minimumSecondaryColumnWidth = detailMinimum }
-        }
+        let listMinimum = 280*scale, detailMinimum = 400*min(scale,1.2)
         let width = view.bounds.inset(by: view.safeAreaInsets).width
         let overlay = view.bounds.height > view.bounds.width || width < listMinimum+detailMinimum+1
-        let mode: DisplayMode = focused ? .secondaryOnly : overlay ? .oneOverSecondary : .oneBesideSecondary
+        if metricsScale != scale {
+            metricsScale = scale
+            minimumPrimaryColumnWidth = listMinimum
+            maximumPrimaryColumnWidth = max(420,listMinimum)
+            if #available(iOS 26.0,*) { minimumSecondaryColumnWidth = detailMinimum }
+        }
+        let preferred = min(maximumPrimaryColumnWidth,max(listMinimum,overlay ? 340 : floor(width/3)))
+        if preferredPrimaryColumnWidth != preferred { preferredPrimaryColumnWidth = preferred }
+        usesOverlay = overlay
+        let mode: DisplayMode = overlay ? .oneOverSecondary : .oneBesideSecondary
         if lastFit != mode {
             lastFit = mode
-            let change = { self.preferredSplitBehavior = overlay ? .overlay : .tile; self.preferredDisplayMode = mode; self.view.layoutIfNeeded() }
-            if animated && !UIAccessibility.isReduceMotionEnabled { UIView.animate(withDuration: 0.3,delay: 0,options: [.beginFromCurrentState,.allowUserInteraction,.curveEaseInOut],animations: change) }
-            else { change() }
-            if overlay && !focused && showsEmptyDetail { show(.primary) }
+            preferredSplitBehavior = overlay ? .overlay : .tile
+            preferredDisplayMode = mode
+            if overlay && !showsEmptyDetail { hide(.primary) } else { show(.primary) }
+            refreshColumns()
         }
     }
     func splitViewController(_ svc: UISplitViewController,topColumnForCollapsingToProposedTopColumn proposedTopColumn: Column) -> Column {
-        state.map { ["note","history","history-preview","settings","trash"].contains($0.kind) } == true ? .secondary : .primary
+        state.map { ["note","shared-opening","history","history-preview","settings","trash"].contains($0.kind) } == true ? .secondary : .primary
+    }
+    func splitViewController(_ svc: UISplitViewController,willChangeTo displayMode: DisplayMode) {
+        sidebarMode = displayMode
+        DispatchQueue.main.async { [weak self] in self?.updateSidebarGestures() }
+        if let state { updateSidebarButton(state) }
     }
     func splitViewControllerDidCollapse(_ svc: UISplitViewController) { refreshColumns() }
     func splitViewControllerDidExpand(_ svc: UISplitViewController) { refreshColumns() }
     private func refreshColumns() {
+        updateSidebarGestures()
         browser.notesList?.configureSearch(in: browser,expanded: !isCollapsed)
+        if !usesOverlay || isCollapsed { browser.navigationItem.rightBarButtonItems?.removeAll { $0.accessibilityIdentifier == "fei.ipad.dismiss-sidebar" } }
+        else if browser.notesList?.isSelecting != true && browser.notesList?.tableView.isEditing != true && browser.navigationItem.rightBarButtonItems?.contains(where: { $0.accessibilityIdentifier == "fei.ipad.dismiss-sidebar" }) != true {
+            browser.navigationItem.rightBarButtonItems = (browser.navigationItem.rightBarButtonItems ?? [])+[sidebarDismissButton()]
+        }
         editor.refreshEditorLayout()
         editor.navigationCoordinator?.refreshPadButtons()
     }

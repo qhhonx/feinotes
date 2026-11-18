@@ -53,12 +53,12 @@ fn copy_entry(source: (&Connection, &Path), dest: (&Connection, &Path), id: &str
     store_meta(dest.0, id, meta)
 }
 
-pub(crate) fn prepare(personal: &Path, id: &str, title: String) -> Result<Room> {
+pub(crate) fn prepare(personal: &Path, id: &str, title: String, public_link: bool) -> Result<Room> {
     Command::new(&account(personal)?, "checkAccess", None)?.send()?;
-    prepare_local(personal, id, title)
+    prepare_local(personal, id, title, public_link)
 }
 
-pub(super) fn prepare_local(personal: &Path, id: &str, title: String) -> Result<Room> {
+pub(super) fn prepare_local(personal: &Path, id: &str, title: String, public_link: bool) -> Result<Room> {
     let mut db = connect(personal)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let all = entries(&tx)?;
@@ -66,6 +66,7 @@ pub(super) fn prepare_local(personal: &Path, id: &str, title: String) -> Result<
     let root_meta = &all[id];
     ensure!(!root_meta.local(), "External files cannot be shared in place");
     let room = Room { scope: Scope { note: id.into(), owner: None, folder: root_meta.folder.is_some() }, title };
+    ensure!(!public_link || !room.scope.folder, "Public links are only available for documents");
     let root = room_root(personal, id)?;
     if root_meta.share_root.as_deref() == Some(id) {
         ensure!(descriptor(&root)?.is_some_and(|r| r.scope == room.scope), "Shared library unavailable");
@@ -96,6 +97,7 @@ pub(super) fn prepare_local(personal: &Path, id: &str, title: String) -> Result<
         let (uploads, _, held, warnings) = journal.counts()?;
         ensure!(uploads > 0 && held == 0 && warnings == 0, "Some selected content or attachments are unavailable");
         fs::write(staged.join("original-stage"), b"1")?;
+        if public_link { fs::write(staged.join(super::LINK_PENDING), b"1")?; }
         Ok(())
     })?;
     for key in ids {
@@ -115,7 +117,7 @@ pub(crate) fn owner_room(entries: &[crate::store::Entry], id: &str) -> Option<Ro
 
 pub(crate) fn awaiting_publication(personal: &Path, room: &Room) -> bool {
     room.scope.owner.is_none() && room_root(personal, &room.scope.note).is_ok_and(|root|
-        root.join("original-stage").exists() && !root.join("seed-published").exists() && !root.join("shared-note-ended").exists())
+        root.join("original-stage").exists() && !root.join("shared-note-ended").exists() && !root.join("seed-published").is_file())
 }
 
 pub(super) fn is_original(personal: &Path, room: &Room) -> Result<bool> {
@@ -264,7 +266,7 @@ mod tests {
         let child = private.create_from(&crate::docxml::parse("<title>Child</title><p>initial</p>")?)?;
         private.set_parent(&child, Some(&nested))?;
         let unrelated = private.create_from(&crate::docxml::parse("<title>Private</title><p>secret</p>")?)?;
-        let room = prepare_local(&personal, &folder, "Shared".into())?;
+        let room = prepare_local(&personal, &folder, "Shared".into(), false)?;
         let root = room_root(&personal, &folder)?;
         let mut owner = Journal::open(&root, None)?;
         let mut store = Store::open_sqlite_at(root.clone())?;
@@ -333,8 +335,8 @@ mod tests {
         let mut doc = Document::default();
         doc.title = crate::model::RichText::plain("Agenda");
         let child = owner_store.create_from_in(&doc, Some(&sub))?;
-        let room = prepare_local(&personal, &root, "team".into())?;
-        assert_eq!(prepare_local(&personal, &root, "team".into())?, room);
+        let room = prepare_local(&personal, &root, "team".into(), false)?;
+        assert_eq!(prepare_local(&personal, &root, "team".into(), false)?, room);
         let mut remote = room.clone();
         remote.scope.owner = Some("synthetic-owner".into());
         let remote_root = stage(&guest, &remote, None)?;

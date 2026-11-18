@@ -61,7 +61,8 @@ pub struct PageLayout {
 pub fn page_layout(o: f32, max: Option<f32>, has_cat: bool, pinned: bool) -> PageLayout {
     #[cfg(target_os = "ios")]
     if o < 700. || unsafe { crate::ipad::fei_ios_is_phone() } {
-        return PageLayout { ml: 18., mr: 18., content: (o - 36.).max(1.),
+        let ml = if super::overlays::mobile_block_handles() { HANDLE_GUTTER } else { 18. };
+        return PageLayout { ml, mr: 18., content: (o - ml - 18.).max(1.),
             cat: CatMode::None };
     }
     page_layout_with_padding(o, max, has_cat, pinned, padding())

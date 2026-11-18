@@ -5,7 +5,7 @@ use gpui::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Default)]
-pub(super) struct TouchState { drag: Option<Drag>, menu: Option<MenuStamp>, point: Point<Pixels> }
+pub(super) struct TouchState { block_drag: bool, drag: Option<Drag>, menu: Option<MenuStamp>, point: Point<Pixels> }
 struct MenuStamp { serial: u64, generation: u64, selection: Selection, blocks: Option<super::core::BlockSel>, cells: Option<super::table_ops::CellSel> }
 #[derive(Clone,Copy)]
 enum Drag {
@@ -17,6 +17,7 @@ static SERIAL: AtomicU64 = AtomicU64::new(1);
 impl Editor {
     pub(super) fn reset_touch_selection(&mut self) {
         self.touch.drag = None;
+        if std::mem::take(&mut self.touch.block_drag) { self.block_drag = None; self.toolbar_hidden = false; }
         self.dragging = false;
         self.dismiss_touch_menu();
         self.invalidate_table_controls();
@@ -58,8 +59,17 @@ impl Editor {
     fn touch_long_press(&mut self, event: &LongPressEvent, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         match event.phase {
             TouchPhase::Started => {
-                if window.default_prevented() || !bounds.contains(&event.start_position) || self.menu.is_some() || self.slash.is_some()
-                    || self.pos_at(event.start_position).is_none() { return; }
+                if window.default_prevented() || !bounds.contains(&event.start_position) { return; }
+                if let Some(id) = self.touch_block_handle_at(event.start_position,window,cx) {
+                    self.dismiss_touch_menu();
+                    self.press_handle(id,event.start_position);
+                    self.touch.block_drag = true;
+                    window.capture_long_press(&cx.entity());
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    return;
+                }
+                if self.menu.is_some() || self.slash.is_some() || self.pos_at(event.start_position).is_none() { return; }
                 let before = self.core.sel;
                 self.link_ui.click = None;
                 self.dismiss_touch_menu();
@@ -78,6 +88,11 @@ impl Editor {
                 cx.stop_propagation();
             }
             TouchPhase::Moved if window.has_long_press_capture(&cx.entity()) => {
+                if self.touch.block_drag {
+                    self.block_drag_move(event.position,true,window,cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if let Some(Drag::Word { word,start,.. }) = self.touch.drag {
                     if (event.position-start).magnitude() > 5. {
                         if let Some(pos) = self.pos_at(event.position) {
@@ -90,6 +105,12 @@ impl Editor {
                 }
                 cx.stop_propagation();
             }
+            TouchPhase::Ended if window.has_long_press_capture(&cx.entity()) && self.touch.block_drag => {
+                self.touch.block_drag = false;
+                self.block_drag_move(event.position,true,window,cx);
+                self.end_block_drag(Some(event.position),window,cx);
+                cx.stop_propagation();
+            }
             TouchPhase::Ended if window.has_long_press_capture(&cx.entity()) && matches!(self.touch.drag,Some(Drag::Word { .. })) => {
                 self.touch.drag = None;
                 self.dragging = false;
@@ -97,7 +118,10 @@ impl Editor {
                 cx.notify();
                 cx.stop_propagation();
             }
-            TouchPhase::Cancelled => { self.cancel_touch_drag(cx); }
+            TouchPhase::Cancelled => {
+                if std::mem::take(&mut self.touch.block_drag) { self.cancel_block_drag(cx); }
+                self.cancel_touch_drag(cx);
+            }
             _ => {}
         }
     }

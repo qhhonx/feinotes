@@ -978,7 +978,7 @@ impl Editor {
             let _ = this.update_in(cx, |e, window, cx| {
                 #[cfg(target_os = "ios")]
                 if !stamp.matches(e,stamp.serial,"file-picker") || e.read_only || !crate::cloud_sync::shared::can_edit_in(&e.library_root,cx) {
-                    e.toast(crate::settings::tr("笔记已更新，请重新插入。","The note changed. Please insert again."),cx); return;
+                    e.toast(crate::settings::tr("文档已更新，请重新插入。","The document changed. Please insert again."),cx); return;
                 }
                 e.import_files(paths,None,window,cx);
             });
@@ -1002,7 +1002,7 @@ impl Editor {
             let _ = this.update_in(cx, |e, window, cx| {
                 #[cfg(target_os = "ios")]
                 if !stamp.matches(e,stamp.serial,"file-import") || e.read_only || !crate::cloud_sync::shared::can_edit_in(&e.library_root,cx) {
-                    e.toast(crate::settings::tr("笔记已更新，请重新插入。","The note changed. Please insert again."),cx); return;
+                    e.toast(crate::settings::tr("文档已更新，请重新插入。","The document changed. Please insert again."),cx); return;
                 }
                 let failed = blocks.iter().any(Option::is_none);
                 let blocks: Vec<Block> = blocks.into_iter().flatten().collect();

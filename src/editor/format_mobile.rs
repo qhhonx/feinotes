@@ -102,15 +102,6 @@ impl Editor {
 
     pub(crate) fn dismiss_mobile_format(&mut self, cx: &mut Context<Self>) { self.mobile_format = false; self.menu = None; cx.notify(); }
 
-    pub(crate) fn toggle_mobile_format(&mut self, cx: &mut Context<Self>) {
-        if self.read_only || !crate::cloud_sync::shared::can_edit_in(&self.library_root,cx) { return; }
-        self.cancel_background_composition(cx);
-        self.mobile_format=false; self.toolbar_hidden=true; self.slash=None;
-        self.format_menu=None; self.table_menu=None; self.dismiss_touch_menu();
-        self.menu=if matches!(self.menu,Some(super::view::Menu::Add { .. })) { None } else { Some(super::view::Menu::Add { block:self.core.sel.head.block,selected:0 }) };
-        self.slash_scroll.set_offset(Default::default()); cx.notify();
-    }
-
     pub(crate) fn present_format_controls(&mut self, initial: Option<&str>, cx: &mut Context<Self>) {
         if self.read_only || !crate::cloud_sync::shared::can_edit_in(&self.library_root,cx) { return; }
         self.table_menu = None;
@@ -119,7 +110,7 @@ impl Editor {
             "done":tr("完成","Done"),"context":"","initial":initial.filter(|s|*s == "blocks" || !self.markdown && matches!(*s,"text-colors"|"text-highlights")),"sections":self.native_format_sections("",false)});
         self.format_menu = Some(stamp);
         self.dismiss_touch_menu();
-        if let Ok(json) = std::ffi::CString::new(request.to_string()) { unsafe { fei_ios_present_format_controls(json.as_ptr()); } }
+        show_format_request(&request);
     }
 
     pub(crate) fn mobile_format_action(&mut self, serial: u64, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -143,7 +134,7 @@ impl Editor {
             "context":"","sections":[group("outline",tr("标题","Headings"),false,actions)]});
         self.format_menu = Some(stamp);
         self.dismiss_touch_menu();
-        if let Ok(json) = std::ffi::CString::new(request.to_string()) { unsafe { fei_ios_present_format_controls(json.as_ptr()); } }
+        show_format_request(&request);
     }
 
     pub(crate) fn mobile_outline_action(&mut self, serial: u64, name: &str, cx: &mut Context<Self>) {
@@ -154,6 +145,10 @@ impl Editor {
         self.invalidate_table_controls();
         self.jump_to_heading(id,cx);
     }
+}
+
+pub(super) fn show_format_request(request: &Value) {
+    if let Ok(json) = std::ffi::CString::new(request.to_string()) { unsafe { fei_ios_present_format_controls(json.as_ptr()); } }
 }
 
 unsafe extern "C" { fn fei_ios_present_format_controls(json: *const std::ffi::c_char); }

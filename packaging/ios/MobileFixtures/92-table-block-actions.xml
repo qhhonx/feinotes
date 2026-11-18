@@ -1,0 +1,8 @@
+<title>QA Table block actions</title>
+<p>Before the table</p>
+<table><tbody>
+<tr><td><p>Top left cell</p></td><td><p>Top right cell</p></td></tr>
+<tr><td><p>Bottom left cell</p></td><td><p></p></td></tr>
+</tbody></table>
+<p>After the table</p>
+<p>Ordinary block</p>

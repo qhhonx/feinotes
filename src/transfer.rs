@@ -304,16 +304,19 @@ impl Workspace {
         if !self.save_before(cx, { let id = id.to_owned(); move |w, _, cx| w.mobile_export(&id, all, cx) }) { return; }
         let Some(doc) = self.doc_of(id, cx) else { return };
         let subs = self.sub_page_titles(id);
-        let root = crate::store::Store::root_dir();
+        let root = self.store.root().to_path_buf();
         let session = crate::store::Store::session_lease(&root);
         cx.spawn(async move |this,cx| {
             let result = cx.background_executor().spawn(async move {
                 let _session = session;
                 let folder = crate::ipad::export_folder()?;
                 let path = folder.join(format!("{}.md", file_name(&doc)));
-                let missing = write_markdown_export(&root, &doc, &subs, &path, all)?;
-                anyhow::ensure!(missing == 0, "{}", crate::localized_format!("有 {missing} 个附件未能导出", "{missing} attachments could not be exported"));
-                Ok::<_,anyhow::Error>(if all { folder } else { path })
+                let result = write_markdown_export(&root, &doc, &subs, &path, all).and_then(|missing| {
+                    anyhow::ensure!(missing == 0, "{}", crate::localized_format!("有 {missing} 个附件未能导出", "{missing} attachments could not be exported"));
+                    Ok(if all { folder.clone() } else { path })
+                });
+                if result.is_err() { let _ = std::fs::remove_dir_all(&folder); }
+                result
             }).await;
             let _ = this.update(cx, |workspace,cx| match result {
                 Ok(path) => crate::ipad::present_export(&path),

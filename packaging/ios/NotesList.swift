@@ -1,4 +1,46 @@
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
+
+/// Gives ordinary pans to the table and stationary holds to UIKit's context menu.
+private final class FeiRowReorderGesture: UIGestureRecognizer {
+    private static let earliestLift: TimeInterval = 0.12
+    private static let latestLift: TimeInterval = 0.55
+    private var start: CGPoint?
+    private var latest: CGPoint?
+    private var startedAt: TimeInterval = 0
+
+    override func touchesBegan(_ touches:Set<UITouch>,with event:UIEvent) {
+        guard start == nil,touches.count == 1,let touch = touches.first else { state = .failed; return }
+        start = touch.location(in: view?.superview)
+        latest = start
+        startedAt = touch.timestamp
+        let timestamp = startedAt
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.latestLift) { [weak self] in
+            guard let self, self.start != nil, self.startedAt == timestamp, self.state == .possible else { return }
+            self.state = .failed
+        }
+    }
+    override func touchesMoved(_ touches:Set<UITouch>,with event:UIEvent) {
+        guard let start,let touch = touches.first else { return }
+        let point = touch.location(in: view?.superview)
+        latest = point
+        if state == .began || state == .changed { state = .changed; return }
+        guard state == .possible else { return }
+        let dx = abs(point.x-start.x),dy = abs(point.y-start.y)
+        guard max(dx,dy) >= 6 else { return }
+        let hold = touch.timestamp-startedAt
+        state = hold >= Self.earliestLift && hold < Self.latestLift && dy > dx ? .began : .failed
+    }
+    override func touchesEnded(_ touches:Set<UITouch>,with event:UIEvent) {
+        if let touch = touches.first { latest = touch.location(in: view?.superview) }
+        if state == .began || state == .changed { state = .ended }
+        else if state == .possible { state = .failed }
+    }
+    override func touchesCancelled(_ touches:Set<UITouch>,with event:UIEvent) { state = state == .possible ? .failed : .cancelled }
+    override func reset() { super.reset(); start = nil; latest = nil }
+    func currentPoint(in target:UIView) -> CGPoint? { latest.map { target.convert($0,from: view?.superview) } }
+    func originalPoint(in target:UIView) -> CGPoint? { start.map { target.convert($0,from: view?.superview) } }
+}
 
 @MainActor
 private final class FeiNotesDataSource: UITableViewDiffableDataSource<Int,String> {
@@ -9,13 +51,28 @@ private final class FeiNotesDataSource: UITableViewDiffableDataSource<Int,String
 }
 
 @MainActor
-final class FeiNotesListController: UIViewController, UITableViewDelegate, UISearchBarDelegate, UISearchResultsUpdating, UISearchControllerDelegate {
+final class FeiNotesListController: UIViewController, UITableViewDelegate, UISearchBarDelegate, UISearchResultsUpdating, UISearchControllerDelegate, UIGestureRecognizerDelegate {
     let tableView = UITableView(frame: .zero,style: .insetGrouped)
     private weak var coordinator: FeiNavigationCoordinator?
     var browsesWorkspace = false
     private var selectedNote: String?
-    var allowsCloudResume: Bool { !searchController.isActive && !tableView.isEditing && !isSelecting && pendingMove == nil && !openingResult && !pendingSelection }
+    var allowsCloudResume: Bool { !searchController.isActive && !tableView.isEditing && !isSelecting && pendingMove == nil && !openingResult && !pendingSelection && rowDrag == nil }
+    var allowsFolderBackGesture: Bool { !searchController.isActive && !isSelecting && !tableView.isEditing && rowDrag == nil && pendingMove == nil }
     private var reorderButtons: [UIBarButtonItem]?
+    private var isReordering = false
+    private struct RowDrag {
+        let id: String
+        let scope: String
+        let preview: UIView
+        let origin: IndexPath
+        let originalOrder: NSDiffableDataSourceSnapshot<Int,String>
+        var destination: IndexPath?
+    }
+    private var rowDrag: RowDrag?
+    #if FEI_MOBILE_QA
+    private var observedEmptyInsertionSlot = false
+    #endif
+    private let selectionCount = UILabel()
     private struct PendingMove { let scope:String; let order:[String]; var writing = false }
     private var pendingMove: PendingMove?
     private struct ListAnchor { let id: String?; let delta: CGFloat; let fallback: CGPoint }
@@ -46,6 +103,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     private var collapsedPinned = Set(UserDefaults.standard.stringArray(forKey: "FeiCollapsedPinnedScopes") ?? [])
     private var isBusy = false
     private weak var pinnedHeaderButton: UIButton?
+    private weak var pinnedHeaderTitle: UILabel?
+    private weak var pinnedHeaderArrow: UIImageView?
     var isSelecting: Bool { listing?.selection != nil }
     private var pendingSelection = false
     private var labels: [String:String] = [:]
@@ -63,8 +122,9 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     private var resultReturn: SearchOrigin?
     private var searchLayout: String?
 
-    init(coordinator: FeiNavigationCoordinator) {
+    init(coordinator: FeiNavigationCoordinator,theme: FeiMobileTheme) {
         self.coordinator = coordinator
+        palette = theme
         super.init(nibName: nil,bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
@@ -73,11 +133,40 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         let delta: CGFloat = listing?.interface_size == "large" ? 2 : listing?.interface_size == "small" ? -1 : 0
         return base.withSize(base.pointSize+delta)
     }
+    private var disclosureSize: CGFloat { UIFontMetrics(forTextStyle: .body).scaledValue(for: 13) }
+    private func disclosureImage(expanded: Bool = false) -> UIImage? {
+        UIImage(systemName: expanded ? "chevron.down" : "chevron.forward",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: disclosureSize,weight: .semibold))
+    }
+
+    private func applyPinnedHeader() {
+        guard let listing else { return }
+        let collapsed = listing.query.isEmpty && collapsedPinned.contains(listing.scope)
+        pinnedHeaderArrow?.image = disclosureImage(expanded: !collapsed)
+        pinnedHeaderArrow?.tintColor = .secondaryLabel
+        pinnedHeaderTitle?.text = labels["pinned"]
+        pinnedHeaderTitle?.textColor = palette.textColor
+        pinnedHeaderTitle?.font = interfaceFont(.headline)
+        pinnedHeaderButton?.isEnabled = listing.query.isEmpty
+        pinnedHeaderButton?.accessibilityLabel = labels["pinned"]
+        pinnedHeaderButton?.accessibilityValue = collapsed ? "collapsed" : "expanded"
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
+        NotificationCenter.default.addObserver(self,selector: #selector(contentSizeChanged),name: UIContentSizeCategory.didChangeNotification,object: nil)
         tableView.translatesAutoresizingMaskIntoConstraints = false
         tableView.delegate = self
         tableView.dragInteractionEnabled = false
+        let reorderPress = FeiRowReorderGesture(target: self,action: #selector(reorderByTouch(_:)))
+        reorderPress.cancelsTouchesInView = true
+        reorderPress.delegate = self
+        tableView.addGestureRecognizer(reorderPress)
+        tableView.panGestureRecognizer.require(toFail: reorderPress)
+        selectionCount.font = .preferredFont(forTextStyle: .footnote)
+        selectionCount.adjustsFontForContentSizeCategory = true
+        selectionCount.textColor = .secondaryLabel
+        selectionCount.adjustsFontSizeToFitWidth = true
         tableView.accessibilityIdentifier = "fei.notes.list"
         tableView.register(UITableViewCell.self,forCellReuseIdentifier: "note")
         tableView.estimatedRowHeight = 86; tableView.rowHeight = UITableView.automaticDimension
@@ -90,7 +179,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             content.text = row.title; content.textProperties.numberOfLines = 1; content.textProperties.font = self.interfaceFont(.headline)
             content.textProperties.color = self.palette.textColor
             content.textProperties.adjustsFontForContentSizeCategory = true
-            content.secondaryText = row.summary
+            content.secondaryText = row.summary.isEmpty ? nil : row.summary
             content.secondaryTextProperties.font = self.interfaceFont(.subheadline)
             content.secondaryTextProperties.color = .secondaryLabel
             content.secondaryTextProperties.numberOfLines = 1
@@ -100,31 +189,62 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 12,leading: 16,bottom: 12,trailing: 16)
             content.image = row.folder ? UIImage(systemName: "folder") : nil
             content.imageProperties.tintColor = self.palette.folderColor
-            cell.contentConfiguration = content; cell.backgroundColor = self.palette.rowColor
-            cell.automaticallyUpdatesBackgroundConfiguration=false
-            cell.configurationUpdateHandler = { [weak self] cell,state in
-                guard let self,var content=cell.contentConfiguration as? UIListContentConfiguration else { return }
-                let highlight=state.isSelected && !self.isSelecting
-                content.textProperties.color=highlight ? self.palette.selectedTextColor : self.palette.textColor
-                content.secondaryTextProperties.color=highlight ? self.palette.selectedTextColor.withAlphaComponent(0.75) : .secondaryLabel
-                if self.isSelecting {
-                    content.image=UIImage(systemName: state.isSelected ? "checkmark.circle.fill" : "circle")
-                    content.imageProperties.reservedLayoutSize=CGSize(width: 24,height: 24)
-                    content.imageProperties.tintColor=state.isSelected ? self.palette.accentColor : .tertiaryLabel
-                } else { content.imageProperties.tintColor=highlight ? self.palette.selectedTextColor : self.palette.folderColor }
-                var background=UIBackgroundConfiguration.listGroupedCell()
-                background.backgroundColor=self.isSelecting && state.isSelected ? .tertiarySystemFill : highlight ? self.palette.selectedColor : self.palette.rowColor
-                background.backgroundColorTransformer=nil
-                cell.backgroundConfiguration=background; cell.contentConfiguration=content
+            if row.folder { content.imageProperties.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: UIFontMetrics(forTextStyle: .headline).scaledValue(for: 22),weight: .regular) }
+            cell.automaticallyUpdatesContentConfiguration = false
+            cell.automaticallyUpdatesBackgroundConfiguration = false
+            cell.selectionStyle = self.isSelecting ? .none : .default
+            cell.accessoryType = .none
+            let baseContent = content
+            let configure: (UITableViewCell,UICellConfigurationState) -> Void = { [weak self] cell,state in
+                guard let self else { return }
+                let isInsertionSlot = self.rowDrag?.id == id
+                cell.accessibilityIdentifier = isInsertionSlot ? "fei.notes.insertion-slot" : "fei.note."+id
+                cell.accessibilityElementsHidden = isInsertionSlot
+                if isInsertionSlot {
+                    cell.contentConfiguration = nil
+                    cell.backgroundConfiguration = .clear()
+                    cell.accessoryView = nil
+                    return
+                }
+                var content = baseContent
+                let highlight = state.isSelected && !self.isSelecting
+                content.textProperties.color = highlight ? self.palette.selectedTextColor : self.palette.textColor
+                content.secondaryTextProperties.color = highlight ? self.palette.selectedTextColor.withAlphaComponent(0.75) : .secondaryLabel
+                content.imageProperties.tintColor = highlight ? self.palette.selectedTextColor : self.palette.folderColor
+                var background = UIBackgroundConfiguration.listGroupedCell()
+                background.backgroundColor = highlight ? self.palette.selectedColor : self.palette.rowColor
+                background.backgroundColorTransformer = nil
+                if cell.backgroundConfiguration != background { cell.backgroundConfiguration = background }
+                if cell.contentConfiguration as? UIListContentConfiguration != content { cell.contentConfiguration = content }
+
+                let image: UIImage?
+                let tint: UIColor
+                let size: CGSize
+                if self.isSelecting && self.listing?.selection?.ids.contains(id) == true {
+                    image = UIImage(systemName: state.isSelected ? "checkmark.circle.fill" : "circle",withConfiguration: UIImage.SymbolConfiguration(pointSize: 20))
+                    tint = state.isSelected ? self.palette.accentColor : .tertiaryLabel
+                    size = CGSize(width: 24,height: 24)
+                } else if row.folder && !self.isSelecting {
+                    image = self.disclosureImage()
+                    tint = highlight ? self.palette.selectedTextColor : .secondaryLabel
+                    size = CGSize(width: max(16,self.disclosureSize),height: max(24,self.disclosureSize))
+                } else {
+                    cell.accessoryView = nil
+                    return
+                }
+                let accessory = cell.accessoryView as? UIImageView ?? UIImageView()
+                accessory.image = image; accessory.tintColor = tint
+                accessory.contentMode = .center; accessory.frame.size = size
+                if cell.accessoryView !== accessory { cell.accessoryView = accessory }
             }
-            cell.accessoryType = row.folder ? .disclosureIndicator : .none
-            cell.showsReorderControl = !self.isSelecting
-            cell.accessibilityIdentifier = "fei.note."+id
+            configure(cell,cell.configurationState)
+            cell.configurationUpdateHandler = configure
+            cell.showsReorderControl = self.isReordering && !self.isSelecting
             return cell
         }
         source.movable = { [weak self] path in
-            guard let self,!self.isSelecting,self.listing?.can_reorder == true,let id=self.source.itemIdentifier(for: path) else { return false }
-            return self.coordinator?.rowItem(id)?.shared != true
+            guard let self,self.isReordering,!self.isSelecting,self.listing?.can_reorder == true else { return false }
+            return self.canDragRow(path)
         }
         source.moved = { [weak self] from,to in self?.moveRow(from: from,to: to) }
         search.delegate = self
@@ -165,23 +285,31 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     }
     func applyTheme(_ theme: FeiMobileTheme) {
         loadViewIfNeeded()
-        let changed = palette != theme; palette = theme
+        let changed = palette != theme
+        palette = theme
         view.tintColor = theme.accentColor; view.backgroundColor = theme.listColor
-        pinnedHeaderButton?.tintColor = theme.textColor
         tableView.backgroundColor = theme.listColor
         search.tintColor = theme.accentColor
         compose.tintColor = theme.accentColor
+        applyPinnedHeader()
         if changed {
-            var snapshot = source.snapshot(); snapshot.reconfigureItems(snapshot.itemIdentifiers)
-            source.apply(snapshot,animatingDifferences: false)
+            UIView.performWithoutAnimation {
+                for cell in tableView.visibleCells { cell.configurationUpdateHandler?(cell,cell.configurationState) }
+            }
         }
     }
-    func update(_ next: FeiNavigationState.Listing,labels: [String:String],busy: Bool) {
-        loadViewIfNeeded()
+    func update(_ next: FeiNavigationState.Listing,labels: [String:String],busy: Bool,theme: FeiMobileTheme) {
+        applyTheme(theme)
         let labelsChanged = self.labels != labels
         self.labels = labels; isBusy=busy
         let previous = listing
         if browsesWorkspace,let previous,previous.scope != next.scope { browserOffsets[previous.scope] = captureAnchor() }
+        if let previous,previous.scope == next.scope, (previous.selection == nil) != (next.selection == nil) {
+            restoreOffset = SearchOrigin(scope: next.scope,query: next.query,anchor: captureAnchor())
+        }
+        if previous?.scope != next.scope || previous?.rows != next.rows || busy || !next.can_reorder || next.selection != nil {
+            finishRowDrag(restore: previous?.scope == next.scope)
+        }
         listing = next
         let ordered = listingSnapshot(next).itemIdentifiers
         if var pending = pendingMove {
@@ -189,11 +317,12 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             else { pending.writing = pending.writing || !next.can_reorder; pendingMove = pending }
         }
         if let previous,previous.scope != next.scope {
+            if isReordering { endReordering() }
             searchOrigin = nil; restoreOffset = nil
             resultReturn = nil
             searchController.isActive = false
         }
-        tableView.rowHeight = ceil(interfaceFont(.headline).lineHeight)+ceil(interfaceFont(.subheadline).lineHeight)+28
+        updateRowHeight()
         search.searchTextField.font = interfaceFont(.body)
         empty.font = interfaceFont(.body); noticeText.font = interfaceFont(.subheadline)
         rows = Dictionary(uniqueKeysWithValues: next.rows.map { ($0.id,$0) })
@@ -204,13 +333,22 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         compose.accessibilityLabel = labels["new"]
         compose.isEnabled = !busy && coordinator?.allowsCompose == true
         tabs.setTitle(labels["all-notes"],forSegmentAt: 0); tabs.setTitle(labels["favorites"],forSegmentAt: 1); tabs.setTitle(labels["sharing"],forSegmentAt: 2)
-        tabs.selectedSegmentIndex = next.tab; tabs.isHidden = !next.tabs || isSelecting
+        tabs.selectedSegmentIndex = next.tab; tabs.isHidden = !next.tabs
+        tabs.isUserInteractionEnabled = !isSelecting; tabs.accessibilityTraits = isSelecting ? [.notEnabled] : []
         empty.text = next.rows.isEmpty ? next.empty : nil
         tableView.isUserInteractionEnabled = !busy && pendingMove == nil; search.isUserInteractionEnabled = !busy && pendingMove == nil
-        if pendingMove == nil && (previous?.rows != next.rows || previous?.interface_size != next.interface_size || previous?.shared_count != next.shared_count || previous?.selection?.serial != next.selection?.serial || labelsChanged || source.snapshot().itemIdentifiers != ordered) {
+        if rowDrag == nil && pendingMove == nil && (previous?.rows != next.rows || previous?.interface_size != next.interface_size || previous?.shared_count != next.shared_count || previous?.selection?.serial != next.selection?.serial || labelsChanged || source.snapshot().itemIdentifiers != ordered) {
             var snapshot = listingSnapshot(next)
-            snapshot.reconfigureItems(Array(Set(source.snapshot().itemIdentifiers).intersection(snapshot.itemIdentifiers)))
-            source.apply(snapshot,animatingDifferences: previous != nil && previous?.scope == next.scope && previous?.query == next.query && view.window != nil) { [weak self] in self?.restoreSearchAnchor(); self?.restoreSelection() }
+            let settled: () -> Void = { [weak self] in self?.restoreSearchAnchor(); self?.restoreSelection() }
+            if previous == nil {
+                view.layoutIfNeeded()
+                source.applySnapshotUsingReloadData(snapshot,completion: settled)
+            } else {
+                snapshot.reconfigureItems(Array(Set(source.snapshot().itemIdentifiers).intersection(snapshot.itemIdentifiers)))
+                let animates = previous?.selection?.serial == next.selection?.serial && previous?.scope == next.scope && previous?.query == next.query &&
+                    source.snapshot().itemIdentifiers != ordered && view.window != nil && !UIAccessibility.isReduceMotionEnabled
+                source.apply(snapshot,animatingDifferences: animates,completion: settled)
+            }
         }
         if browsesWorkspace,previous?.scope != next.scope {
             restoreOffset = SearchOrigin(scope: next.scope,query: next.query,anchor: browserOffsets[next.scope] ?? ListAnchor(id: nil,delta: 0,fallback: CGPoint(x: 0,y: -tableView.adjustedContentInset.top)))
@@ -222,10 +360,23 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         noticeIcon.image=UIImage(systemName: danger ? "exclamationmark.circle.fill" : next.notice_kind == "success" ? "checkmark.circle.fill" : "info.circle.fill")
         noticeIcon.tintColor=danger ? .systemRed : palette.accentColor
         if message != nil && message != previous?.notice { UIAccessibility.post(notification: .announcement,argument: message) }
-        pinnedHeaderButton?.configuration?.title=labels["pinned"]
+        applyPinnedHeader()
         updateSelection(previous: previous?.selection)
         view.setNeedsLayout()
     }
+    private func updateRowHeight() {
+        tableView.rowHeight = ceil(interfaceFont(.headline).lineHeight)+ceil(interfaceFont(.subheadline).lineHeight)+28
+    }
+
+    @objc private func contentSizeChanged() {
+        guard let listing else { return }
+        restoreOffset = SearchOrigin(scope: listing.scope,query: listing.query,anchor: captureAnchor())
+        updateRowHeight()
+        applyPinnedHeader()
+        tableView.reloadData()
+        view.setNeedsLayout()
+    }
+
     func selectNote(_ id: String?) { selectedNote = id; restoreSelection() }
     private func restoreSelection() {
         guard isViewLoaded else { return }
@@ -239,6 +390,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         if let selectedNote,let path = source.indexPath(for: selectedNote) { tableView.selectRow(at: path,animated: false,scrollPosition: .none) }
     }
     func deactivate() {
+        finishRowDrag()
         if tableView.isEditing && !isSelecting { endReordering() }
         searchOrigin = nil; searchController.isActive = false
         parent?.navigationItem.searchController = nil
@@ -246,14 +398,14 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     }
     private func updateCloudResumeProbe() {
         #if FEI_MOBILE_QA
-        tableView.accessibilityValue = "cloudResume=\(coordinator?.readyForCloudResume == true) cloudPending=\(coordinator?.cloudStartPending == true)"
+        tableView.accessibilityValue = "cloudResume=\(coordinator?.readyForCloudResume == true) cloudPending=\(coordinator?.cloudStartPending == true) emptyDragSlot=\(observedEmptyInsertionSlot)"
         #endif
     }
     func configureSearch(in controller: UIViewController,expanded: Bool) {
         guard isViewLoaded,!view.isHidden,controller.navigationController?.topViewController === controller else { return }
         if let selection=listing?.selection {
             controller.navigationItem.searchController=nil
-            controller.navigationItem.title=String(format: labels["selected-count"] ?? "%d selected",selection.selected.count)
+            selectionCount.text=String(format: labels["selected-count"] ?? "%d selected",selection.selected.count)
             selectAllItem.title=labels[selection.selected.count == min(selection.ids.count,selection.limit) && !selection.ids.isEmpty ? "deselect-all" : "select-all"]
             selectAllItem.accessibilityIdentifier="fei.notes.selection.all"
             selectionDone.title=labels["done"]; selectionDone.accessibilityIdentifier="fei.notes.selection.done"
@@ -265,7 +417,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
                 item.isEnabled=enabled && !selection.selected.isEmpty && (id != "move" || selection.can_move)
             }
             deleteSelection.tintColor = .systemRed
-            controller.toolbarItems=[copySelection,.flexibleSpace(),moveSelection,.flexibleSpace(),deleteSelection]
+            controller.toolbarItems=[UIBarButtonItem(customView: selectionCount),.flexibleSpace(),copySelection,.flexibleSpace(),moveSelection,.flexibleSpace(),deleteSelection]
             controller.navigationController?.setToolbarHidden(false,animated: false)
             updateCloudResumeProbe(); searchLayout=nil; return
         }
@@ -275,7 +427,6 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             tabs.isHidden = true
             return
         }
-        controller.navigationItem.title=browsesWorkspace ? coordinator?.browserTitle : coordinator?.listingTitle
         controller.navigationItem.largeTitleDisplayMode = .always
         controller.navigationController?.navigationBar.prefersLargeTitles = true
         controller.definesPresentationContext = true
@@ -374,6 +525,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         } else { view.endEditing(true); coordinator?.send(browsesWorkspace ? "browse-open" : "list-open",id: id,scope: listing.scope) }
     }
     func willPresentSearchController(_ searchController: UISearchController) {
+        finishRowDrag()
         if tableView.isEditing && !isSelecting { endReordering() }
         resultReturn = nil
         if let listing,searchOrigin == nil { searchOrigin = SearchOrigin(scope: listing.scope,query: listing.query,anchor: captureAnchor()) }
@@ -383,13 +535,13 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         // UIKit can clear an inactive field before presenting Search again after pop.
         // The text-change delegate also covers this transition; the results updater
         // intentionally ignores inactive presentation updates.
-        guard !openingResult,let listing,(searchText.isEmpty || searchBar.searchTextField.markedTextRange == nil) else { return }
+        guard !openingResult,!pendingSelection,!isSelecting,let listing,(searchText.isEmpty || searchBar.searchTextField.markedTextRange == nil) else { return }
         resultReturn = nil
         commitSearchClear(searchText,in: listing.scope)
         coordinator?.send(browsesWorkspace ? "browse-search" : "list-search",value: searchText,scope: listing.scope)
     }
     func updateSearchResults(for searchController: UISearchController) {
-        guard searchController.isActive,!openingResult,let listing,search.searchTextField.markedTextRange == nil else { return }
+        guard searchController.isActive,!openingResult,!pendingSelection,!isSelecting,let listing,search.searchTextField.markedTextRange == nil else { return }
         commitSearchClear(search.text ?? "",in: listing.scope)
         coordinator?.send(browsesWorkspace ? "browse-search" : "list-search",value: search.text ?? "",scope: listing.scope)
     }
@@ -439,7 +591,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         else { coordinator?.send("list-tab",value: String(tabs.selectedSegmentIndex),scope: listing.scope) }
     }
     func tableView(_ tableView: UITableView,contextMenuConfigurationForRowAt indexPath: IndexPath,point: CGPoint) -> UIContextMenuConfiguration? {
-        guard !isSelecting,let id = source.itemIdentifier(for: indexPath) else { return nil }
+        guard !isSelecting,rowDrag == nil,let id = source.itemIdentifier(for: indexPath) else { return nil }
         return UIContextMenuConfiguration(identifier: id as NSString,previewProvider: nil) { [weak self] _ in self?.coordinator?.itemMenu(id,browsingWorkspace: self?.browsesWorkspace == true) }
     }
     private func listingSnapshot(_ listing: FeiNavigationState.Listing) -> NSDiffableDataSourceSnapshot<Int,String> {
@@ -452,30 +604,33 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         snapshot.appendSections([1]); snapshot.appendItems(listing.rows.filter { !$0.pinned || $0.folder }.map(\.id),toSection: 1)
         return snapshot
     }
-    func tableView(_ tableView: UITableView,heightForRowAt indexPath: IndexPath) -> CGFloat { tableView.rowHeight }
-    func tableView(_ tableView: UITableView,heightForHeaderInSection section: Int) -> CGFloat { source.snapshot().sectionIdentifiers[section]==0 ? 44 : .leastNormalMagnitude }
+    func tableView(_ tableView: UITableView,heightForHeaderInSection section: Int) -> CGFloat { source.snapshot().sectionIdentifiers[section]==0 ? max(44,ceil(interfaceFont(.headline).lineHeight)+12) : .leastNormalMagnitude }
     func tableView(_ tableView: UITableView,viewForHeaderInSection section: Int) -> UIView? {
-        guard source.snapshot().sectionIdentifiers[section]==0,let listing else { return nil }
+        guard source.snapshot().sectionIdentifiers[section]==0,listing != nil else { return nil }
         let container=UIView(), button=UIButton(type: .system)
-        var config=UIButton.Configuration.plain(); config.title=labels["pinned"]
-        config.image=UIImage(systemName: collapsedPinned.contains(listing.scope) ? "chevron.right" : "chevron.down")
-        config.preferredSymbolConfigurationForImage=UIImage.SymbolConfiguration(pointSize: UIFontMetrics(forTextStyle: .headline).scaledValue(for: 12),weight: .semibold)
-        config.imagePlacement = .trailing; config.imagePadding=6; config.contentInsets = .zero
-        config.titleTextAttributesTransformer=UIConfigurationTextAttributesTransformer { incoming in var out=incoming; out.font=UIFont.preferredFont(forTextStyle: .headline); return out }
-        pinnedHeaderButton=button
-        button.configuration=config; button.contentHorizontalAlignment = .leading; button.tintColor=palette.textColor
-        button.accessibilityIdentifier="fei.notes.pinned-header"; button.accessibilityValue=collapsedPinned.contains(listing.scope) ? "collapsed" : "expanded"
+        let title = UILabel()
+        title.isAccessibilityElement = false
+        let arrow = UIImageView()
+        arrow.contentMode = .center
+        let stack = UIStackView(arrangedSubviews: [title,arrow]); stack.alignment = .center
+        arrow.setContentHuggingPriority(.required,for: .horizontal)
+        stack.isUserInteractionEnabled = false; stack.translatesAutoresizingMaskIntoConstraints = false
+        pinnedHeaderButton=button; pinnedHeaderTitle=title; pinnedHeaderArrow=arrow
+        button.accessibilityIdentifier="fei.notes.pinned-header"
+        applyPinnedHeader()
         button.addTarget(self,action: #selector(togglePinned),for: .touchUpInside); button.translatesAutoresizingMaskIntoConstraints=false
-        container.addSubview(button); NSLayoutConstraint.activate([button.topAnchor.constraint(equalTo: container.topAnchor),button.bottomAnchor.constraint(equalTo: container.bottomAnchor),button.leadingAnchor.constraint(equalTo: container.leadingAnchor),button.trailingAnchor.constraint(equalTo: container.trailingAnchor)])
+        container.addSubview(button); button.addSubview(stack)
+        NSLayoutConstraint.activate([button.topAnchor.constraint(equalTo: container.topAnchor),button.bottomAnchor.constraint(equalTo: container.bottomAnchor),button.leadingAnchor.constraint(equalTo: container.leadingAnchor),button.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.leadingAnchor.constraint(equalTo: button.leadingAnchor,constant: 16),stack.trailingAnchor.constraint(equalTo: button.trailingAnchor,constant: UIDevice.current.userInterfaceIdiom == .phone ? -23 : -16),stack.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            arrow.widthAnchor.constraint(greaterThanOrEqualToConstant: 16),arrow.heightAnchor.constraint(greaterThanOrEqualToConstant: 24)])
         return container
     }
     @objc private func togglePinned() {
-        guard let listing else { return }
+        guard let listing,listing.query.isEmpty else { return }
         if collapsedPinned.contains(listing.scope) { collapsedPinned.remove(listing.scope) } else { collapsedPinned.insert(listing.scope) }
         UserDefaults.standard.set(Array(collapsedPinned),forKey: "FeiCollapsedPinnedScopes")
         source.apply(listingSnapshot(listing),animatingDifferences: !UIAccessibility.isReduceMotionEnabled) { [weak self] in self?.restoreSelection() }
-        pinnedHeaderButton?.configuration?.image=UIImage(systemName: collapsedPinned.contains(listing.scope) ? "chevron.right" : "chevron.down")
-        pinnedHeaderButton?.accessibilityValue=collapsedPinned.contains(listing.scope) ? "collapsed" : "expanded"
+        applyPinnedHeader()
     }
     private func swipe(_ keys: [(String,String,UIColor)],id: String) -> UISwipeActionsConfiguration? {
         guard let listing,!isSelecting else { return nil }
@@ -491,30 +646,147 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         config.performsFirstActionWithFullSwipe = false; return config
     }
     func tableView(_ tableView: UITableView,leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard let id=source.itemIdentifier(for: indexPath),let row=rows[id] else { return nil }
+        guard rowDrag == nil,let id=source.itemIdentifier(for: indexPath),let row=rows[id] else { return nil }
         if listing?.kind == "trash" { return swipe([("restore","arrow.uturn.backward",.systemGreen)],id: id) }
         return row.folder ? nil : swipe([("pin","pin",palette.accentColor),("star","star",.systemOrange)],id: id)
     }
     func tableView(_ tableView: UITableView,trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard let id=source.itemIdentifier(for: indexPath) else { return nil }
+        guard rowDrag == nil,let id=source.itemIdentifier(for: indexPath) else { return nil }
         if listing?.kind == "trash" { return swipe([("purge","trash",.systemRed)],id: id) }
         return swipe(coordinator?.rowItem(id)?.shared == true ? [("delete","trash",.systemRed)] : [("delete","trash",.systemRed),("move","folder",.systemBlue)],id: id)
     }
-    func tableView(_ tableView: UITableView,targetIndexPathForMoveFromRowAt sourceIndexPath: IndexPath,toProposedIndexPath proposedDestinationIndexPath: IndexPath) -> IndexPath {
-        sourceIndexPath.section == proposedDestinationIndexPath.section ? proposedDestinationIndexPath : sourceIndexPath
+    private func draggableRow(_ path: IndexPath) -> Bool {
+        guard let id = source.itemIdentifier(for: path) else { return false }
+        return rows[id]?.reorderable == true
     }
-    private func moveRow(from: IndexPath,to destination: IndexPath) {
-        guard let listing,listing.can_reorder,from.section==destination.section,from != destination,let id=source.itemIdentifier(for: from) else { return }
-        var snapshot=source.snapshot()
-        let section=snapshot.sectionIdentifiers[from.section]
-        var items=snapshot.itemIdentifiers(inSection: section); items.removeAll { $0==id }
-        let index=min(destination.row,items.count), before=index<items.count ? items[index] : nil
-        snapshot.deleteItems([id])
-        if let before { snapshot.insertItems([id],beforeItem: before) } else { snapshot.appendItems([id],toSection: section) }
+
+    private func canDragRow(_ path: IndexPath) -> Bool {
+        guard draggableRow(path) else { return false }
+        let snapshot = source.snapshot()
+        guard snapshot.sectionIdentifiers.indices.contains(path.section) else { return false }
+        let siblings = snapshot.itemIdentifiers(inSection: snapshot.sectionIdentifiers[path.section])
+        return siblings.contains { id in id != source.itemIdentifier(for: path) && rows[id]?.reorderable == true }
+    }
+
+    func gestureRecognizer(_ recognizer: UIGestureRecognizer,shouldReceive touch: UITouch) -> Bool {
+        guard recognizer is FeiRowReorderGesture else { return true }
+        guard listing?.can_reorder == true,!isBusy,!isSelecting,!isReordering,!searchController.isActive,pendingMove == nil,
+              let path = tableView.indexPathForRow(at: touch.location(in: tableView)) else { return false }
+        return canDragRow(path)
+    }
+
+    @objc private func reorderByTouch(_ gesture: FeiRowReorderGesture) {
+        let point = gesture.currentPoint(in: tableView)
+        switch gesture.state {
+        case .began:
+            guard let scope = listing?.scope,let origin = gesture.originalPoint(in: tableView),
+                  let path = tableView.indexPathForRow(at: origin),let id = source.itemIdentifier(for: path),
+                  let cell = tableView.cellForRow(at: path),let preview = cell.snapshotView(afterScreenUpdates: false) else { return }
+            preview.frame = tableView.convert(cell.frame,to: view)
+            preview.layer.shadowOpacity = 0.16; preview.layer.shadowRadius = 10
+            preview.isUserInteractionEnabled = false
+            preview.accessibilityElementsHidden = true
+            view.addSubview(preview)
+            rowDrag = RowDrag(id: id,scope: scope,preview: preview,origin: path,originalOrder: source.snapshot(),destination: path)
+            #if FEI_MOBILE_QA
+            observedEmptyInsertionSlot = false
+            #endif
+            UIView.performWithoutAnimation {
+                cell.configurationUpdateHandler?(cell,cell.configurationState)
+                cell.layoutIfNeeded()
+            }
+            if let point { updateRowDrag(to: point) }
+        case .changed: if let point { updateRowDrag(to: point) }
+        case .ended:
+            if let point { updateRowDrag(to: point) }
+            guard let drag = rowDrag,drag.scope == listing?.scope,let to = drag.destination,to != drag.origin else { finishRowDrag(); return }
+            finishRowDrag(restore: false)
+            moveRow(from: drag.origin,to: to,originalOrder: drag.originalOrder)
+        case .cancelled,.failed: finishRowDrag()
+        default: break
+        }
+    }
+
+    private func updateRowDrag(to point:CGPoint) {
+        guard var drag = rowDrag,drag.scope == listing?.scope else { return }
+        drag.preview.center.y = tableView.convert(point,to: view).y
+        let visible = tableView.bounds.inset(by: tableView.adjustedContentInset)
+        guard point.x >= visible.minX,point.x <= visible.maxX,point.y >= visible.minY,point.y <= visible.maxY,
+              let target = tableView.indexPathForRow(at: CGPoint(x: tableView.bounds.midX,y: point.y)),
+              target.section == drag.origin.section,draggableRow(target) else {
+            drag.destination = nil
+            rowDrag = drag
+            return
+        }
+        guard target != drag.destination else { return }
+        drag.destination = target
+        rowDrag = drag
+        if let proposal = reordered(drag.originalOrder,from: drag.origin,to: target) {
+            let animated = !UIAccessibility.isReduceMotionEnabled
+            #if FEI_MOBILE_QA
+            source.apply(proposal.snapshot,animatingDifferences: animated) { [weak self] in
+                self?.observeInsertionSlot(for: proposal.id)
+            }
+            #else
+            source.apply(proposal.snapshot,animatingDifferences: animated)
+            #endif
+        }
+    }
+
+    #if FEI_MOBILE_QA
+    private func observeInsertionSlot(for id: String) {
+        guard let drag = rowDrag,drag.id == id,drag.preview.window != nil,
+              let slotPath = source.indexPath(for: id),slotPath != drag.origin,
+              let slot = tableView.cellForRow(at: slotPath) else { return }
+        observedEmptyInsertionSlot = slot.contentConfiguration == nil && slot.accessoryView == nil &&
+            slot.accessibilityIdentifier == "fei.notes.insertion-slot"
+        updateCloudResumeProbe()
+    }
+    #endif
+
+    private func finishRowDrag(restore: Bool = true) {
+        guard let drag = rowDrag else { return }
+        rowDrag = nil
+        drag.preview.removeFromSuperview()
+        if let path = source.indexPath(for: drag.id),let cell = tableView.cellForRow(at: path) {
+            cell.configurationUpdateHandler?(cell,cell.configurationState)
+        }
+        if restore && source.snapshot().itemIdentifiers != drag.originalOrder.itemIdentifiers {
+            source.apply(drag.originalOrder,animatingDifferences: false)
+        }
+    }
+
+    func tableView(_ tableView: UITableView,targetIndexPathForMoveFromRowAt sourceIndexPath: IndexPath,toProposedIndexPath proposedDestinationIndexPath: IndexPath) -> IndexPath {
+        sourceIndexPath.section == proposedDestinationIndexPath.section && draggableRow(proposedDestinationIndexPath) ? proposedDestinationIndexPath : sourceIndexPath
+    }
+    private func reordered(_ original: NSDiffableDataSourceSnapshot<Int,String>,from: IndexPath,to destination: IndexPath) -> (snapshot:NSDiffableDataSourceSnapshot<Int,String>,id:String,before:String?)? {
+        guard from.section == destination.section,original.sectionIdentifiers.indices.contains(from.section) else { return nil }
+        let section = original.sectionIdentifiers[from.section]
+        var items = original.itemIdentifiers(inSection: section)
+        guard items.indices.contains(from.row),destination.row >= 0 else { return nil }
+        let id = items.remove(at: from.row)
+        let index = min(destination.row,items.count)
+        let before = index < items.count ? items[index] : nil
+        var snapshot = original
+        if let before { snapshot.moveItem(id,beforeItem: before) }
+        else if let last = items.last { snapshot.moveItem(id,afterItem: last) }
+        return (snapshot,id,before)
+    }
+
+    private func moveRow(from: IndexPath,to destination: IndexPath,originalOrder: NSDiffableDataSourceSnapshot<Int,String>? = nil) {
+        guard let listing,listing.can_reorder,pendingMove == nil,from != destination,
+              let (snapshot,id,before) = reordered(originalOrder ?? source.snapshot(),from: from,to: destination),
+              rows[id]?.reorderable == true else { return }
         pendingMove = PendingMove(scope: listing.scope,order: snapshot.itemIdentifiers)
         tableView.isUserInteractionEnabled = false
         source.apply(snapshot,animatingDifferences: false)
         coordinator?.send("list-reorder",value: before ?? "",id: id,scope: listing.scope)
+        DispatchQueue.main.asyncAfter(deadline: .now()+2) { [weak self] in
+            guard let self,self.pendingMove?.order == snapshot.itemIdentifiers,let current = self.listing else { return }
+            self.pendingMove = nil
+            self.tableView.isUserInteractionEnabled = !self.isBusy
+            self.source.apply(self.listingSnapshot(current),animatingDifferences: false)
+        }
     }
     func beginReordering() {
         guard listing?.can_reorder == true,let parent,!tableView.isEditing else { return }
@@ -523,11 +795,16 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         let done=UIBarButtonItem(title: labels["done"],style: .done,target: self,action: #selector(endReordering))
         done.accessibilityIdentifier = "fei.notes.reorder.done"
         parent.navigationItem.rightBarButtonItems = [done]
+        isReordering = true
+        tableView.visibleCells.forEach { $0.showsReorderControl = true }
         tableView.setEditing(true,animated: !UIAccessibility.isReduceMotionEnabled)
         updateCloudResumeProbe()
     }
     @objc private func endReordering() {
+        guard isReordering else { return }
+        isReordering = false
         tableView.setEditing(false,animated: !UIAccessibility.isReduceMotionEnabled)
+        tableView.visibleCells.forEach { $0.showsReorderControl = false }
         parent?.navigationItem.rightBarButtonItems = reorderButtons; reorderButtons = nil
         updateCloudResumeProbe()
     }

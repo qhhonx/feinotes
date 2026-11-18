@@ -76,7 +76,7 @@ final class CodeFormUITests: XCTestCase {
         title.typeText("FEI_CODE_CONTROLS_\(stamp)")
         app.buttons["fei.rename.save"].tap()
         app.buttons["fei.more"].tap()
-        app.sheets.buttons["笔记选项"].tap()
+        app.sheets.buttons["文档选项"].tap()
         app.sheets.buttons["阅读模式"].tap()
         open(true)
         XCTAssertFalse(name.isEnabled)

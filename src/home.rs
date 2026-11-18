@@ -336,7 +336,7 @@ pub struct Home {
     pub(crate) search_scrollbar: Rc<scrollbar::Scrollbar>,
     sort: HomeSort,
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-    shared_sort: HomeSort,
+    shared_sort: Option<HomeSort>,
     folders_first: bool,
     pub sort_menu: bool,
     thumbs: RefCell<HashMap<String, (u64, Thumb, std::time::Instant)>>,
@@ -361,7 +361,7 @@ impl Default for Home {
             // Manual: the sidebar's order (`Meta::place`), so both lists read the same.
             sort: HomeSort::Manual,
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-            shared_sort: HomeSort::Modified,
+            shared_sort: None,
             folders_first: false,
             sort_menu: false,
             thumbs: Default::default(),
@@ -372,6 +372,13 @@ impl Default for Home {
 }
 
 impl Home {
+    #[cfg(target_os = "ios")]
+    pub(crate) fn inherit_mobile_list_order(&mut self, source: &Self) {
+        self.sort = source.sort;
+        self.shared_sort = source.shared_sort;
+        self.folders_first = source.folders_first;
+    }
+
     pub(crate) fn anchor(&self, key: &str) -> Option<Bounds<Pixels>> {
         self.anchors.borrow().get(key).copied()
     }
@@ -386,7 +393,7 @@ impl Home {
         .inset_0()
     }
 
-    fn shared(&self) -> bool {
+    pub(crate) fn shared(&self) -> bool {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         { self.tab == HomeTab::Shared }
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
@@ -395,7 +402,7 @@ impl Home {
 
     fn order(&self) -> HomeSort {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        if self.shared() { return self.shared_sort; }
+        if self.shared() { return self.shared_sort.unwrap_or(HomeSort::Modified); }
         self.sort
     }
 
@@ -408,8 +415,8 @@ impl Home {
         }
     }
 
-    fn sort_col(&self) -> Col {
-        match self.order() {
+    fn sort_col(order: HomeSort) -> Col {
+        match order {
             HomeSort::Visited => Col::Visited,
             HomeSort::Modified => Col::Modified,
             HomeSort::Created => Col::Created,
@@ -482,7 +489,7 @@ impl Workspace {
             // 我的文档 is the library's top level.
             HomeTab::Recent => self.level_entries(None),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-            HomeTab::Shared => self.sorted_entries(self.shared_entries(cx)),
+            HomeTab::Shared => self.sorted_shared_entries(self.shared_collection_entries(cx)),
             HomeTab::Starred => self.sorted_entries({ let entries = self.entries.iter().filter(|e| e.meta.folder.is_none() && e.meta.starred > 0).cloned().collect::<Vec<_>>();
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 let entries = entries.into_iter().chain(self.shared_entries(cx).into_iter().filter(|entry| entry.meta.starred > 0)).collect();
@@ -493,7 +500,7 @@ impl Workspace {
     #[cfg(target_os = "ios")]
     pub(crate) fn mobile_sort(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
         let sort = HomeSort::of(key);
-        if self.home.shared() { self.home.shared_sort = sort; cx.notify(); return true; }
+        if self.home.shared() { self.home.shared_sort = Some(sort); cx.notify(); return true; }
         if sort == HomeSort::Manual && !self.prepare_manual_order(cx) { return false; }
         self.home.sort = sort;
         self.save_home();
@@ -515,15 +522,37 @@ impl Workspace {
         true
     }
 
-    #[cfg(target_os = "ios")]
-    pub(crate) fn mobile_manual_sort(&self) -> bool { self.home.sort == HomeSort::Manual }
-
     pub(crate) fn manual_home_sort(&self) -> bool { self.home.order() == HomeSort::Manual && self.home.tab == HomeTab::Recent }
 
     /// Mix folders and documents unless the user explicitly groups folders first.
-    pub(crate) fn sorted_entries(&self, mut v: Vec<Entry>) -> Vec<Entry> {
+    pub(crate) fn sorted_entries(&self,v:Vec<Entry>) -> Vec<Entry> { self.sorted_entries_by(v,self.home.order()) }
+    #[cfg(target_os = "ios")]
+    pub(crate) fn sorted_entries_with_rule(&self,v:Vec<Entry>,rule:&str) -> Vec<Entry> { self.sorted_entries_by(v,HomeSort::of(rule)) }
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn shared_order(&self, entries: &[Entry]) -> HomeSort {
+        self.home.shared_sort.unwrap_or_else(|| {
+            if entries.iter().any(|entry| entry.meta.place().0) { HomeSort::Manual } else { HomeSort::Modified }
+        })
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) fn sorted_shared_entries(&self, entries: Vec<Entry>) -> Vec<Entry> {
+        let order = self.shared_order(&entries);
+        let mut entries = self.sorted_entries_by(entries, order);
+        entries.sort_by_key(|entry| !entry.meta.pinned);
+        entries
+    }
+
+    fn displayed_order(&self, entries: &[Entry]) -> HomeSort {
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if self.home.shared() { return self.shared_order(entries); }
+        let _ = entries;
+        self.home.order()
+    }
+
+    fn sorted_entries_by(&self,mut v:Vec<Entry>,sort:HomeSort) -> Vec<Entry> {
         v.sort_by(|a, b| {
-            let order = match self.home.order() {
+            let order = match sort {
                 // The sidebar's order: new pages at the top in both.
                 HomeSort::Manual => (a.meta.place(), &a.id).cmp(&(b.meta.place(), &b.id)),
                 HomeSort::Visited => visited(b).cmp(&visited(a)),
@@ -531,7 +560,7 @@ impl Workspace {
                 HomeSort::Created => b.meta.created.cmp(&a.meta.created),
                 HomeSort::Title => a.title.cmp(&b.title),
             };
-            (if self.home.folders_first && self.home.order() != HomeSort::Manual { b.meta.folder.is_some().cmp(&a.meta.folder.is_some()) } else { std::cmp::Ordering::Equal }).then(order).then_with(|| a.id.cmp(&b.id))
+            (if self.home.folders_first && sort != HomeSort::Manual { b.meta.folder.is_some().cmp(&a.meta.folder.is_some()) } else { std::cmp::Ordering::Equal }).then(order).then_with(|| a.id.cmp(&b.id))
         });
         v
     }
@@ -736,6 +765,7 @@ impl Workspace {
         let shared_tab = self.home.tab == HomeTab::Shared;
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let shared_tab = false;
+        let entries = self.home_entries(cx);
         // Tabs as segmented items: the current one on a quiet fill, no accent.
         let tab = |id: &'static str, label: &'static str, t: HomeTab| {
             let on = self.home.tab == t;
@@ -755,6 +785,7 @@ impl Workspace {
                 .child(crate::settings::label(label))
                 .on_click(cx.listener(move |w, _, _, cx| {
                     w.row_menu = None;
+                    w.create_menu = None;
                     w.home.tab = t;
                     w.home.sort_menu = false;
                     cx.notify();
@@ -816,15 +847,14 @@ impl Workspace {
                 div().id("home-sort").relative().h(px(28.)).px(px(10.)).flex().items_center().gap(px(6.))
                     .rounded(px(9.)).text_size(px(13.)).text_color(Theme::text_caption()).cursor_pointer()
                     .hover(|s| s.bg(Theme::fill_hover())).when(self.home.sort_menu, |d| d.bg(Theme::fill_hover_strong()))
-                    .child(icon("sort-down", 14., Theme::icon())).child(crate::settings::label(self.home.order().label()))
+                    .child(icon("sort-down", 14., Theme::icon())).child(crate::settings::label(self.displayed_order(&entries).label()))
                     .child(self.home.track("home-sort"))
                     .on_click(cx.listener(|w, _, _, cx| { w.home.sort_menu = !w.home.sort_menu; cx.notify(); })),
             )
             .child(self.view_switch(cx).ml(px(16.))) };
 
-        let entries = self.home_entries(cx);
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let shared_body = shared_tab.then(|| self.render_shared_documents(window, cx));
+        let shared_body = shared_tab.then(|| self.render_shared_documents(&entries, window, cx));
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let shared_body = None::<AnyElement>;
         let body = if let Some(body) = shared_body { body } else if entries.is_empty() && (self.home.grid || self.home.tab == HomeTab::Recent) {
@@ -849,7 +879,8 @@ impl Workspace {
     pub(crate) fn render_home_list(&self, entries: &[Entry], in_folder: bool, cx: &mut Context<Self>) -> AnyElement {
         let list_scroll = if in_folder { &self.home.folder_list_scroll } else { &self.home.list_scroll };
         let cols = self.home.cols();
-        let sort = self.home.sort_col();
+        let order = self.displayed_order(entries);
+        let sort = Home::sort_col(order);
         // The title is sized at about three times a column.
         let title_cell = || div().flex_1().flex_basis(relative(0.)).min_w(px(200.));
         let col_cell = || div().flex_1().flex_basis(relative(0.)).max_w(px(240.)).min_w(px(120.));
@@ -869,7 +900,7 @@ impl Workspace {
                 ),
             );
         for c in &cols {
-            let sorted = !matches!(self.home.order(), HomeSort::Title | HomeSort::Manual) && *c == sort;
+            let sorted = !matches!(order, HomeSort::Title | HomeSort::Manual) && *c == sort;
             header = header.child(
                 col_cell().pl(px(20.)).child(
                     div()
@@ -1098,18 +1129,21 @@ impl Workspace {
         };
         if self.home.sort_menu
             && let Some(b) = self.home.anchor("home-sort") {
-                let mut menu = popover().id("sort-menu").occlude().w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
+                let selected_order = self.home.order();
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            let selected_order = if self.home.shared() { self.shared_order(&self.shared_collection_entries(cx)) } else { selected_order };
+            let mut menu = popover().id("sort-menu").occlude().w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
                     .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.home.sort_menu = false; cx.notify(); }));
                 for (index, order) in [HomeSort::Manual, HomeSort::Visited, HomeSort::Modified, HomeSort::Created, HomeSort::Title].into_iter().enumerate() {
 
                     let g = SharedString::from(format!("home-order-{index}"));
-                    menu = menu.child(menu_row(g.clone(), g.clone()).when(self.home.order() == HomeSort::Manual, |d| d.opacity(0.4))
+                    menu = menu.child(menu_row(g.clone(), g.clone()).when(selected_order == HomeSort::Manual, |d| d.opacity(0.4))
                         .child(menu_label(order.label(), g.clone(), gpui::white()).flex_1())
-                        .when(self.home.order() == order, |d| d.child(menu_glyph("check", 14., g)))
+                        .when(selected_order == order, |d| d.child(menu_glyph("check", 14., g)))
                         .on_click(cx.listener(move |w, _, _, cx| {
                             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                             if w.home.shared() {
-                                w.home.shared_sort = order; w.home.sort_menu = false;
+                                w.home.shared_sort = Some(order); w.home.sort_menu = false;
                                 w.home.list_scroll.set_offset(point(px(0.), px(0.))); cx.notify(); return;
                             }
                             if order == HomeSort::Manual && !w.home.shared() && !w.prepare_manual_order(cx) { return; }

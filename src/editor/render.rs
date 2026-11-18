@@ -278,6 +278,12 @@ pub(crate) fn equation_numbers(doc: &crate::model::Document) -> HashMap<BlockId,
 }
 
 impl R<'_> {
+    fn editing_caret(&self) -> bool {
+        #[cfg(target_os = "ios")]
+        if !crate::ipad::editor_input_active() { return false; }
+        self.focused && !self.ed.read_only
+    }
+
     fn text_el(&self, id: BlockId, text: &RichText, mut spec: TextSpec, align: Align, placeholder: Option<SharedString>) -> RichTextElement {
         let core = &self.ed.core;
         let bm = core.in_block_mode() || self.ghost;
@@ -308,7 +314,7 @@ impl R<'_> {
             caret_row_end: caret_here && self.ed.caret_row_end == Some((id, sel.head.offset)),
             marked: self.ed.marked.as_ref().filter(|(b, _)| *b == id && !self.ghost).map(|(_, r)| r.clone()),
             cache: self.cache.clone(),
-            show_caret: caret_here && self.focused && self.ed.caret_visible && !self.ed.read_only,
+            show_caret: caret_here && self.editing_caret() && self.ed.caret_visible,
             highlight: None,
             found: if self.ghost { vec![] } else { self.ed.find_hits(id) },
             eq_counter: self.eqnos.get(&id).copied().unwrap_or(0),
@@ -550,7 +556,7 @@ impl R<'_> {
             && self.ed.core.sel.head.block == b.id
             && !self.ed.core.in_block_mode();
         let selected = self.selected.contains(&b.id) || atomic_sel;
-        let handle = (!env.cell && !env.in_callout && !self.ghost && self.ed.handle_block() == Some(b.id))
+        let handle = (!env.cell && !env.in_callout && !self.ghost && self.ed.shows_block_handle(b.id))
             .then(|| {
                 let first_line = match &b.kind {
                     BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => {
@@ -583,7 +589,7 @@ impl R<'_> {
             .children(self.fold_button(b, env, cx))
             .when(!self.ghost && self.ed.is_dragged(b.id), |d| d.opacity(0.5))
             .children(self.ed.drop_flash_el(b.id).filter(|_| !self.ghost))
-            .when(atomic_caret && self.focused, |d| {
+            .when(atomic_caret && self.editing_caret(), |d| {
                 d.child(
                     div()
                         .absolute()
@@ -674,7 +680,7 @@ impl R<'_> {
         let spec = self.spec_for(b, env);
         let placeholder = match b.kind {
             // Table cells never show the hint (only the caret does).
-            BlockKind::Text if !env.cell && (self.caret_in_empty(b) || self.only_empty_block(b)) && self.ed.slash.is_none() => {
+            BlockKind::Text if !env.cell && (self.caret_in_empty(b) || self.only_empty_block(b)) && self.ed.slash.is_none() && (!cfg!(target_os = "ios") || self.editing_caret()) => {
                 Some(crate::settings::text(TEXT_PLACEHOLDER).into())
             }
             // Empty headings always show "H1"…"H9", focused or not.
@@ -1150,6 +1156,19 @@ const GUTTER_W: f32 = 36.;
 
 pub(super) const TOP: Env = Env { depth: 0, cell: false, color: None, in_callout: false, root: true, column: false, quote: false, width: 0. };
 
+#[cfg(target_os = "ios")]
+unsafe extern "C" {
+    fn fei_ios_editor_top_inset() -> f32;
+    fn fei_ios_editor_bottom_inset() -> f32;
+}
+
+pub(super) fn editor_chrome_insets() -> (f32, f32) {
+    #[cfg(target_os = "ios")]
+    unsafe { (fei_ios_editor_top_inset(), fei_ios_editor_bottom_inset()) }
+    #[cfg(not(target_os = "ios"))]
+    (0., 0.)
+}
+
 impl Editor {
     /// Rebuilds the list items from the document and tells the list which of
     /// them changed (only those are re-measured; off-screen ones keep their
@@ -1165,6 +1184,8 @@ impl Editor {
         self.core.doc.icon.is_some().hash(&mut h);
         self.core.doc.cover.as_ref().map(|_| cover_h.to_bits()).hash(&mut h);
         self.info.hidden.hash(&mut h);
+        let (chrome_top, chrome_bottom) = editor_chrome_insets();
+        chrome_top.to_bits().hash(&mut h);
         let mut keys = vec![h.finish()];
         let links = self.links_key();
         // Rows whose look depends on editor state, not the document.
@@ -1175,7 +1196,7 @@ impl Editor {
         // Walking a long document costs ~1.5ms (1M chars): skip it when
         // nothing the rows depend on changed, as on every scrolling frame.
         let mut fh = FxHasher::default();
-        (self.core.generation, seed, keys[0], links, &nonces).hash(&mut fh);
+        (self.core.generation, seed, keys[0], links, chrome_bottom.to_bits(), &nonces).hash(&mut fh);
         let frame_key = fh.finish();
         if self.items_key == Some(frame_key) {
             return;
@@ -1204,7 +1225,7 @@ impl Editor {
         }
         rows(&self.core.doc.blocks, orders, &mut vec![], 0., seed, &mut items, &mut keys);
         items.push(Item::Below);
-        keys.push(links);
+        keys.push(links ^ u64::from(chrome_bottom.to_bits()));
         for (id, nonce) in nonces {
             if let Some(ix) = super::grid::item_containing(&items, &self.core.doc.blocks, id) {
                 keys[ix] ^= nonce;
@@ -1364,17 +1385,21 @@ impl Editor {
                 .id("below")
                 .w_full()
                 .children(self.refs_list(window, cx))
-                .child(div().h(px(200.)).w_full())
+                .child(div().h(px(200. + editor_chrome_insets().1)).w_full())
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_click_below))
                 .into_any_element(),
         };
         let targets = r.targets.into_inner();
         self.handle_targets.extend(targets);
         let padded = div().w_full().pl(px(self.layout.ml)).pr(px(self.layout.mr)).child(content);
-        match cover {
-            // The cover spans the whole pane, above the padded header.
-            Some(c) => div().w_full().child(c).child(padded).into_any_element(),
-            None => padded.into_any_element(),
+        if ix == 0 && cfg!(target_os = "ios") {
+            div().w_full().pt(px(editor_chrome_insets().0)).children(cover).child(padded).into_any_element()
+        } else {
+            match cover {
+                // The cover spans the whole pane, above the padded header.
+                Some(c) => div().w_full().child(c).child(padded).into_any_element(),
+                None => padded.into_any_element(),
+            }
         }
     }
 
@@ -1382,7 +1407,9 @@ impl Editor {
     /// target outside the rendered items is first brought on screen by its
     /// item and refined on the next frame.
     fn apply_reveal(&mut self, window: &mut Window) {
-        let view = self.list.viewport_bounds();
+        let raw = self.list.viewport_bounds();
+        let (top, bottom) = editor_chrome_insets();
+        let view = Bounds::new(point(raw.left(), raw.top() + px(top)), size(raw.size.width, (raw.size.height - px(top + bottom)).max(px(1.))));
         #[cfg(target_os = "ios")]
         if let Some(find) = &mut self.find && find.native_viewport != Some(view.size) {
             find.native_viewport = Some(view.size);
@@ -1968,7 +1995,7 @@ pub(super) fn block_feishu(&self, b: &Block, siblings: &[Block], idx: usize, env
             && self.ed.core.sel.head.block == b.id
             && !self.ed.core.in_block_mode();
         let selected = self.selected.contains(&b.id) || atomic_sel;
-        let handle = (!env.cell && !env.in_callout && !self.ghost && self.ed.handle_block() == Some(b.id))
+        let handle = (!env.cell && !env.in_callout && !self.ghost && self.ed.shows_block_handle(b.id))
             .then(|| {
                 let first_line = match &b.kind {
                     BlockKind::Text | BlockKind::Heading { .. } | BlockKind::Bullet { .. } | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => {
@@ -1997,7 +2024,7 @@ pub(super) fn block_feishu(&self, b: &Block, siblings: &[Block], idx: usize, env
             .children(self.fold_button(b, env, cx))
             .when(!self.ghost && self.ed.is_dragged(b.id), |d| d.opacity(0.5))
             .children(self.ed.drop_flash_el(b.id).filter(|_| !self.ghost))
-            .when(atomic_caret && self.focused, |d| {
+            .when(atomic_caret && self.editing_caret(), |d| {
                 d.child(
                     div()
                         .absolute()
@@ -2027,7 +2054,7 @@ fn text_block_feishu(&self, b: &Block, env: Env, cx: &mut Context<Editor>) -> An
         let spec = self.spec_for(b, env);
         let placeholder = match b.kind {
             // Table cells never show the hint (only the caret does).
-            BlockKind::Text if !env.cell && (self.caret_in_empty(b) || self.only_empty_block(b)) && self.ed.slash.is_none() => {
+            BlockKind::Text if !env.cell && (self.caret_in_empty(b) || self.only_empty_block(b)) && self.ed.slash.is_none() && (!cfg!(target_os = "ios") || self.editing_caret()) => {
                 Some(crate::settings::text(TEXT_PLACEHOLDER).into())
             }
             // Empty headings always show "H1"…"H9", focused or not.

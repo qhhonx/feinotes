@@ -39,7 +39,7 @@ final class LibraryUITests: XCTestCase {
     }
     private func options(_ app: XCUIApplication) {
         app.buttons["fei.more"].tap()
-        app.sheets.buttons["笔记选项"].tap()
+        app.sheets.buttons["文档选项"].tap()
         XCTAssertTrue(app.sheets.buttons["创建副本"].waitForExistence(timeout: 5))
     }
     private func confirm(_ app: XCUIApplication, accept: Bool) {
@@ -49,7 +49,7 @@ final class LibraryUITests: XCTestCase {
     }
     private func delete(_ app: XCUIApplication) {
         app.buttons["fei.more"].tap()
-        app.sheets.buttons["删除笔记"].tap()
+        app.sheets.buttons["删除文档"].tap()
     }
     private func trash(_ app: XCUIApplication) {
         app.buttons["fei.library-actions"].tap()

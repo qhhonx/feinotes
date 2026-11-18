@@ -28,13 +28,17 @@ final class MobileFeedbackUITests: XCTestCase {
         app.buttons["fei.settings"].tap()
         XCTAssertTrue(app.cells["fei.setting.page:General"].waitForExistence(timeout: 5)); app.cells["fei.setting.page:General"].tap()
         app.cells["fei.setting.language"].tap(); app.cells["fei.setting.option.language.en"].tap()
-        if pad { app.buttons["fei.settings.close"].tap() } else { back(); back() }
+        closeSettings(pad: pad)
         XCTAssertTrue(list.waitForExistence(timeout: 8))
         // Each visual comparison starts from an explicit appearance, not the
         // previous test's persisted preference.
         app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:Appearance"].tap()
         app.cells["fei.setting.appearance"].tap(); app.cells["fei.setting.option.appearance.light"].tap()
-        if pad { app.buttons["fei.settings.close"].tap() } else { back(); back() }
+        closeSettings(pad: pad)
+    }
+    private func closeSettings(pad: Bool) {
+        if pad { app.buttons["fei.settings"].tap() }
+        else { back(); back() }
     }
     private func row(_ title: String) -> XCUIElement { list.cells.containing(.staticText,identifier: title).firstMatch }
     private func open(_ title: String) {
@@ -46,7 +50,7 @@ final class MobileFeedbackUITests: XCTestCase {
         app.buttons["fei.settings"].tap(); XCTAssertTrue(app.cells["fei.setting.page:Appearance"].waitForExistence(timeout:5)); app.cells["fei.setting.page:Appearance"].tap()
         app.cells["fei.setting.theme"].tap(); app.cells["fei.setting.option.theme."+theme].tap()
         app.cells["fei.setting.appearance"].tap(); app.cells["fei.setting.option.appearance."+appearance].tap()
-        if pad { app.buttons["fei.settings.close"].tap() } else { back(); back() }
+        closeSettings(pad: pad)
     }
     private func probe49() -> [String:Any] {
         if surface.exists,let value=surface.value as? String,let data=value.data(using:.utf8),let p=try? JSONSerialization.jsonObject(with:data) as? [String:Any] { return p }
@@ -84,7 +88,7 @@ final class MobileFeedbackUITests: XCTestCase {
         app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:Library"].tap(); app.cells["fei.setting.open-trash"].tap()
         XCTAssertTrue(app.buttons["fei.empty-trash"].waitForExistence(timeout:5));back()
         XCTAssertTrue(app.navigationBars["Documents"].waitForExistence(timeout:5)); shot(prefix+"-trash-returns-library")
-        if pad { app.buttons["fei.settings.close"].tap() } else { back();back() }
+        closeSettings(pad: pad)
         open("QA49 Linked source")
         func follow(_ target:String) {
           for _ in 0..<(pad ? 2 : 1) {
@@ -219,10 +223,10 @@ final class MobileFeedbackUITests: XCTestCase {
         app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:About"].tap()
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Take notes offline, with optional iCloud sync.")).firstMatch.waitForExistence(timeout: 5))
         shot(pad ? "ipad48-about-product-copy" : "iphone48-about-product-copy")
-        if pad { app.buttons["fei.settings.close"].tap() } else { back(); back() }
+        closeSettings(pad: pad)
         app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:Appearance"].tap()
         app.cells["fei.setting.appearance"].tap(); app.cells["fei.setting.option.appearance.dark"].tap()
-        if pad { app.buttons["fei.settings.close"].tap() } else { back(); back() }
+        closeSettings(pad: pad)
         shot(pad ? "ipad48-dark-list" : "iphone48-dark-list")
         if pad {
             XCUIDevice.shared.orientation = .portrait
@@ -427,11 +431,280 @@ final class MobileFeedbackUITests: XCTestCase {
         app.buttons["fei.file.done"].tap()
         XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 5))
     }
+    func testPhoneToolbarDirectToolsAndTopCompose() {
+        start()
+        app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:General"].tap()
+        XCTAssertFalse(app.cells["fei.setting.slash-shortcut"].exists)
+        closeSettings(pad: false)
+        open("QA49 Linked source")
+        wait("The document extends behind the bottom safe area") { abs(self.surface.frame.maxY-self.app.frame.maxY) < 2 }
+        let bar = app.toolbars["fei.editor.toolbar"]
+        shot("69-phone-toolbar-reading")
+        if bar.buttons["fei.edit.mode"].exists { bar.buttons["fei.edit.mode"].tap() }
+        let styles = bar.buttons["fei.edit.styles"]
+        XCTAssertTrue(styles.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars.buttons["fei.new"].isHittable)
+        XCTAssertFalse(bar.buttons["fei.edit.compose"].exists)
+        let keyboard = waitForToolbarSoftwareKeyboard()
+        let actions = assertSinglePhoneEditingRow(bar)
+        let strip = app.scrollViews["fei.editor.editing-actions"]
+        if app.frame.width >= 390 { actions.forEach { XCTAssertTrue(isFullyVisible($0,in: strip),$0.identifier) } }
+        XCTAssertLessThanOrEqual(bar.frame.maxY,keyboard.frame.minY+2)
+        XCTAssertGreaterThan(surface.frame.maxY,bar.frame.minY+20,"The document remains behind the translucent toolbar")
+        shot("69-phone-toolbar-keyboard-on")
+        XCTAssertTrue(bar.buttons["fei.edit.undo"].exists,app.debugDescription)
+        XCTAssertFalse(app.navigationBars.buttons["fei.edit.undo"].exists)
+        let block = bar.buttons["fei.edit.block-actions"]
+        if !block.isEnabled { surface.coordinate(withNormalizedOffset: CGVector(dx: 0.25,dy: 0.45)).tap() }
+        wait("A body caret makes Block actions available") { block.isEnabled }
+        block.tap()
+        XCTAssertTrue(app.tables["fei.block.controls"].waitForExistence(timeout: 5))
+        app.buttons["fei.block.done"].tap()
+        wait("Block actions returns to the editor") { styles.isHittable }
+        func hasChecklist() -> Bool {
+            (probe49()["blocks"] as? [[String:Any]])?.contains { ($0["kind"] as? String)?.hasPrefix("Todo") == true } == true
+        }
+        let undo = bar.buttons["fei.edit.undo"]
+        actions[0].tap()
+        wait("Checklist converts the focused block") { hasChecklist() }
+        undo.tap()
+        wait("Undo restores the block") { !hasChecklist() }
+        undo.press(forDuration: 0.8)
+        let redo = app.buttons["Redo"]
+        XCTAssertTrue(redo.waitForExistence(timeout: 5))
+        redo.tap()
+        wait("The Undo button's Redo menu still works") { hasChecklist() }
+        undo.tap()
+        wait("The original block is restored") { !hasChecklist() }
+        actions[1].tap()
+        wait("The direct table button inserts a table and switches to its controls") { actions[1].label == "Table controls" }
+        actions[1].tap()
+        XCTAssertTrue(app.tables["fei.table.controls"].waitForExistence(timeout: 5))
+        app.buttons["fei.table.done"].tap()
+        waitForEditingToolbar()
+        undo.tap()
+        wait("Undo returns to the paragraph's table insertion action") { actions[1].label == "Table" }
+        styles.tap()
+        XCTAssertTrue(app.tables["fei.format.controls"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.tables["fei.insert.controls"].exists)
+        app.buttons["fei.format.done"].tap()
+        func waitForEditingToolbar() {
+            if !styles.waitForExistence(timeout: 3) {
+                let edit = bar.buttons["fei.edit.mode"]
+                XCTAssertTrue(edit.waitForExistence(timeout: 5))
+                edit.tap()
+                XCTAssertTrue(styles.waitForExistence(timeout: 5))
+            }
+        }
+        waitForEditingToolbar()
+        bar.buttons["fei.edit.insert"].tap()
+        XCTAssertTrue(app.tables["fei.insert.controls"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.tables["fei.format.controls"].exists)
+        app.buttons["fei.insert.done"].tap()
+        waitForEditingToolbar()
+        let slash = app.buttons["fei.edit.slash"]
+        XCTAssertTrue(slash.isHittable)
+        slash.tap()
+        wait("The slash shortcut opens the existing insertion catalog") { self.probe49()["catalog"] as? Bool == true }
+        app.navigationBars.buttons["fei.new"].tap()
+        wait("The top action creates a draft") { (bar.value as? String)?.hasPrefix("draft=true") == true }
+    }
+
+    func testPhoneToolbarKeyboardMotionRecording() {
+        start()
+        app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:Appearance"].tap()
+        app.cells["fei.setting.appearance"].tap(); app.cells["fei.setting.option.appearance.dark"].tap()
+        closeSettings(pad: false)
+        open("QA49 Linked source")
+        let bar = app.toolbars["fei.editor.toolbar"]
+        let readKeyboard = bar.buttons["fei.edit.mode"]
+        readKeyboard.tap()
+        let keyboard = waitForToolbarSoftwareKeyboard()
+        let dismiss = bar.buttons["fei.edit.keyboard"]
+        let strip = app.scrollViews["fei.editor.editing-actions"]
+        func dismissKeyboard() {
+            if !isFullyVisible(dismiss,in: strip) { strip.swipeLeft() }
+            XCTAssertTrue(isFullyVisible(dismiss,in: strip))
+            dismiss.tap()
+        }
+        dismissKeyboard()
+        wait("Reading toolbar before the measured transition") { readKeyboard.isHittable && !keyboard.exists }
+
+        // Record the same settled reading, keyboard show and keyboard hide sequence in both builds.
+        print("FEI70_CAPTURE_READY \(Date().timeIntervalSince1970)")
+        Thread.sleep(forTimeInterval: 1.8)
+        readKeyboard.tap()
+        _ = waitForToolbarSoftwareKeyboard()
+        let actions = assertSinglePhoneEditingRow(bar)
+        let inset: CGFloat = bar.frame.width >= 414 ? 20 : 16
+        XCTAssertEqual(strip.frame.minX-bar.frame.minX,inset,accuracy: 0.5)
+        XCTAssertEqual(bar.frame.maxX-strip.frame.maxX,inset,accuracy: 0.5)
+        XCTAssertTrue(app.navigationBars.buttons["fei.new"].isHittable)
+        print("FEI70_CAPTURE_OPEN width=\(app.frame.width) strip=\(strip.frame) toolbar=\(bar.frame) first=\(actions[0].frame)")
+        Thread.sleep(forTimeInterval: 0.8)
+        dismissKeyboard()
+        wait("The reading toolbar moves back down with the keyboard") { readKeyboard.isHittable && !keyboard.exists }
+        print("FEI70_CAPTURE_CLOSED \(Date().timeIntervalSince1970)")
+        Thread.sleep(forTimeInterval: 0.4)
+    }
+
+    func testPhoneSingleRowToolbarScrollAtAccessibilitySize() {
+        app.launchArguments += ["-UIPreferredContentSizeCategoryName","UICTContentSizeCategoryAccessibilityXXXL"]
+        start()
+        app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:Appearance"].tap()
+        app.cells["fei.setting.appearance"].tap(); app.cells["fei.setting.option.appearance.dark"].tap()
+        closeSettings(pad: false)
+        open("QA49 Linked source")
+        let bar = app.toolbars["fei.editor.toolbar"]
+        bar.buttons["fei.edit.mode"].tap()
+        let keyboard = waitForToolbarSoftwareKeyboard()
+        let actions = assertSinglePhoneEditingRow(bar)
+        let strip = app.scrollViews["fei.editor.editing-actions"]
+        let first = actions[0], keyboardButton = actions[7]
+        XCTAssertGreaterThanOrEqual(first.frame.width,55,"Accessibility text enlarges the controls")
+        XCTAssertFalse(isFullyVisible(keyboardButton,in: strip))
+        shot("69-phone-narrow-dark-toolbar-leading")
+        strip.swipeLeft()
+        wait("Horizontal scrolling exposes Undo and the keyboard button") {
+            self.isFullyVisible(actions[6],in: strip) && self.isFullyVisible(keyboardButton,in: strip)
+        }
+        shot("69-phone-narrow-dark-toolbar-trailing")
+        keyboardButton.tap()
+        wait("The same-row keyboard button hides the keyboard") { (!keyboard.exists || keyboard.frame.minY >= self.app.frame.maxY) && bar.buttons["fei.edit.mode"].isHittable }
+        XCTAssertFalse(strip.exists)
+        XCTAssertTrue(app.navigationBars.buttons["fei.new"].isHittable)
+        shot("69-phone-narrow-dark-keyboard-off")
+        bar.buttons["fei.edit.mode"].tap()
+        _ = waitForToolbarSoftwareKeyboard()
+        wait("Opening the keyboard restores the first tools") { self.isFullyVisible(first,in: strip) }
+    }
+
+    private func waitForToolbarSoftwareKeyboard() -> XCUIElement {
+        let keyboard = app.keyboards.firstMatch
+        let welcome = app.buttons.matching(NSPredicate(format: "label IN {'Continue','继续'}")).firstMatch
+        let space = keyboard.keys.matching(NSPredicate(format: "identifier == 'space' OR label IN {'space','空格键'}")).firstMatch
+        wait("The software keyboard or its first-run screen is visible") { space.isHittable || welcome.isHittable }
+        if welcome.isHittable { welcome.tap() }
+        wait("The software keyboard is docked with usable keys") { space.isHittable && keyboard.frame.minY < self.app.frame.maxY-100 }
+        return keyboard
+    }
+
+    private func isFullyVisible(_ button: XCUIElement,in strip: XCUIElement) -> Bool {
+        button.exists && button.isHittable && strip.frame.insetBy(dx: -1,dy: -1).contains(button.frame)
+    }
+
+    @discardableResult private func assertSinglePhoneEditingRow(_ bar: XCUIElement) -> [XCUIElement] {
+        let strip = app.scrollViews["fei.editor.editing-actions"]
+        XCTAssertTrue(strip.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.toolbars["fei.editor.components"].isHittable)
+        let actions = ["list","table","slash","block-actions","styles","insert","undo","keyboard"].map { bar.buttons["fei.edit."+String($0)] }
+        let leading = Array(actions.prefix(4))
+        for button in leading {
+            XCTAssertTrue(isFullyVisible(button,in: strip),button.identifier)
+            XCTAssertGreaterThanOrEqual(button.frame.width,43.5)
+            XCTAssertGreaterThanOrEqual(button.frame.height,43.5)
+            XCTAssertEqual(button.frame.midY,leading[0].frame.midY,accuracy: 1)
+        }
+        XCTAssertEqual(bar.frame.height,52,accuracy: 1)
+        return actions
+    }
+
+    func testPhoneLocalVersionSheetAndFullPreview() {
+        start()
+        open("QA49 Linked source")
+        XCTAssertTrue(surface.isHittable)
+        app.buttons["fei.more"].tap()
+        app.buttons["Document information"].tap()
+        app.buttons["Version history"].tap()
+        let versions = app.tables["fei.local.versions"]
+        XCTAssertTrue(versions.waitForExistence(timeout: 6))
+        let done = app.buttons["fei.history.close"]
+        let save = app.buttons["fei.history.save"]
+        XCTAssertGreaterThan(done.frame.midX,app.frame.midX)
+        XCTAssertGreaterThan(save.frame.midY,app.frame.midY)
+        save.tap()
+        let version = versions.cells.firstMatch
+        wait("The saved version is ready to open") { version.isHittable }
+        let count = versions.cells.count
+        save.tap()
+        let notice = app.staticTexts["Same as the newest version; nothing added"]
+        XCTAssertTrue(notice.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts.matching(identifier: notice.label).count,1)
+        XCTAssertEqual(versions.cells.count,count)
+        version.tap()
+        XCTAssertTrue(app.buttons["fei.edit.history-marks"].waitForExistence(timeout: 8))
+        XCTAssertTrue(surface.isHittable)
+        XCTAssertFalse(versions.exists)
+        app.buttons["fei.history.close"].tap()
+        XCTAssertTrue(versions.waitForExistence(timeout: 8))
+        app.buttons["fei.history.close"].tap()
+        XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 6))
+        XCTAssertTrue(surface.isHittable)
+    }
+
+    func testPadOrganizationMenuAcrossTabs() {
+        start(pad: true)
+        let tabs = app.segmentedControls["fei.notes.tabs"]
+        for name in ["Favorites","Shared documents","My documents"] {
+            tabs.buttons[name].tap()
+            app.buttons["fei.library-actions"].tap()
+            XCTAssertTrue(app.buttons["Select documents"].exists)
+            XCTAssertTrue(app.buttons["Reorder"].exists)
+            XCTAssertTrue(app.buttons["Sort by"].exists)
+            app.buttons["Sort by"].tap()
+            XCTAssertTrue(app.buttons["Manual order"].exists)
+            app.buttons["Manual order"].tap()
+        }
+        app.buttons["fei.library-actions"].tap()
+        app.buttons["Select documents"].tap()
+        XCTAssertTrue(app.buttons["fei.notes.selection.done"].waitForExistence(timeout: 5))
+        app.buttons["fei.notes.selection.done"].tap()
+    }
+
+    func testPhoneShortHoldReordersAndLongHoldOpensMenu() { shortHoldReorder() }
+    func testPadShortHoldReordersAndLongHoldOpensMenu() { shortHoldReorder(pad: true) }
+    private func shortHoldReorder(pad: Bool = false) {
+        start(pad: pad)
+        app.buttons["fei.library-actions"].tap()
+        app.buttons["Sort by"].tap(); app.buttons["Manual order"].tap()
+        let pinned = app.buttons["fei.notes.pinned-header"]
+        if pinned.exists && pinned.value as? String == "expanded" { pinned.tap() }
+        let cells = list.cells.matching(NSPredicate(format: "identifier BEGINSWITH 'fei.note.'"))
+        let visible = cells.allElementsBoundByIndex.filter { $0.isHittable && $0.frame.maxY < list.frame.maxY-5 }
+        XCTAssertGreaterThanOrEqual(visible.count,3)
+        let first = visible[0].identifier
+        let targetID = visible[2].identifier
+        let origin = visible[0].coordinate(withNormalizedOffset: CGVector(dx: 0.48,dy: 0.55))
+        let target = visible[2].coordinate(withNormalizedOffset: CGVector(dx: 0.48,dy: 0.55))
+        origin.press(forDuration: 0.24,thenDragTo: target,withVelocity: .fast,thenHoldForDuration: 0.45)
+        func moved() -> Bool {
+            let ids = cells.allElementsBoundByIndex.map(\.identifier)
+            guard let from = ids.firstIndex(of: first), let to = ids.firstIndex(of: targetID) else { return false }
+            return from > to
+        }
+        wait("The dragged document reaches its new position") { moved() }
+        XCTAssertTrue((list.value as? String)?.contains("emptyDragSlot=true") == true,"The moving insertion slot contains no original cell content")
+        XCTAssertEqual(cells.matching(identifier: first).count,1,"The drop restores exactly one row")
+        let order = cells.allElementsBoundByIndex.map(\.identifier)
+        let movedRow = cells[first].coordinate(withNormalizedOffset: CGVector(dx: 0.48,dy: 0.55))
+        let header = app.navigationBars.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.1))
+        movedRow.press(forDuration: 0.24,thenDragTo: header,withVelocity: .fast,thenHoldForDuration: 0.45)
+        wait("Dropping outside the list restores the authoritative order") { cells.allElementsBoundByIndex.map(\.identifier) == order }
+        XCTAssertEqual(cells.matching(identifier: first).count,1,"Cancellation restores exactly one row")
+        app.terminate(); app.launch()
+        XCTAssertTrue(list.waitForExistence(timeout: 20))
+        wait("The new position survives relaunch") { moved() }
+        cells[first].press(forDuration: 0.9)
+        XCTAssertTrue(app.buttons["Rename"].waitForExistence(timeout: 5),app.debugDescription)
+    }
+
     func testPhoneManualDragPersists() { manualDrag() }
     func testPadManualDragPersists() { manualDrag(pad: true) }
     private func manualDrag(pad: Bool = false) {
         start(pad: pad)
         list.swipeDown(); list.swipeDown(); list.swipeDown()
+        let pinned = app.buttons["fei.notes.pinned-header"]
+        if pinned.exists && pinned.value as? String == "expanded" { pinned.tap() }
         app.buttons["fei.library-actions"].tap(); app.buttons["Reorder"].tap()
         XCTAssertTrue(app.buttons["fei.notes.reorder.done"].waitForExistence(timeout: 5))
         let cells=list.cells.matching(NSPredicate(format: "identifier BEGINSWITH 'fei.note.'")).allElementsBoundByIndex.filter { $0.isHittable && $0.frame.maxY < list.frame.maxY-5 }

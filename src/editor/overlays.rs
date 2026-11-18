@@ -248,6 +248,12 @@ pub enum Probe {
     Button(Pos),
 }
 
+#[cfg(target_os = "ios")]
+pub(super) fn mobile_block_handles() -> bool { crate::settings::feishu() && !unsafe { crate::ipad::fei_ios_is_phone() } }
+
+#[cfg(target_os = "ios")]
+const TOUCH_HANDLE_SIZE: f32 = 44.;
+
 impl Editor {
     pub(super) fn probe(&self, p: Probe) -> Option<Bounds<Pixels>> {
         match p {
@@ -327,6 +333,8 @@ impl Editor {
         if self.read_only {
             return out;
         }
+        #[cfg(target_os = "ios")]
+        out.extend(self.touch_block_handle(window,cx));
         let menu_el = match self.menu.clone() {
             Some(Menu::OrderedNumber { block, pos, edit, depth }) => self.ordered_number_menu(block, pos, edit, depth, cx),
             Some(Menu::Block { block, sub }) => self.block_menu(block, sub, cx),
@@ -370,6 +378,71 @@ impl Editor {
             Some(Menu::Block { block, .. }) | Some(Menu::Add { block, .. }) => Some(*block),
             _ => self.hover.filter(|_| !self.hover_clipped && !self.typing),
         }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn touch_block_handle_target(&self, window: &Window, cx: &App) -> Option<BlockId> {
+        if !mobile_block_handles() || self.read_only || self.marked.is_some() || self.slash.is_some()
+            || self.find.is_some() || self.dragging || self.menu.is_some()
+            || self.block_drag.as_ref().is_some_and(|d| d.started)
+            || !crate::cloud_sync::shared::can_edit_in(&self.library_root,cx) { return None; }
+        let current = self.mobile_block_target();
+        let id = if let Some((id,true)) = current { id }
+            else if self.core.in_block_mode() || !self.core.sel.is_collapsed() || self.core.cell_sel.is_some() { return None }
+            else if let Some(id) = self.hover.filter(|_| !window.last_input_was_touch() && !self.typing) { id }
+            else if crate::ipad::editor_input_active() && self.focus.is_focused(window) { current?.0 }
+            else { return None };
+        self.mobile_block_kind(id).map(|_|id)
+    }
+
+    #[cfg(target_os = "ios")]
+    fn touch_block_handle_rect(&self, block: Bounds<Pixels>, line: Option<Bounds<Pixels>>) -> Option<Bounds<Pixels>> {
+        let viewport = self.list.viewport_bounds();
+        let extent = px(TOUCH_HANDLE_SIZE);
+        let center = line.map_or(block.top() + px(13.), |first| first.top() + first.size.height / 2.);
+        // Keep the grip on the page's left rail, outside the fold affordance.
+        let origin = point(viewport.left() + px(self.layout.ml - TOUCH_HANDLE_SIZE - 20.), center - extent / 2.);
+        let rect = Bounds::new(origin, size(extent,extent));
+        (rect.top() >= viewport.top() && rect.bottom() <= viewport.bottom()
+            && rect.left() >= viewport.left() && rect.right() <= viewport.right()).then_some(rect)
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(super) fn touch_block_handle_at(&self, at: Point<Pixels>, window: &Window, cx: &App) -> Option<BlockId> {
+        let id = self.touch_block_handle_target(window,cx)?;
+        if !self.handle_targets.contains(&id) { return None; }
+        self.touch_block_handle_rect(self.probe(Probe::Block(id))?,self.probe(Probe::Point(Pos::new(id,0))))?
+            .contains(&at).then_some(id)
+    }
+
+    #[cfg(target_os = "ios")]
+    fn touch_block_handle(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let id = self.touch_block_handle_target(window,cx)?;
+        let block = self.block_rect(id)?;
+        if !self.handle_targets.contains(&id) { return None; }
+        let rect = self.touch_block_handle_rect(block,self.probed(Probe::Point(Pos::new(id,0))))?;
+        let offset = self.rel(rect.origin);
+        Some(div().id(("touch-block-handle",id.0)).absolute().left(offset.x).top(offset.y)
+            .size(px(TOUCH_HANDLE_SIZE)).occlude().flex().items_center().justify_center()
+            .rounded(px(6.)).cursor(CursorStyle::OpenHand).hover(|s|s.bg(Theme::handle_active()))
+            .child(icon("grip-vertical",14.,Theme::icon()))
+            .on_mouse_down(MouseButton::Left,cx.listener(move |ed,ev:&MouseDownEvent,window,cx| {
+                if ed.touch_block_handle_at(ev.position,window,cx) != Some(id) { return; }
+                window.prevent_default(); cx.stop_propagation();
+                if window.last_input_was_touch() { ed.present_block_controls(id,cx); }
+                else { ed.press_handle(id,ev.position); cx.notify(); }
+            }))
+            .on_mouse_up(MouseButton::Left,cx.listener(move |ed,_:&MouseUpEvent,window,cx| {
+                if !window.last_input_was_touch() && ed.block_drag.as_ref().is_some_and(|d| !d.started) {
+                    ed.block_drag = None;
+                    cx.stop_propagation();
+                    ed.present_block_controls(id,cx);
+                }
+            })).into_any_element())
+    }
+
+    pub(super) fn shows_block_handle(&self,id:BlockId) -> bool {
+        !cfg!(target_os = "ios") && self.handle_block() == Some(id)
     }
 
     /// The handle, laid out together with its block (not from last frame's

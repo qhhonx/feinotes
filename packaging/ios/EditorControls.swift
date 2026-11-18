@@ -103,7 +103,7 @@ final class FeiEditorControls: UITableViewController, UIAdaptivePresentationCont
                 return
             }
             guard let host = EditorHost.active?.navigationController?.topViewController else { return }
-            let restore = request.namespace == "format" ? EditorHost.active?.navigationCoordinator?.captureEditorInputReturn() : nil
+            let restore = ["format","insert","block"].contains(request.namespace ?? "") ? EditorHost.active?.navigationCoordinator?.captureEditorInputReturn() : nil
             host.view.endEditing(true)
             let present = {
                 guard generation == current else { return }
@@ -151,6 +151,7 @@ final class FeiEditorControls: UITableViewController, UIAdaptivePresentationCont
         if action.checked { cell.accessibilityTraits.insert(.selected) }
         cell.accessibilityIdentifier = "fei.\(namespace).\(action.key)"
         cell.isUserInteractionEnabled = action.enabled && !waiting
+        if !cell.isUserInteractionEnabled { cell.accessibilityTraits.insert(.notEnabled) }
         return cell
     }
     override func tableView(_ tableView: UITableView,didSelectRowAt indexPath: IndexPath) {

@@ -1,16 +1,16 @@
 # Fei Notes
 
-Native Markdown notes for Mac, iPhone and iPad, with optional iCloud sync and collaboration.
+A native Markdown document app for Mac, iPhone, and iPad. The ease of Lark Docs, even offline. Turn on iCloud to pick up on another device, as you would in Apple Notes, and edit together in real time.
 
 [Website](https://feinotes.app/) · [Try TestFlight](https://feinotes.app/#testflight) · [Support](https://feinotes.app/support/) · [简体中文](README.zh-CN.md)
 
 ![Fei Notes on macOS](website/assets/sync-before-en.webp)
 
-- **Local notes.** Write offline, organize folders, search your notes, and use the trash and library backups.
-- **Optional iCloud sync.** Sync notes, folders and attachments across your Macs, iPhone and iPad. Offline edits to different parts of the same paragraph merge when devices reconnect.
-- **Shared notes.** Invite another Apple Account to view or edit a note and manage access from the app.
+- **Local documents.** Write offline, organize documents in folders, search, and back up your library.
+- **Optional iCloud sync.** Sync documents, folders and attachments across your Macs, iPhone and iPad. Offline edits to different parts of the same paragraph merge when devices reconnect.
+- **Real-time collaboration.** Invite people to view a document or edit it together. Manage who has access from the app.
 - **Markdown and rich content.** Use headings, lists, code, tables, images and attachments in a native block editor.
-- **Boards.** Add Excalidraw drawings inside notes or create a standalone board, with local history and library backups.
+- **Boards.** Add Excalidraw drawings inside documents or create a standalone board, with local history and library backups.
 - **Import Quiet.md libraries.** Copy an existing library into Fei Notes through library settings.
 
 ## Try the app

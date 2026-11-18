@@ -87,7 +87,7 @@ pub fn render(me: &BoardView, window: &mut Window, cx: &mut Context<BoardView>) 
     if panel.is_none() && matches!(pop(cx), Some(Pop::Stroke | Pop::Background | Pop::StartArrowhead | Pop::EndArrowhead | Pop::Font)) { set_pop(None, cx); }
     div().absolute().top_0().left_0().size_full().font_family(style::UI_FONT).text_color(style::text())
         .child(menu::main_menu(me, window, cx))
-        .child(toolbar::render(me, cx))
+        .child(toolbar::render(me, window, cx))
         .when_some(panel, |d, p| d.child(p))
         .child(controls::footer(me, cx))
         .when_some(context_menu::render(me, window, cx), |d, m| d.child(m))

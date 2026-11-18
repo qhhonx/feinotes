@@ -69,7 +69,7 @@ final class MobileNotesStyleUITests: XCTestCase {
         }
         shot("mobile-notes-02-light-list")
         search.tap(); search.typeText("FEI_NO_MATCH_MOBILE_STYLE")
-        XCTAssertTrue(app.staticTexts["No matching notes"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No matching documents"].waitForExistence(timeout: 5))
         if app.frame.width < 600 { XCTAssertTrue(app.keyboards.firstMatch.exists) }
         shot("mobile-notes-03-scoped-search-keyboard")
         cancelSearch(app)
@@ -79,7 +79,7 @@ final class MobileNotesStyleUITests: XCTestCase {
         XCTAssertTrue(app.buttons["fei.share"].exists)
         let toolbar = app.toolbars["fei.editor.toolbar"]
         if app.frame.width >= 600 { XCTAssertLessThan(toolbar.frame.maxY,app.frame.height*0.35) }
-        for id in ["styles","list","table","insert","keyboard"] { XCTAssertTrue(toolbar.buttons["fei.edit."+id].isHittable,id) }
+        for id in ["styles","list","table","insert","keyboard"] { XCTAssertTrue(app.buttons["fei.edit."+id].isHittable,id) }
         let marker = "FEI_MOBILE_STYLE_"+String(Int(Date().timeIntervalSince1970))
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.3,dy: 0.3)).tap(); app.typeText(marker+" synthetic body")
         toolbar.buttons["fei.edit.keyboard"].tap()
@@ -92,10 +92,11 @@ final class MobileNotesStyleUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Notes on design"].waitForExistence(timeout: 5))
         shot("mobile-notes-04-editing-tools")
         app.buttons["fei.more"].tap(); app.sheets.buttons["Note options"].tap(); app.sheets.buttons["Reading mode"].tap()
-        XCTAssertTrue(toolbar.buttons["fei.edit.compose"].waitForExistence(timeout: 5))
+        let compose = app.navigationBars.buttons["fei.new"]
+        XCTAssertTrue(compose.waitForExistence(timeout: 5))
         XCTAssertTrue(toolbar.buttons["fei.edit.quick-checklist"].isHittable)
         shot("mobile-notes-05-reading-compose")
-        toolbar.buttons["fei.edit.compose"].tap()
+        compose.tap()
         XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 5))
         back(app)
         XCTAssertTrue(app.tables["fei.notes.list"].waitForExistence(timeout: 5))
@@ -123,7 +124,7 @@ final class MobileNotesStyleUITests: XCTestCase {
         XCTAssertTrue(search.waitForExistence(timeout: 15),app.debugDescription)
         shot("search-01-inactive-native")
         search.tap(); search.typeText("FEI_NATIVE_SEARCH_NO_MATCH")
-        XCTAssertTrue(app.staticTexts["No matching notes"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No matching documents"].waitForExistence(timeout: 5))
         if app.frame.width < 600 { XCTAssertTrue(app.keyboards.firstMatch.exists) }
         XCTAssertFalse(app.buttons["fei.new"].exists && app.buttons["fei.new"].isHittable)
         shot("search-02-active-native")
@@ -146,9 +147,9 @@ final class MobileNotesStyleUITests: XCTestCase {
         title.typeText(name); app.buttons["fei.rename.save"].tap(); back(app)
         let search = app.searchFields["fei.notes.search-field"]
         search.tap(); search.typeText("NO_MATCH_BEFORE_CLEAR")
-        XCTAssertTrue(app.staticTexts["No matching notes"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No matching documents"].waitForExistence(timeout: 5))
         search.buttons.matching(NSPredicate(format: "label IN {'Clear text','清除文本'}")).firstMatch.tap()
-        XCTAssertFalse(app.staticTexts["No matching notes"].exists)
+        XCTAssertFalse(app.staticTexts["No matching documents"].exists)
         if app.frame.width < 600 { XCTAssertTrue(app.keyboards.firstMatch.exists) }
         search.typeText(name); search.typeText("\n")
         XCTAssertFalse(app.keyboards.firstMatch.exists)
@@ -160,7 +161,7 @@ final class MobileNotesStyleUITests: XCTestCase {
         XCTAssertTrue(result.exists); XCTAssertFalse(app.keyboards.firstMatch.exists)
         shot("search-04-result-return")
         search.tap(); search.typeText(" NO_MATCH_SUFFIX")
-        XCTAssertTrue(app.staticTexts["No matching notes"].waitForExistence(timeout: 5)); cancelSearch(app)
+        XCTAssertTrue(app.staticTexts["No matching documents"].waitForExistence(timeout: 5)); cancelSearch(app)
         XCTAssertEqual(search.value as? String,name)
         XCTAssertTrue(result.waitForExistence(timeout: 5))
         // Restore the initial unfiltered fixture for the following theme tests.
@@ -200,7 +201,7 @@ final class MobileNotesStyleUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication(); app.launchEnvironment["FEI_NOTES_MODE"] = "local"; app.launch()
         XCTAssertTrue(app.buttons["fei.new"].waitForExistence(timeout: 15)); app.buttons["fei.new"].tap()
-        let button = app.toolbars["fei.editor.toolbar"].buttons["fei.edit.table"]
+        let button = app.buttons["fei.edit.table"]
         XCTAssertTrue(button.waitForExistence(timeout: 5)); button.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         app.typeText("Synthetic table cell")

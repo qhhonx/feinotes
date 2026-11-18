@@ -52,7 +52,7 @@ final class LocalHistoryUITests: XCTestCase {
             XCTAssertTrue(row(label).waitForExistence(timeout: 5),app.debugDescription)
         }
         history(); nameFirst("第一版")
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["fei.history.close"].tap()
         XCTAssertTrue(app.navigationBars[prefix].waitForExistence(timeout: 5))
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.3,dy: 0.28)).tap(); app.typeText("\nSECOND34_"+stamp)
         history(); nameFirst("第二版")
@@ -64,9 +64,9 @@ final class LocalHistoryUITests: XCTestCase {
         XCTAssertFalse(app.buttons["fei.edit.keyboard"].exists)
         XCTAssertFalse(app.buttons["fei.edit.insert"].exists)
         app.buttons["fei.edit.history-marks"].tap(); shot("history34-02-read-only-preview")
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["fei.history.close"].tap()
         XCTAssertTrue(table.waitForExistence(timeout: 5))
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["fei.history.close"].tap()
         XCTAssertTrue(app.navigationBars[prefix].waitForExistence(timeout: 5)); shot("history34-03-returned-current-body")
         app.terminate(); app.launch()
         let original = app.tables["fei.notes.list"].cells.containing(.staticText,identifier: prefix).firstMatch

@@ -202,7 +202,7 @@ pub fn select_library(selection: LibrarySelection) -> Result<usize> {
 pub(crate) fn copy_note_to_local(id: &str) -> Result<String> {
     use crate::store::Store;
     ensure!(!local_only() && !crate::in_shared_note(), "{}", crate::settings::tr(
-        "请在个人 iCloud 文档库中复制笔记。", "Copy a note from your personal iCloud library."));
+        "请在个人 iCloud 文档库中复制文档。", "Copy a document from your personal iCloud library."));
     let source = Store::root_dir();
     let parent = source.parent().context("Missing local library folder")?;
     let root = parent.join("local-only");

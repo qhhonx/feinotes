@@ -4,11 +4,20 @@
 use anyhow::Result;
 use loro::LoroDoc;
 use rusqlite::{Connection, OptionalExtension, params};
-use crate::sharing::organizer::{KEY, Organizer, Placement};
+use crate::sharing::{organizer::{KEY, Organizer, Placement}, preferences::{self, Preferences}};
+
+const PREFS_SEEN: &str = "shared-personal-preferences-seen";
+
+fn setting(db: &Connection, key: &str) -> Result<Option<Vec<u8>>> {
+    Ok(db.query_row("SELECT value FROM library_values WHERE key=?1", [key], |row| row.get(0)).optional()?)
+}
+
+fn preferences(db: &Connection, key: &str) -> Result<Option<Preferences>> {
+    Ok(setting(db, key)?.map(|bytes| serde_json::from_slice(&bytes)).transpose()?)
+}
 
 fn read(db: &Connection, key: &str) -> Result<Organizer> {
-    let bytes: Option<Vec<u8>> = db.query_row("SELECT value FROM library_values WHERE key=?1", [key], |row| row.get(0)).optional()?;
-    Ok(bytes.map(|bytes| serde_json::from_slice(&bytes)).transpose()?.unwrap_or_default())
+    Ok(setting(db, key)?.map(|bytes| serde_json::from_slice(&bytes)).transpose()?.unwrap_or_default())
 }
 
 pub(super) fn capture(db: &Connection, doc: &LoroDoc) -> Result<()> {
@@ -19,6 +28,16 @@ pub(super) fn capture(db: &Connection, doc: &LoroDoc) -> Result<()> {
         if Some(value) != seen.0.get(key) { map.insert(key, serde_json::to_string(value)?)?; }
     }
     for key in seen.0.keys().filter(|key| !current.0.contains_key(*key)) { map.delete(key)?; }
+
+    let current = match preferences(db, preferences::KEY)? {
+        Some(values) => values,
+        None => Preferences::from_legacy(|key| setting(db, key))?,
+    };
+    let seen = preferences(db, PREFS_SEEN)?.unwrap_or_default();
+    let map = doc.get_map(preferences::KEY);
+    for (key, value) in current.0 {
+        if seen.0.get(&key) != Some(&value) { map.insert(&key, serde_json::to_string(&value)?)?; }
+    }
     Ok(())
 }
 
@@ -30,10 +49,24 @@ pub(super) fn project(db: &Connection, doc: &LoroDoc) -> Result<()> {
             projected.0.insert(key.to_string(), serde_json::from_str::<Placement>(&raw)?);
         }
     }
-    if projected == read(db, KEY)? && projected == read(db, "shared-personal-folders-seen")? { return Ok(()); }
-    let bytes = serde_json::to_vec(&projected)?;
-    for key in [KEY, "shared-personal-folders-seen"] {
-        db.execute("INSERT OR REPLACE INTO library_values(key,value) VALUES (?1,?2)", params![key, bytes])?;
+    if projected != read(db, KEY)? || projected != read(db, "shared-personal-folders-seen")? {
+        let bytes = serde_json::to_vec(&projected)?;
+        for key in [KEY, "shared-personal-folders-seen"] {
+            db.execute("INSERT OR REPLACE INTO library_values(key,value) VALUES (?1,?2)", params![key, bytes])?;
+        }
+    }
+    let map = doc.get_map(preferences::KEY);
+    let mut projected = Preferences::default();
+    for key in map.keys() {
+        if let Some(raw) = super::content::value(&map, &key) {
+            projected.0.insert(key.to_string(), serde_json::from_str(&raw)?);
+        }
+    }
+    if preferences(db, preferences::KEY)?.as_ref() != Some(&projected) || preferences(db, PREFS_SEEN)?.as_ref() != Some(&projected) {
+        let bytes = serde_json::to_vec(&projected)?;
+        for key in [preferences::KEY, PREFS_SEEN] {
+            db.execute("INSERT OR REPLACE INTO library_values(key,value) VALUES (?1,?2)", params![key, bytes])?;
+        }
     }
     Ok(())
 }

@@ -20,6 +20,15 @@ use super::viewport::{Viewport, get_normalized_zoom, get_viewport_for_zoom};
 use gpui::*;
 use rustc_hash::FxHashMap;
 
+#[cfg(target_os = "ios")]
+#[derive(Default)]
+pub(super) struct BoardTouch {
+    active: bool,
+    moved: bool,
+    double_tap_candidate: bool,
+    tap: Option<(std::time::Instant, Point<Pixels>)>,
+}
+
 /// The gesture in progress, from pointer down to up (`PointerDownState`
 /// plus the tool's transients).
 pub enum Gesture {
@@ -54,12 +63,24 @@ pub fn canvas_element(me: &BoardView, cx: &mut Context<BoardView>) -> impl IntoE
     canvas(
         // the canvas is the whole view: fit once its size is known, before
         // the first paint
-        move |b, _, cx| {
+        move |b, _window, cx| {
             bounds.set(b);
             if let Some(e) = fit.upgrade() { e.update(cx, |v, cx| if !v.fitted { v.fitted = true; v.zoom_to_fit(cx) }); }
+            #[cfg(target_os = "ios")]
+            return _window.insert_hitbox(b, HitboxBehavior::Normal);
         },
-        move |b, _, window, cx| {
+        move |b, _hitbox, window, cx| {
             let Some(e) = entity.upgrade() else { return };
+            #[cfg(target_os = "ios")]
+            {
+                let hitbox = _hitbox.clone();
+                let board = e.downgrade();
+                window.on_mouse_event(move |ev: &TouchDragEvent, phase, window, cx| {
+                    if phase.bubble() {
+                        let _ = board.update(cx, |me, cx| touch_drag(me, ev, &hitbox, window, cx));
+                    }
+                });
+            }
             // borrow the scene for the paint (no clone per frame)
             let (scene, files, faded, view, bg, pending) = e.update(cx, |v, _| {
                 let bg = super::render::color(super::color::color_or_black(&v.app.view_background_color), 1.);
@@ -120,6 +141,8 @@ pub fn css_cursor(s: &str) -> CursorStyle {
 /// element, so the layer listens to the window instead. The release reaches
 /// the board as `on_mouse_up_out` (the layer hides it); the wheel still scrolls.
 pub fn capture_layer(me: &BoardView, cx: &mut Context<BoardView>) -> Option<Div> {
+    #[cfg(target_os = "ios")]
+    if me.touch.active { return None; }
     me.gesture.as_ref()?;
     let view = cx.entity().downgrade();
     let listen = canvas(|_, _, _| {}, move |_, _, window, _| {
@@ -128,6 +151,48 @@ pub fn capture_layer(me: &BoardView, cx: &mut Context<BoardView>) -> Option<Div>
         });
     }).absolute().size_full();
     Some(div().absolute().inset_0().occlude().cursor(cursor(me)).on_scroll_wheel(cx.listener(wheel)).child(listen))
+}
+
+/// Claim touches that start on the drawing surface. Chrome and text fields
+/// occlude this hitbox and keep GPUI's ordinary tap and scroll handling.
+#[cfg(target_os = "ios")]
+fn touch_drag(me: &mut BoardView, ev: &TouchDragEvent, hitbox: &Hitbox, window: &mut Window, cx: &mut Context<BoardView>) {
+    match ev.phase {
+        TouchPhase::Started if !window.default_prevented() && hitbox.is_hovered(window) => {
+            window.prevent_default();
+            me.touch.active = true;
+            me.touch.moved = false;
+            me.touch.double_tap_candidate = me.touch.tap.take().is_some_and(|(at, p)| at.elapsed().as_millis() <= 360 && (p - ev.position).magnitude() <= 22.)
+                && matches!(me.app.active_tool.ty, ToolType::Selection | ToolType::Lasso);
+            if super::chrome::pop(cx).is_some() { super::chrome::set_pop(None, cx); }
+            down(me, &MouseDownEvent { position: ev.position, click_count: 1, ..Default::default() }, window, cx);
+        }
+        TouchPhase::Moved if me.touch.active => {
+            me.touch.moved |= (ev.position - ev.start_position).magnitude() > 6.;
+            moved(me, &MouseMoveEvent { position: ev.position, pressed_button: Some(MouseButton::Left), modifiers: Modifiers::default() }, window, cx);
+        }
+        TouchPhase::Ended if me.touch.active => {
+            me.touch.active = false;
+            let tapped = !me.touch.moved && (ev.position - ev.start_position).magnitude() <= 6.;
+            up(me, &MouseUpEvent { position: ev.position, ..Default::default() }, window, cx);
+            // The second contact can start a drag immediately after selecting.
+            // Only open the double-tap editor once that contact ends as a tap.
+            if tapped && me.touch.double_tap_candidate && me.multi.is_none() {
+                let p = me.scene_point(ev.position);
+                tools::selection::double_click(me, p, Mods::default(), window, cx);
+            } else if tapped {
+                me.touch.tap = Some((std::time::Instant::now(), ev.position));
+            }
+        }
+        TouchPhase::Cancelled if me.touch.active => {
+            // Finish at the last delivered point when UIKit interrupts a drag.
+            me.touch.active = false;
+            finish(me, me.pointer, Mods::default(), window, cx);
+            if me.multi.is_some() { tools::linear::finalize(me, cx); }
+        }
+        _ => return,
+    }
+    cx.stop_propagation();
 }
 
 pub fn listeners(d: Stateful<Div>, cx: &mut Context<BoardView>) -> Stateful<Div> {

@@ -94,6 +94,8 @@ pub struct BoardView {
     /// The canvas in window coordinates, from the last layout.
     pub(crate) bounds: Rc<Cell<Bounds<Pixels>>>,
     pub(crate) gesture: Option<canvas::Gesture>,
+    #[cfg(target_os = "ios")]
+    touch: canvas::BoardTouch,
     /// Space held: dragging pans.
     pub(crate) space: bool,
     /// Zoomed to fit once the canvas had a size.
@@ -184,6 +186,8 @@ impl BoardView {
             linear: None, multi: None, suggested: None, snap_lines: vec![], text: None, frame_name: None, frame_labels: vec![], font_cache: None, font_previewing: false, refocus: false, hover_cursor: CursorStyle::Arrow, pointer: point(px(0.), px(0.)),
             menu: None, help: false, copied_styles: vec![], flowchart: FlowChartCreator::default(), navigator: FlowChartNavigator::default(),
             faded: FxHashMap::default(), saved: 0, slider: false, aabbs: RefCell::default(), hits: RefCell::default(), chrome: None, chrome_quiet: Cell::new(false),
+            #[cfg(target_os = "ios")]
+            touch: canvas::BoardTouch::default(),
         };
         // the loaded scene is the baseline, not an undoable step
         v.store.schedule_action(CaptureUpdateAction::Never);

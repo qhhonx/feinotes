@@ -10,10 +10,11 @@ final class AboutUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait; app.launch()
         XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout: 15)); app.buttons["fei.settings"].tap()
         XCTAssertTrue(app.navigationBars["设置"].waitForExistence(timeout: 5))
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.579)).tap()
+        app.cells["fei.setting.page:About"].tap()
         XCTAssertTrue(app.navigationBars["关于"].waitForExistence(timeout: 5),app.debugDescription)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "原生 Markdown 文档应用")).firstMatch.exists)
         shot("about36-01-product-version-and-links")
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.84,dy: 0.654)).tap()
+        app.cells["fei.setting.notices"].tap()
         let done = app.navigationBars.buttons["fei.notices.done"].firstMatch
         XCTAssertTrue(done.waitForExistence(timeout: 10))
         let list = app.tables["fei.notices.list"]

@@ -15,7 +15,7 @@ final class BatchUITests: XCTestCase {
         XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout: 15))
         func home() { app.navigationBars.buttons["返回"].firstMatch.tap(); XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout: 5)) }
         for kind in ["A","B"] {
-            app.buttons["fei.library-actions"].tap(); app.sheets.buttons["导入笔记"].tap()
+            app.buttons["fei.library-actions"].tap(); app.sheets.buttons["导入文档"].tap()
             let file = app.cells.matching(NSPredicate(format: "label CONTAINS %@",prefix+"_"+kind)).firstMatch
             if !file.waitForExistence(timeout: 2) {
                 if app.buttons["浏览"].firstMatch.waitForExistence(timeout: 2) { app.buttons["浏览"].firstMatch.tap() }
@@ -40,7 +40,7 @@ final class BatchUITests: XCTestCase {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.3,dy: 0.155)).tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5)); app.typeText(prefix)
         func batch() {
-            app.buttons["fei.library-actions"].tap(); app.sheets.buttons["选择笔记"].tap()
+            app.buttons["fei.library-actions"].tap(); app.sheets.buttons["选择文档"].tap()
             XCTAssertTrue(app.tables["fei.batch.controls"].waitForExistence(timeout: 5),app.debugDescription)
         }
         func select(_ title: String) {

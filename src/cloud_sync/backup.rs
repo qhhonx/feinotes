@@ -359,7 +359,7 @@ pub(crate) fn prepare(root: &Path, source: &Path) -> Result<Prepared> {
         let root = shared::room_root(&stage.0, &room.scope.note)?;
         let marker = fs::read(root.join(READY))?;
         ensure!(owner(&marker)? == owner(&current)? && std::str::from_utf8(&marker)?.lines().nth(1) == Some("shared"),
-            "The backup includes a shared note from a different account.");
+            "The backup includes a shared document from a different account.");
         let database = root.join(SQLITE_FILE);
         check_version(&open_db(&database, OpenFlags::SQLITE_OPEN_READ_ONLY)?, supported)?;
         let info = validate_library(&database, &marker, &root)?;
@@ -437,7 +437,7 @@ pub(crate) fn install(root: &Path) -> Result<Option<File>> {
         for room in shared::rooms(library)? {
             let path = shared::room_root(library, &room.scope.note)?;
             room_locks.push(crate::cloud_restore::lock_library(&path)
-                .context("请关闭打开的共享笔记窗口，再重试恢复。")?);
+                .context("请关闭打开的共享文档窗口，再重试恢复。")?);
             if library == stage { Store::ensure_sqlite_wal(&open(&path)?)?; }
         }
     }

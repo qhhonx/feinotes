@@ -794,6 +794,26 @@ impl Editor {
         }
     }
 
+    #[cfg(target_os = "ios")]
+    pub(crate) fn mobile_slash_available(&self) -> bool {
+        let head = self.core.sel.head;
+        !self.read_only && head.block != TITLE && !self.core.is_code(head.block) &&
+            self.core.kind_of(head.block).is_some_and(|kind| kind.has_text())
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn toggle_mobile_slash_menu(&mut self, cx: &mut Context<Self>) {
+        if !self.mobile_slash_available() { return; }
+        let head = self.core.sel.head;
+        self.menu = None;
+        self.mention = None;
+        if self.slash.take().is_none() {
+            self.slash = Some(Slash { block: head.block, trigger: head.offset, start: head.offset, selected: 0 });
+            self.slash_scroll.set_offset(Point::default());
+        }
+        cx.notify();
+    }
+
     fn maybe_open_slash(&mut self, trigger_len: usize) {
         let h = self.core.sel.head;
         if h.block == TITLE || self.core.is_code(h.block) || h.offset < trigger_len {
@@ -953,8 +973,10 @@ impl Editor {
     ) {
         if let Some(s) = self.slash.take() {
             let end = self.core.sel.head.offset.max(s.start);
-            self.core.sel = Selection { anchor: Pos::new(s.block, s.trigger), head: Pos::new(s.block, end) };
-            self.core.delete_selection();
+            if s.trigger < end {
+                self.core.sel = Selection { anchor: Pos::new(s.block, s.trigger), head: Pos::new(s.block, end) };
+                self.core.delete_selection();
+            }
         }
         // 在下方添加 runs the item on a fresh line under the block.
         if let Some(Menu::Block { block, sub: Some(BlockSub::Add(_)) }) = self.menu {
@@ -1118,7 +1140,7 @@ impl Editor {
     #[cfg(target_os = "ios")]
     fn finish_mobile_image(&mut self, stamp: super::format_mobile::SelectionStamp, block: Result<Block,&str>, window: &mut Window, cx: &mut Context<Self>) {
         if !stamp.matches(self,stamp.serial,"image-picker") || self.read_only || !crate::cloud_sync::shared::can_edit_in(&self.library_root,cx) {
-            self.toast(crate::settings::tr("笔记已更新，请重新插入。","The note changed. Please insert again."),cx); return;
+            self.toast(crate::settings::tr("文档已更新，请重新插入。","The document changed. Please insert again."),cx); return;
         }
         match block { Ok(block)=>self.insert_image_block(block,window,cx),Err(message)=>self.toast(message,cx) }
     }
@@ -2663,6 +2685,8 @@ impl Editor {
         if ev.pressed_button.is_some() || matches!(self.menu, Some(Menu::Block { .. }) | Some(Menu::Add { .. })) {
             return;
         }
+        #[cfg(target_os = "ios")]
+        if !window.last_input_was_touch() && self.touch_block_handle_at(p,window,cx).is_some() { return; }
         let best = {
             let bb = self.block_bounds.borrow();
             let mut best: Option<(f32, BlockId)> = None;
@@ -2678,7 +2702,11 @@ impl Editor {
             }
             best.map(|(_, id)| id)
         };
-        if best.is_some() && best != self.hover {
+        #[cfg(target_os = "ios")]
+        let clear_hover = super::overlays::mobile_block_handles();
+        #[cfg(not(target_os = "ios"))]
+        let clear_hover = false;
+        if (best.is_some() || clear_hover) && best != self.hover {
             self.hover = best;
             cx.notify();
         }
@@ -2721,6 +2749,12 @@ impl Editor {
     }
 
     pub fn block_menu_action(&mut self, block: BlockId, act: BlockAct, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_block_menu_action(block,act,cx);
+        crate::gpui_compat::focus(window, &self.focus, cx);
+        self.changed(window, cx);
+    }
+
+    pub(super) fn apply_block_menu_action(&mut self, block: BlockId, act: BlockAct, cx: &mut Context<Self>) {
         // The 标题行 / 标题列 switches flip in place; the menu stays open.
         if !matches!(act, BlockAct::HeaderRow | BlockAct::HeaderCol) {
             self.menu = None;
@@ -2777,8 +2811,6 @@ impl Editor {
             BlockAct::HeaderCol => self.core.table_toggle_header_col(block),
             BlockAct::DistributeCols => self.core.table_distribute(block),
         }
-        crate::gpui_compat::focus(window, &self.focus, cx);
-        self.changed(window, cx);
     }
 
     pub fn scroll_to_block(&mut self, id: BlockId, cx: &mut Context<Self>) {

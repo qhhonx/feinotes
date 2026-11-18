@@ -9,7 +9,7 @@ final class FilePickerUITests: XCTestCase {
         let app = XCUIApplication(); app.launchEnvironment["FEI_NOTES_MODE"] = "local"
         XCUIDevice.shared.orientation = .portrait; app.launch()
         XCTAssertTrue(app.buttons["fei.library-actions"].waitForExistence(timeout: 15)); app.buttons["fei.library-actions"].tap()
-        app.sheets.buttons["导入笔记"].tap()
+        app.sheets.buttons["导入文档"].tap()
         XCTAssertTrue(app.navigationBars["FullDocumentManagerViewControllerNavigationBar"].waitForExistence(timeout: 5),app.debugDescription)
         shot("picker37-01-import-presentation")
         let cancel = app.buttons.matching(NSPredicate(format: "label IN %@",["取消","Cancel"])).firstMatch
@@ -18,7 +18,7 @@ final class FilePickerUITests: XCTestCase {
         let picker = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: picker)],timeout: 5),.completed)
         XCTAssertTrue(app.buttons["fei.library-actions"].waitForExistence(timeout: 5)); app.buttons["fei.library-actions"].tap()
-        app.sheets.buttons["导入笔记"].tap()
+        app.sheets.buttons["导入文档"].tap()
         XCTAssertTrue(picker.waitForExistence(timeout: 5)); XCTAssertTrue(cancel.waitForExistence(timeout: 5)); cancel.tap()
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: picker)],timeout: 5),.completed)
         app.buttons["fei.library-actions"].tap(); app.sheets.buttons["从备份恢复"].tap()

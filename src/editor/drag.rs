@@ -235,7 +235,20 @@ impl Editor {
         cx.notify();
     }
 
+    #[cfg(target_os = "ios")]
+    pub(super) fn cancel_block_drag(&mut self,cx:&mut Context<Self>) {
+        if self.block_drag.take().is_some() {
+            self.toolbar_hidden = false;
+            cx.notify();
+        }
+    }
+
     pub(super) fn end_block_drag(&mut self, at: Option<Point<Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "ios")]
+        if self.read_only || !crate::cloud_sync::shared::can_edit_in(&self.library_root,cx) {
+            self.cancel_block_drag(cx);
+            return;
+        }
         let Some(d) = self.block_drag.take() else { return };
         if !d.started {
             return;

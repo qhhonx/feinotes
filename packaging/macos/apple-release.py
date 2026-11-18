@@ -191,8 +191,8 @@ def beta_notes(build):
     require(build["attributes"].get("usesNonExemptEncryption") is not None,
             "Answer Apple's export-compliance question for this build before distribution")
     notes = {
-        "en-US": "Write a local note, then turn on iCloud Sync. Edit the same sample note on a second Mac. You can also share and edit a sample note with a second Apple Account. Cloud access is included during TestFlight testing without a subscription.",
-        "zh-Hans": "先写一篇本机笔记，再开启 iCloud 同步，在第二台 Mac 编辑同一篇样本笔记。也可以邀请另一个 Apple 账户一起编辑。TestFlight 测试期间可直接使用云功能，无需订阅。",
+        "en-US": "Create a document in your local library, then turn on iCloud Sync. Edit the same sample document on a second Mac. You can also share and edit a sample document with a second Apple Account. Cloud access is included during TestFlight testing without a subscription.",
+        "zh-Hans": "先在本机文档库新建一篇文档，再开启 iCloud 同步，在第二台 Mac 编辑同一篇示例文档。也可以邀请另一个 Apple 账户一起编辑。TestFlight 测试期间可直接使用云功能，无需订阅。",
     }
     directory = os.environ.get("FEI_BETA_NOTES_DIR")
     if directory:

@@ -28,6 +28,12 @@ impl Organizer {
         self.0.entry(id.to_string()).or_default().parent = parent.map(str::to_string);
         Ok(())
     }
+    pub(super) fn is_folder(&self, id: &str) -> bool { self.0.get(id).is_some_and(|row| row.title.is_some()) }
+
+    pub(super) fn parent(&self, id: &str) -> Option<String> {
+        self.0.get(id).and_then(|row| row.parent.as_ref()).filter(|parent| *parent != id && self.is_folder(parent)).cloned()
+    }
+
     pub(super) fn folders(&self) -> impl Iterator<Item=Entry> + '_ {
         self.0.iter().filter_map(|(id, placement)| {
             let title = placement.title.clone()?;
@@ -38,13 +44,19 @@ impl Organizer {
 }
 
 pub(crate) fn reload(cx: &mut App) {
-    if let Ok(tree) = Organizer::load() && cx.try_global::<Organizer>() != Some(&tree) { cx.set_global(tree); }
+    let mut changed = super::preferences::reload(cx);
+    if let Ok(tree) = Organizer::load() && cx.try_global::<Organizer>() != Some(&tree) {
+        cx.set_global(tree);
+        changed = true;
+    }
+    if changed { sidebar::notify(cx); }
 }
 
 impl Workspace {
     pub(crate) fn rename_collection(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        let title = cx.global::<Organizer>().0.get(&id).and_then(|p| p.title.clone()).unwrap_or_default();
-        self.personal_collection(None, window, cx); self.sharing.edit_collection = Some(id);
+        if self.sharing.busy { return; }
+        let Some(title) = cx.global::<Organizer>().0.get(&id).and_then(|p| p.title.clone()) else { return; };
+        self.sharing_sheet(Sheet::RenameCollection(id), window, cx);
         self.sharing.folder_name.update(cx, |field, cx| field.set_text(&title, cx));
     }
     pub(crate) fn remove_collection(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -57,27 +69,15 @@ impl Workspace {
         self.row_menu = None; cx.notify();
     }
 
-    pub(crate) fn personal_collection(&mut self, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        self.sharing_sheet(Sheet::Collection(parent), window, cx);
-        self.sharing.folder_name.update(cx, |field, cx| field.set_text("", cx));
-    }
-    pub(super) fn save_collection(&mut self, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn save_collection_name(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let title = self.sharing.folder_name.read(cx).text.trim().to_owned();
         if title.is_empty() { return; }
-        let editing = self.sharing.edit_collection.take();
-        let id = editing.clone().unwrap_or_else(|| format!("collection-{}", uuid::Uuid::new_v4()));
         let result = self.update_organizer(cx, |tree| {
-            if editing.is_none() { tree.place(&id, parent.as_deref())?; }
-            anyhow::ensure!(tree.0.contains_key(&id), "Folder unavailable");
-            tree.0.get_mut(&id).unwrap().title = Some(title);
+            let name = tree.0.get_mut(id).and_then(|p| p.title.as_mut()).ok_or_else(|| anyhow::anyhow!("Folder unavailable"))?;
+            *name = title;
             Ok(())
         });
-        if result {
-            self.sharing.collection = parent.clone();
-            if let Some(parent) = parent { self.expanded.insert(parent); }
-            self.sharing.folded = false;
-            self.close_sharing(window, cx);
-        }
+        if result { self.close_sharing(window, cx); }
     }
     pub(super) fn update_organizer(&mut self, cx: &mut Context<Self>, change: impl FnOnce(&mut Organizer) -> anyhow::Result<()>) -> bool {
         let result = (|| {

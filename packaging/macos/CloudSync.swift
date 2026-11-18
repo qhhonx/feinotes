@@ -195,6 +195,8 @@ private struct Changes: Encodable {
     var more = false
     var error: String?
     var errorKind: String?
+    var errorStage: String?
+    var cursorAdvanced = false
     var legacy = false
     var roomAccess: ShareAccess?
     var cursorReplayed = false
@@ -206,7 +208,6 @@ private func syncErrorKind(_ error: Error) -> String {
     if case CloudAccessError.required = error { return "subscriptionRequired" }
     if case CloudAccessError.testflightVerification = error { return "testflightVerification" }
     if case SyncError.account = error { return "account" }
-    if case SyncError.timeout = error { return "offline" }
     if case ShareError.account = error { return "accountChanged" }
     if case ShareError.signedOut = error { return "signedOut" }
     guard let error = error as? CKError else { return "other" }
@@ -311,7 +312,7 @@ private func push(_ edits: [Edit], to db: CKDatabase, in zone: CKRecordZone.ID,
     return (done, done.count != edits.count)
 }
 
-private func exchange(_ request: Exchange, revision: UInt64) async throws -> Changes {
+private func exchange(_ request: Exchange, revision: UInt64, completion: SyncCompletion) async throws -> Changes {
     #if !FEI_CLOUD_QA
     guard request.channel == nil, request.expireCursorForQA != true, request.uploadFaultForQA == nil else { throw SyncError.invalid }
     #else
@@ -349,6 +350,7 @@ private func exchange(_ request: Exchange, revision: UInt64) async throws -> Cha
     let saved = tracksInventory ? request.token.flatMap { try? JSONDecoder().decode(InventoryCursor.self, from: $0) } : nil
     let rawToken = tracksInventory ? saved?.token : request.token
     var token = rawToken.flatMap { try? NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: $0) }
+    let previousToken = token
     var generation = saved?.generation
     if token == nil && request.room == nil {
         do { _ = try await db.recordZone(for: syncZone) }
@@ -363,6 +365,7 @@ private func exchange(_ request: Exchange, revision: UInt64) async throws -> Cha
     if tracksInventory && token != nil && saved?.ready == true && access != .readOnly {
         guard request.maintenance == nil || access == nil || access == .owner else { throw SyncError.invalid }
         try checkCloudAccountRevision(revision)
+        if !request.edits.isEmpty || request.maintenance != nil { completion.setStage("uploading") }
         do { (uploaded, uploadQuotaExceeded) = try await push(request.edits, to: db, in: syncZone,
             maintenance: request.maintenance, generation: generation, uploadFaultForQA: request.uploadFaultForQA, revision: revision) }
         catch {
@@ -382,6 +385,7 @@ private func exchange(_ request: Exchange, revision: UInt64) async throws -> Cha
         try await Task.sleep(for: .seconds(7))
     }
     #endif
+    completion.setStage("downloading")
     var expireCursor = request.expireCursorForQA == true && request.channel != nil
     var replayed = false
     while true {
@@ -452,7 +456,7 @@ private func exchange(_ request: Exchange, revision: UInt64) async throws -> Cha
             let receipt = tracksInventory ? InventoryReceipt(chunks: chunks, reset: token == nil, ready: ready,
                 deleted: page.deletions.map { $0.recordID.recordName }) : nil
             return Changes(retention: receipt, uploaded: uploaded, edits: edits, token: cursor, more: page.moreComing,
-                           legacy: request.legacy, roomAccess: access, cursorReplayed: replayed,
+                           cursorAdvanced: page.changeToken != previousToken, legacy: request.legacy, roomAccess: access, cursorReplayed: replayed,
                            uploadQuotaExceeded: uploadQuotaExceeded)
         } catch let error as CKError where error.code == .changeTokenExpired && token != nil {
             token = nil // Loro imports are idempotent, so replay is safe.
@@ -469,6 +473,11 @@ private func exchange(_ request: Exchange, revision: UInt64) async throws -> Cha
 private final class SyncCompletion: @unchecked Sendable {
     let done = DispatchSemaphore(value: 0)
     var reply = Changes()
+    private let stageLock = NSLock()
+    private var stage = "connecting"
+
+    func setStage(_ value: String) { stageLock.withLock { stage = value } }
+    func currentStage() -> String { stageLock.withLock { stage } }
 }
 
 @_cdecl("quiet_cloud_exchange")
@@ -479,7 +488,7 @@ public func quietCloudExchange(_ json: UnsafePointer<CChar>) -> UnsafeMutablePoi
     let revision = quietCloudAccountRevision()
     let worker = Task.detached {
         do {
-            let reply = try await exchange(request.get(), revision: revision)
+            let reply = try await exchange(request.get(), revision: revision, completion: completion)
             try checkCloudAccountRevision(revision)
             completion.reply = reply
         } catch {
@@ -499,7 +508,7 @@ public func quietCloudExchange(_ json: UnsafePointer<CChar>) -> UnsafeMutablePoi
                 FileHandle.standardError.write(Data("CloudKit QA error \(codes.joined(separator: " → "))\n".utf8))
             }
             #endif
-            completion.reply = Changes(error: failure.localizedDescription, errorKind: syncErrorKind(failure))
+            completion.reply = Changes(error: failure.localizedDescription, errorKind: syncErrorKind(failure), errorStage: completion.currentStage())
         }
         completion.done.signal()
     }
@@ -513,7 +522,7 @@ public func quietCloudExchange(_ json: UnsafePointer<CChar>) -> UnsafeMutablePoi
         reply = completion.reply
     } else {
         worker.cancel()
-        reply = Changes(error: SyncError.timeout.localizedDescription, errorKind: syncErrorKind(SyncError.timeout))
+        reply = Changes(error: SyncError.timeout.localizedDescription, errorKind: syncErrorKind(SyncError.timeout), errorStage: completion.currentStage())
     }
     guard let bytes = try? JSONEncoder().encode(reply) else { return nil }
     return strdup(String(decoding: bytes, as: UTF8.self))

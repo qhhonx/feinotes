@@ -13,7 +13,7 @@ fn root() -> Option<PathBuf> {
 
 pub(super) fn enabled() -> bool { root().is_some() }
 
-fn reply() -> Reply { Reply { scope: None, title: None, url: None, members: vec![], error: None, error_kind: None } }
+fn reply() -> Reply { Reply { scope: None, title: None, url: None, audience: Audience::Invited, members: vec![], error: None, error_kind: None, owned_rooms: None } }
 
 pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
     let root = root()?;
@@ -34,11 +34,31 @@ pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
         ensure!(scope.owner.is_none(), "Only synthetic owners manage invitations");
         let path = root.join(format!("qa-members-{}.json", scope.note));
         let mut result = if path.is_file() { serde_json::from_slice(&fs::read(&path)?)? } else { reply() };
-        result.url = Some("https://www.icloud.com/share/synthetic-fei-ui".into());
+        if !path.is_file() && room_root(&root.join("a".repeat(64)), &scope.note)?.join(LINK_PENDING).is_file() {
+            result.audience = Audience::LinkDraft;
+        }
         match command.action {
             "members" => {},
+            "publishLink" => {
+                if root.join("fail-link-write-once").is_file() {
+                    fs::remove_file(root.join("fail-link-write-once"))?;
+                    result.error = Some("Cannot perform action due to region".into());
+                    result.error_kind = Some("linkRegionRestricted".into());
+                    return Ok(result);
+                }
+                ensure!(matches!(result.audience, Audience::LinkDraft | Audience::LinkReadOnly | Audience::LinkClosed)
+                    && !scope.folder && result.members.is_empty(), "Cannot reopen a private invitation as a public link");
+                if result.audience == Audience::LinkDraft { result.audience = Audience::LinkReadOnly; }
+            }
+            "closeLink" => {
+                ensure!(result.audience.link_active() || result.audience == Audience::LinkClosed, "No public link");
+                result.audience = Audience::LinkClosed;
+                result.members.clear();
+            }
             "invite" => {
+                ensure!(result.audience.can_invite(), "Individual invitations require private access");
                 if root.join("fail-invite-once").is_file() { fs::remove_file(root.join("fail-invite-once"))?; anyhow::bail!("Synthetic invitation failed. Retry this shared note."); }
+                result.audience = Audience::Invited;
                 result.members.push(Member { id: "synthetic-participant".into(), name: "".into(), permission: command.permission.context("Missing permission")?, accepted: false });
             }
             "permission" => result.members.iter_mut().find(|member| Some(member.id.as_str()) == command.participant)
@@ -46,7 +66,14 @@ pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
             "revoke" => result.members.retain(|member| Some(member.id.as_str()) != command.participant),
             _ => anyhow::bail!("Unexpected synthetic share command"),
         }
+        result.url = (result.audience == Audience::Invited || result.audience.link_active())
+            .then(|| "https://www.icloud.com/share/synthetic-fei-ui".into());
         fs::write(path, serde_json::to_vec(&result)?)?;
+        if command.action == "publishLink" && root.join("fail-link-reply-once").is_file() {
+            fs::remove_file(root.join("fail-link-reply-once"))?;
+            result.error = Some("Synthetic publication acknowledgement lost".into());
+            result.error_kind = Some("shareTimeout".into());
+        }
         Ok(result)
     })())
 }

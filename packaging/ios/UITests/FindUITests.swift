@@ -89,7 +89,7 @@ final class FindUITests: XCTestCase {
         shot("find-05-replace-all-undo")
         closeFind()
         app.buttons["fei.more"].tap()
-        app.sheets.buttons["笔记选项"].tap()
+        app.sheets.buttons["文档选项"].tap()
         app.sheets.buttons["阅读模式"].tap()
         app.buttons["fei.more"].tap()
         app.sheets.buttons["文档内查找"].tap()

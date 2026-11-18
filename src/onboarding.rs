@@ -608,7 +608,7 @@ impl Onboarding {
                 .on_click(cx.listener(move |w, _, _, cx| { w.lang_menu = if open { None } else { Some(current) }; cx.notify(); })));
         let lib = card(arrive(since, 0.3, 0.8))
             .child(card_icon("folder"))
-            .child(card_text(short_path(&self.root).into(), tr("笔记以文件保存在这里，在访达里也能直接打开", "Notes are saved here as files you can open in Finder").into(), false))
+            .child(card_text(short_path(&self.root).into(), tr("文档以文件保存在这里，在访达里也能直接打开", "Documents are saved here as files you can open in Finder").into(), false))
             .child(soft_button("onb-change", tr("更改…", "Change…")).on_click(cx.listener(|w, _, window, cx| w.pick_folder(true, window, cx))));
         let hotkey = cfg!(target_os = "macos").then(|| {
             let key = if self.recording { String::new() } else { self.hotkey.clone() };
@@ -619,7 +619,7 @@ impl Onboarding {
             };
             card(arrive(since, 0.42, 0.8))
                 .child(card_icon("keyboard"))
-                .child(card_text(tr("随手记", "Quick note").into(), desc.into(), error))
+                .child(card_text(tr("快速新建文档", "Quick document").into(), desc.into(), error))
                 .child(soft_button("onb-hotkey", "").min_w(px(96.)).when(self.recording, |d| d.bg(Theme::fill_hover_strong()).text_color(Theme::text_caption()))
                     .child(if self.recording { tr("按下组合键…", "Press keys…").to_string() } else { crate::shortcuts::pretty(&key) })
                     .on_click(cx.listener(|w, _, window, cx| w.start_recording(window, cx))))
@@ -631,7 +631,7 @@ impl Onboarding {
             .child(div().flex().flex_col().items_center().gap(px(12.)).opacity(a).relative().top(px(10. * (1. - a)))
                 .child(div().size(px(64.)).rounded(px(15.)).overflow_hidden().shadow(theme::shadow_card()).child(img(crate::settings::about_icon()).size_full()))
                 .child(lifted(over, 56., 64., true, false, "Quiet.md"))
-                .child(lifted(over, 15., 23., false, true, tr("一个又快又安静的本地笔记应用。", "A fast, quiet, local notes app."))))
+                .child(lifted(over, 15., 23., false, true, tr("一个又快又安静的本地文档应用。", "A fast, quiet, local document app."))))
             .child(div().w_full().max_w(px(560.)).mt(px(40.)).flex().flex_col().gap(px(12.))
                 .child(lang)
                 .child(lib)
@@ -701,7 +701,7 @@ impl Onboarding {
             let can: Vec<usize> = (0..found.len()).collect();
             let all = !can.is_empty() && can.iter().all(|&i| self.chosen.get(i).copied().unwrap_or(false));
             let head = div().w_full().px(px(4.)).flex().items_center().justify_between()
-                .child(lifted(over, 12., 16., false, true, crate::localized_format!("在这台电脑上找到 {} 处笔记", "Notes found on this computer ({})", found.len())))
+                .child(lifted(over, 12., 16., false, true, crate::localized_format!("在这台电脑上找到 {} 个文档库", "Document libraries found on this computer ({})", found.len())))
                 .when(can.len() > 1, |d| d.child(soft_button("onb-all", if all { tr("全不选", "Select none") } else { tr("全选", "Select all") })
                     .when(over, |b| b.bg(hsla(0., 0., 0., 0.28)).text_color(gpui::white()).hover(|s| s.bg(hsla(0., 0., 0., 0.4))))
                     .on_click(cx.listener(move |w, _, _, cx| { for &i in &can { if let Some(c) = w.chosen.get_mut(i) { *c = !all; } } cx.notify(); }))));
@@ -711,7 +711,7 @@ impl Onboarding {
         // Auto margins centre it while it fits; taller, it starts at the top and scrolls.
         div().id("onb-scroll").size_full().overflow_y_scroll().flex().flex_col().items_center().px(px(48.)).pt(px(56.)).pb(px(88.))
             .child(div().my_auto().flex_none().w_full().max_w(px(560.)).flex().flex_col().gap(px(24.)).opacity(a).relative().top(px(10. * (1. - a)))
-                .child(heading(over, tr("带上已有的笔记", "Bring your notes"), tr("导入的是副本，原来的文件不会被改动。也可以跳过，以后从菜单导入。", "Imports are copies; your files stay as they are. You can skip this and import later.")))
+                .child(heading(over, tr("带上已有的文档", "Import your documents"), tr("导入的是副本，原来的文件不会被改动。也可以跳过，以后从菜单导入。", "Imports are copies; your files stay as they are. You can skip this and import later.")))
                 .child(sheet(None, pick_rows))
                 .children(found.map(|(head, rows)| sheet(Some(head.into_any_element()), rows)))
                 .children(self.error.clone().map(|e| note_owned(e, true))))

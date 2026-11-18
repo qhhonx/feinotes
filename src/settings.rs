@@ -101,8 +101,8 @@ pub fn browser_at(i: usize) -> String {
     i.checked_sub(1).and_then(|i| browsers().get(i).copied()).unwrap_or_default().to_string()
 }
 pub(crate) fn product_about_description() -> &'static str {
-    if cfg!(target_os="ios") { tr("离线记笔记，可开启 iCloud 同步。","Take notes offline, with optional iCloud sync.") }
-    else { tr("在 Mac 上离线记笔记，可开启 iCloud 同步。","Take notes offline on your Mac, with optional iCloud sync.") }
+    tr("飞记是一款原生 Markdown 文档应用。启用 iCloud 后，支持跨设备同步和多人实时协作。",
+        "Fei Notes is a native Markdown document app. Enable iCloud to sync across devices and collaborate in real time.")
 }
 
 /// Whether ⌘N should make a Markdown file: the preferred 快捷新建 type, or the
@@ -256,7 +256,12 @@ pub fn sync_dark(cx: &App) -> bool {
     let on = match prefs().appearance.as_str() {
         "light" => false,
         "dark" => true,
-        _ => matches!(cx.window_appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark),
+        _ => {
+            #[cfg(target_os = "ios")]
+            { let _ = cx; unsafe extern "C" { fn fei_ios_system_dark() -> bool; } unsafe { fei_ios_system_dark() } }
+            #[cfg(not(target_os = "ios"))]
+            { matches!(cx.window_appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark) }
+        },
     };
     let changed = theme::set_dark(on);
     if changed { themes::touch(); }
@@ -363,11 +368,11 @@ impl Page {
             Page::General => tr("通用", "General"),
             Page::Appearance => tr("外观", "Appearance"),
             Page::Shortcuts => tr("快捷键", "Shortcuts"),
-            Page::Library => tr("文档库", "Documents"),
+            Page::Library => tr("文档库", "Library"),
             #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
             Page::Cloud => tr("iCloud 同步", "iCloud Sync"),
             #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
-            Page::Shared => tr("共享笔记", "Shared Notes"),
+            Page::Shared => tr("共享文档", "Shared documents"),
             Page::About => tr("关于", "About"),
         }
     }
@@ -536,9 +541,10 @@ fn sample_page(t: &themes::Theme, s: f32) -> Div {
         .border_1().border_color(st.color("code.border").unwrap_or_else(|| st.token("code_chip_border"))).font_family(mono.clone()).text_color(st.color("code.color").unwrap_or(text)).child(s);
     let para = p(div().flex().flex_wrap().items_center())
         .child(format!("{}{}", crate::app_name(), tr(" 是一款", " is a ")))
-        .child(div().font_weight(FontWeight(st.num("strong.weight"))).text_color(st.color("strong.color").unwrap_or(text)).child(tr("安静的本地笔记应用", "quiet, local notes app")))
+        .child(div().font_weight(FontWeight(st.num("strong.weight"))).text_color(st.color("strong.color").unwrap_or(text)).child(tr("安静的本地文档应用", "quiet, local document app")))
         .child(tr("，", ", "))
-        .child(tr("文档就是电脑上的文件。", "your notes are files. "))
+        .child(if crate::FEI_NOTES { tr("离线也能写作。", "write offline. ") }
+            else { tr("文档就是电脑上的文件。", "your documents are files. ") })
         .child(tr("输入 ", "Type "))
         .child(chip("/"))
         .child(tr(" 插入内容，", " to insert, "))
@@ -564,7 +570,7 @@ fn sample_page(t: &themes::Theme, s: f32) -> Div {
     let quote = div().flex().gap(sc((st.num("quote.indent") - st.num("quote.bar")).max(4.)))
         .child(div().flex_none().w(sc(st.num("quote.bar")).max(px(1.))).rounded(px(1.)).bg(st.color("quote.bar-color").unwrap_or_else(|| st.token("quote_bar"))))
         .child(p(div()).text_color(st.color("quote.color").unwrap_or(text)).when(st.flag("quote.italic"), |d| d.italic()).child(if crate::FEI_NOTES {
-            tr("这是一篇示例笔记，可以自由修改。", "This is a sample note. Edit it freely.")
+            tr("这是一篇示例文档，可以自由修改。", "This is a sample document. Edit it freely.")
         } else { tr("每一篇指南都是用 Quiet.md 写成的，放心修改。", "Every guide is written in Quiet.md. Edit them freely.") }));
     let callout = div().px(sc(st.num("callout.pad-x"))).py(sc(st.num("callout.pad-y"))).rounded(sc(st.num("callout.radius")))
         .bg(st.named("callout", "light-yellow").unwrap_or_else(|| st.token("code_chip")))
@@ -1128,7 +1134,7 @@ impl Workspace {
 
     fn library_page(&self, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        if shared::scope(&self.store, cx).is_some() { return group(None, vec![cloud_sync_row(self.store.root(), cx)]).into_any_element(); }
+        if shared::scope(&self.store, cx).is_some() { return group(None, vec![cloud_sync_row(self, cx)]).into_any_element(); }
         let root = crate::store::Store::root_dir();
         let location = if cfg!(target_os = "windows") { root.display().to_string() } else {
             dirs::home_dir().and_then(|h| root.strip_prefix(h).ok().map(|r| format!("~/{}", r.display()))).unwrap_or_else(|| root.display().to_string())
@@ -1166,7 +1172,7 @@ impl Workspace {
         div().w_full().flex().flex_col().pt(px(8.)).gap(px(16.))
             .child(group(Some(tr("导入", "Import")), vec![
                 row(tr("从 Quiet.md 导入", "Import from Quiet.md"),
-                    desc(tr("将笔记复制到当前文档库。", "Copy notes into your current library.")),
+                    desc(tr("将文档复制到当前文档库。", "Copy documents into your current library.")),
                     button("import-legacy-library", tr("选择文件夹…", "Choose Folder…"))
                         .on_click(cx.listener(|w, _, window, cx| w.import_legacy_library(window, cx)))).into_any_element(),
             ]))
@@ -1193,7 +1199,7 @@ impl Workspace {
     fn cloud_rows(&self, cx: &mut Context<Self>) -> Div {
         let local = crate::cloud_restore::local_only();
         let mut rows = vec![self.library_mode_row(cx).into_any_element()];
-        if !local { rows.insert(0, cloud_sync_row(self.store.root(), cx)); }
+        if !local { rows.insert(0, cloud_sync_row(self, cx)); }
         if !local { rows.extend(self.sync_issues_rows(cx)); }
         if crate::cloud_trial::testflight() {
             rows.push(row("TestFlight", desc(tr("内测期间可直接使用 iCloud 同步和协作。",
@@ -1210,8 +1216,8 @@ impl Workspace {
         let summary = state.message.as_deref().unwrap_or(match active {
             Some(Plan::Annual) => tr("已订阅年付方案。", "Your annual subscription is active."),
             Some(Plan::Monthly) => tr("已订阅月付方案。", "Your monthly subscription is active."),
-            None => tr("本机笔记免费。订阅包含 iCloud 同步和协作。",
-                "Local notes are free. A subscription includes iCloud sync and collaboration."),
+            None => tr("本机文档库免费使用。订阅包含 iCloud 同步和协作。",
+                "The local library is free to use. A subscription includes iCloud sync and collaboration."),
         });
         let load = if state.busy { setting_status(tr("正在查询 App Store", "Checking the App Store")).into_any_element() }
             else { button("cloud-subscription-load", if state.show_plans { tr("收起方案", "Hide Plans") } else { tr("查看方案", "View Plans") })
@@ -1395,8 +1401,8 @@ impl Workspace {
         };
         group(Some(tr("备份与恢复", "Backup and Restore")), vec![
             row(tr("创建整库备份", "Back Up Library"),
-                Some(tr("包含笔记、文件夹、回收站、附件和待同步改动。",
-                    "Includes notes, folders, Trash, attachments, and pending changes.").into()),
+                Some(tr("包含文档、文件夹、回收站、附件和待同步改动。",
+                    "Includes documents, folders, Trash, attachments, and pending changes.").into()),
                 button("create-library-backup", tr("选择保存文件夹…", "Choose Backup Folder…"))
                     .on_click(cx.listener(|w, _, window, cx| w.library_backup(false, window, cx)))).into_any_element(),
             row(if error.is_some() || scheduled { tr("尚未恢复备份", "Backup Restore Incomplete") }
@@ -1499,7 +1505,7 @@ impl Workspace {
     fn sync_issues_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(status) = crate::cloud_sync::status(self.store.root(), cx) else { return vec![]; };
         let expanded = self.sync_issues.is_some();
-        if !expanded && status.held == 0 && status.attachments == 0 { return vec![]; }
+        if !expanded && status.held == 0 && status.attachments == 0 && status.conflicts == 0 { return vec![]; }
         let action = if expanded { tr("收起", "Hide Details") } else { tr("查看详情", "Show Details") };
         let mut rows = vec![row(tr("未同步的内容", "Items That Couldn’t Sync"), None,
             button("cloud-issues", action).on_click(cx.listener(|w, _, _, cx| {
@@ -1519,18 +1525,22 @@ impl Workspace {
             for issue in issues {
                 let id = issue.id.clone();
                 let trashed = issue.trashed;
-                let title = crate::model::display_title(&issue.title);
                 let detail = sync_issue_detail(issue);
+                let Some(title) = issue.title.as_deref() else {
+                    rows.push(row(tr("尚未载入的文档", "Document not yet loaded"), Some(detail.into()), div()).into_any_element());
+                    continue;
+                };
+                let title = crate::model::display_title(title);
                 rows.push(row(title, Some(detail.into()),
                     button(SharedString::from(format!("open-sync-issue-{}", issue.id)),
-                        if trashed { tr("打开回收站", "Open Trash") } else { tr("打开笔记", "Open Note") })
+                        if trashed { tr("打开回收站", "Open Trash") } else { tr("打开文档", "Open Document") })
                         .on_click(cx.listener(move |w, _, window, cx| {
                             if trashed { w.show_view(View::Trash, cx); }
                             else { w.open(&id, window, cx); }
                         }))).into_any_element());
             }
             if issues.len() == 30 {
-                rows.push(row(tr("显示前 30 篇待处理笔记", "Showing the First 30 Affected Notes"), None, div()).into_any_element());
+                rows.push(row(tr("显示前 30 篇待处理文档", "Showing the First 30 Affected Documents"), None, div()).into_any_element());
             }
         }
         rows
@@ -1542,7 +1552,7 @@ impl Workspace {
         let local = crate::cloud_restore::local_only();
         let fallback = crate::cloud_restore::startup_fallback();
         let title = tr("文档库", "Library");
-        let detail = if local { fallback.unwrap_or(tr("笔记保存在这台 Mac。", "Notes are stored on this Mac.")) }
+        let detail = if local { fallback.unwrap_or(tr("文档保存在这台 Mac。", "Documents are stored on this Mac.")) }
         else if crate::cloud_sync::status(self.store.root(), cx).is_some_and(|status| matches!(status.phase, SyncPhase::AccountChanged | SyncPhase::SignedOut)) {
             tr("当前打开的是原 iCloud 文档库的本机副本。", "A local copy of the previous iCloud library is open.")
         }
@@ -1653,15 +1663,15 @@ impl Workspace {
         let version = env!("CARGO_PKG_VERSION");
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let version = release_bundle_string(c"CFBundleShortVersionString").unwrap_or_else(|| version.into());
-        #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
-        let version = release_bundle_string(c"CFBundleVersion").map(|build| format!("{version} ({build})")).unwrap_or(version);
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let version = release_bundle_string(c"CFBundleVersion").filter(|build| !build.is_empty()).map(|build| format!("{version} ({build})")).unwrap_or(version);
         div().w_full().flex().flex_col().gap(px(28.)).child(div().w_full().pt(px(24.)).flex().flex_col().items_center().gap(px(10.))
             .child(img(about_icon()).size(px(88.)))
             .child(div().text_size(px(20.)).line_height(px(26.)).font_weight(FontWeight::SEMIBOLD).child(crate::app_name()))
             .child(div().text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 5.)).text_color(Theme::text_caption()).child(format!("{} {}", tr("版本", "Version"), version)))
             .child(div().text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 7.)).text_color(Theme::text_caption()).child(if crate::FEI_NOTES {
                 product_about_description()
-            } else { tr("本地优先的笔记应用：无需账号，文档就是你电脑上的文件。", "Local-first notes: no account, your documents are files on your Mac.") }))
+            } else { tr("本地优先的文档应用：无需账号，文档就是你电脑上的文件。", "A local-first document app. Your documents are stored as files on your Mac, with no account required.") }))
             .when(crate::FEI_NOTES, |d| d.child(div().text_size(px(crate::mobile::detail(12.))).text_color(Theme::text_caption())
                 .child(tr("基于 Quiet.md 开发", "Based on Quiet.md")))))
             .children(release_rows)
@@ -1674,9 +1684,13 @@ impl Workspace {
 fn sync_issue_detail(issue: &crate::cloud_sync::SyncIssue) -> String {
     use crate::cloud_sync::AssetProblem;
                 let mut detail = Vec::new();
+                if issue.conflict {
+                    detail.push(tr("这篇文档的改动需要恢复。已保留本机内容和收到的 iCloud 改动。",
+                        "Changes to this document need recovery. Local content and downloaded iCloud changes are preserved.").to_string());
+                }
                 if issue.held {
-                    detail.push(tr("改动已保存在本机。将较长的正文拆成几篇笔记后重试。",
-                        "Changes are saved on this Mac. Split a large note into smaller notes and try again.").to_string());
+                    detail.push(tr("改动已保存在本机。将较长的正文拆成几篇文档后重试。",
+                        "Changes are saved on this Mac. Split a large document into smaller documents and try again.").to_string());
                 }
                 for attachment in &issue.attachments {
                     let name = attachment.source.rsplit('/').next().unwrap_or(&attachment.source);
@@ -1699,54 +1713,109 @@ fn sync_issue_detail(issue: &crate::cloud_sync::SyncIssue) -> String {
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-fn cloud_sync_detail(root: &std::path::Path, cx: &App) -> Option<String> {
-    use crate::cloud_sync::SyncPhase;
+fn cloud_sync_detail(workspace: &Workspace, root: &std::path::Path, cx: &App) -> Option<String> {
+    use crate::{app::SaveStatus, cloud_sync::SyncPhase};
     let status = crate::cloud_sync::status(root, cx)?;
-    let pending = status.uploads > 0 || status.downloads > 0;
+    let current_document = workspace.store.root() == root && workspace.current.is_some();
     let account_check = matches!(status.phase, SyncPhase::AccountChecking | SyncPhase::AccountChanged | SyncPhase::SignedOut);
-    let description = match if status.access_paused && !account_check { SyncPhase::SubscriptionRequired } else { status.phase } {
+    let phase = if status.access_paused && !account_check { SyncPhase::SubscriptionRequired } else { status.phase };
+    let stalled = status.stalled;
+    let actionable = matches!(phase, SyncPhase::AccountChanged | SyncPhase::SignedOut | SyncPhase::Quota
+        | SyncPhase::SubscriptionRequired | SyncPhase::ReadOnly | SyncPhase::Revoked);
+    let phase = if actionable || account_check { phase } else { stalled.unwrap_or(phase) };
+    let description = match phase {
+        SyncPhase::Connecting if stalled.is_some() => tr("连接 iCloud 停滞。请检查网络，再点「立即同步」。",
+            "Connecting to iCloud has stalled. Check your connection, then choose Sync Now."),
+        SyncPhase::Uploading if stalled.is_some() => tr("上传停滞。请检查网络和 iCloud 空间，再点「立即同步」。",
+            "Uploads have stalled. Check your connection and iCloud storage, then choose Sync Now."),
+        SyncPhase::Downloading if stalled.is_some() => tr("下载停滞。请检查网络，再点「立即同步」。",
+            "Downloads have stalled. Check your connection, then choose Sync Now."),
+        SyncPhase::Applying if stalled.is_some() => tr("应用已下载的改动时停滞。请检查本机可用空间，再点「立即同步」。",
+            "Applying downloaded changes has stalled. Check available device storage, then choose Sync Now."),
+        SyncPhase::Failed if stalled.is_some() => tr("同步停滞。请点「立即同步」重试。", "Sync has stalled. Choose Sync Now to retry."),
+        SyncPhase::Offline if stalled.is_some() => tr("一直连不上 iCloud。请检查网络，恢复连接后会自动重试。",
+            "iCloud is still unreachable. Check your connection. Sync retries when the connection returns."),
+        SyncPhase::Account if stalled.is_some() => tr("无法验证 iCloud 账户。请检查系统设置中的账户，再点「立即同步」。",
+            "Could not verify the iCloud account. Check your account in Settings, then choose Sync Now."),
+        SyncPhase::TestFlightVerification if stalled.is_some() => tr("无法验证 TestFlight 安装。请联网后重试，或从 TestFlight 重新打开飞记。",
+            "Could not verify the TestFlight installation. Retry online or reopen Fei Notes from TestFlight."),
         SyncPhase::Connecting => tr("正在连接 iCloud", "Connecting to iCloud"),
-        SyncPhase::Ready if pending => tr("正在处理待同步的改动", "Syncing pending changes"),
-        SyncPhase::Ready if status.held > 0 || status.attachments > 0 =>
-            tr("部分内容未同步", "Some items could not sync"),
+        SyncPhase::Uploading => tr("正在上传改动", "Uploading changes"),
+        SyncPhase::Downloading => tr("正在从 iCloud 下载改动", "Downloading changes from iCloud"),
+        SyncPhase::Applying => tr("正在应用已下载的改动", "Applying downloaded changes"),
+        SyncPhase::Ready if status.catalogue_paused => tr("文档目录同步已暂停", "Document list sync is paused"),
+        SyncPhase::Ready if status.conflicts > 0 => tr("部分文档需要恢复", "Some documents need recovery"),
+        SyncPhase::Ready if status.downloads > 0 => tr("正在应用已下载的改动", "Applying downloaded changes"),
+        SyncPhase::Ready if status.uploads > 0 => tr("正在等待上传", "Waiting to upload"),
+        SyncPhase::Ready if status.held > 0 || status.attachments > 0 => tr("部分内容未同步", "Some items could not sync"),
+        SyncPhase::Ready if current_document && workspace.unsaved =>
+            tr("等待本机改动保存后同步", "Waiting for changes to be saved on this device"),
         SyncPhase::Ready => tr("已同步", "Up to date"),
-        SyncPhase::Offline => tr("暂时连不上 iCloud，改动已保存在本机。恢复连接后会自动重试。",
-            "iCloud is temporarily unreachable. Changes are saved on this device and sync will retry automatically."),
-        SyncPhase::Account => tr("请检查系统设置中的 iCloud 账户", "Check your iCloud account in Settings"),
-        SyncPhase::AccountChecking => tr("正在确认 iCloud 账户，改动先保存在本机。",
-            "Checking the iCloud account. Changes are saved on this device."),
+        SyncPhase::Offline => tr("暂时连不上 iCloud，恢复连接后会自动重试。", "iCloud is temporarily unreachable. Sync will retry automatically."),
+        SyncPhase::AccountChecking | SyncPhase::Account => tr("正在确认 iCloud 账户", "Checking the iCloud account"),
         #[cfg(target_os = "ios")]
         SyncPhase::AccountChanged => tr("iCloud 账户已切换。请在系统设置中确认账户，再点「重新连接 iCloud」。",
             "The iCloud account changed. Check the account in Settings, then choose Reconnect to iCloud."),
         #[cfg(target_os = "macos")]
-        SyncPhase::AccountChanged => tr("iCloud 账户已切换。重启后会检查当前账户，原账户的改动保存在本机。",
-            "The iCloud account changed. Restart to check the current account. Changes for the previous account are saved on this device."),
+        SyncPhase::AccountChanged => tr("iCloud 账户已切换。请重新打开飞记以检查当前账户。",
+            "The iCloud account changed. Reopen Fei Notes to check the current account."),
         #[cfg(target_os = "ios")]
         SyncPhase::SignedOut => tr("iCloud 已退出。请在系统设置中登录，再点「重新连接 iCloud」。",
             "You’re signed out of iCloud. Sign in in Settings, then choose Reconnect to iCloud."),
         #[cfg(target_os = "macos")]
-        SyncPhase::SignedOut => tr("iCloud 已退出。重启后会打开本机文档库，原账户的改动保存在本机。",
-            "You’re signed out of iCloud. Restart to open the local library. Changes for the previous account are saved on this device."),
-        SyncPhase::Quota => tr("iCloud 空间不足，待上传改动已保存在本机。释放空间后可点「立即同步」。",
-            "iCloud is full. Pending uploads are saved on this device. Free up space, then choose Sync Now."),
-        SyncPhase::SubscriptionRequired => tr("同步已暂停，改动仍保存在本机。恢复云功能后会继续同步。",
-            "Sync is paused and changes are saved on this device. Sync resumes when cloud access is restored."),
-        SyncPhase::TestFlightVerification => tr("暂时无法验证 TestFlight 安装，改动已保存在本机。请联网后重试，或从 TestFlight 重新打开飞记。",
-            "Could not verify the TestFlight installation. Changes are saved on this device. Retry online or reopen Fei Notes from TestFlight."),
-        SyncPhase::Failed => tr("同步失败，改动已保存在本机", "Sync failed. Changes are saved on this device."),
+        SyncPhase::SignedOut => tr("iCloud 已退出。请在系统设置中登录，再重新打开飞记。",
+            "You’re signed out of iCloud. Sign in in Settings, then reopen Fei Notes."),
+        SyncPhase::Quota => tr("iCloud 空间不足。释放空间后可点「立即同步」。",
+            "iCloud storage is full. Free up space, then choose Sync Now."),
+        SyncPhase::SubscriptionRequired => tr("同步已暂停。恢复云功能后会继续同步。",
+            "Sync is paused. It resumes when cloud access is restored."),
+        SyncPhase::TestFlightVerification => tr("正在验证 TestFlight 安装", "Verifying the TestFlight installation"),
+        SyncPhase::ReadOnly => tr("共享权限已改为只读。请联系所有者恢复编辑权限。",
+            "The share is now read-only. Ask the owner to restore editing access."),
+        SyncPhase::Revoked => tr("共享访问已结束。请联系所有者。", "Access to this share has ended. Contact the owner."),
+        SyncPhase::Failed => tr("正在等待重试", "Waiting to retry"),
     };
-    let mut detail = description.to_owned();
-    if pending {
-        detail.push_str(&crate::localized_format!(" · 待上传 {} 项，待应用 {} 项", " · {} uploads and {} downloads pending",
+    let local = if current_document {
+        match &workspace.status {
+            SaveStatus::Failed(_) => Some(tr("本机保存失败", "Could not save on this device")),
+            SaveStatus::Saving => Some(tr("正在保存到本机", "Saving on this device")),
+            SaveStatus::Saved if !workspace.unsaved => Some(tr("当前文档的改动已保存在本机", "Changes to this document are saved on this device")),
+            SaveStatus::Idle if !workspace.unsaved && workspace.editor.is_some() =>
+                Some(tr("当前文档已保存在本机", "This document is saved on this device")),
+            _ => None,
+        }
+    } else { None };
+    let mut detail = String::new();
+    if let Some(local) = local.or_else(|| (status.uploads > 0).then(|| tr(
+        "待上传的改动已保存在本机", "Pending uploads are saved on this device"))) {
+        detail.push_str(local);
+        detail.push('\n');
+    }
+    detail.push_str(description);
+    if status.uploads > 0 || status.downloads > 0 {
+        detail.push_str(&crate::localized_format!(" · 待上传 {} 项，待应用 {} 项", " · {} uploads and {} items to apply",
             status.uploads, status.downloads));
     }
+    if let Some(time) = crate::cloud_sync::last_success(root, cx) {
+        let (year, month, day, hour, minute) = crate::time::civil(time);
+        let date = format!("{year}-{month:02}-{day:02} {hour:02}:{minute:02}");
+        detail.push_str(&crate::localized_format!("\n上次同步成功：{}", "\nLast successful sync: {}", date));
+    } else if !actionable && !account_check && phase != SyncPhase::Account {
+        detail.push_str(tr("\n尚无同步成功记录", "\nNo successful sync recorded yet"));
+    }
+    if status.catalogue_paused {
+        detail.push_str(tr("\n已保留目录改动，已有文档的正文仍可同步。", "\nDocument list changes are preserved. Existing document contents can still sync."));
+    }
+    if status.conflicts > 0 {
+        detail.push_str(&crate::localized_format!(" · {} 篇文档的改动需要恢复", " · {} documents have changes that need recovery", status.conflicts));
+    }
     if status.held > 0 {
-        detail.push_str(&crate::localized_format!(" · {} 篇笔记有未能上传的改动", " · {} notes have changes that could not upload", status.held));
+        detail.push_str(&crate::localized_format!(" · {} 篇文档有未能上传的改动", " · {} documents have changes that could not upload", status.held));
     }
     if status.attachments > 0 {
         detail.push_str(&crate::localized_format!(" · {} 个附件超限、缺失或不可读", " · {} attachments are oversized, missing or unreadable", status.attachments));
     }
-    if !account_check && let Some(view) = crate::cloud_sync::presence::view(root, cx) && !view.devices.is_empty() {
+    if !account_check && phase != SyncPhase::Revoked && let Some(view) = crate::cloud_sync::presence::view(root, cx) && !view.devices.is_empty() {
         let names = view.devices.iter().take(3).map(String::as_str).collect::<Vec<_>>().join(", ");
         detail.push_str(&crate::localized_format!(" · 其他在线设备 {} 台（{}）", " · {} other devices online ({})",
             view.devices.len(), names));
@@ -1755,13 +1824,14 @@ fn cloud_sync_detail(root: &std::path::Path, cx: &App) -> Option<String> {
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-fn cloud_sync_row(root: &std::path::Path, cx: &App) -> AnyElement {
+fn cloud_sync_row(workspace: &Workspace, cx: &App) -> AnyElement {
     use crate::cloud_sync::SyncPhase;
+    let root = workspace.store.root();
     let Some(status) = crate::cloud_sync::status(root, cx) else {
         return row(tr("iCloud 同步", "iCloud sync"), None, div().child(tr("仅保存在本机", "Saved on this device only"))).into_any_element();
     };
     let account_check = matches!(status.phase, SyncPhase::AccountChecking | SyncPhase::AccountChanged | SyncPhase::SignedOut);
-    let detail = cloud_sync_detail(root, cx).unwrap_or_default();
+    let detail = cloud_sync_detail(workspace, root, cx).unwrap_or_default();
     let action = match status.phase {
         #[cfg(target_os = "ios")]
         SyncPhase::AccountChanged | SyncPhase::SignedOut => Some(button("reconnect-cloud-library",tr("重新连接 iCloud…","Reconnect to iCloud…"))
@@ -1769,7 +1839,7 @@ fn cloud_sync_row(root: &std::path::Path, cx: &App) -> AnyElement {
         #[cfg(target_os = "macos")]
         SyncPhase::AccountChanged | SyncPhase::SignedOut => Some(button("reopen-cloud-library", tr("重新打开飞记", "Reopen Fei Notes"))
             .on_click(|_, _, cx| cx.defer(crate::app::restart))),
-        _ if !status.access_paused && !account_check => Some(button("retry-cloud-sync", tr("立即同步", "Sync now"))
+        _ if !status.access_paused && !account_check && status.phase != SyncPhase::Revoked => Some(button("retry-cloud-sync", tr("立即同步", "Sync now"))
             .on_click({ let root = root.to_path_buf(); move |_, _, cx| crate::cloud_sync::retry(&root, cx) })),
         _ => None,
     };
@@ -2120,7 +2190,7 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "重试" => "Retry",
         "不再提示" => "Do not ask again",
         "放弃修改" => "Discard changes",
-        "Quiet.md · 快速笔记" => "Quiet.md · Quick note",
+        "Quiet.md · 快速文档" => "Quiet.md · Quick document",
         "没有匹配结果，换个关键词试试吧" => "No results. Try another search term.",
         "本文被以下文档所引用" => "Referenced by these documents",
         "隐藏引用列表" => "Hide references",
@@ -2364,7 +2434,7 @@ fn diagnostic_for(message: &str, english: bool) -> String {
         ("恢复文档 {} 失败，已恢复的文档保留在文档库", "Could not restore document {}. Documents already restored remain in Documents."),
         ("文档已恢复，回收站索引清理失败：{}", "Document restored, but the Trash index could not be cleaned up: {}"),
         ("上一次恢复请求已失效。请重新选择备份。", "The previous restore request is no longer usable. Choose the backup again."),
-        ("请关闭打开的共享笔记窗口，再重试恢复。", "Close any open shared note windows, then retry the restore."),
+        ("请关闭打开的共享文档窗口，再重试恢复。", "Close any open shared document windows, then retry the restore."),
     ];
     for (source, target) in TEMPLATES {
         let parts: Vec<_> = source.split("{}").collect();

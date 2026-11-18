@@ -23,8 +23,9 @@ pub(crate) fn share_toolbar_icon() -> AnyElement {
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-pub(crate) fn participants_icon() -> AnyElement {
+pub(crate) fn participants_icon(feishu: bool) -> AnyElement {
     let color = toolbar_color("toolbar.button.color").unwrap_or_else(Theme::icon);
+    if cfg!(target_os = "macos") && feishu { return svg().path("editor-icons/user.svg").size(px(18.)).flex_none().text_color(color).into_any_element(); }
     #[cfg(target_os = "ios")]
     return svg().path("editor-icons/user.svg").size(px(20.)).text_color(color).into_any_element();
     #[cfg(target_os = "macos")]

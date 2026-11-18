@@ -339,15 +339,14 @@ impl Store {
         write_atomic(&root.join(".cloud-restore-ready"), marker)
     }
 
-    pub fn show_shared_note(db: &Connection, id: &str, front: &str) -> Result<bool> {
+    pub fn show_shared_note(db: &Connection, id: &str, front: &str, registered: u64) -> Result<bool> {
         if db.query_row("SELECT EXISTS(SELECT 1 FROM library_entries WHERE id = ?1)", [id], |row| row.get::<_, bool>(0))? {
             return Ok(false);
         }
         if !db.query_row("SELECT EXISTS(SELECT 1 FROM library_documents WHERE id = ?1 AND trashed = 0)", [id], |row| row.get::<_, bool>(0))? {
             return Ok(false);
         }
-        let now = now();
-        write_meta(db, id, &Meta { created: now, modified: now, markdown: !front.is_empty(), ..Default::default() })?;
+        write_meta(db, id, &Meta { created: registered, modified: registered, markdown: !front.is_empty(), ..Default::default() })?;
         Ok(true)
     }
 
@@ -601,7 +600,7 @@ impl Store {
         let snapshot = input.unchecked_transaction()?;
         let meta: String = snapshot.query_row("SELECT meta FROM library_entries WHERE id = ?1", [id], |r| r.get(0))?;
         let mut meta: Meta = serde_json::from_str(&meta)?;
-        anyhow::ensure!(meta.folder.is_none() && !meta.local(), "只能复制已保存的笔记");
+        anyhow::ensure!(meta.folder.is_none() && !meta.local(), "只能复制已保存的文档");
         meta.parent = None;
         meta.root_order = None;
         meta.order = 0;
@@ -724,6 +723,14 @@ impl Store {
         set_value(&Library::new(Self::root_dir().join(SQLITE_FILE)).connect()?, key, value)
     }
 
+    pub fn write_sqlite_settings(settings: &[(&str, &[u8])]) -> Result<()> {
+        let mut db = Library::new(Self::root_dir().join(SQLITE_FILE)).connect()?;
+        let tx = db.transaction()?;
+        for (key, value) in settings { set_value(&tx, key, value)?; }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub(super) fn refresh_sqlite(&mut self) -> Result<()> {
         let db = self.sqlite.as_ref().unwrap().read()?;
         self.index = read_map(db, "library_entries")?;
@@ -810,7 +817,7 @@ impl Store {
     /// Body, index and the caller's sync changes either all commit or all roll back.
     pub fn save_sqlite_with<T>(&mut self, id: &str, doc: &Document, sync: impl FnOnce(&Transaction<'_>, i64) -> Result<T>) -> Result<(Meta, T)> {
         let _lock = self.begin_write()?;
-        anyhow::ensure!(self.sqlite_manages(id), "This note is outside the SQLite library");
+        anyhow::ensure!(self.sqlite_manages(id), "This document is outside the SQLite library");
         self.save_sqlite_locked(id, doc, None, None, sync)
     }
 

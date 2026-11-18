@@ -76,7 +76,7 @@ pub fn open_document(document: Option<String>, cx: &mut App) {
     }, |window, cx| cx.new(|cx| crate::app::Workspace::new_document_window(document, window, cx)));
     match result {
         Ok(handle) => { cx.global_mut::<QuickWindows>().0.push(handle); cx.activate(true); },
-        Err(e) => eprintln!("无法打开快速笔记：{e}"),
+        Err(e) => eprintln!("无法打开快速文档：{e}"),
     }
 }
 
@@ -114,7 +114,7 @@ mod hotkey {
         HELD.with(|h| *h.borrow_mut() = [false; 2]);
         for slot in [&KEY, &LAST_KEY] { slot.with(|k| { let mut k = k.borrow_mut(); if !k.0.is_null() { unsafe { UnregisterEventHotKey(k.0); } } *k = (ptr::null_mut(), String::new()); }); }
     }
-    /// Hotkey `id` (1 快速笔记, 2 打开上次的文档) on `combo`; an empty `combo` turns it off.
+    /// Hotkey `id` (1 快速文档, 2 打开上次的文档) on `combo`; an empty `combo` turns it off.
     pub fn install(cx: &mut App, id: u32, code: u32, modifiers: u32, combo: &str) -> Result<(), i32> {
         let slot = if id == 2 { &LAST_KEY } else { &KEY };
         if slot.with(|k| k.borrow().1 == combo) { return Ok(()); }
@@ -140,11 +140,11 @@ mod hotkey {
 
 pub fn install(cx: &mut App) -> bool {
     cx.on_action(|_: &QuickNew, cx| open(cx));
-    // Settings › 快速笔记 shows a failure; no alert on every launch.
+    // Settings › 快速文档 shows a failure; no alert on every launch.
     crate::settings::prefs().quick_hotkey && register(cx)
 }
 
-/// Why each global hotkey (快速笔记, 打开上次的文档) isn't registered, if it failed.
+/// Why each global hotkey (快速文档, 打开上次的文档) isn't registered, if it failed.
 static HOTKEY_ERROR: std::sync::Mutex<[Option<String>; 2]> = std::sync::Mutex::new([None, None]);
 pub fn hotkey_error() -> Option<String> { HOTKEY_ERROR.lock().unwrap().iter().flatten().next().cloned() }
 /// Register the global hotkeys from the shortcuts file.

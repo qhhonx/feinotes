@@ -113,8 +113,8 @@ pub(crate) fn app_name() -> &'static str {
 }
 
 pub(crate) fn app_window_title(quick: bool) -> String {
-    if in_shared_note() { format!("{} · {}", app_name(), settings::tr("共享笔记", "Shared Note")) }
-    else if quick { format!("{} · {}", app_name(), settings::tr("快速笔记", "Quick Note")) }
+    if in_shared_note() { format!("{} · {}", app_name(), settings::tr("共享文档", "Shared Document")) }
+    else if quick { format!("{} · {}", app_name(), settings::tr("快速文档", "Quick Document")) }
     else if cfg!(all(target_os = "macos", feature = "cloudkit-restore")) && !FEI_NOTES {
         format!("{} · {}", app_name(), settings::tr("iCloud 恢复测试", "iCloud Restore Test"))
     } else { app_name().into() }
@@ -390,8 +390,8 @@ impl Render for StartupHome {
             .on_action(cx.listener(|home, _: &app::NewDoc, window, cx| home.open_local(None,window,cx)))
             .on_action(|_: &app::CloseWindow, window, _| window.remove_window())
             .flex().flex_col().items_start().gap_4()
-            .child(div().text_2xl().child(settings::tr("我的文档","My Notes")))
-            .child(ui::primary_button("startup-compose",settings::tr("新建本机笔记","New On-Device Note"))
+            .child(div().text_2xl().child(settings::tr("我的文档","My documents")))
+            .child(ui::primary_button("startup-compose",settings::tr("新建本机文档","New On-Device Document"))
                 .on_click(cx.listener(|home,_,window,cx| home.open_local(None,window,cx))));
         for (index,(id,title)) in self.notes.iter().enumerate() {
             let id = id.clone();

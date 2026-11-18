@@ -7,31 +7,26 @@ impl Workspace {
         cx.try_global::<cloud_sync::activity::ActivityView>()?.0.iter().find(|row| row.room.scope.note == id).map(|row| row.room.clone())
     }
 
-    pub(crate) fn render_shared_documents(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_shared_documents(&self, entries: &[crate::store::Entry], window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let tree = cx.global::<organizer::Organizer>();
-        let folder = self.sharing.collection.as_deref().filter(|id| tree.0.contains_key(*id));
-        let belongs = |id: &str| tree.0.get(id).and_then(|p| p.parent.as_deref()).filter(|parent| tree.0.contains_key(*parent)) == folder;
-        let entries = self.sorted_entries(self.shared_entries(cx).into_iter().filter(|e| belongs(&e.id))
-            .chain(tree.folders().filter(|e| belongs(&e.id))).collect());
-        let error = cx.try_global::<cloud_sync::activity::ActivityView>().and_then(|view| view.1.clone());
+        let folder = self.sharing.collection.as_deref().filter(|id| tree.is_folder(id));
+        let error = cx.try_global::<cloud_sync::activity::ActivityView>().is_some_and(|view| view.1);
         let mut body = div().flex_1().min_h_0().flex().flex_col();
-        let parent = folder.map(str::to_string);
-        let mut tools = div().flex().items_center().gap(px(10.)).px(px(24.)).py(px(6.));
         if let Some(id) = folder {
             let placement = &tree.0[id]; let up = placement.parent.clone();
-            tools = tools.child(action("collection-up", tr("上一级", "Up one level"), true)
+            body = body.child(div().flex().items_center().gap(px(10.)).px(px(24.)).py(px(6.))
+                .child(action("collection-up", tr("上一级", "Up one level"), true)
                 .on_click(cx.listener(move |ws, _, _, cx| { ws.sharing.collection = up.clone(); cx.notify(); })))
-                .child(caption(placement.title.clone().unwrap_or_default()));
+                .child(caption(placement.title.clone().unwrap_or_default())));
         }
-        body = body.child(tools.child(action("collection-add", tr("新建个人文件夹", "New personal folder"), true)
-            .on_click(cx.listener(move |ws, _, window, cx| ws.personal_collection(parent.clone(), window, cx)))));
         if !self.sharing_allowed(cx) {
             body = body.child(div().px(px(24.)).pt(px(12.)).child(caption(tr("协作已暂停。请在文档库设置中检查 iCloud。", "Collaboration is paused. Check iCloud in Documents settings."))));
         }
-        if let Some(error) = error {
-            body = body.child(div().px(px(24.)).pt(px(12.)).child(caption(format!("{} {}", tr("共享列表暂未更新。", "The shared list could not update."), settings::diagnostic(&error)))));
+        if error {
+            body = body.child(div().px(px(24.)).pt(px(12.)).child(caption(tr(
+                "共享列表暂未更新。飞记会自动重试。", "The shared list could not update. Fei Notes will retry."))));
         }
-        body.child(if self.home.grid { self.render_home_grid(&entries, false, window, cx) } else { self.render_home_list(&entries, false, cx) }).into_any_element()
+        body.child(if self.home.grid { self.render_home_grid(entries, false, window, cx) } else { self.render_home_list(entries, false, cx) }).into_any_element()
     }
 
     pub(crate) fn shared_row_menu(&self, menu: RowMenu, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -65,8 +60,8 @@ impl Workspace {
                     .on_click(cx.listener(move |w, _, _, cx| w.toggle_shared_organization(&pin, true, cx))))
                 .child(item("shared-row-star", if entry.meta.starred > 0 { "star-off" } else { "star" }, if entry.meta.starred > 0 { tr("取消收藏", "Remove favorite") } else { tr("收藏", "Add to favorites") })
                     .on_click(cx.listener(move |w, _, _, cx| w.toggle_shared_organization(&star, false, cx))))
-                .child(item("shared-row-link", "copy", tr("复制邀请链接", "Copy invitation link"))
-                    .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.copy_shared_link(link.clone(), window, cx); })))
+                .when(owner, |d| d.child(item("shared-row-link", "copy", tr("复制共享链接", "Copy share link"))
+                    .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.copy_shared_link(link.clone(), window, cx); }))))
                 .child(div().mx(px(8.)).my(px(5.)).h(px(1.)).bg(Theme::line_border()))
                 .when(!room.scope.folder, |d| d.child(item("shared-row-markdown", "export", tr("下载为 Markdown…", "Download Markdown…"))
                     .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.with_shared_document(md.clone(), window, cx, |w, id, _, cx| w.open_export_md(id, cx)); }))))

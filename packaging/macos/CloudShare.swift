@@ -6,6 +6,8 @@ import Foundation
 
 private let sharePrefix = "QuietSharedNote-v1-"
 private let folderPrefix = "QuietSharedFolder-v1-"
+private let linkDraftType = "app.feinotes.document-link.draft"
+private let linkPublishedType = "app.feinotes.document-link.published"
 let sharedAssetScope = "00000000-0000-0000-0000-000000000002"
 
 struct ShareScope: Codable, Equatable {
@@ -28,17 +30,37 @@ struct ShareScope: Codable, Equatable {
 
 enum ShareAccess: String, Codable { case owner, readWrite, readOnly, revoked }
 
+private enum ShareAudience: String, Encodable {
+    case invited, linkDraft, linkReadOnly, linkReadWrite, linkClosed
+
+    init(_ share: CKShare) {
+        if share.publicPermission == .readOnly { self = .linkReadOnly }
+        else if share.publicPermission != .none { self = .linkReadWrite }
+        else if share[CKShare.SystemFieldKey.shareType] as? String == linkDraftType { self = .linkDraft }
+        else if share[CKShare.SystemFieldKey.shareType] as? String == linkPublishedType { self = .linkClosed }
+        else { self = .invited }
+    }
+}
+
 enum ShareError: LocalizedError {
-    case invalid, account, signedOut, ownerOnly, removed, timeout
+    case invalid, account, signedOut, ownerOnly, timeout, unavailableLink, deniedLink, invitationOnly, linkOnly, refresh
+    case linkRegionRestricted, linkWriteRejected, linkWriteUnconfirmed
 
     var errorDescription: String? {
         switch self {
-        case .invalid: "This is not a valid shared note."
+        case .invalid: "This is not a valid shared document."
         case .account: "The iCloud account does not match this library."
-        case .signedOut: "The Mac is signed out of iCloud or iCloud is restricted."
+        case .signedOut: "Sign in to iCloud in System Settings, then reconnect Fei Notes."
         case .ownerOnly: "Only the owner can manage this invitation."
-        case .removed: "Access to this shared note has ended."
         case .timeout: "CloudKit sharing did not respond. Try again."
+        case .unavailableLink: "This share link is invalid or has been closed."
+        case .deniedLink: "This account cannot use this link. It may have been closed or sent to a different Apple Account."
+        case .invitationOnly: "This document uses account invitations. Its existing access cannot be changed to a public link."
+        case .linkOnly: "This document uses link access. Individual invitations and permissions are unavailable."
+        case .refresh: "Sharing permissions changed on another device. Refresh and try again."
+        case .linkRegionRestricted: "iCloud reported a regional restriction on the public link."
+        case .linkWriteRejected: "iCloud rejected the public link change."
+        case .linkWriteUnconfirmed: "Could not confirm the public link settings with iCloud."
         }
     }
 }
@@ -82,6 +104,10 @@ func shareAccess(_ db: CKDatabase, _ scope: ShareScope, in zone: CKRecordZone.ID
     catch where shareIsGone(error) { return .revoked }
     if scope.owner == nil { return .owner }
     guard let member = share.currentUserParticipant, member.acceptanceStatus == .accepted else { return .revoked }
+    if member.role == .publicUser {
+        if share.publicPermission == .none { return .revoked }
+        if share.publicPermission == .readOnly { return .readOnly }
+    }
     switch member.permission {
     case .readWrite: return .readWrite
     case .readOnly: return .readOnly
@@ -99,6 +125,105 @@ private struct ShareRequest: Decodable {
     let participant: String?
     let url: String?
     let accessChannel: String?
+    let knownOwned: [String]?
+    let trace: ShareTraceTag?
+}
+
+// Traces are selected by exact synthetic sample title in Rust and require a
+// fresh launch token. Keep this file separate from general app logging.
+private struct ShareTraceTag: Decodable, Sendable {
+    enum Sample: String, Decodable, Sendable { case publicLink, privateInvite }
+    let sample: Sample
+    let attempt: UUID
+}
+
+private struct ShareTrace: Sendable {
+    private static let lock = NSLock()
+    private let tag: ShareTraceTag
+    private let action: String
+    private let file: URL
+
+    init?(_ request: ShareRequest) {
+        guard let tag = request.trace, ["create", "createLinkDraft", "publishLink", "members", "invite"].contains(request.action),
+              let token = ProcessInfo.processInfo.environment["FEI_SHARE_TRACE_TOKEN"], let session = UUID(uuidString: token)
+        else { return nil }
+        self.tag = tag
+        self.action = request.action
+        self.file = FileManager.default.temporaryDirectory.appendingPathComponent("fei-share-trace-\(session.uuidString.lowercased()).ndjson")
+    }
+
+    func event(_ phase: String, _ status: String, share: CKShare? = nil, audience: ShareAudience? = nil,
+               error: Error? = nil, record: CKRecord.ID? = nil, boundary: String? = nil, errorKind: String? = nil) {
+        var event: [String: Any] = [
+            "schema": 1, "timeMs": Int64(Date().timeIntervalSince1970 * 1000), "attempt": tag.attempt.uuidString,
+            "sample": tag.sample.rawValue, "action": action, "phase": phase, "status": status,
+            "container": containerID, "environment": cloudEnvironment, "database": "ownerPrivate",
+        ]
+        if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+           build.count <= 20, build.utf8.allSatisfy({ (48...57).contains($0) || $0 == 46 }) {
+            event["build"] = build
+        }
+        if let share {
+            event["audience"] = ShareAudience(share).rawValue
+            event["invitationHostClass"] = switch share.url?.host?.lowercased() {
+            case "www.icloud.com.cn", "icloud.com.cn": "icloudCN"
+            case "www.icloud.com", "icloud.com": "icloudGlobal"
+            case nil: "absent"
+            default: "other"
+            }
+        } else if let audience { event["audience"] = audience.rawValue }
+        if let boundary { event["boundary"] = boundary }
+        if let errorKind { event["errorKind"] = errorKind }
+        if let error {
+            let top = error as NSError
+            var errors = [Self.errorFields(top, layer: "outer")]
+            if let underlying = top.userInfo[NSUnderlyingErrorKey] as? NSError {
+                errors.append(Self.errorFields(underlying, layer: "outerUnderlying"))
+            }
+            if let record, let item = (error as? CKError)?.partialErrorsByItemID?[AnyHashable(record)] {
+                let nested = item as NSError
+                errors.append(Self.errorFields(nested, layer: "targetRecord"))
+                if let underlying = nested.userInfo[NSUnderlyingErrorKey] as? NSError {
+                    errors.append(Self.errorFields(underlying, layer: "targetUnderlying"))
+                }
+            }
+            event["errors"] = errors
+        }
+        guard var line = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]) else { return }
+        line.append(10)
+        Self.lock.withLock {
+            if !FileManager.default.fileExists(atPath: file.path) {
+                _ = FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600])
+            }
+            guard let handle = try? FileHandle(forWritingTo: file) else { return }
+            defer { try? handle.close() }
+            do {
+                guard try handle.seekToEnd() + UInt64(line.count) <= 128 * 1024 else { return }
+                try handle.write(contentsOf: line)
+            } catch { }
+        }
+    }
+
+    private static func errorFields(_ error: NSError, layer: String) -> [String: Any] {
+        let allowedDomains = [CKErrorDomain, "CKInternalErrorDomain", "CloudKitErrorDomain", NSURLErrorDomain, NSCocoaErrorDomain]
+        var fields: [String: Any] = ["layer": layer, "domain": allowedDomains.contains(error.domain) ? error.domain : "other",
+                                     "code": error.code]
+        guard error.domain == CKErrorDomain || error.domain == "CKInternalErrorDomain" || error.domain == "CloudKitErrorDomain"
+        else { return fields }
+        let messages = [error.localizedDescription, error.localizedFailureReason ?? ""]
+        fields["regionRejectionText"] = messages.contains { $0.localizedCaseInsensitiveContains("Cannot perform action due to region") }
+        for message in messages {
+            if fields["requestUUID"] == nil,
+               let match = message.firstMatch(of: #/\bRequestUUID\s*[:=]\s*([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\b/#),
+               let uuid = UUID(uuidString: String(match.1)) {
+                fields["requestUUID"] = uuid.uuidString
+            }
+            if fields["operationID"] == nil, let match = message.firstMatch(of: #/\bOperationID\s*[:=]\s*([0-9a-fA-F]{16})\b/#) {
+                fields["operationID"] = String(match.1).uppercased()
+            }
+        }
+        return fields
+    }
 }
 
 private struct ShareMember: Encodable {
@@ -112,9 +237,43 @@ private struct ShareReply: Encodable {
     var scope: ShareScope?
     var title: String?
     var url: String?
+    var audience: ShareAudience?
     var members: [ShareMember] = []
     var error: String?
     var errorKind: String?
+    var ownedRooms: [OwnedRoom]?
+}
+
+private struct OwnedRoom: Encodable {
+    let scope: ShareScope
+    let title: String
+}
+
+private func discoverOwned(_ db: CKDatabase, known: Set<String>, revision: UInt64) async throws -> [OwnedRoom] {
+    let zones = try await db.allRecordZones()
+    let targets = zones.compactMap { zone -> (CKRecord.ID, ShareScope)? in
+        let name = zone.zoneID.zoneName
+        let folder = name.hasPrefix(folderPrefix)
+        let prefix = folder ? folderPrefix : sharePrefix
+        guard name.hasPrefix(prefix) else { return nil }
+        let id = String(name.dropFirst(prefix.count))
+        guard !known.contains(id), UUID(uuidString: id)?.uuidString.lowercased() == id else { return nil }
+        return (shareID(in: zone.zoneID), ShareScope(note: id, owner: nil, folder: folder ? true : nil))
+    }
+    var rooms: [OwnedRoom] = []
+    for offset in stride(from: 0, to: targets.count, by: 50) {
+        try checkCloudAccountRevision(revision)
+        let batch = targets[offset..<min(offset + 50, targets.count)]
+        let records = try await db.records(for: batch.map { $0.0 }, desiredKeys: [CKShare.SystemFieldKey.title])
+        for (id, scope) in batch {
+            guard let result = records[id] else { throw ShareError.invalid }
+            do {
+                guard let share = try result.get() as? CKShare else { continue }
+                rooms.append(OwnedRoom(scope: scope, title: share[CKShare.SystemFieldKey.title] as? String ?? ""))
+            } catch where shareIsGone(error) { continue }
+        }
+    }
+    return rooms
 }
 
 private func shareReply(_ share: CKShare, scope: ShareScope) -> ShareReply {
@@ -126,14 +285,60 @@ private func shareReply(_ share: CKShare, scope: ShareScope) -> ShareReply {
         return ShareMember(id: id, name: name, permission: member.permission == .readWrite ? .readWrite : .readOnly,
                            accepted: member.acceptanceStatus == .accepted)
     }
+    let audience = ShareAudience(share)
+    let available = audience != .linkDraft && audience != .linkClosed
     return ShareReply(scope: scope, title: share[CKShare.SystemFieldKey.title] as? String,
-                      url: share.url?.absoluteString, members: members)
+                      url: available ? share.url?.absoluteString : nil, audience: audience, members: members)
 }
 
-private func saveShare(_ share: CKShare, to db: CKDatabase) async throws -> CKShare {
-    let result = try await db.modifyRecords(saving: [share], deleting: [], savePolicy: .ifServerRecordUnchanged, atomically: true)
-    guard let saved = try result.saveResults[share.recordID]?.get() as? CKShare else { throw ShareError.invalid }
-    return saved
+private func readManagedShare(_ db: CKDatabase, in zone: CKRecordZone.ID, trace: ShareTrace?, phase: String) async throws -> CKShare {
+    trace?.event(phase, "started")
+    do {
+        let share = try await getShare(db, in: zone)
+        trace?.event(phase, "ok", share: share)
+        return share
+    } catch {
+        trace?.event(phase, "error", error: error, record: shareID(in: zone))
+        throw error
+    }
+}
+
+private func saveShare(_ share: CKShare, to db: CKDatabase, trace: ShareTrace?, phase: String) async throws -> CKShare {
+    trace?.event(phase, "started", share: share)
+    var boundary = "modifyRecords"
+    do {
+        let result = try await db.modifyRecords(saving: [share], deleting: [], savePolicy: .ifServerRecordUnchanged, atomically: true)
+        boundary = "recordResult"
+        guard let saved = try result.saveResults[share.recordID]?.get() as? CKShare else { throw ShareError.invalid }
+        trace?.event(phase, "ok", share: saved, boundary: boundary)
+        return saved
+    } catch {
+        trace?.event(phase, "error", error: error, record: share.recordID, boundary: boundary)
+        if let cloud = error as? CKError, cloud.code == .serverRecordChanged { throw ShareError.refresh }
+        throw error
+    }
+}
+
+private func publicLinkWriteError(_ error: Error, id: CKRecord.ID) -> ShareError {
+    if case ShareError.refresh = error { return .refresh }
+    let item = (error as? CKError)?.partialErrorsByItemID?[AnyHashable(id)] ?? error
+    // CloudKit's public error codes have no region-specific case. Use the
+    // observed server message only to explain this failed share write.
+    if let cloudError = item as? CKError {
+        let underlying = (item as NSError).userInfo[NSUnderlyingErrorKey] as? Error
+        if [item.localizedDescription, underlying?.localizedDescription ?? ""]
+            .contains(where: { $0.localizedCaseInsensitiveContains("Cannot perform action due to region") }) {
+            return .linkRegionRestricted
+        }
+        switch cloudError.code {
+        case .serverRecordChanged:
+            return .refresh
+        case .serverRejectedRequest, .permissionFailure, .managedAccountRestricted, .invalidArguments, .batchRequestFailed:
+            return .linkWriteRejected
+        default: break
+        }
+    }
+    return .linkWriteUnconfirmed
 }
 
 private func acceptShare(_ value: String, container: CKContainer, revision: UInt64) async throws -> ShareReply {
@@ -150,29 +355,42 @@ private func acceptShare(_ value: String, container: CKContainer, revision: UInt
                            owner: metadata.participantRole == .owner ? nil : zone.ownerName, folder: folder ? true : nil)
     _ = try scope.zone()
     let title = metadata.share[CKShare.SystemFieldKey.title] as? String
+    if metadata.participantRole != .owner {
+        let audience = ShareAudience(metadata.share)
+        guard (audience != .linkDraft && audience != .linkClosed) || metadata.participantRole == .privateUser else {
+            throw ShareError.unavailableLink
+        }
+    }
     if metadata.participantRole == .owner || metadata.participantStatus == .accepted {
         return ShareReply(scope: scope, title: title)
     }
-    guard metadata.participantStatus == .pending else { throw ShareError.removed }
+    guard metadata.participantStatus == .pending else { throw ShareError.deniedLink }
     try checkCloudAccountRevision(revision)
     _ = try await container.accept(metadata)
     return ShareReply(scope: scope, title: title)
 }
 
-private func manageShare(_ request: ShareRequest, revision: UInt64) async throws -> ShareReply {
+private func manageShare(_ request: ShareRequest, revision: UInt64, trace: ShareTrace?) async throws -> ShareReply {
     #if !FEI_CLOUD_QA
     guard request.accessChannel == nil else { throw ShareError.invalid }
     #endif
     let container = CKContainer(identifier: containerID)
     try await shareAccount(container, expected: request.account)
     // Existing participants can still be inspected or removed after access ends.
-    if !["members", "revoke", "delete", "leave"].contains(request.action) {
+    if !["members", "revoke", "closeLink", "delete", "leave"].contains(request.action) {
         try await CloudAccess.shared.require(account: request.account, channel: request.accessChannel)
     }
     try checkCloudAccountRevision(revision)
+    trace?.event("accountAndAccess", "ok")
     if request.action == "checkAccess" { return ShareReply() }
+    if request.action == "discoverOwned" {
+        return ShareReply(ownedRooms: try await discoverOwned(container.privateCloudDatabase,
+            known: Set(request.knownOwned ?? []), revision: revision))
+    }
     if request.action == "accept", let url = request.url {
-        return try await acceptShare(url, container: container, revision: revision)
+        do { return try await acceptShare(url, container: container, revision: revision) }
+        catch let error as CKError where error.code == .permissionFailure { throw ShareError.deniedLink }
+        catch where shareIsGone(error) { throw ShareError.unavailableLink }
     }
     if request.action == "delete" || request.action == "leave" {
         guard let scope = request.scope,
@@ -190,35 +408,80 @@ private func manageShare(_ request: ShareRequest, revision: UInt64) async throws
     guard let scope = request.scope, scope.owner == nil else { throw ShareError.ownerOnly }
     let zone = try scope.zone()
     let db = container.privateCloudDatabase
-    if request.action == "create" {
-        do { _ = try await db.recordZone(for: zone) }
-        catch where shareIsGone(error) {
+    if request.action == "create" || request.action == "createLinkDraft" {
+        guard request.action == "create" || scope.folder != true else { throw ShareError.invalid }
+        do {
+            _ = try await db.recordZone(for: zone)
+            trace?.event("draftZone", "reused")
+        } catch where shareIsGone(error) {
+            trace?.event("draftZoneLookup", "error", error: error)
             try checkCloudAccountRevision(revision)
-            _ = try await db.save(CKRecordZone(zoneID: zone))
+            do {
+                _ = try await db.save(CKRecordZone(zoneID: zone))
+                trace?.event("draftZone", "ok")
+            } catch {
+                trace?.event("draftZone", "error", error: error)
+                throw error
+            }
+        } catch {
+            trace?.event("draftZoneLookup", "error", error: error)
+            throw error
         }
-        do { return shareReply(try await getShare(db, in: zone), scope: scope) }
+        do { return shareReply(try await readManagedShare(db, in: zone, trace: trace, phase: "draftRead"), scope: scope) }
         catch let error as CKError where error.code == .unknownItem {
             try checkCloudAccountRevision(revision)
             let share = CKShare(recordZoneID: zone)
             share.publicPermission = .none
-            share[CKShare.SystemFieldKey.title] = String((request.title ?? "Shared note").prefix(100))
-            return shareReply(try await saveShare(share, to: db), scope: scope)
+            if request.action == "createLinkDraft" { share[CKShare.SystemFieldKey.shareType] = linkDraftType }
+            share[CKShare.SystemFieldKey.title] = String((request.title ?? "Shared document").prefix(100))
+            do { return shareReply(try await saveShare(share, to: db, trace: trace, phase: "draftSave"), scope: scope) }
+            catch where request.action == "createLinkDraft" { throw publicLinkWriteError(error, id: share.recordID) }
         }
     }
-    let share = try await getShare(db, in: zone)
-    guard share.publicPermission == .none else { throw ShareError.invalid }
+    if request.action == "publishLink" { trace?.event("clientSeedGate", "passed") }
+    let share: CKShare
+    do { share = try await readManagedShare(db, in: zone, trace: trace, phase: "currentShareRead") }
+    catch where request.action == "publishLink" { throw ShareError.linkWriteUnconfirmed }
+    let audience = ShareAudience(share)
     switch request.action {
     case "members":
         return shareReply(share, scope: scope)
+    case "publishLink":
+        guard scope.folder != true else { throw ShareError.invalid }
+        if share[CKShare.SystemFieldKey.shareType] as? String == linkPublishedType {
+            // A retried publication can observe an earlier success or a subsequent closure.
+            return shareReply(share, scope: scope)
+        }
+        guard audience == .linkDraft, share.participants.allSatisfy({ $0.role == .owner }) else { throw ShareError.invitationOnly }
+        share.publicPermission = .readOnly
+        share[CKShare.SystemFieldKey.shareType] = linkPublishedType
+    case "closeLink":
+        guard scope.folder != true else { throw ShareError.invalid }
+        if audience == .linkClosed { return shareReply(share, scope: scope) }
+        guard audience == .linkReadOnly || audience == .linkReadWrite else { throw ShareError.linkOnly }
+        share.publicPermission = .none
+        share[CKShare.SystemFieldKey.shareType] = linkPublishedType
     case "invite":
+        guard audience == .invited || audience == .linkDraft else { throw ShareError.linkOnly }
         guard let email = request.email, email.utf8.count <= 254, email.contains("@"),
               let access = request.permission, access == .readOnly || access == .readWrite else { throw ShareError.invalid }
-        let invited = try await container.shareParticipant(forEmailAddress: email)
+        let invited: CKShare.Participant
+        do {
+            invited = try await container.shareParticipant(forEmailAddress: email)
+            trace?.event("inviteeLookup", "ok")
+        } catch {
+            trace?.event("inviteeLookup", "error", error: error)
+            throw error
+        }
         guard !invited.isEqual(share.owner) else { throw ShareError.ownerOnly }
         let member = share.participants.first { $0.isEqual(invited) } ?? invited
         member.permission = access == .readWrite ? .readWrite : .readOnly
         share.addParticipant(member)
+        // The owner explicitly chose an account invitation. Keep the scope
+        // private and record that choice only if the invitation save succeeds.
+        if audience == .linkDraft { share[CKShare.SystemFieldKey.shareType] = nil }
     case "permission", "revoke":
+        guard audience == .invited || audience == .linkDraft else { throw ShareError.linkOnly }
         guard let member = share.participants.first(where: {
             $0.role != .owner && $0.participantID == request.participant
         }) else { throw ShareError.invalid }
@@ -231,7 +494,18 @@ private func manageShare(_ request: ShareRequest, revision: UInt64) async throws
     default: throw ShareError.invalid
     }
     try checkCloudAccountRevision(revision)
-    return shareReply(try await saveShare(share, to: db), scope: scope)
+    if request.action == "publishLink" {
+        do { _ = try await saveShare(share, to: db, trace: trace, phase: "publicPermissionSave") }
+        catch { throw publicLinkWriteError(error, id: share.recordID) }
+        try checkCloudAccountRevision(revision)
+        do { return shareReply(try await readManagedShare(db, in: zone, trace: trace, phase: "publicPermissionReadback"), scope: scope) }
+        catch { throw ShareError.linkWriteUnconfirmed }
+    }
+    let saved = try await saveShare(share, to: db, trace: trace, phase: "privateInvitationSave")
+    if request.action == "closeLink" {
+        return shareReply(try await getShare(db, in: zone), scope: scope)
+    }
+    return shareReply(saved, scope: scope)
 }
 
 private final class ShareCompletion: @unchecked Sendable {
@@ -242,18 +516,38 @@ private final class ShareCompletion: @unchecked Sendable {
 @_cdecl("quiet_cloud_share")
 public func quietCloudShare(_ json: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>? {
     let input = Data(String(cString: json).utf8)
+    let request = Result { try JSONDecoder().decode(ShareRequest.self, from: input) }
+    let trace = (try? request.get()).flatMap(ShareTrace.init)
+    trace?.event("command", "started")
     let completion = ShareCompletion()
     let revision = quietCloudAccountRevision()
     let worker = Task.detached {
         do {
-            let reply = try await manageShare(JSONDecoder().decode(ShareRequest.self, from: input), revision: revision)
+            let reply = try await manageShare(request.get(), revision: revision, trace: trace)
             try checkCloudAccountRevision(revision)
             completion.reply = reply
+            trace?.event("command", "ok", audience: reply.audience)
         }
         catch {
             completion.reply = ShareReply(error: error.localizedDescription)
+            if let sharing = error as? ShareError {
+                switch sharing {
+                case .unavailableLink: completion.reply.errorKind = "unavailableLink"
+                case .deniedLink: completion.reply.errorKind = "deniedLink"
+                case .signedOut: completion.reply.errorKind = "signedOut"
+                case .account: completion.reply.errorKind = "accountMismatch"
+                case .refresh: completion.reply.errorKind = "shareConflict"
+                case .invitationOnly: completion.reply.errorKind = "invitationOnly"
+                case .linkOnly: completion.reply.errorKind = "linkOnly"
+                case .linkRegionRestricted: completion.reply.errorKind = "linkRegionRestricted"
+                case .linkWriteRejected: completion.reply.errorKind = "linkWriteRejected"
+                case .linkWriteUnconfirmed: completion.reply.errorKind = "linkWriteUnconfirmed"
+                default: break
+                }
+            }
             if case CloudAccessError.required = error { completion.reply.errorKind = "subscriptionRequired" }
             if case CloudAccessError.testflightVerification = error { completion.reply.errorKind = "testflightVerification" }
+            trace?.event("command", "error", error: error, errorKind: completion.reply.errorKind)
         }
         completion.done.signal()
     }
@@ -261,7 +555,8 @@ public func quietCloudShare(_ json: UnsafePointer<CChar>) -> UnsafeMutablePointe
     if completion.done.wait(timeout: .now() + 45) == .success { reply = completion.reply }
     else {
         worker.cancel()
-        reply = ShareReply(error: ShareError.timeout.localizedDescription)
+        trace?.event("command", "timeout")
+        reply = ShareReply(error: ShareError.timeout.localizedDescription, errorKind: "shareTimeout")
     }
     guard let bytes = try? JSONEncoder().encode(reply) else { return nil }
     return strdup(String(decoding: bytes, as: UTF8.self))

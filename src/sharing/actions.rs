@@ -41,20 +41,33 @@ impl Workspace {
         }
     }
 
+    pub(super) fn copy_link_to_clipboard(&mut self, link: String, public_link: bool, cx: &mut Context<Self>) {
+        if !crate::devtools::scripted() { cx.write_to_clipboard(ClipboardItem::new_string(link.clone())); }
+        self.sharing.copied_text = Some(link);
+        self.show_toast(if public_link { tr("已复制公开链接", "Public link copied") }
+            else { tr("已复制邀请链接", "Invitation link copied") }, cx);
+    }
+
     pub(crate) fn copy_shared_link(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sharing.busy || !self.sharing_account_ready(cx) { return; }
-        let epoch = self.begin_sharing_request(cx); let personal = crate::store::Store::root_dir();
+        if room.scope.owner.is_some() || self.sharing.busy || !self.sharing_account_ready(cx) { return; }
+        let epoch = self.begin_sharing_request(cx);
+        let personal = crate::store::Store::root_dir();
         cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn(async move {
-                let reply = shared::manage(&personal, &room, "members", "", None)?;
-                links::branded(reply.url.as_deref().ok_or_else(|| anyhow::anyhow!("Invitation link unavailable"))?)
-            }).await;
+            let target = room.clone();
+            let result = cx.background_executor().spawn(async move { shared::manage(&personal, &target, "members", "", None) }).await;
             let _ = this.update_in(cx, |w, _, cx| {
                 if !w.finish_sharing_request(epoch, None, cx) { return; }
                 match result {
-                    Ok(link) => {
-                        if !crate::devtools::scripted() { cx.write_to_clipboard(ClipboardItem::new_string(link.clone())); }
-                        w.sharing.copied_text = Some(link); w.show_toast(tr("已复制邀请链接", "Invitation link copied"), cx);
+                    Ok(reply) => {
+                        let public_link = reply.audience.link_active();
+                        let link = reply.url.as_deref().and_then(|url| links::branded(url).ok());
+                        let closed = reply.audience == Audience::LinkClosed;
+                        if w.sheet_room().is_some_and(|open| open.scope == room.scope) { w.sharing.reply = Some(reply); }
+                        if let Some(link) = link { w.copy_link_to_clipboard(link, public_link, cx); }
+                        else {
+                            w.show_toast_kind(ui::ToastKind::Error, if closed { link_audience(Audience::LinkClosed) }
+                                else { tr("共享链接暂不可用，请刷新后重试。", "Share link unavailable. Refresh and try again.") }, cx);
+                        }
                     }
                     Err(error) => w.show_toast_kind(ui::ToastKind::Error, &settings::diagnostic(&error.to_string()), cx),
                 }

@@ -105,7 +105,7 @@ final class TableUITests: XCTestCase {
         shot("table-04-restored-controls")
         app.buttons["fei.table.done"].tap()
         app.buttons["fei.more"].tap()
-        app.sheets.buttons["笔记选项"].tap()
+        app.sheets.buttons["文档选项"].tap()
         app.sheets.buttons["阅读模式"].tap()
         app.buttons["fei.more"].tap()
         app.sheets.buttons["表格操作"].tap()

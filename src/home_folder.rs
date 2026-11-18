@@ -370,17 +370,15 @@ impl Workspace {
                     .overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(display_title(&e.title))))
                 .child(div().text_size(px(12.)).line_height(px(18.)).text_color(Theme::text_caption())
                     .child(crate::localized_count!(count, "{} 项", "{} item", "{} items", count))))
-            .when(self.batch.is_none(), |d| d
+            .when(self.batch.is_none(), |d| d.when(!id.starts_with("collection-"), |d| d
                 .child(div().id(SharedString::from(format!("home-fnew-{id}"))).flex_none().size(px(28.)).rounded_full().flex().items_center().justify_center()
                     .bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_button()).opacity(reveal).cursor_pointer()
                     .hover(|s| s.bg(Theme::fill_hover_strong()))
-                    .tip(if id.starts_with("collection-") { crate::settings::tr("新建个人子文件夹", "New personal subfolder") } else { crate::settings::tr("新建文档", "New document") }, None)
+                    .tip(crate::settings::tr("新建文档", "New document"), None)
                     .child(icon("plus", 15., Theme::icon()).with_transformation(Transformation::scale(size(0.7 + 0.3 * reveal, 0.7 + 0.3 * reveal))))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |w, _, window, cx| { cx.stop_propagation();
-                        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                        if new_id.starts_with("collection-") { w.personal_collection(Some(new_id.clone()), window, cx); return; }
-                        w.new_child(&new_id, window, cx); })))
+                        w.new_child(&new_id, window, cx); }))))
                 .child(self.home_more(e, format!("home-fmore-{id}"), cx).size(px(28.)).rounded_full().bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_button()).opacity(reveal)));
         div().id(SharedString::from(format!("home-folder-{id}"))).relative().w_full().min_w_0().h(px(h)).cursor_pointer()
             .when(self.batch.is_some(), |d| d.opacity(0.45))

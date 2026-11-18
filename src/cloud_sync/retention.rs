@@ -23,7 +23,7 @@ pub(super) fn unpack(bytes: &[u8]) -> Result<(Index, &[u8])> {
     Ok((serde_json::from_slice(history)?,body))
 }
 
-fn pack(index: &Index, snapshot: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn pack(index: &Index, snapshot: &[u8]) -> Result<Vec<u8>> {
     let history=serde_json::to_vec(index)?;
     let mut bytes=Vec::with_capacity(MAGIC.len()+4+history.len()+snapshot.len());
     bytes.extend_from_slice(MAGIC);

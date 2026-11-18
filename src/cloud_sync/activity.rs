@@ -23,16 +23,16 @@ pub(crate) struct SharedRow {
 }
 
 #[derive(Default, PartialEq, Eq)]
-pub(crate) struct ActivityView(pub Vec<SharedRow>, pub Option<String>);
+pub(crate) struct ActivityView(pub Vec<SharedRow>, pub bool);
 impl Global for ActivityView {}
 
 pub(crate) fn update_entry(scope: &shared::Scope, entry: &crate::store::Entry, cx: &mut App) {
     if !cx.has_global::<ActivityView>() { return; }
-    if cx.global::<ActivityView>().0.iter().any(|row| row.room.scope == *scope && row.room.title == entry.title && row.icon == entry.icon && row.modified == entry.meta.modified && row.opened == entry.meta.opened && row.body == entry.body) { return; }
+    if cx.global::<ActivityView>().0.iter().any(|row| row.room.scope == *scope && row.room.title == entry.title && row.icon == entry.icon && row.created == entry.meta.created && row.modified == entry.meta.modified && row.opened == entry.meta.opened && row.body == entry.body) { return; }
     cx.update_global::<ActivityView, _>(|view, _| {
         if let Some(row) = view.0.iter_mut().find(|row| row.room.scope == *scope) {
             row.room.title = entry.title.clone(); row.icon = entry.icon.clone();
-            row.modified = entry.meta.modified; row.opened = entry.meta.opened; row.body = entry.body.clone();
+            row.created = entry.meta.created; row.modified = entry.meta.modified; row.opened = entry.meta.opened; row.body = entry.body.clone();
         } else {
             view.0.push(SharedRow { room: shared::Room { scope: scope.clone(), title: entry.title.clone() }, unread: false, summary: String::new(), body: entry.body.clone(), modified: entry.meta.modified, created: entry.meta.created, opened: entry.meta.opened, icon: entry.icon.clone() });
         }
@@ -141,8 +141,9 @@ fn poll(personal: &Path, account: &str, room: &Room) -> Result<bool> {
     Ok(page.more)
 }
 
-fn row(personal: &Path, mut room: Room) -> Result<Option<SharedRow>> {
-    if shared::room_root(personal, &room.scope.note)?.join("shared-note-ended").exists() { return Ok(None); }
+pub(super) fn row(personal: &Path, mut room: Room) -> Result<Option<SharedRow>> {
+    let root = shared::room_root(personal, &room.scope.note)?;
+    if root.join("shared-note-ended").exists() { return Ok(None); }
     let db = room_db(personal, &room)?;
     if value(&db, "shared-activity-revoked")?.is_some() { return Ok(None); }
     let has_activity: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'shared_activity')",
@@ -159,14 +160,38 @@ fn row(personal: &Path, mut room: Room) -> Result<Option<SharedRow>> {
     } else { "".into() };
     let summary = body.chars().take(160).collect();
     let meta: Option<String> = db.query_row("SELECT meta FROM library_entries WHERE id = ?1", [&room.scope.note], |row| row.get(0)).optional()?;
-    let meta = meta.and_then(|meta| serde_json::from_str::<crate::store::Meta>(&meta).ok()).unwrap_or_default();
+    let meta = meta.and_then(|meta| serde_json::from_str::<crate::store::Meta>(&meta).ok()).unwrap_or_else(|| {
+        let registered = if room.scope.folder { 0 } else { shared::registered_at(&root) };
+        crate::store::Meta { created: registered, modified: registered, ..Default::default() }
+    });
     if let Some(title) = meta.folder.as_ref() { room.title = title.clone(); }
     let icon = db.query_row("SELECT icon FROM library_documents WHERE id = ?1", [&room.scope.note], |row| row.get::<_, Option<String>>(0)).optional().ok().flatten().flatten();
     Ok(Some(SharedRow { room, unread, summary, body, modified: meta.modified, created: meta.created, opened: meta.opened, icon }))
 }
 
-pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Option<PathBuf>, generation: uuid::Uuid) {
+pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Option<PathBuf>, generation: uuid::Uuid, discover_owned: bool) {
     cx.set_global(ActivityView::default());
+    if discover_owned {
+        let root = personal.clone();
+        let key = account.clone();
+        cx.spawn(async move |cx| {
+            let mut last_error = None;
+            loop {
+                if !crate::gpui_compat::async_update(cx, |cx| super::current(&root, generation, cx)).unwrap_or(false) { break; }
+                let (root, key) = (root.clone(), key.clone());
+                let lease = crate::store::Store::session_lease(&root);
+                let error = cx.background_executor().spawn(async move {
+                    let _lease = lease;
+                    shared::discover_owned(&root, &key).err().map(|error| format!("{error:#}"))
+                }).await;
+                if let Some(error) = &error && last_error.as_ref() != Some(error) {
+                    crate::logging::write(&format!("Discover owned shares: {error}"));
+                }
+                last_error = error;
+                cx.background_executor().timer(Duration::from_secs(30)).await;
+            }
+        }).detach();
+    }
     cx.spawn(async move |cx| {
         let mut index = 0usize;
         let mut delay = Duration::ZERO;
@@ -184,20 +209,26 @@ pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Opt
                     else { rooms.get(current).map_or(Ok(false), |room| poll(&root, &key, room)) };
                 let mut view = rooms.into_iter().filter_map(|room| row(&root, room).ok().flatten()).collect::<Vec<_>>();
                 sort_rows(&mut view);
-                (ActivityView(view, None), current + 1, result.as_ref().is_ok_and(|more| *more), result.err())
+                (view, current + 1, result.as_ref().is_ok_and(|more| *more), result.err())
             }).await;
-            let list_error = error.as_ref().map(|error| format!("{error:#}"));
+            let list_error = error.is_some();
             if let Some(error) = error {
                 let error = format!("{error:#}");
                 if last_error.as_ref() != Some(&error) { crate::logging::write(&format!("Shared note activity: {error}")); }
                 last_error = Some(error);
             } else { last_error = None; }
             index = if more { next - 1 } else { next };
-            delay = if more { Duration::from_secs(1) } else if view.0.is_empty() { Duration::from_secs(8) }
+            delay = if more { Duration::from_secs(1) } else if view.is_empty() { Duration::from_secs(8) }
                 else { Duration::from_secs(4) };
             if !crate::gpui_compat::async_update(cx, |cx| {
                 if !super::current(&personal, generation, cx) { return false; }
-                let mut view = ActivityView(view.0, list_error);
+                let mut view = ActivityView(view, list_error);
+                // A poll can read metadata just before the editor records an open.
+                let opened: std::collections::HashMap<_, _> = cx.global::<ActivityView>().0.iter()
+                    .map(|row| (&row.room.scope.note, row.opened)).collect();
+                for row in &mut view.0 {
+                    if let Some(&previous) = opened.get(&row.room.scope.note) { row.opened = row.opened.max(previous); }
+                }
                 // A disk poll must not put an older title back over an unsaved edit.
                 for window in cx.windows().into_iter().filter_map(|window| window.downcast::<crate::app::Workspace>()) {
                     if let Ok(ws) = window.read(cx)

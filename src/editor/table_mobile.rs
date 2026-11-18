@@ -20,9 +20,12 @@ impl Editor {
 
     pub(crate) fn mobile_table_target(&self) -> Option<(BlockId,usize,usize)> {
         if let Some(s) = self.core.cell_sel { return self.core.table(s.table).map(|_| (s.table,s.anchor.0,s.anchor.1)); }
-        if let Some(target) = self.core.cell_of(self.core.sel.head.block) { return Some(target); }
-        let s = self.core.block_sel?;
-        (s.anchor == s.head && self.core.table(s.head).is_some()).then_some((s.head,0,0))
+        let caret = self.core.cell_of(self.core.sel.head.block);
+        if let Some(s) = self.core.block_sel {
+            if s.anchor != s.head || self.core.table(s.head).is_none() { return None; }
+            return Some(caret.filter(|(id,_,_)|*id == s.head).unwrap_or((s.head,0,0)));
+        }
+        caret
     }
 
     pub(super) fn invalidate_table_controls(&mut self) {

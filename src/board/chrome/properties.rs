@@ -657,6 +657,9 @@ pub(crate) fn render(me: &BoardView, window: &mut Window, cx: &mut Context<Board
 
     // `appState.height - 166`
     let max_h = (me.bounds.get().size.height - px(166.)).max(px(120.));
+    let max_h = if cfg!(target_os = "ios") && window.viewport_size().width < px(680.) {
+        max_h.min((window.viewport_size().height * 0.36).max(px(100.)))
+    } else { max_h };
     Some(div().absolute().left(px(style::PADDING)).top(px(TOP))
         .child(island("board-props", 0.).max_w(px(MAX_W)).max_h(max_h).flex().flex_col()
             .child(div().id("board-props-scroll").max_h(max_h).overflow_y_scroll().p(px(PAD)).child(body.w(px(cw)))))

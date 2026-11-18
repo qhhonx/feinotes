@@ -40,8 +40,17 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         search.hidesNavigationBarDuringPresentation = false
         definesPresentationContext = true
     }
-    func update(_ next:FeiSettingsState,busy:Bool) {
+    private var palette: FeiMobileTheme?
+    func applyTheme(_ theme: FeiMobileTheme) {
+        guard palette != theme else { return }
+        palette = theme
+        view.tintColor = theme.accentColor; tableView.tintColor = theme.accentColor
+        refreshRows()
+    }
+
+    func update(_ next:FeiSettingsState,busy:Bool,theme:FeiMobileTheme) {
         loadViewIfNeeded()
+        applyTheme(theme)
         guard next != model || self.busy != busy else { return }
         let wasShortcuts = model?.page == "Shortcuts"
         model = next; self.busy = busy
@@ -95,7 +104,7 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         if row.id.hasPrefix("page:") {
             let symbols = ["General":"gearshape","Appearance":"paintpalette","Library":"folder","Shortcuts":"keyboard","Cloud":"icloud","Shared":"person.2","About":"info.circle"]
             content.image = UIImage(systemName: symbols[String(row.id.dropFirst(5))] ?? "gearshape")
-            content.imageProperties.tintColor = coordinator?.theme.accentColor ?? view.tintColor
+            content.imageProperties.tintColor = palette?.accentColor ?? view.tintColor
         }
         content.textProperties.font = font(.body)
         content.textProperties.numberOfLines = 0; content.textProperties.adjustsFontForContentSizeCategory = true

@@ -17,20 +17,50 @@ final class FeiEditorToolbar: UIToolbar {
     private weak var coordinator: FeiNavigationCoordinator?
     private var state: FeiNavigationState?
     private var mode: String?
-    private var composeAllowed = false
-    private var reducedTools = false
+    let componentBar = UIToolbar()
+    private(set) var hasComponentRow = false
+    var onComponentRowChanged: (() -> Void)?
+    private var slashButton: UIBarButtonItem?
+    private var editingAllowed = false
     private var labels: [String:String] = [:]
     private var keyboardVisible = false
     private let keyboardButton = UIBarButtonItem()
     private var tableButton: UIBarButtonItem?
+    private var blockButton: UIBarButtonItem?
     private var commandButtons: [UIBarButtonItem] = []
     private var typing = false
+    private var showsBlockActions = false
     private(set) var navigationItems: [UIBarButtonItem] = []
+    private let phoneEditingGlass = UIVisualEffectView()
+    private let phoneEditingScroll = EditingScrollView()
+    private let phoneEditingStack = UIStackView()
+    private var phoneEditingLeading: NSLayoutConstraint?
+    private var phoneEditingTrailing: NSLayoutConstraint?
+    private var phoneEditingMinimumWidth: NSLayoutConstraint?
+    private var phoneEditingCommands: EditingCommands?
+    private var phoneEditingButtons: [(item: UIBarButtonItem, button: UIButton)] = []
+
+    private struct EditingCommands {
+        let checklist, table, slash, block, styles, insert, undo, keyboard: UIBarButtonItem
+        var components: [UIBarButtonItem] { [checklist,table,slash,block] }
+        var all: [UIBarButtonItem] { components + [styles,insert,undo,keyboard] }
+    }
+
+    private final class EditingScrollView: UIScrollView {
+        override func touchesShouldCancel(in view: UIView) -> Bool {
+            if view is UIButton { return true }
+            return super.touchesShouldCancel(in: view)
+        }
+    }
 
     init() {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         accessibilityIdentifier = "fei.editor.toolbar"
+        componentBar.translatesAutoresizingMaskIntoConstraints = false
+        componentBar.accessibilityIdentifier = "fei.editor.components"
+        componentBar.isHidden = true
+        if UIDevice.current.userInterfaceIdiom == .phone { installPhoneEditingStrip() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
     private func spacer() -> UIBarButtonItem { UIBarButtonItem(barButtonSystemItem: .flexibleSpace,target: nil,action: nil) }
@@ -40,6 +70,43 @@ final class FeiEditorToolbar: UIToolbar {
         item.accessibilityIdentifier = "fei.edit."+id
         return item
     }
+    private func undoItem() -> UIBarButtonItem {
+        let undo = UIAction { [weak self] _ in self?.send("undo") }
+        let redo = UIAction(title: labels["redo"] ?? "Redo",image: UIImage(systemName: "arrow.uturn.forward")) { [weak self] _ in self?.send("redo") }
+        let item = UIBarButtonItem(image: UIImage(systemName: "arrow.uturn.backward"),primaryAction: undo,menu: UIMenu(children: [redo]))
+        item.accessibilityIdentifier = "fei.edit.undo"
+        item.accessibilityLabel = labels["undo"]
+        return item
+    }
+    private func editingCommands(block: UIBarButtonItem) -> EditingCommands {
+        keyboardButton.target = self; keyboardButton.action = #selector(keyboardCommand)
+        keyboardButton.accessibilityIdentifier = "fei.edit.keyboard"
+        return EditingCommands(
+            checklist: button("checklist","todo","list",#selector(listCommand)),
+            table: button("tablecells","table","table",#selector(tableCommand)),
+            slash: button("slash.circle","slash","slash",#selector(slashCommand)),
+            block: block,
+            styles: button("textformat.size","format-text","styles",#selector(stylesCommand)),
+            insert: button("paperclip","insert","insert",#selector(insertCommand)),
+            undo: undoItem(), keyboard: keyboardButton
+        )
+    }
+    private func needsComponentRow(_ state: FeiNavigationState) -> Bool {
+        guard UIDevice.current.userInterfaceIdiom != .phone,state.kind == "note",state.can_edit,typing else { return false }
+        return bounds.width < 500 || UIApplication.shared.preferredContentSizeCategory.isAccessibilityCategory
+    }
+    override func layoutSubviews() {
+        if let leading = phoneEditingLeading, let trailing = phoneEditingTrailing, bounds.width > 0 {
+            // Match the native reading toolbar's compact and wide iPhone margins.
+            let inset: CGFloat = bounds.width >= 414 ? 20 : 16
+            if leading.constant != inset {
+                leading.constant = inset
+                trailing.constant = -inset
+            }
+        }
+        super.layoutSubviews()
+        if let state,needsComponentRow(state) != hasComponentRow { update(state,coordinator: coordinator,typing: typing) }
+    }
     func update(_ next: FeiNavigationState,coordinator: FeiNavigationCoordinator?,typing: Bool = false) {
         state = next; self.coordinator = coordinator
         self.typing = typing
@@ -47,17 +114,43 @@ final class FeiEditorToolbar: UIToolbar {
         let palette = next.theme ?? .system
         tintColor = palette.accentColor
         let appearance = UIToolbarAppearance()
-        appearance.configureWithDefaultBackground()
-        if let color = palette.chromeColor { appearance.backgroundColor = color }
-        standardAppearance = appearance; scrollEdgeAppearance = appearance; compactAppearance = appearance
+        appearance.configureWithTransparentBackground()
+        if #unavailable(iOS 26.0) {
+            appearance.backgroundEffect = UIBlurEffect(style: .systemChromeMaterial)
+            if let color = palette.chromeColor { appearance.backgroundColor = color.withAlphaComponent(0.65) }
+        }
+        for bar in [self,componentBar] {
+            bar.tintColor = palette.accentColor
+            bar.standardAppearance = appearance; bar.scrollEdgeAppearance = appearance; bar.compactAppearance = appearance
+        }
         let nextMode = next.kind == "history-preview" ? "preview" : next.can_edit && typing ? "editing" : next.write_allowed && (next.can_edit || next.reading) ? "reading" : "locked"
-        let reduced = UIApplication.shared.preferredContentSizeCategory.isAccessibilityCategory
-        if mode != nextMode || labels != next.labels || composeAllowed != (next.can_create && coordinator?.hasPadWorkspace != true) || reducedTools != reduced {
-            reducedTools = reduced
-            composeAllowed = next.can_create && coordinator?.hasPadWorkspace != true
-            mode = nextMode; labels = next.labels; commandButtons = []; tableButton = nil
+        let stacked = needsComponentRow(next)
+        let blockTools = next.can_edit && (nextMode == "editing" || next.block_selected)
+        let labelsChanged = labels != next.labels
+        if mode != nextMode || labelsChanged || hasComponentRow != stacked || editingAllowed != next.can_edit || showsBlockActions != blockTools {
+            let rowChanged = hasComponentRow != stacked
+            hasComponentRow = stacked
+            editingAllowed = next.can_edit
+            showsBlockActions = blockTools
+            mode = nextMode; labels = next.labels; commandButtons = []; tableButton = nil; slashButton = nil
+            componentBar.items = nil
+            let block = button("square.stack","block-actions","block-actions",#selector(blockActions))
+            blockButton = block
+            if phone && (phoneEditingCommands == nil || labelsChanged) {
+                let commands = editingCommands(block: button("square.stack","block-actions","block-actions",#selector(blockActions)))
+                phoneEditingCommands = commands
+                // Have the controls laid out while reading, before the keyboard starts moving the bar.
+                UIView.performWithoutAnimation {
+                    updateKeyboardImage()
+                    setPhoneEditingItems(commands.all)
+                    if bounds.width > 0 { layoutIfNeeded() }
+                }
+            }
             if !phone {
-                navigationItems = [button("textformat.size","format-text","styles",#selector(stylesCommand)),button("checklist","todo","list",#selector(listCommand)),button("tablecells","table","table",#selector(tableCommand)),button("paperclip","insert","insert",#selector(insertCommand))]
+                navigationItems = [button("checklist","todo","list",#selector(listCommand)),button("tablecells","table","table",#selector(tableCommand))]
+                navigationItems.append(button("slash.circle","slash","slash",#selector(slashCommand)))
+                navigationItems += [button("textformat.size","format-text","styles",#selector(stylesCommand)),button("paperclip","insert","insert",#selector(insertCommand))]
+                if blockTools { navigationItems.append(button("square.stack","block-actions","block-actions",#selector(blockActions))) }
             }
             if nextMode == "preview" {
                 let marks = button("highlighter","history-marks","history-marks",#selector(historyMarks))
@@ -69,16 +162,16 @@ final class FeiEditorToolbar: UIToolbar {
                 }
                 items = list+[restore]
             } else if nextMode == "editing" {
-                let undo = button("arrow.uturn.backward","undo","undo",#selector(undoCommand))
-                undo.menu = UIMenu(children: [UIAction(title: labels["redo"] ?? "Redo",image: UIImage(systemName: "arrow.uturn.forward")) { [weak self] _ in self?.send("redo") }])
-                let list = button("checklist","todo","list",#selector(listCommand))
-                let table = button("tablecells","table","table",#selector(tableCommand)); tableButton = table
-                let styles = button("textformat.size","format-text","styles",#selector(stylesCommand))
-                let insert = button("paperclip","insert","insert",#selector(insertCommand))
-                keyboardButton.target = self; keyboardButton.action = #selector(keyboardCommand)
-                keyboardButton.accessibilityIdentifier = "fei.edit.keyboard"
-                commandButtons = [undo,list,styles,table,insert,keyboardButton]
-                items = phone ? (reduced ? [styles,insert,spacer(),keyboardButton] : [styles,list,table,insert,spacer(),keyboardButton]) : (reduced ? [styles,insert,spacer(),undo,keyboardButton] : [styles,list,table,insert,spacer(),undo,keyboardButton])
+                let editing = phoneEditingCommands ?? editingCommands(block: block)
+                tableButton = editing.table; slashButton = editing.slash; blockButton = editing.block
+                commandButtons = editing.all
+                if phone {
+                    setItems(nil,animated: false)
+                } else {
+                    let commands = [editing.styles,editing.insert,spacer(),editing.undo,editing.keyboard]
+                    componentBar.items = stacked ? [spacer()] + editing.components + [spacer()] : nil
+                    items = stacked ? commands : editing.components + commands
+                }
                 updateKeyboardImage()
             } else {
                 let status = UILabel()
@@ -88,28 +181,129 @@ final class FeiEditorToolbar: UIToolbar {
                 status.text = labels[nextMode == "reading" ? "reading" : "not-editable"]
                 let text = UIBarButtonItem(customView: status)
                 if nextMode == "reading" {
-                    let edit = button("pencil","edit-note","mode",#selector(editCommand))
+                    let edit = next.can_edit ? button("keyboard","keyboard","mode",#selector(editCommand))
+                        : button("pencil","edit-note","mode",#selector(editCommand))
                     let checklist = button("checklist","todo","quick-checklist",#selector(quickChecklist))
                     let insert = button("paperclip","insert","quick-insert",#selector(quickInsert))
-                    var list = reduced ? [edit,insert,spacer()] : [checklist,insert,edit,spacer()]
+                    var list = [checklist,insert]
+                    if blockTools { list.append(block) }
+                    list.append(spacer())
                     commandButtons = [checklist,insert,edit]
-                    if composeAllowed {
-                        let compose = button("square.and.pencil","new","compose",#selector(composeNote))
-                        compose.tintColor = palette.accentColor
-                        if #available(iOS 26.0,*) { compose.sharesBackground = false }
-                        list.append(compose); commandButtons.append(compose)
+                    if phone && next.can_edit {
+                        let undo = undoItem()
+                        list.append(undo); commandButtons.append(undo)
                     }
+                    list.append(edit)
                     items = list
                 } else { items = [text,spacer()] }
             }
+            if rowChanged { onComponentRowChanged?() }
         }
-        navigationItems.forEach { $0.isEnabled = next.can_edit && !next.busy }
-        items?.filter { $0.accessibilityIdentifier == "fei.edit.compose" }.forEach { $0.tintColor = palette.accentColor }
+        navigationItems.forEach {
+            $0.isEnabled = next.can_edit && !next.busy && ($0.accessibilityIdentifier != "fei.edit.slash" || next.slash_available)
+        }
         tableButton?.accessibilityLabel = next.labels[next.table_active ? "table-controls" : "table"]
         commandButtons.forEach { $0.isEnabled = !next.busy && ($0.accessibilityIdentifier != "fei.edit.history-restore" || next.local_history?.can_restore == true) }
+        slashButton?.isEnabled = next.slash_available && !next.busy
+        blockButton?.isEnabled = next.block_actions && next.can_edit && !next.busy
         if nextMode == "preview" { commandButtons.first?.tintColor = next.local_history?.marks == true ? palette.accentColor : .secondaryLabel }
+        if phone { updatePhoneEditingStrip(visible: nextMode == "editing") }
     }
-    func refreshContentSize() { if let state { update(state,coordinator: coordinator,typing: typing) } }
+    private func installPhoneEditingStrip() {
+        let glass = phoneEditingGlass
+        let scroll = phoneEditingScroll
+        let stack = phoneEditingStack
+        if #available(iOS 26.0,*) {
+            let effect = UIGlassEffect()
+            effect.isInteractive = true
+            glass.effect = effect
+            glass.cornerConfiguration = .capsule()
+            glass.contentView.tintColor = .label
+        }
+        glass.isHidden = true
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.delaysContentTouches = false
+        scroll.isDirectionalLockEnabled = true
+        scroll.showsVerticalScrollIndicator = false
+        scroll.accessibilityIdentifier = "fei.editor.editing-actions"
+        stack.distribution = .fillEqually
+        for view in [glass,scroll,stack] { view.translatesAutoresizingMaskIntoConstraints = false }
+        addSubview(glass)
+        glass.contentView.addSubview(scroll)
+        scroll.addSubview(stack)
+
+        let leading = glass.leadingAnchor.constraint(equalTo: leadingAnchor,constant: 16)
+        let trailing = glass.trailingAnchor.constraint(equalTo: trailingAnchor,constant: -16)
+        phoneEditingLeading = leading; phoneEditingTrailing = trailing
+        let minimum = stack.widthAnchor.constraint(greaterThanOrEqualToConstant: 0)
+        phoneEditingMinimumWidth = minimum
+        let fits = stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor,constant: -12)
+        fits.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            leading, trailing,
+            glass.centerYAnchor.constraint(equalTo: centerYAnchor),
+            glass.heightAnchor.constraint(equalToConstant: 48),
+            scroll.leadingAnchor.constraint(equalTo: glass.contentView.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: glass.contentView.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: glass.contentView.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: glass.contentView.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor,constant: 6),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor,constant: -6),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor), minimum, fits
+        ])
+    }
+    private func updatePhoneEditingStrip(visible: Bool) {
+        guard phoneEditingGlass.isHidden == visible else {
+            if visible { refreshPhoneEditingItems() }
+            return
+        }
+        // The keyboard guide animates the toolbar itself. Commit local geometry without
+        // interpolating the glass, scroll offset or button layout inside that animation.
+        UIView.performWithoutAnimation {
+            if visible {
+                refreshPhoneEditingItems()
+                if bounds.width > 0 { layoutIfNeeded() }
+                phoneEditingScroll.setContentOffset(.zero,animated: false)
+            }
+            phoneEditingGlass.isHidden = !visible
+        }
+    }
+    private func setPhoneEditingItems(_ items: [UIBarButtonItem]) {
+        phoneEditingStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        phoneEditingButtons = items.map { item in
+            let control = UIButton(type: .system)
+            control.accessibilityIdentifier = item.accessibilityIdentifier
+            control.menu = item.menu
+            control.setImage(item.image,for: .normal)
+            if let action = item.primaryAction { control.addAction(action,for: .primaryActionTriggered) }
+            else if let action = item.action { control.addTarget(item.target,action: action,for: .primaryActionTriggered) }
+            phoneEditingStack.addArrangedSubview(control)
+            return (item,control)
+        }
+        updatePhoneEditingSize()
+    }
+    private func updatePhoneEditingSize() {
+        guard !phoneEditingButtons.isEmpty else { return }
+        let metrics = UIFontMetrics(forTextStyle: .body)
+        let width = min(56,max(44,metrics.scaledValue(for: 44,compatibleWith: traitCollection)))
+        let pointSize = min(26,max(21,metrics.scaledValue(for: 21,compatibleWith: traitCollection)))
+        phoneEditingMinimumWidth?.constant = width * CGFloat(phoneEditingButtons.count)
+        let symbols = UIImage.SymbolConfiguration(pointSize: pointSize,weight: .regular)
+        phoneEditingButtons.forEach { $0.button.setPreferredSymbolConfiguration(symbols,forImageIn: .normal) }
+    }
+    private func refreshPhoneEditingItems() {
+        for (item,control) in phoneEditingButtons {
+            control.accessibilityLabel = item.accessibilityLabel
+            control.isEnabled = item.isEnabled
+            if control.image(for: .normal) != item.image { control.setImage(item.image,for: .normal) }
+        }
+    }
+    func refreshContentSize() {
+        if let state { update(state,coordinator: coordinator,typing: typing) }
+        updatePhoneEditingSize()
+    }
     func updateKeyboardVisibility() {
         guard let parent = superview?.superview else { return }
         let guide = parent.keyboardLayoutGuide.layoutFrame
@@ -119,6 +313,7 @@ final class FeiEditorToolbar: UIToolbar {
     private func updateKeyboardImage() {
         keyboardButton.image = UIImage(systemName: keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
         keyboardButton.accessibilityLabel = labels[keyboardVisible ? "hide-keyboard" : "keyboard"]
+        if !phoneEditingGlass.isHidden { refreshPhoneEditingItems() }
     }
     private func send(_ command:String) {
         guard let state,state.kind == "note",!state.busy else { return }
@@ -127,13 +322,13 @@ final class FeiEditorToolbar: UIToolbar {
     @objc private func historyMarks() { if let h = state?.local_history { coordinator?.sendHistory("marks",history: h) } }
     @objc private func historyCopy() { if let h = state?.local_history { coordinator?.sendHistory("copy",name: h.selected,history: h) } }
     @objc private func historyRestore() { if let h = state?.local_history,h.can_restore { coordinator?.confirmHistory("restore",history: h) } }
-    @objc private func undoCommand() { send("undo") }
+    @objc private func slashCommand() { send("slash") }
     @objc private func listCommand() { send("todo") }
     @objc private func tableCommand() { send(state?.table_active == true ? "table-tools" : "table") }
     @objc private func quickChecklist() { send("quick-checklist") }
     @objc private func quickInsert() { send("quick-insert") }
-    @objc private func composeNote() { guard mode == "reading" else { return }; coordinator?.composeNote() }
     @objc private func stylesCommand() { send("styles") }
+    @objc private func blockActions() { send("block-actions") }
     @objc private func insertCommand() { send("insert") }
     @objc private func editCommand() { send(state?.can_edit == true ? "keyboard" : "edit") }
     @objc private func keyboardCommand() {

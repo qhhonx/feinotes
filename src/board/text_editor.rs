@@ -15,6 +15,7 @@ use super::text_edit::{EditView, EditorLayout, TextEditSession, caret_index_at, 
 use super::types::TextAlign;
 use super::Hooks;
 use crate::input::{TextField, TextFieldEvent};
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 pub struct TextEditing {
@@ -91,7 +92,11 @@ pub fn begin(me: &mut BoardView, id: &str, existing: bool, caret_at: Option<[f64
     // after the press that started the edit is done with focus
     let fh = field.read(cx).focus_handle(cx);
     crate::gpui_compat::focus(window, &fh, cx);
-    window.defer(cx, move |window, cx| crate::gpui_compat::focus(window, &fh, cx));
+    window.defer(cx, move |window, cx| {
+        crate::gpui_compat::focus(window, &fh, cx);
+        #[cfg(target_os = "ios")]
+        if fh.is_focused(window) { gpui_mobile::show_keyboard(); }
+    });
     me.text = Some(TextEditing { session, field, _sub: sub, layout, restyle: false });
     me.commit(None, cx);
 }
@@ -146,6 +151,8 @@ pub fn submit(me: &mut BoardView, via_keyboard: bool, window: &mut Window, cx: &
         me.app.active_tool = super::actions::update_active_tool(&me.app, ToolType::Selection);
     }
     me.focus(window, cx);
+    #[cfg(target_os = "ios")]
+    gpui_mobile::hide_keyboard();
     me.commit(Some(if capture { CaptureUpdateAction::Immediately } else { CaptureUpdateAction::Eventually }), cx);
 }
 
@@ -174,6 +181,7 @@ pub fn element(me: &BoardView) -> Option<AnyElement> {
     // caret 8pt inside its box (`hscroll`) and would scroll the text left
     let w = (p.width as f32 * z).max(1.) + 10.;
     Some(div().key_context("BoardText").absolute().left(left).top(top).w(px(w)).min_h(px(l.height as f32 * z))
+        .when(cfg!(target_os = "ios"), |d| d.occlude())
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .child(div().flex().w_full().child(t.field.clone()))

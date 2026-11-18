@@ -20,6 +20,9 @@ const MAIN: [Tool; 11] = [Tool::Hand, Tool::Selection, Tool::Rectangle, Tool::Di
 /// `ExtraToolsDropdown`'s tools we have.
 const EXTRA: [Tool; 3] = [Tool::Image, Tool::Frame, Tool::Lasso];
 
+const TOUCH_MAIN: [Tool; 6] = [Tool::Hand, Tool::Selection, Tool::Rectangle, Tool::Arrow, Tool::FreeDraw, Tool::Text];
+const TOUCH_EXTRA: [Tool; 8] = [Tool::Diamond, Tool::Ellipse, Tool::Line, Tool::StickyNote, Tool::Eraser, Tool::Image, Tool::Frame, Tool::Lasso];
+
 pub(crate) fn tool_icon_name(t: Tool) -> &'static str {
     match t {
         Tool::Selection => "selection",
@@ -75,13 +78,13 @@ pub(crate) fn tool_shortcut(t: Tool) -> Option<String> {
     Some(match (letter, n) { (Some(l), Some(n)) => format!("{l} {} {n}", tr("或", "or")), (Some(l), None) => l, (None, n) => n.map(|n| n.to_string()).unwrap_or_default() })
 }
 
-fn tool_button(me: &BoardView, t: Tool, cx: &mut Context<BoardView>) -> Stateful<Div> {
+fn tool_button(me: &BoardView, t: Tool, compact: bool, cx: &mut Context<BoardView>) -> Stateful<Div> {
     let on = me.tool() == t;
     let name = if on && fillable(t) { format!("{}-filled", tool_icon_name(t)) } else { tool_icon_name(t).to_string() };
     tool_icon(SharedString::from(format!("board-tool-{t:?}")), style::LG_BUTTON, on)
         .child(icon(&name, style::ICON, tool_icon_color(on)))
         // the hand hides its key (`hideKeyBinding`)
-        .when_some(tool_letter(t).filter(|_| t != Tool::Hand), |d, k| d.child(keybinding(k, on)))
+        .when_some(tool_letter(t).filter(|_| !compact && t != Tool::Hand), |d, k| d.child(keybinding(k, on)))
         .ex_tip(tool_label(t), tool_shortcut(t).as_deref())
         .on_click(cx.listener(move |me, _, window, cx| me.set_tool(t, window, cx)))
 }
@@ -90,9 +93,10 @@ fn tool_button(me: &BoardView, t: Tool, cx: &mut Context<BoardView>) -> Stateful
 fn divider() -> Div { div().flex_none().w(px(1.)).h(px(24.)).bg(style::border()) }
 
 /// `ExtraToolsDropdown`: the trigger shows the chosen extra tool, else the dots.
-fn extra_tools(me: &BoardView, cx: &mut Context<BoardView>) -> Stateful<Div> {
+fn extra_tools(me: &BoardView, compact: bool, narrow: bool, cx: &mut Context<BoardView>) -> Stateful<Div> {
     let tool = me.tool();
-    let selected = EXTRA.contains(&tool);
+    let tools = if compact { &TOUCH_EXTRA[..] } else { &EXTRA[..] };
+    let selected = tools.contains(&tool) || narrow && tool == Tool::Text;
     let open = pop(cx) == Some(Pop::ExtraTools);
     let trigger = div().id("board-extra-tools").flex_none().relative().size(px(style::LG_BUTTON)).flex().items_center().justify_center().rounded(px(style::RADIUS_LG)).cursor_pointer()
         .when(selected, |d| d.bg(style::surface_primary_container()))
@@ -102,25 +106,40 @@ fn extra_tools(me: &BoardView, cx: &mut Context<BoardView>) -> Stateful<Div> {
         .on_click(cx.listener(|_, _, _, cx| { let open = pop(cx) == Some(Pop::ExtraTools); set_pop(if open { None } else { Some(Pop::ExtraTools) }, cx) }));
     if !open { return trigger; }
     let mut menu = dropdown("board-extra-tools-menu").min_w(px(190.));
-    for t in EXTRA {
-        let k = match t { Tool::Image => Some("9".to_string()), Tool::Frame => Some("F".to_string()), _ => None };
+    for t in tools.iter().copied().chain(narrow.then_some(Tool::Text)) {
+        let k = if compact { None } else { match t { Tool::Image => Some("9".to_string()), Tool::Frame => Some("F".to_string()), _ => None } };
         menu = menu.child(dropdown_item(("board-extra-tool", t as usize), Some(tool_icon_name(t)), tool_label(t), k, tool == t)
             .on_click(cx.listener(move |me, _, window, cx| { set_pop(None, cx); me.set_tool(t, window, cx) })));
+    }
+    if compact {
+        let locked = me.tool_locked();
+        menu = menu.child(super::menu::dropdown_separator())
+            .child(dropdown_item("board-mobile-tool-lock", Some(if locked { "locked" } else { "unlocked" }),
+                tr("绘制后保持所选工具", "Keep selected tool active"), None, locked)
+                .on_click(cx.listener(|me, _, window, cx| { set_pop(None, cx); me.run(BoardAction::ToggleToolLock, window, cx); })));
     }
     let menu = menu.on_mouse_down_out(cx.listener(|_, _, _, cx| if pop(cx) == Some(Pop::ExtraTools) { set_pop(None, cx) }));
     // below the trigger, right edges aligned (`sideOffset` 8 + `margin-top` 6)
     trigger.child(div().absolute().top(px(style::LG_BUTTON + 14.)).right_0().child(deferred(anchored().anchor(Corner::TopRight).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3)))
 }
 
-pub(crate) fn render(me: &BoardView, cx: &mut Context<BoardView>) -> impl IntoElement {
+pub(crate) fn render(me: &BoardView, window: &Window, cx: &mut Context<BoardView>) -> impl IntoElement {
+    let width = window.viewport_size().width;
+    if cfg!(target_os = "ios") && width < px(680.) {
+        let narrow = width < px(356.);
+        let mut row = div().flex().items_center().gap(px(style::SPACE));
+        for t in TOUCH_MAIN.into_iter().filter(|t| !narrow || *t != Tool::Text) { row = row.child(tool_button(me, t, true, cx)); }
+        let bar = island("board-toolbar", 1.).child(row.child(extra_tools(me, true, narrow, cx)));
+        return div().absolute().top(px(style::TOP_PADDING)).left(px(56.)).right(px(8.)).flex().justify_center().child(bar);
+    }
     let locked = me.tool_locked();
     let lock = tool_icon("board-tool-lock", style::LG_BUTTON, locked)
         .child(icon(if locked { "locked" } else { "unlocked" }, style::ICON, tool_icon_color(locked)))
         .ex_tip(&format!("{} — Q", tr("绘制后保持所选的工具栏状态", "Keep selected tool active after drawing")), None)
         .on_click(cx.listener(|me, _, window, cx| me.run(BoardAction::ToggleToolLock, window, cx)));
     let mut row = div().flex().items_center().gap(px(style::SPACE)).child(lock).child(divider().mr(px(4.)));
-    for t in MAIN { row = row.child(tool_button(me, t, cx)); }
-    row = row.child(divider().ml(px(4.))).child(extra_tools(me, cx));
+    for t in MAIN { row = row.child(tool_button(me, t, false, cx)); }
+    row = row.child(divider().ml(px(4.))).child(extra_tools(me, false, false, cx));
     let bar = island("board-toolbar", 1.).relative().child(row).children(super::hints::render(me));
     div().absolute().top(px(style::TOP_PADDING)).left_0().right_0().flex().justify_center().child(bar)
 }

@@ -19,11 +19,16 @@ pub(super) fn dismiss_form() { unsafe { fei_ios_dismiss_object_form(); } }
 impl Editor {
     fn mobile_objects(&self, editable: bool) -> Vec<(String,String)> {
         let mut objects = Vec::new();
+        let mut board_number = 0;
         self.core.doc.for_each_block(|block| {
             if let BlockKind::Code { caption,lang,.. } = &block.kind { objects.push((format!("code:{}:0",block.id.0),format!("{}：{} ({lang})",tr("代码块","Code block"),caption.as_deref().unwrap_or(crate::settings::text(super::caption::CODE_CAPTION))))); }
             if !editable { return; }
             if let BlockKind::Image { caption,.. } = &block.kind { objects.push((format!("image:{}:0",block.id.0),format!("{}：{}",tr("图片","Image"),caption.as_deref().unwrap_or("")))); }
             if matches!(block.kind,BlockKind::Countdown(_)) { objects.push((format!("countdown:{}:0",block.id.0),tr("倒计时","Countdown").into())); }
+            if matches!(block.kind,BlockKind::Board(_)) {
+                board_number += 1;
+                objects.push((format!("board:{}:0",block.id.0),format!("{} {board_number}",tr("编辑画板","Edit board"))));
+            }
             for (range,marks) in block.text.spans() {
                 let Some(inline) = &marks.inline else { continue };
                 let (kind,title,detail) = match &inline.kind {
@@ -46,7 +51,7 @@ impl Editor {
         let stamp = SelectionStamp::capture(self,"object-list");
         let mut actions: Vec<_> = self.mobile_objects(editable).into_iter().map(|(key,title)| { let mut a = control(&key,&title,false); a["dismiss"] = json!(true); a }).collect();
         if actions.is_empty() { let mut a = control("empty",tr("暂无可设置内容","No configurable content"),false); a["enabled"] = json!(false); actions.push(a); }
-        let request = json!({"serial":stamp.serial,"namespace":"objects","command":"object-open","title":if editable { tr("内容设置","Content settings") } else { tr("代码块工具","Code tools") },"done":tr("完成","Done"),"context":"","sections":[group("objects",tr("当前笔记","Current note"),false,actions)]});
+        let request = json!({"serial":stamp.serial,"namespace":"objects","command":"object-open","title":if editable { tr("内容设置","Content settings") } else { tr("代码块工具","Code tools") },"done":tr("完成","Done"),"context":"","sections":[group("objects",tr("当前文档","Current document"),false,actions)]});
         self.table_menu = None;
         self.format_menu = Some(stamp);
         self.dismiss_touch_menu();
@@ -68,6 +73,7 @@ impl Editor {
             "button"=>self.open_button_panel(Pos::new(block,offset),window,cx),
             "reminder"=>self.open_reminder(Pos::new(block,offset),cx),
             "countdown"=>self.open_countdown(block,window,cx),
+            "board"=>self.open_board(block,window,cx),
             _=>{},
         }
     }
@@ -124,7 +130,7 @@ impl Editor {
             self.menu = None;
             self.cd.dialog = None;
             self.invalidate_table_controls();
-            self.toast(tr("笔记已更新，请重新打开设置。","The note changed. Please reopen its settings."),cx);
+            self.toast(tr("文档已更新，请重新打开设置。","The document changed. Please reopen its settings."),cx);
             return;
         }
         match self.menu {

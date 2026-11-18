@@ -7,7 +7,7 @@ use anyhow::{Result, ensure};
 use gpui::{BorrowAppContext, App, Global, Hsla, SharedString};
 use loro::cursor::Cursor;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, ffi::{CStr, CString, c_char}, path::PathBuf, time::{Duration, Instant}};
+use std::{collections::HashMap, ffi::{CStr, CString, c_char}, path::{Path, PathBuf}, sync::{Arc, Weak}, time::{Duration, Instant}};
 use crate::{app, editor::core::{Pos, Selection}, model::BlockId};
 use super::{Bytes, content};
 use unicode_segmentation::UnicodeSegmentation;
@@ -46,8 +46,7 @@ pub(crate) fn badge_ink(color: Hsla) -> Hsla {
 
 pub(crate) enum SelectionSource {
     Idle,
-    Editing(String, Selection),
-    Waiting,
+    Editing(String, Option<Selection>),
 }
 
 #[derive(Default, PartialEq, Eq)]
@@ -60,6 +59,15 @@ pub(crate) struct View {
 pub(crate) struct Views(HashMap<PathBuf, View>);
 impl Global for Views {}
 pub(crate) fn view<'a>(root: &std::path::Path, cx: &'a App) -> Option<&'a View> { cx.try_global::<Views>()?.0.get(root) }
+pub(crate) fn wake(root: &Path, cx: &App) {
+    if let Some(session) = super::session(root, cx) { let _ = session.presence_wake.try_send(()); }
+}
+#[cfg(target_os = "ios")]
+pub(crate) fn wake_all(cx: &mut App) {
+    if let Some(sync) = cx.try_global::<super::Sync>() {
+        for session in sync.0.values() { let _ = session.presence_wake.try_send(()); }
+    }
+}
 pub(super) fn remove(root: &std::path::Path, cx: &mut App) {
     if !cx.has_global::<Views>() { return; }
     cx.update_global::<Views, _>(|views, _| { views.0.remove(root); });
@@ -102,6 +110,19 @@ struct State {
     head: Option<CursorRef>,
 }
 
+impl State {
+    fn editing(note: String, selection: Option<Selection>, doc: Option<&loro::LoroDoc>) -> Self {
+        let (anchor, head) = selection.zip(doc).map_or((None, None), |(sel, doc)|
+            (CursorRef::new(doc, sel.anchor), CursorRef::new(doc, sel.head)));
+        Self { note: Some(note), anchor, head }
+    }
+
+    fn visible_note(&self, room: Option<&super::shared::Scope>) -> Option<&str> {
+        let note = self.note.as_deref()?;
+        room.is_none_or(|room| note != super::assets::SCOPE && room.permits(note)).then_some(note)
+    }
+}
+
 #[derive(Deserialize)]
 struct Device {
     peer: String,
@@ -136,16 +157,13 @@ fn exchange(request: Request) -> Result<Page> {
     Ok(page)
 }
 
-fn local_state(root: &std::path::Path, cx: &mut App) -> Result<Option<State>> {
+fn local_state(root: &Path, cx: &mut App) -> State {
     let (id, selection) = match app::cloud_active_selection(root, cx) {
-        SelectionSource::Idle => return Ok(Some(State::default())),
-        SelectionSource::Waiting => return Ok(None),
+        SelectionSource::Idle => return State::default(),
         SelectionSource::Editing(id, selection) => (id, selection),
     };
-    let doc = super::journal(root, cx).text_state(&id)?;
-    let anchor = doc.as_ref().and_then(|doc| CursorRef::new(doc, selection.anchor));
-    let head = doc.as_ref().and_then(|doc| CursorRef::new(doc, selection.head));
-    Ok(Some(State { note: Some(id), anchor, head }))
+    let doc = selection.and_then(|_| super::journal(root, cx).text_state(&id).ok().flatten());
+    State::editing(id, selection, doc.as_ref())
 }
 
 struct Online {
@@ -174,7 +192,35 @@ fn shared_names_omit_addresses_and_controls() {
     assert_eq!(display_name(Some(&name)).unwrap().graphemes(true).count(), 20);
 }
 
-fn publish(root: &std::path::Path, online: &mut HashMap<u64, Online>, room_note: Option<&str>, cx: &mut App) {
+#[cfg(test)]
+#[test]
+fn editing_presence_can_precede_anchors_and_tracks_the_document_within_a_folder() -> Result<()> {
+    use crate::model::{Block, Document};
+    use super::shared::Scope;
+
+    let note = uuid::Uuid::new_v4().to_string();
+    let folder = Scope { note: uuid::Uuid::new_v4().to_string(), owner: None, folder: true };
+    let other = Scope { folder: false, ..folder.clone() };
+    let doc = Document { blocks: vec![Block::text("甲乙丙丁")], ..Default::default() };
+    let id = doc.blocks[0].id;
+    let selection = Selection { anchor: Pos::new(id, "甲".len()), head: Pos::new(id, "甲乙丙".len()) };
+    let pending = State::editing(note.clone(), None, None);
+    assert_eq!(pending.visible_note(Some(&folder)), Some(note.as_str()));
+    assert_eq!(pending.visible_note(Some(&other)), None);
+    assert_eq!(State::default().visible_note(Some(&folder)), None);
+    assert!(pending.anchor.is_none() && pending.head.is_none());
+
+    let loro = content::open(&content::seed(&doc)?)?;
+    let active = State::editing(note, Some(selection), Some(&loro));
+    let payload = serde_json::to_string(&active)?;
+    assert!(!payload.contains("乙丙"));
+    let received: State = serde_json::from_str(&payload)?;
+    assert_eq!(received.anchor.and_then(|anchor| anchor.resolve(&loro)), Some(selection.anchor));
+    assert_eq!(received.head.and_then(|head| head.resolve(&loro)), Some(selection.head));
+    Ok(())
+}
+
+fn publish(root: &Path, online: &mut HashMap<u64, Online>, room: Option<&super::shared::Scope>, cx: &mut App) {
     let now = Instant::now();
     online.retain(|_, device| device.until > now);
     let mut devices: Vec<_> = online.iter().collect();
@@ -183,9 +229,8 @@ fn publish(root: &std::path::Path, online: &mut HashMap<u64, Online>, room_note:
     let mut participants = HashMap::new();
     for (&peer, device) in devices {
         view.devices.push(device.name.clone());
-        let Some(note) = &device.state.note else { continue; };
-        if room_note.is_some_and(|id| id != note) { continue; }
-        let collaborator = if room_note.is_some() {
+        let Some(note) = device.state.visible_note(room) else { continue; };
+        let collaborator = if room.is_some() {
             let key = (note, device.identity.as_deref(), device.identity.is_none().then_some(peer));
             participants.entry(key).or_insert_with(|| {
                 let name = device.identity.as_ref().and_then(|_| display_name(device.display_name.as_deref()));
@@ -193,70 +238,86 @@ fn publish(root: &std::path::Path, online: &mut HashMap<u64, Online>, room_note:
                     .unwrap_or_else(|| device.alias.to_string().into());
                 let name = name.unwrap_or_else(|| crate::localized_format!("协作者 {}", "Collaborator {}", device.alias).into());
                 let collaborator = Collaborator { name: Some(name), initials, color: (device.alias - 1) % COLORS.len() };
-                view.collaborators.entry(note.clone()).or_default().push(collaborator.clone());
+                view.collaborators.entry(note.to_owned()).or_default().push(collaborator.clone());
                 collaborator
             }).clone()
         } else {
             Collaborator { name: None, initials: "".into(), color: (peer % COLORS.len() as u64) as usize }
         };
-        if let Ok(Some(doc)) = super::journal(root, cx).text_state(note)
-            && let Some(anchor) = device.state.anchor.as_ref().and_then(|pos| pos.resolve(&doc))
-            && let Some(head) = device.state.head.as_ref().and_then(|pos| pos.resolve(&doc))
+        if let (Some(anchor), Some(head)) = (&device.state.anchor, &device.state.head)
+            && let Ok(Some(doc)) = super::journal(root, cx).text_state(note)
+            && let (Some(anchor), Some(head)) = (anchor.resolve(&doc), head.resolve(&doc))
         {
-            view.notes.entry(note.clone()).or_default().push(RemoteSelection { selection: Selection { anchor, head }, collaborator });
+            view.notes.entry(note.to_owned()).or_default().push(RemoteSelection { selection: Selection { anchor, head }, collaborator });
         }
     }
     if self::view(root, cx) != Some(&view) { cx.update_global::<Views, _>(|views, _| { views.0.insert(root.to_path_buf(), view); }); }
 }
 
-pub(super) fn start(cx: &mut App, root: PathBuf, generation: uuid::Uuid, pause: Option<PathBuf>) -> Result<()> {
+// A reopened room reuses its CloudKit peer record. Serialize exchanges with
+// the retiring generation so its last update cannot overtake the new editor.
+#[derive(Default)]
+struct Transports(HashMap<PathBuf, Weak<async_lock::Mutex<()>>>);
+impl Global for Transports {}
+
+pub(super) fn start(cx: &mut App, root: PathBuf, generation: uuid::Uuid, pause: Option<PathBuf>, wake: async_channel::Receiver<()>) -> Result<()> {
     let (account, channel, peer) = super::journal(&root, cx).identity();
     let (account, channel) = (account.to_owned(), channel.map(str::to_owned));
     let room = super::journal(&root, cx).room().cloned();
     #[cfg(feature = "devtools")]
     let channel = if room.is_some() { crate::cloud_trial::test_channel()? } else { channel };
+    let transports = &mut cx.default_global::<Transports>().0;
+    let transport = transports.get(&root).and_then(Weak::upgrade).unwrap_or_default();
+    transports.retain(|_, transport| transport.strong_count() > 0);
+    transports.insert(root.clone(), Arc::downgrade(&transport));
     if !cx.has_global::<Views>() { cx.set_global(Views::default()); }
     cx.update_global::<Views, _>(|views, _| { views.0.insert(root.clone(), View::default()); });
     cx.spawn(async move |cx| {
         let mut delay = Duration::ZERO;
         let mut online = HashMap::new();
         let mut next_alias = 1;
-        let room_note = room.as_ref().map(|room| room.note.as_str());
         let mut token = None;
         let mut last: Option<(Instant, Vec<u8>)> = None;
+        let mut announced_editing = false;
         loop {
-            cx.background_executor().timer(delay).await;
+            let mut timer = std::pin::pin!(cx.background_executor().timer(delay));
+            let mut woken = std::pin::pin!(wake.recv());
+            std::future::poll_fn(|cx| {
+                use std::task::Poll;
+                if woken.as_mut().poll(cx).is_ready() || timer.as_mut().poll(cx).is_ready() { Poll::Ready(()) }
+                else { Poll::Pending }
+            }).await;
+            let _transport = transport.lock().await;
             if !crate::gpui_compat::async_update(cx, |cx| super::current(&root, generation, cx)).unwrap_or(false) { break; }
             let Ok(request) = crate::gpui_compat::async_update(cx, |cx| {
                 let status = super::status(&root, cx).unwrap();
                 if status.access_paused || matches!(status.phase, super::SyncPhase::AccountChecking
                     | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut) {
                     online.clear();
-                    publish(&root, &mut online, room_note, cx);
+                    publish(&root, &mut online, room.as_ref(), cx);
                     return None;
                 }
                 if super::journal(&root, cx).access() == Some(super::shared::Access::Revoked) { online.clear(); }
-                publish(&root, &mut online, room_note, cx);
-                Some((super::journal(&root, cx).access(),
-                    local_state(&root, cx).and_then(|state| state.map(|state| serde_json::to_vec(&state).map_err(Into::into)).transpose())))
+                publish(&root, &mut online, room.as_ref(), cx);
+                Some((super::journal(&root, cx).access(), local_state(&root, cx)))
             }) else { break };
             let Some((access, state)) = request else { delay = POLL; continue; };
-            let Ok(state) = state else { delay = POLL; continue };
-            let state = state.or_else(|| last.as_ref().map(|(_, previous)| previous.clone()));
             if access == Some(super::shared::Access::Revoked) || pause.as_ref().is_some_and(|path| path.exists()) {
                 if access.is_some() { online.clear(); }
                 delay = POLL;
                 continue;
             }
-            let update = state.filter(|state| access.is_none_or(super::shared::Access::can_write)
-                && last.as_ref().is_none_or(|(time, old)| old != state || time.elapsed() >= HEARTBEAT));
+            let editing = state.note.is_some();
+            let update = serde_json::to_vec(&state).ok().filter(|state| access.is_none_or(super::shared::Access::can_write)
+                && last.as_ref().is_none_or(|(time, old)| old != state || (room.is_none() || editing) && time.elapsed() >= HEARTBEAT));
+            if editing && update.is_some() { announced_editing = true; }
             let request = Request { account: account.clone(), channel: channel.clone(), peer: peer.to_string(),
                 token: token.clone(), state: update.clone().map(Bytes), room: room.clone() };
             let revision = super::account_revision();
             match cx.background_executor().spawn(async move { exchange(request) }).await {
                 Ok(page) if super::account_revision() == revision => {
+                    if let Some(state) = update { last = Some((Instant::now(), state)); announced_editing = editing; }
                     if !crate::gpui_compat::async_update(cx, |cx| super::current(&root, generation, cx)).unwrap_or(false) { break; }
-                    if let Some(state) = update { last = Some((Instant::now(), state)); }
                     if page.replay { online.clear(); }
                     token = page.token;
                     for id in page.removed.iter().filter_map(|id| id.parse::<u64>().ok()) { online.remove(&id); }
@@ -278,10 +339,19 @@ pub(super) fn start(cx: &mut App, root: PathBuf, generation: uuid::Uuid, pause: 
                                 until: Instant::now() + TTL - Duration::from_secs_f64(device.age) });
                         }
                     }
-                    if crate::gpui_compat::async_update(cx, |cx| publish(&root, &mut online, room_note, cx)).is_err() { break; }
+                    if crate::gpui_compat::async_update(cx, |cx| publish(&root, &mut online, room.as_ref(), cx)).is_err() { break; }
                     delay = if page.more { Duration::ZERO } else { POLL };
                 }
                 _ => delay = (delay * 2).clamp(POLL, Duration::from_secs(8)),
+            }
+        }
+        if announced_editing && pause.as_ref().is_none_or(|path| !path.exists()) {
+            let _transport = transport.lock().await;
+            let retired = crate::gpui_compat::async_update(cx, |cx| super::session(&root, cx)
+                .is_none_or(|session| session.journal.identity().2 != peer)).unwrap_or(false);
+            if retired && let Ok(state) = serde_json::to_vec(&State::default()) {
+                let request = Request { account, channel, peer: peer.to_string(), token, state: Some(Bytes(state)), room };
+                let _ = cx.background_executor().spawn(async move { exchange(request) }).await;
             }
         }
     }).detach();

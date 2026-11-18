@@ -23,7 +23,7 @@ impl SharedStore {
     pub fn root(&self) -> &std::path::Path { &self.2 }
     pub fn is_shared(&self) -> bool { self.3 }
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-    pub(crate) fn open_shared(root: std::path::PathBuf) -> Result<Self> { Ok(Self::from_store(Store::open_sqlite_at(root)?, true)) }
+    pub(crate) fn from_shared_store(store: Store) -> Self { Self::from_store(store, true) }
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub(crate) fn only_session_reference(&self) -> bool { Rc::strong_count(&self.0) == 1 }
     pub fn file_task_busy(&self) -> bool { self.1.load(Ordering::Acquire) }

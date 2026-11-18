@@ -57,7 +57,7 @@ final class ImageCacheUITests: XCTestCase {
         let row = app.tables["fei.notes.list"].cells.containing(.staticText,identifier: prefix).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5)); row.tap()
         XCTAssertTrue(app.navigationBars[prefix].waitForExistence(timeout: 5)); settle(); shot("cache33-03-reopened-picture")
-        app.buttons["fei.more"].tap(); app.sheets.buttons["删除笔记"].tap()
+        app.buttons["fei.more"].tap(); app.sheets.buttons["删除文档"].tap()
         XCTAssertTrue(app.alerts["fei.confirm"].waitForExistence(timeout: 5))
         app.alerts.buttons["fei.confirm.ok"].firstMatch.tap()
         let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: app.navigationBars[prefix])

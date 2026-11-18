@@ -90,7 +90,7 @@ final class MediaUITests: XCTestCase {
         shot("media-05-native-file-preview")
         app.buttons["fei.file.done"].tap()
         app.buttons["fei.more"].tap()
-        app.sheets.buttons["笔记选项"].tap()
+        app.sheets.buttons["文档选项"].tap()
         app.sheets.buttons["阅读模式"].tap()
         app.buttons["fei.more"].tap()
         XCTAssertTrue(app.sheets.buttons["图片和附件"].waitForExistence(timeout: 5))

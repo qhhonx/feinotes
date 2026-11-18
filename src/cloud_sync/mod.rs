@@ -11,6 +11,7 @@ mod journal;
 mod retention;
 mod paragraphs;
 pub(crate) mod presence;
+mod progress;
 pub(crate) mod shared;
 mod table;
 pub(crate) mod library;
@@ -21,7 +22,7 @@ use anyhow::{Result, ensure};
 use base64::{Engine, prelude::BASE64_STANDARD};
 use gpui::{BorrowAppContext, App, Global};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, ffi::{CStr, CString, c_char}, path::{Path, PathBuf}, time::Duration};
+use std::{collections::HashMap, ffi::{CStr, CString, c_char}, path::{Path, PathBuf}, time::{Duration, Instant}};
 use crate::{app, editor::core::{Core, Pos}, model::Document, shared_store::SharedStore, store::{Meta, Store}};
 use journal::Journal;
 pub(crate) use assets::AssetProblem;
@@ -34,9 +35,10 @@ pub(crate) struct NoteChange {
 
 pub(crate) struct SyncIssue {
     pub id: String,
-    pub title: String,
+    pub title: Option<String>,
     pub trashed: bool,
     pub held: bool,
+    pub conflict: bool,
     pub attachments: Vec<AttachmentIssue>,
 }
 
@@ -103,7 +105,9 @@ struct Changes { #[serde(default)] retention: Option<retention::Receipt>, upload
     #[serde(rename = "cursorReplayed", default)]
     cursor_replayed: bool }
 
-fn exchange(request: Exchange) -> Result<Changes> {
+fn exchange(request: Exchange) -> Result<Changes> { exchange_page(request).map(|(page, _)| page) }
+
+fn exchange_page(request: Exchange) -> Result<(Changes, bool)> {
     let revision = account_revision();
     #[cfg(feature = "devtools")]
     let request = {
@@ -128,16 +132,21 @@ fn exchange(request: Exchange) -> Result<Changes> {
             Some("quota") => SyncPhase::Quota,
             Some("subscriptionRequired") => SyncPhase::SubscriptionRequired,
             Some("testflightVerification") => SyncPhase::TestFlightVerification,
-            _ => SyncPhase::Failed,
+            _ => match value.get("errorStage").and_then(serde_json::Value::as_str) {
+                Some("uploading") => SyncPhase::Uploading,
+                Some("downloading") => SyncPhase::Downloading,
+                _ => SyncPhase::Connecting,
+            },
         };
         return Err(CloudFailure { phase, message: error.into() }.into());
     }
+    let cursor_advanced = value.get("cursorAdvanced").and_then(serde_json::Value::as_bool).unwrap_or(false);
     let page: Changes = serde_json::from_value(value)?;
     ensure!(page.legacy == request.legacy, "CloudKit returned a page from the wrong sync zone");
     ensure!(page.room_access.is_some() == request.room.is_some(), "CloudKit returned the wrong sharing scope");
     ensure!(!page.upload_quota_exceeded || !request.edits.is_empty() || request.maintenance.is_some(), "CloudKit reported upload quota for a download-only request");
     ensure!(page.uploaded.iter().all(|id| request.edits.iter().any(|edit| &edit.id == id)), "CloudKit acknowledged an edit that was not sent");
-    Ok(page)
+    Ok((page, cursor_advanced))
 }
 
 pub fn test_root() -> Result<Option<PathBuf>> {
@@ -164,7 +173,10 @@ struct Session {
     store: SharedStore,
     generation: uuid::Uuid,
     sender: async_channel::Sender<()>,
+    presence_wake: async_channel::Sender<()>,
     retry_attachments: bool,
+    progress: progress::Monitor,
+    account_revision: u64,
 }
 
 fn session<'a>(root: &Path, cx: &'a App) -> Option<&'a Session> { cx.try_global::<Sync>()?.0.get(root) }
@@ -191,6 +203,7 @@ pub(crate) fn shared_access_ended(root: &Path, note: &str, cx: &mut App) -> Resu
         session.journal.receive(Changes { retention: None, uploaded: vec![], edits: vec![], token: None, more: false, legacy: false,
             room_access: Some(shared::Access::Revoked), upload_quota_exceeded: false,
             #[cfg(feature = "devtools")] cursor_replayed: false })?;
+        update_status(root, cx, SyncPhase::Revoked);
     }
     cx.update_global::<activity::ActivityView, _>(|view, _| view.0.retain(|row| row.room.scope.note != note));
     app::cloud_notes_changed(root, &[], false, cx);
@@ -208,6 +221,11 @@ pub(crate) fn release_unused(cx: &mut App) {
 pub(crate) enum SyncPhase {
     #[default]
     Connecting,
+    Uploading,
+    Downloading,
+    Applying,
+    ReadOnly,
+    Revoked,
     Ready,
     Offline,
     Account,
@@ -227,7 +245,11 @@ pub(crate) struct SyncStatus {
     pub downloads: u32,
     pub held: u32,
     pub attachments: u32,
+    pub conflicts: u32,
+    pub catalogue_paused: bool,
     pub access_paused: bool,
+    pub stalled: Option<SyncPhase>,
+    last_success: Option<u64>,
 }
 
 
@@ -283,24 +305,47 @@ pub(crate) fn retry(root: &Path, cx: &mut App) {
     let Some(session) = cx.global_mut::<Sync>().0.get_mut(root) else { return };
     session.retry_attachments = true;
     let _ = session.sender.try_send(());
-    update_status(root, cx, SyncPhase::Connecting);
 }
 
 pub(crate) fn access_changed(_cx: &App) { sync_resumed(0); }
 
+pub(crate) fn last_success(root: &Path, cx: &App) -> Option<u64> {
+    let status = status(root, cx)?;
+    let session = session(root, cx)?;
+    if session.account_revision != account_revision()
+        || matches!(status.phase, SyncPhase::AccountChecking | SyncPhase::AccountChanged | SyncPhase::SignedOut | SyncPhase::Account | SyncPhase::Revoked)
+    { return None; }
+    status.last_success
+}
+
 fn update_status(root: &Path, cx: &mut App, phase: SyncPhase) { update_status_after_exchange(root, cx, phase, false); }
 
 fn update_status_after_exchange(root: &Path, cx: &mut App, phase: SyncPhase, authorized: bool) {
-    let ((uploads, downloads, held, attachments), phase) = match journal(root, cx).counts() {
-        Ok(counts) => (counts, phase),
-        Err(_) => ((0, 0, 0, 0), SyncPhase::Failed),
+    let journal = journal(root, cx);
+    let ((uploads, downloads, held, attachments), conflicts, catalogue_paused, phase) =
+        match (journal.counts(), journal.pending_work(), journal.catalogue_paused()) {
+        (Ok(counts), Ok((_, _, conflicts)), Ok(paused)) => (counts, conflicts, paused, phase),
+        _ => ((0, 0, 0, 0), 0, false, SyncPhase::Failed),
     };
     let before = status(root, cx).expect("session status");
     let access_paused = !authorized && (phase == SyncPhase::SubscriptionRequired || before.access_paused);
-    let changed = before.access_paused != access_paused;
-    let status = SyncStatus { phase, uploads, downloads, held, attachments, access_paused };
+    let refresh_access = before.access_paused != access_paused || before.phase != phase
+        && matches!(phase, SyncPhase::AccountChecking | SyncPhase::AccountChanged | SyncPhase::SignedOut);
+    let progress = &session(root, cx).unwrap().progress;
+    let status = SyncStatus { phase, uploads, downloads, held, attachments, conflicts, catalogue_paused, access_paused,
+        stalled: progress.stalled(), last_success: progress.last_success };
     if before != &status { cx.update_global::<SyncStatuses, _>(|statuses, _| { statuses.0.insert(root.to_path_buf(), status); }); }
-    if scope(root, cx).is_some() && (changed || matches!(phase, SyncPhase::AccountChecking | SyncPhase::AccountChanged | SyncPhase::SignedOut)) { app::cloud_notes_changed(root, &[], false, cx); }
+    if scope(root, cx).is_some() && refresh_access { app::cloud_notes_changed(root, &[], false, cx); }
+}
+
+fn record_success(session: &mut Session) {
+    if !session.progress.should_record_success() { return; }
+    let time = crate::time::now();
+    if time == 0 { return; }
+    match session.journal.record_success(time) {
+        Ok(()) => session.progress.record_success(time),
+        Err(error) => crate::logging::write(&format!("Could not save last successful iCloud sync: {error:#}")),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -360,13 +405,20 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
     let upload_fault_fixture = test_root()?.map(|root| root.join("qa-upload-fault"));
     let room = opened.room().is_some();
     let account = opened.identity().0.to_owned();
+    let discover_owned = opened.identity().1.is_none() && test_root()?.is_none();
     let marker = opened.account_verification_marker()?;
     let generation = uuid::Uuid::new_v4();
     let (retry_tx, retry_rx) = async_channel::bounded(1);
     let (account_tx, account_rx) = async_channel::bounded(1);
+    let (presence_wake, presence_rx) = async_channel::bounded(1);
     if !cx.has_global::<Sync>() { cx.set_global(Sync::default()); }
     if !cx.has_global::<SyncStatuses>() { cx.set_global(SyncStatuses::default()); }
-    cx.global_mut::<Sync>().0.insert(root.clone(), Session { journal: opened, store, generation, sender: retry_tx.clone(), retry_attachments: false });
+    let last_success = opened.last_success().unwrap_or_else(|error| {
+        crate::logging::write(&format!("Could not read last successful iCloud sync: {error:#}"));
+        None
+    });
+    cx.global_mut::<Sync>().0.insert(root.clone(), Session { journal: opened, store, generation, sender: retry_tx.clone(), presence_wake,
+        retry_attachments: false, progress: progress::Monitor::new(last_success), account_revision: account_revision() });
     cx.update_global::<SyncStatuses, _>(|statuses, _| { statuses.0.insert(root.clone(), SyncStatus::default()); });
     let watch = ACCOUNT_WATCH.get_or_init(Default::default);
     let first = { let mut watch = watch.lock().unwrap(); let first = watch.is_empty(); watch.insert(root.clone(), (marker, retry_tx, account_tx)); first };
@@ -374,8 +426,10 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
         && std::env::var_os("QUIET_SYNC_QA_SHARED_SESSIONS").is_some();
     if first && !local_session_qa { unsafe { quiet_cloud_watch_sync_resume(sync_resumed) }; }
     update_status(&root, cx, SyncPhase::Connecting);
-    if let Err(error) = presence::start(cx, root.clone(), generation, pause.clone()) { release(&root, cx); return Err(error); }
-    if !room { activity::start(cx, root.clone(), account, pause.clone(), generation); }
+    if let Err(error) = presence::start(cx, root.clone(), generation, pause.clone(), presence_rx) { release(&root, cx); return Err(error); }
+    if !room {
+        activity::start(cx, root.clone(), account, pause.clone(), generation, discover_owned && !local_session_qa);
+    }
     let account_root = root.clone();
     cx.spawn(async move |cx| {
         while account_rx.recv().await.is_ok() {
@@ -407,6 +461,8 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                 if room && session(&root, cx).unwrap().store.only_session_reference() { release(&root, cx); return false; }
                 true
             }).unwrap_or(false) { break; }
+            let mut round = progress::Round::default();
+            let mut failure_phase = SyncPhase::Applying;
             let result = crate::gpui_compat::async_update(cx, |cx| {
                 if observed_revision != account_revision() {
                     observed_revision = account_revision();
@@ -414,11 +470,15 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                 }
                 if std::mem::take(&mut cx.global_mut::<Sync>().0.get_mut(&root).unwrap().retry_attachments) {
                     upload_retry_at = None;
-                    if journal_mut(&root, cx).retry_attachments()? { legacy_checked = None; }
+                    let journal = journal_mut(&root, cx);
+                    journal.retry_conflicts()?;
+                    if journal.retry_attachments()? { legacy_checked = None; }
                 }
                 let legacy = !room && legacy_checked.is_none_or(|time| time.elapsed() >= Duration::from_secs(60));
-                merge(&root, cx)?;
+                round.legacy = legacy;
+                merge(&root, &mut round, cx)?;
                 update_status(&root, cx, status(&root, cx).unwrap().phase);
+                failure_phase = SyncPhase::Failed;
                 let allow_upload = !legacy && upload_retry_at.is_none_or(|time| std::time::Instant::now() >= time);
                 let journal = &journal(&root, cx);
                 let request = if legacy { journal.legacy_request()? } else { journal.request_with_uploads(allow_upload)? };
@@ -435,36 +495,70 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
             });
             let Ok(request) = result else { break };
             let revision = account_revision();
-            let (legacy, allow_upload) = request.as_ref().map(|(legacy, allow_upload, _)| (*legacy, *allow_upload)).unwrap_or_default();
+            let (legacy, allow_upload, wanted) = request.as_ref().map(|(legacy, allow_upload, request)|
+                (*legacy, *allow_upload, request.downloads.clone())).unwrap_or_default();
             let result = match request {
                 Ok(_) if pause.as_ref().is_some_and(|path| path.exists()) => {
                     delay = Duration::from_secs(2);
                     continue;
                 }
-                Ok((_, _, request)) => cx.background_executor().spawn(async move { exchange(request) }).await,
+                Ok((_, _, request)) => {
+                    failure_phase = SyncPhase::Connecting;
+                    cx.background_executor().spawn(async move { exchange_page(request) }).await
+                }
                 Err(error) => Err(error),
             };
             if !crate::gpui_compat::async_update(cx, |cx| current(&root, generation, cx)).unwrap_or(false) { break; }
             let Ok(result) = crate::gpui_compat::async_update(cx, |cx| -> Result<_> {
                 check_account_revision(revision)?;
-                let page = result?;
+                let (page, cursor_advanced) = result?;
+                round.connected = true;
                 let (more, quota_exceeded) = (page.more, page.upload_quota_exceeded);
+                failure_phase = SyncPhase::Applying;
+                let scope_session = cx.global_mut::<Sync>().0.get_mut(&root).unwrap();
+                scope_session.account_revision = revision;
                 if !page.uploaded.is_empty() || !page.edits.is_empty() {
                     crate::logging::write(&format!("CloudKit sync uploaded={} downloaded={}", page.uploaded.len(), page.edits.len()));
                 }
-                if journal_mut(&root, cx).receive(page)? { app::cloud_notes_changed(&root, &[], true, cx); }
-                merge(&root, cx)?;
-                Ok((more, quota_exceeded))
+                let (access_changed, uploaded) = scope_session.journal.receive_page(page)?;
+                round.uploaded = uploaded;
+                round.download_advanced = more && cursor_advanced;
+                if access_changed { app::cloud_notes_changed(&root, &[], true, cx); }
+                merge(&root, &mut round, cx)?;
+                let journal = journal(&root, cx);
+                let (uploads, _, held, attachments) = journal.counts()?;
+                let (active_uploads, active_downloads, conflicts) = journal.pending_work()?;
+                let access = journal.access();
+                let revoked = access == Some(shared::Access::Revoked);
+                let read_only = access == Some(shared::Access::ReadOnly);
+                let next_downloads = if legacy || more || revoked { vec![] } else { journal.attachment_downloads()? };
+                round.download_advanced |= !more && round.applied && wanted.iter().any(|id| !next_downloads.contains(id));
+                round.downloading = more || !next_downloads.is_empty();
+                round.applying = !revoked && active_downloads > 0;
+                round.uploading = !revoked && !read_only && !more && active_uploads > 0;
+                Ok((more, quota_exceeded, uploads == 0 && held == 0 && attachments == 0 && conflicts == 0 && !journal.catalogue_paused()?, revoked, read_only && uploads > 0))
             }) else { break };
             match result {
-                Ok((more, quota_exceeded)) => {
+                Ok((more, quota_exceeded, uploads_clean, revoked, read_only_pending)) => {
                     account_notice = None;
                     if legacy && !more { legacy_checked = Some(std::time::Instant::now()); }
                     if quota_exceeded { upload_retry_at = Some(std::time::Instant::now() + Duration::from_secs(30)); }
                     else if allow_upload { upload_retry_at = None; }
                     let (pending, collaborating, settled) = crate::gpui_compat::async_update(cx, |cx| {
-                        update_status_after_exchange(&root, cx, if upload_retry_at.is_some() { SyncPhase::Quota }
-                            else if more { SyncPhase::Connecting } else { SyncPhase::Ready }, true);
+                        let phase = if revoked { SyncPhase::Revoked }
+                            else if upload_retry_at.is_some() { SyncPhase::Quota }
+                            else if round.downloading { SyncPhase::Downloading }
+                            else if round.applying { SyncPhase::Applying }
+                            else if read_only_pending { SyncPhase::ReadOnly }
+                            else if round.uploading { SyncPhase::Uploading }
+                            else { SyncPhase::Ready };
+                        let scope_session = cx.global_mut::<Sync>().0.get_mut(&root).unwrap();
+                        scope_session.progress.completed(Instant::now(), round);
+                        if !legacy && uploads_clean && phase == SyncPhase::Ready && !round.apply_blocked_by_local_edits
+                            && account_revision() == revision {
+                            record_success(scope_session);
+                        }
+                        update_status_after_exchange(&root, cx, phase, true);
                         let collaborating = match app::cloud_active_selection(&root, cx) {
                             presence::SelectionSource::Editing(id, _) => presence::view(&root, cx).expect("presence view").notes.contains_key(&id),
                             _ => false,
@@ -472,19 +566,21 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                         let writable = journal(&root, cx).access().is_none_or(shared::Access::can_write);
                         let status = status(&root, cx).unwrap();
                         (status.uploads > 0 && writable, collaborating,
-                            status.phase == SyncPhase::Ready && status.uploads == 0 && status.downloads == 0)
+                            status.phase == SyncPhase::Ready && status.uploads == 0 && status.downloads == 0 && status.conflicts == 0 && !status.catalogue_paused)
                     }).unwrap_or_default();
                     if !legacy && settled && !reported_ready {
                         crate::logging::write("CloudKit sync ready: no pending uploads or downloads");
                         reported_ready = true;
                     }
                     last_error = None;
-                    delay = if legacy || more || (pending && upload_retry_at.is_none()) { Duration::ZERO } else if collaborating { Duration::from_secs(1) }
+                    delay = if (legacy && !more) || (round.downloading && round.download_advanced)
+                        || (pending && upload_retry_at.is_none() && round.uploaded) { Duration::ZERO }
+                        else if collaborating { Duration::from_secs(1) }
                         else { Duration::from_secs(3) };
                 }
                 Err(error) => {
                     reported_ready = false;
-                    let phase = error.downcast_ref::<CloudFailure>().map_or(SyncPhase::Failed, |error| error.phase);
+                    let phase = error.downcast_ref::<CloudFailure>().map_or(failure_phase, |error| error.phase);
                     let _ = crate::gpui_compat::async_update(cx, |cx| {
                         if matches!(phase, SyncPhase::AccountChanged | SyncPhase::SignedOut) {
                             if let Ok(marker) = journal(&root, cx).account_verification_marker() { protect_offline_library(&marker); }
@@ -493,6 +589,7 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                                 account_notice = Some(phase);
                             }
                         }
+                        cx.global_mut::<Sync>().0.get_mut(&root).unwrap().progress.failed(Instant::now(), phase, round);
                         update_status(&root, cx, phase);
                     });
                     let error = format!("{error:#}");
@@ -525,9 +622,15 @@ pub(crate) fn mark_shared_updates_read(root: &Path, updates: &[String], cx: &mut
     Ok(())
 }
 
-fn merge(root: &Path, cx: &mut App) -> Result<()> {
-    let Some(positions) = app::cloud_open_positions(root, cx) else { return Ok(()); };
+fn merge(root: &Path, round: &mut progress::Round, cx: &mut App) -> Result<()> {
+    let before = journal(root, cx).inbox_count()?;
+    let Some(positions) = app::cloud_open_positions(root, cx) else {
+        round.apply_blocked_by_local_edits = true;
+        return Ok(());
+    };
+    round.apply_blocked_by_local_edits = false;
     let (library_changed, changed) = journal_mut(root, cx).merge(&positions)?;
+    round.applied |= journal(root, cx).inbox_count()? < before;
     if library_changed || !changed.is_empty() {
         if let Some(scope) = scope(root, cx) { shared::original::refresh_owner(root, scope, None)?; }
         app::cloud_notes_changed(root, &changed, true, cx);
@@ -538,7 +641,7 @@ fn merge(root: &Path, cx: &mut App) -> Result<()> {
 fn wake_after_save(root: &Path, cx: &mut App) {
     update_status(root, cx, status(root, cx).unwrap().phase);
     let status = status(root, cx).unwrap();
-    if status.uploads > 0 && matches!(status.phase, SyncPhase::Ready | SyncPhase::Connecting) {
+    if status.uploads > 0 && matches!(status.phase, SyncPhase::Ready | SyncPhase::Connecting | SyncPhase::Uploading) {
         let _ = session(root, cx).unwrap().sender.try_send(());
     }
 }

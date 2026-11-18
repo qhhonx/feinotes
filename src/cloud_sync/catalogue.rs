@@ -137,7 +137,7 @@ pub fn project(db: &Connection, doc: &LoroDoc, shared_folder: bool) -> Result<bo
             let body: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM library_documents WHERE id = ?1)", [&id], |row| row.get(0))?;
             let held: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM notes WHERE id = ?1 AND held <> 0)", [&id], |row| row.get(0))?;
             if held { continue; }
-            if !body && !journal::rebuild_body(db, &id, life != Life::Live)? { continue; }
+            if !body && (journal::has_conflict(db, &id)? || !journal::rebuild_body(db, &id, life != Life::Live)?) { continue; }
         }
         entries.insert(id, (meta, life));
     }
@@ -163,6 +163,7 @@ pub fn project(db: &Connection, doc: &LoroDoc, shared_folder: bool) -> Result<bo
     }
     let mut changed = false;
     for (id, (mut meta, life)) in entries {
+        if life == Life::Purged && journal::has_conflict(db, &id)? { continue; }
         let (table, other) = if life == Life::Live { ("library_entries", "library_trash") }
             else { ("library_trash", "library_entries") };
         changed |= db.execute(&format!("DELETE FROM {other} WHERE id = ?1"), [&id])? != 0;

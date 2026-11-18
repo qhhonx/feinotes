@@ -64,7 +64,7 @@ final class ReminderNotificationUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout: 15))
         app.buttons["fei.library-actions"].tap()
-        app.sheets.buttons["导入笔记"].tap()
+        app.sheets.buttons["导入文档"].tap()
         let fixture = app.cells.matching(NSPredicate(format: "label CONTAINS %@ AND NOT (label CONTAINS %@)","FEI_NOTIFICATION21","CANCEL")).firstMatch
         if !fixture.waitForExistence(timeout: 2) {
             if app.buttons["浏览"].firstMatch.waitForExistence(timeout: 2) { app.buttons["浏览"].firstMatch.tap() }
@@ -117,7 +117,7 @@ final class ReminderNotificationUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout: 15))
         app.buttons["fei.library-actions"].tap()
-        app.sheets.buttons["导入笔记"].tap()
+        app.sheets.buttons["导入文档"].tap()
         let fixture = app.cells.matching(NSPredicate(format: "label CONTAINS %@","FEI_NOTIFICATION21_CANCEL")).firstMatch
         if !fixture.waitForExistence(timeout: 2) {
             if app.buttons["浏览"].firstMatch.waitForExistence(timeout: 2) { app.buttons["浏览"].firstMatch.tap() }

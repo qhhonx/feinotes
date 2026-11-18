@@ -9,7 +9,7 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
     ensure!(!personal.exists(), "Shared-session QA requires a fresh synthetic library");
     let source = personal.join(".restore-source");
     let mut file = Store::open_at(source.clone())?;
-    file.create_from(&Document { title: crate::model::RichText::plain("Personal fixture"),
+    let original = file.create_from(&Document { title: crate::model::RichText::plain("Personal fixture"),
         blocks: vec![crate::model::Block::text("private body")], ..Default::default() })?;
     fs::write(source.join(".cloud-restore-ready"), format!("{}\n", "a".repeat(64)))?;
     Store::initialize_sqlite(&personal)?;
@@ -35,6 +35,16 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
             reader.merge(&Default::default())?;
         }
         rooms.push(room);
+    }
+    if std::env::var_os("QUIET_SYNC_QA_UNREAD_UI").is_some() {
+        let room = original::prepare_local(&personal, &original, "Personal fixture".into(), false)?;
+        let root = room_root(&personal, &room.scope.note)?;
+        let db = rusqlite::Connection::open(root.join(crate::store::SQLITE_FILE))?;
+        super::super::activity::schema(&db)?;
+        db.execute("INSERT INTO shared_activity (id, projected) VALUES ('qa-unread', 1)", [])?;
+        let order: Vec<&str> = rooms.iter().map(|r| r.scope.note.as_str()).chain(std::iter::once(&original[..])).collect();
+        let db = rusqlite::Connection::open(personal.join(crate::store::SQLITE_FILE))?;
+        db.execute("INSERT INTO library_values (key, value) VALUES ('shared-sidebar-order', ?1)", [serde_json::to_vec(&order)?])?;
     }
     fs::write(root.join("pause-cloud"), b"isolated local session regression")?;
     fs::write(root.join("qa-session-rooms.json"), serde_json::to_vec(&rooms)?)?;

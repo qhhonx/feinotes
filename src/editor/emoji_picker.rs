@@ -59,34 +59,47 @@ struct Section {
 }
 
 impl Section {
-    fn height(&self) -> f32 {
-        self.title_h + self.emojis.len().div_ceil(PER_LINE) as f32 * ROW_H
+    fn height(&self,columns:usize) -> f32 {
+        self.title_h + self.emojis.len().div_ceil(columns) as f32 * ROW_H
     }
 }
 
-fn layout(groups: Vec<(&'static str, Vec<&'static Emoji>, f32)>) -> Vec<Section> {
+fn layout(groups: Vec<(&'static str, Vec<&'static Emoji>, f32)>,columns:usize) -> Vec<Section> {
     let mut top = 0.;
     groups
         .into_iter()
         .map(|(title, emojis, title_h)| {
             let s = Section { title, emojis, top, title_h };
-            top += s.height();
+            top += s.height(columns);
             s
         })
         .collect()
 }
 
 /// 最近 and the categories; one untitled section of results while searching.
-fn sections(query: &str) -> Vec<Section> {
+fn sections(query: &str,columns:usize) -> Vec<Section> {
     if query.is_empty() {
         let mut g = vec![(crate::settings::text("最近"), emoji::frequent(), TITLE_H)];
         for (i, t) in emoji::CATEGORIES.iter().enumerate() {
             g.push((*t, emoji::category(i).iter().collect(), TITLE_H));
         }
-        layout(g)
+        layout(g,columns)
     } else {
-        layout(vec![("", emoji::search(query), RESULTS_TITLE_H)])
+        layout(vec![("", emoji::search(query), RESULTS_TITLE_H)],columns)
     }
+}
+
+struct PickerLayout { width:f32, height:f32, inset:f32, boundary:f32, columns:usize, scroll_height:f32 }
+
+fn picker_layout(viewport:Size<Pixels>,tabs:bool,mobile:bool) -> PickerLayout {
+    let boundary = if mobile { 8. } else { BOUNDARY };
+    let inset = if mobile { 12. } else { INSET };
+    let width = if mobile { W.min((f32::from(viewport.width)-2.*boundary).max(1.)) } else { W };
+    let default_height = if tabs { H+TABS_H-10. } else { H };
+    let height = if mobile { default_height.min((f32::from(viewport.height)-2.*boundary).max(1.)) } else { default_height };
+    let columns = if mobile { (((width-2.*inset+1.)/(CELL+1.)).floor() as usize).clamp(1,PER_LINE) } else { PER_LINE };
+    let chrome = if mobile { (if tabs { 42. } else { 0. })+inset+36.+6.+36.+2. } else { default_height-SCROLL_H };
+    PickerLayout { width,height,inset,boundary,columns,scroll_height:SCROLL_H.min((height-chrome).max(1.)) }
 }
 
 /// Height of the callout's emoji box: it follows the first child's line so
@@ -129,6 +142,7 @@ impl Editor {
 
     pub(super) fn on_emoji_field(&mut self, ev: &TextFieldEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Menu::Emoji { target, selected }) = self.menu.clone() else { return };
+        let geometry = picker_layout(window.viewport_size(),target==EmojiTarget::DocIcon,cfg!(target_os = "ios"));
         let q = self.emoji_query(cx);
         let n = if q.is_empty() { 0 } else { emoji::search(&q).len() };
         let step = |d: isize| (selected as isize + d).clamp(0, n.saturating_sub(1) as isize) as usize;
@@ -138,8 +152,8 @@ impl Editor {
                 self.emoji_scroll.set_offset(Point::default());
                 0
             }
-            TextFieldEvent::Up if n > 0 => step(-(PER_LINE as isize)),
-            TextFieldEvent::Down if n > 0 => step(PER_LINE as isize),
+            TextFieldEvent::Up if n > 0 => step(-(geometry.columns as isize)),
+            TextFieldEvent::Down if n > 0 => step(geometry.columns as isize),
             TextFieldEvent::LeftEdge if n > 0 => step(-1),
             TextFieldEvent::RightEdge if n > 0 => step(1),
             TextFieldEvent::Submit => {
@@ -153,9 +167,9 @@ impl Editor {
         };
         if sel != selected {
             // Keep the highlighted row in view.
-            let y = RESULTS_TITLE_H + (sel / PER_LINE) as f32 * ROW_H;
+            let y = RESULTS_TITLE_H + (sel / geometry.columns) as f32 * ROW_H;
             let off = -f32::from(self.emoji_scroll.offset().y);
-            let off = if y < off { y } else if y + ROW_H > off + SCROLL_H { y + ROW_H - SCROLL_H } else { off };
+            let off = if y < off { y } else if y + ROW_H > off + geometry.scroll_height { y + ROW_H - geometry.scroll_height } else { off };
             self.emoji_scroll.set_offset(point(px(0.), px(-off)));
         }
         self.menu = Some(Menu::Emoji { target, selected: sel });
@@ -195,36 +209,42 @@ impl Editor {
     }
 
     pub(super) fn emoji_picker(&self, target: EmojiTarget, selected: usize, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let a = self.emoji_anchor(target)?;
+        let a = match self.emoji_anchor(target) {
+            Some(anchor) => anchor,
+            None if cfg!(target_os = "ios") => Bounds::new(Point::default(),size(px(1.),px(1.))),
+            None => return None,
+        };
         let tabs = target == EmojiTarget::DocIcon;
-        let h = if tabs { H + TABS_H - 10. } else { H };
+        let viewport = window.viewport_size();
+        let mobile = cfg!(target_os = "ios");
+        let PickerLayout { width,height,inset,boundary,columns,scroll_height } = picker_layout(viewport,tabs,mobile);
         let q = self.emoji_query(cx);
         let searching = !q.is_empty();
-        let secs = sections(&q);
-        let content_h = secs.last().map_or(0., |s| s.top + s.height());
-        let off = (-f32::from(self.emoji_scroll.offset().y)).clamp(0., (content_h - SCROLL_H).max(0.));
+        let secs = sections(&q,columns);
+        let content_h = secs.last().map_or(0., |s| s.top + s.height(columns));
+        let off = (-f32::from(self.emoji_scroll.offset().y)).clamp(0., (content_h - scroll_height).max(0.));
 
         // Rows in view, positioned by hand inside a box of the full height.
         let mut content = div().relative().w_full().h(px(content_h));
         let current = secs.iter().rposition(|s| s.top <= off + 0.5).unwrap_or(0);
         let hover_bg = Theme::fill_hover_strong();
         for (si, s) in secs.iter().enumerate() {
-            if s.top > off + SCROLL_H || s.top + s.height() < off {
+            if s.top > off + scroll_height || s.top + s.height(columns) < off {
                 continue;
             }
             // The current section's title is drawn stuck to the top instead.
             if searching || si != current {
                 content = content.child(title_el(s.title, s.title_h).absolute().top(px(s.top)).left_0());
             }
-            for (ri, row) in s.emojis.chunks(PER_LINE).enumerate() {
+            for (ri, row) in s.emojis.chunks(columns).enumerate() {
                 let y = s.top + s.title_h + ri as f32 * ROW_H;
-                if y > off + SCROLL_H || y + ROW_H < off {
+                if y > off + scroll_height || y + ROW_H < off {
                     continue;
                 }
-                let mut r = div().absolute().top(px(y)).left(px(INSET)).flex().gap(px(1.));
+                let mut r = div().absolute().top(px(y)).left(px(inset)).flex().gap(px(1.));
                 for (ci, e) in row.iter().enumerate() {
                     let e: &'static Emoji = e;
-                    let i = ri * PER_LINE + ci;
+                    let i = ri * columns + ci;
                     let lit = searching && i == selected;
                     r = r.child(
                         div()
@@ -262,9 +282,9 @@ impl Editor {
             let y = (next - off - TITLE_H).min(0.);
             title_el(s.title, TITLE_H).absolute().top(px(y)).left_0().bg(theme::ta(255, 255, 255, 0.8))
         });
-        let thumb = (content_h > SCROLL_H).then(|| {
-            let h = (SCROLL_H * SCROLL_H / content_h).max(THUMB_MIN);
-            let top = (SCROLL_H - h) * off / (content_h - SCROLL_H);
+        let thumb = (content_h > scroll_height).then(|| {
+            let h = (scroll_height * scroll_height / content_h).max(THUMB_MIN.min(scroll_height));
+            let top = (scroll_height - h) * off / (content_h - scroll_height);
             div().absolute().right_0().top(px(top)).w(px(7.)).h(px(h)).rounded(px(3.5)).group_hover("emoji-scroll", |s| s.bg(Theme::scrollbar_thumb()))
         });
         let scroll = div()
@@ -273,7 +293,7 @@ impl Editor {
             .relative()
             .flex_none()
             .mt(px(6.))
-            .h(px(SCROLL_H))
+            .h(px(scroll_height))
             .overflow_hidden()
             .child(div().id("emoji-scroll").size_full().overflow_y_scroll().track_scroll(&self.emoji_scroll).child(content))
             .children(sticky)
@@ -285,7 +305,8 @@ impl Editor {
         let search = div()
             .id("emoji-search")
             .relative()
-            .w(px(363.))
+            .when(mobile,|d|d.flex_1().min_w_0())
+            .when(!mobile,|d|d.w(px(363.)))
             .h(px(36.))
             .rounded(px(9.))
             .bg(crate::theme::raised(Theme::bg_body()))
@@ -355,7 +376,8 @@ impl Editor {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |ed, _, window, cx| ed.pick_emoji(target, emoji::random_pick(), false, window, cx)));
 
-        let mut nav = div().relative().flex_1().px(px(INSET)).flex().items_center().justify_between().child(
+        let nav_size = ((width-2.*inset)/NAV.len() as f32).clamp(1.,30.);
+        let mut nav = div().relative().flex_1().when(mobile,|d|d.min_h(px(36.))).px(px(inset)).flex().items_center().justify_between().child(
             div()
                 .absolute()
                 .top_0()
@@ -369,7 +391,7 @@ impl Editor {
             nav = nav.child(
                 div()
                     .id(("emoji-nav", i))
-                    .size(px(30.))
+                    .w(px(nav_size)).h(px(30.))
                     .rounded(px(ROW_RADIUS))
                     .flex()
                     .items_center()
@@ -382,7 +404,7 @@ impl Editor {
                     .on_click(cx.listener(move |ed, _, _, cx| {
                         // A category click leaves search.
                         ed.emoji_field.update(cx, |f, cx| f.set_text("", cx));
-                        let top = sections("").get(i).map_or(0., |s| s.top);
+                        let top = sections("",columns).get(i).map_or(0., |s| s.top);
                         ed.emoji_scroll.set_offset(point(px(0.), px(-top)));
                         cx.notify();
                     })),
@@ -393,8 +415,8 @@ impl Editor {
             .id("emoji-picker")
             .occlude()
             .relative()
-            .w(px(W))
-            .h(px(h))
+            .w(px(width))
+            .h(px(height))
             .flex()
             .flex_col()
             .bg(crate::theme::raised(Theme::bg_body()))
@@ -407,15 +429,15 @@ impl Editor {
             .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
             .when(tabs, |d| {
                 d.child(
-                    div().flex_none().h(px(TABS_H)).pl(px(24.)).flex().child(
-                        div().pt(px(20.)).pb(px(12.)).text_size(px(13.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::primary_500()).child(crate::settings::text("表情符号")),
+                    div().flex_none().h(px(if mobile { 42. } else { TABS_H })).pl(px(inset+1.)).flex().child(
+                        div().pt(px(if mobile { 10. } else { 20. })).pb(px(12.)).text_size(px(13.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::primary_500()).child(crate::settings::text("表情符号")),
                     ),
                 )
                 .child(
                     div()
                         .id("emoji-remove")
                         .absolute()
-                        .top(px(18.))
+                        .top(px(if mobile { 10. } else { 18. }))
                         .right(px(21.))
                         .px(px(6.))
                         .rounded(px(ROW_RADIUS))
@@ -432,20 +454,24 @@ impl Editor {
                         })),
                 )
             })
-            .child(div().flex_none().pt(px(if tabs { INSET - 10. } else { INSET })).pl(px(INSET)).flex().gap(px(7.)).child(search).child(random))
+            .child(div().flex_none().pt(px(if tabs && !mobile { inset-10. } else { inset })).pl(px(inset))
+                .when(mobile,|d|d.pr(px(inset))).flex().gap(px(7.)).child(search).child(random)
+                .when(mobile,|d|d.child(div().id("emoji-close").size(px(36.)).flex_none().flex().items_center().justify_center()
+                    .child(icon("x",16.,Theme::icon())).tip(crate::settings::tr("关闭","Close"),None)
+                    .on_mouse_down(MouseButton::Left,|_,_,cx|cx.stop_propagation())
+                    .on_click(cx.listener(|ed,_,window,cx|ed.close_menu_focus(window,cx))))))
             .child(scroll)
             .child(nav);
 
         // bottomLeft, else right-start, whichever overflows the window less,
         // then shifted inside it (`boundaryPadding: 20`).
-        let vp = window.viewport_size();
-        let (vw, vh) = (f32::from(vp.width), f32::from(vp.height));
+        let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
         let (l, t, r, b) = (f32::from(a.left()), f32::from(a.top()), f32::from(a.right()), f32::from(a.bottom()));
-        let over_below = (b + OFFSET + h - (vh - BOUNDARY)).max(0.);
-        let over_right = (t + h - (vh - BOUNDARY)).max(0.);
+        let over_below = (b + OFFSET + height - (vh - boundary)).max(0.);
+        let over_right = (t + height - (vh - boundary)).max(0.);
         let (x, y) = if over_below <= over_right { (l, b + OFFSET) } else { (r + OFFSET, t) };
-        let x = x.min(vw - BOUNDARY - W).max(BOUNDARY);
-        let y = y.min(vh - BOUNDARY - h).max(BOUNDARY);
+        let x = x.min(vw - boundary - width).max(boundary);
+        let y = y.min(vh - boundary - height).max(boundary);
         Some(at(self.rel(point(px(x), px(y))), Corner::TopLeft, el))
     }
 }
@@ -471,14 +497,14 @@ mod tests {
 
     #[test]
     fn section_geometry() {
-        let s = sections("");
+        let s = sections("",super::PER_LINE);
         assert_eq!(s.len(), 8);
         // 最近 69 tall (one row), 表情符号 1761 (48 rows).
-        assert_eq!(s[0].height(), 68.5);
+        assert_eq!(s[0].height(super::PER_LINE), 68.5);
         assert_eq!(s[1].top, 68.5);
-        assert_eq!(s[1].height(), 1760.5);
-        let r = sections("猫");
+        assert_eq!(s[1].height(super::PER_LINE), 1760.5);
+        let r = sections("猫",super::PER_LINE);
         assert_eq!(r.len(), 1);
-        assert_eq!(r[0].height(), 16. + 72.);
+        assert_eq!(r[0].height(super::PER_LINE), 16. + 72.);
     }
 }

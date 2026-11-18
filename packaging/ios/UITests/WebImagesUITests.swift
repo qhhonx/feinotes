@@ -14,7 +14,7 @@ final class WebImagesUITests: XCTestCase {
         XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout: 15))
         func load(_ kind: String) {
             app.buttons["fei.library-actions"].tap()
-            app.sheets.buttons["导入笔记"].tap()
+            app.sheets.buttons["导入文档"].tap()
             let file = app.cells.matching(NSPredicate(format: "label CONTAINS %@","FEI_WEB22_\(kind)")).firstMatch
             if !file.waitForExistence(timeout: 2) {
                 if app.buttons["浏览"].firstMatch.waitForExistence(timeout: 2) { app.buttons["浏览"].firstMatch.tap() }
@@ -62,7 +62,7 @@ final class WebImagesUITests: XCTestCase {
         app.launchEnvironment["FEI_NOTES_MODE"] = "local"
         app.launch()
         XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout: 15))
-        app.buttons["fei.library-actions"].tap(); app.sheets.buttons["导入笔记"].tap()
+        app.buttons["fei.library-actions"].tap(); app.sheets.buttons["导入文档"].tap()
         let file = app.cells.matching(NSPredicate(format: "label CONTAINS %@","FEI_WEB22_https")).firstMatch
         XCTAssertTrue(file.waitForExistence(timeout: 8),app.debugDescription); file.tap()
         if app.buttons["打开"].firstMatch.waitForExistence(timeout: 2) { app.buttons["打开"].firstMatch.tap() }
@@ -96,7 +96,7 @@ final class WebImagesUITests: XCTestCase {
         shot("web-08-automatic-download-off")
         app.navigationBars.buttons["完成"].tap()
         XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout: 5))
-        app.buttons["fei.library-actions"].tap(); app.sheets.buttons["导入笔记"].tap()
+        app.buttons["fei.library-actions"].tap(); app.sheets.buttons["导入文档"].tap()
         let file = app.cells.matching(NSPredicate(format: "label CONTAINS %@","FEI_WEB22_manual")).firstMatch
         XCTAssertTrue(file.waitForExistence(timeout: 8),app.debugDescription); file.tap()
         if app.buttons["打开"].firstMatch.waitForExistence(timeout: 2) { app.buttons["打开"].firstMatch.tap() }

@@ -28,22 +28,25 @@ final class FeiLocalHistoryController: UITableViewController {
         empty.numberOfLines = 0; empty.textAlignment = .center; empty.textColor = .secondaryLabel
     }
     func update(_ state: FeiNavigationState.LocalHistory,labels:[String:String],busy:Bool) {
-        loadViewIfNeeded(); self.state = state; self.labels = labels; self.busy = busy
+        loadViewIfNeeded()
+        if let notice = state.notice, notice != self.state?.notice {
+            UIAccessibility.post(notification: .announcement,argument: notice)
+        }
+        self.state = state; self.labels = labels; self.busy = busy
         tableView.isUserInteractionEnabled = !busy
         empty.text = state.empty; tableView.backgroundView = rows.isEmpty ? empty : nil
-        parent?.navigationItem.prompt = state.notice ?? state.subtitle
-        parent?.navigationItem.rightBarButtonItems = barItems()
+        navigationItem.prompt = state.notice ?? state.subtitle
+        toolbarItems = barItems()
         tableView.reloadData()
     }
-    func deactivate() { view.isHidden = true; parent?.navigationItem.prompt = nil }
-    func barItems() -> [UIBarButtonItem] {
+    private func barItems() -> [UIBarButtonItem] {
         guard let state else { return [] }
         let save = UIBarButtonItem(image: UIImage(systemName: "plus"),style: .plain,target: self,action: #selector(saveCurrent))
         save.accessibilityLabel = labels["history-save"]; save.accessibilityIdentifier = "fei.history.save"; save.isEnabled = !busy
         let named = UIAction(title: labels["history-named"] ?? "Named versions only",state: state.named_only ? .on : .off) { [weak self] _ in self?.coordinator?.sendHistory("named",history: state) }
         let filter = UIBarButtonItem(image: UIImage(systemName: "line.3.horizontal.decrease.circle"),menu: UIMenu(children: [named]))
         filter.accessibilityLabel = labels["history-filter"]; filter.accessibilityIdentifier = "fei.history.filter"; filter.isEnabled = !busy
-        return [save,filter]
+        return [filter,UIBarButtonItem(systemItem: .flexibleSpace),save]
     }
     @objc private func saveCurrent() { if let state,!busy { coordinator?.sendHistory("save",history: state) } }
     override func tableView(_ tableView: UITableView,numberOfRowsInSection section:Int) -> Int { rows.count }

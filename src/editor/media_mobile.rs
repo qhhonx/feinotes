@@ -33,7 +33,7 @@ impl Editor {
         }).collect();
         if actions.is_empty() { let mut action = control("empty",tr("暂无图片或附件","No images or attachments"),false); action["enabled"] = json!(false); actions.push(action); }
         let request = json!({"serial":stamp.serial,"namespace":"attachments","command":"attachment-action","title":tr("图片和附件","Images and attachments"),"done":tr("完成","Done"),
-            "context":"","sections":[group("attachments",tr("当前笔记","Current note"),false,actions)]});
+            "context":"","sections":[group("attachments",tr("当前文档","Current document"),false,actions)]});
         self.format_menu = Some(stamp);
         self.table_menu = None;
         self.dismiss_touch_menu();
@@ -62,14 +62,22 @@ impl Editor {
     }
 
     pub(crate) fn present_insert_controls(&mut self, cx: &mut Context<Self>) {
+        self.present_insert_request(false,cx);
+    }
+
+    pub(super) fn present_insert_controls_below(&mut self, cx: &mut Context<Self>) {
+        self.present_insert_request(true,cx);
+    }
+
+    fn present_insert_request(&mut self, below: bool, cx: &mut Context<Self>) {
         if self.read_only || !crate::cloud_sync::shared::can_edit_in(&self.library_root,cx) { return; }
         self.table_menu = None;
-        let stamp = SelectionStamp::capture(self,"insert");
+        let stamp = SelectionStamp::capture(self,if below { "insert-below" } else { "insert" });
         let items = self.mobile_insert_items();
         let action = |index,item: &SlashItem| {
             let mut action = control(&insert_key(index,item.kind),crate::settings::text(item.label),false);
             action["dismiss"] = json!(true);
-            if item.kind == SlashKind::Link { action["enabled"] = json!(self.core.sel.head.block != super::core::TITLE && !self.core.is_code(self.core.sel.head.block)); }
+            if item.kind == SlashKind::Link { action["enabled"] = json!(below || self.core.sel.head.block != super::core::TITLE && !self.core.is_code(self.core.sel.head.block)); }
             action
         };
         let quick = [SlashKind::Image,SlashKind::File,SlashKind::Link,SlashKind::Table,SlashKind::Divider];
@@ -96,10 +104,20 @@ impl Editor {
 
     pub(crate) fn mobile_insert_action(&mut self, serial: u64, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(stamp) = self.format_menu.take() else { return };
-        if !stamp.matches(self,serial,"insert") || self.read_only || !crate::cloud_sync::shared::can_edit_in(&self.library_root,cx) { self.invalidate_table_controls(); return; }
+        let below = stamp.matches(self,serial,"insert-below");
+        if !(below || stamp.matches(self,serial,"insert")) || self.read_only || !crate::cloud_sync::shared::can_edit_in(&self.library_root,cx) { self.invalidate_table_controls(); return; }
+        let kind = self.mobile_insert_items().into_iter().find(|(index,item)|insert_key(*index,item.kind) == name).map(|(_,item)|item.kind);
+        if kind.is_none() && name != "photos" { return; }
         crate::gpui_compat::focus(window,&self.focus,cx);
+        if below {
+            let Some(after) = self.core.block_sel_ids().last().copied().or_else(||self.mobile_table_block_from_cell()) else { return };
+            let paragraph = self.core.insert_paragraph_after(after);
+            self.core.clear_block_sel();
+            self.set_caret(super::core::Pos::new(paragraph,0),false);
+            self.changed(window,cx);
+        }
         if name == "photos" { self.pick_photo(window,cx); return; }
-        let Some(kind) = self.mobile_insert_items().into_iter().find(|(index,item)|insert_key(*index,item.kind) == name).map(|(_,item)|item.kind) else { return };
+        let Some(kind) = kind else { return };
         if kind == SlashKind::Link {
             if self.core.sel.head.block != super::core::TITLE && !self.core.is_code(self.core.sel.head.block) { self.link_from_selection(window,cx); }
             return;
@@ -149,7 +167,7 @@ impl Editor {
 }
 
 fn insert_key(index: usize, kind: SlashKind) -> String {
-    match kind { SlashKind::Image=>"image".into(),SlashKind::File=>"file".into(),SlashKind::Link=>"link".into(),SlashKind::Table=>"table".into(),SlashKind::Divider=>"divider".into(),_=>format!("slash:{index}") }
+    match kind { SlashKind::Image=>"image".into(),SlashKind::File=>"file".into(),SlashKind::Link=>"link".into(),SlashKind::Table=>"table".into(),SlashKind::Divider=>"divider".into(),SlashKind::Board=>"board".into(),_=>format!("slash:{index}") }
 }
 
 pub(super) fn dismiss_link_form() { unsafe { fei_ios_dismiss_link_form(); } }

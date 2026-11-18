@@ -1,9 +1,9 @@
-Fei Notes 1.0.8 brings the integrated Mac document and cloud engine to iPhone and iPad.
+Fei Notes 1.0.8 beta for iPhone and iPad
 
-• Native note lists, folders, search, settings, sharing controls and iPad workspace navigation.
-• Original-note sharing, shared folders, offline merging and attachments use the current Mac library scope.
-• Fixes missing bold text in the Notes theme by selecting the iOS system font correctly; both Chinese and English headings and inline bold now render with their intended weight.
-• Includes the latest board-frame memory bounds and cloud checkpoint retention correction.
-• Cloud features are included in TestFlight without starting a trial or purchasing a subscription.
+• Create and organize documents on iPhone. Keep the document list beside the editor on iPad.
+• Share original documents or folders and edit together in real time. Document and sync formats match the Mac beta.
+• Fixes an issue that could prevent Chinese and English headings and inline bold text from displaying at the correct weight in the Notes theme.
 
-Update all devices participating in this cloud beta to the latest compatible release. Earlier checkpoint-protocol builds must not write to the same library. Real multi-account sharing and physical-device acceptance remain separate checks.
+Try editing with the keyboard, searching for a document, and writing offline. On iPad, switch between portrait and landscape and check the document list and editor. If you also test on Mac, update every test device to the 1.0.8 beta before checking that changes to the same sample document sync.
+
+Cloud features are included during TestFlight testing without a subscription.

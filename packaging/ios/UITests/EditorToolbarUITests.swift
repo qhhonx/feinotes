@@ -22,7 +22,7 @@ final class EditorToolbarUITests: XCTestCase {
             XCTAssertEqual(XCTWaiter.wait(for: [expected],timeout: 6),.completed,app.debugDescription)
         }
         keyboard(true)
-        for name in ["undo","list","styles","insert","keyboard"] { XCTAssertTrue(bar.buttons["fei.edit."+name].isHittable) }
+        for name in ["undo","list","styles","insert","keyboard"] { XCTAssertTrue(app.buttons["fei.edit."+name].isHittable) }
         shot("toolbar-01-native-icons-above-keyboard")
         bar.buttons["fei.edit.keyboard"].tap(); keyboard(false)
         bar.buttons["fei.edit.keyboard"].tap(); keyboard(true)
@@ -39,7 +39,7 @@ final class EditorToolbarUITests: XCTestCase {
         bar.buttons["fei.edit.insert"].tap()
         XCTAssertTrue(app.tables["fei.insert.controls"].waitForExistence(timeout: 5),app.debugDescription)
         app.buttons["fei.insert.done"].tap()
-        app.buttons["fei.more"].tap(); app.sheets.buttons["笔记选项"].tap(); app.sheets.buttons["阅读模式"].tap()
+        app.buttons["fei.more"].tap(); app.sheets.buttons["文档选项"].tap(); app.sheets.buttons["阅读模式"].tap()
         XCTAssertTrue(bar.buttons["fei.edit.mode"].waitForExistence(timeout: 5),app.debugDescription)
         XCTAssertFalse(bar.buttons["fei.edit.insert"].exists)
         let settled = Date().addingTimeInterval(2)

@@ -13,6 +13,7 @@ use super::frame::get_frame_like_title;
 use super::history::CaptureUpdateAction;
 use super::types::Kind;
 use crate::input::{TextField, TextFieldEvent};
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 pub struct FrameNameEditing {
@@ -47,7 +48,11 @@ pub fn begin(me: &mut BoardView, id: &str, window: &mut Window, cx: &mut Context
     });
     let fh = field.read(cx).focus_handle(cx);
     crate::gpui_compat::focus(window, &fh, cx);
-    window.defer(cx, move |window, cx| crate::gpui_compat::focus(window, &fh, cx));
+    window.defer(cx, move |window, cx| {
+        crate::gpui_compat::focus(window, &fh, cx);
+        #[cfg(target_os = "ios")]
+        if fh.is_focused(window) { gpui_mobile::show_keyboard(); }
+    });
     me.frame_name = Some(FrameNameEditing { id: id.to_string(), field, _sub: sub });
     cx.notify();
 }
@@ -55,6 +60,8 @@ pub fn begin(me: &mut BoardView, id: &str, window: &mut Window, cx: &mut Context
 /// `resetEditingFrame`: the name trimmed, empty back to none.
 pub fn end(me: &mut BoardView, cx: &mut Context<BoardView>) {
     let Some(f) = me.frame_name.take() else { return };
+    #[cfg(target_os = "ios")]
+    gpui_mobile::hide_keyboard();
     me.app.editing_frame = None;
     let name = me.scene.get_element(&f.id).and_then(|e| e.frame_name()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
     if me.scene.get_element(&f.id).is_some_and(|e| e.frame_name() != name.as_deref()) { set_name(me, &f.id, name); }
@@ -122,6 +129,7 @@ pub fn element(me: &BoardView, cx: &mut Context<BoardView>) -> Option<AnyElement
     let bg = super::render::color(super::color::color_or_black(&me.app.view_background_color), 1.);
     f.field.update(cx, |t, _| { t.size = size; t.line_height = NAME_LINE; t.color = name_color(); });
     Some(div().absolute().left(b.origin.x - o.x - px(pad)).top(b.origin.y - o.y).p(px(pad)).rounded(px(4.)).bg(bg).border_1().border_color(super::chrome::style::primary())
+        .when(cfg!(target_os = "ios"), |d| d.occlude())
         .font_family(super::chrome::style::UI_FONT)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())

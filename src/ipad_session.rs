@@ -121,8 +121,8 @@ pub(crate) fn resume_when_ready(cx: &mut App) {
 
 pub(crate) fn startup_fallback() -> Option<&'static str> {
     STARTUP_FALLBACK.load(Ordering::Acquire).then(|| crate::settings::tr(
-        "暂时无法连接 iCloud，已打开本机文档库。原 iCloud 笔记和待上传改动会保留。",
-        "iCloud is temporarily unavailable. The local library is open; your iCloud notes and pending changes are kept."))
+        "暂时无法连接 iCloud，已打开本机文档库。原 iCloud 文档和待上传改动会保留。",
+        "iCloud is temporarily unavailable. The local library is open; your iCloud documents and pending changes are kept."))
 }
 
 pub(crate) fn request(selection: LibrarySelection, cx: &mut App) {

@@ -1,0 +1,11 @@
+Fei Notes 1.0.8 (1019) for iPhone and iPad
+
+• Improved document navigation, editor tools, tables and boards, and switching between the document list and editor on iPad.
+• Fixed cases where an invalid cloud record could block synchronization of other documents.
+• Fixed a crash while replaying cloud changes, while retaining pending edits and conflicts.
+
+Update all participating devices to this round of builds. Please test editing the same sample document across devices, working offline, reopening the app and collaborating through an invitation to a specific Apple Account.
+
+Known limitations: some existing library catalogues and individual document conflicts still need separate recovery. Recovery work in progress is not included here. Creating or retrying public sharing links remains unavailable; private invitations to specific accounts remain available. Please preserve your library and report any problems.
+
+iCloud access is included during TestFlight testing without a subscription.

@@ -14,7 +14,7 @@ final class DocumentInfoUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
         app.launch()
         XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout: 15))
-        app.buttons["fei.library-actions"].tap(); app.sheets.buttons["导入笔记"].tap()
+        app.buttons["fei.library-actions"].tap(); app.sheets.buttons["导入文档"].tap()
         let file = app.cells.matching(NSPredicate(format: "label CONTAINS %@",prefix)).firstMatch
         if !file.waitForExistence(timeout: 2) {
             if app.buttons["浏览"].firstMatch.waitForExistence(timeout: 2) { app.buttons["浏览"].firstMatch.tap() }
@@ -47,7 +47,7 @@ final class DocumentInfoUITests: XCTestCase {
         XCTAssertTrue(name.waitForExistence(timeout: 5)); name.typeText(title+"新"); app.buttons["fei.rename.save"].tap()
         XCTAssertTrue(app.navigationBars[title+"新"].waitForExistence(timeout: 5))
         info(13,44); shot("info-02-refreshed-after-rename"); close()
-        app.buttons["fei.more"].tap(); app.sheets.buttons["笔记选项"].tap(); app.sheets.buttons["阅读模式"].tap()
+        app.buttons["fei.more"].tap(); app.sheets.buttons["文档选项"].tap(); app.sheets.buttons["阅读模式"].tap()
         info(13,44)
         XCTAssertEqual(app.keyboards.count,0)
         shot("info-03-reading-mode-access"); close()

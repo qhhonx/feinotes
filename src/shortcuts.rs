@@ -191,7 +191,7 @@ const GROUPS: [(&str, &str); 5] = [("应用与窗口", "App & windows"), ("文�
 fn info(name: &str) -> Option<(usize, &'static str, &'static str)> {
     Some(match name.rsplit("::").next().unwrap_or(name) {
         "NewDoc" => (0, "新建文档", "New document"),
-        "QuickNew" => (0, "新建笔记窗口", "New note window"),
+        "QuickNew" => (0, "新建文档窗口", "New document window"),
         "CloseWindow" => (0, "关闭窗口", "Close window"),
         "HideApp" if crate::FEI_NOTES => (0, "隐藏飞记", "Hide Fei Notes"),
         "HideApp" => (0, "隐藏 Quiet.md", "Hide Quiet.md"),
@@ -274,7 +274,7 @@ pub fn rows(cx: &App) -> Vec<(String, String, String)> {
         }
     }
     rows.sort_by_key(|r| r.0);
-    [("global".to_string(), tr("全局快速新建笔记窗口", "Quick note from anywhere").to_string(), global_key()), (LAST_ID.to_string(), tr("打开上次使用的文档", "Open last used document").to_string(), key_of(cx, LAST_ID))]
+    [("global".to_string(), tr("全局快捷键新建文档", "Quickly create a document from anywhere").to_string(), global_key()), (LAST_ID.to_string(), tr("打开上次使用的文档", "Open last used document").to_string(), key_of(cx, LAST_ID))]
         .into_iter().filter(|_| cfg!(target_os = "macos"))
         .chain(rows.into_iter().map(|(_, id, t, k)| (id, t, k))).collect()
 }
@@ -330,7 +330,7 @@ pub(crate) fn change(id: &str, key: Option<String>, cx: &mut App) -> anyhow::Res
         anyhow::ensure!(m.platform || m.control || m.alt, first_group_hint());
         let global = s.custom.get("global").map(String::as_str).unwrap_or(GLOBAL_DEFAULT);
         if id != "global" {
-            anyhow::ensure!(!overlaps(&parsed, &sequence(global)?), tr("与全局快速新建快捷键冲突，请先修改全局快捷键", "Change the global quick note shortcut first"));
+            anyhow::ensure!(!overlaps(&parsed, &sequence(global)?), tr("与全局快速新建快捷键冲突，请先修改全局快捷键", "Change the global quick document shortcut first"));
         }
         let last = s.custom.get(LAST_ID).map(String::as_str).unwrap_or(LAST_DEFAULT);
         if id != LAST_ID {
@@ -501,12 +501,12 @@ impl Workspace {
         let global_err = self.shortcut_error.as_ref().filter(|(id, _)| is_global(id)).map(|(_, e)| e.clone())
             .or_else(|| on.then(crate::quick_note::hotkey_error).flatten());
         let matches = |zh: &str, en: &str, key: &str| q.is_empty() || [zh.to_lowercase(), en.to_lowercase(), key.to_lowercase()].iter().any(|s| s.contains(&q));
-        let show_global = cfg!(target_os = "macos") && (matches("快速新建笔记", "Quick note", &pretty(&global)) || matches("打开上次使用的文档", "Open last used document", &pretty(&last)));
+        let show_global = cfg!(target_os = "macos") && (matches("快速新建文档", "Quick document", &pretty(&global)) || matches("打开上次使用的文档", "Open last used document", &pretty(&last)));
         let empty = empty && !show_global;
         let global_group = div().w_full().flex().flex_col().gap(px(8.))
             .child(crate::settings::group(Some(tr("全局", "Global")), vec![
                 div().w_full().px(px(16.)).py(px(10.)).flex().items_center().gap(px(12.))
-                    .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(20.)).child(tr("快速新建笔记", "Quick note")))
+                    .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(20.)).child(tr("快速新建文档", "Quick document")))
                     .when(on && global != GLOBAL_DEFAULT && !global_rec, |d| d.child(crate::settings::link_button("global-reset", tr("恢复默认", "Reset")).on_click(cx.listener(|w, _, _, cx| w.reset_shortcut("global", cx)))))
                     .when(on, |d| d.child(crate::settings::keycap("global-key", &if global_rec { self.shortcut_strokes.join(" ") } else { global.clone() }, global_rec).on_click(cx.listener(|w, _, window, cx| w.start_recording("global", window, cx)))))
                     .child(crate::settings::switch("pref-hotkey", on).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.quick_hotkey = !p.quick_hotkey, cx))))

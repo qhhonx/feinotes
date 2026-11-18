@@ -193,13 +193,23 @@ fn block_id(tree: &LoroTree, id: TreeID) -> Result<BlockId> {
     Ok(BlockId(value(&tree.get_meta(id)?, "block").context("Missing block identifier")?.parse()?))
 }
 
+#[derive(Debug)]
+pub(super) struct ConflictingBlockShapes;
+
+impl std::fmt::Display for ConflictingBlockShapes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Duplicate cloud block identifier with different shapes")
+    }
+}
+
+impl std::error::Error for ConflictingBlockShapes {}
+
 // Replicas can contain several tree nodes for one logical block. Their text
 // is shared by block identifier. Only equivalent shapes can be projected once.
 fn first_occurrence(tree: &LoroTree, ids: &mut HashMap<BlockId, TreeID>, id: BlockId, node: TreeID) -> Result<bool> {
     if let Some(&first) = ids.get(&id) {
         let shape = value(&tree.get_meta(node)?, "shape").context("Missing block payload")?;
-        ensure!(value(&tree.get_meta(first)?, "shape").as_deref() == Some(shape.as_str()),
-            "Duplicate cloud block identifier with different shapes");
+        ensure!(value(&tree.get_meta(first)?, "shape").as_deref() == Some(shape.as_str()), ConflictingBlockShapes);
         return Ok(false);
     }
     ids.insert(id, node);

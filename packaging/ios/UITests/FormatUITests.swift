@@ -86,7 +86,7 @@ final class FormatUITests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(0.4))
         shot("format-09-outline-jump")
         app.buttons["fei.more"].tap()
-        app.sheets.buttons["笔记选项"].tap()
+        app.sheets.buttons["文档选项"].tap()
         app.sheets.buttons["阅读模式"].tap()
         app.buttons["fei.more"].tap()
         XCTAssertTrue(app.sheets.buttons["文档目录"].waitForExistence(timeout: 5),app.debugDescription)

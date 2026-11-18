@@ -22,7 +22,7 @@ impl Workspace {
         let can_restore = !crate::cloud_sync::shared::editing_paused(&self.store,cx) && crate::cloud_sync::shared::access(&self.store,cx).is_none_or(|a|a.can_write());
         Some(NativeHistory { token:h.token,scope:crate::ipad::editor_scope(self),note:h.id.clone(),selected:h.selected.clone(),previewing:self.preview.is_some(),named_only:h.named_only,marks:h.marks,can_restore,can_copy:!crate::in_shared_note(),
             versions:h.versions.iter().map(|v|NativeVersion { name:v.name.clone(),title:v.label.clone().unwrap_or_else(||format_time(v.ms/1000)),detail:format!("{} · {}",day_label(v.ms/1000),delta_text(&v.name,&h.delta)),named:v.label.is_some() }).collect(),
-            notice:h.error.clone().or_else(||self.toast.as_ref().filter(|(_,_,t)|t.elapsed().as_secs_f32()<3.).map(|(_,text,_)|text.to_string())),
+            notice:h.error.clone().or_else(||h.feedback.clone()),
             empty:crate::settings::tr("暂无历史版本","No versions yet").into(),subtitle:crate::settings::tr("本机保存的历史版本","Versions saved on this device").into() })
     }
 
@@ -32,9 +32,12 @@ impl Workspace {
         if token != Some(h.token) || self.current.as_deref() != Some(h.id.as_str()) || scope != Some(crate::ipad::editor_scope(self).as_str()) { return; }
         let Some(command) = value.and_then(|v|serde_json::from_str::<Command>(v).ok()) else { return };
         if command.name.as_ref().is_some_and(|name|!h.versions.iter().any(|v|&v.name == name)) { return; }
+        let selected = h.selected.clone();
+        if let Some(h) = &mut self.history { h.feedback = None; }
         match command.op.as_str() {
             "preview"=>if let Some(name) = command.name { self.preview_version(&name,window,cx); },
             "close"=>self.close_history(cx),
+            "back-to-list" if self.preview.is_some()=>self.exit_preview(cx),
             "marks"=>self.toggle_history_marks(cx),
             "named"=>self.toggle_history_named(cx),
             "save" if self.preview.is_none()=>self.save_version_now(window,cx),
@@ -43,7 +46,7 @@ impl Workspace {
                 self.history.as_mut().unwrap().selected = Some(name);
                 if command.op == "delete" { self.delete_selected_version(window,cx); } else { self.version_as_copy(window,cx); }
             },
-            "restore" if self.preview.is_some() && command.name == h.selected=>self.restore_selected(window,cx),
+            "restore" if self.preview.is_some() && command.name == selected=>self.restore_selected(window,cx),
             _=>{},
         }
     }

@@ -1,7 +1,7 @@
 import XCTest
 
 final class PhonePolishUITests: XCTestCase {
-    private let app = XCUIApplication(bundleIdentifier: "app.feinotes.iphone.polish43")
+    private let app = XCUIApplication()
     private func shot(_ name: String) {
         let settled = Date().addingTimeInterval(0.4)
         wait({ Date() >= settled },"Allow the GPUI drawable to settle after native chrome updates")
@@ -35,35 +35,37 @@ final class PhonePolishUITests: XCTestCase {
         XCTAssertGreaterThan(create.frame.minX,search.frame.maxX)
         shot("iphone43-01-list-search-compose")
         search.tap(); search.typeText("NO_MATCH_43")
-        XCTAssertTrue(app.staticTexts["No matching notes"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No matching documents"].waitForExistence(timeout: 5))
         wait({ self.app.keyboards.firstMatch.exists },"Search owns the keyboard")
         XCTAssertFalse(create.isHittable)
         wait({ search.frame.maxY <= self.app.keyboards.firstMatch.frame.minY },"Search must clear the keyboard")
         shot("iphone43-02-search-native-input")
         search.buttons.matching(NSPredicate(format: "label IN {'Clear text','清除文本'}")).firstMatch.tap()
         XCTAssertTrue(app.keyboards.firstMatch.exists)
-        XCTAssertFalse(app.staticTexts["No matching notes"].exists)
+        XCTAssertFalse(app.staticTexts["No matching documents"].exists)
         cancelSearch(); wait({ !self.app.keyboards.firstMatch.exists },"Cancel dismisses search input")
         XCTAssertTrue(create.isHittable)
         create.tap()
         let bar = app.toolbars["fei.editor.toolbar"]
+        let compose = app.navigationBars.buttons["fei.new"]
         XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 8))
         wait({ bar.buttons["fei.edit.styles"].isHittable },"New note opens for typing")
         XCTAssertTrue(app.buttons["fei.edit.done"].isHittable)
-        XCTAssertTrue(app.navigationBars.buttons["fei.edit.undo"].isHittable)
-        XCTAssertFalse(bar.buttons["fei.edit.undo"].exists)
-        for id in ["styles","list","table","insert","keyboard"] { XCTAssertTrue(bar.buttons["fei.edit."+id].isHittable) }
+        XCTAssertTrue(bar.buttons["fei.edit.undo"].exists)
+        XCTAssertFalse(app.navigationBars.buttons["fei.edit.undo"].exists)
+        for id in ["styles","list","table","insert","keyboard"] { XCTAssertTrue(app.buttons["fei.edit."+id].isHittable) }
         let marker = "Phone polish "+String(Int(Date().timeIntervalSince1970))
         app.otherElements["fei.editor.surface"].coordinate(withNormalizedOffset: CGVector(dx: 0.25,dy: 0.4)).tap()
         app.typeText("Synthetic toolbar and search body")
         shot("iphone43-03-editing-above-keyboard")
         app.buttons["fei.edit.done"].tap()
-        wait({ bar.buttons["fei.edit.compose"].isHittable },"Done restores reading shortcuts")
+        wait({ bar.buttons["fei.edit.mode"].isHittable },"Done restores reading shortcuts")
         XCTAssertFalse(app.buttons["fei.edit.done"].exists)
         XCTAssertFalse(app.keyboards.firstMatch.exists)
         XCTAssertTrue(bar.buttons["fei.edit.quick-checklist"].isHittable)
         XCTAssertTrue(bar.buttons["fei.edit.quick-insert"].isHittable)
-        XCTAssertGreaterThan(bar.buttons["fei.edit.compose"].frame.minX,bar.buttons["fei.edit.mode"].frame.maxX)
+        XCTAssertTrue(compose.isHittable)
+        XCTAssertLessThan(compose.frame.midY,bar.frame.minY)
         shot("iphone43-04-done-reading-shortcuts")
         bar.buttons["fei.edit.mode"].tap()
         wait({ bar.buttons["fei.edit.styles"].isHittable },"Edit resumes typing")
@@ -82,7 +84,7 @@ final class PhonePolishUITests: XCTestCase {
         let row = app.tables["fei.notes.list"].cells.containing(.staticText,identifier: marker).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5)); row.tap()
         XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 5))
-        wait({ bar.buttons["fei.edit.compose"].isHittable },"Search result opens without input")
+        wait({ bar.buttons["fei.edit.mode"].isHittable },"Search result opens without input")
         XCTAssertFalse(app.keyboards.firstMatch.exists)
         back(); XCTAssertEqual(search.value as? String,marker)
         XCTAssertTrue(row.exists); XCTAssertFalse(app.keyboards.firstMatch.exists)
@@ -114,7 +116,7 @@ final class PhonePolishUITests: XCTestCase {
             XCTAssertLessThanOrEqual(bar.frame.maxY,keyboard.frame.minY+2)
             XCTAssertLessThanOrEqual(surface.frame.maxY,bar.frame.minY+2)
             XCTAssertGreaterThan(surface.frame.height,40)
-            for id in ["styles","list","table","insert","keyboard"] { XCTAssertTrue(bar.buttons["fei.edit."+id].isHittable) }
+            for id in ["styles","list","table","insert","keyboard"] { XCTAssertTrue(app.buttons["fei.edit."+id].isHittable) }
             print("KEYBOARD44_GUIDE \(name) \(bar.value ?? "nil")")
             print("KEYBOARD44_GEOMETRY \(name) keyboard=\(keyboard.frame) toolbar=\(bar.frame) editor=\(surface.frame)")
             shot("iphone44-"+name)
@@ -151,7 +153,7 @@ final class PhonePolishUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
         docked("08-portrait-return")
         app.buttons["fei.edit.done"].tap()
-        wait({ !keyboard.exists && bar.buttons["fei.edit.compose"].isHittable },"Done restores reading chrome")
+        wait({ !keyboard.exists && bar.buttons["fei.edit.mode"].isHittable },"Done restores reading chrome")
         XCTAssertEqual(bar.frame.maxY,bottom,accuracy: 3)
         shot("iphone44-09-done-reading")
         back()
@@ -173,7 +175,7 @@ final class PhonePolishUITests: XCTestCase {
         let search = app.searchFields["fei.notes.search-field"]
         XCTAssertTrue(search.isHittable); XCTAssertTrue(app.buttons["fei.new"].isHittable)
         search.tap(); search.typeText("PHONE43_LARGE_NO_MATCH")
-        XCTAssertTrue(app.staticTexts["No matching notes"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No matching documents"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["fei.new"].isHittable)
         shot("iphone43-08-large-dark-search")
         cancelSearch(); app.buttons["fei.new"].tap()
@@ -181,9 +183,10 @@ final class PhonePolishUITests: XCTestCase {
         wait({ bar.buttons["fei.edit.styles"].isHittable },"Large text keeps editing controls")
         for id in ["styles","insert","keyboard"] { XCTAssertTrue(bar.buttons["fei.edit."+id].isHittable) }
         app.buttons["fei.edit.done"].tap()
-        wait({ bar.buttons["fei.edit.compose"].isHittable },"Large text keeps reading Compose")
-        XCTAssertTrue(bar.buttons["fei.edit.mode"].isHittable)
-        XCTAssertGreaterThan(bar.buttons["fei.edit.compose"].frame.minX,bar.buttons["fei.edit.mode"].frame.maxX)
+        wait({ bar.buttons["fei.edit.mode"].isHittable },"Large text keeps reading controls")
+        let compose = app.navigationBars.buttons["fei.new"]
+        XCTAssertTrue(compose.isHittable)
+        XCTAssertLessThan(compose.frame.midY,bar.frame.minY)
         shot("iphone43-09-large-dark-reading")
         back(); app.buttons["fei.settings"].tap(); setting("page:Appearance")
         setting("appearance"); app.cells["fei.setting.option.appearance.light"].tap()

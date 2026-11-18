@@ -27,6 +27,8 @@ pub(crate) mod mobile;
 pub struct HistoryView {
     #[cfg(target_os = "ios")]
     pub(crate) token: u64,
+    #[cfg(target_os = "ios")]
+    feedback: Option<String>,
     pub id: String,
     pub versions: Vec<Version>,
     pub selected: Option<String>,
@@ -46,6 +48,8 @@ pub struct Preview {
     pub core: Core,
     pub reading: bool,
     pub name: String,
+    #[cfg(target_os = "ios")]
+    scroll: ListOffset,
 }
 
 pub struct VersionRename {
@@ -100,10 +104,13 @@ impl Workspace {
                 delta.insert(v.name.clone(), fdl_core::diff::counts(&lines));
             }
         }
+        #[cfg(not(target_os = "ios"))]
         let first = versions.first().map(|v| v.name.clone());
         self.history = Some(HistoryView {
             #[cfg(target_os = "ios")]
             token: mobile::next_token(),
+            #[cfg(target_os = "ios")]
+            feedback: None,
             id: id.to_string(),
             versions,
             selected: None,
@@ -116,6 +123,12 @@ impl Workspace {
         self.doc_menu = false;
         self.doc_sub = None;
         self.mark_history_drawer(true, cx);
+        #[cfg(target_os = "ios")]
+        {
+            let _ = window;
+            cx.notify();
+        }
+        #[cfg(not(target_os = "ios"))]
         match first {
             Some(name) => self.preview_version(&name, window, cx),
             None => {
@@ -151,7 +164,11 @@ impl Workspace {
             && let Some(ed) = &self.editor
         {
             let e = ed.read(cx);
-            self.preview = Some(Preview { core: e.core.clone(), reading: e.read_only, name: name.to_string() });
+            self.preview = Some(Preview {
+                core: e.core.clone(), reading: e.read_only, name: name.to_string(),
+                #[cfg(target_os = "ios")]
+                scroll: e.list.logical_scroll_top(),
+            });
         }
         if let Some(ed) = &self.editor {
             ed.update(cx, |e, cx| {
@@ -178,7 +195,16 @@ impl Workspace {
         let Some(p) = self.preview.take() else { return };
         if let Some(ed) = &self.editor {
             ed.update(cx, |e, cx| {
+                #[cfg(not(target_os = "ios"))]
                 e.receive_document(&p.core, cx);
+                #[cfg(target_os = "ios")]
+                {
+                    e.receive_document_at(&p.core, p.core.sel, cx);
+                    e.core.block_sel = p.core.block_sel.clone();
+                    e.core.cell_sel = p.core.cell_sel.clone();
+                    e.core.pending_marks = p.core.pending_marks.clone();
+                    e.list.scroll_to(p.scroll);
+                }
                 e.diff_marks = None;
                 e.set_preview(false, cx);
                 e.set_read_only(p.reading, cx);
@@ -243,14 +269,20 @@ impl Workspace {
         if !self.flush(cx) { return }
         let Some(h) = self.history.as_ref() else { return };
         let id = h.id.clone();
-        match self.store.save_version_now(&id) {
-            Ok(true) => self.show_toast_kind(crate::editor_ui::ToastKind::Success, crate::settings::tr("已保存当前版本", "Saved a version"), cx),
-            // Identical text never adds a snapshot; say so rather than let the
-            // click look broken.
-            Ok(false) => self.show_toast_kind(crate::editor_ui::ToastKind::Info, crate::settings::tr("内容与上一份相同，没有新增版本", "Same as the newest version; nothing added"), cx),
+        let saved = match self.store.save_version_now(&id) {
+            Ok(saved) => saved,
             Err(e) => return self.set_history_error(e.to_string(), cx),
-        }
+        };
+        let message = if saved { crate::settings::tr("已保存当前版本", "Saved a version") }
+            else { crate::settings::tr("内容与上一份相同，没有新增版本", "Same as the newest version; nothing added") };
+        #[cfg(not(target_os = "ios"))]
+        self.show_toast_kind(if saved { crate::editor_ui::ToastKind::Success } else { crate::editor_ui::ToastKind::Info }, message, cx);
         self.refresh_history(window, cx);
+        #[cfg(target_os = "ios")]
+        if let Some(history) = &mut self.history {
+            history.feedback = Some(message.into());
+            cx.notify();
+        }
     }
 
     /// Re-read the list, keeping the preview where it is (or on the newest).
