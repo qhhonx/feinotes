@@ -1,110 +1,52 @@
-.collab-story { container-type: inline-size; }
+/* Native document, avatars and selections; labels move as crops of the same capture. */
+.collab-story { container-type: inline-size; overflow: visible; background: transparent; border: 0; box-shadow: none; }
 .collab-preview {
   --toolbar-midline: 2.174cqw;
+  --capture: url('assets/editor-feishu.webp?v=20261118f');
   position: relative;
   aspect-ratio: 1840 / 1142;
   overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 86%);
+  border-radius: 13px;
+  box-shadow: 0 0 0 1px rgb(11 46 58 / 10%), 0 35px 85px -20px rgb(5 37 48 / 43%), 0 7px 24px rgb(5 39 49 / 13%);
   container-type: inline-size;
   background: #fff;
   color: #263145;
 }
+html[lang="en"] .collab-preview { --capture: url('assets/editor-feishu-en.webp?v=20261118f'); }
 .collab-preview img { display: block; width: 100%; height: auto; }
-.collab-presence {
-  position: absolute;
-  z-index: 2;
-  right: 9.9%;
-  top: var(--toolbar-midline);
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  gap: .85cqw;
-  white-space: nowrap;
-  padding-inline: .55cqw;
-  background: #fff;
-}
-.collab-avatars { display: flex; align-items: center; padding-left: .3cqw; }
 .collab-preview .traffic { top: var(--toolbar-midline); transform: translateY(-50%); }
-.collab-avatar {
-  display: grid;
-  place-items: center;
-  width: 2.65cqw;
-  height: 2.65cqw;
-  margin-left: -.3cqw;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  color: #fff;
-  font-size: 1.06cqw;
-  font-weight: 680;
-  line-height: 1;
+.collab-controls { display: flex; align-items: center; gap: 12px; padding: 16px 1cqw 0; color: #f8faee; font-size: 11px; }
+.collab-toggle { border: 1px solid rgb(255 255 255 / 35%); border-radius: 999px; background: rgb(255 255 255 / 15%); color: inherit; padding: 6px 11px; font: inherit; cursor: pointer; }
+.collab-toggle:hover { background: rgb(255 255 255 / 25%); }
+.collab-toggle:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.collab-edit { display: none; position: absolute; height: 3.9cqw; }
+.is-writing .collab-edit { display: block; }
+.collab-edit-first {
+  --progress: var(--first-progress, 0); --text-width: 12.337cqw;
+  --paper: #f0f5ff; --ink: #2d9f20; /* Sampled from the native capture. */
+  --label-x: -62.065cqw; --label-y: -20.815cqw;
+  left: 49.728cqw; top: 20.815cqw; width: 15.4cqw;
 }
-.collab-avatar.lin { background: #277762; }
-.collab-avatar.chen { background: #6552ac; }
-.collab-share {
-  display: inline-flex;
-  align-items: center;
-  gap: .35cqw;
-  padding: .34cqw .77cqw;
-  border: 1px solid #dce6fc;
-  border-radius: .48cqw;
-  background: #edf3ff;
-  color: #305ac0;
-  font-size: 1.08cqw;
-  font-weight: 650;
-  line-height: 1.35;
+.collab-edit-second {
+  --progress: var(--second-progress, 0); --text-width: 4.13cqw;
+  --paper: #fff; --ink: #7022cf;
+  --label-x: -50.109cqw; --label-y: -40.978cqw;
+  left: 45.978cqw; top: 40.978cqw; width: 6.9cqw; height: 3.35cqw;
 }
-.collab-share svg {
-  width: 1.07cqw;
-  height: 1.07cqw;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.collab-remainder { position: absolute; inset: 0 0 0 calc(var(--text-width) * var(--progress)); background: var(--paper); }
+.collab-writer {
+  position: absolute; left: calc(var(--text-width) * var(--progress)); top: 0;
+  width: 2.9cqw; height: 1.5cqw;
+  background-image: var(--capture); background-size: 100cqw auto;
+  background-position: var(--label-x) var(--label-y); background-repeat: no-repeat;
 }
-.coedit-selection {
-  position: absolute;
-  top: var(--top);
-  left: var(--left);
-  width: var(--width);
-  height: var(--height, 2.6%);
-  border-right: max(1px, .15cqw) solid var(--person);
-  border-radius: .2cqw 0 0 .2cqw;
-  background: var(--selection);
-  mix-blend-mode: multiply;
-  pointer-events: none;
-}
-.coedit-name {
-  position: absolute;
-  top: var(--top);
-  left: calc(var(--left) + var(--width));
-  transform: translate(-1px, -100%);
-  z-index: 1;
-  padding: .15cqw .56cqw .24cqw;
-  border-radius: .3cqw .3cqw .3cqw 0;
-  color: #fff;
-  background: var(--person);
-  font-size: 1.07cqw;
-  font-weight: 660;
-  line-height: 1.35;
-  white-space: nowrap;
-  pointer-events: none;
-}
-.collab-preview .lin-mark {
-  --left: 53.1%;
-  --width: 9.15%;
-  --top: 35.3%;
-  --person: #277762;
-  --selection: #69ceaa42;
-}
-.collab-preview .chen-mark {
-  --left: 49.2%;
-  --width: 4.75%;
-  --top: 68.35%;
-  --person: #6552ac;
-  --selection: #a58cea48;
-}
-html[lang="en"] .collab-preview .lin-mark { --left: 50.7%; --width: 13%; }
-html[lang="en"] .collab-preview .chen-mark { --left: 49.2%; --width: 7%; }
-@media (max-width: 640px) {
-  .collab-avatar { border-width: 1px; }
-}
+.collab-writer::after { content: ""; position: absolute; top: 1.5cqw; left: 0; height: 1.75cqw; border-left: max(1px, .11cqw) solid var(--ink); }
+html[lang="en"] .collab-edit-first { --text-width: 14.239cqw; --label-x: -72.011cqw; left: 57.772cqw; width: 17.4cqw; }
+html[lang="en"] .collab-edit-second { --text-width: 6.957cqw; --label-x: -52.935cqw; width: 10cqw; }
+html[lang="en"] .collab-writer { width: 3.1cqw; }
+@media (max-width: 760px) { .collab-preview { border-radius: 10px; } }
+@media (prefers-reduced-motion: reduce) { .collab-edit, .collab-toggle { display: none !important; } }
+/* Keep the table row rule visible while masking the original participant label. */
+.is-writing .collab-edit-second::before { content: ""; position: absolute; z-index: 1; left: 0; right: 0; top: .38cqw; height: .09cqw; background: #dedede; }
+.collab-writer { z-index: 2; }

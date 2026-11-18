@@ -1,0 +1,11 @@
+<title>把周末留给海边</title>
+<p> </p>
+<p><b><span background-color="light-yellow">如果还早，就沿着海走到天黑。</span></b></p>
+<p> </p>
+<p>周六坐最早一班车，到灯塔的时候，海应该刚刚醒过来。</p>
+<img path="samples/image.png" width="554" height="220" crop="0.1995,0.3222,0.8005,0.7075" caption="灯塔前的小路"/>
+<p> </p>
+<h1>出门前</h1>
+<checkbox done="true">把相机电池充满</checkbox>
+<checkbox done="false">带一本书和一件挡风的外套</checkbox>
+<checkbox done="false">路过面包店时买两只肉桂卷</checkbox>

@@ -92,7 +92,7 @@ Rust release archive and the Production Swift bridge. QA/devtools features are
 forbidden. Beta access still requires the existing verified TestFlight receipt
 path. Use the platform-specific manual workflow; it pins the exact source SHA,
 version and build and validates the archive before upload. Release notes live in
-`release-notes/1.0.7/`. iOS links system SQLite with Rusqlite 0.40.2, whose base
+`release-notes/1.0.8/`. iOS links system SQLite with Rusqlite 0.40.2, whose base
 bindings support the deployment baseline without importing SQLite 3.44 client-data
 APIs. The Mac workspace keeps Rusqlite 0.41.1 and bundled SQLite.
 

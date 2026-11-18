@@ -9,9 +9,9 @@
   <title>飞记 · 写得自在，记得安心。</title>
   <link rel="icon" href="assets/fei-notes.png" type="image/png">
   <link rel="preload" as="image" href="assets/coastal-canopy-v1.jpg">
-  <link rel="stylesheet" href="landing.css?v=33c04d9f07">
-  <link rel="stylesheet" href="sync-preview.css">
-  <link rel="stylesheet" href="collab-preview.css">
+  <link rel="stylesheet" href="landing.css?v=20261118f">
+  <link rel="stylesheet" href="sync-preview.css?v=20261118f">
+  <link rel="stylesheet" href="collab-preview.css?v=20261118f">
 </head>
 <body>
   <div class="page">
@@ -33,48 +33,39 @@
         <div id="testflight" class="beta-access" data-language="zh" data-status="testflight-status.json">
           <div class="beta-platform" data-beta-platform="MAC_OS">
             <a class="beta-download" data-beta-link aria-disabled="true" tabindex="-1" aria-live="polite">测试版准备中</a>
-            <p class="beta-details">macOS 14 或更高版本</p>
-            <p class="beta-details" data-beta-review hidden aria-live="polite"></p>
+            <p class="beta-details beta-platform-status">Mac · macOS 14+<span data-beta-review hidden aria-live="polite"></span></p>
           </div>
           <div class="beta-mobile" data-beta-platform="IOS">
             <a class="beta-mobile-link" data-beta-link aria-disabled="true" tabindex="-1" aria-live="polite">iPhone / iPad · 测试版准备中</a>
-            <p class="beta-details" data-beta-review hidden aria-live="polite"></p>
+            <span class="beta-details" data-beta-review hidden aria-live="polite"></span>
           </div>
         </div>
       </div>
       <div class="theme-switch" role="group" aria-label="查看功能">
         <button type="button" class="active" data-theme="sync" aria-pressed="true">iCloud 多端同步</button>
-        <button type="button" data-theme="collab" aria-pressed="false">多人实时共编</button>
+        <button type="button" data-theme="collab" aria-pressed="false">多人实时编辑</button>
       </div>
       <figure class="shot story sync-story sync-preview" data-scene="sync" aria-label="同一篇海边笔记在 Mac 和 iPhone 上的飞记界面展示。">
         <div class="sync-stage">
           <div class="sync-window sync-window-primary">
-            <img src="assets/sync-before-zh.webp" width="1840" height="1142" alt="飞记备忘录主题实拍。「把周末留给海边」的标题下方写着「如果还早，」，下面是灯塔照片和黄色圆形待办。" fetchpriority="high">
-            <span class="scene-note" aria-hidden="true">备忘录主题</span>
+            <img src="assets/sync-after-zh.webp?v=20261118f" width="1840" height="1142" alt="飞记备忘录主题实拍。「把周末留给海边」从「如果还早，」续写到「就沿着海走到天黑。」，下面是灯塔照片和黄色圆形待办。" fetchpriority="high">
+            <img class="sync-before" src="assets/sync-before-zh.webp?v=20261118f" width="1840" height="1142" alt="" aria-hidden="true">
           </div>
           <div class="sync-window sync-window-secondary sync-phone">
-            <img src="assets/sync-iphone-zh.png" width="1206" height="2622" alt="iPhone 上的飞记界面。「把周末留给海边」在标题下方续写为「如果还早，就沿着海走到天黑。」">
-            <span class="scene-note" aria-hidden="true">iPhone</span>
+            <div class="phone-screen"><img src="assets/sync-iphone-zh.png?v=20261118f" width="1206" height="2622" alt="iPhone 上的飞记界面。「把周末留给海边」在标题下方续写为「如果还早，就沿着海走到天黑。」">
+            <span class="phone-line-mask" aria-hidden="true"></span></div>
           </div>
+          <div class="sync-controls"><span class="sync-caption">备忘录主题</span><button class="sync-replay" data-animation-toggle type="button" aria-label="暂停动画">Ⅱ 暂停动画</button></div>
         </div>
       </figure>
-      <figure class="shot story collab-story" data-scene="collab" hidden aria-label="多人实时共编 · 界面设计预览">
+      <figure class="shot story collab-story" data-scene="collab" hidden aria-label="多人实时编辑 · 飞书文档主题原生界面">
         <div class="collab-preview">
           <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
-          <img src="assets/editor-feishu.webp" width="1840" height="1142" alt="海边小书展 · 开展计划。林夏正在选中本周目标，陈屿正在修改表格进度。" loading="lazy">
-          <div class="collab-presence" aria-hidden="true">
-            <div class="collab-avatars">
-              <span class="collab-avatar lin">林</span>
-              <span class="collab-avatar chen">陈</span>
-            </div>
-            <span class="collab-share"><svg viewBox="0 0 16 16"><path d="M8 10V2m0 0L5 5m3-3 3 3M5 7H3v7h10V7h-2"/></svg>共享</span>
-          </div>
-          <span class="coedit-selection lin-mark" aria-hidden="true"></span>
-          <span class="coedit-name lin-mark" aria-hidden="true">林夏</span>
-          <span class="coedit-selection chen-mark" aria-hidden="true"></span>
-          <span class="coedit-name chen-mark" aria-hidden="true">陈屿</span>
+          <img src="assets/editor-feishu.webp?v=20261118f" width="1840" height="1142" alt="海边小书展 · 开展计划。林夏续写本周目标，陈屿同时填写表格进度。" loading="lazy">
+          <div class="collab-edit collab-edit-first" aria-hidden="true"><span class="collab-remainder"></span><span class="collab-writer"></span></div>
+          <div class="collab-edit collab-edit-second" aria-hidden="true"><span class="collab-remainder"></span><span class="collab-writer"></span></div>
         </div>
-        <figcaption class="scene-note">飞书文档主题</figcaption>
+        <figcaption class="collab-controls"><span>飞书文档主题</span><button class="collab-toggle" data-animation-toggle type="button" aria-label="暂停动画">Ⅱ 暂停动画</button></figcaption>
       </figure>
     </main>
     <footer class="wrap">
@@ -82,7 +73,7 @@
       <div class="footer-links"><a href="https://t.me/+eKIYrdIFufxmYzJl">Telegram 反馈群 ↗</a><a href="https://github.com/s1dashu/quiet-md">基于 Quiet.md</a></div>
     </footer>
   </div>
-  <script src="theme-gallery.js" defer></script>
+  <script src="theme-gallery.js?v=20261118f" defer></script>
   <script src="testflight.js?v=3" defer></script>
 </body>
 </html>

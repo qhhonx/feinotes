@@ -111,3 +111,6 @@ html[lang="en"] .lead { max-width: 680px; }
 .beta-mobile { text-align: center; }
 .beta-mobile-link { font-size: 12px; line-height: 1.6; color: inherit; text-underline-offset: 3px; }
 .beta-mobile-link[aria-disabled="true"] { opacity: .7; text-decoration: none; pointer-events: none; }
+
+.beta-platform-status { margin: 0; }
+.beta-access [data-beta-review]:not([hidden])::before { content: " · "; }
