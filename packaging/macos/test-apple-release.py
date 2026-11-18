@@ -20,6 +20,11 @@ def record(kind, identifier, **attributes):
 
 
 class AppleReleaseTest(TestCase):
+    def setUp(self):
+        switch = mock.patch.dict(os.environ, FEI_EXPIRE_SUPERSEDED_BETAS='0')
+        switch.start()
+        self.addCleanup(switch.stop)
+
     def beta_status(self, builds, states, enabled=True):
         group = record('betaGroups', 'public-group', publicLink='https://testflight.apple.com/join/example',
                        publicLinkEnabled=enabled)
