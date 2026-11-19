@@ -1,8 +1,8 @@
 {
   "state": "available",
   "url": "https://testflight.apple.com/join/NdcXugMy",
-  "version": "1.0.4",
-  "build": "1010",
+  "version": "1.0.7",
+  "build": "1014",
   "pending": {
     "state": "review",
     "version": "1.0.8",
@@ -12,8 +12,8 @@
     "MAC_OS": {
       "state": "available",
       "url": "https://testflight.apple.com/join/NdcXugMy",
-      "version": "1.0.4",
-      "build": "1010",
+      "version": "1.0.7",
+      "build": "1014",
       "pending": {
         "state": "review",
         "version": "1.0.8",
@@ -21,9 +21,11 @@
       }
     },
     "IOS": {
-      "state": "unavailable",
-      "url": "https://testflight.apple.com/join/NdcXugMy"
+      "state": "review",
+      "url": "https://testflight.apple.com/join/NdcXugMy",
+      "version": "1.0.8",
+      "build": "1017"
     }
   },
-  "updatedAt": "2026-11-18T01:20:34.115026+00:00"
+  "updatedAt": "2026-11-18T02:07:10.002214+00:00"
 }

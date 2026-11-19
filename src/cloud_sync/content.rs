@@ -132,10 +132,16 @@ fn write_document(doc: &LoroDoc, content: &Document, jitter: u8, fine_tables: bo
     let tree = doc.get_tree("blocks");
     tree.enable_fractional_index(jitter);
     let mut ids = HashMap::new();
+    let mut duplicates = false;
     for node in tree.get_nodes(false) {
         let key = block_id(&tree, node.id)?;
-        ensure!(ids.insert(key, node.id).is_none(), "Duplicate tree block identifier");
+        ids.entry(key).and_modify(|existing: &mut TreeID| {
+            duplicates = true;
+            *existing = (*existing).min(node.id);
+        }).or_insert(node.id);
     }
+    // Prefer a visible occurrence over an older copy under the undo root.
+    if duplicates { ids.extend(visible_ids(&tree)?); }
     // Keep removed nodes under a hidden root so undo can reuse their identity.
     let trash = if let Some(id) = ids.remove(&BlockId(0)) { id } else {
         let id = tree.create(None)?;
@@ -187,12 +193,47 @@ fn block_id(tree: &LoroTree, id: TreeID) -> Result<BlockId> {
     Ok(BlockId(value(&tree.get_meta(id)?, "block").context("Missing block identifier")?.parse()?))
 }
 
+// Replicas can contain several tree nodes for one logical block. Their text
+// is shared by block identifier. Only equivalent shapes can be projected once.
+fn first_occurrence(tree: &LoroTree, ids: &mut HashMap<BlockId, TreeID>, id: BlockId, node: TreeID) -> Result<bool> {
+    if let Some(&first) = ids.get(&id) {
+        let shape = value(&tree.get_meta(node)?, "shape").context("Missing block payload")?;
+        ensure!(value(&tree.get_meta(first)?, "shape").as_deref() == Some(shape.as_str()),
+            "Duplicate cloud block identifier with different shapes");
+        return Ok(false);
+    }
+    ids.insert(id, node);
+    Ok(true)
+}
+
+fn visible_ids(tree: &LoroTree) -> Result<HashMap<BlockId, TreeID>> {
+    fn visit(tree: &LoroTree, nodes: Vec<TreeID>, ids: &mut HashMap<BlockId, TreeID>) -> Result<()> {
+        for node in nodes {
+            let id = block_id(tree, node)?;
+            if id == BlockId(0) { continue; }
+            first_occurrence(tree, ids, id, node)?;
+            visit(tree, tree.children(node).unwrap_or_default(), ids)?;
+        }
+        Ok(())
+    }
+    let mut ids = HashMap::new();
+    visit(tree, tree.roots(), &mut ids)?;
+    Ok(ids)
+}
+
 pub fn render(doc: &LoroDoc) -> Result<Document> {
-    fn read_nodes(doc: &LoroDoc, tree: &LoroTree, nodes: Vec<TreeID>) -> Result<Vec<Block>> {
+    fn read_nodes(doc: &LoroDoc, tree: &LoroTree, ids: &mut HashMap<BlockId, TreeID>, nodes: Vec<TreeID>) -> Result<Vec<Block>> {
         let mut out = vec![];
         for node in nodes {
             let id = block_id(tree, node)?;
             if id == BlockId(0) { continue; }
+            let first = first_occurrence(tree, ids, id, node)?;
+            let mut children = read_nodes(doc, tree, ids, tree.children(node).unwrap_or_default())?;
+            if !first {
+                // Retain distinct descendants contributed under the other occurrence.
+                out.append(&mut children);
+                continue;
+            }
             let meta = tree.get_meta(node)?;
             let shape = value(&meta, "shape").context("Missing block payload")?;
             let mut block = serde_json::from_str::<Payload>(&shape)?.decode(id)?;
@@ -200,7 +241,6 @@ pub fn render(doc: &LoroDoc) -> Result<Document> {
                 super::table::render(doc, &shape, &mut block)?;
             }
             block.text = super::paragraphs::read(doc, id)?;
-            let mut children = read_nodes(doc, tree, tree.children(node).unwrap_or_default())?;
             let nests = block.kind.nests() || matches!(block.kind, BlockKind::Quote | BlockKind::Callout { .. } | BlockKind::Column { .. });
             if nests {
                 block.children = children;
@@ -232,7 +272,7 @@ pub fn render(doc: &LoroDoc) -> Result<Document> {
     let mut target = crate::docxml::parse(&header)?;
     target.title = super::paragraphs::read(doc, TITLE)?;
     let tree = doc.get_tree("blocks");
-    target.blocks = read_nodes(doc, &tree, tree.roots())?;
+    target.blocks = read_nodes(doc, &tree, &mut HashMap::new(), tree.roots())?;
     if target.blocks.is_empty() { target.blocks.push(Block::text("")); }
     Ok(target)
 }

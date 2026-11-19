@@ -901,7 +901,7 @@ impl Journal {
         for (id, trashed) in ids.into_iter().filter(|(id, _)| writable && local.contains_key(id)
             || self.room.as_ref().is_some_and(|room| room.note == *id && self.access.is_some_and(Access::can_write))) {
             let (doc, seen, front) = Store::read_sync_body(&tx, &id, trashed)?;
-            capture_note(&tx, &self.root, self.peer, &id, &doc, seen, &front)?;
+            capture_note(&tx, &self.root, self.peer, &id, &doc, seen, &front).context("Capture local document for sync")?;
         }
 
         let edits = incoming(&tx, catalogue::SCOPE)?;
@@ -934,7 +934,7 @@ impl Journal {
             let status = loro.import_batch(&updates)?;
             if status.pending.is_some() { continue; }
             if loro.oplog_vv() != before {
-                let doc = content::render(&loro)?;
+                let doc = content::render(&loro).context("Render merged cloud document")?;
                 let merged_front = front(&loro);
                 let mut paths = content::local_assets(&doc);
                 if self.room.is_some() {
@@ -965,7 +965,8 @@ impl Journal {
                     }
                 }
                 trim_recent_versions(&tx, &id)?;
-                let seen = Store::write_sync_body(&tx, &id, trashed.unwrap_or(false), &doc, &merged_front)?;
+                let seen = Store::write_sync_body(&tx, &id, trashed.unwrap_or(false), &doc, &merged_front)
+                    .context("Save merged cloud document")?;
                 checkpoint_note(&tx, &id, &Note { assets: paths, snapshot: loro.export(ExportMode::Snapshot)?, seen, held: false })?;
                 let positions = anchors.iter().filter_map(|(pos, anchor)|
                     content::resolve(&loro, pos.block, anchor).map(|resolved| (*pos, resolved))).collect();
@@ -1022,6 +1023,49 @@ impl HistoryFixture {
 #[cfg(test)]
 impl Drop for HistoryFixture {
     fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
+#[cfg(test)]
+#[test]
+fn equivalent_cloud_block_aliases_preserve_descendants_and_future_edits() -> Result<()> {
+    let fixture = HistoryFixture::new()?;
+    let mut journal = Journal::open(&fixture.0, None)?;
+    let mut store = Store::open_sqlite_at(fixture.0.clone())?;
+    let body = crate::docxml::parse("<title>Block identity</title><p>first</p><p>second</p>")?;
+    let id = store.create_from(&body)?;
+    journal.merge(&Default::default())?;
+    let stored = store.load_for_edit(&id, false)?;
+    let remote = journal.text_state(&id)?.context("Missing document snapshot")?;
+    remote.set_peer_id(journal.peer + 1)?;
+    let before = remote.oplog_vv();
+    let tree = remote.get_tree("blocks");
+    let tree_id = |value: crate::model::BlockId| -> Result<loro::TreeID> {
+        let key = value.0.to_string();
+        tree.roots().into_iter()
+            .find(|&node| tree.get_meta(node).ok().and_then(|meta| content::value(&meta, "block")).as_deref() == Some(&key))
+            .context("Missing test block")
+    };
+    let original = tree_id(stored.blocks[0].id)?;
+    let child = tree_id(stored.blocks[1].id)?;
+    let duplicate = tree.create(None)?;
+    let meta = tree.get_meta(duplicate)?;
+    let original_meta = tree.get_meta(original)?;
+    for key in ["block", "shape"] {
+        content::put(&meta, key, &content::value(&original_meta, key).context("Missing test metadata")?)?;
+    }
+    tree.mov(child, Some(duplicate))?;
+    let data = remote.export(ExportMode::updates(&before))?;
+    journal.receive(Changes { retention: None, uploaded: vec![], edits: vec![Edit { id: "duplicate-block".into(),
+        note: id.clone(), data: super::Bytes(data), collaborator: false }], token: Some(super::Bytes(vec![1])),
+        more: false, legacy: false, room_access: None, #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
+    journal.merge(&Default::default())?;
+    let mut merged = store.load_for_edit(&id, false)?;
+    assert_eq!(merged, stored);
+    merged.blocks[1].text = crate::model::RichText::plain("second, edited locally");
+    store.save(&id, &merged)?;
+    journal.merge(&Default::default())?;
+    assert_eq!(content::render(&journal.text_state(&id)?.context("Missing edited snapshot")?)?, merged);
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,0 +1,10 @@
+Fei Notes 1.0.8 (1017): iPad Home and navigation updates.
+
+• Uses a native two-column iPad layout: browse notes and folders on the left and write on the right. Home has the same three category tabs as iPhone.
+• Fixes parent navigation in nested folders and folder routes within the shared category.
+• Aligns pinned-note expand and collapse controls on iPhone and iPad and reuses the native new-folder form.
+• Retains the previous build's cloud format, shared notes, offline merging, attachments and Notes theme bold-text fix.
+
+Please focus on iPad rotation, both columns, focus mode and restoration, keeping the open document while searching, batch selection and returning from nested folders. Also check pinned-note expansion and collapse on both iPhone and iPad.
+
+Cloud access is included during TestFlight without a subscription. Use compatible builds on every device participating in this cloud beta; earlier checkpoint-protocol builds must not write to the same library. Boards still merge at scene or block-property level. Simulator UI checks passed; physical-device and live cross-account sharing acceptance remain separate checks.

@@ -233,5 +233,113 @@ class AppleReleaseTest(TestCase):
             create.assert_not_called()
 
 
+def pending_record(identifier, version='1.0.8', build='1016', platform='MAC_OS', state='WAITING_FOR_BETA_REVIEW', **changes):
+    result = dict(id=identifier, version=version, build=build, platform=platform, state=state,
+                  expired=False, processing='VALID', audience='APP_STORE_ELIGIBLE')
+    result.update(changes)
+    return result
+
+
+class SupersessionTest(TestCase):
+    def test_same_platform_pending_only_and_numeric_order(self):
+        records = [pending_record('new'), pending_record('older', version='1.0.6', build='1013', state='IN_BETA_REVIEW'),
+                   pending_record('approved', version='1.0.7', build='1014', state='IN_BETA_TESTING'),
+                   pending_record('ios', build='1017', platform='IOS'), pending_record('same-version-old', build='99'),
+                   pending_record('unsubmitted', build='1000', state='READY_FOR_BETA_SUBMISSION'),
+                   pending_record('rejected', build='1001', state='BETA_REJECTED')]
+        planned = release.pending_beta_supersession_plan(records)
+        self.assertEqual({p['older']['id'] for p in planned}, {'older', 'same-version-old'})
+        self.assertTrue(all(p['replacement']['id'] == 'new' for p in planned))
+
+    def test_new_build_must_be_valid_unexpired_and_submitted(self):
+        for changes in [dict(processing='PROCESSING'), dict(expired=True), dict(audience='INTERNAL_ONLY'),
+                        dict(state='READY_FOR_BETA_SUBMISSION'), dict(state='BETA_REJECTED')]:
+            with self.subTest(changes=changes):
+                self.assertEqual(release.pending_beta_supersession_plan([pending_record('old', build='1015'), pending_record('new', **changes)]), [])
+
+    def test_version_comparison_and_platform_isolation(self):
+        planned = release.pending_beta_supersession_plan([pending_record('old', version='1.0.9'), pending_record('new', version='1.0.10'),
+                               pending_record('ios', version='2.0.0', platform='IOS')])
+        self.assertEqual([(p['older']['id'], p['replacement']['id']) for p in planned], [('old', 'new')])
+        self.assertEqual(release.pending_beta_supersession_plan([pending_record('mac'), pending_record('ios', version='2.0.0', platform='IOS')]), [])
+
+    def test_malformed_versions_and_equal_builds_are_not_candidates(self):
+        self.assertEqual(release.pending_beta_supersession_plan([pending_record('old', version='unknown'), pending_record('new')]), [])
+        self.assertEqual(release.pending_beta_supersession_plan([pending_record('same'), pending_record('also-same')]), [])
+
+    def simulate(self, apply=True, fresh_state=None, fresh_new_state=None, remove_new=False, confirm=True, repeat=False):
+        records = {p['id']: p for p in [pending_record('old', build='1015'), pending_record('new')]}
+        detail_reads = {}; membership_reads = 0
+        def builds(path):
+            nonlocal membership_reads
+            membership_reads += 1
+            ids = ['old'] if remove_new and membership_reads > 1 else list(records)
+            return iter(raw(identifier) for identifier in ids)
+        def raw(identifier):
+            p = records[identifier]
+            return {'id': identifier, 'attributes': {'version': p['build'], 'expired': p['expired'],
+                    'processingState': p['processing'], 'buildAudienceType': p['audience']}}
+        def get(method, path):
+            self.assertEqual(method, 'GET')
+            identifier = path.split('/')[3]; p = records[identifier]
+            if path.endswith('/preReleaseVersion'):
+                return {'data': {'attributes': {'version': p['version'], 'platform': p['platform']}}}
+            if path.endswith('/buildBetaDetail'):
+                detail_reads[identifier] = detail_reads.get(identifier, 0) + 1
+                state = fresh_state if identifier == 'old' and detail_reads[identifier] > 1 and fresh_state else p['state']
+                if identifier == 'new' and detail_reads[identifier] > 1 and fresh_new_state: state = fresh_new_state
+                return {'data': {'attributes': {'externalBuildState': state}}}
+            return {'data': raw(identifier)}
+        def expire(kind, identifier, values):
+            self.assertEqual((kind, identifier, values), ('builds', 'old', {'expired': True}))
+            if confirm: records[identifier].update(expired=True, state='EXPIRED')
+        with mock.patch.dict(os.environ, FEI_EXPIRE_SUPERSEDED_BETAS='1'), \
+             mock.patch.object(release, 'beta_group', return_value={'id': 'public'}), \
+             mock.patch.object(release, 'rows', side_effect=builds), \
+             mock.patch.object(release, 'request', side_effect=get), \
+             mock.patch.object(release, 'patch', side_effect=expire) as patch:
+            first = release.supersede_pending_betas('public', apply)
+            second = release.supersede_pending_betas('public', apply) if repeat else None
+            return first, second, patch.call_count
+
+    def test_dry_run_never_mutates(self):
+        result, _, count = self.simulate(apply=False)
+        self.assertEqual(count, 0)
+        self.assertEqual(len(result['planned']), 1)
+
+    def test_apply_requires_explicit_enabled_policy(self):
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch.object(release, 'beta_group', return_value={'id': 'public'}), \
+             mock.patch.object(release, 'rows', return_value=[]), \
+             mock.patch.object(release, 'patch') as patch:
+            with self.assertRaises(ValueError): release.supersede_pending_betas('public', True)
+            patch.assert_not_called()
+
+    def test_expiration_is_read_back_and_idempotent(self):
+        first, second, count = self.simulate(repeat=True)
+        self.assertEqual(count, 1)
+        self.assertTrue(first['expired'][0]['after']['expired'])
+        self.assertEqual(second['expired'], [])
+
+    def test_newly_approved_old_build_is_preserved(self):
+        result, _, count = self.simulate(fresh_state='IN_BETA_TESTING')
+        self.assertEqual(count, 0)
+        self.assertEqual(len(result['skipped']), 1)
+
+    def test_rejected_replacement_prevents_expiration(self):
+        result, _, count = self.simulate(fresh_new_state='BETA_REJECTED')
+        self.assertEqual(count, 0)
+        self.assertEqual(len(result['skipped']), 1)
+
+    def test_changed_membership_prevents_expiration(self):
+        result, _, count = self.simulate(remove_new=True)
+        self.assertEqual(count, 0)
+        self.assertEqual(len(result['skipped']), 1)
+
+    def test_missing_apple_expiration_confirmation_is_an_error(self):
+        with self.assertRaisesRegex(ValueError, 'did not confirm'):
+            self.simulate(confirm=False)
+
+
 if __name__ == "__main__":
     main()

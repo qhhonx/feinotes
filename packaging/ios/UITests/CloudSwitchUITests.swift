@@ -32,10 +32,10 @@ final class CloudSwitchUITests: XCTestCase {
         app.buttons["fei.settings"].tap()
         let cloud = app.cells["fei.setting.page:Library"]
         for _ in 0..<6 { if cloud.isHittable { break }; app.tables["fei.settings.list"].swipeUp() }
-        XCTAssertTrue(cloud.exists); cloud.tap()
+        XCTAssertTrue(cloud.isHittable); cloud.tap()
         let toggle = app.cells["fei.setting.library-switch"]
         for _ in 0..<6 { if toggle.isHittable { break }; app.tables["fei.settings.list"].swipeUp() }
-        XCTAssertTrue(toggle.waitForExistence(timeout: 5)); toggle.tap()
+        XCTAssertTrue(toggle.isHittable); toggle.tap()
         XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 5))
         app.alerts.firstMatch.buttons.matching(identifier: "fei.confirm.ok").firstMatch.tap()
         let message = app.staticTexts.matching(identifier: "fei.settings.message").firstMatch

@@ -114,9 +114,12 @@ signing instructions below for a product package.
 
 The `TestFlight` configuration and `FeiNotesTestFlight` scheme link an optimized
 Rust release archive and the Production Swift bridge. QA/devtools features are
-forbidden. Beta access still requires the existing verified TestFlight receipt
-path. Use the platform-specific manual workflow; it pins the exact source SHA,
-version and build and validates the archive before upload. Release notes live in
+forbidden. The iOS TestFlight configuration includes cloud access without a
+StoreKit app-transaction request. Production CloudKit still enforces the signed
+container entitlement and iCloud account. App Store releases use the Product
+configuration and its subscription rules. Use the platform-specific manual
+workflow for TestFlight; it pins the exact source SHA, version and build and
+validates the archive before upload. Release notes live in
 `release-notes/1.0.8/`. iOS links system SQLite with Rusqlite 0.40.2, whose base
 bindings support the deployment baseline without importing SQLite 3.44 client-data
 APIs. The Mac workspace keeps Rusqlite 0.41.1 and bundled SQLite.

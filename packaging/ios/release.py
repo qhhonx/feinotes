@@ -72,6 +72,16 @@ def validate_signed_entitlements(ent):
     require(DOMAIN in ent.get('com.apple.developer.associated-domains', []), 'Signed invitation domain missing')
 
 
+def validate_signer(app, signer):
+    # codesign's optional prefix must be attached; a separate token is another code path.
+    with tempfile.TemporaryDirectory() as temporary:
+        prefix = str(Path(temporary) / 'signer-')
+        subprocess.run(['codesign', '-d', '--extract-certificates=' + prefix, str(app)], capture_output=True, check=True)
+        leaf = Path(prefix + '0')
+        require(leaf.is_file(), 'Signature has no leaf signing certificate')
+        require(hashlib.sha1(leaf.read_bytes()).hexdigest().upper() == signer.upper(), 'Unexpected actual iOS signer')
+
+
 def verify_app(app, version, build, signer, uuid):
     info = plistlib.loads((app / 'Info.plist').read_bytes())
     validate_info(info, version, build)
@@ -92,11 +102,7 @@ def verify_app(app, version, build, signer, uuid):
     require(subprocess.check_output(['lipo', '-archs', str(executable)], text=True).split() == ['arm64'],
             'Expected a device arm64 executable')
     # Verify the actual leaf signing certificate, not only profile membership.
-    with tempfile.TemporaryDirectory() as temporary:
-        prefix = str(Path(temporary) / 'signer-')
-        subprocess.run(['codesign', '-d', '--extract-certificates', prefix, str(app)], capture_output=True, check=True)
-        leaf = Path(prefix + '0').read_bytes()
-        require(hashlib.sha1(leaf).hexdigest().upper() == signer.upper(), 'Unexpected actual iOS signer')
+    validate_signer(app, signer)
     return {'platform': 'IOS', 'version': version, 'build': build, 'profileUUID': profile['UUID'],
             'signerSHA1': signer.upper(), 'bundle': BUNDLE, 'architectures': ['arm64']}
 

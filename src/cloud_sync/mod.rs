@@ -406,6 +406,7 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
         let mut legacy_checked: Option<std::time::Instant> = None;
         let mut upload_retry_at: Option<std::time::Instant> = None;
         let mut delay = Duration::from_secs(2);
+        let mut reported_ready = false;
         loop {
             let mut timer = std::pin::pin!(cx.background_executor().timer(delay));
             let mut wake = std::pin::pin!(retry_rx.recv());
@@ -474,7 +475,7 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                     if legacy && !more { legacy_checked = Some(std::time::Instant::now()); }
                     if quota_exceeded { upload_retry_at = Some(std::time::Instant::now() + Duration::from_secs(30)); }
                     else if allow_upload { upload_retry_at = None; }
-                    let (pending, collaborating) = crate::gpui_compat::async_update(cx, |cx| {
+                    let (pending, collaborating, settled) = crate::gpui_compat::async_update(cx, |cx| {
                         update_status_after_exchange(&root, cx, if upload_retry_at.is_some() { SyncPhase::Quota }
                             else if more { SyncPhase::Connecting } else { SyncPhase::Ready }, true);
                         let collaborating = match app::cloud_active_selection(&root, cx) {
@@ -482,13 +483,20 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                             _ => false,
                         };
                         let writable = journal(&root, cx).access().is_none_or(shared::Access::can_write);
-                        (status(&root, cx).unwrap().uploads > 0 && writable, collaborating)
+                        let status = status(&root, cx).unwrap();
+                        (status.uploads > 0 && writable, collaborating,
+                            status.phase == SyncPhase::Ready && status.uploads == 0 && status.downloads == 0)
                     }).unwrap_or_default();
+                    if !legacy && settled && !reported_ready {
+                        crate::logging::write("CloudKit sync ready: no pending uploads or downloads");
+                        reported_ready = true;
+                    }
                     last_error = None;
                     delay = if legacy || more || (pending && upload_retry_at.is_none()) { Duration::ZERO } else if collaborating { Duration::from_secs(1) }
                         else { Duration::from_secs(3) };
                 }
                 Err(error) => {
+                    reported_ready = false;
                     let phase = error.downcast_ref::<CloudFailure>().map_or(SyncPhase::Failed, |error| error.phase);
                     let _ = crate::gpui_compat::async_update(cx, |cx| {
                         if matches!(phase, SyncPhase::AccountChanged | SyncPhase::SignedOut) {

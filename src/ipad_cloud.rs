@@ -40,6 +40,8 @@ pub(crate) fn prepare(parent: &Path, channel: uuid::Uuid) -> Result<PathBuf> {
 }
 
 pub(crate) fn prepare_selection(parent: &Path, channel: uuid::Uuid) -> Result<PathBuf> {
+    #[cfg(feature = "mobile-qa")]
+    ensure!(std::env::var("FEI_QA_CLOUD_SWITCH_FAILURE").as_deref() != Ok("1"), "Cloud switch QA failure; local notes are kept");
     checked_root(parent,request(parent,channel,4)?)
 }
 

@@ -27,12 +27,13 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: product/quiet-sync
-      - name: Read Apple's public beta state
+      - name: Reconcile pending builds and read Apple's public beta state
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY_B64: ${{ secrets.ASC_PRIVATE_KEY_B64 }}
           FEI_PUBLIC_BETA_GROUP_ID: ${{ vars.FEI_PUBLIC_BETA_GROUP_ID }}
+          FEI_EXPIRE_SUPERSEDED_BETAS: ${{ vars.FEI_EXPIRE_SUPERSEDED_BETAS }}
         shell: bash
         run: |
           set -euo pipefail
@@ -42,6 +43,8 @@ jobs:
           printf '%s' "$ASC_PRIVATE_KEY_B64" | base64 --decode > "$key"
           unset ASC_PRIVATE_KEY_B64
           export ASC_KEY_PATH="$key"
+          python3 -B packaging/macos/test-apple-release.py
+          python3 -B packaging/macos/apple-release.py supersede-pending --apply
           python3 -B packaging/macos/apple-release.py beta-status website/testflight-status.json
       - name: Publish a changed availability state
         env:
