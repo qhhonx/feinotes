@@ -158,16 +158,21 @@ fn set_app_icon() {
     }
 }
 
-/// The main window's options: centred at the remembered size, or at `at`.
+/// The main window's options: at `at`, else at the remembered spot on its own
+/// display, clamped into the work area.
 pub(crate) fn main_window_options(scripted: bool, at: Option<Bounds<Pixels>>, cx: &mut App) -> WindowOptions {
     // Scripted dev runs must not steal keyboard focus from whatever the
     // user is typing into.
-    let mut bounds = at.unwrap_or_else(|| Bounds::centered(None, quick_note::main_window_size(cx), cx));
+    let (display_id, mut bounds) = match at { Some(at) => (None, at), None => quick_note::main_window_bounds(cx) };
     // A half-point origin (an odd leftover height) makes AppKit grow the
     // window by a point when it aligns the frame to pixels.
     bounds.origin = bounds.origin.map(|v| v.round());
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
+        // The frame is measured from that display's own top-left corner, so the
+        // window has to be opened on it: anywhere else that number means
+        // somewhere on another screen (#253).
+        display_id,
         window_background: crate::theme::window_background(),
         app_id: Some(crate::APP_ID.into()),
         window_decorations: if cfg!(target_os = "linux") { Some(WindowDecorations::Client) } else { None },
@@ -185,7 +190,7 @@ pub(crate) fn main_window_options(scripted: bool, at: Option<Bounds<Pixels>>, cx
     }
 }
 
-/// The main window, centred at the remembered size, or where first launch's window was.
+/// The main window, at the remembered spot, or where first launch's window was.
 pub(crate) fn open_main_window(scripted: bool, at: Option<Bounds<Pixels>>, cx: &mut App) {
     let options = main_window_options(scripted, at, cx);
     cx.open_window(options, |window, cx| {

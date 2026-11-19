@@ -180,7 +180,7 @@ impl Workspace {
     pub(crate) fn render_create_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (target, pos) = self.create_menu.clone()?;
         let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::ui::menu_row(id, SharedString::from(id)).child(icon(glyph, 16., Theme::icon())).child(label);
-        let menu = popover().id("create-items").occlude().w(px(180.)).py(px(crate::ui::MENU_PAD_Y))
+        let menu = popover().id("create-items").occlude().min_w(px(180.)).py(px(crate::ui::MENU_PAD_Y))
             .on_mouse_down_out(cx.listener(move |w, event: &MouseDownEvent, _, cx| {
                 let key = match &w.create_menu {
                     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -273,7 +273,7 @@ impl Workspace {
         let (doc, folder, rename, mv, del) = (m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone());
         let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::ui::menu_row(id, SharedString::from(id)).child(icon(glyph, 16., Theme::icon())).child(label);
         let pos = if m.pos.x < px(0.) { point(-m.pos.x, m.pos.y + px(22.)) } else { m.pos };
-        vec![deferred(anchored().position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("folder-row-menu").occlude().w(px(190.)).py(px(crate::ui::MENU_PAD_Y))
+        vec![deferred(anchored().position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("folder-row-menu").occlude().min_w(px(190.)).py(px(crate::ui::MENU_PAD_Y))
             .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }))
             .children({
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]

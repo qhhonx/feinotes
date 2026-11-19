@@ -645,6 +645,9 @@ impl Workspace {
                 MouseButton::Left,
                 cx.listener(move |w, ev: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
+                    // The row menu's outside-click handler has already closed it on this press, so
+                    // a press on its own button closes it rather than reopening it (see `open`).
+                    if open { w.row_menu = None; cx.notify(); return; }
                     // Hang the menu from the button; a negative x marks "from the button".
                     let b = lookup.borrow().get(&slot2).copied();
                     let pos = b.map_or(ev.position, |b| point(-b.left() - px(1.), b.top()));
@@ -854,7 +857,7 @@ impl Workspace {
             let menu = popover()
                 .id("batch-menu")
                 .occlude()
-                .w(px(ROW_MENU_W))
+                .min_w(px(ROW_MENU_W))
                 .px(px(5.))
                 .py(px(crate::ui::MENU_PAD_Y))
                 .on_mouse_down_out(cx.listener(|w, _, _, cx| {
@@ -884,12 +887,17 @@ impl Workspace {
         let pdf = m.id.clone();
         let new_window = m.id.clone();
         let sub_bounds = self.row_sub_bounds.clone();
+        // The menu follows its longest translation too (#225); its rendered
+        // width (from the previous frame — a submenu only opens after one)
+        // places the 下载 submenu beside it.
+        let menu_w_record = self.row_menu_w.clone();
         // The row menu leaves out the cloud entries 在新标签页打开, 分享,
         // 复制链接, 添加快捷方式到, 转移所有权, 设置密级.
         let menu = popover()
             .id("row-menu")
             .occlude()
-            .w(px(ROW_MENU_W))
+            .min_w(px(ROW_MENU_W))
+            .child(canvas(move |b, _, _| menu_w_record.set(Some(f32::from(b.size.width))), |_, _, _, _| {}).absolute().inset_0())
             .px(px(5.))
             .py(px(crate::ui::MENU_PAD_Y))
             .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
@@ -985,18 +993,19 @@ impl Workspace {
             record.set(None);
             // Level the submenu's first item with 下载.
             let top = row_sub_top(menu_top);
+            let menu_w = self.row_menu_w.get().unwrap_or(ROW_MENU_W);
             let left = match corner {
-                Anchor::TopRight | Anchor::BottomRight => origin.x - px(ROW_MENU_W),
+                Anchor::TopRight | Anchor::BottomRight => origin.x - px(menu_w),
                 _ => origin.x,
             };
-            let x = left + px(ROW_MENU_W + 4.);
+            let x = left + px(menu_w + 4.);
             out.push(
                 deferred(
                     anchored().anchor(Anchor::TopLeft).position(point(x, px(top))).snap_to_window_with_margin(px(8.)).child(
                         popover()
                             .id("rm-download-menu")
                             .occlude()
-                            .w(px(130.))
+                            .min_w(px(130.))
                             .px(px(5.))
                             .py(px(crate::ui::MENU_PAD_Y))
                             .child(canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())

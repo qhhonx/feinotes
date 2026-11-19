@@ -12,7 +12,7 @@ const NAME_BYTES: usize = 120;
 /// A title as a file or folder name (no extension): illegal characters become
 /// their full-width forms, control characters spaces; no leading `.`, no
 /// trailing dot or space (Windows drops them), Windows device names get a
-/// `_`, and at most 120 bytes. Empty: 未命名文档.
+/// `_`, and at most 120 bytes. Empty: `model::untitled()`.
 pub fn file_name_for(title: &str) -> String {
     let mut s: String = title.chars().map(|c| match ILLEGAL.iter().find(|(a, _)| *a == c) {
         Some((_, b)) => *b,
@@ -21,7 +21,7 @@ pub fn file_name_for(title: &str) -> String {
     }).collect();
     s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     let s = s.trim_start_matches(['.', ' ']).trim_end_matches(['.', ' ']);
-    let mut s = if s.is_empty() { crate::model::UNTITLED.to_string() } else { s.to_string() };
+    let mut s = if s.is_empty() { crate::model::untitled().to_string() } else { s.to_string() };
     if s.len() > NAME_BYTES {
         let mut end = NAME_BYTES;
         while !s.is_char_boundary(end) { end -= 1; }

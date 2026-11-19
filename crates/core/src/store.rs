@@ -261,6 +261,14 @@ pub struct Settings {
     /// Main window size, remembered like the quick note window's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_size: Option<[f32; 2]>,
+    /// Main window position and the display it was on, so reopening returns
+    /// to the same spot. The origin is in that display's top-left coordinates,
+    /// and the display is named by its UUID — the one identifier that survives
+    /// a restart; a display that is gone makes the window re-centre.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_origin: Option<[f32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_display: Option<String>,
     /// 阅读位置: the list offset each document was left at, so switching back
     /// returns to the same place. Kept out of `index.json`: it is window
     /// state, not document metadata.
@@ -1586,12 +1594,35 @@ impl Store {
         Ok(doc)
     }
 
+    /// Accept an external revision only when the caller has a clean editor.
+    pub fn refresh_markdown(&self, id: &str) -> Result<Option<Document>> {
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite_manages(id) { return Ok(None); }
+
+        if !self.is_markdown(id) { return Ok(None) }
+        let disk = self.read_doc_text(id)?;
+        if self.loaded.borrow().get(id).is_none_or(|base| base == &disk) { return Ok(None) }
+        let doc = self.parse_doc(id, &disk)?;
+        self.loaded.borrow_mut().insert(id.into(), disk);
+        Ok(Some(doc))
+    }
+
     /// Release a closed editor's conflict-detection baseline, after its last window saved.
     pub fn forget_loaded(&self, id: &str) { self.loaded.borrow_mut().remove(id); }
 
     pub fn save(&mut self, id: &str, doc: &Document) -> Result<Meta> {
         let _lock = self.begin_write()?;
         self.save_now(id, doc)
+    }
+
+    /// A live Markdown editor writes its current body even after an external save.
+    pub fn save_editor(&mut self, id: &str, doc: &Document) -> Result<Meta> {
+        let _lock = self.begin_write()?;
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite_manages(id) { return self.save_now(id, doc); }
+        if !self.is_markdown(id) { return self.save_now(id, doc) }
+        let disk = self.read_doc_text(id)?;
+        self.write_doc_against(id, doc, Some(disk), true)
     }
 
     /// `save` for callers that already hold the write lock. A new id becomes a
@@ -1618,8 +1649,12 @@ impl Store {
 
     fn write_doc(&mut self, id: &str, doc: &Document) -> Result<Meta> {
         let disk = if self.is_markdown(id) || self.loaded.borrow().contains_key(id) { crate::vfs::read_to_string(self.path(id)).ok() } else { None };
+        self.write_doc_against(id, doc, disk, false)
+    }
+
+    fn write_doc_against(&mut self, id: &str, doc: &Document, disk: Option<String>, overwrite: bool) -> Result<Meta> {
         let (xml, copies) = self.serialize_with_copies(id, doc, disk.as_deref());
-        if let Some(previous) = self.loaded.borrow().get(id) {
+        if !overwrite && let Some(previous) = self.loaded.borrow().get(id) {
             let disk = disk.as_deref().ok_or_else(|| anyhow::anyhow!("文档文件已不在原处，可能已被移动或删除"))?;
             let message = if self.index.get(id).is_some_and(Meta::local) { "文件已在别处被修改，未覆盖磁盘内容。请另存副本或重新打开文件" } else { "文档已被另一个实例修改，未覆盖磁盘内容。请另存副本或重新载入磁盘版本" };
             anyhow::ensure!(disk == previous || disk == xml, "{message}");
@@ -1653,7 +1688,6 @@ impl Store {
                 }
             }
         }
-        self.loaded.borrow_mut().insert(id.to_string(), if same { disk.unwrap_or(xml) } else { xml });
         let title = doc.title.text.trim().to_string();
         let named = self.named_by_file(id);
         let changed = if named { title != self.markdown_title(id) } else { true };
@@ -1665,6 +1699,7 @@ impl Store {
         m.modified = t;
         let m = m.clone();
         self.save_index()?;
+        self.loaded.borrow_mut().insert(id.to_string(), if same { disk.unwrap_or(xml) } else { xml });
         Ok(m)
     }
 
@@ -2136,7 +2171,11 @@ impl Store {
         #[cfg(feature = "sqlite-store")]
         if self.sqlite_manages(id) { return self.index.contains_key(id); }
 
-        self.index.get(id).is_some_and(|m| if m.folder.is_some() { self.flat || self.abs(&m.rel).fs_is_dir() } else { self.path(id).fs_exists() })
+        let Some(m) = self.index.get(id) else { return false };
+        if m.folder.is_some() { return self.flat || self.abs(&m.rel).fs_is_dir() }
+        #[cfg(test)]
+        crate::store::DISK_LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.path(id).fs_exists()
     }
 
     /// 彻底删除 a page from the 回收站, with the pages that went with it.
@@ -2370,6 +2409,11 @@ impl Store {
     }
 }
 
+/// Disk existence checks performed by `index_has`; compiled only in tests,
+/// to keep imports O(N) instead of O(N × library) (#216).
+#[cfg(test)]
+pub(crate) static DISK_LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2401,6 +2445,23 @@ mod tests {
 
     fn doc(title: &str) -> Document {
         Document { title: crate::model::RichText::plain(title), ..Default::default() }
+    }
+
+    /// #216: importing N files must stay O(N) disk checks — the per-file
+    /// drop used to stat every entry of the library through `move_in_tree`.
+    #[test]
+    fn importing_files_does_not_walk_the_library() {
+        let lib = Lib::new("import-walk");
+        let mut store = lib.open();
+        let folder = store.create_folder("imported", None).unwrap();
+        for _ in 0..30 { store.create_from(&doc("background")).unwrap(); }
+        DISK_LOOKUPS.store(0, std::sync::atomic::Ordering::Relaxed);
+        for _ in 0..10 {
+            let id = store.create_from(&doc("page")).unwrap();
+            store.set_parent(&id, Some(&folder)).unwrap();
+        }
+        let looked = DISK_LOOKUPS.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(looked <= 20, "10 imports made {looked} disk checks, not O(N)");
     }
 
     fn doc_with(title: &str, body: &str) -> Document {
@@ -2654,6 +2715,30 @@ mod tests {
         assert_eq!(crate::whiteboard::write_file(&s.load(&id).unwrap()), crate::vfs::read_to_string(lib.0.join("流程.excalidraw")).unwrap());
     }
 
+    #[cfg(feature = "sqlite-store")]
+    #[test]
+    fn markdown_editor_keeps_sqlite_revision_checks() {
+        let lib = Lib::new("sqlite-markdown-editor");
+        crate::vfs::create_dir_all(&lib.0).unwrap();
+        Store::initialize_local_sqlite(&lib.0).unwrap();
+        let mut s = Store::open_sqlite_at(lib.0.clone()).unwrap();
+        let id = s.create_markdown(&crate::markdown::parse_file("original\n", "Note", None), "---\na: 1\n---\n").unwrap();
+        let mut editor = s.load_for_edit(&id, false).unwrap();
+        editor.blocks[0].text = crate::model::RichText::plain("local edit");
+        s.save_editor(&id, &editor).unwrap();
+        assert!(s.file_path(&id).is_none());
+        assert_eq!(s.load(&id).unwrap().blocks[0].text.text, "local edit");
+        let mut other = Store::open_sqlite_at(lib.0.clone()).unwrap();
+        let mut remote = other.load_for_edit(&id, false).unwrap();
+        remote.blocks[0].text = crate::model::RichText::plain("remote edit");
+        other.save(&id, &remote).unwrap();
+        assert!(s.refresh_markdown(&id).unwrap().is_none());
+        assert!(s.save_editor(&id, &editor).is_err());
+        assert_eq!(s.load(&id).unwrap().blocks[0].text.text, "remote edit");
+        assert_eq!(s.front_matter_of(&id), "---\na: 1\n---\n");
+        assert!(!lib.0.join("Note.md").exists());
+    }
+
     #[test]
     fn markdown_documents_stay_markdown() {
         let lib = Lib::new("markdown");
@@ -2713,6 +2798,25 @@ mod tests {
         let e = s.list().into_iter().find(|e| e.meta.rel == "model.md").unwrap();
         assert!(e.meta.markdown);
         assert!(e.body.contains("Written by a model"), "{:?}", e.body);
+    }
+
+    #[test]
+    fn markdown_editor_uses_the_last_saved_body() {
+        let lib = Lib::new("markdown-external-save");
+        let mut s = lib.open();
+        let file = lib.0.join("note.md");
+        crate::vfs::write(&file, "original\n").unwrap();
+        let id = s.open_local(&file).unwrap();
+        let mut editor = s.load_for_edit(&id, false).unwrap();
+        editor.blocks = vec![crate::model::Block::text("from the editor")];
+        crate::vfs::write(&file, "from another app\n").unwrap();
+        s.save_editor(&id, &editor).unwrap();
+        assert_eq!(crate::vfs::read_to_string(&file).unwrap(), "from the editor\n");
+        assert!(s.refresh_markdown(&id).unwrap().is_none());
+        crate::vfs::write(&file, "saved after the editor\n").unwrap();
+        let refreshed = s.refresh_markdown(&id).unwrap().unwrap();
+        assert_eq!(refreshed.blocks[0].text.text, "saved after the editor");
+        assert!(s.refresh_markdown(&id).unwrap().is_none());
     }
 
     #[test]

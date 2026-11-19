@@ -568,6 +568,29 @@ impl Editor {
         }));
     }
 
+    /// Markdown parsing allocates fresh block ids. Prefer the same paragraph
+    /// near its old position, then fall back to that position in the new file.
+    pub fn receive_markdown(&mut self, next: &Core, cx: &mut Context<Self>) {
+        let old_units = self.core.units();
+        let new_units = next.units();
+        let remap = |pos: Pos| {
+            if pos.block == TITLE { return pos }
+            let ix = old_units.iter().position(|u| u.id == pos.block).unwrap_or(0);
+            let text = self.core.text_of(pos.block);
+            let block = text.and_then(|t| new_units.iter().enumerate()
+                .filter(|(_, u)| u.id != TITLE && next.text_of(u.id).is_some_and(|v| v.text == t.text))
+                .min_by_key(|(j, _)| j.abs_diff(ix)).map(|(_, u)| u))
+                .or_else(|| new_units.get(ix)).or_else(|| new_units.last());
+            Pos::new(block.map_or(TITLE, |u| u.id), pos.offset)
+        };
+        let head = remap(self.core.sel.head);
+        let anchor = if self.core.sel.is_collapsed() { head } else { remap(self.core.sel.anchor) };
+        let scope = |p: Pos| new_units.iter().find(|u| u.id == p.block).and_then(|u| u.scope);
+        self.core.sel = if scope(anchor) == scope(head) { Selection { anchor, head } } else { Selection::caret(head) };
+        self.restore_top = self.scroll_top();
+        self.receive_document(next, cx);
+    }
+
     /// Call after every command: emits Changed, keeps menus consistent,
     /// scrolls the caret into view and restarts the caret blink.
     pub fn receive_document(&mut self, core: &Core, cx: &mut Context<Self>) {
@@ -2089,6 +2112,12 @@ impl Editor {
             }
             (None, None) => return,
         };
+        // A macOS file copy (including WeChat) can contain only native file
+        // references. GPUI returns these before looking for bitmap data.
+        let file_refs = item.as_ref().and_then(|item| item.entries().iter().find_map(|entry| match entry {
+            ClipboardEntry::ExternalPaths(files) => Some(files.paths()),
+            _ => None,
+        }));
         if self.core.in_block_mode() {
             // Paste after the selected blocks.
             if let Some(last) = self.core.block_sel_ids().last().copied() {
@@ -2149,8 +2178,32 @@ impl Editor {
                 blocks.push(Block::text(""));
                 self.core.paste_blocks(blocks);
             }
-        } else if let Some(s) = text.filter(|s| !s.is_empty()) {
-            self.core.paste_markdown(&s);
+        } else {
+            let files = if !rich_target {
+                None
+            } else if let Some(paths) = file_refs.filter(|paths| !paths.is_empty()) {
+                paths.iter().all(|p| super::image::is_local_image_file(p)).then(|| paths.to_vec())
+            } else {
+                text.as_deref().and_then(|s| {
+                    s.lines().map(str::trim).filter(|line| !line.is_empty())
+                        .map(super::image::local_image_path).collect::<Option<Vec<_>>>()
+                }).filter(|paths| !paths.is_empty())
+            };
+            if let Some(files) = files {
+                let mut blocks = Vec::new();
+                for file in files {
+                    match super::image::image_block_from_file(&self.library_root,&file) {
+                        Ok(b) => blocks.push(b),
+                        Err(msg) => self.toast(msg, cx),
+                    }
+                }
+                if !blocks.is_empty() {
+                    blocks.push(Block::text(""));
+                    self.core.paste_blocks(blocks);
+                }
+            } else if let Some(s) = text.filter(|s| !s.is_empty()) {
+                self.core.paste_markdown(&s);
+            }
         }
         if let Some(msg) = self.core.notice.take() {
             self.toast(msg, cx);

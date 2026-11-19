@@ -330,11 +330,12 @@ fn short_path(p: &Path) -> String {
     parts.join(" › ")
 }
 
-/// A picked folder as a library: an existing one or an empty folder is used
-/// as it is; anything else gets a Quiet.md folder inside.
+/// A picked folder as a library, used as it is: its Markdown and DocxXML
+/// files show up as documents (#282). Only the home folder and a disk's
+/// root get a Quiet.md folder inside; scanning all of either is never meant.
 pub(crate) fn library_in(dir: PathBuf) -> PathBuf {
-    let empty = fdl_core::vfs::read_dir(&dir).map(|mut r| r.all(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().starts_with('.')))).unwrap_or(true);
-    if crate::store::Store::is_library(&dir) || empty { dir } else { dir.join("Quiet.md") }
+    let broad = dir.parent().is_none() || dirs::home_dir().is_some_and(|h| h == dir);
+    if broad && !crate::store::Store::is_library(&dir) { dir.join("Quiet.md") } else { dir }
 }
 
 // ---- the view
@@ -914,5 +915,17 @@ mod tests {
         assert_eq!(found_name("Typora", &m.join("iCloud~abnerworks~Typora/Documents"), m), "Typora");
         assert_eq!(found_name("Obsidian", &m.join("iCloud~md~obsidian/Documents/Thesis"), m), "Thesis");
         assert_eq!(found_name("Obsidian", Path::new("/Users/me/Documents"), m), "Documents");
+    }
+
+    #[test]
+    fn a_picked_folder_is_the_library_itself() {
+        let dir = fdl_core::vfs::temp_dir().join(format!("qmd-library-in-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.md"), "# Notes").unwrap();
+        assert_eq!(super::library_in(dir.clone()), dir);
+        assert_eq!(super::library_in("/".into()), Path::new("/Quiet.md"));
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(super::library_in(home.clone()), home.join("Quiet.md"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

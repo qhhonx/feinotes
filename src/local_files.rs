@@ -101,7 +101,7 @@ impl Workspace {
         let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::ui::menu_row(id, SharedString::from(id)).child(icon(glyph, 16., Theme::icon())).child(label);
         let pos = if m.pos.x < px(0.) { point(-m.pos.x, m.pos.y + px(22.)) } else { m.pos };
         let shown = if cfg!(target_os = "macos") { tr("在访达中显示", "Show in Finder") } else if cfg!(target_os = "windows") { tr("在文件资源管理器中显示", "Show in File Explorer") } else { tr("在文件管理器中显示", "Show in File Manager") };
-        vec![deferred(anchored().position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("local-row-menu").occlude().w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
+        vec![deferred(anchored().position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("local-row-menu").occlude().min_w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
             .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }))
             .child(row("lr-import", "folder-input", tr("导入到文档库", "Import into library")).on_click(cx.listener(move |w, _, window, cx| w.import_local(&import, window, cx))))
             .child(row("lr-rename", "square-pen", tr("重命名", "Rename")).on_click(cx.listener(move |w, _, window, cx| w.start_rename(&rename, window, cx))))

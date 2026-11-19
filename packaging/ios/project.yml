@@ -122,7 +122,7 @@ targets:
         UpstreamPreview:
           PRODUCT_BUNDLE_IDENTIFIER: app.quietmd.cloudlab
           INFOPLIST_KEY_CFBundleDisplayName: 飞记·上游云体验
-          CURRENT_PROJECT_VERSION: "51"
+          CURRENT_PROJECT_VERSION: "52"
           PROVISIONING_PROFILE: $(FEI_UPSTREAM_DEVICE_PROFILE)
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: FEI_CLOUD_QA FEI_UPSTREAM_PREVIEW
           CODE_SIGN_ENTITLEMENTS: DevCloud.entitlements

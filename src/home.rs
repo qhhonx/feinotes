@@ -800,7 +800,9 @@ impl Workspace {
                 .child(text_btn("home-batch-exit", "x", crate::settings::text("退出"), true).ml(px(8.))
                     .tip(crate::settings::text("退出批量操作"), None)
                     .on_click(cx.listener(|w, _, _, cx| { w.batch = None; w.row_menu = None; cx.notify(); })))
-        } else { toolbar
+        } else { // Menu state at render: the popover's outside-press handler clears it on mouse-down, before a click
+            // would fire, so toggle on mouse-down from this snapshot.
+            let sort_open = self.home.sort_menu; toolbar
             .child(tab("home-tab-recent", crate::settings::text("我的文档"), HomeTab::Recent))
             .child(tab("home-tab-star", crate::settings::text("收藏"), HomeTab::Starred))
             .children({
@@ -818,7 +820,7 @@ impl Workspace {
                     .hover(|s| s.bg(Theme::fill_hover())).when(self.home.sort_menu, |d| d.bg(Theme::fill_hover_strong()))
                     .child(icon("sort-down", 14., Theme::icon())).child(crate::settings::label(self.home.order().label()))
                     .child(self.home.track("home-sort"))
-                    .on_click(cx.listener(|w, _, _, cx| { w.home.sort_menu = !w.home.sort_menu; cx.notify(); })),
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, _, cx| { cx.stop_propagation(); w.home.sort_menu = !sort_open; cx.notify(); })),
             )
             .child(self.view_switch(cx).ml(px(16.))) };
 
@@ -870,6 +872,7 @@ impl Workspace {
             );
         for c in &cols {
             let sorted = !matches!(self.home.order(), HomeSort::Title | HomeSort::Manual) && *c == sort;
+            let sort_open = self.home.sort_menu;
             header = header.child(
                 col_cell().pl(px(20.)).child(
                     div()
@@ -890,8 +893,9 @@ impl Workspace {
                         .when(sorted, |d| {
                             d.child(icon("sort-down", 12., Theme::icon()))
                                 .cursor_pointer()
-                                .on_click(cx.listener(|w, _, _, cx| {
-                                    w.home.sort_menu = !w.home.sort_menu;
+                                .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, _, cx| {
+                                    cx.stop_propagation();
+                                    w.home.sort_menu = !sort_open;
                                     cx.notify();
                                 }))
                         }),
@@ -984,14 +988,17 @@ impl Workspace {
             }).collect()
         }))
         // The last row's own 16 plus 32 more: 48 below the cards at the end,
-        // clear of the window's rounded corner.
+        // clear of the window's rounded corner. (32: GPUI 0.2's uniform_list
+        // counted its padding twice, and the cards end where that put them.)
         // The top padding sits inside the list's clip, so a folder's papers can
-        // rise above the first row without being cut off. (28 and 32: GPUI
-        // 0.2's uniform_list counted its padding twice, and the cards sit and
-        // end where that put them.)
-        .flex_1().min_h_0().pt(px(28.)).pb(px(32.));
+        // rise above the first row without being cut off — and that clip line is
+        // where a row scrolling out of sight stops. It used to sit 4pt higher,
+        // the list lifted into the tab row above it, so a scrolling row drew over
+        // 我的文档 / 收藏 and the buttons beside them (#238). 28 under that lift is
+        // 24 without it: the cards stay exactly where they were.
+        .flex_1().min_h_0().pt(px(24.)).pb(px(32.));
         let scroll = grid_scroll.0.borrow().base_handle.clone();
-        div().relative().flex_1().min_h_0().mt(px(-4.)).flex().flex_col()
+        div().relative().flex_1().min_h_0().flex().flex_col()
             .on_mouse_move(cx.listener(|w, ev: &MouseMoveEvent, _, cx| w.track_home_press(ev, cx)))
             .child(crate::gpui_compat::track_scroll(grid, grid_scroll)).child(self.home.grid_scrollbar.render(&scroll)).into_any_element()
     }
@@ -1100,7 +1107,7 @@ impl Workspace {
         };
         if self.home.sort_menu
             && let Some(b) = self.home.anchor("home-sort") {
-                let mut menu = popover().id("sort-menu").occlude().w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
+                let mut menu = popover().id("sort-menu").occlude().min_w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
                     .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.home.sort_menu = false; cx.notify(); }));
                 for (index, order) in [HomeSort::Manual, HomeSort::Visited, HomeSort::Modified, HomeSort::Created, HomeSort::Title].into_iter().enumerate() {
 

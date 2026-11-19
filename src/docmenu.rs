@@ -223,15 +223,24 @@ impl Workspace {
             })
         };
         let sub_bounds = self.doc_sub_bounds.clone();
+        // The menu follows its longest translation (#225); its rendered width
+        // (from the previous frame — a submenu only opens after one) places
+        // the submenus that open to its left.
+        let menu_w_record = self.doc_menu_w.clone();
+        let menu_w = move || {
+            let record = menu_w_record.clone();
+            canvas(move |b, _, _| record.set(Some(f32::from(b.size.width))), |_, _, _, _| {}).absolute().inset_0()
+        };
         let (pin_id, star_id, mv_id, del_id, dup_id, print_id) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
         let menu = popover()
             .id("doc-menu")
             .occlude()
-            .w(px(MENU_W))
+            .min_w(px(MENU_W))
             .py(px(PAD))
             .flex()
             .flex_col()
             .shadow(theme::shadow_s4_down())
+            .child(menu_w())
             .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
                 if sub_bounds.get().is_none_or(|b| !b.contains(&ev.position)) {
                     w.close_doc_menu(cx);
@@ -359,7 +368,7 @@ impl Workspace {
                 .into_any_element(),
         ];
         // Submenus open to the left, 4px from the menu, level with their item.
-        let sub_at = point(right - px(MENU_W + 4.), px(0.));
+        let sub_at = point(right - px(self.doc_menu_w.get().unwrap_or(MENU_W) + 4.), px(0.));
         let item_top = |k: usize, d: usize| f32::from(menu_top) + item_top(k, d);
         let extra_rows = usize::from(show_share) + usize::from(show_local_copy);
         let record = self.doc_sub_bounds.clone();
@@ -380,7 +389,7 @@ impl Workspace {
                     popover()
                         .id("dm-download-menu")
                         .occlude()
-                        .w(px(130.))
+                        .min_w(px(130.))
                         .px(px(5.))
                         .py(px(PAD))
                         .child(recorder())
@@ -394,7 +403,7 @@ impl Workspace {
                 popover()
                     .id("dm-more-menu")
                     .occlude()
-                    .w(px(210.))
+                    .min_w(px(210.))
                     .px(px(5.))
                     .py(px(PAD))
                     .child(recorder())

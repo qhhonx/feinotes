@@ -142,6 +142,9 @@ pub struct Preferences {
     pub last_new: String,
     /// 网页搜索 engine: "baidu", "bing", "duckduckgo"; empty is Google.
     pub search_engine: String,
+    /// 启动时打开: true shows the home page; false returns to the
+    /// document read last (#234).
+    pub start_home: bool,
     /// 打开链接: the browser a link opens in ("Safari", "Microsoft Edge"…),
     /// empty for the system default.
     pub browser: String,
@@ -179,7 +182,7 @@ fn system_lang() -> Lang {
 impl Default for Preferences {
     fn default() -> Self {
         let lang = system_lang();
-        Preferences { theme: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), browser: String::new(), opaque_window: false, ui_font: String::new(), migrate_later: 0 }
+        Preferences { theme: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), start_home: false, browser: String::new(), opaque_window: false, ui_font: String::new(), migrate_later: 0 }
     }
 }
 
@@ -225,6 +228,7 @@ pub fn load() {
 pub(crate) fn apply(p: Preferences) {
     FEISHU.store(p.feishu, Ordering::Relaxed);
     LANG.store(p.lang() as u8, Ordering::Relaxed);
+    crate::model::set_untitled(translate(crate::model::UNTITLED, p.lang()));
     MOTION_HIGH.store(p.motion == "high", Ordering::Relaxed);
     // Before the themes are read (startup) the base comes from `feishu`.
     themes::select(&p.theme_id());
@@ -998,6 +1002,9 @@ impl Workspace {
                         .relative()
                         .on_click(cx.listener(move |w, _, _, cx| { w.pref_menu = None; w.lang_menu = if w.lang_menu.is_some() { None } else { Some(current) }; cx.notify(); }))
                 }).into_any_element(),
+                row(tr("启动时打开", "On launch"), desc(tr("上次阅读的文档，或主页。", "The document read last, or the home page.")),
+                    segmented("pref-start", &[tr("上次文档", "Last document"), tr("主页", "Home page")], p.start_home as usize,
+                        |w, i, cx| w.set_pref(|p| p.start_home = i == 1, cx), cx)).into_any_element(),
                 row(tr("自动下载网络图片", "Download web images"), desc(if crate::FEI_NOTES {
                     tr("关闭后，网络图片显示为占位，可点击单独加载。", "When off, web images show a placeholder you can click to load.")
                 } else { tr("关闭后不联网，网络图片显示为占位，点击单独加载。", "When off the app stays offline; web images show a placeholder you can click to load.") }),
@@ -1173,8 +1180,7 @@ impl Workspace {
             .child(self.backup_rows(cx))
     }
 
-    /// 更改…: a folder picked as the next library; `library_in` decides
-    /// whether it is used as it is or gets a Quiet.md folder inside.
+    /// 更改…: a folder picked as the next library, used as it is (see `library_in`).
     fn pick_library(&mut self, cx: &mut Context<Self>) {
         if cfg!(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-restore")) { return; }
         let picked = crate::devtools::take_pick();
@@ -2332,10 +2338,7 @@ macro_rules! localized_format {
 }
 
 /// User titles are content, not translation keys.
-pub fn display_title(title: &str) -> String {
-    let title = title.trim();
-    if title.is_empty() { text(crate::model::UNTITLED).to_string() } else { title.to_string() }
-}
+pub fn display_title(title: &str) -> String { crate::model::display_title(title) }
 
 /// Core diagnostics stay independent of UI language. Only known message templates
 /// are translated here; captured paths, document IDs and OS errors are preserved.

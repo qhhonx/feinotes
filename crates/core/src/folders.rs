@@ -96,7 +96,10 @@ impl Store {
             anyhow::ensure!(self.index.get(anchor).is_some_and(|m| m.parent.as_deref() == parent) && self.index_has(anchor), "目标位置已改变，请重试");
             if anchor == id { return Ok(()); }
         }
-        let mut siblings: Vec<String> = self.index.iter().filter(|(k, m)| m.parent.as_deref() == parent && self.index_has(k)).map(|(k, _)| k.clone()).collect();
+        // Siblings straight from the index: a disk check per entry made an
+        // import of N files walk the whole library N times (#216); entries
+        // whose file vanished stay unlisted in `list` either way.
+        let mut siblings: Vec<String> = self.index.iter().filter(|(_, m)| m.parent.as_deref() == parent).map(|(k, _)| k.clone()).collect();
         // The sidebar's order (`Meta::place`, ties by id), so the numbers written
         // here match the order the drop was made in.
         siblings.sort_by(|ka, kb| (self.index[ka].place(), ka).cmp(&(self.index[kb].place(), kb)));

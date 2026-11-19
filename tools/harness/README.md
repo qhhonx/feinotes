@@ -117,3 +117,10 @@ with a delayed account check must retain a note entered before it completes.
 Build with `cloudkit-sync,devtools` and set `FDL_CLOUD_BIN` and
 `FDL_CLOUD_DYLD_PATH`; no real account or existing library is used. Account and
 device-marker mismatch checks also run in the cloud configuration unit tests.
+
+`python3 tools/harness/markdown_external.py` checks clean external Markdown
+refresh and defers replacement/autosave during IME composition. It uses a fresh
+file library, synthetic marked text and offscreen captures; `FDL_BIN` selects
+the devtools build. SQLite keeps its separate version and transaction checks.
+The last-read startup check reads FORMAT 4's temporary local reading state,
+separately from the portable document index.

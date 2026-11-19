@@ -2448,6 +2448,22 @@ pub(super) fn image_block_from_file(root: &Path, p: &Path) -> Result<Block, &'st
     image_block_named(root, &bytes, &ext, p.file_stem().and_then(|s| s.to_str()))
 }
 
+/// One line of pasted text that is nothing but a local image file path
+/// (`file://` counts): the file to take in, if it is really an image
+/// that exists. WeChat puts such a line in the pasteboard instead of
+/// image data (#252).
+pub(crate) fn local_image_path(line: &str) -> Option<PathBuf> {
+    let s = line.trim();
+    let s = s.strip_prefix("file://").unwrap_or(s);
+    let p = Path::new(s);
+    is_local_image_file(p).then(|| p.to_path_buf())
+}
+
+pub(super) fn is_local_image_file(p: &Path) -> bool {
+    let ext = p.extension().and_then(|x| x.to_str()).unwrap_or_default().to_ascii_lowercase();
+    p.is_absolute() && FORMATS.contains(&ext.as_str()) && p.fs_is_file()
+}
+
 /// File name of a remote image's download in `assets/remote`.
 fn remote_name(url: &str) -> String {
     let mut h = rustc_hash::FxHasher::default();
@@ -2592,7 +2608,7 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap, clipboard_image_data, decode, decode_png, pasted_remote, BAD_DIMS};
+    use super::{cap, clipboard_image_data, decode, decode_png, local_image_path, pasted_remote, BAD_DIMS};
     use crate::model::{Block, BlockKind, RichText};
     use gpui::ImageFormat;
 
@@ -2692,6 +2708,23 @@ mod tests {
         assert!(decode_png(&dir.join("rgb.png"), 4096).is_none());
         assert!(decode_png(&dir.join("missing.png"), 512).is_none());
         let _ = fdl_core::vfs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_image_path_takes_only_existing_image_files() {
+        let dir = std::env::temp_dir().join(format!("fdl-imgpath-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("shot.png");
+        std::fs::write(&png, b"not decoded, only named").unwrap();
+        let shown = png.display().to_string();
+        assert_eq!(local_image_path(&shown).as_deref(), Some(png.as_path()));
+        assert_eq!(local_image_path(&format!("  file://{shown}  ")).as_deref(), Some(png.as_path()));
+        // Not there, wrong type, or relative: text, not an image.
+        assert_eq!(local_image_path(&dir.join("gone.png").display().to_string()), None);
+        assert_eq!(local_image_path(&dir.join("notes.txt").display().to_string()), None);
+        assert_eq!(local_image_path("shot.png"), None);
+        assert_eq!(local_image_path("https://example.com/a.png"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

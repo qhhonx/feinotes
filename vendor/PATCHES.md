@@ -82,6 +82,7 @@ $V refresh                    # 用当前快照重写所有补丁的 diff（只�
 | 0032 cosmic-bundled-fonts | 43、38 | `gpui_wgpu/cosmic_text_system.rs` | `add_fonts` 加入的字形替换系统里同字族、同样式的已有字形（Fedora 的 COLRv1 Noto Color Emoji 让位给内置的 CBDT 版）；Xiaolai 没有 `m` 字形也加载。Linux 和网页 |
 | 0033 glyph-outline | 37、38 | `gpui/platform.rs`、`text_system.rs`、`gpui_apple/text_system.rs`、`gpui_windows/direct_write.rs`（加 `Win32_Graphics_Direct2D_Common`）、`gpui_wgpu/cosmic_text_system.rs`、`gpui_web/text_system.rs` | `WindowTextSystem::glyph_outline` 和 `GlyphOutlineCmd`：字形轮廓（字体单位、y 向上）。macOS 用 font-kit（合成斜体同样错切），Windows 用 DirectWrite `GetGlyphRunOutline`，Linux 和网页用 swash；网页的画布回退字体没有。画板的 CPU 渲染（vello）和旋转文字用它。macOS 加载没有 `m` 字形的 Xiaolai |
 | 0034 image-into-frames | 新 | `gpui/assets.rs` | `RenderImage::into_frames`：取回图片的帧。画板的 vello 帧每次画面变化新建一张图片，上一张 `drop_image` 后把它的缓冲取回，下一帧 vello 直接画进去（`src/board/render_vello.rs`），省掉每帧新分配和拷贝 12 MB |
+| 0035 macos-file-image-clipboard | 新 | `gpui_macos/pasteboard.rs` | 复制单个文件时保留剪贴板附带的位图，供编辑器粘贴微信等应用的图片。 |
 
 ## 没有再带的旧补丁
 
@@ -197,4 +198,4 @@ scripts/check.sh
 
 ## Fei Notes additions
 
-Patch `0035-feinotes-universal-links` ports the previous product `application:continueUserActivity:restorationHandler:` delegate callback to `gpui_macos`. Browsing activities enter the same URL handler as explicit URL opens, preserving CloudKit invitation handling. The old `vendor/gpui` layout is retired with upstream.
+Patch `0036-feinotes-universal-links` ports the previous product `application:continueUserActivity:restorationHandler:` delegate callback to `gpui_macos`. Browsing activities enter the same URL handler as explicit URL opens, preserving CloudKit invitation handling. The old `vendor/gpui` layout is retired with upstream.

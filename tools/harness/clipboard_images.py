@@ -31,6 +31,10 @@ pixels.save(work / "screenshot.tiff")
 pixels.save(work / "screenshot.png")
 (work / "text.txt").write_text("screenshot.png")
 (work / "rich.html").write_text("<p><b>Rich text</b></p>")
+# #252: a path in the pasteboard instead of image data (WeChat).
+(work / "path.txt").write_text(f"{work / 'screenshot.png'}")
+(work / "path-url.txt").write_text(f"file://{work / 'screenshot.png'}")
+(work / "mixed.txt").write_text(f"{work / 'screenshot.png'}\nnot a path")
 
 
 def run(name, clipboard, finish="", plain=False, expected_images=1, expected_text=None):
@@ -91,3 +95,8 @@ run("multiple", tiff + "\n" + png_text, expected_images=2)
 run("plain", png_text, plain=True, expected_images=0, expected_text="Beforescreenshot.pngAfter")
 run("rich_html", png_text + f"\nclip html {work / 'rich.html'}",
     expected_images=0, expected_text="BeforeRich textAfter")
+run("path_text", f"clip text {work / 'path.txt'}")
+run("path_url", f"clip text {work / 'path-url.txt'}")
+run("path_mixed", f"clip text {work / 'mixed.txt'}", expected_images=0)
+run("path_plain", f"clip text {work / 'path.txt'}", plain=True,
+    expected_images=0, expected_text=f"Before{work / 'screenshot.png'}After")

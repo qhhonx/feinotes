@@ -397,6 +397,11 @@ pub struct Workspace {
     pub doc_sub: Option<DocSub>,
     /// Last-frame bounds of the open submenu (clicks there keep the menu open).
     pub doc_sub_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Rendered width of the open 「…」 menu, for placing its submenus (#225).
+    pub doc_menu_w: Rc<Cell<Option<f32>>>,
+    /// The same for the sidebar row menu, whose 下载 submenu sits beside it
+    /// (#225).
+    pub row_menu_w: Rc<Cell<Option<f32>>>,
     pub doc_info: Option<DocInfo>,
     /// 版本历史 drawer, open for `HistoryView::id`.
     pub history: Option<crate::history::HistoryView>,
@@ -573,7 +578,7 @@ impl Workspace {
                 cx.notify();
                 if window.is_window_active() {
                     if !this.is_shared() && let Some(id) = &this.current { crate::quick_note::used(id, cx); }
-                    if !this.store.file_task_busy() { this.entries = this.store.list(); this.sort(); }
+                    if !this.store.file_task_busy() { this.entries = this.store.list(); this.sort(); this.refresh_markdown(cx); }
                     crate::update::check_if_stale(cx); cx.notify();
                 }
                 else if !this.store.file_task_busy() { this.remember_scroll(cx); if this.drop_pristine_draft(cx) { this.view = View::Home; } this.cancel_home_drag(cx); this.end_folder_drag(true, cx); this.cancel_shortcut_recording(cx); this.flush(cx); }
@@ -623,9 +628,22 @@ impl Workspace {
             let root = match this.update(cx, |w, _| w.store.root().to_path_buf()) { Ok(root) => root, Err(_) => return };
             let shape = || { let root = root.clone(); bg.spawn(async move { crate::store::Store::shape_at(&root) }) };
             let mut last = shape().await;
+            let mut last_file = None;
             loop {
                 bg.timer(Duration::from_secs(2)).await;
                 let now = shape().await;
+                let Ok(path) = this.update(cx, |w, _| w.current.as_ref()
+                    .filter(|id| !w.store.file_task_busy() && w.store.is_markdown(id))
+                    .and_then(|id| w.store.file_path(id))) else { break };
+                let file = bg.spawn(async move {
+                    let path = path?;
+                    let meta = fdl_core::vfs::metadata(&path).ok()?;
+                    Some((path, meta.modified().ok()?, meta.len()))
+                }).await;
+                if file != last_file {
+                    let _ = this.update(cx, |w, cx| w.refresh_markdown(cx));
+                    last_file = file;
+                }
                 if now == last { continue }
                 let reloaded = this.update(cx, |w, cx| {
                     // Not mid-rename: the row under the field would be rebuilt.
@@ -724,6 +742,8 @@ impl Workspace {
             doc_menu: false,
             doc_sub: None,
             doc_sub_bounds: Rc::new(Cell::new(None)),
+            doc_menu_w: Rc::new(Cell::new(None)),
+            row_menu_w: Rc::new(Cell::new(None)),
             doc_info: None,
             history: None,
             preview: None,
@@ -766,11 +786,14 @@ impl Workspace {
         ws.sort();
         ws.load_home();
         // An empty library opens on 主页's empty state; only a quick note
-        // window starts a document of its own.
-        match document.or_else(|| (!quick).then(|| ws.entries.first().map(|e| e.id.clone())).flatten()) {
-            Some(id) => {
-                if !ws.try_open(&id, window, cx) && ws.is_shared() { ws.view = View::Home; }
-            }
+        // window starts a document of its own. The last-read preference
+        // changes the document choice, preserving product open/access guards.
+        let document = document.or_else(|| (!quick && !crate::settings::prefs().start_home).then(|| {
+            ws.entries.iter().filter(|e| e.meta.opened > 0).max_by_key(|e| e.meta.opened)
+                .or_else(|| ws.entries.first()).map(|e| e.id.clone())
+        }).flatten());
+        match document {
+            Some(id) => { if !ws.try_open(&id, window, cx) { ws.view = View::Home; } }
             None if quick => ws.new_doc(window, cx),
             None => { ws.view = View::Home; crate::gpui_compat::focus(window,&ws.focus,cx); }
         }
@@ -939,7 +962,8 @@ impl Workspace {
                 this.file_history.prefer_files = false;
                 // 阅读模式 put the document back: nothing to save.
                 let rejected = this.editor.clone().is_some_and(|ed| ed.update(cx, |e, cx| e.reject_read_only_edit(cx)));
-                if !rejected {
+                let composing = this.editor.as_ref().is_some_and(|ed| ed.read(cx).marked.is_some());
+                if !rejected && !composing {
                     if this.draft.is_some() { this.unsaved = true; this.materialize_draft(cx); }
                     this.sync_document(window, cx);
                     this.schedule_save(window, cx);
@@ -952,7 +976,7 @@ impl Workspace {
                 cx.notify();
             }
             EditorEvent::Save => {
-                this.flush(cx);
+                if !this.flush(cx) { this.confirm = Some(Confirm::SaveFailed); cx.notify(); }
             }
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             EditorEvent::CloudUndo { redo } => {
@@ -1441,9 +1465,8 @@ impl Workspace {
         self.refresh_shared_entry(cx);
         self.save_task = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(delay).await;
-            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             loop {
-                match this.update(cx, |w, cx| w.editor.as_ref().is_some_and(|ed| ed.read(cx).composing())) {
+                match this.update(cx, |w, cx| w.editor.as_ref().is_some_and(|ed| ed.read(cx).marked.is_some())) {
                     Ok(true) => cx.background_executor().timer(SAVE_DELAY).await,
                     Ok(false) => break,
                     Err(_) => return,
@@ -1472,6 +1495,52 @@ impl Workspace {
                 notify_system(&display_title(&entry.title),&crate::editor::reminder::notification(reminder));
             }
         });
+    }
+
+    fn refresh_markdown(&mut self, cx: &mut Context<Self>) {
+        if self.preview.is_some() || self.store.file_task_busy() || matches!(self.confirm, Some(Confirm::SaveFailed)) { return }
+        let Some(id) = self.current.clone() else { return };
+        if !self.store.is_markdown(&id) || self.store.file_path(&id).is_none()
+            || self.editor.as_ref().is_some_and(|e| e.read(cx).marked.is_some()) { return }
+        if self.unsaved {
+            self.flush(cx);
+            return
+        }
+        // A newly opened sibling can be clean while its source view still has a pending edit.
+        if cx.windows().into_iter().filter_map(|h| h.downcast::<Workspace>()?.entity(cx).ok())
+            .filter(|p| p.entity_id() != cx.entity_id())
+            .any(|p| { let w = p.read(cx); w.store.root() == self.store.root() && w.current.as_ref() == Some(&id) && (w.unsaved || w.editor.as_ref().is_some_and(|e| e.read(cx).marked.is_some())) }) { return }
+        if let Ok(Some(doc)) = self.store.with(|s| s.refresh_markdown(&id)) {
+            self.adopt_markdown(&id, doc, cx);
+        }
+    }
+
+    /// All live views share the store's save baseline, so install the accepted
+    /// revision in each of them before a sibling's pending autosave can run.
+    fn adopt_markdown(&mut self, id: &str, doc: crate::model::Document, cx: &mut Context<Self>) {
+        let core = crate::editor::core::Core::new(doc);
+        let install = |w: &mut Self, cx: &mut Context<Self>| {
+            if let Some(p) = &mut w.preview { p.core = core.clone(); }
+            else if let Some(ed) = &w.editor { ed.update(cx, |e, cx| e.receive_markdown(&core, cx)); }
+            w.save_task = None;
+            w.unsaved = false;
+            w.dirty_since = None;
+            w.status = SaveStatus::Saved;
+            if let Some(entry) = w.entries.iter_mut().find(|e| e.id == id) {
+                entry.title = core.doc.title.text.clone();
+                entry.body = core.doc.plain_text().into();
+                entry.reminders = core.doc.reminders();
+                entry.links = core.doc.doc_links();
+            }
+            cx.notify();
+        };
+        install(self, cx);
+        for handle in cx.windows().into_iter().filter_map(|h| h.downcast::<Workspace>()) {
+            let Ok(peer) = handle.entity(cx) else { continue };
+            if peer.entity_id() != cx.entity_id() && peer.read(cx).store.root() == self.store.root() && peer.read(cx).current.as_deref() == Some(id) {
+                peer.update(cx, install);
+            }
+        }
     }
 
     /// Write the open document to disk if it has unsaved changes. False when
@@ -1503,7 +1572,7 @@ impl Workspace {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let result = crate::cloud_sync::save(&mut self.store, &id, &core, cx);
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-        let result = self.store.save(&id, doc).map(|meta| (meta, false));
+        let result = self.store.with(|s| s.save_editor(&id, doc)).map(|meta| (meta, false));
         match result {
             Ok((meta, held)) => {
                 if let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
@@ -1513,6 +1582,25 @@ impl Workspace {
                     e.reminders = reminders;
                     e.links = links;
                     e.meta = meta.clone();
+                }
+                // A mirrored edit was saved by this window. A sibling must not
+                // later write it a second time over a newer external edit.
+                if meta.markdown && self.store.file_path(&id).is_some() {
+                    for handle in cx.windows().into_iter().filter_map(|h| h.downcast::<Workspace>()) {
+                        let Ok(peer) = handle.entity(cx) else { continue };
+                        if peer.entity_id() == cx.entity_id() { continue }
+                        let w = peer.read(cx);
+                        if w.store.root() == self.store.root() && w.unsaved && w.current.as_ref() == Some(&id) && w.preview.is_none()
+                            && w.editor.as_ref().is_some_and(|e| e.read(cx).core.doc == ed.read(cx).core.doc) {
+                            peer.update(cx, |w, cx| {
+                                w.unsaved = false;
+                                w.dirty_since = None;
+                                w.save_task = None;
+                                w.status = SaveStatus::Saved;
+                                cx.notify();
+                            });
+                        }
+                    }
                 }
                 self.sync_links(cx);
                 ed.update(cx, |e, cx| {
@@ -1592,10 +1680,13 @@ impl Workspace {
             let Some(id) = self.current.clone() else { return };
             match self.store.load_for_edit(&id, false) {
                 Ok(doc) => {
-                    if let Some(ed) = &self.editor {
-                        ed.update(cx, |e, cx| e.receive_document(&crate::editor::core::Core::new(doc), cx));
+                    if self.store.is_markdown(&id) { self.adopt_markdown(&id, doc, cx); }
+                    else {
+                        if let Some(ed) = &self.editor {
+                            ed.update(cx, |e, cx| e.receive_document(&crate::editor::core::Core::new(doc), cx));
+                        }
+                        self.sync_document(window, cx);
                     }
-                    self.sync_document(window, cx);
                     self.save_task = None;
                     self.unsaved = false;
                     self.status = SaveStatus::Idle;
@@ -1853,6 +1944,7 @@ impl Workspace {
             ];
         }
         let record_more = self.more_btn_bounds.clone();
+        let doc_open = self.doc_menu;
         div()
             .id("top-bar").relative()
             .when_some(crate::ui::toolbar_color("toolbar.bg"), |d, c| d.bg(c))
@@ -1924,7 +2016,7 @@ impl Workspace {
 
                     )
                     .when_some(save_error, |d, error| d.child(
-                        div().min_w_0().max_w(px(220.)).text_size(px(12.)).line_height(px(18.))
+                        div().id("save-status-error").when(self.unsaved, |d| d.cursor_pointer().on_click(cx.listener(|w, _, _, cx| { w.confirm = Some(Confirm::SaveFailed); cx.notify(); }))).min_w_0().max_w(px(220.)).text_size(px(12.)).line_height(px(18.))
                             .text_color(theme::c(craft::R400)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(error),
                     ))
                     .when(collaboration_paused, |d| d.child(div().flex_none().text_size(px(12.))
@@ -1947,8 +2039,11 @@ impl Workspace {
                                 .when(self.doc_menu, |d| d.bg(crate::ui::toolbar_color("toolbar.button.hover").unwrap_or_else(Theme::fill_hover)))
                                 .when(!self.doc_menu, |d| d.tip(crate::settings::tr("更多", "More"), None))
                                 .child(canvas(move |b, _, _| record_more.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
-                                .on_click(cx.listener(|w, _, _, cx| {
-                                    w.doc_menu = !w.doc_menu;
+                                // Toggle on mouse-down from the render-time state: the menu's outside-press
+                                // handler has already cleared `doc_menu` by the time a click would fire.
+                                .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, _, cx| {
+                                    cx.stop_propagation();
+                                    w.doc_menu = !doc_open;
                                     w.doc_sub = None;
                                     cx.notify();
                                 })),

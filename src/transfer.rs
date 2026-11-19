@@ -524,7 +524,7 @@ impl Workspace {
             row(id, glyph, label).on_click(cx.listener(move |w, _, window, cx| w.open_import_kind(kind, parent.clone(), window, cx)))
         };
         Some(deferred(anchored().anchor(Anchor::TopRight).position(pos).snap_to_window_with_margin(px(8.)).child(
-            crate::ui::popover().id("import-items").occlude().w(px(210.)).py(px(crate::ui::MENU_PAD_Y))
+            crate::ui::popover().id("import-items").occlude().min_w(px(210.)).py(px(crate::ui::MENU_PAD_Y))
                 .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.import_menu = None; cx.notify(); }))
                 .child(item("import-md", "doc-md", crate::settings::tr("导入 Markdown 文件…", "Import Markdown Files…"), ImportKind::Markdown))
                 .child(item("import-folder", "folder", crate::settings::tr("导入文件夹…", "Import Folder…"), ImportKind::Folder))

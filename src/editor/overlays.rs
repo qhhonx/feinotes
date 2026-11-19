@@ -1512,7 +1512,7 @@ impl Editor {
 
         let drop_el: Option<AnyElement> = match dropdown {
             Some(Menu::TurnInto) => {
-                let mut list = menu().id("tb-turn-menu").occlude().w(px(200.)).py(px(MENU_PAD_Y)).max_h(turn_height).overflow_y_scroll().on_scroll(|_, _, cx| cx.stop_propagation());
+                let mut list = menu().id("tb-turn-menu").occlude().min_w(px(200.)).py(px(MENU_PAD_Y)).max_h(turn_height).overflow_y_scroll().on_scroll(|_, _, cx| cx.stop_propagation());
                 for (i, it) in TURN_ITEMS.iter().enumerate() {
                     let k = (it.kind)();
                     if self.markdown && matches!(k, BlockKind::Callout { .. }) {
@@ -1896,7 +1896,7 @@ impl Editor {
         let x_color = f32::min(x_align + 44. + 17. + 5. * 32., w - CALLOUT_PANEL_W - 2.).max(0.);
         let drop_el: Option<AnyElement> = match dropdown {
             Some(Menu::TurnInto) => {
-                let mut list = menu().id("ttb-turn-menu").occlude().w(px(200.)).py(px(MENU_PAD_Y)).max_h(turn_height).overflow_y_scroll().on_scroll(|_, _, cx| cx.stop_propagation());
+                let mut list = menu().id("ttb-turn-menu").occlude().min_w(px(200.)).py(px(MENU_PAD_Y)).max_h(turn_height).overflow_y_scroll().on_scroll(|_, _, cx| cx.stop_propagation());
                 for (i, it) in TURN_ITEMS.iter().enumerate() {
                     let k = (it.kind)();
                     if matches!(k, BlockKind::Callout { .. }) {

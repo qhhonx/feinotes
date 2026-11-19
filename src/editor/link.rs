@@ -492,7 +492,7 @@ impl Editor {
                 .absolute()
                 .left(px(CARD_MORE_X - 9. - 1.))
                 .top(px(1. + 8. + 24. + 2. - 1.))
-                .w(px(SUBMENU_W))
+                .min_w(px(SUBMENU_W))
                 .py(px(crate::editor_ui::MENU_PAD_Y))
                 .on_hover(cx.listener(|e, h: &bool, _, cx| e.card_over(2, *h, cx)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -591,7 +591,7 @@ impl Editor {
         menu()
             .id("tb-more-menu")
             .occlude()
-            .w(px(SUBMENU_W))
+            .min_w(px(SUBMENU_W))
             .py(px(crate::editor_ui::MENU_PAD_Y))
             .on_hover(cx.listener(|e, h: &bool, _, cx| e.tb_drop_over(Menu::TbMore, 1, *h, cx)))
             .child(menu_item("tm-search", "search", crate::settings::text("文档库内搜索")).on_click(cx.listener(|e, _, _, cx| {

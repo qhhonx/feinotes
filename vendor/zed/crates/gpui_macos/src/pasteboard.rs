@@ -80,6 +80,7 @@ impl Pasteboard {
                     }
                 }
                 if !paths.is_empty() {
+                    let single_file = paths.len() == 1;
                     let mut entries = vec![ClipboardEntry::ExternalPaths(ExternalPaths(paths))];
 
                     // Also include the string representation so text editors can
@@ -88,6 +89,11 @@ impl Pasteboard {
                         entries.push(string_item);
                     }
 
+                    // quiet.md: WeChat also supplies the bitmap when its
+                    // temporary file is outside the receiving app's access.
+                    if single_file {
+                        self.append_image(&mut entries);
+                    }
                     return Some(ClipboardItem { entries });
                 }
             }
@@ -100,13 +106,17 @@ impl Pasteboard {
             if let Some(string_entry) = self.read_string_from_pasteboard() {
                 entries.push(string_entry);
             }
-            for format in ImageFormat::iter() {
-                if let Some(item) = self.read_image(format) {
-                    entries.extend(item.entries);
-                    break;
-                }
-            }
+            self.append_image(&mut entries);
             (!entries.is_empty()).then_some(ClipboardItem { entries })
+        }
+    }
+
+    fn append_image(&self, entries: &mut Vec<ClipboardEntry>) {
+        for format in ImageFormat::iter() {
+            if let Some(item) = self.read_image(format) {
+                entries.extend(item.entries);
+                break;
+            }
         }
     }
 
