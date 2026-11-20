@@ -13,6 +13,30 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
     primary.update(cx, |_, window, _| crate::devtools::select_script_window(window))?;
     if name.starts_with("folder-sidebar-") { return folder_sidebar_step(name, &root, primary, cx); }
     match name {
+        "document-status-list" | "document-status-grid" | "document-status-search" | "document-status-menu-open" =>
+            primary.update(cx, |ws,window,cx| -> Result<()> {
+                let entry = ws.entries.iter().find(|entry| entry.title.starts_with("长标题验收"))
+                    .context("Missing the long document-title fixture")?;
+                ensure!(entry.meta.pinned && ws.document_has_shared_status(entry, cx), "Fixture must be pinned and shared");
+                match name {
+                    "document-status-search" => {
+                        ws.open_search(window,cx);
+                        ws.search.update(cx, |field,cx| field.set_text("长标题验收",cx));
+                    }
+                    "document-status-menu-open" => {
+                        ensure!(ws.row_menu.as_ref().is_some_and(|menu| menu.id == entry.id),
+                            "The separate ellipsis did not open the document menu");
+                    }
+                    _ => {
+                        ws.sidebar_open = true;
+                        ws.folded[1] = false;
+                        ws.home.tab = crate::home::HomeTab::Recent;
+                        ws.home.grid = name.ends_with("grid");
+                        ws.show_view(View::Home,cx);
+                    }
+                }
+                Ok(())
+            })??,
         name if name.starts_with("personal-sync-") => primary.update(cx, |ws,window,cx| -> Result<()> {
             if let Some(phase) = name.strip_prefix("personal-sync-").and_then(cloud_sync::personal_status_fixture) {
                 ensure!(root.join("pause-cloud").is_file(), "Expected a paused synthetic cloud session");

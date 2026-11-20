@@ -67,9 +67,10 @@ pub(crate) fn folder_color() -> Hsla { crate::themes::active().color("sidebar.fo
 pub(crate) fn hover() -> Hsla { crate::themes::active().color("sidebar.hover").unwrap_or_else(Theme::sidebar_hover) }
 pub(crate) fn selection_fill() -> Hsla { crate::themes::active().color("sidebar.selected").unwrap_or_else(Theme::sidebar_selected) }
 
-#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-pub(crate) fn shared_document_icon() -> Svg {
-    icon("shared-document", 15., Theme::icon())
+pub(crate) fn shared_document_badge() -> Stateful<Div> {
+    div().id("shared-document-status").flex_none().flex().items_center()
+        .child(icon("shared-document", 14., Theme::text_caption()))
+        .tip(crate::settings::tr("已共享", "Shared"), None)
 }
 
 pub(crate) fn shared_unread_dot() -> Div { div().size(px(6.)).flex_none().rounded_full().bg(Theme::primary()) }
@@ -666,12 +667,14 @@ impl Workspace {
     }
 
     pub(crate) fn more_button(&self, e: &Entry, key: &str, cx: &mut Context<Self>) -> Stateful<Div> {
-        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        if matches!(key, "doc" | "pinned" | "shared-pinned") && self.published_document_share(e, cx) {
-            return self.more_button_with_status(e, key, Some(div().child(shared_document_icon())), cx)
-                .tip(crate::settings::tr("已共享", "Shared"), None);
-        }
         self.more_button_with_status(e, key, None, cx)
+    }
+
+    pub(crate) fn document_has_shared_status(&self, entry: &Entry, cx: &App) -> bool {
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        { self.published_document_share(entry, cx) }
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+        { let _ = (entry, cx); false }
     }
 
     pub(crate) fn more_button_with_status(&self, e: &Entry, key: &str, status: Option<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -761,8 +764,9 @@ impl Workspace {
         self.rename.as_ref().filter(|r| r.id == id && r.sidebar_section.is_none_or(|origin| origin == section))
     }
 
-    pub(crate) fn sidebar_title(&self, e: &Entry, section: SidebarSection, selected: bool, drop_target: bool) -> AnyElement {
+    pub(crate) fn sidebar_title(&self, e: &Entry, section: SidebarSection, selected: bool, drop_target: bool, cx: &App) -> AnyElement {
         let renaming = self.sidebar_rename(&e.id, section).map(|r| r.field.clone());
+        let title = display_title(&e.title);
         match renaming {
             // The field opens with the text exactly where the name was (2 + 1 + 6 = the
             // label's 9): a white well with a thin edge, wrapped in a soft focus ring.
@@ -800,14 +804,16 @@ impl Workspace {
                 .pl(px(9.))
                 .flex_1()
                 .min_w_0()
+                .flex()
+                .items_center()
                 .text_size(px(theme::ui_font()))
                 .line_height(px(DOC_ROW_H))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
                 .text_color(if selected { self.sidebar_selection_text(e.meta.folder.is_some()) } else if drop_target { Theme::text() } else { text_color() })
                 .when(selected, |d| d.when_some(crate::themes::active().num_override("sidebar.selected.weight"), |d, w| d.font_weight(FontWeight(w))))
-                .child(ui_text(display_title(&e.title)))
+                .child(crate::ui::document_title(&title).child(ui_text(title)))
+                .when(matches!(section, SidebarSection::Personal | SidebarSection::Pinned) && self.document_has_shared_status(e, cx), |d| {
+                    d.child(shared_document_badge().ml(px(6.)))
+                })
                 .into_any_element(),
         }
     }
@@ -829,9 +835,7 @@ impl Workspace {
         let menu_open = self.row_menu.as_ref().is_some_and(|m| m.id == e.id && !m.batch && m.pos.x < px(0.))
             || self.create_menu.as_ref().is_some_and(|(item, _)| target.as_ref() == Some(item));
         let give = if float { (if folder { 74. } else { 28. }) * if menu_open { 1. } else { self.folder_drag.reveal(&e.id) } } else { 0. };
-        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let give = if float && self.published_document_share(e, cx) { give.max(28.) } else { give };
-        let title = div().flex_1().min_w_0().flex().mr(px(give)).child(self.sidebar_title(e, section, selected, drop_target));
+        let title = div().flex_1().min_w_0().flex().mr(px(give)).child(self.sidebar_title(e, section, selected, drop_target, cx));
         // 批量操作: 我的文档 rows get a checkbox and lose "…"; checked rows are tinted.
         let batch = self.batch.as_ref().filter(|_| key == "doc" && !self.shared_batch());
         let checked = batch.is_some_and(|b| b.contains(&e.id));

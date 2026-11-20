@@ -85,6 +85,15 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
         fs::write(room_root(&personal, &room.scope.note)?.join("seed-published"), b"synthetic shared owner")?;
         store.trash_sqlite_folder(&folder)?;
     }
+    if std::env::var_os("QUIET_SYNC_QA_DOCUMENT_STATUS").is_some() {
+        let mut store = Store::open_sqlite_at(personal.clone())?;
+        let title = "长标题验收 · 从主页到搜索都应能看懂这个文档的共享与置顶状态 · 窄窗口里仍能打开更多操作 · Windows, Mac and Mobile document title layout · 第四季度工作记录";
+        let document = store.create_from(&Document { title: crate::model::RichText::plain(title),
+            blocks: vec![crate::model::Block::text("仅供测试的正文。")], ..Default::default() })?;
+        store.update_meta(&document, |meta| { meta.pinned = true; meta.root_order = Some(0); })?;
+        let room = original::prepare_local(&personal, &document, title.into(), false)?;
+        fs::write(room_root(&personal, &room.scope.note)?.join("seed-published"), b"synthetic shared owner")?;
+    }
     fs::write(root.join("pause-cloud"), b"isolated local session regression")?;
     fs::write(root.join("qa-session-rooms.json"), serde_json::to_vec(&rooms)?)?;
     Ok(personal)

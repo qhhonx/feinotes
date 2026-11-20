@@ -700,11 +700,6 @@ impl Workspace {
         let id = e.id.clone();
         let (rec, k2) = (self.more_bounds.clone(), key.clone());
         let open = self.row_menu.as_ref().is_some_and(|m| m.id == e.id && m.pos.x > px(0.) && m.corner == Corner::TopRight);
-        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let badge = !self.home.shared() && self.published_document_share(e, cx) && !open;
-        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-        let badge = false;
-        let group = if key.starts_with("home-gmore-") { "home-card" } else { "home-document-row" };
         div()
             .id(SharedString::from(key.clone()))
             .relative()
@@ -717,16 +712,7 @@ impl Workspace {
             .cursor_pointer()
             .hover(|s| s.bg(Theme::fill_hover_strong()))
             .when(open, |d| d.bg(Theme::fill_hover_strong()))
-            .child(div().flex().items_center().when(badge, |d| d.opacity(0.).group_hover(group, |s| s.opacity(1.)))
-                .child(icon("ellipsis", 16., Theme::icon())))
-            .map(|d| {
-                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                return d.when(badge, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center()
-                    .group_hover(group, |s| s.opacity(0.)).child(crate::sidebar::shared_document_icon()))
-                    .tip(crate::settings::tr("已共享", "Shared"), None));
-                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-                d
-            })
+            .child(icon("ellipsis", 16., Theme::icon()))
             .child(canvas(move |b, _, _| {
                 rec.borrow_mut().insert(key.clone(), b);
             }, |_, _, _, _| {}).absolute().inset_0())
@@ -1016,11 +1002,11 @@ impl Workspace {
         }
         for (i, e) in entries.iter().enumerate() {
             let (id, id2) = (e.id.clone(), e.id.clone());
+            let title = display_title(&e.title);
             let menu_on = self.row_menu.as_ref().is_some_and(|m| m.id == e.id);
             let check = self.home_check(e);
             let mut row = div()
                 .id(SharedString::from(format!("home-row-{}", e.id)))
-                .group("home-document-row")
                 .h(px(56.))
                 .flex()
                 .items_center()
@@ -1044,7 +1030,10 @@ impl Workspace {
                         .items_center()
                         .when(self.batch.is_some(), |d| d.child(div().w(px(14.)).mr(px(12.)).flex_none().children(check)))
                         .child(entry_icon(e, !self.home.shared() && !self.is_shared(), cx))
-                        .child(div().min_w_0().text_size(px(15.)).line_height(px(22.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(display_title(&e.title))))
+                        .child(crate::ui::document_title(&title).text_size(px(15.)).line_height(px(22.)).child(ui_text(title)))
+                        .when(!self.home.shared() && self.document_has_shared_status(e, cx), |d| {
+                            d.child(crate::sidebar::shared_document_badge().ml(px(6.)))
+                        })
                         .when(e.meta.pinned, |d| d.child(icon("pin-filled", 14., Theme::pinned()).ml(px(6.))))
                         .children({
                             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -1110,10 +1099,10 @@ impl Workspace {
     /// in a folder that show one (`home_folder.rs`). `pad`: its margin.
     pub(crate) fn thumb_page(&self, e: &Entry, pad: f32) -> Div {
         let thumb = self.thumb(e);
-        self.thumb_page_with(e, &thumb, pad)
+        self.thumb_page_with(e, &thumb, pad, false)
     }
 
-    fn thumb_page_with(&self, e: &Entry, thumb: &Thumb, pad: f32) -> Div {
+    fn thumb_page_with(&self, e: &Entry, thumb: &Thumb, pad: f32, shared: bool) -> Div {
         if thumb.blocks.is_empty() && e.title.trim().is_empty() {
                 div()
                     .size_full()
@@ -1122,12 +1111,21 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .child(img("illus/blank-doc.svg").size(px(64.)))
-                    .child(div().mt(px(4.)).text_size(px(14.)).line_height(px(22.)).text_color(Theme::text_placeholder()).child(crate::settings::text("空白文档")))
+                    .child(div().mt(px(4.)).flex().items_center().gap(px(6.)).text_size(px(14.)).line_height(px(22.))
+                        .text_color(Theme::text_placeholder()).child(crate::settings::text("空白文档"))
+                        .when(shared, |d| d.child(crate::sidebar::shared_document_badge())))
             } else {
                 let mut p = div().size_full().p(px(pad)).overflow_hidden().flex().flex_col();
                 p = p.child(div().flex_none().flex().items_start().gap(px(6.)).mb(px(8.))
                     .when_some(e.icon.as_ref(), |d, emoji| d.child(div().flex_none().text_size(px(14.)).line_height(px(20.)).child(emoji.clone())))
-                    .child(div().min_w_0().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::BOLD).child(e.title.clone())));
+                    .child(if shared {
+                        crate::ui::document_title(&e.title).text_size(px(14.)).line_height(px(20.))
+                            .font_weight(FontWeight::BOLD).child(ui_text(e.title.clone())).into_any_element()
+                    } else {
+                        div().min_w_0().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::BOLD)
+                            .child(e.title.clone()).into_any_element()
+                    })
+                    .when(shared, |d| d.pr(px(16.)).child(crate::sidebar::shared_document_badge().mt(px(3.)))));
                 // A 画板: its board, drawn to fit the rest of the card.
                 if e.meta.kind == crate::store::DocKind::Board {
                     let board = thumb.blocks.iter().find_map(|b| match &b.kind { BlockKind::Board(bd) => Some(bd.clone()), _ => None }).unwrap_or_default();
@@ -1147,13 +1145,10 @@ impl Workspace {
             let id = e.id.clone();
             let id2 = e.id.clone();
             let thumb = self.thumb(e);
-            let page = self.thumb_page_with(e, &thumb, 18.);
+            let shared = !self.home.shared() && self.document_has_shared_status(e, cx);
+            let page = self.thumb_page_with(e, &thumb, 18., shared);
             let radius = 32.;
             let menu_on = self.row_menu.as_ref().is_some_and(|m| m.id == e.id);
-            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-            let shared_badge = !self.home.shared() && self.published_document_share(e, cx);
-            #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-            let shared_badge = false;
             let check = self.home_check(e);
             let arm = e.id.clone();
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -1196,7 +1191,7 @@ impl Workspace {
                     .when_some(check, |d, c| d.child(div().absolute().top(px(12.)).left(px(12.)).child(c)))
                     .when(self.batch.is_none(), |d| d.child(
                         div().absolute().top(px(8.)).right(px(8.))
-                            .when(!menu_on && !shared_badge, |d| d.opacity(0.).group_hover("home-card", |s| s.opacity(1.)))
+                            .when(!menu_on, |d| d.opacity(0.).group_hover("home-card", |s| s.opacity(1.)))
                             .child(self.home_more(e, format!("home-gmore-{}", e.id), cx).rounded_full().bg(Theme::bg_overlay())),
                     ))
             .into_any_element()

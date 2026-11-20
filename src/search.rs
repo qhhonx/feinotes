@@ -212,14 +212,13 @@ pub(crate) fn result_info(e: &Entry, shared: bool, received_share: bool, q: &str
         .overflow_hidden()
         .child(
             div()
-                .text_size(px(13.))
-                .line_height(px(20.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(Theme::text())
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .child(ui_text(title).hit(title_hit, Theme::link())),
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(crate::ui::document_title(&title).text_size(px(13.)).line_height(px(20.))
+                    .font_weight(FontWeight::SEMIBOLD).text_color(Theme::text())
+                    .child(ui_text(title).hit(title_hit, Theme::link())))
+                .when(shared && e.meta.folder.is_none(), |d| d.child(crate::sidebar::shared_document_badge())),
         )
         .children(summary.map(|(text, hits)| div().text_size(px(12.)).line_height(px(20.)).child(summary_text(text, hits, width, window))))
         .child(extra_line(e, shared, received_share))
@@ -334,7 +333,7 @@ impl Workspace {
             .child(entry_icon(e, cx))
             .child(result_info(e, {
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                { self.shared_list_room(&e.id, cx).is_some() }
+                { self.document_has_shared_status(e, cx) || self.shared_list_room(&e.id, cx).is_some() }
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { false }
             }, {

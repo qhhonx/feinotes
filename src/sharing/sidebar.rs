@@ -47,11 +47,17 @@ impl Workspace {
 
     pub(crate) fn shared_shortcut_row(&self, entry: &Entry, cx: &mut Context<Self>) -> Stateful<Div> {
         let id = entry.id.clone();
+        let title = display_title(&entry.title);
         div().id(SharedString::from(format!("shared-pinned-{id}"))).group("doc-row").h(px(crate::sidebar::ROW_H)).mb(px(crate::sidebar::ROW_GAP))
             .pl(px(6.)).flex().items_center().gap(px(9.)).rounded(px(crate::sidebar::ROW_R)).cursor_pointer()
             .text_size(px(crate::theme::ui_font())).text_color(crate::sidebar::text_color()).hover(|s| s.bg(crate::sidebar::hover()))
             .when(self.sidebar_row_selected(SidebarSection::Pinned, &id), |d| d.bg(crate::sidebar::selection_fill()))
-            .child(crate::sidebar::entry_icon(entry, self.viewing_shared_folder(&id, cx), true, cx)).child(div().flex_1().min_w_0().truncate().child(display_title(&entry.title)))
+            .child(crate::sidebar::entry_icon(entry, self.viewing_shared_folder(&id, cx), true, cx))
+            .child(div().flex_1().min_w_0().flex().items_center()
+                .child(crate::ui::document_title(&title).child(crate::ui::ui_text(title)))
+                .when(self.document_has_shared_status(entry, cx), |d| {
+                    d.child(crate::sidebar::shared_document_badge().ml(px(6.)))
+                }))
             .child(self.more_button(entry, "shared-pinned", cx))
             .on_mouse_down(MouseButton::Right, cx.listener({ let id = id.clone(); move |w, event: &MouseDownEvent, _, cx| {
                 w.row_menu = Some(crate::app::RowMenu { id: format!("shared:{id}"), pos: event.position, corner: Corner::TopLeft, sub: false, batch: false }); cx.notify();
@@ -234,7 +240,7 @@ impl Workspace {
                             w.sharing.sidebar.icon_press = true; w.sharing.sidebar.icon_alt = ev.modifiers.alt;
                         }))))
                 .child(div().flex_1().min_w_0().flex().mr(px(title_reserve))
-                    .child(self.sidebar_title(entry, SidebarSection::Shared, selected, false)))
+                    .child(self.sidebar_title(entry, SidebarSection::Shared, selected, false, cx)))
                 .when(!batch && (!member || cfg!(target_os = "macos")), |d| d
                     .on_mouse_down(MouseButton::Right, cx.listener(move |w, event: &MouseDownEvent, _, cx| {
                         w.row_menu = Some(crate::app::RowMenu { id: menu_id.clone(), pos: event.position, corner: Corner::TopLeft, sub: false, batch: false });
@@ -265,7 +271,7 @@ impl Workspace {
                 slot.child(crate::sidebar::checkbox(if checked { crate::sidebar::Check::On } else { crate::sidebar::Check::Off }, blocked, "doc-row")))))
             .when(batch && !member && checked, |d| d.bg(crate::sidebar::selection_fill()))
             .child(crate::sidebar::entry_icon(entry, false, false, cx))
-            .child(self.sidebar_title(entry, SidebarSection::Shared, selected, false))
+            .child(self.sidebar_title(entry, SidebarSection::Shared, selected, false, cx))
             .children(end)
             .when(!member, |d| d.on_mouse_down(MouseButton::Right, cx.listener({ let id = id.clone(); move |w, event: &MouseDownEvent, _, cx| {
                 if w.batch.is_some() && !w.batch.as_ref().is_some_and(|ids| ids.contains(&id)) { w.toggle_check(&id); }

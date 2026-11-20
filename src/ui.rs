@@ -342,7 +342,26 @@ fn tip_bg() -> Hsla { if theme::dark() { theme::rgbaf(0x3a, 0x3b, 0x3d, 1.) } el
 
 impl Render for Tooltip {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let lines: Vec<SharedString> = self.label.split('\n').map(|l| SharedString::from(l.to_string())).collect();
+        let vp = window.viewport_size();
+        let mut style = window.text_style();
+        style.font_family = theme::UI_FONT.into();
+        #[cfg(target_os = "ios")]
+        let lines: Vec<SharedString> = self.label.split('\n').map(|line| line.to_owned().into()).collect();
+        #[cfg(not(target_os = "ios"))]
+        let lines = {
+            let max_width = (vp.width - px(40.)).clamp(px(32.), px(480.));
+            let mut wrapper = window.text_system().line_wrapper(style.font(), px(12.));
+            let mut lines = Vec::new();
+            for line in self.label.split('\n') {
+                let mut start = 0;
+                for boundary in wrapper.wrap_line(&[LineFragment::text(line)], max_width) {
+                    lines.push(SharedString::from(line[start..boundary.ix].to_owned()));
+                    start = boundary.ix;
+                }
+                lines.push(SharedString::from(line[start..].to_owned()));
+            }
+            lines
+        };
         let bubble = div()
             .px(px(10.))
             .py(px(6.))
@@ -361,8 +380,6 @@ impl Render for Tooltip {
         };
         // 10px from the trigger with an arrow pointing at it, on the preferred
         // side unless it doesn't fit, and kept inside the window.
-        let mut style = window.text_style();
-        style.font_family = theme::UI_FONT.into();
         let text_w = lines
             .iter()
             .map(|l| {
@@ -372,7 +389,6 @@ impl Render for Tooltip {
             .fold(px(0.), |a, b| a.max(b));
         let w = text_w + px(20.);
         let h = px(TIP_PAD + TIP_LINE * lines.len() as f32);
-        let vp = window.viewport_size();
         let gap = px(TIP_GAP);
         let s = px(TIP_ARROW);
         // (bubble origin, arrow base centre, arrow direction)
@@ -542,6 +558,11 @@ impl TipExt for Stateful<Div> {
             cx.new(|_| Tooltip { label, anchor, origin, side }).into()
         })
     }
+}
+
+pub(crate) fn document_title(title: &str) -> Stateful<Div> {
+    div().id("document-title").relative().min_w_0().truncate()
+        .tip_label(title.to_owned(), TipSide::Below)
 }
 
 /// Human-friendly modification time ("今天 14:03", "昨天", "10月3日").

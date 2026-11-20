@@ -206,11 +206,9 @@ impl Workspace {
                                     None => doc_icon(),
                                 }
                             })
-                            .child(div().min_w_0().text_size(px(15.)).line_height(px(22.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(title)))
+                            .child(crate::ui::document_title(&title).text_size(px(15.)).line_height(px(22.)).child(ui_text(title)))
                             .when(!t.folder && t.share_root.is_some(), |d| {
-                                d.child(div().id("trash-shared-mark").ml(px(8.)).flex_none()
-                                    .tip(crate::settings::tr("已共享", "Shared"), None)
-                                    .child(icon("shared-document", 15., Theme::text_caption())))
+                                d.child(crate::sidebar::shared_document_badge().ml(px(6.)))
                             }),
                     )
                     .child(
