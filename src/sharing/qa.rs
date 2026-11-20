@@ -12,6 +12,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
     let primary = handles[0];
     primary.update(cx, |_, window, _| crate::devtools::select_script_window(window))?;
     if name.starts_with("folder-sidebar-") { return folder_sidebar_step(name, &root, primary, cx); }
+    if let Some(action) = name.strip_prefix("move-matrix-") { return move_matrix(action, primary, cx); }
     match name {
         "document-status-list" | "document-status-grid" | "document-status-search" | "document-status-menu-open" =>
             primary.update(cx, |ws,window,cx| -> Result<()> {
@@ -816,6 +817,178 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
         _ => anyhow::bail!("Unknown sharing UI QA step"),
     }
     Ok(())
+}
+
+fn move_matrix(action: &str, primary: WindowHandle<Workspace>, cx: &mut App) -> Result<()> {
+    use crate::home::HomeTab;
+    if matches!(action, "document-move-click" | "document-target-click" | "document-confirm-click") {
+        let ws = primary.read(cx)?;
+        let anchor = match action {
+            "document-move-click" => "qa-document-move".to_owned(),
+            "document-target-click" => "qa-move-first-hit".to_owned(),
+            _ => "qa-move-confirm".to_owned(),
+        };
+        let at = ws.home.anchor(&anchor).context(format!("Move control did not render: {anchor}"))?.center();
+        cx.update_window(primary.into(), |_, window, cx| {
+            let modifiers = Modifiers::default();
+            window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1, first_mouse: false }), cx);
+            window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1 }), cx);
+        })?;
+        return Ok(());
+    }
+    primary.update(cx, |ws,window,cx| -> Result<()> {
+        ensure!(std::env::var_os("QUIET_SYNC_QA_MOVE_MATRIX").is_some(), "Move matrix requires isolated fixtures");
+        fn id(entries: &[crate::store::Entry], title: &str) -> Result<String> {
+            Ok(entries.iter().find(|entry| entry.title == title).with_context(|| format!("Missing fixture {title}"))?.id.clone())
+        }
+        fn pair(entries: &[crate::store::Entry], prefix: &str) -> Result<Vec<String>> {
+            ["document","folder"].into_iter().map(|kind| id(entries,&format!("{prefix} moving {kind}"))).collect()
+        }
+        let shared_entries = ws.shared_sidebar_entries(cx);
+        let personal_entries = ws.personal_navigation_entries(cx);
+        match action {
+            "setup" => {
+                ws.sidebar_open = true;
+                ws.folded[1] = false;
+                ws.sharing.folded = false;
+                ws.expanded.insert(id(&personal_entries,"Move personal source")?);
+                for title in ["Move shared A","Move shared A source"] {
+                    ws.expanded.insert(id(&personal_entries,title)?);
+                    ws.sharing.expanded.insert(id(&shared_entries,title)?);
+                }
+                ws.home.tab = HomeTab::Recent;
+                ws.navigate_home(window,cx);
+            }
+            "drag-personal-document" | "drag-personal-folder" | "drag-shared-document" | "drag-shared-folder" => {
+                let shared = action.starts_with("drag-shared");
+                let entries = if shared { &shared_entries } else { &personal_entries };
+                let prefix = if shared { "Move shared A" } else { "Move personal" };
+                let kind = action.rsplit('-').next().unwrap();
+                let source = id(entries,&format!("{prefix} moving {kind}"))?;
+                let target = id(entries,&format!("{prefix} target"))?;
+                let from = ws.qa_sidebar_point(shared,&source,false).context("Source row must be visible")?;
+                let to = ws.qa_sidebar_point(shared,&target,false).context("Destination row must be visible")?;
+                ws.with_sidebar(shared, |ws| {
+                    ws.arm_folder_drag(&source,from,cx);
+                    ws.move_folder_drag(to,window,cx);
+                    ws.end_folder_drag(false,window,cx);
+                });
+            }
+            "verify-personal-drag" | "verify-personal-root" => {
+                ensure!(!ws.is_shared(),"Expected personal library");
+                let entries = ws.store.list();
+                let target = id(&entries,"Move personal target")?;
+                let expected = (action == "verify-personal-drag").then_some(&target);
+                for item in pair(&entries,"Move personal")? {
+                    ensure!(entries.iter().any(|entry| entry.id == item && entry.meta.parent.as_ref() == expected),
+                        "Wrong personal destination after {action}");
+                }
+                eprintln!("MOVE_MATRIX_OK {action}");
+            }
+            "personal-root" => ws.move_docs(&pair(&personal_entries,"Move personal")?,None,cx),
+            "personal-into-share" => {
+                ws.move_docs(&pair(&personal_entries,"Move personal")?,Some(id(&personal_entries,"Move shared B target")?),cx);
+                ensure!(matches!(ws.sharing.sheet,Some(Sheet::MoveInto(..))),"Moving into a share must first confirm who gains access");
+                ws.submit_sharing(window,cx);
+            }
+            "verify-personal-into-share" => {
+                let entries = ws.store.list();
+                let scope = id(&entries,"Move shared B")?;
+                let target = id(&entries,"Move shared B target")?;
+                let room = ws.shared_list_room(&scope,cx).context("Missing destination share")?;
+                let shared = shared::store_for(&room,cx)?.list();
+                let folder = id(&entries,"Move personal moving folder")?;
+                let child = id(&entries,"Move personal child")?;
+                for item in pair(&entries,"Move personal")? {
+                    ensure!(entries.iter().any(|entry| entry.id == item && entry.meta.parent.as_ref() == Some(&target) && entry.meta.share_root.as_ref() == Some(&scope))
+                        && shared.iter().any(|entry| entry.id == item && entry.meta.parent.as_ref() == Some(&target)), "Real move missed the shared catalogue");
+                }
+                ensure!(shared.iter().any(|entry| entry.id == child && entry.meta.parent.as_ref() == Some(&folder)), "Shared move split the subtree");
+                eprintln!("MOVE_MATRIX_OK {action}");
+            }
+            "drag-projected-to-personal" | "drag-projected-to-personal-folder" => {
+                let kind = if action.ends_with("folder") { "folder" } else { "document" };
+                let source = id(&personal_entries, &format!("Move shared A moving {kind}"))?;
+                let target = id(&personal_entries, "Move personal target")?;
+                let from = ws.qa_sidebar_point(false, &source, false).context("Projected row must be visible")?;
+                let to = ws.qa_sidebar_point(false, &target, false).context("Personal destination must be visible")?;
+                ws.arm_folder_drag(&source, from, cx);
+                ws.move_folder_drag(to, window, cx);
+                ws.end_folder_drag(false, window, cx);
+            }
+            "observe-projected-drop" => {
+                let entries = ws.store.list();
+                let source = id(&entries, "Move shared A source")?;
+                for item in pair(&entries, "Move shared A")? {
+                    let entry = entries.iter().find(|entry| entry.id == item).unwrap();
+                    ensure!(entry.meta.parent.as_ref() == Some(&source),
+                        "Cross-library drop changed the personal projection of {}", entry.title);
+                    let personal_target = id(&entries, "Move personal target")?;
+                    ensure!(ws.store.set_parent(&item, Some(&personal_target)).is_err(),
+                        "Personal store accepted a move for a shared child");
+                }
+                eprintln!("MOVE_MATRIX_OK {action}");
+            }
+            "observe-shared-drag" | "open-share" => {
+                let scope = id(&shared_entries,"Move shared A")?;
+                let room = ws.shared_list_room(&scope,cx).context("Missing source share")?;
+                if action == "open-share" {
+                    ws.open_shared_note(&room,window,cx);
+                } else {
+                    let entries = shared::store_for(&room,cx)?.list();
+                    for kind in ["document","folder"] {
+                        let title = format!("Move shared A moving {kind}");
+                        let parent = entries.iter().find(|entry| entry.title == title).and_then(|entry|entry.meta.parent.as_ref()).context("Drag lost the original")?;
+                        let location = entries.iter().find(|entry| &entry.id == parent).context("Drag left an invalid parent")?;
+                        eprintln!("MOVE_MATRIX_OBSERVED shared-sidebar-{kind} {}", location.title);
+                    }
+                }
+            }
+            "open-shared-document" => {
+                let room = ws.current_room(cx).context("Missing shared library")?;
+                let document = id(&ws.entries, "Move shared A moving document")?;
+                ws.open_shared_item_interactive(room, document, None, window, cx);
+            }
+            "open-document-menu" => {
+                ensure!(ws.view == View::Doc && ws.is_shared(), "Shared editor did not open");
+                ws.doc_menu = true;
+                cx.notify();
+            }
+            "verify-document-menu-move" => {
+                let entries = ws.store.list();
+                let document = id(&entries, "Move shared A moving document")?;
+                let target = id(&entries, "Move shared A target")?;
+                ensure!(entries.iter().any(|entry| entry.id == document && entry.meta.parent.as_ref() == Some(&target)),
+                    "The document menu did not move the shared document");
+                eprintln!("MOVE_MATRIX_OK {action}");
+            }
+            "shared-to-target" | "shared-to-root" | "verify-shared-target" | "verify-shared-root" => {
+                ensure!(ws.is_shared() && ws.view == View::Folder, "Expected a shared folder");
+                let entries = ws.store.list();
+                let items = pair(&entries,"Move shared A")?;
+                let root = id(&entries,"Move shared A")?;
+                let target = id(&entries,"Move shared A target")?;
+                match action {
+                    "shared-to-target" => ws.move_docs(&items,Some(target),cx),
+                    "shared-to-root" => ws.move_docs(&items,None,cx),
+                    _ => {
+                        let expected = if action.ends_with("target") { &target } else { &root };
+                        for item in items {
+                            ensure!(entries.iter().any(|entry| entry.id == item && entry.meta.parent.as_ref() == Some(expected)),
+                                "Wrong shared destination after {action}");
+                        }
+                        let child = id(&entries,"Move shared A child")?;
+                        let folder = id(&entries,"Move shared A moving folder")?;
+                        ensure!(entries.iter().any(|entry| entry.id == child && entry.meta.parent.as_ref() == Some(&folder)),
+                            "Shared move split the subtree");
+                        eprintln!("MOVE_MATRIX_OK {action}");
+                    }
+                }
+            }
+            _ => anyhow::bail!("Unknown move-matrix check"),
+        }
+        Ok(())
+    })?
 }
 
 fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle<Workspace>, cx: &mut App) -> Result<()> {

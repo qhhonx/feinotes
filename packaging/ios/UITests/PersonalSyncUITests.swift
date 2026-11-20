@@ -164,6 +164,122 @@ final class PersonalSyncUITests: XCTestCase {
         XCTAssertTrue(trashFolder.exists)
     }
 
+    func testMoveWithinPersonalLibrary() {
+        let (app,pad) = launchMoveFixture()
+        checkMoveBetweenFolders(app,pad: pad,prefix: "Move personal",root: "My documents")
+    }
+
+    func testMoveWithinSharedFolder() {
+        let (app,pad) = launchMoveFixture()
+        app.segmentedControls["fei.notes.tabs"].buttons["Shared documents"].tap()
+        let share = moveRow("Move shared A",in: app)
+        XCTAssertTrue(share.waitForExistence(timeout: 8))
+        share.tap()
+        checkMoveBetweenFolders(app,pad: pad,prefix: "Move shared A",root: "Move shared A",
+                                excluded: ["My documents","Move personal target","Move shared B","Move shared B target"])
+    }
+
+    func testMovePersonalIntoOwnedSharedFolder() {
+        let (app,pad) = launchMoveFixture()
+        let source = "Move personal source"
+        let items = ["Move personal moving document","Move personal moving folder"]
+        moveRow(source,in: app).tap()
+        for name in items {
+            chooseMove(app,item: name,destination: "Move shared A target")
+            XCTAssertTrue(app.navigationBars["Move into shared folder"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@",
+                "All members can access")).firstMatch.exists)
+            let confirm = app.cells["fei.setting.share-submit"]
+            XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+            capture("move-and-share-confirmation")
+            confirm.tap()
+            let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: moveRow(name,in: app))
+            XCTAssertEqual(XCTWaiter.wait(for: [removed],timeout: 12),.completed)
+        }
+        exitMoveFolder(app,pad: pad,title: source)
+        app.segmentedControls["fei.notes.tabs"].buttons["Shared documents"].tap()
+        moveRow("Move shared A",in: app).tap()
+        let target = moveRow("Move shared A target",in: app)
+        XCTAssertTrue(target.waitForExistence(timeout: 8))
+        target.tap()
+        for name in items {
+            XCTAssertTrue(moveRow(name,in: app).waitForExistence(timeout: 6),name)
+        }
+        moveRow(items[1],in: app).tap()
+        XCTAssertTrue(moveRow("Move personal child",in: app).waitForExistence(timeout: 6))
+        capture("move-personal-into-shared")
+    }
+
+    private func launchMoveFixture() -> (XCUIApplication,Bool) {
+        continueAfterFailure = false
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
+        XCUIDevice.shared.orientation = pad ? .landscapeLeft : .portrait
+        let app = XCUIApplication()
+        app.launchArguments += ["-AppleLanguages", "(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launch()
+        XCTAssertTrue(app.segmentedControls["fei.notes.tabs"].waitForExistence(timeout: 15))
+        return (app,pad)
+    }
+
+    private func moveRow(_ title: String,in app: XCUIApplication) -> XCUIElement {
+        app.tables.matching(identifier: "fei.notes.list").cells.containing(.staticText,identifier: title).firstMatch
+    }
+
+    private func chooseMove(_ app: XCUIApplication,item: String,destination: String,excluded: [String] = []) {
+        let row = moveRow(item,in: app)
+        XCTAssertTrue(row.waitForExistence(timeout: 6),item)
+        row.press(forDuration: 1)
+        let move = app.buttons["Move to"].firstMatch
+        XCTAssertTrue(move.waitForExistence(timeout: 6))
+        move.tap()
+        XCTAssertTrue(app.navigationBars["Move to"].waitForExistence(timeout: 5))
+        let picker = app.tables.matching(NSPredicate(format: "identifier != %@", "fei.notes.list")).firstMatch
+        for title in excluded + [item] {
+            XCTAssertFalse(picker.cells.containing(.staticText,identifier: title).firstMatch.exists,title)
+        }
+        let target = picker.cells.containing(.staticText,identifier: destination).firstMatch
+        XCTAssertTrue(target.waitForExistence(timeout: 5),destination)
+        capture("move-destinations")
+        target.tap()
+    }
+
+    private func exitMoveFolder(_ app: XCUIApplication,pad: Bool,title: String) {
+        let back = pad ? app.buttons["fei.browser.parent"] : app.navigationBars[title].buttons.firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 8),title)
+        back.tap()
+    }
+
+    private func checkMoveBetweenFolders(_ app: XCUIApplication,pad: Bool,prefix: String,root: String,excluded: [String] = []) {
+        let source = prefix + " source"
+        let target = prefix + " target"
+        let names = [prefix + " moving document",prefix + " moving folder"]
+        let sourceRow = moveRow(source,in: app)
+        XCTAssertTrue(sourceRow.waitForExistence(timeout: 8))
+        sourceRow.tap()
+        for name in names { chooseMove(app,item: name,destination: target,excluded: excluded) }
+        exitMoveFolder(app,pad: pad,title: source)
+        let targetRow = moveRow(target,in: app)
+        XCTAssertTrue(targetRow.waitForExistence(timeout: 8))
+        targetRow.tap()
+        for name in names { chooseMove(app,item: name,destination: root,excluded: excluded) }
+        exitMoveFolder(app,pad: pad,title: target)
+        for name in names {
+            XCTAssertTrue(moveRow(name,in: app).waitForExistence(timeout: 6),name)
+        }
+        capture("move-items-at-root")
+        for name in names { chooseMove(app,item: name,destination: source,excluded: excluded) }
+        sourceRow.tap()
+        for name in names {
+            XCTAssertTrue(moveRow(name,in: app).waitForExistence(timeout: 6),name)
+        }
+        moveRow(names[1],in: app).tap()
+        XCTAssertTrue(moveRow(prefix + " child",in: app).waitForExistence(timeout: 6))
+        capture("move-subtree-back-in-source")
+    }
+
     func testSettingsLibraryAndTrashNavigation() {
         continueAfterFailure = false
         let app = XCUIApplication()

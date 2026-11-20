@@ -94,6 +94,26 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
         let room = original::prepare_local(&personal, &document, title.into(), false)?;
         fs::write(room_root(&personal, &room.scope.note)?.join("seed-published"), b"synthetic shared owner")?;
     }
+    if std::env::var_os("QUIET_SYNC_QA_MOVE_MATRIX").is_some() {
+        fn make_items(store: &mut Store, prefix: &str, parent: Option<&str>) -> Result<()> {
+            let source = store.create_folder(&format!("{prefix} source"), parent)?;
+            store.create_folder(&format!("{prefix} target"), parent)?;
+            let folder = store.create_folder(&format!("{prefix} moving folder"), Some(&source))?;
+            for (title, parent) in [(format!("{prefix} moving document"), &source), (format!("{prefix} child"), &folder)] {
+                store.create_from_in(&Document { title: crate::model::RichText::plain(title),
+                    blocks: vec![crate::model::Block::text("Synthetic movable content")], ..Default::default() }, Some(parent))?;
+            }
+            Ok(())
+        }
+        let mut store = Store::open_sqlite_at(personal.clone())?;
+        make_items(&mut store, "Move personal", None)?;
+        for title in ["Move shared A", "Move shared B"] {
+            let folder = store.create_folder(title, None)?;
+            make_items(&mut store, title, Some(&folder))?;
+            let room = original::prepare_local(&personal, &folder, title.into(), false)?;
+            fs::write(room_root(&personal, &room.scope.note)?.join("seed-published"), b"synthetic shared owner")?;
+        }
+    }
     fs::write(root.join("pause-cloud"), b"isolated local session regression")?;
     fs::write(root.join("qa-session-rooms.json"), serde_json::to_vec(&rooms)?)?;
     Ok(personal)
