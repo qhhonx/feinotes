@@ -5,5 +5,6 @@ Fei Notes 1.0.9 (1021) beta
 • Trash distinguishes documents from folders and shows their original location and time remaining. Fixed the long-press menu and clearing issues for shared items.
 • Fixed a clipped Trash list and misplaced shared sync popovers on iPad.
 • On iPhone and iPad, rows display the setting and its value side by side, with help text below.
+• Fixed the missing permissions confirmation when moving items into a shared folder you own.
 
 Use sample documents to check updating from 1.0.8, syncing across devices, and the Empty Trash confirmation and result. Cloud features are included during TestFlight testing without a subscription.

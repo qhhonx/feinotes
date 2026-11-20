@@ -5,5 +5,7 @@ Fei Notes 1.0.9 (1021) beta
 • Trash keeps the document icon and marks shared documents separately. Fixed a case where a standalone shared document could remain in Trash.
 • The shared folder breadcrumb returns to the list you opened it from.
 • On iPhone and iPad, rows display the setting and its value side by side, with help text below.
+• Sharing and pin indicators appear beside document titles. Hover over a truncated title to read the full name.
+• Move an editable document within its shared folder. Fixed a drag operation that could leave the personal list out of sync with the shared folder.
 
 Use sample documents to check updating from 1.0.8, syncing across devices, and the Empty Trash confirmation and result. Cloud features are included during TestFlight testing without a subscription.
