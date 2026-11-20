@@ -1728,16 +1728,15 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         }
     }
 
-    func itemMenu(_ id: String,browsingWorkspace: Bool = false) -> UIMenu {
-        guard let item = state?.items.first(where: { $0.id == id }) else { return UIMenu() }
-        let fromBrowser = browsingWorkspace && !item.offline_recovery
-        let listing = fromBrowser ? state?.browser?.listing : state?.listing
-        let scope = listing?.scope
+    func itemMenu(_ id: String,scope: String,browsingWorkspace: Bool) -> UIMenu {
+        let fromBrowser = browsingWorkspace
+        guard let listing = fromBrowser ? state?.browser?.listing : state?.listing,
+              listing.scope == scope,let item = rowItem(id,in: listing) else { return UIMenu() }
         let inherited = isInsideSharedFolder(browser: fromBrowser) && !item.shared
         let personalBrowser = fromBrowser && state?.shared_session == true && state?.browser?.personal == true && item.personal
         func action(_ key: String,_ symbol: String,_ command: String? = nil,danger: Bool = false,perform: (() -> Void)? = nil) -> UIAction {
             UIAction(title: label(key),image: UIImage(systemName: symbol),attributes: danger ? .destructive : []) { [weak self] _ in
-                guard let self,let scope,self.state?.busy == false,(fromBrowser ? self.state?.browser?.listing.scope : self.state?.listing?.scope) == scope else { return }
+                guard let self,self.state?.busy == false,(fromBrowser ? self.state?.browser?.listing.scope : self.state?.listing?.scope) == scope else { return }
                 if let perform { perform() }
                 else if personalBrowser && ["delete","duplicate","pdf","print"].contains(command ?? key) {
                     self.send("personal-row-action",value: (command ?? key) + ":",id: id,scope: scope)
@@ -1765,7 +1764,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             let groups = (flags.isEmpty ? [] : [group(flags)]) + [group(organize),group([access])]
             return UIMenu(children: groups + [group([action(item.share_end ?? "leave-shared","trash","shared-end",danger: true)])])
         }
-        let row = listing?.rows.first { $0.id == id }
+        let row = listing.rows.first { $0.id == id }
         let shareActions: [UIMenuElement]
         if inherited {
             shareActions = [action("shared-folder-access","person.2",perform: { [weak self] in
@@ -1780,7 +1779,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             }
         } else { shareActions = [] }
         var organize: [UIMenuElement] = [action("rename","pencil",perform: { [weak self] in self?.rename(id: id,title: item.title,browserScope: fromBrowser ? scope : nil) }),action("move","folder",perform: { [weak self] in self?.showMove([id],serial: nil,personalBrowser: personalBrowser) }),action("duplicate","doc.on.doc")]
-        if item.folder && !inherited && listing?.kind == "notes" {
+        if item.folder && !inherited && listing.kind == "notes" {
             organize.insert(action("new-folder","folder.badge.plus",perform: { [weak self] in if browsingWorkspace { self?.createSidebarFolder(parentID: id) } else { self?.newFolder(parentID: id) } }),at: 0)
         }
         var groups: [UIMenuElement] = flags.isEmpty ? [] : [group(flags)]
@@ -1796,9 +1795,13 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         state?.folder_access == true && (!browser || state?.browser?.personal == false)
     }
     func canModifyFolderContents(browser: Bool) -> Bool { !isInsideSharedFolder(browser: browser) || state?.can_create == true }
-    func rowItem(_ id: String) -> FeiNavigationState.Item? { state?.items.first { $0.id == id } }
+    func rowItem(_ id: String,in listing: FeiNavigationState.Listing) -> FeiNavigationState.Item? {
+        let inTrash = listing.kind == "trash"
+        return state?.items.first { $0.id == id && ($0.trashed || $0.offline_recovery) == inTrash }
+    }
     func rowAction(_ key: String,id: String,scope: String,browser: Bool) {
-        guard state?.busy == false,(browser ? state?.browser?.listing.scope : state?.listing?.scope)==scope,let item=state?.items.first(where: { $0.id==id }) else { return }
+        guard state?.busy == false,let listing = browser ? state?.browser?.listing : state?.listing,
+              listing.scope == scope,let item = rowItem(id,in: listing) else { return }
         if ["delete","move"].contains(key) && !canModifyFolderContents(browser: browser) { return }
         if key=="move" { showMove(id); return }
         let command = item.shared ? ["pin":"shared-pin","star":"shared-star","delete":"shared-end"][key] ?? key : key

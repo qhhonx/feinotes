@@ -162,14 +162,18 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             withConfiguration: UIImage.SymbolConfiguration(pointSize: disclosureSize,weight: .semibold))
     }
 
-    private func folderImage(shared: Bool) -> UIImage? {
+    private func leadingImage(for row: FeiNavigationState.Listing.Row,inTrash: Bool) -> UIImage? {
+        guard row.folder || inTrash else { return nil }
         let size = UIFontMetrics(forTextStyle: .headline).scaledValue(for: 22)
-        guard let folder = UIImage(systemName: "folder",withConfiguration: UIImage.SymbolConfiguration(pointSize: size)),
-              let people = UIImage(systemName: "person.2.fill",withConfiguration: UIImage.SymbolConfiguration(pointSize: size * 0.34)) else { return nil }
-        let canvas = CGSize(width: folder.size.width,height: max(folder.size.height,size))
+        let configuration = UIImage.SymbolConfiguration(pointSize: size)
+        guard let folder = UIImage(systemName: "folder",withConfiguration: configuration) else { return nil }
+        let glyph = row.folder ? folder : UIImage(systemName: "doc.text",withConfiguration: configuration)
+        guard let glyph else { return nil }
+        let canvas = CGSize(width: folder.size.width,height: max(folder.size.height,glyph.size.height,size))
         return UIGraphicsImageRenderer(size: canvas).image { renderer in
-            folder.draw(at: CGPoint(x: 0,y: (canvas.height - folder.size.height) / 2))
-            guard shared else { return }
+            glyph.draw(at: CGPoint(x: (canvas.width - glyph.size.width) / 2,y: (canvas.height - glyph.size.height) / 2))
+            guard row.shared_folder,
+                  let people = UIImage(systemName: "person.2.fill",withConfiguration: UIImage.SymbolConfiguration(pointSize: size * 0.34)) else { return }
             let badge = CGRect(x: canvas.width - people.size.width,y: canvas.height - people.size.height,width: people.size.width,height: people.size.height)
             renderer.cgContext.setBlendMode(.clear)
             UIBezierPath(roundedRect: badge.insetBy(dx: -1,dy: -1),cornerRadius: 2).fill()
@@ -228,7 +232,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             content.textToSecondaryTextVerticalPadding = 4
             content.secondaryTextProperties.adjustsFontForContentSizeCategory = true
             content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 12,leading: 16,bottom: 12,trailing: 16)
-            content.image = row.folder ? self.folderImage(shared: row.shared_folder) : isTrash ? UIImage(systemName: "doc.text") : nil
+            content.image = self.leadingImage(for: row,inTrash: isTrash)
             content.imageProperties.tintColor = row.folder ? self.palette.folderColor : self.palette.textColor
             cell.automaticallyUpdatesContentConfiguration = false
             cell.automaticallyUpdatesBackgroundConfiguration = false
@@ -769,8 +773,11 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         else { coordinator?.send("list-tab",value: String(tabs.selectedSegmentIndex),scope: listing.scope) }
     }
     func tableView(_ tableView: UITableView,contextMenuConfigurationForRowAt indexPath: IndexPath,point: CGPoint) -> UIContextMenuConfiguration? {
-        guard !isSelecting,rowDrag == nil,let id = source.itemIdentifier(for: indexPath) else { return nil }
-        return UIContextMenuConfiguration(identifier: id as NSString,previewProvider: nil) { [weak self] _ in self?.coordinator?.itemMenu(id,browsingWorkspace: self?.browsesWorkspace == true) }
+        guard !isSelecting,rowDrag == nil,let listing,let id = source.itemIdentifier(for: indexPath) else { return nil }
+        let browser = browsesWorkspace
+        return UIContextMenuConfiguration(identifier: id as NSString,previewProvider: nil) { [weak self] _ in
+            self?.coordinator?.itemMenu(id,scope: listing.scope,browsingWorkspace: browser)
+        }
     }
     private func listingSnapshot(_ listing: FeiNavigationState.Listing) -> NSDiffableDataSourceSnapshot<Int,String> {
         var snapshot=NSDiffableDataSourceSnapshot<Int,String>()
@@ -813,8 +820,15 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     private func swipe(_ keys: [(String,String,UIColor)],id: String) -> UISwipeActionsConfiguration? {
         guard let listing,!isSelecting else { return nil }
         let config = UISwipeActionsConfiguration(actions: keys.map { key,symbol,color in
-            let item = coordinator?.rowItem(id)
-            let labelKey = key == "delete" && item?.shared == true ? (item?.share_end ?? "leave-shared") : key == "delete" && item?.folder == true ? "delete-folder" : key == "pin" && item?.pinned == true ? "unpin" : key == "star" && item?.starred == true ? "unstar" : key
+            let item = coordinator?.rowItem(id,in: listing)
+            let labelKey: String
+            switch key {
+            case "delete" where item?.shared == true: labelKey = item?.share_end ?? "leave-shared"
+            case "delete","restore","purge": labelKey = item?.folder == true ? key + "-folder" : key
+            case "pin" where item?.pinned == true: labelKey = "unpin"
+            case "star" where item?.starred == true: labelKey = "unstar"
+            default: labelKey = key
+            }
             let action = UIContextualAction(style: key == "delete" || key == "purge" || key == "discard-recovery" ? .destructive : .normal,title: labels[labelKey]) { [weak self] _,_,done in
                 guard let self else { done(false); return }
                 self.coordinator?.rowAction(key,id: id,scope: listing.scope,browser: self.browsesWorkspace); done(true)
@@ -824,17 +838,18 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         config.performsFirstActionWithFullSwipe = false; return config
     }
     func tableView(_ tableView: UITableView,leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard rowDrag == nil,let id=source.itemIdentifier(for: indexPath),let row=rows[id] else { return nil }
-        if coordinator?.rowItem(id)?.offline_recovery == true { return swipe([("keep-recovery","doc.on.doc",.systemGreen)],id: id) }
-        if listing?.kind == "trash" { return swipe([("restore","arrow.uturn.backward",.systemGreen)],id: id) }
+        guard rowDrag == nil,let listing,let id=source.itemIdentifier(for: indexPath),let row=rows[id] else { return nil }
+        if coordinator?.rowItem(id,in: listing)?.offline_recovery == true { return swipe([("keep-recovery","doc.on.doc",.systemGreen)],id: id) }
+        if listing.kind == "trash" { return swipe([("restore","arrow.uturn.backward",.systemGreen)],id: id) }
         return row.folder ? nil : swipe([("pin","pin",palette.accentColor),("star","star",.systemOrange)],id: id)
     }
     func tableView(_ tableView: UITableView,trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard rowDrag == nil,let id=source.itemIdentifier(for: indexPath) else { return nil }
-        if coordinator?.rowItem(id)?.offline_recovery == true { return swipe([("discard-recovery","trash",.systemRed)],id: id) }
-        if listing?.kind == "trash" { return swipe([("purge","trash",.systemRed)],id: id) }
+        guard rowDrag == nil,let listing,let id=source.itemIdentifier(for: indexPath) else { return nil }
+        let item = coordinator?.rowItem(id,in: listing)
+        if item?.offline_recovery == true { return swipe([("discard-recovery","trash",.systemRed)],id: id) }
+        if listing.kind == "trash" { return swipe([("purge","trash",.systemRed)],id: id) }
         guard coordinator?.canModifyFolderContents(browser: browsesWorkspace) == true else { return nil }
-        return swipe(coordinator?.rowItem(id)?.shared == true ? [("delete","trash",.systemRed)] : [("delete","trash",.systemRed),("move","folder",.systemBlue)],id: id)
+        return swipe(item?.shared == true ? [("delete","trash",.systemRed)] : [("delete","trash",.systemRed),("move","folder",.systemBlue)],id: id)
     }
     private func draggableRow(_ path: IndexPath) -> Bool {
         guard let id = source.itemIdentifier(for: path) else { return false }

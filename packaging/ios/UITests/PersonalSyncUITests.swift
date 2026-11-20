@@ -47,6 +47,12 @@ final class PersonalSyncUITests: XCTestCase {
         XCTAssertEqual(personalFolder.value as? String,"Folder")
         XCTAssertEqual(sharedDocument.value as? String,"Document, Shared")
         XCTAssertEqual(sharedFolder.value as? String,"Folder, Shared folder")
+        for (cell,title) in [(personalFolder,"QA personal folder"),(sharedDocument,"QA shared document"),(sharedFolder,"QA shared trash")] {
+            XCTAssertEqual(cell.staticTexts[title].frame.minX,personal.staticTexts["QA personal trash"].frame.minX,accuracy: 1)
+            let subtitle = cell.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "days")).firstMatch
+            XCTAssertTrue(subtitle.exists)
+            XCTAssertEqual(subtitle.frame.minX,metadata.frame.minX,accuracy: 1)
+        }
         let retention = app.staticTexts["fei.notes.trash-retention"]
         XCTAssertTrue(retention.exists)
         XCTAssertEqual(personal.frame.minX,retention.frame.minX,accuracy: 24)
@@ -102,6 +108,60 @@ final class PersonalSyncUITests: XCTestCase {
         trashEntry.tap()
         XCTAssertTrue(app.staticTexts["Trash is empty"].waitForExistence(timeout: 5))
         XCTAssertFalse(empty.isEnabled)
+    }
+
+    func testTrashUsesSharedRootRowMenu() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = UIDevice.current.userInterfaceIdiom == .pad ? .landscapeLeft : .portrait
+        app.launchArguments += ["-AppleLanguages", "(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launch()
+
+        let tabs = app.segmentedControls["fei.notes.tabs"]
+        let shared = tabs.buttons["Shared documents"]
+        XCTAssertTrue(shared.waitForExistence(timeout: 15))
+        shared.tap()
+        let title = "QA shared root folder"
+        let liveFolder = app.tables["fei.notes.list"].cells.containing(.staticText,identifier: title).firstMatch
+        XCTAssertTrue(liveFolder.waitForExistence(timeout: 8))
+        let identifier = liveFolder.identifier
+        liveFolder.press(forDuration: 1)
+        let manage = app.buttons["Folder sharing access"].firstMatch
+        XCTAssertTrue(manage.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Restore folder"].exists)
+        capture("active-shared-root-menu")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.9,dy: 0.92)).tap()
+
+        let settings = app.buttons["fei.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 8))
+        settings.tap()
+        let entry = app.cells["fei.setting.page:Trash"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        entry.tap()
+        XCTAssertTrue(app.navigationBars["Trash"].waitForExistence(timeout: 5))
+        let trashFolder = app.tables["fei.notes.list"].cells.containing(.staticText,identifier: title)
+            .matching(NSPredicate(format: "value == %@", "Folder, Shared folder")).firstMatch
+        XCTAssertTrue(trashFolder.waitForExistence(timeout: 5))
+        XCTAssertEqual(trashFolder.identifier,identifier)
+        XCTAssertEqual(trashFolder.value as? String,"Folder, Shared folder")
+        trashFolder.tap()
+        let restore = app.buttons["Restore folder"].firstMatch
+        let purge = app.buttons["Delete folder permanently"].firstMatch
+        XCTAssertFalse(restore.exists)
+        trashFolder.press(forDuration: 1)
+        XCTAssertTrue(restore.waitForExistence(timeout: 5))
+        XCTAssertTrue(purge.exists)
+        XCTAssertFalse(manage.exists)
+        XCTAssertFalse(app.buttons["Organize in personal folder"].exists)
+        capture("trash-shared-root-menu")
+        purge.tap()
+        let confirm = app.alerts["fei.confirm"]
+        XCTAssertTrue(confirm.staticTexts["Permanently delete folder?"].waitForExistence(timeout: 5))
+        confirm.buttons["fei.confirm.cancel"].firstMatch.tap()
+        XCTAssertTrue(trashFolder.exists)
     }
 
     func testSettingsLibraryAndTrashNavigation() {
