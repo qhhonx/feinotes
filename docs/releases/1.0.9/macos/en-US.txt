@@ -2,7 +2,8 @@ Fei Notes 1.0.9 (1021) beta
 
 • Settings provides direct access to the document library, iCloud sync, and Trash. Turn off syncing from the iCloud page.
 • The library page shows whether you are using the local or iCloud library. On Mac, choose Show in Finder on the Local data folder row.
-• Improved Trash navigation and fixed cases where Empty Trash could fail.
+• Trash keeps the document icon and marks shared documents separately. Fixed a case where a standalone shared document could remain in Trash.
+• The shared folder breadcrumb returns to the list you opened it from.
 • On iPhone and iPad, rows display the setting and its value side by side, with help text below.
 
 Use sample documents to check updating from 1.0.8, syncing across devices, and the Empty Trash confirmation and result. Cloud features are included during TestFlight testing without a subscription.
