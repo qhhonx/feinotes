@@ -349,12 +349,18 @@ impl Workspace {
             div().id(SharedString::from(format!("folder-crumb-{key}"))).no_drag().flex_none().max_w(px(220.)).px(px(4.)).rounded(px(6.))
                 .overflow_hidden().whitespace_nowrap().text_ellipsis().cursor_pointer()
                 .text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::text()))
+                .when(key == "home" && cfg!(all(target_os = "macos", feature = "devtools")), |d| {
+                    d.relative().child(self.home.track("folder-breadcrumb-root"))
+                })
                 .child(ui_text(label))
-                .on_click(cx.listener(move |w, _, window, cx| match &target { Some(t) => w.open(t, window, cx), #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))] None if w.is_shared() => w.return_to_shared_list(window, cx), None => w.show_view(View::Home, cx) }))
+                .on_click(cx.listener(move |w, _, window, cx| match &target {
+                    Some(t) => w.open(t, window, cx),
+                    None => w.navigate_breadcrumb_library(window, cx),
+                }))
         };
         let path = self.ancestors(&id);
         let mut crumbs = div().min_w_0().flex().items_center().text_size(px(17.)).line_height(px(24.))
-            .child(link("home".into(), if self.is_shared() { tr("共享文档", "Shared documents") } else { tr("我的文档", "My documents") }.into(), None));
+            .child(link("home".into(), self.breadcrumb_library_title().into(), None));
         for (i, e) in path.iter().enumerate() {
             if path.len() > 2 && i > 0 && i < path.len() - 1 {
                 if i == 1 {

@@ -600,6 +600,12 @@ sharing-ui folder-sidebar-origin-click-home-folder
 wait 550
 sharing-ui folder-sidebar-origin-check-personal-folder
 shot home-my-documents-folder-selected
+sharing-ui folder-sidebar-origin-click-breadcrumb
+wait 550
+sharing-ui folder-sidebar-origin-return-personal
+shot breadcrumb-return-my-documents
+sharing-ui folder-sidebar-origin-click-home-folder
+wait 550
 sharing-ui folder-sidebar-origin-fold-personal
 wait 550
 sharing-ui folder-sidebar-origin-no-jump
@@ -610,6 +616,13 @@ wait 250
 sharing-ui folder-sidebar-origin-click-home-folder
 wait 550
 sharing-ui folder-sidebar-origin-check-shared-folder
+shot home-shared-documents-folder-selected
+sharing-ui folder-sidebar-origin-click-breadcrumb
+wait 550
+sharing-ui folder-sidebar-origin-return-shared
+shot breadcrumb-return-shared-documents
+sharing-ui folder-sidebar-origin-click-home-folder
+wait 550
 sharing-ui folder-sidebar-origin-form-keeps-editor
 sharing-ui folder-sidebar-origin-make-personal-folder
 wait 550
@@ -689,7 +702,8 @@ if args.sidebar_origin:
     assert 'SIDEBAR_NEW_FORM_KEEPS_EDITOR' in text, text[-4000:]
     assert text.count('SIDEBAR_CREATE_ORIGIN_OK') == 4 and text.count('SIDEBAR_INVITE_FAILURE_HIDDEN') == 3, text[-4000:]
     assert text.count('SIDEBAR_INVITE_RETRY_ONE_ITEM') == 2 and 'SIDEBAR_INVITE_CANCEL_NO_ITEM' in text, text[-4000:]
-    assert len(list(root.glob('*.png'))) == 6 and 'PANIC' not in text, text[-4000:]
+    assert text.count('FOLDER_BREADCRUMB_RETURN_OK') == 2, text[-4000:]
+    assert len(list(root.glob('*.png'))) == 9 and 'PANIC' not in text, text[-4000:]
     print('SIDEBAR_ORIGIN_OK')
     raise SystemExit
 if args.sidebar_consistency:

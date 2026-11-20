@@ -869,6 +869,17 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
         })?;
         return Ok(());
     }
+    #[cfg(target_os = "macos")]
+    if name == "folder-sidebar-origin-click-breadcrumb" {
+        let at = primary.read(cx)?.home.anchor("folder-breadcrumb-root").context("Folder breadcrumb did not render")?.center();
+        cx.update_window(primary.into(), |_, window, cx| {
+            let modifiers = Modifiers::default();
+            window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers }), cx);
+            window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1, first_mouse: false }), cx);
+            window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1 }), cx);
+        })?;
+        return Ok(());
+    }
     if let Some(row) = name.strip_prefix("folder-sidebar-click-") {
         let (in_shared, id, icon) = match row {
             "owner" => (true, &owner, false),
@@ -1061,7 +1072,15 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
                     && (ws.folder_current.as_ref() == Some(id) || ws.current.as_ref() == Some(id)), "Home opened the wrong shared item");
                 let picks = if shared { (None, Some(id.as_str())) } else { (Some(id.as_str()), None) };
                 ensure!((ws.qa_sidebar_pick(false), ws.qa_sidebar_pick(true)) == picks, "Home highlighted the wrong sidebar section");
+                let label = if shared { tr("共享文档", "Shared documents") } else { tr("我的文档", "My documents") };
+                ensure!(ws.breadcrumb_library_title() == label, "The breadcrumb ignored the entry's sidebar section");
                 eprintln!("SIDEBAR_HOME_ORIGIN_OK {name}");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-return-personal" | "folder-sidebar-origin-return-shared" => {
+                let tab = if name.ends_with("shared") { crate::home::HomeTab::Shared } else { crate::home::HomeTab::Recent };
+                ensure!(!ws.is_shared() && ws.view == View::Home && ws.home.tab == tab, "The breadcrumb returned to the wrong Home tab");
+                eprintln!("FOLDER_BREADCRUMB_RETURN_OK {name}");
             }
             #[cfg(target_os = "macos")]
             "folder-sidebar-origin-fold-personal" => {

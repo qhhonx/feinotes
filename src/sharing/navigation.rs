@@ -559,19 +559,31 @@ impl Workspace {
     }
 
     pub(crate) fn navigate_personal_from(&mut self, view: View, document: Option<String>, entry: Option<SidebarEntry>, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_personal_route(view, document, entry, None, window, cx);
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn navigate_personal_home_tab(&mut self, tab: crate::home::HomeTab, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_personal_route(View::Home, None, None, Some(tab), window, cx);
+    }
+
+    fn navigate_personal_route(&mut self, view: View, document: Option<String>, entry: Option<SidebarEntry>, tab: Option<crate::home::HomeTab>, window: &mut Window, cx: &mut Context<Self>) {
         self.sharing.account_open = None;
         #[cfg(target_os = "macos")]
         self.cancel_sidebar_open();
         if !self.is_shared() {
             if let Some(id) = document {
                 if self.try_open(&id, window, cx) { self.sidebar_entry = entry; cx.notify(); }
-            } else { self.show_view(view, cx); }
+            } else {
+                if let Some(tab) = tab { self.home.tab = tab; }
+                self.show_view(view, cx);
+            }
             return;
         }
         if self.sharing.busy { return; }
         self.close_history(cx);
         let retry = document.clone(); let retry_entry = entry.clone();
-        if !self.save_before(cx, move |w, window, cx| w.navigate_personal_from(view, retry, retry_entry, window, cx)) { return; }
+        if !self.save_before(cx, move |w, window, cx| w.navigate_personal_route(view, retry, retry_entry, tab, window, cx)) { return; }
         self.remember_scroll(cx);
         self.refresh_shared_entry(cx);
         let route = self.sharing.personal_route.take();
@@ -601,7 +613,10 @@ impl Workspace {
             if let Some(id) = document {
                 if ws.try_open(&id, window, cx) { ws.sidebar_entry = entry; }
             }
-            else { ws.show_view(view, cx); }
+            else {
+                if let Some(tab) = tab { ws.home.tab = tab; }
+                ws.show_view(view, cx);
+            }
             ws
         });
         cx.defer(cloud_sync::release_unused);

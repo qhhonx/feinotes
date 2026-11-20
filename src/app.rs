@@ -1319,6 +1319,31 @@ impl Workspace {
         self.show_view(View::Home, cx);
     }
 
+    pub(crate) fn breadcrumb_library_title(&self) -> &'static str {
+        if self.is_shared() {
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            if self.shared_sidebar_section() == crate::sidebar::SidebarSection::Personal {
+                return crate::settings::tr("我的文档", "My documents");
+            }
+            return crate::settings::tr("共享文档", "Shared documents");
+        }
+        crate::settings::tr("我的文档", "My documents")
+    }
+
+    pub(crate) fn navigate_breadcrumb_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if self.is_shared() {
+            #[cfg(target_os = "macos")]
+            if self.shared_sidebar_section() == crate::sidebar::SidebarSection::Personal {
+                self.navigate_personal_home_tab(crate::home::HomeTab::Recent, window, cx);
+                return;
+            }
+            self.return_to_shared_list(window, cx);
+            return;
+        }
+        self.navigate_home(window, cx);
+    }
+
     /// 退出 on a standalone 画板: save it, close it, and show the folder it
     /// is in (主页 at the top).
     fn leave_board(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1884,12 +1909,8 @@ impl Workspace {
         if self.current.is_some() || self.draft.is_some() {
             crumbs.push(div().id("crumb-library").no_drag().flex_none().px(px(4.)).rounded(px(4.)).cursor_pointer()
                 .whitespace_nowrap().text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::primary_500()))
-                .child(ui_text(if self.is_shared() { crate::settings::tr("共享文档", "Shared documents") } else { crate::settings::tr("我的文档", "My documents") }.to_string()))
-                .on_click(cx.listener(|w, _, window, cx| {
-                    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                    if w.is_shared() { w.navigate_personal(View::Shared, None, window, cx); return; }
-                    w.navigate_home(window, cx);
-                }))
+                .child(ui_text(self.breadcrumb_library_title().to_string()))
+                .on_click(cx.listener(|w, _, window, cx| w.navigate_breadcrumb_library(window, cx)))
                 .into_any_element());
             crumbs.push(sep());
         }
@@ -1956,7 +1977,7 @@ impl Workspace {
         let left = if self.sidebar_open { 18. } else { theme::TRAFFIC_LIGHTS_W + 4. + 28. + 4. + 28. + 25. };
         let room = pane_w - left - crate::ui::header_right_inset() - 3. * HEADER_ACTIONS_H - 8. - 16.;
         if room < 360. && !crumbs.is_empty() {
-            let path: Vec<&str> = std::iter::once(crate::settings::tr("我的文档", "My documents")).chain(chain.iter().map(|c| c.1.as_str())).collect();
+            let path: Vec<&str> = std::iter::once(self.breadcrumb_library_title()).chain(chain.iter().map(|c| c.1.as_str())).collect();
             crumbs = vec![
                 div().id("crumb-more").no_drag().flex_none().size(px(20.)).flex().items_center().justify_center().rounded(px(4.))
                     .text_color(Theme::text_caption()).tip(&path.join(" / "), None).child("…").into_any_element(),
