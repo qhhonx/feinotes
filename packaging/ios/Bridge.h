@@ -14,6 +14,7 @@ void gpui_ios_did_become_active(void *app);
 void gpui_ios_will_resign_active(void *app);
 
 void fei_ios_command(const char *json);
+uint64_t fei_ios_publish_navigation_after_pop(void);
 void fei_ios_set_editor_input(bool active, const char *scope);
 void fei_ios_presence_scene_active(bool active);
 

@@ -306,10 +306,13 @@ fn owner(marker: &[u8]) -> Result<&str> {
 }
 
 fn rotate_peer(database: &Path) -> Result<()> {
-    let db = Connection::open(database)?;
+    let mut db = Connection::open(database)?;
     if table(&db, "state")? {
+        let tx = db.transaction()?;
+        if table(&tx, "offline_recoveries")? { super::journal::recovery::preserve_peers(&tx)?; }
         let peer = (uuid::Uuid::new_v4().as_u128() as i64 & i64::MAX).max(2);
-        db.execute("UPDATE state SET value=?1 WHERE key='peer'", [peer])?;
+        tx.execute("UPDATE state SET value=?1 WHERE key='peer'", [peer])?;
+        tx.commit()?;
     }
     Ok(())
 }

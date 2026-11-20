@@ -24,7 +24,14 @@ final class EditorScene: UIResponder, UIWindowSceneDelegate {
         guard let scene = scene as? UIWindowScene else { return }
         let window = UIWindow(windowScene: scene)
         let host = EditorHost()
-        window.rootViewController = UIDevice.current.userInterfaceIdiom == .pad ? FeiPadWorkspaceController(host: host) : UINavigationController(rootViewController: host)
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            window.rootViewController = FeiPadWorkspaceController(host: host)
+        } else {
+            host.configureNavigationTitleMode()
+            let navigation = UINavigationController(rootViewController: host)
+            navigation.navigationBar.prefersLargeTitles = true
+            window.rootViewController = navigation
+        }
         self.window = window
         window.makeKeyAndVisible()
         #if FEI_MOBILE_QA
@@ -93,6 +100,7 @@ final class EditorHost: FeiRouteController {
     private var findImmersive = false
     private var toolbarAtTop = false
     private var editorOverlapsChrome = false
+    private var editorExtendsTop = false
     private var lastEditorInsets = UIEdgeInsets.zero
     private static let testChannelKey = "FeiNotesCloudChannel"
     private var editorView: EditorFrameView?
@@ -222,9 +230,7 @@ final class EditorHost: FeiRouteController {
     }
 
     func prepareEditorTransition(to parent: FeiRouteController) {
-        let visible = !parent.hasNativeContent && (parent.routeKey.hasPrefix("note:") || parent.routeKey.hasPrefix("draft:") || parent.routeKey.hasPrefix("history-preview")) && toolbarState?.find_active != true && toolbarState?.board_open != true
-        editorToolbarContainer.isHidden = !visible || toolbarAtTop
-        layoutEditorToolbar(visible: visible)
+        layoutEditorToolbar(in: parent)
     }
 
     private func configureEditorLayout(in parent: FeiRouteController,frameView: UIView) {
@@ -234,33 +240,35 @@ final class EditorHost: FeiRouteController {
         let height = editorToolbarContainer.heightAnchor.constraint(equalToConstant: 0)
         editorToolbarHeight = height
         editorOverlapsChrome = shouldOverlapChrome
+        editorExtendsTop = shouldExtendTop
         let extendsBehindHomeIndicator = editorOverlapsChrome && UIDevice.current.userInterfaceIdiom == .phone
         parent.view.keyboardLayoutGuide.usesBottomSafeArea = !extendsBehindHomeIndicator
-        let top = findImmersive || editorOverlapsChrome ? parent.view.topAnchor : parent.view.safeAreaLayoutGuide.topAnchor
+        let top = editorExtendsTop ? parent.view.topAnchor : parent.view.safeAreaLayoutGuide.topAnchor
         frameConstraints = [frameView.topAnchor.constraint(equalTo: top),height,
             editorToolbarContainer.leadingAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.leadingAnchor),
             editorToolbarContainer.trailingAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.trailingAnchor),
             frameView.leadingAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.leadingAnchor),
             frameView.trailingAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.trailingAnchor)]
-        if toolbarAtTop {
-            frameConstraints += [editorToolbarContainer.topAnchor.constraint(equalTo: parent.view.safeAreaLayoutGuide.topAnchor),frameView.bottomAnchor.constraint(equalTo: parent.view.keyboardLayoutGuide.topAnchor)]
-        } else {
-            let bottom = editorOverlapsChrome ? parent.view.keyboardLayoutGuide.topAnchor : editorToolbarContainer.topAnchor
-            let docked = editorToolbarContainer.bottomAnchor.constraint(equalTo: parent.view.keyboardLayoutGuide.topAnchor)
-            frameConstraints.append(frameView.bottomAnchor.constraint(equalTo: bottom))
-            if extendsBehindHomeIndicator {
-                docked.priority = .defaultHigh
-                frameConstraints.append(editorToolbarContainer.bottomAnchor.constraint(lessThanOrEqualTo: parent.view.safeAreaLayoutGuide.bottomAnchor))
-                frameConstraints.append(editorToolbarContainer.bottomAnchor.constraint(lessThanOrEqualTo: parent.view.keyboardLayoutGuide.topAnchor))
-            }
-            frameConstraints.append(docked)
+        let bottom = editorOverlapsChrome || toolbarAtTop ? parent.view.keyboardLayoutGuide.topAnchor : editorToolbarContainer.topAnchor
+        let docked = editorToolbarContainer.bottomAnchor.constraint(equalTo: parent.view.keyboardLayoutGuide.topAnchor)
+        frameConstraints.append(frameView.bottomAnchor.constraint(equalTo: bottom))
+        if extendsBehindHomeIndicator {
+            docked.priority = .defaultHigh
+            frameConstraints.append(editorToolbarContainer.bottomAnchor.constraint(lessThanOrEqualTo: parent.view.safeAreaLayoutGuide.bottomAnchor))
+            frameConstraints.append(editorToolbarContainer.bottomAnchor.constraint(lessThanOrEqualTo: parent.view.keyboardLayoutGuide.topAnchor))
         }
+        frameConstraints.append(docked)
         NSLayoutConstraint.activate(frameConstraints)
-        layoutEditorToolbar()
+        layoutEditorToolbar(in: parent)
     }
-    private func layoutEditorToolbar(visible: Bool? = nil) {
-        let show = (visible ?? editorToolbarVisible) && !toolbarAtTop
-        let row = show && editorToolbar.hasComponentRow
+    private func layoutEditorToolbar(in route: FeiRouteController? = nil) {
+        let parent = route ?? editorView?.controller.parent as? FeiRouteController
+        let isEditor = parent.map { !$0.hasNativeContent && ($0.routeKey.hasPrefix("note:") ||
+            $0.routeKey.hasPrefix("draft:") || $0.routeKey.hasPrefix("history-preview")) } ?? false
+        let visible = route == nil ? editorToolbarVisible : toolbarState?.find_active != true && toolbarState?.board_open != true
+        let show = isEditor && visible && !toolbarAtTop
+        editorToolbarContainer.isHidden = !show
+        let row = show && !toolbarAtTop && editorToolbar.hasComponentRow
         editorToolbar.componentBar.isHidden = !row
         editorComponentRowHeight?.constant = row ? FeiEditorToolbar.preferredHeight : 0
         editorToolbarHeight?.constant = show ? FeiEditorToolbar.preferredHeight * (row ? 2 : 1) : 0
@@ -270,8 +278,10 @@ final class EditorHost: FeiRouteController {
         return parent.view.bounds.width >= 600
     }
     private var shouldOverlapChrome: Bool {
-        guard let state = toolbarState else { return false }
-        return ["note","history-preview"].contains(state.kind) && !state.board_open && !state.find_active && !findImmersive
+        toolbarState?.editorOverlapsChrome == true && !findImmersive
+    }
+    private var shouldExtendTop: Bool {
+        shouldOverlapChrome || (findImmersive && toolbarState?.document_needs_attention != true)
     }
     var editorChromeInsets: UIEdgeInsets {
         guard editorOverlapsChrome,let frame = editorView,let parent = frame.superview,!frame.isHidden else { return .zero }
@@ -283,11 +293,14 @@ final class EditorHost: FeiRouteController {
     func refreshEditorLayout() {
         guard let frameView = editorView,let parent = frameView.controller.parent as? FeiRouteController else { return }
         let expanded = usesTopTools(in: parent)
-        if expanded != toolbarAtTop || shouldOverlapChrome != editorOverlapsChrome { configureEditorLayout(in: parent,frameView: frameView) }
+        if expanded != toolbarAtTop || shouldOverlapChrome != editorOverlapsChrome || shouldExtendTop != editorExtendsTop {
+            configureEditorLayout(in: parent,frameView: frameView)
+        }
     }
 
     func updateEditorToolbar(_ state: FeiNavigationState) {
         toolbarState = state
+        editorToolbarContainer.isUserInteractionEnabled = !state.conflict_review
         refreshEditorLayout()
         #if FEI_MOBILE_QA
         if let qa = state.qa {
@@ -296,8 +309,7 @@ final class EditorHost: FeiRouteController {
         }
         #endif
         editorToolbarVisible = (state.kind == "note" || state.kind == "history-preview") && !state.find_active && !state.board_open && (editorView?.controller.parent as? FeiRouteController)?.hasNativeContent != true
-        editorToolbarContainer.isHidden = !editorToolbarVisible || toolbarAtTop
-        editorToolbar.update(state,coordinator: navigationCoordinator,typing: editorHasKeyboardFocus)
+        editorToolbar.update(state,coordinator: navigationCoordinator,typing: editorHasKeyboardFocus,topTools: toolbarAtTop)
         layoutEditorToolbar()
         editorToolbarContainer.superview?.setNeedsLayout()
     }
@@ -324,7 +336,8 @@ final class EditorHost: FeiRouteController {
         }
         guard focusChanged else { return }
         if focused { padWorkspace?.beginEditorInput() }
-        if let state = toolbarState { editorToolbar.update(state,coordinator: navigationCoordinator,typing: focused) }
+        if let state = toolbarState { editorToolbar.update(state,coordinator: navigationCoordinator,typing: focused,topTools: toolbarAtTop) }
+        layoutEditorToolbar()
         navigationCoordinator?.refreshInputControls()
     }
     func setBrowserTapGuard(_ action: (() -> Void)?) {

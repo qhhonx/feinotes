@@ -5,6 +5,8 @@ mod assets;
 pub(crate) mod backup;
 mod catalogue;
 mod organizer;
+pub(crate) mod conflict_ui;
+pub(crate) use journal::conflict::ConflictVersions;
 mod content;
 mod history;
 mod journal;
@@ -52,6 +54,43 @@ pub(crate) struct AttachmentIssue {
 
 pub(crate) fn issues(root: &Path, cx: &App) -> Result<Vec<SyncIssue>> {
     session(root, cx).map_or_else(|| Ok(vec![]), |sync| sync.journal.issues())
+}
+
+pub(crate) fn document_conflict(root: &Path, id: &str, cx: &App) -> bool {
+    status(root, cx).is_some_and(|status| status.conflicts > 0)
+        && session(root, cx).is_some_and(|session| session.journal.document_conflict(id))
+}
+
+pub(crate) fn can_review_conflict(root: &Path, cx: &App) -> bool {
+    session(root, cx).is_some_and(|session| session.account_revision == account_revision()
+        && session.journal.can_review_conflict())
+        && !root.join("require-account-verification").exists()
+        && status(root, cx).is_some_and(|s| !matches!(s.phase, SyncPhase::Account | SyncPhase::AccountChecking
+            | SyncPhase::AccountChanged | SyncPhase::SignedOut | SyncPhase::Revoked))
+}
+
+pub(crate) fn conflict_versions(root: &Path, id: &str, cx: &App) -> Result<ConflictVersions> {
+    ensure!(can_review_conflict(root, cx), "This iCloud document is unavailable");
+    journal(root, cx).conflict_versions(id)
+}
+
+pub(crate) fn copy_conflict_versions(root: &Path, id: &str, selected: &[(bool, [u8; 32])], cx: &mut App) -> Result<Vec<String>> {
+    ensure!(can_review_conflict(root, cx), "This iCloud document is unavailable");
+    let revision = session(root, cx).unwrap().account_revision;
+    let copies = journal_mut(root, cx).copy_conflict_versions(id, selected, || {
+        check_account_revision(revision)?;
+        ensure!(!root.join("require-account-verification").exists(), "The iCloud account requires verification.");
+        Ok(())
+    })?;
+    let _ = session(root, cx).unwrap().sender.try_send(());
+    Ok(copies)
+}
+
+pub(crate) fn retry_document(root: &Path, id: &str, cx: &mut App) -> Result<()> {
+    ensure!(can_review_conflict(root, cx), "This iCloud document is unavailable");
+    journal_mut(root, cx).retry_document(id)?;
+    let _ = session(root, cx).unwrap().sender.try_send(());
+    Ok(())
 }
 
 unsafe extern "C" {
@@ -205,7 +244,7 @@ pub(crate) fn shared_access_ended(root: &Path, note: &str, cx: &mut App) -> Resu
             #[cfg(feature = "devtools")] cursor_replayed: false })?;
         update_status(root, cx, SyncPhase::Revoked);
     }
-    cx.update_global::<activity::ActivityView, _>(|view, _| view.0.retain(|row| row.room.scope.note != note));
+    activity::remove_room(note, cx);
     app::cloud_notes_changed(root, &[], false, cx);
     Ok(())
 }
@@ -238,6 +277,17 @@ pub(crate) enum SyncPhase {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct ApplyWait {
+    pub catalogue_predecessor: bool,
+    pub documents_awaiting_catalogue: u32,
+    pub documents_awaiting_predecessor: u32,
+    pub documents_awaiting_attachment: u32,
+    pub documents_held: u32,
+    pub local_edit: bool,
+    pub local_error: bool,
+}
+
 #[derive(Default, PartialEq, Eq)]
 pub(crate) struct SyncStatus {
     pub phase: SyncPhase,
@@ -248,7 +298,10 @@ pub(crate) struct SyncStatus {
     pub conflicts: u32,
     pub catalogue_paused: bool,
     pub access_paused: bool,
+    pub access_verified: bool,
     pub stalled: Option<SyncPhase>,
+    pub apply_wait: ApplyWait,
+    pub retry_requested: bool,
     last_success: Option<u64>,
 }
 
@@ -262,9 +315,9 @@ fn protect_offline_library(marker: &Path) {
     }
 }
 
-fn account_revision() -> u64 { unsafe { quiet_cloud_account_revision() } }
+pub(crate) fn account_revision() -> u64 { unsafe { quiet_cloud_account_revision() } }
 
-fn check_account_revision(revision: u64) -> Result<()> {
+pub(crate) fn check_account_revision(revision: u64) -> Result<()> {
     if account_revision() == revision { return Ok(()); }
     Err(CloudFailure { phase: SyncPhase::AccountChecking, message: "The iCloud account status changed during this request.".into() }.into())
 }
@@ -307,12 +360,48 @@ pub(crate) fn retry(root: &Path, cx: &mut App) {
     let _ = session.sender.try_send(());
 }
 
+pub(crate) fn retry_shared(root: &Path,cx: &mut App) {
+    if scope(root,cx).is_none() { return; }
+    cx.update_global::<SyncStatuses,_>(|statuses,_| {
+        if let Some(status) = statuses.0.get_mut(root) { status.retry_requested = true; }
+    });
+    retry(root,cx);
+}
+
+// Wake account verification without changing the durable upload queue or retrying held edits.
+pub(crate) fn recheck_account(root: &Path, cx: &App) {
+    if let Some(session) = session(root, cx) { let _ = session.sender.try_send(()); }
+}
+
+pub(crate) fn account_is_current(root: &Path, cx: &App) -> bool {
+    session(root, cx).is_some_and(|session| session.account_revision == account_revision())
+        && !root.join("require-account-verification").exists()
+}
+
+// The Swift bridge compared the current account with this personal session before exchanging
+// data. Serialize marker removal with the native account-change callback.
+fn complete_account_check(root: &Path, revision: u64) -> Result<()> {
+    let _guard = ACCOUNT_WATCH.get_or_init(Default::default).lock().unwrap();
+    check_account_revision(revision)?;
+    let marker = root.join("require-account-verification");
+    match std::fs::remove_file(&marker) {
+        Ok(()) => {
+            if let Err(error) = check_account_revision(revision) {
+                protect_offline_library(&marker);
+                return Err(error);
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 pub(crate) fn access_changed(_cx: &App) { sync_resumed(0); }
 
 pub(crate) fn last_success(root: &Path, cx: &App) -> Option<u64> {
     let status = status(root, cx)?;
-    let session = session(root, cx)?;
-    if session.account_revision != account_revision()
+    if !account_is_current(root, cx)
         || matches!(status.phase, SyncPhase::AccountChecking | SyncPhase::AccountChanged | SyncPhase::SignedOut | SyncPhase::Account | SyncPhase::Revoked)
     { return None; }
     status.last_success
@@ -320,7 +409,44 @@ pub(crate) fn last_success(root: &Path, cx: &App) -> Option<u64> {
 
 fn update_status(root: &Path, cx: &mut App, phase: SyncPhase) { update_status_after_exchange(root, cx, phase, false); }
 
+#[cfg(any(feature = "devtools", target_os = "ios"))]
+#[cfg_attr(target_os = "ios", cfg(feature = "mobile-qa"))]
+pub(crate) fn fixture_status(root: &Path, phase: SyncPhase, cx: &mut App) {
+    let Some(status) = status(root,cx) else { return; };
+    let (uploads, stalled) = match phase {
+        SyncPhase::Failed => (2, Some(SyncPhase::Uploading)),
+        SyncPhase::Uploading | SyncPhase::Offline => (2, None),
+        _ => (0, None),
+    };
+    let personal = scope(root,cx).is_none();
+    let replacement = SyncStatus { phase, uploads, stalled,
+        access_verified: personal && matches!(phase, SyncPhase::Ready | SyncPhase::Offline),
+        access_paused: phase == SyncPhase::SubscriptionRequired,
+        last_success: status.last_success.or((personal && matches!(phase, SyncPhase::Ready | SyncPhase::Offline)).then(crate::time::now)),
+        ..Default::default() };
+    cx.update_global::<SyncStatuses,_>(|statuses,_| { statuses.0.insert(root.to_path_buf(),replacement); });
+}
+
+#[cfg(any(feature = "devtools", target_os = "ios"))]
+#[cfg_attr(target_os = "ios", cfg(feature = "mobile-qa"))]
+pub(crate) fn personal_status_fixture(name: &str) -> Option<SyncPhase> {
+    Some(match name {
+        "ready" => SyncPhase::Ready,
+        "offline" => SyncPhase::Offline,
+        "verifying" => SyncPhase::AccountChecking,
+        "signed-out" => SyncPhase::SignedOut,
+        "changed" => SyncPhase::AccountChanged,
+        "no-access" => SyncPhase::SubscriptionRequired,
+        _ => return None,
+    })
+}
+
 fn update_status_after_exchange(root: &Path, cx: &mut App, phase: SyncPhase, authorized: bool) {
+    #[cfg(target_os = "ios")]
+    #[cfg(feature = "mobile-qa")]
+    if crate::ipad_session::sync_badge_fixture() && (scope(root,cx).is_some()
+        || std::env::var("FEI_QA_PERSONAL_SYNC_STATE").ok().is_some_and(|name|personal_status_fixture(&name).is_some())) { return; }
+
     let journal = journal(root, cx);
     let ((uploads, downloads, held, attachments), conflicts, catalogue_paused, phase) =
         match (journal.counts(), journal.pending_work(), journal.catalogue_paused()) {
@@ -329,12 +455,34 @@ fn update_status_after_exchange(root: &Path, cx: &mut App, phase: SyncPhase, aut
     };
     let before = status(root, cx).expect("session status");
     let access_paused = !authorized && (phase == SyncPhase::SubscriptionRequired || before.access_paused);
+    let access_verified = authorized || before.access_verified && !access_paused
+        && !matches!(phase, SyncPhase::Account | SyncPhase::AccountChecking | SyncPhase::AccountChanged
+            | SyncPhase::SignedOut | SyncPhase::TestFlightVerification);
     let refresh_access = before.access_paused != access_paused || before.phase != phase
         && matches!(phase, SyncPhase::AccountChecking | SyncPhase::AccountChanged | SyncPhase::SignedOut);
     let progress = &session(root, cx).unwrap().progress;
     let status = SyncStatus { phase, uploads, downloads, held, attachments, conflicts, catalogue_paused, access_paused,
-        stalled: progress.stalled(), last_success: progress.last_success };
-    if before != &status { cx.update_global::<SyncStatuses, _>(|statuses, _| { statuses.0.insert(root.to_path_buf(), status); }); }
+        access_verified, stalled: progress.stalled(), apply_wait: journal.apply_wait, retry_requested: false, last_success: progress.last_success };
+    if before != &status {
+        #[cfg(target_os = "ios")]
+        if scope(root, cx).is_none() && std::env::var("FEI_LOCAL_ACCEPTANCE_MODE").as_deref() == Ok("inhouse") {
+            // Keep this bounded and free of document data, account IDs and raw error strings.
+            let summary = serde_json::json!({
+                "phase": format!("{:?}", status.phase),
+                "stalled": status.stalled.map(|p| format!("{p:?}")),
+                "uploads": status.uploads, "downloads": status.downloads,
+                "conflicts": status.conflicts, "catalogue_paused": status.catalogue_paused,
+                "attachments": status.attachments, "wait": status.apply_wait,
+                "last_success": status.last_success,
+            });
+            let folder = std::env::temp_dir();
+            let staging = folder.join("feinotes-sync-stage.tmp");
+            if std::fs::write(&staging, summary.to_string()).is_ok() {
+                let _ = std::fs::rename(staging, folder.join("feinotes-sync-summary.json"));
+            }
+        }
+        cx.update_global::<SyncStatuses, _>(|statuses, _| { statuses.0.insert(root.to_path_buf(), status); });
+    }
     if scope(root, cx).is_some() && refresh_access { app::cloud_notes_changed(root, &[], false, cx); }
 }
 
@@ -446,6 +594,7 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
         let mut account_notice = None;
         let mut legacy_checked: Option<std::time::Instant> = None;
         let mut upload_retry_at: Option<std::time::Instant> = None;
+        let mut replayed_stalled_apply = false;
         let mut delay = Duration::from_secs(2);
         let mut reported_ready = false;
         loop {
@@ -470,9 +619,14 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                 }
                 if std::mem::take(&mut cx.global_mut::<Sync>().0.get_mut(&root).unwrap().retry_attachments) {
                     upload_retry_at = None;
+                    let retry_apply = !room && status(&root, cx).is_some_and(|s| s.stalled == Some(SyncPhase::Applying));
                     let journal = journal_mut(&root, cx);
                     journal.retry_conflicts()?;
-                    if journal.retry_attachments()? { legacy_checked = None; }
+                    let replay = journal.retry_attachments()?;
+                    if replay || retry_apply && journal.replay_pending_apply()? {
+                        legacy_checked = None;
+                        replayed_stalled_apply |= retry_apply;
+                    }
                 }
                 let legacy = !room && legacy_checked.is_none_or(|time| time.elapsed() >= Duration::from_secs(60));
                 round.legacy = legacy;
@@ -512,6 +666,7 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
             let Ok(result) = crate::gpui_compat::async_update(cx, |cx| -> Result<_> {
                 check_account_revision(revision)?;
                 let (page, cursor_advanced) = result?;
+                if !room { complete_account_check(&root, revision)?; }
                 round.connected = true;
                 let (more, quota_exceeded) = (page.more, page.upload_quota_exceeded);
                 failure_phase = SyncPhase::Applying;
@@ -544,7 +699,7 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                     if legacy && !more { legacy_checked = Some(std::time::Instant::now()); }
                     if quota_exceeded { upload_retry_at = Some(std::time::Instant::now() + Duration::from_secs(30)); }
                     else if allow_upload { upload_retry_at = None; }
-                    let (pending, collaborating, settled) = crate::gpui_compat::async_update(cx, |cx| {
+                    let (pending, collaborating, settled, stalled_apply) = crate::gpui_compat::async_update(cx, |cx| {
                         let phase = if revoked { SyncPhase::Revoked }
                             else if upload_retry_at.is_some() { SyncPhase::Quota }
                             else if round.downloading { SyncPhase::Downloading }
@@ -566,8 +721,27 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                         let writable = journal(&root, cx).access().is_none_or(shared::Access::can_write);
                         let status = status(&root, cx).unwrap();
                         (status.uploads > 0 && writable, collaborating,
-                            status.phase == SyncPhase::Ready && status.uploads == 0 && status.downloads == 0 && status.conflicts == 0 && !status.catalogue_paused)
+                            status.phase == SyncPhase::Ready && status.uploads == 0 && status.downloads == 0 && status.conflicts == 0 && !status.catalogue_paused,
+                            phase == SyncPhase::Applying && status.stalled == Some(SyncPhase::Applying))
                     }).unwrap_or_default();
+                    if !room && stalled_apply && !replayed_stalled_apply {
+                        // One automatic inventory replay per session. A missing
+                        // predecessor can block imports even on a healthy connection.
+                        replayed_stalled_apply = true;
+                        let replay = crate::gpui_compat::async_update(cx, |cx| {
+                            if !current(&root, generation, cx) || account_revision() != revision { return Ok(false); }
+                            journal(&root, cx).replay_pending_apply()
+                        });
+                        match replay {
+                            Ok(Ok(true)) => {
+                                legacy_checked = None;
+                                delay = Duration::ZERO;
+                                continue;
+                            }
+                            Ok(Err(error)) => crate::logging::write(&format!("Could not restart stalled iCloud apply: {error:#}")),
+                            _ => {}
+                        }
+                    }
                     if !legacy && settled && !reported_ready {
                         crate::logging::write("CloudKit sync ready: no pending uploads or downloads");
                         reported_ready = true;
@@ -626,11 +800,15 @@ fn merge(root: &Path, round: &mut progress::Round, cx: &mut App) -> Result<()> {
     let before = journal(root, cx).inbox_count()?;
     let Some(positions) = app::cloud_open_positions(root, cx) else {
         round.apply_blocked_by_local_edits = true;
+        journal_mut(root, cx).apply_wait = ApplyWait { local_edit: true, ..Default::default() };
         return Ok(());
     };
     round.apply_blocked_by_local_edits = false;
-    let (library_changed, changed) = journal_mut(root, cx).merge(&positions)?;
-    round.applied |= journal(root, cx).inbox_count()? < before;
+    let journal = journal_mut(root, cx);
+    let (library_changed, changed) = journal.merge(&positions).inspect_err(|_| {
+        journal.apply_wait.local_error = true;
+    })?;
+    round.applied |= journal.inbox_count()? < before;
     if library_changed || !changed.is_empty() {
         if let Some(scope) = scope(root, cx) { shared::original::refresh_owner(root, scope, None)?; }
         app::cloud_notes_changed(root, &changed, true, cx);
@@ -673,13 +851,37 @@ pub fn versions(root: &Path, id: &str, cx: &App) -> Result<Vec<(i64, String, Str
 }
 
 pub(crate) fn offline_recoveries(root: &Path, cx: &App) -> Result<Vec<(String, String)>> {
-    session(root, cx).map_or_else(|| Ok(vec![]), |sync| sync.journal.offline_recoveries())
+    let Some(sync) = session(root, cx) else { return Ok(vec![]); };
+    let mut rows = sync.journal.offline_recoveries()?;
+    if recovery_account_ready(root, cx) {
+        let shared = sync.journal.shared_recoveries()?;
+        if recovery_account_ready(root, cx) { rows.extend(shared); }
+    }
+    Ok(rows)
 }
 
 pub(crate) fn resolve_offline_recovery(root: &Path, id: &str, keep: bool, cx: &mut App) -> Result<Option<String>> {
-    let copy = journal_mut(root, cx).resolve_offline_recovery(id, keep)?;
+    ensure!(session(root, cx).is_some(), "This library has no active sync session");
+    let copy = if journal::recovery::is_shared(id) {
+        ensure!(recovery_account_ready(root, cx), "{}", crate::settings::tr(
+            "请先确认 iCloud 账户。", "Verify your iCloud account first."));
+        let revision = session(root, cx).unwrap().account_revision;
+        journal_mut(root, cx).resolve_shared_recovery(id, keep, || {
+            check_account_revision(revision)?;
+            ensure!(!root.join("require-account-verification").exists(), "The iCloud account requires verification.");
+            Ok(())
+        })?
+    } else { journal_mut(root, cx).resolve_offline_recovery(id, keep)? };
     if copy.is_some() && let Some(session) = session(root, cx) { let _ = session.sender.try_send(()); }
     Ok(copy)
+}
+
+fn recovery_account_ready(root: &Path, cx: &App) -> bool {
+    root == Store::root_dir() && !crate::cloud_restore::local_only()
+        && !root.join("require-account-verification").exists()
+        && session(root, cx).is_some_and(|sync| sync.journal.room().is_none() && sync.account_revision == account_revision())
+        && status(root, cx).is_some_and(|s| !matches!(s.phase,
+            SyncPhase::Account | SyncPhase::AccountChecking | SyncPhase::AccountChanged | SyncPhase::SignedOut))
 }
 
 pub fn version(root: &Path, id: &str, sequence: i64, cx: &App) -> Result<(Document, String)> {
@@ -702,6 +904,25 @@ pub fn thumbnail(path: &Path, destination: &Path) -> bool {
 #[cfg(test)]
 mod session_tests {
     use super::*;
+
+    #[test]
+    fn only_the_current_account_revision_can_clear_the_verification_marker() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("fei-account-verification-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root)?;
+        let marker = root.join("require-account-verification");
+        let result = (|| -> Result<()> {
+            std::fs::write(&marker, [])?;
+            let revision = account_revision();
+            assert!(complete_account_check(&root, revision.wrapping_add(1)).is_err());
+            assert!(marker.is_file());
+            complete_account_check(&root, revision)?;
+            assert!(!marker.exists());
+            complete_account_check(&root, revision)?;
+            Ok(())
+        })();
+        std::fs::remove_dir_all(root)?;
+        result
+    }
 
     #[test]
     fn library_handoff_preserves_queued_edits_and_isolates_late_callbacks() -> Result<()> {

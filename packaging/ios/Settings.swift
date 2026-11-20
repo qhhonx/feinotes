@@ -1,16 +1,250 @@
 import UIKit
 
 struct FeiSettingsState: Decodable, Equatable, Sendable {
-    struct Choice: Decodable, Equatable, Sendable { let value:String; let title:String }
+    struct Choice: Decodable, Equatable, Sendable { let value:String; let title:String; let preview:Preview? }
     struct Row: Decodable, Equatable, Sendable {
         let id:String; let title:String; let detail:String; let kind:String; let value:String
         let preview:Preview?
         let choices:[Choice]; let enabled:Bool; let danger:Bool
         var selectedTitle:String { choices.first(where: { $0.value == value })?.title ?? value }
     }
-    struct Preview: Decodable, Equatable, Sendable { let font:String; let mono:String; let size:CGFloat; let heading_size:CGFloat; let line:CGFloat; let text:[CGFloat]; let heading:[CGFloat]; let background:[CGFloat]; let link:[CGFloat]; let code_background:[CGFloat]; let title:String; let body:String; let list:String; let quote:String }
-    struct Section: Decodable, Equatable, Sendable { let title:String; let rows:[Row] }
+    struct Preview: Decodable, Equatable, Sendable {
+        struct TextStyle: Decodable, Equatable, Sendable {
+            let font:String; let size:CGFloat; let line:CGFloat; let weight:CGFloat; let ink:[CGFloat]
+        }
+        struct TaskStyle: Decodable, Equatable, Sendable {
+            let size:CGFloat; let radius:CGFloat; let gap:CGFloat
+            let fill:[CGFloat]; let check:[CGFloat]; let border:[CGFloat]; let empty:[CGFloat]
+            let done_ink:[CGFloat]; let strike:Bool; let done_label:String; let pending_label:String
+        }
+        let title:String; let body:String; let highlight:String; let heading:String; let completed:String; let pending:String
+        let paper:[CGFloat]; let title_style:TextStyle; let body_style:TextStyle; let heading_style:TextStyle
+        let paragraph_gap:CGFloat; let heading_gap:CGFloat
+        let highlight_fill:[CGFloat]?; let highlight_ink:[CGFloat]; let highlight_weight:CGFloat
+        let tasks:TaskStyle
+    }
+    struct Section: Decodable, Equatable, Sendable { let title:String; let rows:[Row]; let footer:String? }
     let scope:String; let page:String; let sections:[Section]; let message:String?; let interface_size:String
+
+    @MainActor func font(_ style:UIFont.TextStyle) -> UIFont {
+        let base = UIFont.preferredFont(forTextStyle: style)
+        let delta:CGFloat = interface_size == "large" ? 2 : interface_size == "small" ? -1 : 0
+        return base.withSize(base.pointSize+delta)
+    }
+}
+
+@MainActor
+private final class FeiThemePreviewView: UIView {
+    init(_ preview:FeiSettingsState.Preview) {
+        super.init(frame: .zero)
+        backgroundColor = color(preview.paper,fallback: .systemBackground)
+        let title = label(preview.title,style: preview.title_style)
+        let body = label(preview.body,style: preview.body_style)
+        let highlight = label(preview.highlight,style: preview.body_style,weight: preview.highlight_weight,
+                              ink: preview.highlight_ink,fill: preview.highlight_fill)
+        let heading = label(preview.heading,style: preview.heading_style)
+        heading.accessibilityTraits.insert(.header)
+        let complete = task(preview.completed,done: true,preview: preview)
+        let pending = task(preview.pending,done: false,preview: preview)
+        let stack = UIStackView(arrangedSubviews: [title,body,highlight,heading,complete,pending])
+        stack.axis = .vertical
+        stack.spacing = max(2,preview.paragraph_gap)
+        stack.setCustomSpacing(8,after: title)
+        stack.setCustomSpacing(10,after: highlight)
+        stack.setCustomSpacing(max(2,preview.heading_gap),after: heading)
+        stack.setCustomSpacing(max(2,preview.tasks.gap),after: complete)
+        directionalLayoutMargins = NSDirectionalEdgeInsets(top: 12,leading: 16,bottom: 16,trailing: 16)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: layoutMarginsGuide.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: layoutMarginsGuide.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
+        ])
+    }
+
+    required init?(coder:NSCoder) { fatalError("init(coder:) is unsupported") }
+
+    private func color(_ rgba:[CGFloat],fallback:UIColor = .label) -> UIColor {
+        guard rgba.count == 4 else { return fallback }
+        return UIColor(red: rgba[0],green: rgba[1],blue: rgba[2],alpha: rgba[3])
+    }
+
+    private func label(_ text:String,style:FeiSettingsState.Preview.TextStyle,weight:CGFloat? = nil,
+                       ink:[CGFloat]? = nil,fill:[CGFloat]? = nil,strike:Bool = false) -> UILabel {
+        let weights:[UIFont.Weight] = [.ultraLight,.thin,.light,.regular,.medium,.semibold,.bold,.heavy,.black]
+        let weightIndex = min(weights.count,max(1,Int(((weight ?? style.weight) / 100).rounded()))) - 1
+        let pointSize = max(1,style.size)
+        let system = UIFont.systemFont(ofSize: pointSize,weight: weights[weightIndex])
+        let family = UIFontDescriptor(fontAttributes: [.family:style.font,.traits: [UIFontDescriptor.TraitKey.weight: weights[weightIndex]]])
+        let font = style.font == ".SystemUIFont" ? system : UIFont(descriptor: family,size: pointSize)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = style.line
+        paragraph.lineBreakMode = .byWordWrapping
+        var attributes:[NSAttributedString.Key:Any] = [.font:font,.foregroundColor:color(ink ?? style.ink),.paragraphStyle:paragraph]
+        if let fill { attributes[.backgroundColor] = color(fill) }
+        if strike { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+        let label = UILabel()
+        label.attributedText = NSAttributedString(string: text,attributes: attributes)
+        label.numberOfLines = 0
+        label.lineBreakMode = .byWordWrapping
+        return label
+    }
+
+    private func task(_ text:String,done:Bool,preview:FeiSettingsState.Preview) -> UIView {
+        let style = preview.tasks
+        let label = label(text,style: preview.body_style,ink: done ? style.done_ink : nil,strike: done && style.strike)
+        label.accessibilityValue = done ? style.done_label : style.pending_label
+        let marker = UIView()
+        marker.backgroundColor = color(done ? style.fill : style.empty)
+        marker.layer.cornerRadius = style.radius
+        if done {
+            let check = UIImageView(image: UIImage(systemName: "checkmark",withConfiguration: UIImage.SymbolConfiguration(weight: .semibold)))
+            check.tintColor = color(style.check)
+            check.contentMode = .scaleAspectFit
+            check.translatesAutoresizingMaskIntoConstraints = false
+            marker.addSubview(check)
+            NSLayoutConstraint.activate([
+                check.centerXAnchor.constraint(equalTo: marker.centerXAnchor),
+                check.centerYAnchor.constraint(equalTo: marker.centerYAnchor),
+                check.widthAnchor.constraint(equalTo: marker.widthAnchor,multiplier: 0.58),
+                check.heightAnchor.constraint(equalTo: check.widthAnchor),
+            ])
+        } else {
+            marker.layer.borderWidth = 1
+            marker.layer.borderColor = color(style.border).cgColor
+        }
+
+        let row = UIView()
+        marker.translatesAutoresizingMaskIntoConstraints = false
+        label.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(marker)
+        row.addSubview(label)
+        let markerOffset = max(0,(preview.body_style.line-style.size)/2)
+        NSLayoutConstraint.activate([
+            marker.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            marker.topAnchor.constraint(equalTo: row.topAnchor,constant: markerOffset),
+            marker.widthAnchor.constraint(equalToConstant: style.size),
+            marker.heightAnchor.constraint(equalTo: marker.widthAnchor),
+            marker.bottomAnchor.constraint(lessThanOrEqualTo: row.bottomAnchor),
+            label.leadingAnchor.constraint(equalTo: marker.trailingAnchor,constant: 8),
+            label.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            label.topAnchor.constraint(equalTo: row.topAnchor),
+            label.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+        ])
+        return row
+    }
+}
+
+private extension UITableViewCell {
+    func installPreview(_ preview:UIView) {
+        preview.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(preview)
+        NSLayoutConstraint.activate([
+            preview.topAnchor.constraint(equalTo: contentView.topAnchor),
+            preview.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            preview.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            preview.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+        ])
+    }
+}
+
+@MainActor
+final class FeiShareAcceptController: UIViewController {
+    private weak var coordinator: FeiNavigationCoordinator?
+    private let link = UITextField()
+    private let submit = UIButton(type: .system)
+    private let notice = UILabel()
+    private var scope: String?
+    private var busy = false
+    private var projectedLink: String?
+    private var canAccept = false
+
+    init(coordinator: FeiNavigationCoordinator) {
+        self.coordinator = coordinator
+        super.init(nibName: nil,bundle: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemGroupedBackground
+        link.borderStyle = .roundedRect
+        link.font = .preferredFont(forTextStyle: .body)
+        link.adjustsFontForContentSizeCategory = true
+        link.keyboardType = .URL
+        link.returnKeyType = .go
+        link.autocorrectionType = .no
+        link.autocapitalizationType = .none
+        link.clearButtonMode = .whileEditing
+        link.accessibilityIdentifier = "fei.share.invitation-link"
+        link.addTarget(self,action: #selector(updateSubmit),for: .editingChanged)
+        link.addTarget(self,action: #selector(accept),for: .editingDidEndOnExit)
+        submit.configuration = .filled()
+        submit.accessibilityIdentifier = "fei.share.accept"
+        submit.addTarget(self,action: #selector(accept),for: .touchUpInside)
+        notice.numberOfLines = 0
+        notice.font = .preferredFont(forTextStyle: .footnote)
+        notice.adjustsFontForContentSizeCategory = true
+        notice.accessibilityIdentifier = "fei.share.invitation-status"
+
+        let scroll = UIScrollView()
+        scroll.keyboardDismissMode = .interactive
+        let form = UIStackView(arrangedSubviews: [link,submit,notice])
+        form.axis = .vertical
+        form.spacing = 12
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        form.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(scroll)
+        scroll.addSubview(form)
+        let safe = view.safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: safe.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+            form.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor,constant: 20),
+            form.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor,constant: -20),
+            form.leadingAnchor.constraint(equalTo: scroll.frameLayoutGuide.leadingAnchor,constant: 20),
+            form.trailingAnchor.constraint(equalTo: scroll.frameLayoutGuide.trailingAnchor,constant: -20),
+            form.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor,constant: 20),
+            form.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor,constant: -20),
+            link.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            submit.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+        ])
+    }
+
+    func update(_ state: FeiSettingsState,busy: Bool,theme: FeiMobileTheme) {
+        loadViewIfNeeded()
+        let rows = state.sections.flatMap { $0.rows }
+        guard let field = rows.first(where: { $0.kind == "invitation-link" }) else { return }
+        self.busy = busy
+        canAccept = field.enabled
+        scope = state.scope
+        if projectedLink != field.value {
+            projectedLink = field.value
+            link.text = field.value
+        }
+        link.isEnabled = !busy
+        link.placeholder = field.detail
+        link.accessibilityLabel = field.detail
+        submit.configuration?.title = field.title
+        submit.configuration?.baseBackgroundColor = theme.accentColor
+        notice.text = rows.first(where: { $0.id == "share-message" || $0.id == "share-busy" || $0.id == "share-unavailable" })?.title
+        notice.textColor = busy || !canAccept ? .secondaryLabel : .systemRed
+        notice.isHidden = notice.text?.isEmpty != false
+        updateSubmit()
+    }
+
+    @objc private func updateSubmit() { submit.isEnabled = canAccept && !busy && !trimmedLink.isEmpty }
+    private var trimmedLink: String { link.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
+
+    @objc private func accept() {
+        guard canAccept,!busy,let scope,!trimmedLink.isEmpty else { return }
+        link.resignFirstResponder()
+        coordinator?.send("settings-command",value: trimmedLink,id: "share-accept",scope: scope)
+    }
 }
 
 @MainActor
@@ -87,19 +321,39 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         guard let model else { return }
         let query = search.searchBar.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         sections = model.sections.map { section in
-            FeiSettingsState.Section(title: section.title,rows: section.rows.filter { model.page != "Shortcuts" || query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.value.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query) || prettyShortcut($0.value).localizedCaseInsensitiveContains(query) })
+            FeiSettingsState.Section(title: section.title,rows: section.rows.filter { model.page != "Shortcuts" || query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.value.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query) || prettyShortcut($0.value).localizedCaseInsensitiveContains(query) },footer: section.footer)
         }.filter { !$0.rows.isEmpty }
         tableView.reloadData()
     }
     override func numberOfSections(in tableView:UITableView) -> Int { sections.count }
     override func tableView(_ tableView:UITableView,numberOfRowsInSection section:Int) -> Int { sections[section].rows.count }
     override func tableView(_ tableView:UITableView,titleForHeaderInSection section:Int) -> String? { sections[section].title.isEmpty ? nil : sections[section].title }
+    override func tableView(_ tableView:UITableView,titleForFooterInSection section:Int) -> String? { sections[section].footer }
+    override func tableView(_ tableView:UITableView,heightForFooterInSection section:Int) -> CGFloat {
+        sections[section].footer == nil ? tableView.sectionFooterHeight : UITableView.automaticDimension
+    }
+    override func tableView(_ tableView:UITableView,viewForFooterInSection section:Int) -> UIView? {
+        guard let text = sections[section].footer else { return nil }
+        let footer = UITableViewHeaderFooterView(reuseIdentifier: nil)
+        var content = UIListContentConfiguration.groupedFooter()
+        content.text = text
+        content.textProperties.font = font(.footnote)
+        content.textProperties.color = .secondaryLabel
+        content.textProperties.numberOfLines = 0
+        content.textProperties.adjustsFontForContentSizeCategory = true
+        footer.contentConfiguration = content
+        footer.isAccessibilityElement = true
+        footer.accessibilityLabel = text
+        footer.accessibilityTraits = .staticText
+        return footer
+    }
     override func tableView(_ tableView:UITableView,heightForRowAt indexPath:IndexPath) -> CGFloat { UITableView.automaticDimension }
     override func tableView(_ tableView:UITableView,cellForRowAt indexPath:IndexPath) -> UITableViewCell {
         let row = sections[indexPath.section].rows[indexPath.row]
         if let preview = row.preview { return themePreviewCell(preview) }
         let cell = UITableViewCell(style: .subtitle,reuseIdentifier: nil)
-        var content = cell.defaultContentConfiguration()
+        let trailingStatus = row.id == "page:Cloud" && model?.page == "root"
+        var content = trailingStatus ? UIListContentConfiguration.valueCell() : cell.defaultContentConfiguration()
         content.text = row.title
         if row.id.hasPrefix("page:") {
             let symbols = ["General":"gearshape","Appearance":"paintpalette","Library":"folder","Shortcuts":"keyboard","Cloud":"icloud","Shared":"person.2","About":"info.circle"]
@@ -133,30 +387,19 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
             toggle.addAction(UIAction { [weak self,weak toggle] _ in self?.command(row,value: toggle?.isOn == true ? "true" : "false",scope: scope) },for: .valueChanged)
             cell.accessoryView = toggle
         } else if ["page","choice","shortcut","input","link"].contains(row.kind) { cell.accessoryType = .disclosureIndicator }
-        if !enabled { cell.isUserInteractionEnabled = false }
+        if !enabled {
+            cell.isUserInteractionEnabled = false
+            cell.accessibilityTraits.insert(.notEnabled)
+        }
         return cell
     }
     private func themePreviewCell(_ preview:FeiSettingsState.Preview) -> UITableViewCell {
         let cell = UITableViewCell(); cell.selectionStyle = .none; cell.accessibilityIdentifier = "fei.setting.theme-preview"
-        let text = UITextView(); text.isEditable = false; text.isSelectable = false; text.isScrollEnabled = false
-        func color(_ c:[CGFloat]) -> UIColor { guard c.count == 4 else { return .label }; return UIColor(red: c[0],green: c[1],blue: c[2],alpha: c[3]) }
-        let font = UIFont(name: preview.font,size: preview.size) ?? .systemFont(ofSize: preview.size)
-        let heading = UIFont(name: preview.font,size: preview.heading_size) ?? .boldSystemFont(ofSize: preview.heading_size)
-        let paragraph = NSMutableParagraphStyle(); paragraph.minimumLineHeight = preview.line; paragraph.paragraphSpacing = 8
-        let body:[NSAttributedString.Key:Any] = [.font:font,.foregroundColor:color(preview.text),.paragraphStyle:paragraph]
-        let content = NSMutableAttributedString(string: preview.title+"\n",attributes: [.font:heading,.foregroundColor:color(preview.heading),.paragraphStyle:paragraph])
-        content.append(NSAttributedString(string: preview.body+"\n• "+preview.list+"\n❝ "+preview.quote+"\n",attributes: body))
-        content.append(NSAttributedString(string: "let ideas = []",attributes: [.font:UIFont(name: preview.mono,size: preview.size) ?? .monospacedSystemFont(ofSize: preview.size,weight: .regular),.foregroundColor:color(preview.text),.backgroundColor:color(preview.code_background)]))
-        text.attributedText = content; text.backgroundColor = color(preview.background)
-        text.textContainerInset = UIEdgeInsets(top: 20,left: 12,bottom: 20,right: 12)
-        text.translatesAutoresizingMaskIntoConstraints = false; cell.contentView.addSubview(text)
-        NSLayoutConstraint.activate([text.topAnchor.constraint(equalTo: cell.contentView.topAnchor),text.bottomAnchor.constraint(equalTo: cell.contentView.bottomAnchor),text.leadingAnchor.constraint(equalTo: cell.contentView.leadingAnchor),text.trailingAnchor.constraint(equalTo: cell.contentView.trailingAnchor)])
+        cell.installPreview(FeiThemePreviewView(preview))
         return cell
     }
     private func font(_ style:UIFont.TextStyle) -> UIFont {
-        let base = UIFont.preferredFont(forTextStyle: style)
-        let delta:CGFloat = model?.interface_size == "large" ? 2 : model?.interface_size == "small" ? -1 : 0
-        return base.withSize(base.pointSize+delta)
+        model?.font(style) ?? .preferredFont(forTextStyle: style)
     }
     override func tableView(_ tableView:UITableView,didSelectRowAt indexPath:IndexPath) {
         tableView.deselectRow(at: indexPath,animated: true)
@@ -164,7 +407,7 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         let row = sections[indexPath.section].rows[indexPath.row]
         guard row.enabled,!busy else { return }
         if row.kind == "choice" {
-            let picker = FeiSettingsChoiceController(row: row,scope: model.scope,coordinator: coordinator)
+            let picker = FeiSettingsChoiceController(row: row,state: model,coordinator: coordinator)
             navigationController?.pushViewController(picker,animated: !UIAccessibility.isReduceMotionEnabled)
         } else if row.kind == "shortcut" { showShortcut(row,scope: model.scope) }
         else if row.kind == "input" { showInput(row,scope: model.scope) }
@@ -183,7 +426,7 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         alert.addTextField { field in
             field.placeholder = row.detail; field.autocorrectionType = .no; field.autocapitalizationType = .none
             field.text = row.value
-            field.keyboardType = row.id == "share-accept" ? .URL : .emailAddress
+            field.keyboardType = row.id == "share-accept" ? .URL : row.id == "share-new-name" ? .default : .emailAddress
             field.accessibilityIdentifier = "fei.settings.input"
         }
         alert.addAction(UIAlertAction(title: coordinator?.localized("取消","Cancel"),style: .cancel))
@@ -209,8 +452,10 @@ final class FeiSettingsChoiceController: UITableViewController {
     private var row:FeiSettingsState.Row
     private let scope:String
     private weak var coordinator:FeiNavigationCoordinator?
-    init(row:FeiSettingsState.Row,scope:String,coordinator:FeiNavigationCoordinator?) {
-        self.row = row; self.scope = scope; self.coordinator = coordinator
+    private var state:FeiSettingsState
+    private var comparesThemes:Bool { row.id == "theme" }
+    init(row:FeiSettingsState.Row,state:FeiSettingsState,coordinator:FeiNavigationCoordinator?) {
+        self.row = row; self.state = state; self.scope = state.scope; self.coordinator = coordinator
         super.init(style: .insetGrouped); title = row.title
         navigationItem.backButtonDisplayMode = .minimal
     }
@@ -218,25 +463,59 @@ final class FeiSettingsChoiceController: UITableViewController {
     override func viewDidLoad() { super.viewDidLoad(); tableView.accessibilityIdentifier = "fei.settings.choices"; tableView.rowHeight = UITableView.automaticDimension; tableView.estimatedRowHeight = 52 }
     func update(_ state:FeiSettingsState,busy:Bool) {
         guard scope == state.scope,let next = state.sections.flatMap(\.rows).first(where: { $0.id == row.id }) else { view.isUserInteractionEnabled = false; return }
-        guard row != next || view.isUserInteractionEnabled == busy else { return }
-        row = next; title = next.title; view.isUserInteractionEnabled = !busy && next.enabled; tableView.reloadData()
+        let enabled = !busy && next.enabled
+        guard row != next || state.interface_size != self.state.interface_size || view.isUserInteractionEnabled != enabled else { return }
+        row = next; self.state = state; title = next.title; view.isUserInteractionEnabled = enabled; tableView.reloadData()
     }
-    override func tableView(_ tableView:UITableView,numberOfRowsInSection section:Int) -> Int { row.choices.count }
+    override func numberOfSections(in tableView:UITableView) -> Int { comparesThemes ? row.choices.count : 1 }
+    override func tableView(_ tableView:UITableView,numberOfRowsInSection section:Int) -> Int { comparesThemes ? 1 : row.choices.count }
+    private func choiceIndex(_ indexPath:IndexPath) -> Int { comparesThemes ? indexPath.section : indexPath.row }
     override func tableView(_ tableView:UITableView,cellForRowAt indexPath:IndexPath) -> UITableViewCell {
-        let item = row.choices[indexPath.row]; let cell = UITableViewCell()
+        let item = row.choices[choiceIndex(indexPath)]; let cell = UITableViewCell()
+        let selected = row.value == item.value
+        cell.accessibilityIdentifier = "fei.setting.option."+row.id+"."+item.value
+        if let preview = item.preview {
+            let name = UILabel()
+            name.text = item.title; name.font = state.font(.headline); name.adjustsFontForContentSizeCategory = true; name.numberOfLines = 0
+            let header = UIStackView(arrangedSubviews: [name])
+            header.alignment = .center; header.spacing = 8
+            header.isLayoutMarginsRelativeArrangement = true
+            header.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 11,leading: 16,bottom: 11,trailing: 16)
+            header.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            if selected {
+                let check = UIImageView(image: UIImage(systemName: "checkmark",withConfiguration: UIImage.SymbolConfiguration(textStyle: .body,scale: .medium)))
+                check.tintColor = .label; check.adjustsImageSizeForAccessibilityContentSizeCategory = true
+                check.setContentHuggingPriority(.required,for: .horizontal)
+                check.setContentCompressionResistancePriority(.required,for: .horizontal)
+                header.addArrangedSubview(check)
+            }
+            let divider = UIView()
+            divider.backgroundColor = .separator
+            divider.heightAnchor.constraint(equalToConstant: 1/max(1,tableView.traitCollection.displayScale)).isActive = true
+            let sample = FeiThemePreviewView(preview)
+            sample.accessibilityElementsHidden = true
+            let stack = UIStackView(arrangedSubviews: [header,divider,sample])
+            stack.axis = .vertical
+            cell.installPreview(stack)
+            cell.isAccessibilityElement = true
+            cell.accessibilityLabel = item.title
+            cell.accessibilityTraits.insert(.button)
+            if selected { cell.accessibilityTraits.insert(.selected) }
+            return cell
+        }
         var content = cell.defaultContentConfiguration(); content.text = item.title
         content.textProperties.font = .preferredFont(forTextStyle: .body); content.textProperties.numberOfLines = 0; content.textProperties.adjustsFontForContentSizeCategory = true
         content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 14,leading: 16,bottom: 14,trailing: 16)
         if item.value == "revoke" { content.textProperties.color = .systemRed }
-        cell.contentConfiguration = content; cell.accessoryType = row.value == item.value ? .checkmark : .none
-        cell.accessibilityIdentifier = "fei.setting.option."+row.id+"."+item.value
+        cell.contentConfiguration = content; cell.accessoryType = selected ? .checkmark : .none
         return cell
     }
     override func tableView(_ tableView:UITableView,didSelectRowAt indexPath:IndexPath) {
-        let value = row.choices[indexPath.row].value
+        let item = row.choices[choiceIndex(indexPath)]
+        let value = item.value
         let send = { [weak self] in guard let self else { return }; self.coordinator?.send("settings-command",value: value,id: self.row.id,scope: self.scope); self.navigationController?.popViewController(animated: !UIAccessibility.isReduceMotionEnabled) }
         if value == "revoke" {
-            let alert = UIAlertController(title: row.choices[indexPath.row].title,message: row.title,preferredStyle: .alert)
+            let alert = UIAlertController(title: item.title,message: row.title,preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: coordinator?.localized("取消","Cancel"),style: .cancel))
             alert.addAction(UIAlertAction(title: row.choices[indexPath.row].title,style: .destructive) { _ in send() }); present(alert,animated: true)
         } else { send() }

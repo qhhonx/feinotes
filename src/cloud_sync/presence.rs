@@ -59,6 +59,16 @@ pub(crate) struct View {
 pub(crate) struct Views(HashMap<PathBuf, View>);
 impl Global for Views {}
 pub(crate) fn view<'a>(root: &std::path::Path, cx: &'a App) -> Option<&'a View> { cx.try_global::<Views>()?.0.get(root) }
+#[cfg(all(feature = "devtools", target_os = "macos"))]
+pub(crate) fn qa_online(root: &Path, id: &str, online: bool, cx: &mut App) {
+    if !cx.has_global::<Views>() { cx.set_global(Views::default()); }
+    let view = cx.global_mut::<Views>().0.entry(root.to_owned()).or_default();
+    if !online { view.collaborators.remove(id); return; }
+    let people = ["林夏", "周宁", "陈安", "王景"].into_iter().enumerate().map(|(color, name)| Collaborator {
+        name: Some(name.into()), initials: name.chars().take(1).collect::<String>().into(), color,
+    }).collect();
+    view.collaborators.insert(id.to_owned(), people);
+}
 pub(crate) fn wake(root: &Path, cx: &App) {
     if let Some(session) = super::session(root, cx) { let _ = session.presence_wake.try_send(()); }
 }
@@ -175,7 +185,7 @@ struct Online {
     until: Instant,
 }
 
-fn display_name(name: Option<&str>) -> Option<SharedString> {
+pub(super) fn display_name(name: Option<&str>) -> Option<SharedString> {
     let name = name?.trim();
     if name.is_empty() || name.contains('@') || name.chars().any(|ch| ch.is_control() || matches!(ch, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')) { return None; }
     Some(name.graphemes(true).take(20).collect::<String>().into())

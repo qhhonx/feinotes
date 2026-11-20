@@ -16,6 +16,9 @@ use super::history::History;
 use super::retention;
 use super::shared::{self, Access};
 
+pub(super) mod recovery;
+pub(super) mod conflict;
+
 #[cfg(panic = "abort")]
 compile_error!("CloudKit journal recovery requires panic unwinding");
 
@@ -32,6 +35,7 @@ pub struct Journal {
     next_collection: std::cell::Cell<Option<std::time::Instant>>,
     merged_data_version: Option<i64>,
     retry_catalogue: bool,
+    pub(super) apply_wait: super::ApplyWait,
     history: HashMap<String, History>,
 }
 
@@ -104,12 +108,18 @@ fn get_state(db: &Connection, key: &str) -> Result<Option<Vec<u8>>> {
     Ok(db.query_row("SELECT value FROM state WHERE key = ?1", [key], |row| row.get(0)).optional()?)
 }
 
+pub(super) fn stored_catalogue(db: &Connection) -> Result<LoroDoc> {
+    Ok(open_replay_snapshot(&get_state(db, "catalogue")?.context("Missing shared catalogue")?)?)
+}
+
 fn put_state(db: &Connection, key: &str, data: &[u8]) -> Result<()> {
     db.execute("INSERT OR REPLACE INTO state VALUES (?1, ?2)", params![key, data])?;
     Ok(())
 }
 
 const CATALOGUE_PAUSED: &str = "catalogue_replay_paused";
+const CATALOGUE_REPLAY_UPGRADE: &str = "catalogue_replay_attempted_loro_1_18";
+const DOCUMENT_REPLAY_UPGRADE: &str = "table_alias_projection_v2";
 
 #[derive(Debug)]
 enum ReplayFailure { Rejected, Panicked }
@@ -148,7 +158,7 @@ fn open_replay_snapshot(snapshot: &[u8]) -> Result<LoroDoc, ReplayFailure> {
 }
 
 fn stage_catalogue(db: &Connection, peer: u64, personal: bool, writable: bool, paused: bool,
-    local: &catalogue::Catalogue, seen: &catalogue::Catalogue) -> Result<Option<(LoroDoc, VersionVector)>>
+    local: &catalogue::Catalogue, seen: &catalogue::Catalogue, awaiting_predecessor: &mut bool) -> Result<Option<(LoroDoc, VersionVector)>>
 {
     let snapshot = get_state(db, "catalogue")?.context("Missing catalogue snapshot")?;
     let (catalogue, before) = with_replay_candidate(LoroDoc::new(), |doc| {
@@ -163,7 +173,7 @@ fn stage_catalogue(db: &Connection, peer: u64, personal: bool, writable: bool, p
         enqueue(db, catalogue::SCOPE, catalogue.export(ExportMode::updates(&before))?)?;
     }
 
-    let edits = incoming(db, catalogue::SCOPE)?;
+    let (records, edits) = incoming(db, catalogue::SCOPE)?;
     if edits.is_empty() {
         return Ok(Some((catalogue, before)));
     }
@@ -174,8 +184,22 @@ fn stage_catalogue(db: &Connection, peer: u64, personal: bool, writable: bool, p
         doc.set_peer_id(peer)?;
         Ok(pending)
     })?;
-    if pending { return Ok((!paused).then_some((catalogue, before))); }
-    db.execute("DELETE FROM inbox WHERE note = ?1", [catalogue::SCOPE])?;
+    if pending {
+        *awaiting_predecessor = true;
+        if paused { return Ok(None); }
+        // Keep records with missing history byte-for-byte. Persist the causally
+        // complete changes from this batch with the catalogue projection so a
+        // lone gap cannot prevent unrelated folders and lists from updating.
+        let applied = candidate.oplog_vv();
+        for (record, edit) in records.iter().zip(&edits) {
+            let end = LoroDoc::decode_import_blob_meta(edit, false)?.partial_end_vv;
+            if applied.includes_vv(&end) {
+                db.execute("DELETE FROM inbox WHERE id = ?1", [record])?;
+            }
+        }
+    } else {
+        db.execute("DELETE FROM inbox WHERE note = ?1", [catalogue::SCOPE])?;
+    }
     Ok(Some((candidate, before)))
 }
 
@@ -186,15 +210,20 @@ pub fn enqueue(db: &Connection, scope: &str, update: Vec<u8>) -> Result<()> {
     Ok(())
 }
 
-fn incoming(db: &Connection, scope: &str) -> Result<Vec<Vec<u8>>> {
-    let records = db.prepare("SELECT id, data FROM inbox WHERE note = ?1 ORDER BY rowid")?
-        .query_map([scope], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    records.into_iter().map(|(id, mut data)| {
+fn incoming(db: &Connection, scope: &str) -> Result<(Vec<String>, Vec<Vec<u8>>)> {
+    let mut statement = db.prepare("SELECT id, data FROM inbox WHERE note = ?1 ORDER BY rowid")?;
+    let mut rows = statement.query([scope])?;
+    let mut records = Vec::new();
+    let mut updates = Vec::new();
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        let mut data: Vec<u8> = row.get(1)?;
         // Existing libraries can have complete checkpoint envelopes in the inbox.
         normalize_checkpoint(db, &id, scope, &mut data)?;
-        Ok(data)
-    }).collect()
+        records.push(id);
+        updates.push(data);
+    }
+    Ok((records, updates))
 }
 
 fn front(loro: &LoroDoc) -> String {
@@ -300,12 +329,31 @@ fn archived_document(body: ValueRef<'_>) -> Result<Document> {
     crate::docxml::parse(body.as_str()?)
 }
 
+fn archived_body(db: &Connection, id: &str, sequence: i64) -> Result<(Document, String)> {
+    let mut stmt = db.prepare("SELECT body, front FROM sync_history WHERE note = ?1 AND sequence = ?2")?;
+    let mut rows = stmt.query(params![id, sequence])?;
+    let row = rows.next()?.context("The recovery copy is missing.")?;
+    Ok((archived_document(row.get_ref(0)?)?, row.get(1)?))
+}
+
+fn write_recovery_copy(db: &Connection, id: &str, doc: &mut Document, front: &str, mut meta: Meta) -> Result<()> {
+    let title = crate::settings::display_title(&doc.title.text);
+    doc.title = crate::model::RichText::plain(crate::localized_format!("{} · 恢复副本", "{} · recovered", title));
+    let now = crate::time::now();
+    meta.created = now;
+    meta.modified = now;
+    meta.name = (meta.markdown || !meta.kind.is_doc()).then(|| doc.title.text.clone());
+    Store::write_sync_body(db, id, false, doc, front)?;
+    db.execute("INSERT INTO library_entries VALUES (?1, ?2)", params![id, serde_json::to_string(&meta)?])?;
+    Ok(())
+}
+
 pub(super) fn note_version(db: &Connection, id: &str) -> Result<Option<VersionVector>> {
     note(db, id)?.filter(|note| !note.snapshot.is_empty())
         .map(|note| open_note(db, id, &note.snapshot).map(|doc| doc.oplog_vv())).transpose()
 }
 
-pub fn archive_body(db: &Connection, id: &str, deleted_version: Option<&VersionVector>, markdown: bool) -> Result<()> {
+pub fn archive_body(db: &Connection, id: &str, deleted_version: Option<&VersionVector>, markdown: bool, shared_peer: Option<u64>) -> Result<()> {
     let trashed = db.query_row("SELECT trashed FROM library_documents WHERE id = ?1", [id],
         |row| row.get::<_, bool>(0)).optional()?;
     if let Some(trashed) = trashed {
@@ -313,13 +361,27 @@ pub fn archive_body(db: &Connection, id: &str, deleted_version: Option<&VersionV
         let sequence = archive(db, id, &doc, &front, true)?;
         let held: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM notes WHERE id = ?1 AND held <> 0)", [id], |row| row.get(0))?;
         let after_delete = match deleted_version {
-            Some(deleted) => note_version(db, id)?.is_some_and(|local| !deleted.includes_vv(&local)),
+            Some(deleted) => note_version(db, id)?.is_some_and(|local| match shared_peer {
+                Some(peer) => local.get(&peer).copied().unwrap_or(0) > deleted.get(&peer).copied().unwrap_or(0),
+                None => !deleted.includes_vv(&local),
+            }),
             None => db.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE note = ?1)", [id], |row| row.get(0))?,
         };
         if held || after_delete {
             db.execute("INSERT OR IGNORE INTO offline_recoveries VALUES (?1, ?2, ?3, ?4)", params![id, sequence, doc.title.text, markdown])?;
         }
     }
+    Ok(())
+}
+
+pub(super) fn archive_owner_ended(db: &Connection, room: &shared::Scope) -> Result<()> {
+    if room.owner.is_some() || room.folder { return Ok(()); }
+    let initialized: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'offline_recoveries')", [], |r| r.get(0))?;
+    if !initialized { return Ok(()); }
+    let front: Option<String> = db.query_row("SELECT front FROM library_documents WHERE id = ?1 AND (
+        EXISTS(SELECT 1 FROM outbox WHERE note = ?1) OR EXISTS(SELECT 1 FROM notes WHERE id = ?1 AND held <> 0))",
+        [&room.note], |r| r.get(0)).optional()?;
+    if let Some(front) = front { archive_body(db, &room.note, None, !front.is_empty(), None)?; }
     Ok(())
 }
 
@@ -396,18 +458,31 @@ fn capture_note(db: &Connection, root: &Path, peer: u64, id: &str, doc: &Documen
     Ok(finish_capture(db, root, id, doc, (seen, markdown), Capture { old, loro: &loro, before })?.0)
 }
 
-fn apply_document(db: &Connection, root: &Path, id: &str, shared: bool, positions: &[Pos]) -> Result<(bool, Option<NoteChange>)> {
+enum DocumentApply {
+    Applied(Option<NoteChange>),
+    Held,
+    AwaitingPredecessor,
+    AwaitingAttachment,
+    Deleted,
+}
+
+fn apply_document(db: &Connection, root: &Path, id: &str, shared: bool, positions: &[Pos]) -> Result<DocumentApply> {
     let old = note(db, id)?;
-    if old.as_ref().is_some_and(|note| note.held) { return Ok((false, None)); }
-    let updates = incoming(db, id)?;
-    if updates.is_empty() { return Ok((true, None)); }
+    if old.as_ref().is_some_and(|note| note.held) { return Ok(DocumentApply::Held); }
+    let (_, updates) = incoming(db, id)?;
+    let retry = has_conflict(db, id)?;
+    if updates.is_empty() && !retry { return Ok(DocumentApply::Applied(None)); }
+    if old.is_none() && updates.is_empty() { return Err(content::ConflictingBlockShapes.into()); }
     let loro = open_note(db, id, old.as_ref().map_or(&[], |note| note.snapshot.as_slice()))?;
     let before = loro.oplog_vv();
     let anchors: Vec<_> = positions.iter().filter_map(|&pos| content::anchor(&loro, pos).map(|anchor| (pos, anchor))).collect();
     let (loro, status) = with_replay_candidate(loro, |doc| doc.import_batch(&updates))?;
-    if status.pending.is_some() { return Ok((false, None)); }
-    let changed = if loro.oplog_vv() != before {
-        let doc = content::render(&loro).context("Render merged cloud document")?;
+    if status.pending.is_some() { return Ok(DocumentApply::AwaitingPredecessor); }
+    let changed = if loro.oplog_vv() != before || retry {
+        let (doc, repaired) = content::project(&loro).map_err(|error| {
+            crate::logging::write(&format!("Could not project synced document: {error:#}"));
+            content::ConflictingBlockShapes
+        })?;
         let merged_front = front(&loro);
         let mut paths = content::local_assets(&doc);
         if shared {
@@ -417,14 +492,18 @@ fn apply_document(db: &Connection, root: &Path, id: &str, shared: bool, position
         let total = paths.len();
         paths.retain(|source| local_only.get(source).is_none());
         if !db.query_row("SELECT EXISTS(SELECT 1 FROM cloud_inventory_state)", [], |r| r.get::<_,bool>(0))?
-            && paths.iter().any(|source| !assets::present(root, source)) { return Ok((false, None)); }
+            && paths.iter().any(|source| !assets::present(root, source)) { return Ok(DocumentApply::AwaitingAttachment); }
         attachment_warnings(db, id, total - paths.len())?;
         let (tips, has_fork) = archive_frontiers(&loro, &before, &updates)?;
+        let protect_versions = has_fork || repaired && (retry || {
+            let previous = loro.fork_at(&loro.vv_to_frontiers(&before))?;
+            !content::project(&previous).is_ok_and(|(_, had_aliases)| had_aliases)
+        });
         let trashed = db.query_row("SELECT trashed FROM library_documents WHERE id = ?1", [id],
             |row| row.get::<_, bool>(0)).optional()?;
         if let Some(trashed) = trashed {
             let (current, _, front) = Store::read_sync_body(db, id, trashed)?;
-            if current != doc || front != merged_front { archive(db, id, &current, &front, has_fork)?; }
+            if current != doc || front != merged_front { archive(db, id, &current, &front, protect_versions)?; }
         }
         // Preserve the sender's branch as well as our previous view.
         // A split or deleted block can hide text in the merged view.
@@ -434,7 +513,7 @@ fn apply_document(db: &Connection, root: &Path, id: &str, shared: bool, position
             let candidate = content::render(&branch)?;
             let candidate_front = front(&branch);
             if candidate != doc || candidate_front != merged_front {
-                archive(db, id, &candidate, &candidate_front, has_fork)?;
+                archive(db, id, &candidate, &candidate_front, protect_versions)?;
             }
         }
         trim_recent_versions(db, id)?;
@@ -447,7 +526,7 @@ fn apply_document(db: &Connection, root: &Path, id: &str, shared: bool, position
     } else { None };
     if shared { activity::mark_projected(db, id)?; }
     db.execute("DELETE FROM inbox WHERE note = ?1", [id])?;
-    Ok((true, changed))
+    Ok(DocumentApply::Applied(changed))
 }
 
 fn revision(db: &Connection, id: &str) -> Result<(i64, String)> {
@@ -493,6 +572,7 @@ impl Journal {
             CREATE TABLE IF NOT EXISTS offline_recoveries (
                 note TEXT PRIMARY KEY, sequence INTEGER NOT NULL, title TEXT NOT NULL, markdown INTEGER NOT NULL);
         ")?;
+        if room.is_none() { db.execute_batch("CREATE TABLE IF NOT EXISTS shared_recovery_resolutions (id TEXT PRIMARY KEY, copy TEXT)")?; }
         retention::schema(&db)?;
         let has_recovery = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sync_history') WHERE name = 'recovery')",
             [], |row| row.get::<_, bool>(0))?;
@@ -549,7 +629,7 @@ impl Journal {
         };
         tx.commit()?;
         let mut journal = Self { db, _lock: lock, _session: session, root: root.to_path_buf(), peer: peer as u64, account, channel, room, access,
-            next_collection: Default::default(), merged_data_version: None, retry_catalogue: false, history: HashMap::new() };
+            next_collection: Default::default(), merged_data_version: None, retry_catalogue: false, apply_wait: Default::default(), history: HashMap::new() };
         if let Err(error) = journal.collect_local() { crate::logging::write(&format!("Deferred local attachment cleanup: {error:#}")); }
         Ok(journal)
     }
@@ -557,6 +637,15 @@ impl Journal {
     pub fn room(&self) -> Option<&shared::Scope> { self.room.as_ref() }
 
     pub fn access(&self) -> Option<Access> { self.access }
+
+    pub(super) fn restrict_to_read_only(&mut self) -> Result<bool> {
+        if !self.access.is_some_and(Access::can_write) { return Ok(false); }
+        let tx = self.db.transaction()?;
+        put_state(&tx, "shared_access", &serde_json::to_vec(&Access::ReadOnly)?)?;
+        tx.commit()?;
+        self.access = Some(Access::ReadOnly);
+        Ok(true)
+    }
 
     pub fn seed_shared(&mut self, doc: &Document, front: &str) -> Result<()> {
         let room = self.room.as_ref().context("Not a shared document")?;
@@ -608,6 +697,10 @@ impl Journal {
         let in_library: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM library_documents WHERE id = ?1 AND trashed = 0)",
             [id], |row| row.get(0))?;
         if !in_library { return Ok((store.save(id, doc)?, false)); }
+        if has_conflict(&self.db, id)? {
+            self.history.remove(id);
+            return store.save(id, doc).map(|meta| (meta, false));
+        }
         let root = self.root.clone();
         let peer = self.peer;
         let active = self.history(id)?;
@@ -633,6 +726,7 @@ impl Journal {
 
     pub fn undo(&mut self, store: &mut SharedStore, id: &str, core: &Core, peers: &[Pos], redo: bool) -> Result<Option<(NoteChange, Option<crate::editor::core::Selection>)>> {
         self.ensure_writable(id)?;
+        if has_conflict(&self.db, id)? { return Ok(None); }
         let root = self.root.clone();
         let peer = self.peer;
         let Some((old, history)) = self.history(id)? else { return Ok(None) };
@@ -690,20 +784,9 @@ impl Journal {
         let (sequence, markdown): (i64, bool) = tx.query_row(
             "SELECT sequence, markdown FROM offline_recoveries WHERE note = ?1", [id], |row| Ok((row.get(0)?, row.get(1)?)))?;
         let copy = if keep {
-            let (mut doc, front): (Document, String) = {
-                let mut stmt = tx.prepare("SELECT body, front FROM sync_history WHERE note = ?1 AND sequence = ?2")?;
-                let mut rows = stmt.query(params![id, sequence])?;
-                let row = rows.next()?.context("The recovery copy is missing.")?;
-                (archived_document(row.get_ref(0)?)?, row.get(1)?)
-            };
-            let title = crate::settings::display_title(&doc.title.text);
-            doc.title = crate::model::RichText::plain(crate::localized_format!("{} · 恢复副本", "{} · recovered", title));
+            let (mut doc, front) = self::archived_body(&tx, id, sequence)?;
             let new = uuid::Uuid::new_v4().to_string();
-            let now = crate::time::now();
-            let name = markdown.then(|| doc.title.text.clone());
-            let meta = Meta { created: now, modified: now, markdown, name, ..Default::default() };
-            Store::write_sync_body(&tx, &new, false, &doc, &front)?;
-            tx.execute("INSERT INTO library_entries VALUES (?1, ?2)", params![new, serde_json::to_string(&meta)?])?;
+            write_recovery_copy(&tx, &new, &mut doc, &front, Meta { markdown, ..Default::default() })?;
             Some(new)
         } else { None };
         tx.execute("DELETE FROM offline_recoveries WHERE note = ?1", [id])?;
@@ -949,6 +1032,13 @@ impl Journal {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?)
     }
 
+    pub(super) fn replay_pending_apply(&self) -> Result<bool> {
+        if self.pending_work()?.1 == 0 { return Ok(false); }
+        // Ask CloudKit for predecessors again. Preserve all downloaded edits,
+        // local snapshots, versions and the outbox while the cursor is rebuilt.
+        Ok(self.db.execute("DELETE FROM state WHERE key IN ('token', 'legacy_token')", [])? != 0)
+    }
+
     pub(super) fn retry_conflicts(&mut self) -> Result<()> {
         self.db.execute("UPDATE sync_document_conflicts SET retry = 1 WHERE retry = 0", [])?;
         self.retry_catalogue = true;
@@ -1071,6 +1161,7 @@ impl Journal {
             activity::remember_access(&tx, access)?;
             if access == Access::Revoked {
                 ensure!(page.edits.is_empty() && page.token.is_none(), "A revoked share returned note content");
+                archive_owner_ended(&tx, room)?;
                 tx.execute("DELETE FROM library_entries", [])?;
             }
         }
@@ -1107,14 +1198,19 @@ impl Journal {
     }
 
     pub fn merge(&mut self, open_positions: &HashMap<String, Vec<Pos>>) -> Result<(bool, Vec<NoteChange>)> {
+        self.apply_wait = Default::default();
         if self.access == Some(Access::Revoked) { return Ok((false, vec![])); }
         self.history.retain(|id, _| open_positions.contains_key(id));
         // Store writes through a separate connection. A quiet poll needn't
         // decode the entire library index again just to fetch a CloudKit page.
         let version: i64 = self.db.pragma_query_value(None, "data_version", |row| row.get(0))?;
         let paused = self.catalogue_paused()?;
-        let retry = self.retry_catalogue;
-        if self.merged_data_version == Some(version) && !(paused && retry)
+        // Retry an existing pause once after the Loro upgrade. Keep the
+        // durable pause if its original records still cannot be applied.
+        let upgraded = paused && get_state(&self.db, CATALOGUE_REPLAY_UPGRADE)?.is_none();
+        let document_recovery_available = get_state(&self.db, DOCUMENT_REPLAY_UPGRADE)?.is_none();
+        let retry = self.retry_catalogue || upgraded;
+        if self.merged_data_version == Some(version) && !document_recovery_available && !(paused && retry)
             && self.pending_work()?.1 == 0
             && !self.db.query_row("SELECT EXISTS(SELECT 1 FROM sync_document_conflicts WHERE retry = 1)",
                 [], |row| row.get::<_, bool>(0))?
@@ -1124,9 +1220,10 @@ impl Journal {
         let writable = self.access.is_none_or(Access::can_write);
         let local = if has_catalogue { catalogue::local(&tx)? } else { Default::default() };
         let seen = serde_json::from_slice(&get_state(&tx, "catalogue_seen")?.context("Missing catalogue projection")?)?;
+        let mut wait = super::ApplyWait::default();
         let catalogue = if !paused || retry {
             let mut candidate = tx.savepoint()?;
-            match stage_catalogue(&candidate, self.peer, self.room.is_none(), writable, paused, &local, &seen) {
+            match stage_catalogue(&candidate, self.peer, self.room.is_none(), writable, paused, &local, &seen, &mut wait.catalogue_predecessor) {
                 Ok(Some(ready)) => {
                     candidate.execute("DELETE FROM state WHERE key = ?1", [CATALOGUE_PAUSED])?;
                     candidate.commit()?;
@@ -1143,7 +1240,14 @@ impl Journal {
                 Err(error) => return Err(error),
             }
         } else { None };
+        if upgraded { put_state(&tx, CATALOGUE_REPLAY_UPGRADE, b"1")?; }
         let catalogue_paused = has_catalogue && catalogue.is_none();
+        let recover_documents = document_recovery_available && !catalogue_paused;
+        // Revisit conflicts recorded by older clients once, even offline.
+        if recover_documents {
+            tx.execute("UPDATE sync_document_conflicts SET retry = 1", [])?;
+            put_state(&tx, DOCUMENT_REPLAY_UPGRADE, b"1")?;
+        }
 
         let mut work: std::collections::BTreeMap<String, Option<bool>> = tx.prepare(
             "SELECT DISTINCT note FROM inbox WHERE note NOT IN (?1, ?2)
@@ -1167,11 +1271,31 @@ impl Journal {
         for (id, trashed) in work {
             // Keep bodies for unknown entries pending until their catalogue
             // metadata can be applied. Never project a rejected tombstone.
-            if catalogue_paused && !local.contains_key(&id) { continue; }
+            if catalogue_paused && !local.contains_key(&id) {
+                wait.documents_awaiting_catalogue += 1;
+                continue;
+            }
             let mut candidate = tx.savepoint()?;
             let result = (|| {
+                if !writable && has_conflict(&candidate, &id)?
+                    && candidate.query_row("SELECT EXISTS(SELECT 1 FROM library_documents d JOIN notes n USING(id)
+                        WHERE d.id = ?1 AND d.revision <> n.seen)", [&id], |row| row.get::<_, bool>(0))?
+                { return Err(content::ConflictingBlockShapes.into()); }
                 if let Some(trashed) = trashed {
                     let (doc, seen, front) = Store::read_sync_body(&candidate, &id, trashed)?;
+                    if has_conflict(&candidate, &id)? && let Some(old) = note(&candidate, &id)?
+                        && let Ok((previous, true)) = content::project(&open_note(&candidate, &id, &old.snapshot)?)
+                    {
+                        // An older local projection may predate the aliases.
+                        // Do not turn missing tables in it into CRDT deletes.
+                        let mut ids = HashSet::new();
+                        doc.for_each_block(|block| { ids.insert(block.id); });
+                        let mut retains_tables = true;
+                        previous.for_each_block(|block| {
+                            if matches!(block.kind, crate::model::BlockKind::Table(_)) { retains_tables &= ids.contains(&block.id); }
+                        });
+                        ensure!(retains_tables, content::ConflictingBlockShapes);
+                    }
                     capture_note(&candidate, &self.root, self.peer, &id, &doc, seen, &front)
                         .context("Capture local document for sync")?;
                 }
@@ -1183,18 +1307,24 @@ impl Journal {
                     } else {
                         candidate.execute("DELETE FROM inbox WHERE note = ?1", [&id])?;
                     }
-                    return Ok((false, None));
+                    return Ok(DocumentApply::Deleted);
                 }
                 apply_document(&candidate, &self.root, &id, self.room.is_some(),
                     open_positions.get(&id).map_or(&[], Vec::as_slice))
             })();
             match result {
-                Ok((complete, change)) => {
-                    if complete {
-                        candidate.execute("DELETE FROM sync_document_conflicts WHERE note = ?1", [&id])?;
+                Ok(result) => {
+                    match result {
+                        DocumentApply::Applied(change) => {
+                            candidate.execute("DELETE FROM sync_document_conflicts WHERE note = ?1", [&id])?;
+                            changed.extend(change);
+                        }
+                        DocumentApply::Held => wait.documents_held += 1,
+                        DocumentApply::AwaitingPredecessor => wait.documents_awaiting_predecessor += 1,
+                        DocumentApply::AwaitingAttachment => wait.documents_awaiting_attachment += 1,
+                        DocumentApply::Deleted => {}
                     }
                     candidate.commit()?;
-                    changed.extend(change);
                 }
                 Err(error) if error.is::<content::ConflictingBlockShapes>() || error.is::<ReplayFailure>() => {
                     candidate.rollback()?;
@@ -1230,6 +1360,7 @@ impl Journal {
         } else { false };
         tx.commit()?;
         self.retry_catalogue = false;
+        self.apply_wait = wait;
         self.merged_data_version = Some(version);
         Ok((library_changed, changed))
     }
@@ -1606,6 +1737,124 @@ fn attachment_issues_identify_files_and_clear_after_retry() -> Result<()> {
     journal.merge(&Default::default())?;
     assert!(journal.issues()?.is_empty());
     assert_eq!(journal.counts()?.3, 0);
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn stalled_apply_refetches_a_missing_predecessor_without_discarding_queues() -> Result<()> {
+    let fixture = HistoryFixture::new()?;
+    let mut journal = Journal::open(&fixture.0, None)?;
+    let mut store = Store::open_sqlite_at(fixture.0.clone())?;
+    let id = store.create_from(&crate::docxml::parse("<title>Existing document</title><p>Local text</p>")?)?;
+    journal.merge(&Default::default())?;
+    let page = |edits, uploaded, token| Changes {
+        retention: None, uploaded, edits, token: Some(super::Bytes(vec![token])),
+        more: false, legacy: false, room_access: None, upload_quota_exceeded: false,
+        #[cfg(feature = "devtools")] cursor_replayed: false,
+    };
+    let ids = journal.request()?.edits.into_iter().map(|edit| edit.id).collect();
+    journal.receive(page(vec![], ids, 1))?;
+    assert!(!journal.replay_pending_apply()?);
+
+    let state = journal.text_state(&id)?.context("Missing local state")?;
+    state.set_peer_id(journal.peer.wrapping_add(1))?;
+    let start = state.oplog_vv();
+    set_front(&state, "predecessor")?;
+    state.commit();
+    let predecessor = Edit { id: "missing".into(), note: id.clone(), collaborator: false,
+        data: super::Bytes(state.export(ExportMode::updates(&start))?) };
+    let after_first = state.oplog_vv();
+    set_front(&state, "received later")?;
+    state.commit();
+    let later = Edit { id: "later".into(), note: id.clone(), collaborator: false,
+        data: super::Bytes(state.export(ExportMode::updates(&after_first))?) };
+    let new_local = store.create_from(&crate::docxml::parse("<title>Local outbox</title>")?)?;
+    journal.receive(page(vec![later.clone()], vec![], 2))?;
+    journal.merge(&Default::default())?;
+    let prior = journal.counts()?;
+    assert!(prior.0 > 0);
+    assert_eq!(prior.1, 1);
+    assert_eq!(journal.apply_wait.documents_awaiting_predecessor, 1);
+    assert_ne!(journal.text_state(&id)?.unwrap().oplog_vv(), state.oplog_vv());
+
+    assert!(journal.replay_pending_apply()?);
+    assert!(!journal.replay_pending_apply()?);
+    assert_eq!(journal.counts()?, prior);
+    assert!(journal.request()?.token.is_none());
+    journal.receive(page(vec![predecessor, later], vec![], 3))?;
+    journal.merge(&Default::default())?;
+    assert_eq!(journal.inbox_count()?, 0);
+    assert_eq!(journal.apply_wait, Default::default());
+    assert_eq!(journal.counts()?.0, prior.0);
+    assert_eq!(journal.text_state(&id)?.unwrap().oplog_vv(), state.oplog_vv());
+    assert!(store.list().iter().any(|entry| entry.id == new_local));
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn catalogue_continues_applying_independent_folders_while_a_predecessor_is_missing() -> Result<()> {
+    let fixture = HistoryFixture::new()?;
+    let remote = HistoryFixture::new()?;
+    let mut local_store = Store::open_sqlite_at(fixture.0.clone())?;
+    let mut remote_store = Store::open_sqlite_at(remote.0.clone())?;
+    let mut journal = Journal::open(&fixture.0, None)?;
+    let remote_journal = Journal::open(&remote.0, None)?;
+
+    let local_folder = local_store.create_folder("Pending local folder", None)?;
+    journal.merge(&Default::default())?;
+    let outbox = journal.counts()?.0;
+    assert!(outbox > 0);
+
+    let first_folder = remote_store.create_folder("Folder missing its initial record", None)?;
+    let independent = remote_store.create_folder("Independent folder", None)?;
+    let catalogue = catalogue::local(&remote_journal.db)?;
+    let page = |edits, token| Changes {
+        retention: None, uploaded: vec![], edits, token: Some(super::Bytes(vec![token])),
+        more: false, legacy: false, room_access: None, upload_quota_exceeded: false,
+        #[cfg(feature = "devtools")] cursor_replayed: false,
+    };
+    let edit = |name: &str, doc: &LoroDoc, since| -> Result<Edit> {
+        Ok(Edit { id: name.into(), note: catalogue::SCOPE.into(), collaborator: false,
+            data: super::Bytes(doc.export(ExportMode::updates(&since))?) })
+    };
+    let delayed = LoroDoc::new();
+    delayed.set_peer_id(50)?;
+    let first: catalogue::Catalogue = [(first_folder.clone(), catalogue[&first_folder].clone())].into();
+    catalogue::capture(&remote_journal.db, &delayed, &Default::default(), &first)?;
+    let predecessor = edit("predecessor", &delayed, VersionVector::default())?;
+    let before = delayed.oplog_vv();
+    let mut renamed: catalogue::Catalogue = first.clone();
+    renamed.get_mut(&first_folder).unwrap().insert("folder".into(), serde_json::json!("Recovered folder"));
+    catalogue::capture(&remote_journal.db, &delayed, &first, &renamed)?;
+    let pending = edit("pending", &delayed, before)?;
+    let ready = LoroDoc::new();
+    ready.set_peer_id(51)?;
+    catalogue::capture(&remote_journal.db, &ready, &Default::default(),
+        &[(independent.clone(), catalogue[&independent].clone())].into())?;
+
+    journal.receive(page(vec![pending.clone(), edit("ready", &ready, Default::default())?], 1))?;
+    journal.merge(&Default::default())?;
+    assert!(journal.apply_wait.catalogue_predecessor);
+    assert_eq!(journal.inbox_count()?, 1);
+    let remaining: Vec<u8> = journal.db.query_row("SELECT data FROM inbox WHERE id='pending'", [], |row| row.get(0))?;
+    assert_eq!(remaining, pending.data.0);
+    let visible = catalogue::local(&journal.db)?;
+    assert!(visible.contains_key(&independent));
+    assert!(visible.contains_key(&local_folder));
+    assert!(!visible.contains_key(&first_folder));
+    assert_eq!(journal.counts()?.0, outbox);
+
+    drop(journal);
+    let mut reopened = Journal::open(&fixture.0, None)?;
+    reopened.receive(page(vec![predecessor], 2))?;
+    reopened.merge(&Default::default())?;
+    assert_eq!(reopened.inbox_count()?, 0);
+    assert_eq!(reopened.counts()?.0, outbox);
+    let visible = catalogue::local(&reopened.db)?;
+    assert_eq!(visible[&first_folder]["folder"], serde_json::json!("Recovered folder"));
+    assert!(visible.contains_key(&independent) && visible.contains_key(&local_folder));
     Ok(())
 }
 

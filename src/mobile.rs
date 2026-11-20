@@ -7,7 +7,6 @@ use gpui::*;
 pub fn native_shell(_window: &Window) -> bool { true }
 pub fn control(desktop: f32) -> f32 { if cfg!(target_os = "ios") { desktop.max(44.) } else { desktop } }
 pub fn label(desktop: f32) -> f32 { if cfg!(target_os = "ios") { desktop.max(16.) } else { desktop } }
-pub fn detail(desktop: f32) -> f32 { if cfg!(target_os = "ios") { desktop.max(14.) } else { desktop } }
 
 pub fn ui_font() -> f32 { crate::theme::ui_font() + if cfg!(target_os = "ios") { 3. } else { 0. } }
 pub fn ui_font_small() -> f32 { crate::theme::ui_font_small() + if cfg!(target_os = "ios") { 2. } else { 0. } }
@@ -85,9 +84,14 @@ mod shell {
             if self.view == View::Doc && self.history.is_some() { self.close_history(cx); return; }
             if self.view == View::Settings {
                 if !self.mobile_settings_root && self.settings_page==Page::Shared { self.close_sharing(window,cx); }
-                else if self.mobile_settings_root { self.mobile_close_settings(window,cx); }
+                else if self.mobile_settings_root || self.settings_page == Page::SharedSync { self.mobile_close_settings(window,cx); }
+                else if self.settings_page == Page::CloudAccess { self.close_settings(cx); }
                 else if let Some(parent) = self.mobile_settings_parent.take() { self.open_settings(parent,cx); }
-                else { self.mobile_settings_root = true; cx.notify(); }
+                else if self.cloud_settings_from_share { self.mobile_close_settings(window,cx); }
+                else {
+                    if self.settings_page == Page::Cloud { self.cancel_cloud_enable(); }
+                    self.mobile_settings_root = true; cx.notify();
+                }
                 return;
             }
             if let Some(editor) = &self.editor { editor.update(cx, |ed, cx| { ed.cancel_background_composition(cx); }); }
@@ -104,12 +108,15 @@ mod shell {
             }
             if self.is_shared() {
                 if crate::cloud_sync::shared::scope(&self.store,cx).is_some_and(|scope|scope.folder) {
-                    if self.view == View::Doc { self.show_view(View::Folder,cx); hide_keyboard(); return; }
-                    let parent = self.folder_current.as_ref().and_then(|id|self.entries.iter().find(|e|&e.id==id)).and_then(|e|e.meta.parent.clone());
+                    let folder = self.folder_current.as_ref().and_then(|id|self.entries.iter()
+                        .find(|entry| &entry.id == id && entry.meta.folder.is_some()));
+                    // A document can be opened directly from a personal list
+                    // (for example from Favorites), with no folder on the stack.
+                    if self.view == View::Doc && folder.is_some() { self.show_view(View::Folder,cx); hide_keyboard(); return; }
+                    let parent = folder.and_then(|entry|entry.meta.parent.clone());
                     if let Some(parent) = parent { self.folder_current=Some(parent); self.show_view(View::Folder,cx); hide_keyboard(); return; }
                 }
-                let view = if self.mobile_personal_browser(cx) && self.folder_current.is_some() { View::Folder } else { View::Home };
-                self.navigate_personal(view,None,window,cx); return;
+                self.mobile_return_from_share(window,cx); return;
             }
             if self.home.tab == crate::home::HomeTab::Shared && self.mobile_collection_up(cx) { return; }
             if self.view == View::Home && self.home.tab == crate::home::HomeTab::Shared { self.home.tab = crate::home::HomeTab::Recent; }
@@ -133,16 +140,17 @@ mod shell {
             if let Some(editor) = &self.editor { editor.update(cx, |ed, cx| { ed.cancel_background_composition(cx); }); }
             if !self.save_before(cx, move |w, _, cx| w.mobile_open_settings_for(shared_library, cx)) { return; }
             self.mobile_settings_return = self.view.clone();
-            self.mobile_settings_shared_library = shared_library;
             self.mobile_settings_root = !shared_library;
             self.mobile_settings_parent = None;
-            self.open_settings(if shared_library { Page::Library } else { Page::General }, cx);
+            self.open_settings(if shared_library { Page::SharedSync } else { Page::General }, cx);
             hide_keyboard();
         }
 
         pub(crate) fn mobile_close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-            let previous = self.mobile_settings_return.clone();
+            let previous = self.mobile_settings_return;
+            let restore_shared_sync = self.take_cloud_settings_return();
             self.show_view(previous, cx);
+            self.restore_shared_sync(restore_shared_sync,cx);
             self.complete_shared_open(window,cx);
             hide_keyboard();
         }
@@ -153,12 +161,14 @@ mod shell {
             if personal && self.home.tab == crate::home::HomeTab::Shared { return self.mobile_order_entries(self.sorted_shared_entries(self.shared_collection_entries(cx))); }
             let mut entries = if personal { self.personal_navigation_entries(cx) } else { self.entries.clone() };
             if self.home.tab == crate::home::HomeTab::Starred {
-                let shared = self.shared_entries(cx);
-                let shared_ids: std::collections::HashSet<_> = shared.iter().map(|e|e.id.as_str()).collect();
-                entries.retain(|e|!shared_ids.contains(e.id.as_str()));
-                entries.extend(shared);
-                entries.retain(|entry| entry.meta.folder.is_none() && entry.meta.starred > 0);
+                entries = self.favorite_entries(cx);
             } else { entries.retain(|entry| entry.meta.parent == self.folder_current); }
+            for entry in &mut entries {
+                if let Some((pinned, starred)) = self.shared_child_marks(&entry.id, cx) {
+                    entry.meta.pinned = pinned;
+                    entry.meta.starred = starred;
+                }
+            }
             self.mobile_order_entries(self.sorted_entries(entries))
         }
 
@@ -166,25 +176,33 @@ mod shell {
             self.mobile_navigation.links.clear(); self.mobile_navigation.trash=None;
             if !self.is_shared() && self.mobile_collection(id,cx) { return; }
             if let Some(room) = self.shared_list_room(id,cx) { self.open_shared_note(&room,window,cx); }
+            else if self.home.tab == crate::home::HomeTab::Starred && let Some(room) = self.shared_child_room(id,cx) {
+                self.open_shared_item_interactive(room,id.into(),None,window,cx);
+            }
             else if self.is_shared() && (self.mobile_personal_browser(cx) || !self.entries.iter().any(|e|e.id==id)) { self.navigate_personal(View::Home,Some(id.into()),window,cx); }
             else { self.open(id,window,cx); }
         }
 
-        pub(crate) fn mobile_document_sharing(&self) -> bool {
-            self.view == View::Settings && self.settings_page == Page::Shared &&
-                !self.mobile_settings_root && self.mobile_settings_return == View::Doc && self.current.is_some()
+        pub(crate) fn mobile_contextual_sharing(&self) -> bool {
+            self.view == View::Settings && self.settings_page == Page::Shared && !self.mobile_settings_root
+                && matches!(self.mobile_settings_return,View::Doc | View::Home | View::Folder | View::Shared)
         }
 
         pub(crate) fn render_mobile(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
             crate::ipad::publish_navigation(self,cx);
             let body = match self.view {
-                _ if self.view == View::Doc || self.mobile_document_sharing() => {
+                _ if self.view == View::Doc || self.mobile_contextual_sharing() && self.mobile_settings_return == View::Doc => {
                     let failure = match &self.status {
                         SaveStatus::Failed(message) => Some(message.clone()),
                         _ => None,
                     };
                     div().flex_1().min_h_0().relative().flex().flex_col()
                         .children(failure.map(|text| div().px(px(18.)).text_size(px(14.)).text_color(Theme::danger()).child(text)))
+                        .map(|d| {
+                            #[cfg(feature = "cloudkit-sync")]
+                            let d = d.children(self.render_conflict_banner(cx));
+                            d
+                        })
                         .child(div().flex_1().min_h_0().children(self.editor.clone()))
                         .into_any_element()
                 }
@@ -197,6 +215,8 @@ mod shell {
                 .child(if self.library_switching { tr("正在打开文档库…","Opening library…") } else { tr("正在处理…","Working…") })
                 .on_mouse_down(MouseButton::Left,|_,_,cx| cx.stop_propagation())).with_priority(30));
             let toast = self.render_toast(window);
+            #[cfg(feature = "cloudkit-sync")]
+            let conflict_review = self.render_conflict_review(window, cx);
             let theme_menu = self.render_theme_menu(cx);
             let lang_menu = self.render_lang_menu(cx);
             let pref_menu = self.render_pref_menu(cx);
@@ -205,7 +225,12 @@ mod shell {
                 .size_full().flex().flex_col().bg(Theme::bg_body()).text_color(Theme::text()).font_family(theme::UI_FONT)
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                 .map(|d| self.workspace_actions(d,cx))
-                .child(body).children(export).children(search).children(theme_menu).children(lang_menu).children(pref_menu).children(move_dialog).children(toast).children(busy).into_any_element()
+                .child(body).children(export).children(search).children(theme_menu).children(lang_menu).children(pref_menu).children(move_dialog).children(toast).children(busy)
+                .map(|d| {
+                    #[cfg(feature = "cloudkit-sync")]
+                    let d = d.children(conflict_review);
+                    d
+                }).into_any_element()
         }
     }
 }

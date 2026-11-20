@@ -18,9 +18,12 @@ use std::sync::{Arc, LazyLock, Mutex, RwLock};
 mod mobile;
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-use crate::cloud_sync::shared;
+pub(crate) mod sync_status;
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+mod personal_sync;
+
 #[cfg(target_os = "ios")]
-use crate::cloud_sync::shared::Access;
+use crate::cloud_sync::shared::{self, Access};
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 use crate::cloud_subscription::{self, Action as SubscriptionAction, ActiveSubscription, Offer, Outcome as SubscriptionOutcome, Plan};
 
@@ -36,6 +39,10 @@ pub(crate) struct Subscription {
     trial: Option<crate::cloud_trial::Trial>,
     trial_busy: bool,
     trial_message: Option<String>,
+    enable_epoch: u64,
+    enable_checking: bool,
+    enable_result: Option<crate::cloud_restore::EnableCheck>,
+    enabling_cloud: bool,
 }
 
 // ---- preferences
@@ -355,8 +362,12 @@ pub(crate) fn watch_themes(cx: &mut Context<Workspace>) {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Page {
     #[default] General, Appearance, Shortcuts, Library,
-    #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    SharedSync,
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     Cloud,
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    CloudAccess,
     #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
     Shared,
     About,
@@ -369,8 +380,12 @@ impl Page {
             Page::Appearance => tr("外观", "Appearance"),
             Page::Shortcuts => tr("快捷键", "Shortcuts"),
             Page::Library => tr("文档库", "Library"),
-            #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
-            Page::Cloud => tr("iCloud 同步", "iCloud Sync"),
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            Page::SharedSync => tr("共享同步状态", "Shared sync status"),
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            Page::Cloud => "iCloud",
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            Page::CloudAccess => tr("开通飞记云功能", "Fei Notes cloud features"),
             #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
             Page::Shared => tr("共享文档", "Shared documents"),
             Page::About => tr("关于", "About"),
@@ -382,8 +397,10 @@ impl Page {
             Page::Appearance => "palette",
             Page::Shortcuts => "keyboard",
             Page::Library => "storage",
-            #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
-            Page::Cloud => "storage",
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            Page::SharedSync => "storage",
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            Page::Cloud | Page::CloudAccess => "cloud",
             #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
             Page::Shared => "doc",
             Page::About => "info",
@@ -391,9 +408,13 @@ impl Page {
     }
 }
 
-/// The sidebar list, one evenly spaced run (six rows need no unlabelled
-/// groups); `None` is 回收站 (its own view, shown with this sidebar).
-const NAV: [Option<Page>; 6] = [Some(Page::General), Some(Page::Appearance), Some(Page::Shortcuts), Some(Page::Library), None, Some(Page::About)];
+/// The settings sidebar. Trash is a view, represented by `None`.
+const NAV: &[Option<Page>] = &[
+    Some(Page::General), Some(Page::Appearance), Some(Page::Shortcuts), Some(Page::Library),
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    Some(Page::Cloud),
+    None, Some(Page::About),
+];
 
 // ---- controls (switch on the accent, 30pt buttons, grouped rows)
 
@@ -429,13 +450,23 @@ fn row(title: impl Into<SharedString>, desc: Option<SharedString>, control: impl
 
 fn desc(s: &'static str) -> Option<SharedString> { Some(s.into()) }
 
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+fn cloud_disable_detail() -> &'static str {
+    tr("切换到本机文档库，保留 iCloud 文档和待上传改动。",
+        "Switch to the local library and keep your iCloud documents and pending changes.")
+}
+
 #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
 fn release_bundle_string(key: &std::ffi::CStr) -> Option<String> {
     use objc::{class, msg_send, sel, sel_impl, runtime::{BOOL, Object, YES}};
     unsafe {
         let bundle: *mut Object = msg_send![class!(NSBundle), mainBundle];
+        if bundle.is_null() { return None; }
         let key: *mut Object = msg_send![class!(NSString), stringWithUTF8String: key.as_ptr()];
+        if key.is_null() { return None; }
         let value: *mut Object = msg_send![bundle, objectForInfoDictionaryKey: key];
+        // Missing Info.plist keys return nil, which is not a valid objc message receiver in Rust.
+        if value.is_null() { return None; }
         let is_string: BOOL = msg_send![value, isKindOfClass: class!(NSString)];
         if is_string != YES { return None; }
         let text: *const std::ffi::c_char = msg_send![value, UTF8String];
@@ -450,8 +481,15 @@ fn release_url(key: &std::ffi::CStr) -> Option<String> {
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+fn about_public_links() -> [(&'static str, &'static str, &'static str); 2] {
+    [("about-website", tr("官方网站", "Official Website"), "https://feinotes.app/"),
+     ("about-feedback", tr("Telegram 反馈群", "Telegram Feedback Group"), "https://t.me/+eKIYrdIFufxmYzJl")]
+}
+
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 fn setting_status(label: &'static str) -> Div {
-    div().text_size(px(crate::mobile::detail(12.))).line_height(px(crate::mobile::detail(17.).max(if cfg!(target_os = "ios") { 21. } else { 17. }))).text_color(Theme::text_caption()).child(label)
+    let (font_size, line_height) = if cfg!(target_os = "ios") { (14., 21.) } else { (12., 17.) };
+    div().text_size(px(font_size)).line_height(px(line_height)).text_color(Theme::text_caption()).child(label)
 }
 
 /// The switch: the accent when on, black 16% when off, a white knob.
@@ -507,14 +545,95 @@ pub(crate) fn link_button(id: impl Into<ElementId>, label: &'static str) -> Stat
 }
 
 pub(crate) fn button(id: impl Into<ElementId>, label: &'static str) -> Stateful<Div> {
-    div().id(id).flex_none().h(px(crate::mobile::control(28.))).px(px(12.)).flex().items_center().justify_center().rounded(px(8.)).cursor_pointer()
+    setting_button(id,label,true)
+}
+
+fn setting_button(id: impl Into<ElementId>, label: &'static str, enabled: bool) -> Stateful<Div> {
+    div().id(id).flex_none().h(px(crate::mobile::control(28.))).px(px(12.)).flex().items_center().justify_center().rounded(px(8.))
         .when(cfg!(target_os = "ios"), |d| d.min_w(px(44.)))
-        .bg(crate::theme::raised(Theme::bg_body())).border_1().border_color(Theme::button_border()).shadow(theme::shadow_button())
-        .hover(|s| s.bg(theme::c(craft::N100))).active(|s| s.bg(theme::c(craft::N200)))
-        .text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 5.)).text_color(Theme::text()).child(label)
+        .bg(crate::theme::raised(Theme::bg_body())).border_1().border_color(Theme::button_border())
+        .when(enabled, |d| d.cursor_pointer().shadow(theme::shadow_button())
+            .hover(|s| s.bg(theme::c(craft::N100))).active(|s| s.bg(theme::c(craft::N200))))
+        .text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 5.))
+        .text_color(if enabled { Theme::text() } else { Theme::text_disabled() }).child(label)
 }
 
 // ---- theme preview
+
+struct ThemeSample {
+    title: &'static str,
+    body: &'static str,
+    highlight: &'static str,
+    heading: &'static str,
+    completed: &'static str,
+    pending: &'static str,
+}
+
+fn theme_sample() -> ThemeSample {
+    ThemeSample {
+        title: tr("海边小书展", "Seaside Book Fair"),
+        body: tr("去旧码头的路上没信号，先把雨天动线写下来。", "No signal on the way to the old pier. I’ll sketch the rain route here."),
+        highlight: tr("周五下午一起走场。", "Walk through the space together on Friday afternoon."),
+        heading: tr("走场前", "Before the walkthrough"),
+        completed: tr("回到 Mac，接着补上摊位图", "Pick up on the Mac and add the stall map"),
+        pending: tr("邀请陈屿一起改入口说明", "Invite Chen to revise the entrance directions together"),
+    }
+}
+
+fn branded_sample_page(st: &themes::Style) -> Div {
+    use crate::editor_theme::{body_line_for, body_size_for, heading_metrics_for, title_for};
+
+    let sample = theme_sample();
+    let ink = st.color("page.color").unwrap_or_else(|| st.token("text"));
+    let paper = st.color("page.bg").unwrap_or_else(|| st.token("bg_body"));
+    let family = SharedString::from(st.font("page.font"));
+    let size = body_size_for(st);
+    let line = body_line_for(st);
+    let title = title_for(st);
+    let heading = heading_metrics_for(st, 2);
+    let strong = st.color("strong.color").unwrap_or(ink);
+    let mut mark_font = font(family.clone());
+    mark_font.weight = FontWeight(st.num("strong.weight"));
+    let fill = st.named("highlight", "light-yellow");
+    let highlight = StyledText::new(sample.highlight).with_runs(vec![TextRun {
+        len: sample.highlight.len(), font: mark_font,
+        color: if fill.is_some() { theme::on_mark(strong) } else { strong },
+        background_color: fill, underline: None, strikethrough: None,
+    }]);
+
+    let feishu = st.feishu;
+    let box_size = if feishu { 16. } else { st.num("task.size") };
+    let radius = if feishu { 4. } else { st.num("task.radius") };
+    let circular = radius >= box_size / 2. - 0.1;
+    let fill = st.color("task.checked").unwrap_or_else(|| st.token("primary"));
+    let check = if feishu { crate::feishu_theme::Theme::primary_500() } else { st.color("task.check").unwrap_or_else(gpui::white) };
+    let border = if feishu { crate::feishu_theme::Theme::text() } else { st.token("todo_box") };
+    let empty = theme::raised(st.token("bg_body"));
+    let done_ink = st.token("todo_done");
+    let task = |done, label| {
+        let filled = done && !feishu;
+        let icon_size = if feishu { 14. } else if circular { box_size } else { (box_size * 13. / 17.).round() };
+        div().flex().gap(px(8.)).items_start()
+            .child(div().flex_none().size(px(box_size)).mt(px(((line - box_size) / 2.).max(0.))).rounded(px(radius))
+                .border_1().border_color(if filled { fill } else { border }).bg(if filled { fill } else { empty })
+                .flex().items_center().justify_center()
+                .when(done, |d| d.child(ui::icon(if circular { "notes-todo-check" } else { "todo-check" }, icon_size, check))))
+            .child(div().min_w_0().flex_1().when(done, |d| d.text_color(done_ink).when(feishu || st.flag("done.strike"), |d| d.line_through())).child(label))
+    };
+    div().w_full().min_w_0().flex().justify_center().bg(paper).font_family(family)
+        .text_color(ink).text_size(px(size)).line_height(px(line))
+        .child(div().w_full().min_w_0().max_w(px(st.num("page.width").clamp(240., 760.))).px(px(24.)).pt(px(22.)).pb(px(24.)).flex().flex_col()
+            .child(div().font_family(SharedString::from(st.font("title.font"))).text_size(px(title.size)).line_height(px(title.line_height))
+                .font_weight(FontWeight(st.num("title.weight"))).text_color(st.color("title.color").unwrap_or(ink))
+                .mb(px(st.num("title.gap"))).child(sample.title))
+            .child(div().mb(px(st.num("p.gap"))).child(sample.body))
+            .child(div().child(highlight))
+            .child(div().mt(px(heading.mt)).mb(px(heading.mb)).font_family(SharedString::from(st.font("h2.font")))
+                .text_size(px(heading.size)).line_height(px(heading.line_height)).font_weight(FontWeight(st.num("h2.weight")))
+                .text_color(st.color("h2.color").unwrap_or(ink)).child(sample.heading))
+            .child(div().flex().flex_col().gap(px(st.todo_gap.unwrap_or_else(|| st.list_gap())))
+                .child(task(true, sample.completed)).child(task(false, sample.pending))))
+}
 
 /// Preview scale against the real document. Its frame clips to a rectangle
 /// (GPUI masks have no radius), so the page is rounded inside the frame.
@@ -867,8 +986,30 @@ impl Workspace {
         if !themes::themes().iter().any(|t| t.id == id) { self.set_pref(|p| { p.theme = "craft".into(); p.feishu = false; }, cx); }
     }
 
+    pub(crate) fn open_global_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "ios")]
+        self.mobile_open_settings(cx);
+        #[cfg(not(target_os = "ios"))]
+        {
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            if self.settings_page == Page::SharedSync {
+                self.open_settings(Page::Library, cx);
+                self.refresh_library_cloud(_window, cx);
+                return;
+            }
+            self.show_view(View::Settings, cx);
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            self.refresh_library_cloud(_window, cx);
+        }
+    }
+
     pub(crate) fn open_settings(&mut self, page: Page, cx: &mut Context<Self>) {
         self.cancel_shortcut_recording(cx);
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if page != self.settings_page {
+            self.sync_issues = None;
+            if !matches!(page, Page::Cloud | Page::CloudAccess) { self.cancel_cloud_enable(); }
+        }
         self.settings_page = page;
         self.theme_menu = None;
         self.lang_menu = None;
@@ -881,8 +1022,8 @@ impl Workspace {
 
     pub(crate) fn render_settings_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let current = (self.view == View::Settings).then_some(self.settings_page);
-        #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
-        let current = if current == Some(Page::Cloud) { Some(Page::Library) } else { current };
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let current = if current == Some(Page::CloudAccess) { Some(Page::Cloud) } else { current };
         let in_trash = self.view == View::Trash;
         let nav_row = |page: Option<Page>, cx: &mut Context<Self>| {
             let on = if page.is_some() { page == current } else { in_trash };
@@ -895,11 +1036,13 @@ impl Workspace {
                 .child(title)
                 .on_click(cx.listener(move |w, _, _window, cx| match page {
                     Some(p) => {
+                        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                        { w.cloud_settings_from_share = false; }
                         w.open_settings(p, cx);
                         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                         w.refresh_library_cloud(_window, cx);
                     }
-                    None => w.show_view(View::Trash, cx),
+                    None => w.open_settings_trash(cx),
                 }))
         };
         div().w(px(self.sidebar_w(window))).h_full().flex_none().flex().flex_col().text_color(Theme::text()).font_family(theme::UI_FONT)
@@ -939,12 +1082,46 @@ impl Workspace {
             .into_any_element()
     }
 
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) fn cancel_cloud_enable(&mut self) {
+        self.subscription.enable_epoch += 1;
+        self.subscription.enable_checking = false;
+        self.subscription.enable_result = None;
+        self.subscription.enabling_cloud = false;
+    }
+
     /// Back to where 设置 was opened from.
     pub(crate) fn close_settings(&mut self, cx: &mut Context<Self>) {
-        #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
-        if self.settings_page == Page::Cloud { return self.open_settings(Page::Library, cx); }
-        let back = if self.editor.is_some() && self.current.is_some() { View::Doc } else { View::Home };
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if self.settings_page == Page::CloudAccess {
+            self.cancel_cloud_enable();
+            #[cfg(target_os = "ios")]
+            { self.mobile_settings_parent = None; }
+            return self.open_settings(Page::Cloud, cx);
+        }
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let restore_shared_sync = self.take_cloud_settings_return();
+        #[cfg(not(target_os = "ios"))]
+        let back = self.settings_return;
+        #[cfg(target_os = "ios")]
+        let back = self.mobile_settings_return;
         self.show_view(back, cx);
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        self.restore_shared_sync(restore_shared_sync,cx);
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) fn take_cloud_settings_return(&mut self) -> bool {
+        if matches!(self.settings_page,Page::Cloud | Page::CloudAccess) { self.cancel_cloud_enable(); }
+        std::mem::take(&mut self.cloud_settings_from_share)
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) fn restore_shared_sync(&mut self, restore: bool, cx: &mut Context<Self>) {
+        if restore && matches!(self.view,View::Doc | View::Folder) && self.current_room(cx).is_some() {
+            self.sharing.sync_panel_open = true;
+            cx.notify();
+        }
     }
 
     pub(crate) fn render_settings(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -954,8 +1131,20 @@ impl Workspace {
             Page::Appearance => self.appearance_page(cx),
             Page::Shortcuts => self.shortcut_settings(cx),
             Page::Library => self.library_page(cx),
-            #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
-            Page::Cloud => self.cloud_rows(cx).into_any_element(),
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            Page::SharedSync => {
+                let mut rows = vec![cloud_sync_row(self, self.store.root(), cx)];
+                rows.extend(self.sync_issues_rows(self.store.root(), cx));
+                group(None, rows).into_any_element()
+            }
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            Page::Cloud => div().flex().flex_col().gap(px(8.))
+                .when(self.cloud_settings_from_share,|d|d.child(self.cloud_back_row(tr("‹ 共享同步状态","‹ Shared sync status"),cx)))
+                .child(self.cloud_rows(cx)).into_any_element(),
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            Page::CloudAccess => div().flex().flex_col().gap(px(8.)).child(self.cloud_back_row("‹ iCloud",cx))
+                .child(group(None, if cloud_subscription::available() { self.subscription_rows(cx) }
+                    else { vec![self.trial_row(cx).into_any_element()] })).into_any_element(),
             #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
             Page::Shared => div().into_any_element(),
             Page::About => self.about_page(cx),
@@ -1063,9 +1252,17 @@ impl Workspace {
             }));
         // One group, top to bottom: the choice, how it looks, its stylesheet.
         // The preview is a page of the theme on a quiet band, like a sheet on a desk.
-        let shown = { let list = themes::themes(); list.iter().find(|t| t.id == current).or_else(|| list.first()).map(|t| sample_page(t, PAGE_S).rounded(px(7.))) };
-        let sample = div().w_full().px(px(16.)).py(px(16.)).flex().justify_center().bg(Theme::fill_hover())
-            .child(div().w_full().h(px(360.)).rounded(px(8.)).overflow_hidden().border_1().border_color(Theme::line_border()).shadow(theme::shadow_button()).children(shown));
+        let frame = |d: Div| d.w_full().min_w_0().rounded(px(8.)).overflow_hidden()
+            .border_1().border_color(Theme::line_border()).shadow(theme::shadow_button());
+        let list = themes::themes();
+        let selected = list.iter().find(|t| t.id == current).or_else(|| list.first());
+        let shown = if crate::FEI_NOTES {
+            selected.map(|t| frame(branded_sample_page(t.style)))
+        } else {
+            Some(frame(div().h(px(360.)).children(selected.map(|t| sample_page(t, PAGE_S).rounded(px(7.))))))
+        };
+        drop(list);
+        let sample = div().w_full().px(px(16.)).py(px(16.)).flex().justify_center().bg(Theme::fill_hover()).children(shown);
         let mut rows = vec![
             row(tr("外观", "Appearance"), None, {
                 let at = match prefs().appearance.as_str() { "light" => 1, "dark" => 2, _ => 0 };
@@ -1112,20 +1309,34 @@ impl Workspace {
             .into_any_element()
     }
 
+    pub(crate) fn personal_settings_store(&self, cx: &App) -> Option<crate::shared_store::SharedStore> {
+        let store = cx.global::<crate::shared_store::SharedStore>();
+        (!store.is_shared() && store.root() == crate::store::Store::root_dir()).then(|| store.clone())
+    }
+
+    pub(crate) fn personal_history_limit(&self, cx: &App) -> u32 {
+        if self.is_shared() { self.personal_settings_store(cx).map_or(self.history_limit, |store| store.settings().history_limit()) }
+        else { self.history_limit }
+    }
+
     /// 版本历史: the retention count is stored in the library, so every
     /// window sees it; the cached copy only avoids reading a file per frame.
     pub(crate) fn change_history_limit(&mut self, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
-        let mut s = self.store.settings();
+        let Some(store) = self.personal_settings_store(cx) else { return; };
+        let mut s = store.settings();
         let next = (s.history_limit() as i32 + delta).clamp(1, 30) as u32;
         s.set_history_limit(next);
-        if self.store.save_settings(&s).is_err() { return }
-        self.history_limit = next;
+        if store.save_settings(&s).is_err() { return; }
+        if self.store.root() == store.root() { self.history_limit = next; }
         // Other windows cache the number for their settings page; saving
         // always reads the library, so this is display-only.
         for handle in cx.windows().into_iter()
             .filter(|w| w.window_id() != window.window_handle().window_id())
             .filter_map(|w| w.downcast::<Workspace>()) {
-            let _ = handle.update(cx, |ws, _, cx| { ws.history_limit = next; cx.notify() });
+            let _ = handle.update(cx, |ws, _, cx| {
+                if ws.store.root() == store.root() { ws.history_limit = next; }
+                cx.notify();
+            });
         }
         cx.notify();
     }
@@ -1133,8 +1344,9 @@ impl Workspace {
 
 
     fn library_page(&self, cx: &mut Context<Self>) -> AnyElement {
-        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        if shared::scope(&self.store, cx).is_some() { return group(None, vec![cloud_sync_row(self, cx)]).into_any_element(); }
+        if self.personal_settings_store(cx).is_none() {
+            return div().child(tr("请在飞记主窗口打开个人文档库设置。", "Open your personal library settings in the main Fei Notes window.")).into_any_element();
+        }
         let root = crate::store::Store::root_dir();
         let location = if cfg!(target_os = "windows") { root.display().to_string() } else {
             dirs::home_dir().and_then(|h| root.strip_prefix(h).ok().map(|r| format!("~/{}", r.display()))).unwrap_or_else(|| root.display().to_string())
@@ -1149,12 +1361,12 @@ impl Workspace {
                     // A test run's library (`QUIET_MD_HOME`) is fixed: a restart would lose it.
                     .when(!cfg!(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-restore")) && std::env::var_os("QUIET_MD_HOME").is_none(), |d| d.child(button("change-library", tr("更改…", "Change…")).on_click(cx.listener(|w, _, _, cx| w.pick_library(cx)))))).into_any_element(),
                 row(tr("回收站", "Trash"), Some(crate::localized_format!("删除的文档保留 {} 天后自动清除。", "Deleted documents are kept for {} days.", crate::store::TRASH_DAYS).into()),
-                    button("open-trash", tr("打开", "Open")).on_click(cx.listener(|w, _, _, cx| w.show_view(View::Trash, cx)))).into_any_element(),
+                    button("open-trash", tr("打开", "Open")).on_click(cx.listener(|w, _, _, cx| w.open_settings_trash(cx)))).into_any_element(),
                 row(tr("版本历史", "Version history"),
                     desc(tr("每篇文档保留的历史版本数（1–30 份）", "Snapshots kept for each document (1–30)")),
                     div().flex_none().flex().items_center().gap(px(12.))
                         .child(button("history-minus", "−").on_click(cx.listener(|w, _, window, cx| w.change_history_limit(-1, window, cx))))
-                        .child(div().w(px(40.)).flex().items_center().justify_center().text_size(px(theme::ui_font())).text_color(Theme::text()).child(self.history_limit.to_string()))
+                        .child(div().w(px(40.)).flex().items_center().justify_center().text_size(px(theme::ui_font())).text_color(Theme::text()).child(self.personal_history_limit(cx).to_string()))
                         .child(button("history-plus", "+").on_click(cx.listener(|w, _, window, cx| w.change_history_limit(1, window, cx))))).into_any_element(),
             ]))
             .children({
@@ -1166,18 +1378,146 @@ impl Workspace {
             .into_any_element()
     }
 
+    pub(crate) fn open_settings_trash(&mut self, cx: &mut Context<Self>) {
+        if self.personal_settings_store(cx).is_none() { return; }
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if self.is_shared() {
+            cx.defer(|cx| {
+                let options = crate::main_window_options(crate::devtools::scripted(), None, cx);
+                let _ = cx.open_window(options, |window, cx| cx.new(|cx| {
+                    let mut ws = Workspace::new(window, cx);
+                    ws.show_view(View::Trash, cx);
+                    ws
+                }));
+            });
+            return;
+        }
+        if !self.is_shared() { self.show_view(View::Trash, cx); }
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) fn settings_sync_root(&self, cx: &App) -> Option<std::path::PathBuf> {
+        if self.settings_page == Page::SharedSync { return Some(self.store.root().to_path_buf()); }
+        self.personal_settings_store(cx).map(|store| store.root().to_path_buf())
+    }
+
     /// Keep product additions after the upstream library rows so new upstream settings stay together.
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     fn product_library_groups(&self, cx: &mut Context<Self>) -> Div {
+        let root = crate::store::Store::root_dir();
+        let mut files = vec![row(tr("从 Quiet.md 迁移", "Migrate from Quiet.md"),
+            desc(tr("将文档复制到当前文档库。", "Copy documents into your current library.")),
+            button("import-legacy-library", tr("选择文件夹…", "Choose Folder…"))
+                .on_click(cx.listener(|w, _, window, cx| w.import_legacy_library(window, cx)))).into_any_element()];
+        files.extend(self.backup_rows(cx));
         div().w_full().flex().flex_col().pt(px(8.)).gap(px(16.))
-            .child(group(Some(tr("导入", "Import")), vec![
-                row(tr("从 Quiet.md 导入", "Import from Quiet.md"),
-                    desc(tr("将文档复制到当前文档库。", "Copy documents into your current library.")),
-                    button("import-legacy-library", tr("选择文件夹…", "Choose Folder…"))
-                        .on_click(cx.listener(|w, _, window, cx| w.import_legacy_library(window, cx)))).into_any_element(),
-            ]))
-            .child(self.cloud_rows(cx))
-            .child(self.backup_rows(cx))
+            .child(group(None,vec![self.library_mode_row(&root,cx).into_any_element()]))
+            .child(group(Some(tr("导入与导出","Import and Export")),files))
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn cloud_back_row(&self, label: &'static str, cx: &mut Context<Self>) -> Div {
+        div().flex().child(link_button("cloud-back", label)
+            .on_click(cx.listener(|w, _, _, cx| w.close_settings(cx))))
+    }
+
+    #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+    fn cloud_summary(&self, cx: &App) -> &'static str {
+        use crate::cloud_sync::SyncPhase::*;
+        if crate::cloud_restore::local_only() { return tr("未开启","Off"); }
+        match self.personal_settings_store(cx).and_then(|store|crate::cloud_sync::status(store.root(),cx)).map(|s|s.phase) {
+            Some(SignedOut) => tr("已退出登录","Signed out"),
+            Some(SubscriptionRequired) => tr("同步暂停","Sync paused"),
+            Some(Offline | Failed) => tr("等待重试","Waiting to retry"),
+            Some(AccountChanged) => tr("账户已切换","Account changed"),
+            Some(AccountChecking | Account) => tr("正在确认账户","Checking account"),
+            _ => tr("已开启","On"),
+        }
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) fn open_cloud_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.personal_settings_store(cx).is_none() { return; }
+        #[cfg(target_os = "ios")]
+        {
+            if self.view != View::Settings {
+                if !self.save_before(cx,|w,window,cx| w.open_cloud_settings(window,cx)) { return; }
+                self.mobile_settings_return = self.view;
+            }
+            self.mobile_settings_root = false;
+            self.mobile_settings_parent = None;
+        }
+        self.open_settings(Page::Cloud,cx);
+        self.refresh_library_cloud(window,cx);
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) fn open_cloud_settings_from_share(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.view,View::Doc | View::Folder) || self.current_room(cx).is_none()
+            || self.personal_settings_store(cx).is_none() { return; }
+        if !self.save_before(cx,|w,window,cx| w.open_cloud_settings_from_share(window,cx)) { return; }
+        self.open_cloud_settings(window,cx);
+        self.cloud_settings_from_share = self.view == View::Settings;
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn open_cloud_access(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "ios")]
+        { self.mobile_settings_parent = Some(Page::Cloud); }
+        self.open_settings(Page::CloudAccess,cx);
+        self.subscription.show_plans = true;
+        if cloud_subscription::available() { self.subscription_action(SubscriptionAction::Load,window,cx); }
+        if crate::cloud_trial::available() { self.trial_action(false,window,cx); }
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn begin_cloud_enable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::cloud_restore::EnableCheck;
+        if self.library_switching || self.subscription.enable_checking || !crate::cloud_restore::local_only()
+            || self.view != View::Settings || !matches!(self.settings_page,Page::Cloud | Page::CloudAccess) { return; }
+        self.subscription.enabling_cloud = true;
+        self.subscription.enable_checking = true;
+        self.subscription.enable_result = None;
+        let epoch = self.subscription.enable_epoch;
+        cx.notify();
+        cx.spawn_in(window, async move |this,cx| {
+            let result = cx.background_executor().spawn(async { crate::cloud_restore::check_enable() }).await;
+            let _ = this.update_in(cx, |w,window,cx| {
+                if w.subscription.enable_epoch != epoch { return; }
+                w.subscription.enable_checking = false;
+                if w.view != View::Settings || !matches!(w.settings_page,Page::Cloud | Page::CloudAccess)
+                    || !crate::cloud_restore::local_only() {
+                    w.subscription.enabling_cloud = false;
+                    return;
+                }
+                w.subscription.enable_result = Some(result);
+                match result {
+                    EnableCheck::Ready => {
+                        w.subscription.enabling_cloud = false;
+                        w.subscription.enable_result = None;
+                        w.open_cloud_settings(window,cx);
+                        w.confirm = Some(crate::app::Confirm::SwitchCloudLibrary { cloud: true, copy_local: false });
+                    }
+                    EnableCheck::AccessRequired if !crate::cloud_trial::testflight() &&
+                        (crate::cloud_trial::available() || cloud_subscription::available()) => w.open_cloud_access(window,cx),
+                    _ => w.subscription.enabling_cloud = false,
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn enable_cloud_message(&self) -> &'static str {
+        use crate::cloud_restore::EnableCheck;
+        if self.subscription.enable_checking { return tr("正在核对 iCloud 账户和云功能权益。","Checking iCloud account and cloud access."); }
+        match self.subscription.enable_result {
+            Some(EnableCheck::SignedOut) => tr("请在系统设置中登录 iCloud，再回来重试。","Sign in to iCloud in system settings, then try again."),
+            Some(EnableCheck::Unavailable) => tr("暂时无法确认 iCloud。连接恢复后可重试。","Could not verify iCloud. Retry when the connection returns."),
+            Some(EnableCheck::AccessRequired) => crate::cloud_trial::access_required(),
+            _ => tr("当前使用本机文档库。开启后可跨设备同步和多人实时协作。",
+                "You’re using your local library. Turn on iCloud to sync between devices and collaborate in real time."),
+        }
     }
 
     /// 更改…: a folder picked as the next library; `library_in` decides
@@ -1197,16 +1537,56 @@ impl Workspace {
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     fn cloud_rows(&self, cx: &mut Context<Self>) -> Div {
-        let local = crate::cloud_restore::local_only();
-        let mut rows = vec![self.library_mode_row(cx).into_any_element()];
-        if !local { rows.insert(0, cloud_sync_row(self, cx)); }
-        if !local { rows.extend(self.sync_issues_rows(cx)); }
-        if crate::cloud_trial::testflight() {
-            rows.push(row("TestFlight", desc(tr("内测期间可直接使用 iCloud 同步和协作。",
-                "iCloud sync and collaboration are available during beta testing.")), div()).into_any_element());
-        } else if cloud_subscription::available() { rows.extend(self.subscription_rows(cx)); }
-        else if crate::cloud_trial::available() { rows.push(self.trial_row(cx).into_any_element()); }
-        group(Some(tr("iCloud 同步", "iCloud Sync")), rows)
+        use personal_sync::Action;
+        if crate::cloud_restore::local_only() {
+            let control = if self.subscription.enable_checking { setting_status(tr("正在检查","Checking")).into_any_element() }
+            else { button("switch-library",tr("开启 iCloud 同步…","Enable iCloud Sync…"))
+                .on_click(cx.listener(|w, _, window, cx| w.begin_cloud_enable(window,cx))).into_any_element() };
+            let mut rows = vec![row(tr("同步未开启","Sync is off"),desc(self.enable_cloud_message()),control).into_any_element()];
+            if matches!(self.subscription.enable_result, Some(crate::cloud_restore::EnableCheck::SignedOut)) {
+                rows.push(row(tr("iCloud 账户","iCloud account"),None,account_settings_control()).into_any_element());
+            }
+            return group(None, rows);
+        }
+        let Some(store) = self.personal_settings_store(cx) else { return group(None, vec![]); };
+        let root = store.root();
+        let sync = personal_sync::read(root,cx);
+        let control = match sync.action {
+            Action::Sync => button("retry-cloud-sync",tr("立即同步","Sync Now"))
+                .on_click({ let root = root.to_path_buf(); move |_, _, cx| crate::cloud_sync::retry(&root,cx) }).into_any_element(),
+            Action::AutoRetry => setting_button("retry-cloud-sync",tr("立即同步","Sync Now"),false).into_any_element(),
+            Action::VerifyAccount => button("verify-cloud-account",tr("重新验证 iCloud","Verify iCloud Again"))
+                .on_click({ let root = root.to_path_buf(); move |_, _, cx| crate::cloud_sync::recheck_account(&root,cx) }).into_any_element(),
+            Action::SignIn | Action::ChangedAccount => account_settings_control(),
+            Action::Plans if crate::cloud_trial::available() || cloud_subscription::available() =>
+                button("cloud-subscription-load",tr("查看订阅方案","View Plans"))
+                    .on_click(cx.listener(|w, _, window, cx| w.open_cloud_access(window,cx))).into_any_element(),
+            _ => div().into_any_element(),
+        };
+        let mut rows = vec![row(sync.title,sync.detail.map(Into::into),control).into_any_element()];
+        rows.extend(sync.rows.into_iter().map(|(_,label,value)|row(label,None,div()
+            .text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 7.))
+            .text_color(Theme::text_caption()).child(value)).into_any_element()));
+        rows.extend(self.sync_issues_rows(root,cx));
+        if sync.action != Action::Plans && !crate::cloud_trial::testflight() && cloud_subscription::available() {
+            rows.push(row(tr("订阅","Subscription"),None,button("cloud-subscription-load",tr("查看订阅方案","View Plans"))
+                .on_click(cx.listener(|w, _, window, cx| w.open_cloud_access(window,cx)))).into_any_element());
+        }
+        let disable = if self.library_switching { setting_status(tr("正在准备文档库", "Preparing library")).into_any_element() }
+        else { button("cloud-disable",tr("关闭…","Turn Off…"))
+            .on_click(cx.listener(|w, _, _, cx| w.begin_cloud_disable(cx))).into_any_element() };
+        div().flex().flex_col().gap(px(16.))
+            .child(group(Some(tr("同步状态","Sync status")), rows))
+            .child(group(None,vec![row(tr("关闭 iCloud 同步","Turn Off iCloud Sync"),
+                desc(cloud_disable_detail()),disable).into_any_element()]))
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn begin_cloud_disable(&mut self, cx: &mut Context<Self>) {
+        if self.view != View::Settings || self.settings_page != Page::Cloud || self.library_switching
+            || self.confirm.is_some() || crate::cloud_restore::local_only() || self.personal_settings_store(cx).is_none() { return; }
+        self.confirm = Some(crate::app::Confirm::SwitchCloudLibrary { cloud: false, copy_local: false });
+        cx.notify();
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -1292,17 +1672,22 @@ impl Workspace {
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx.background_executor().spawn(async move { crate::cloud_trial::request(start) }).await;
-            let _ = this.update_in(cx, |w, _, cx| {
+            let _ = this.update_in(cx, |w, window, cx| {
                 let state = &mut w.subscription;
                 state.trial_busy = false;
+                let mut granted = false;
                 match result {
                     Ok(trial) => {
                         state.trial = trial;
                         state.trial_message = None;
-                        if start { crate::cloud_sync::access_changed(cx); }
+                        if start {
+                            crate::cloud_sync::access_changed(cx);
+                            granted = trial.is_some_and(|t|t.active_at(crate::cloud_trial::now_ms()));
+                        }
                     }
                     Err(error) => state.trial_message = Some(crate::localized_format!("无法查询 iCloud 试用。{}", "Couldn’t check the iCloud trial. {}", error)),
                 }
+                if granted && w.subscription.enabling_cloud { w.begin_cloud_enable(window,cx); }
                 cx.notify();
             });
         }).detach();
@@ -1310,14 +1695,14 @@ impl Workspace {
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub(crate) fn refresh_library_cloud(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.view != View::Settings || self.settings_page != Page::Library || shared::scope(&self.store, cx).is_some() { return; }
+        if self.view != View::Settings || !matches!(self.settings_page,Page::Cloud | Page::CloudAccess) || self.personal_settings_store(cx).is_none() { return; }
         if cloud_subscription::available() { self.subscription_updated(window, cx); }
         if !crate::cloud_trial::testflight() && crate::cloud_trial::available() { self.trial_action(false, window, cx); }
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub(crate) fn subscription_updated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.view != View::Settings || self.settings_page != Page::Library || shared::scope(&self.store, cx).is_some() { return; }
+        if self.view != View::Settings || !matches!(self.settings_page,Page::Cloud | Page::CloudAccess) || self.personal_settings_store(cx).is_none() { return; }
         if self.subscription.busy { self.subscription.refresh_pending = true; }
         else { self.subscription_action(SubscriptionAction::Status, window, cx); }
     }
@@ -1372,23 +1757,25 @@ impl Workspace {
                         });
                     }).detach();
                 }
+                let granted = state.active.and_then(ActiveSubscription::plan_now).is_some() && state.enabling_cloud;
                 if std::mem::take(&mut state.refresh_pending) { w.subscription_updated(window, cx); }
+                if granted { w.begin_cloud_enable(window,cx); }
                 cx.notify();
             });
         }).detach();
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-    fn backup_rows(&self, cx: &mut Context<Self>) -> Div {
+    fn backup_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         #[cfg(target_os = "macos")]
         let error = crate::cloud_restore::BACKUP_RESTORE_ERROR.get();
         #[cfg(target_os = "ios")]
         let error: Option<&String> = None;
         let scheduled = crate::cloud_sync::backup::scheduled(&crate::store::Store::root_dir());
         let detail = error.map(|error| diagnostic(error)).unwrap_or_else(|| if scheduled {
-            tr("备份已校验。重启后继续恢复。", "The backup was verified. Restart to continue restoring it.").into()
+            tr("整库文件已校验。重启后继续恢复。", "The library file was verified. Restart to continue restoring it.").into()
         } else {
-            tr("飞记会校验备份，并保留恢复前的文档库。", "Fei Notes verifies the backup and keeps your current library.").into()
+            tr("飞记会校验所选文件，并保留恢复前的文档库。", "Fei Notes verifies the selected file and keeps your current library.").into()
         });
         let action = if scheduled {
             button("retry-library-restore", tr("重试恢复", "Retry Restore"))
@@ -1396,30 +1783,31 @@ impl Workspace {
                     if !w.library_switching { cx.defer(crate::app::restart); }
                 }))
         } else {
-            button("restore-library-backup", tr("选择备份…", "Choose Backup…"))
+            button("restore-library-backup", tr("选择文件…", "Choose File…"))
                 .on_click(cx.listener(|w, _, window, cx| w.library_backup(true, window, cx)))
         };
-        group(Some(tr("备份与恢复", "Backup and Restore")), vec![
-            row(tr("创建整库备份", "Back Up Library"),
+        vec![
+            row(tr("导出整库文件", "Export Library File"),
                 Some(tr("包含文档、文件夹、回收站、附件和待同步改动。",
                     "Includes documents, folders, Trash, attachments, and pending changes.").into()),
-                button("create-library-backup", tr("选择保存文件夹…", "Choose Backup Folder…"))
+                button("create-library-backup", tr("选择保存文件夹…", "Choose Save Folder…"))
                     .on_click(cx.listener(|w, _, window, cx| w.library_backup(false, window, cx)))).into_any_element(),
-            row(if error.is_some() || scheduled { tr("尚未恢复备份", "Backup Restore Incomplete") }
-                else { tr("从备份恢复", "Restore from Backup") }, Some(detail.into()), action).into_any_element(),
-        ])
+            row(if error.is_some() || scheduled { tr("尚未完成恢复", "Restore Incomplete") }
+                else { tr("从整库文件恢复", "Restore from Library File") }, Some(detail.into()), action).into_any_element(),
+        ]
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     fn library_backup(&mut self, restore: bool, window: &mut Window, cx: &mut Context<Self>) {
         use crate::cloud_sync::backup;
-        if self.is_shared() { return; }
+        let Some(store) = self.personal_settings_store(cx) else { return; };
+        let root = store.root().to_path_buf();
         if self.library_switching { return; }
         let picked = crate::devtools::take_pick();
         let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions {
             files: restore, directories: !restore, multiple: false,
-            prompt: Some(if restore { tr("选择飞记备份", "Choose a Fei Notes Backup") }
-                else { tr("选择备份保存文件夹", "Choose a Backup Folder") }.into()),
+            prompt: Some(if restore { tr("选择飞记整库文件", "Choose a Fei Notes Library File") }
+                else { tr("选择保存文件夹", "Choose a Save Folder") }.into()),
             #[cfg(not(target_os = "ios"))] extensions: restore.then(|| vec!["feinotesbackup".into()]),
         }));
         self.library_switching = true;
@@ -1431,7 +1819,6 @@ impl Workspace {
             };
             let result: anyhow::Result<Option<String>> = async {
                 let Some(path) = paths.and_then(|paths| paths.into_iter().next()) else { return Ok(None); };
-                let root = crate::store::Store::root_dir();
                 if restore {
                     let target = root.clone();
                     let prepared = cx.background_executor().spawn(async move { backup::prepare(&target, &path) }).await?;
@@ -1447,10 +1834,10 @@ impl Workspace {
                         .filter_map(|window| window.downcast::<Workspace>())
                         .map(|window| window.update(cx, |w, _, cx| w.flush(cx)).unwrap_or(false))
                         .fold(true, |saved, next| saved & next))?;
-                    anyhow::ensure!(saved && others_saved, "{}", tr("请先处理窗口里的保存失败，再创建备份。",
-                        "Resolve any save errors in open windows before backing up."));
+                    anyhow::ensure!(saved && others_saved, "{}", tr("请先处理窗口里的保存失败，再导出整库文件。",
+                        "Resolve any save errors in open windows before exporting the library file."));
                     let (output, _) = cx.background_executor().spawn(async move { backup::create(&root, &path) }).await?;
-                    Ok(Some(crate::localized_format!("已保存备份 · {}", "Backup saved · {}", output.file_name().unwrap_or_default().to_string_lossy())))
+                    Ok(Some(crate::localized_format!("已导出整库文件 · {}", "Library file exported · {}", output.file_name().unwrap_or_default().to_string_lossy())))
                 }
             }.await;
             let _ = this.update_in(cx, |w, _, cx| {
@@ -1458,7 +1845,7 @@ impl Workspace {
                 match result {
                     Ok(Some(message)) => w.show_toast(&message, cx),
                     Err(error) => w.show_toast_kind(ui::ToastKind::Error, &crate::localized_format!(
-                        "备份或恢复失败 · {}", "Backup or restore failed · {}", error), cx),
+                        "导出或恢复失败 · {}", "Export or restore failed · {}", error), cx),
                     Ok(None) => {}
                 }
                 cx.notify();
@@ -1477,6 +1864,8 @@ impl Workspace {
 
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     pub(crate) fn restore_library_backup(&mut self, prepared: crate::cloud_sync::backup::Prepared, cx: &mut Context<Self>) {
+        let Some(store) = self.personal_settings_store(cx) else { return; };
+        let root = store.root().to_path_buf();
         if self.library_switching { return; }
         self.library_switching = true;
         cx.notify();
@@ -1486,14 +1875,14 @@ impl Workspace {
                 return;
             }
             let _ = cx.update(crate::cloud_sync::release_unused);
-            let result = cx.background_executor().spawn(async move { prepared.schedule(&crate::store::Store::root_dir()) }).await;
+            let result = cx.background_executor().spawn(async move { prepared.schedule(&root) }).await;
             match result {
                 Ok(()) => { let _ = cx.update(crate::app::restart); }
                 Err(error) => {
                     let _ = this.update(cx, |w, cx| {
                         w.library_switching = false;
                         w.show_toast_kind(ui::ToastKind::Error, &crate::localized_format!(
-                            "恢复备份失败。{}", "Couldn’t restore the backup. {}", error), cx);
+                            "恢复整库文件失败。{}", "Couldn’t restore the library file. {}", error), cx);
                         cx.notify();
                     });
                 }
@@ -1502,8 +1891,9 @@ impl Workspace {
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-    fn sync_issues_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let Some(status) = crate::cloud_sync::status(self.store.root(), cx) else { return vec![]; };
+    fn sync_issues_rows(&self, root: &std::path::Path, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(status) = crate::cloud_sync::status(root, cx) else { return vec![]; };
+        let scoped_to_share = self.settings_page == Page::SharedSync;
         let expanded = self.sync_issues.is_some();
         if !expanded && status.held == 0 && status.attachments == 0 && status.conflicts == 0 { return vec![]; }
         let action = if expanded { tr("收起", "Hide Details") } else { tr("查看详情", "Show Details") };
@@ -1511,7 +1901,8 @@ impl Workspace {
             button("cloud-issues", action).on_click(cx.listener(|w, _, _, cx| {
                 if w.sync_issues.is_some() { w.sync_issues = None; }
                 else {
-                    match crate::cloud_sync::issues(w.store.root(), cx) {
+                    let Some(root) = w.settings_sync_root(cx) else { return; };
+                    match crate::cloud_sync::issues(&root, cx) {
                         Ok(issues) => w.sync_issues = Some(issues),
                         Err(error) => w.show_toast_kind(ui::ToastKind::Error, &error.to_string(), cx),
                     }
@@ -1531,13 +1922,14 @@ impl Workspace {
                     continue;
                 };
                 let title = crate::model::display_title(title);
-                rows.push(row(title, Some(detail.into()),
-                    button(SharedString::from(format!("open-sync-issue-{}", issue.id)),
-                        if trashed { tr("打开回收站", "Open Trash") } else { tr("打开文档", "Open Document") })
-                        .on_click(cx.listener(move |w, _, window, cx| {
-                            if trashed { w.show_view(View::Trash, cx); }
-                            else { w.open(&id, window, cx); }
-                        }))).into_any_element());
+                let action = (!scoped_to_share || !trashed).then(|| button(SharedString::from(format!("open-sync-issue-{}", issue.id)),
+                    if trashed { tr("打开回收站", "Open Trash") } else { tr("打开文档", "Open Document") })
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        if trashed { w.open_settings_trash(cx); }
+                        else if !scoped_to_share && w.is_shared() { w.navigate_personal(View::Home, Some(id.clone()), window, cx); }
+                        else { w.open(&id, window, cx); }
+                    })));
+                rows.push(row(title, Some(detail.into()), div().children(action)).into_any_element());
             }
             if issues.len() == 30 {
                 rows.push(row(tr("显示前 30 篇待处理文档", "Showing the First 30 Affected Documents"), None, div()).into_any_element());
@@ -1547,25 +1939,26 @@ impl Workspace {
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-    fn library_mode_row(&self, cx: &mut Context<Self>) -> Div {
+    fn cloud_library_label(&self,cx: &App) -> &'static str {
+        use crate::cloud_sync::SyncPhase;
+        if crate::cloud_restore::local_only() { tr("本机","On this device") }
+        else if self.personal_settings_store(cx).and_then(|store|crate::cloud_sync::status(store.root(),cx))
+            .is_some_and(|status|matches!(status.phase,SyncPhase::SignedOut | SyncPhase::AccountChanged)) {
+            tr("原 iCloud 文档库","Previous iCloud library")
+        } else { "iCloud" }
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn library_mode_row(&self, root: &std::path::Path, cx: &App) -> Div {
         use crate::cloud_sync::SyncPhase;
         let local = crate::cloud_restore::local_only();
         let fallback = crate::cloud_restore::startup_fallback();
-        let title = tr("文档库", "Library");
         let detail = if local { fallback.unwrap_or(tr("文档保存在这台 Mac。", "Documents are stored on this Mac.")) }
-        else if crate::cloud_sync::status(self.store.root(), cx).is_some_and(|status| matches!(status.phase, SyncPhase::AccountChanged | SyncPhase::SignedOut)) {
+        else if crate::cloud_sync::status(root, cx).is_some_and(|status| matches!(status.phase, SyncPhase::AccountChanged | SyncPhase::SignedOut)) {
             tr("当前打开的是原 iCloud 文档库的本机副本。", "A local copy of the previous iCloud library is open.")
         }
         else { tr("正在使用 iCloud 文档库。", "Using your iCloud library.") };
-        let label = if fallback.is_some() { tr("重新连接 iCloud…", "Reconnect to iCloud…") }
-            else if local { tr("开启 iCloud 同步…", "Enable iCloud Sync…") }
-            else { tr("切换到本机…", "Switch to Local…") };
-        let action = if self.library_switching { setting_status(tr("正在准备文档库", "Preparing library")).into_any_element() }
-        else { button("switch-library", label).on_click(cx.listener(move |w, _, _, cx| {
-            w.confirm = Some(crate::app::Confirm::SwitchCloudLibrary { cloud: local, copy_local: false });
-            cx.notify();
-        })).into_any_element() };
-        row(title, desc(detail), action)
+        row(tr("当前文档库","Current library"),desc(detail),div().text_color(Theme::text_caption()).child(self.cloud_library_label(cx)))
     }
 
     #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
@@ -1575,6 +1968,7 @@ impl Workspace {
 
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     pub(crate) fn select_library(&mut self, selection: crate::cloud_restore::LibrarySelection, cx: &mut Context<Self>) {
+        if self.personal_settings_store(cx).is_none() { return; }
         if self.library_switching { return; }
         self.library_switching = true;
         cx.notify();
@@ -1598,6 +1992,8 @@ impl Workspace {
 
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     fn import_legacy_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(store) = self.personal_settings_store(cx) else { return; };
+        let root = store.root().to_path_buf();
         let picked = crate::devtools::take_pick();
         let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions {
             files: false, directories: true, multiple: false,
@@ -1609,16 +2005,18 @@ impl Workspace {
                 None => picked,
             };
             let Some(source) = paths.and_then(|paths| paths.into_iter().next()) else { return; };
-            let root = crate::store::Store::root_dir();
+            let target = root.clone();
             let result = cx.background_executor().spawn(async move {
-                crate::store::Store::import_legacy_copy(&root, &source)
+                crate::store::Store::import_legacy_copy(&target, &source)
             }).await;
             let _ = this.update_in(cx, |w, _, cx| match result {
                 Ok(count) => {
-                    w.entries = w.store.list();
-                    w.sort();
-                    w.sync_links(cx);
-                    crate::cloud_sync::retry(w.store.root(), cx);
+                    if w.store.root() == root {
+                        w.entries = w.store.list();
+                        w.sort();
+                        w.sync_links(cx);
+                    }
+                    crate::cloud_sync::retry(&root, cx);
                     w.show_toast(&crate::localized_format!("已导入 {} 项", "Imported {} items", count), cx);
                 }
                 Err(error) => w.show_toast_kind(crate::ui::ToastKind::Error,
@@ -1630,12 +2028,15 @@ impl Workspace {
     fn about_page(&self, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let release_rows = {
-            let mut rows: Vec<AnyElement> = [(c"FeiSupportURL", "about-support", tr("支持", "Support")),
+            let mut rows: Vec<AnyElement> = about_public_links().into_iter().map(|(id, title, url)| {
+                row(title, None, button(id, tr("打开", "Open")).on_click(move |_, _, cx| cx.open_url(url))).into_any_element()
+            }).collect();
+            rows.extend([(c"FeiSupportURL", "about-support", tr("支持", "Support")),
                 (c"FeiPrivacyURL", "about-privacy", tr("隐私政策", "Privacy Policy")),
                 (c"FeiTermsURL", "about-terms", tr("使用条款", "Terms of Use"))].into_iter().filter_map(|(key, id, title)| {
                 let url = release_url(key)?;
                 Some(row(title, None, button(id, tr("打开", "Open")).on_click(move |_, _, cx| cx.open_url(&url))).into_any_element())
-            }).collect();
+            }));
             if let Some(notices) = std::env::current_exe().ok().and_then(|path| {
                 #[cfg(target_os = "macos")]
                 { Some(path.parent()?.parent()?.join("Resources/Open Source Licenses.txt")) }
@@ -1656,7 +2057,7 @@ impl Workspace {
                         }
                     })).into_any_element());
             }
-            (!rows.is_empty()).then(|| group(None, rows))
+            Some(group(None, rows))
         };
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let release_rows: Option<Div> = None;
@@ -1665,16 +2066,18 @@ impl Workspace {
         let version = release_bundle_string(c"CFBundleShortVersionString").unwrap_or_else(|| version.into());
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let version = release_bundle_string(c"CFBundleVersion").filter(|build| !build.is_empty()).map(|build| format!("{version} ({build})")).unwrap_or(version);
+        let footer_size = crate::mobile::ui_font_small();
         div().w_full().flex().flex_col().gap(px(28.)).child(div().w_full().pt(px(24.)).flex().flex_col().items_center().gap(px(10.))
             .child(img(about_icon()).size(px(88.)))
             .child(div().text_size(px(20.)).line_height(px(26.)).font_weight(FontWeight::SEMIBOLD).child(crate::app_name()))
             .child(div().text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 5.)).text_color(Theme::text_caption()).child(format!("{} {}", tr("版本", "Version"), version)))
             .child(div().text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 7.)).text_color(Theme::text_caption()).child(if crate::FEI_NOTES {
                 product_about_description()
-            } else { tr("本地优先的文档应用：无需账号，文档就是你电脑上的文件。", "A local-first document app. Your documents are stored as files on your Mac, with no account required.") }))
-            .when(crate::FEI_NOTES, |d| d.child(div().text_size(px(crate::mobile::detail(12.))).text_color(Theme::text_caption())
-                .child(tr("基于 Quiet.md 开发", "Based on Quiet.md")))))
+            } else { tr("本地优先的文档应用：无需账号，文档就是你电脑上的文件。", "A local-first document app. Your documents are stored as files on your Mac, with no account required.") })))
             .children(release_rows)
+            .when(crate::FEI_NOTES, |d| d.child(div().w_full().px(px(4.)).text_size(px(footer_size))
+                .line_height(px(footer_size + 5.)).text_color(Theme::text_caption())
+                .child(tr("基于 Quiet.md 开发", "Based on Quiet.md"))))
             .when(!crate::FEI_NOTES, |d| d.child(group(None, vec![update_row(cx).into_any_element()])))
             .into_any_element()
     }
@@ -1753,18 +2156,10 @@ fn cloud_sync_detail(workspace: &Workspace, root: &std::path::Path, cx: &App) ->
         SyncPhase::Ready => tr("已同步", "Up to date"),
         SyncPhase::Offline => tr("暂时连不上 iCloud，恢复连接后会自动重试。", "iCloud is temporarily unreachable. Sync will retry automatically."),
         SyncPhase::AccountChecking | SyncPhase::Account => tr("正在确认 iCloud 账户", "Checking the iCloud account"),
-        #[cfg(target_os = "ios")]
-        SyncPhase::AccountChanged => tr("iCloud 账户已切换。请在系统设置中确认账户，再点「重新连接 iCloud」。",
-            "The iCloud account changed. Check the account in Settings, then choose Reconnect to iCloud."),
-        #[cfg(target_os = "macos")]
-        SyncPhase::AccountChanged => tr("iCloud 账户已切换。请重新打开飞记以检查当前账户。",
-            "The iCloud account changed. Reopen Fei Notes to check the current account."),
-        #[cfg(target_os = "ios")]
-        SyncPhase::SignedOut => tr("iCloud 已退出。请在系统设置中登录，再点「重新连接 iCloud」。",
-            "You’re signed out of iCloud. Sign in in Settings, then choose Reconnect to iCloud."),
-        #[cfg(target_os = "macos")]
-        SyncPhase::SignedOut => tr("iCloud 已退出。请在系统设置中登录，再重新打开飞记。",
-            "You’re signed out of iCloud. Sign in in Settings, then reopen Fei Notes."),
+        SyncPhase::AccountChanged => tr("iCloud 账户已切换。请在「文档库 › iCloud」查看。",
+            "The iCloud account changed. See Library › iCloud."),
+        SyncPhase::SignedOut => tr("iCloud 已退出登录。请在系统设置中登录原账户。",
+            "You’re signed out of iCloud. Sign in to your previous account in System Settings."),
         SyncPhase::Quota => tr("iCloud 空间不足。释放空间后可点「立即同步」。",
             "iCloud storage is full. Free up space, then choose Sync Now."),
         SyncPhase::SubscriptionRequired => tr("同步已暂停。恢复云功能后会继续同步。",
@@ -1815,35 +2210,32 @@ fn cloud_sync_detail(workspace: &Workspace, root: &std::path::Path, cx: &App) ->
     if status.attachments > 0 {
         detail.push_str(&crate::localized_format!(" · {} 个附件超限、缺失或不可读", " · {} attachments are oversized, missing or unreadable", status.attachments));
     }
-    if !account_check && phase != SyncPhase::Revoked && let Some(view) = crate::cloud_sync::presence::view(root, cx) && !view.devices.is_empty() {
-        let names = view.devices.iter().take(3).map(String::as_str).collect::<Vec<_>>().join(", ");
-        detail.push_str(&crate::localized_format!(" · 其他在线设备 {} 台（{}）", " · {} other devices online ({})",
-            view.devices.len(), names));
-    }
     Some(detail)
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-fn cloud_sync_row(workspace: &Workspace, cx: &App) -> AnyElement {
+fn cloud_sync_row(workspace: &Workspace, root: &std::path::Path, cx: &App) -> AnyElement {
     use crate::cloud_sync::SyncPhase;
-    let root = workspace.store.root();
     let Some(status) = crate::cloud_sync::status(root, cx) else {
         return row(tr("iCloud 同步", "iCloud sync"), None, div().child(tr("仅保存在本机", "Saved on this device only"))).into_any_element();
     };
     let account_check = matches!(status.phase, SyncPhase::AccountChecking | SyncPhase::AccountChanged | SyncPhase::SignedOut);
     let detail = cloud_sync_detail(workspace, root, cx).unwrap_or_default();
     let action = match status.phase {
-        #[cfg(target_os = "ios")]
-        SyncPhase::AccountChanged | SyncPhase::SignedOut => Some(button("reconnect-cloud-library",tr("重新连接 iCloud…","Reconnect to iCloud…"))
-            .on_click(|_,_,cx| crate::ipad_session::request(crate::cloud_restore::LibrarySelection::Cloud,cx))),
-        #[cfg(target_os = "macos")]
-        SyncPhase::AccountChanged | SyncPhase::SignedOut => Some(button("reopen-cloud-library", tr("重新打开飞记", "Reopen Fei Notes"))
-            .on_click(|_, _, cx| cx.defer(crate::app::restart))),
         _ if !status.access_paused && !account_check && status.phase != SyncPhase::Revoked => Some(button("retry-cloud-sync", tr("立即同步", "Sync now"))
             .on_click({ let root = root.to_path_buf(); move |_, _, cx| crate::cloud_sync::retry(&root, cx) })),
         _ => None,
     };
     row(tr("iCloud 同步", "iCloud sync"), Some(detail.into()), div().children(action)).into_any_element()
+}
+
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+fn account_settings_control() -> AnyElement {
+    #[cfg(target_os = "macos")]
+    return button("open-apple-account",tr("打开系统设置…","Open System Settings…"))
+        .on_click(|_,_,cx|cx.open_url("x-apple.systempreferences:com.apple.systempreferences.AppleIDSettings")).into_any_element();
+    #[cfg(target_os = "ios")]
+    setting_status(tr("设置 › Apple 账户","Settings › Apple Account")).into_any_element()
 }
 
 /// The sidebar bar's 更新 pill, only while a new version is on offer:

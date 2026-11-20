@@ -372,6 +372,12 @@ impl Store {
 }
 
 impl Store {
+    /// Stage and rebase a shared recovery's attachments before publishing its body.
+    pub fn stage_recovery_assets(doc: &mut Document, source: &Path, stage: &Path, prefix: &Path,
+        original: &str, copy: &str) -> Result<()> {
+        stage_copy_assets(doc, source, stage, prefix, &HashMap::from([(original.to_owned(), copy.to_owned())]))
+    }
+
     pub fn set_sqlite_session_root(root: PathBuf) -> Result<()> {
         super::SESSION.select(root, true)
     }
@@ -855,20 +861,49 @@ impl Store {
     }
 
     pub(super) fn delete_sqlite(&mut self, id: &str, root: Option<&str>) -> Result<()> {
-        let before = self.file_state(id);
-        let meta = self.index.get(id).cloned().context("文档不存在")?;
-        let trashed = Trashed { meta, deleted: now(), root: root.map(str::to_string) };
-        let mut db = self.sqlite.as_ref().unwrap().connect()?;
+        self.trash_sqlite_entries(&[(id.to_owned(), root.map(str::to_owned))])
+    }
+
+    /// Trash a folder and its descendants in one SQLite transaction.
+    pub fn trash_sqlite_folder(&mut self, id: &str) -> Result<()> {
+        let _lock = self.begin_write()?;
+        self.check_shared_writer(Some(id))?;
+        anyhow::ensure!(self.index.get(id).is_some_and(|meta| meta.folder.is_some()), "Folder no longer exists");
+        let mut items = vec![(id.to_owned(), None)];
+        let mut seen = std::collections::HashSet::from([id.to_owned()]);
+        let mut next = 0;
+        while next < items.len() {
+            let parent = items[next].0.clone();
+            for (child, _) in self.index.iter().filter(|(_, meta)| meta.parent.as_deref() == Some(&parent)) {
+                anyhow::ensure!(seen.insert(child.clone()), "Invalid folder cycle");
+                items.push((child.clone(), Some(id.to_owned())));
+            }
+            next += 1;
+        }
+        self.trash_sqlite_entries(&items)
+    }
+
+    fn trash_sqlite_entries(&mut self, items: &[(String, Option<String>)]) -> Result<()> {
+        let mut db = self.sqlite.as_ref().context("SQLite library unavailable")?.connect()?;
         let tx = db.transaction()?;
-        if trashed.meta.folder.is_none() { move_document(&tx, id, true)?; }
-        tx.execute("INSERT INTO library_trash VALUES (?1, ?2)", params![id, serde_json::to_string(&trashed)?])?;
-        tx.execute("DELETE FROM library_entries WHERE id = ?1", [id])?;
+        let mut deleted = Vec::with_capacity(items.len());
+        for (id, root) in items {
+            let meta = self.index.get(id).cloned().context("文档不存在")?;
+            let trashed = Trashed { meta, deleted: now(), root: root.clone() };
+            let before = self.file_state(id);
+            if trashed.meta.folder.is_none() { move_document(&tx, id, true)?; }
+            tx.execute("INSERT INTO library_trash VALUES (?1, ?2)", params![id, serde_json::to_string(&trashed)?])?;
+            tx.execute("DELETE FROM library_entries WHERE id = ?1", [id])?;
+            deleted.push((id, trashed, before));
+        }
         tx.commit()?;
-        self.trash.insert(id.to_string(), trashed);
-        self.index.remove(id);
-        self.loaded.borrow_mut().remove(id);
-        crate::versions::move_to_trash(&self.history_base(), id);
-        self.record_file_change(id, before);
+        for (id, trashed, before) in deleted {
+            self.trash.insert(id.clone(), trashed);
+            self.index.remove(id);
+            self.loaded.borrow_mut().remove(id);
+            crate::versions::move_to_trash(&self.history_base(), id);
+            self.record_file_change(id, before);
+        }
         Ok(())
     }
 
@@ -898,6 +933,15 @@ impl Store {
         Ok(moved)
     }
 
+    pub fn purge_sqlite_trash_groups(&mut self, ids: &[String]) -> Result<()> {
+        let _lock = self.begin_write()?;
+        self.check_shared_writer(None)?;
+        let mut grouped: Vec<_> = ids.iter().filter(|id| self.trash.contains_key(*id)).flat_map(|id| self.trash_group(id)).collect();
+        grouped.sort();
+        grouped.dedup();
+        self.purge_sqlite(grouped)
+    }
+
     pub(super) fn purge_sqlite(&mut self, ids: Vec<String>) -> Result<()> {
         let mut db = self.sqlite.as_ref().unwrap().connect()?;
         let tx = db.transaction()?;
@@ -916,7 +960,7 @@ impl Store {
     pub(super) fn list_sqlite_trash(&mut self, can_write: bool) -> Result<Vec<TrashEntry>> {
         let cutoff = now().saturating_sub(TRASH_DAYS * 86_400);
         if can_write {
-            let expired: Vec<_> = self.trash.iter().filter(|(_, t)| t.deleted <= cutoff).map(|(id, _)| id.clone()).collect();
+            let expired: Vec<_> = self.trash.iter().filter(|(_, t)| t.deleted <= cutoff && t.meta.share_root.is_none()).map(|(id, _)| id.clone()).collect();
             if !expired.is_empty() { self.purge_sqlite(expired)?; }
         }
         let db = self.sqlite.as_ref().unwrap().read()?;
@@ -924,7 +968,7 @@ impl Store {
         for (id, trashed) in self.trash.iter().filter(|(_, t)| t.root.as_ref().is_none_or(|r| !self.trash.contains_key(r))) {
             let (title, icon) = if let Some(name) = &trashed.meta.folder { (name.clone(), None) }
             else { db.query_row("SELECT title, icon FROM library_documents WHERE id = ?1 AND trashed = 1", [id], |row| Ok((row.get(0)?, row.get(1)?)))? };
-            entries.push(TrashEntry { id: id.clone(), title, icon, deleted: trashed.deleted, parent: trashed.meta.parent.clone() });
+            entries.push(TrashEntry { id: id.clone(), title, icon, deleted: trashed.deleted, parent: trashed.meta.parent.clone(), share_root: trashed.meta.share_root.clone() });
         }
         entries.sort_by(|a, b| b.deleted.cmp(&a.deleted).then_with(|| a.id.cmp(&b.id)));
         Ok(entries)

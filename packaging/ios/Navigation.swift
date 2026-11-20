@@ -2,12 +2,12 @@ import UIKit
 
 struct FeiNavigationState: Decodable, Equatable, Sendable {
     struct Listing: Decodable, Equatable, Sendable {
-        struct Row: Decodable, Equatable, Sendable { let id:String; let title:String; let summary:String; let folder:Bool; let pinned:Bool; let reorderable:Bool }
+        struct Row: Decodable, Equatable, Sendable { let id:String; let title:String; let summary:String; let folder:Bool; let pinned:Bool; let reorderable:Bool; let shared_badge:Bool; let shared_folder:Bool; let unread_update:Bool }
         struct Selection: Decodable,Equatable,Sendable { let serial:UInt64; let ids:[String]; let selected:[String]; let limit:Int; let can_move:Bool; let moving:Bool }
-        let kind:String; let can_select:Bool; let can_sort:Bool; let can_reorder:Bool; let shared_count:Int; let selection:Selection?; let notice_kind:String?
+        let kind:String; let can_select:Bool; let can_sort:Bool; let can_reorder:Bool; let shared_create:Bool; let sort_rule:String; let folders_first:Bool?; let shared_count:Int; let selection:Selection?; let notice_kind:String?
         let interface_size:String; let notice:String?; let scope:String; let query:String; let tab:Int; let tabs:Bool; let empty:String; let rows:[Row]
     }
-    struct Browser: Decodable,Equatable,Sendable { let folder:String?; let favorites:Bool; let shared:Bool; let personal:Bool; let title:String; let path:[Route]; let listing:Listing }
+    struct Browser: Decodable,Equatable,Sendable { let folder:String?; let favorites:Bool; let shared:Bool; let personal:Bool; let can_create:Bool; let title:String; let path:[Route]; let listing:Listing }
     struct QA: Decodable,Equatable,Sendable {
         struct Pos: Decodable,Equatable,Sendable { let block:UInt64; let offset:Int }
         struct Selection: Decodable,Equatable,Sendable { let anchor:Pos; let head:Pos }
@@ -16,10 +16,24 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
     let qa: QA?
     let browser: Browser?
     let settings: FeiSettingsState?
+    let restore_shared_sync: Bool
     let local_history: LocalHistory?
     struct SharedOpening: Decodable, Equatable, Sendable { let message: String; let loading: Bool; let retry: String?; let back: String }
-    let document_sharing: Bool
+    let sharing_title: String?
+    let folder_access: Bool
+    let document_needs_attention: Bool
+    let conflict_review: Bool
+
+    // Conflict controls precede the scroll view that normally insets the editor content.
+    var editorOverlapsChrome: Bool {
+        ["note","history-preview"].contains(kind) && !board_open && !find_active && !document_needs_attention
+    }
     let shared_opening: SharedOpening?
+    struct SharedSync: Decodable, Equatable, Sendable {
+        let title: String; let scope: String; let detail: String; let rows: [[String]]
+        let attention: Bool; let action: String?
+    }
+    let shared_sync: SharedSync?
     let slash_available: Bool
     let listing: Listing?
     let editor_scope:String
@@ -43,6 +57,10 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
         let trashed: Bool
         let shared: Bool
         let owned: Bool
+        let offline_recovery: Bool
+        let personal: Bool
+        let inherited_share: Bool
+        let share_end: String?
     }
     struct Confirmation: Decodable, Equatable, Sendable {
         struct Version: Decodable, Equatable, Sendable { let sequence: Int64; let time: String; let preview: String }
@@ -56,6 +74,7 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
         let choice: String?
         let choice_on: Bool
         let save_failed: Bool
+        let enable_cloud: Bool
     }
     struct Reorder: Decodable, Equatable, Sendable {
         struct Item: Decodable, Equatable, Sendable { let id:String; let title:String; let folder:Bool; let pinned:Bool }
@@ -95,16 +114,29 @@ class FeiRouteController: UIViewController {
     var frozenContent: UIView?
     var notesList: FeiNotesListController?
     var settingsList: FeiSettingsController?
-    struct BarIdentity: Equatable { let kind:String; let shared:Bool; let editing:Bool; let typing:Bool; let blockSelected:Bool; let expanded:Bool; let topTools:Bool; let composing:Bool; let board:Bool; let collaborators:[String]; let labels:[String:String] }
+    struct BarIdentity: Equatable { let kind:String; let shared:Bool; let editing:Bool; let typing:Bool; let blockSelected:Bool; let expanded:Bool; let topTools:Bool; let composing:Bool; let board:Bool; let collaborators:[String]; let appearance:String; let theme:FeiMobileTheme?; let labels:[String:String] }
     var barIdentity: BarIdentity?
     var overlapsChrome = false
     var chromeTheme: FeiMobileTheme?
+    private var emptyTrash = false
     private var sharedOpening: UIStackView?
     private let openingSpinner = UIActivityIndicatorView(style: .medium)
     private let openingMessage = UILabel()
     private let openingRetry = UIButton(type: .system)
     private let openingBack = UIButton(type: .system)
     var hasNativeContent: Bool { settingsList?.view.isHidden == false || notesList?.view.isHidden == false || sharedOpening?.isHidden == false }
+
+    @discardableResult
+    func configureNavigationTitleMode() -> Bool {
+        let isList = isWorkspaceBrowser || ["notes","shared","settings","trash"].contains(routeKey) || routeKey.hasPrefix("folder:")
+        // Keep the empty Trash message in view at the largest type size in a narrow column.
+        let compactEmptyTrash = routeKey == "trash" && emptyTrash &&
+            traitCollection.horizontalSizeClass == .compact && traitCollection.preferredContentSizeCategory == .accessibilityExtraExtraExtraLarge
+        let large = isList && !compactEmptyTrash
+        let mode: UINavigationItem.LargeTitleDisplayMode = large ? .always : .never
+        if navigationItem.largeTitleDisplayMode != mode { navigationItem.largeTitleDisplayMode = mode }
+        return large
+    }
 
     func updateSharedOpening(_ state: FeiNavigationState, coordinator: FeiNavigationCoordinator) {
         guard let opening = state.shared_opening else {
@@ -149,33 +181,58 @@ class FeiRouteController: UIViewController {
     }
 
     func updateListing(_ listing: FeiNavigationState.Listing?,labels: [String:String],busy: Bool,coordinator: FeiNavigationCoordinator) {
-        guard let listing else { notesList?.deactivate(); return }
+        guard let listing else {
+            if let notesList,!notesList.view.isHidden {
+                notesList.deactivate()
+                if settingsList?.view.isHidden != false { setContentScrollView(nil,for: .all) }
+            }
+            return
+        }
+        if isWorkspaceBrowser { view.backgroundColor = coordinator.theme.workspaceListColor }
+        emptyTrash = routeKey == "trash" && listing.rows.isEmpty
+        configureNavigationTitleMode()
         if notesList == nil {
             let list = FeiNotesListController(coordinator: coordinator,theme: coordinator.theme)
             list.browsesWorkspace = isWorkspaceBrowser
             addChild(list); list.view.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(list.view)
             NSLayoutConstraint.activate([list.view.topAnchor.constraint(equalTo: view.topAnchor),list.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),list.view.leadingAnchor.constraint(equalTo: isWorkspaceBrowser ? view.safeAreaLayoutGuide.leadingAnchor : view.leadingAnchor),list.view.trailingAnchor.constraint(equalTo: isWorkspaceBrowser ? view.safeAreaLayoutGuide.trailingAnchor : view.trailingAnchor)])
             list.didMove(toParent: self); notesList = list
+            setContentScrollView(list.tableView,for: .all)
         }
-        notesList?.view.isHidden = false
-        notesList?.update(listing,labels: labels,busy: busy,theme: coordinator.theme)
-        setContentScrollView(notesList?.tableView,for: .all)
+        guard let notesList else { return }
+        if notesList.view.isHidden { setContentScrollView(notesList.tableView,for: .all) }
+        notesList.view.isHidden = false
+        notesList.update(listing,labels: labels,busy: busy,canCompose: coordinator.showsComposeShortcut,theme: coordinator.theme)
     }
 
     func updateSettings(_ settings:FeiSettingsState?,busy:Bool,coordinator:FeiNavigationCoordinator) {
-        guard let settings else { settingsList?.deactivate(); return }
+        guard let settings else {
+            if let settingsList,!settingsList.view.isHidden {
+                settingsList.deactivate()
+                if notesList?.view.isHidden != false { setContentScrollView(nil,for: .all) }
+            }
+            return
+        }
+        configureNavigationTitleMode()
         if settingsList == nil {
             let list = FeiSettingsController(coordinator: coordinator)
             addChild(list); list.view.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(list.view)
             NSLayoutConstraint.activate([list.view.topAnchor.constraint(equalTo: view.topAnchor),list.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),list.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),list.view.trailingAnchor.constraint(equalTo: view.trailingAnchor)])
             list.didMove(toParent: self); settingsList = list
+            setContentScrollView(list.tableView,for: .all)
         }
-        settingsList?.view.isHidden = false; settingsList?.update(settings,busy: busy,theme: coordinator.theme)
+        guard let settingsList else { return }
+        if settingsList.view.isHidden { setContentScrollView(settingsList.tableView,for: .all) }
+        settingsList.view.isHidden = false
+        settingsList.update(settings,busy: busy,theme: coordinator.theme)
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
+        registerForTraitChanges([UITraitHorizontalSizeClass.self,UITraitPreferredContentSizeCategory.self]) { (controller: FeiRouteController,_) in
+            controller.configureNavigationTitleMode()
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -192,7 +249,7 @@ class FeiRouteController: UIViewController {
 
     func applyTheme(_ theme: FeiMobileTheme) {
         view.tintColor = theme.accentColor
-        view.backgroundColor = hasNativeContent ? theme.listColor : theme.paperColor
+        view.backgroundColor = isWorkspaceBrowser ? theme.workspaceListColor : hasNativeContent ? theme.listColor : theme.paperColor
         notesList?.applyTheme(theme)
         settingsList?.applyTheme(theme)
     }
@@ -214,7 +271,296 @@ class FeiRouteController: UIViewController {
 }
 
 @MainActor
-final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, UIAdaptivePresentationControllerDelegate {
+private final class FeiShareOverviewController: UIViewController {
+    private let stack = UIStackView()
+    private let scroll = UIScrollView()
+    private var names: [String]
+    private var showsPeople = false
+    private let labels: [String:String]
+    private let manage: () -> Void
+
+    init(names: [String], labels: [String:String], manage: @escaping () -> Void) {
+        self.names = names
+        self.labels = labels
+        self.manage = manage
+        super.init(nibName: nil,bundle: nil)
+    }
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        view.accessibilityIdentifier = "fei.share.overview"
+        view.accessibilityViewIsModal = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .vertical
+        stack.spacing = 4
+        view.addSubview(scroll)
+        scroll.addSubview(stack)
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor,constant: 10),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor,constant: -10),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor,constant: 12),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor,constant: -12),
+            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor,constant: -24)
+        ])
+        render()
+    }
+
+    func updateNames(_ names: [String]) {
+        guard self.names != names else { return }
+        self.names = names
+        if isViewLoaded { render() }
+    }
+
+    private func text(_ string: String, style: UIFont.TextStyle) -> UILabel {
+        let label = UILabel()
+        label.text = string
+        label.font = .preferredFont(forTextStyle: style)
+        label.adjustsFontForContentSizeCategory = true
+        label.numberOfLines = 0
+        return label
+    }
+
+    private func row(_ key: String, id: String, action: @escaping () -> Void) -> UIButton {
+        var configuration = UIButton.Configuration.plain()
+        configuration.title = labels[key]
+        configuration.baseForegroundColor = .label
+        configuration.titleLineBreakMode = .byWordWrapping
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6,leading: 8,bottom: 6,trailing: 8)
+        let button = UIButton(configuration: configuration,primaryAction: UIAction { _ in action() })
+        button.accessibilityIdentifier = id
+        button.contentHorizontalAlignment = .leading
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        return button
+    }
+
+    private func showPeople(_ show: Bool) {
+        showsPeople = show
+        render()
+        scroll.setContentOffset(.zero,animated: false)
+        let header = stack.arrangedSubviews.first as? UIStackView
+        UIAccessibility.post(notification: .screenChanged,argument: header?.arrangedSubviews.first { $0 is UILabel })
+    }
+
+    private func makeHeader() -> UIView {
+        let title = text(labels[showsPeople ? "online-collaborators" : "already-shared"] ?? "",style: .headline)
+        title.accessibilityTraits.insert(.header)
+        let header = UIStackView()
+        header.alignment = .center
+        header.spacing = 4
+        if showsPeople {
+            header.addArrangedSubview(headerButton("chevron.backward",label: "back",id: "fei.share.online.back") { [weak self] in
+                self?.showPeople(false)
+            })
+        }
+        header.addArrangedSubview(title)
+        header.addArrangedSubview(headerButton("xmark",label: "close-share-overview",id: "fei.share.overview.close") { [weak self] in
+            self?.dismiss(animated: true)
+        })
+        return header
+    }
+
+    private func headerButton(_ symbol: String,label: String,id: String,action: @escaping () -> Void) -> UIButton {
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: symbol,withConfiguration: UIImage.SymbolConfiguration(pointSize: 13,weight: .semibold))
+        configuration.baseForegroundColor = .secondaryLabel
+        let button = UIButton(configuration: configuration,primaryAction: UIAction { _ in action() })
+        button.accessibilityLabel = labels[label]
+        button.accessibilityIdentifier = id
+        NSLayoutConstraint.activate([button.widthAnchor.constraint(equalToConstant: 44),button.heightAnchor.constraint(equalToConstant: 44)])
+        return button
+    }
+
+    private func avatar(_ name: String,index: Int,size: CGFloat) -> UIView {
+        let colors: [UIColor] = [.systemBlue,.systemPurple,.systemTeal,.systemOrange]
+        let badge = UIView()
+        badge.backgroundColor = colors[index % colors.count].withAlphaComponent(0.22)
+        badge.layer.cornerRadius = size / 2
+        badge.accessibilityElementsHidden = true
+        let initial = text(String(name.prefix(1)),style: .caption1)
+        initial.textColor = .label
+        initial.numberOfLines = 1
+        initial.textAlignment = .center
+        initial.adjustsFontSizeToFitWidth = true
+        initial.minimumScaleFactor = 0.65
+        initial.translatesAutoresizingMaskIntoConstraints = false
+        badge.addSubview(initial)
+        NSLayoutConstraint.activate([
+            badge.widthAnchor.constraint(equalToConstant: size),
+            badge.heightAnchor.constraint(equalToConstant: size),
+            initial.leadingAnchor.constraint(equalTo: badge.leadingAnchor,constant: 2),
+            initial.trailingAnchor.constraint(equalTo: badge.trailingAnchor,constant: -2),
+            initial.centerYAnchor.constraint(equalTo: badge.centerYAnchor)
+        ])
+        return badge
+    }
+
+    private func personRow(_ name: String,index: Int) -> UIView {
+        let label = text(name,style: .subheadline)
+        let status = text(labels["online-status"] ?? "",style: .caption1)
+        label.accessibilityIdentifier = "fei.share.online.member"
+        status.textColor = .secondaryLabel
+        status.setContentHuggingPriority(.required,for: .horizontal)
+        status.setContentCompressionResistancePriority(.required,for: .horizontal)
+        let content = UIStackView(arrangedSubviews: [avatar(name,index: index,size: 26),label,status])
+        content.alignment = .center
+        content.spacing = 8
+        content.isLayoutMarginsRelativeArrangement = true
+        content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 4,leading: 2,bottom: 4,trailing: 2)
+        content.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
+        let divider = UIView()
+        divider.backgroundColor = .separator
+        divider.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+        let row = UIStackView(arrangedSubviews: [divider,content])
+        row.axis = .vertical
+        return row
+    }
+
+    private func disclosure() -> UIImageView {
+        let image = UIImageView(image: UIImage(systemName: "chevron.forward",withConfiguration: UIImage.SymbolConfiguration(pointSize: 12,weight: .semibold)))
+        image.tintColor = .tertiaryLabel
+        return image
+    }
+
+    private func attachTrailing(_ view: UIView,to button: UIButton) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.isUserInteractionEnabled = false
+        button.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.trailingAnchor.constraint(equalTo: button.trailingAnchor,constant: -8),
+            view.centerYAnchor.constraint(equalTo: button.centerYAnchor)
+        ])
+        let fitting = view.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
+        var configuration = button.configuration
+        configuration?.contentInsets.trailing = ceil(fitting.width) + 16
+        button.configuration = configuration
+    }
+
+    private func render() {
+        for view in stack.arrangedSubviews { stack.removeArrangedSubview(view); view.removeFromSuperview() }
+        stack.addArrangedSubview(makeHeader())
+        if showsPeople {
+            if names.isEmpty {
+                let empty = text(labels["no-online-collaborators"] ?? "",style: .subheadline)
+                empty.textColor = .secondaryLabel
+                stack.addArrangedSubview(empty)
+            } else {
+                let summary = text(String(format: labels["online-context"] ?? "%d",names.count),style: .footnote)
+                summary.textColor = .secondaryLabel
+                stack.addArrangedSubview(summary)
+                for (index,name) in names.enumerated() {
+                    stack.addArrangedSubview(personRow(name,index: index))
+                }
+            }
+        } else {
+            if !names.isEmpty {
+                let online = row("online-collaborators",id: "fei.share.online") { [weak self] in self?.showPeople(true) }
+                online.accessibilityValue = String(names.count)
+                let avatars = UIStackView()
+                avatars.alignment = .center
+                avatars.spacing = 3
+                avatars.accessibilityElementsHidden = true
+                for (index,name) in names.prefix(3).enumerated() {
+                    avatars.addArrangedSubview(avatar(name,index: index,size: 22))
+                }
+                if names.count > 3 {
+                    let remaining = text("+\(names.count - 3)",style: .caption1)
+                    remaining.textColor = .secondaryLabel
+                    avatars.addArrangedSubview(remaining)
+                }
+                avatars.addArrangedSubview(disclosure())
+                attachTrailing(avatars,to: online)
+                stack.addArrangedSubview(online)
+            }
+            let permissions = row("share-access-action",id: "fei.share.permissions",action: manage)
+            attachTrailing(disclosure(),to: permissions)
+            stack.addArrangedSubview(permissions)
+        }
+        let width = min(304,max(228,(presentingViewController?.view.bounds.width ?? 336) - 32))
+        let height = stack.systemLayoutSizeFitting(CGSize(width: width - 24,height: 0),
+            withHorizontalFittingPriority: .required,verticalFittingPriority: .fittingSizeLevel).height + 20
+        preferredContentSize = CGSize(width: width,height: min(340,ceil(height)))
+    }
+}
+
+@MainActor
+private final class FeiSharedSyncController: UIViewController {
+    private let content = UIStackView()
+    private let scroll = UIScrollView()
+    private var snapshot: FeiNavigationState.SharedSync?
+    private var warningColor: UIColor?
+    private var action: ((String)->Void)?
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        content.axis = .vertical
+        content.spacing = 12
+        content.translatesAutoresizingMaskIntoConstraints = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(scroll); scroll.addSubview(content)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor), scroll.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor,constant: 18),
+            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor,constant: -18),
+            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor,constant: 12),
+            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor,constant: -18),
+            content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor,constant: -36)
+        ])
+    }
+
+    func update(_ status: FeiNavigationState.SharedSync,labels: [String:String],warning: UIColor, action: @escaping (String)->Void) {
+        loadViewIfNeeded()
+        self.action = action
+        guard status != snapshot || warning != warningColor else { return }
+        snapshot = status
+        warningColor = warning
+        content.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        func label(_ text: String,style: UIFont.TextStyle,color: UIColor) -> UILabel {
+            let label = UILabel()
+            label.text = text; label.font = .preferredFont(forTextStyle: style)
+            label.adjustsFontForContentSizeCategory = true; label.numberOfLines = 0; label.textColor = color
+            return label
+        }
+        view.accessibilityIdentifier = "fei.shared-sync"
+        title = labels["shared-sync-status"]
+        content.addArrangedSubview(label(status.scope,style: .subheadline,color: .secondaryLabel))
+        let headline = label(status.title,style: .headline,color: status.attention ? warning : .label)
+        headline.accessibilityIdentifier = "fei.shared-sync.status"
+        content.addArrangedSubview(headline)
+        if !status.detail.isEmpty { content.addArrangedSubview(label(status.detail,style: .subheadline,color: .secondaryLabel)) }
+        for row in status.rows where row.count == 2 {
+            let line = UIStackView()
+            line.distribution = .fill; line.spacing = 8; line.alignment = .firstBaseline
+            let key = label(row[0],style: .subheadline,color: .secondaryLabel)
+            let value = label(row[1],style: .subheadline,color: .label)
+            value.textAlignment = .right
+            value.setContentHuggingPriority(.defaultHigh,for: .horizontal)
+            line.addArrangedSubview(key); line.addArrangedSubview(value)
+            content.addArrangedSubview(line)
+        }
+        if let operation = status.action {
+            let key = operation == "retry" ? "sync-retry" : "sync-settings"
+            let button = UIButton(type: .system)
+            button.addAction(UIAction { [weak self] _ in self?.action?(operation) },for: .touchUpInside)
+            button.setTitle(labels[key],for: .normal)
+            button.accessibilityIdentifier = "fei.shared-sync.action"
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            content.addArrangedSubview(button)
+        }
+        preferredContentSize = CGSize(width: 340,height: 270)
+    }
+}
+
+@MainActor
+final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, UIPopoverPresentationControllerDelegate {
     weak var host: EditorHost?
     private var state: FeiNavigationState?
     var cloudStartPending: Bool { state?.cloud_start_pending == true }
@@ -227,8 +573,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     var readyForInvitation: Bool { state?.cloud_start_pending == false && state?.busy == false && !applying }
     private enum DocumentSheet: Equatable {
         case sharing(String)
+        case invitation(String)
         case history(UInt64)
     }
+    private weak var shareOverview: FeiShareOverviewController?
+    private var shareOverviewScope: String?
     private var documentSheet: UINavigationController?
     private var documentSheetKey: DocumentSheet?
     private var documentSheetChanging = false
@@ -236,7 +585,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     private var pending: FeiNavigationState?
     private var applying = false
     private var nativePopTarget: String?
-    private var nativePopSource: String?
+    private var postPopRevision: UInt64 = 0
     private weak var buttonsController: UIViewController?
     private var buttonsKind: String?
     private var buttonsShared = false
@@ -258,14 +607,52 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     }
     private var createSerial: UInt64 = 0
     private var pendingCreation: UInt64?
-    var allowsCompose: Bool { state?.busy == false && (state?.can_create == true || state?.browser?.personal == true) && state?.listing?.kind != "shared" && state?.browser?.shared != true && state?.confirmation == nil && pendingCreation == nil }
-    func composeNote(listingScope: String? = nil) {
-        guard allowsCompose,!applying,host?.navigationController?.transitionCoordinator == nil,let state else { return }
-        if let listingScope,(hasPadWorkspace ? state.browser?.listing.scope : state.listing?.scope) != listingScope { return }
-        createSerial = max(createSerial,state.revision)+1; pendingCreation = createSerial
-        send(hasPadWorkspace ? "browse-compose" : "compose",id: state.current,serial: createSerial,scope: hasPadWorkspace ? state.browser?.listing.scope : state.listing?.scope ?? state.editor_scope)
+    private var visibleListing: FeiNavigationState.Listing? { hasPadWorkspace ? state?.browser?.listing : state?.listing }
+    private var isVirtualListing: Bool {
+        guard let listing = visibleListing else { return false }
+        let personal = hasPadWorkspace ? state?.browser?.personal == true : state?.shared_session == false
+        return listing.kind == "shared" || personal && listing.tab == 1
     }
+    var showsComposeShortcut: Bool {
+        guard let state,let listing = visibleListing,["notes","shared"].contains(listing.kind) else { return false }
+        if isVirtualListing { return false }
+        return hasPadWorkspace ? state.browser?.can_create == true : state.can_create
+    }
+    func configureListCompose(_ item: UIBarButtonItem) {
+        let title = label("new")
+        item.isEnabled = allowsCompose
+        guard item.accessibilityLabel != title || item.primaryAction == nil else { return }
+        item.accessibilityLabel = title
+        item.menu = nil
+        item.primaryAction = UIAction(title: title,image: UIImage(systemName: "square.and.pencil")) { [weak self] _ in self?.composeNote() }
+    }
+    var allowsCompose: Bool {
+        guard let state,!state.busy,state.confirmation == nil,pendingCreation == nil else { return false }
+        return showsComposeShortcut
+    }
+    func composeNote() {
+        guard allowsCompose,!applying,host?.navigationController?.transitionCoordinator == nil,let state else { return }
+        requestComposition(hasPadWorkspace ? "browse-compose" : "compose",state: state,
+            scope: hasPadWorkspace ? state.browser?.listing.scope : state.listing?.scope)
+    }
+    func composeFromEditor() {
+        guard let state,state.kind == "note",state.current != nil,state.can_create,!state.busy,!state.conflict_review,
+              state.confirmation == nil,pendingCreation == nil,!applying,host?.navigationController?.transitionCoordinator == nil else { return }
+        requestComposition("editor-compose",state: state,scope: state.editor_scope)
+    }
+    private func requestComposition(_ action: String,state: FeiNavigationState,scope: String?) {
+        guard let scope else { return }
+        createSerial = max(createSerial,state.revision)+1
+        pendingCreation = createSerial
+        send(action,id: state.current,serial: createSerial,scope: scope)
+    }
+    private weak var sharedSync: FeiSharedSyncController?
+    private var sharedSyncScope: String?
+    private var sharedSyncRestoreScope: String?
+    private weak var browserMore: UIBarButtonItem?
+    private var moreBadgeRevision: (Bool, FeiMobileTheme)?
     private weak var confirmationAlert: UIAlertController?
+    private weak var cloudSwitchSheet: UIViewController?
     private var informationGeneration: UInt64 = 0
     private var informationSerial: UInt64?
     private weak var informationAlert: UIAlertController?
@@ -292,7 +679,8 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     }
 
     private func applyNavigation(_ next: FeiNavigationState) {
-        guard next.revision > (state?.revision ?? 0), next.revision > (pending?.revision ?? 0),
+        guard next.revision >= postPopRevision,
+              next.revision > (state?.revision ?? 0), next.revision > (pending?.revision ?? 0),
               let host, let navigation = host.navigationController else { return }
         if navigation.transitionCoordinator != nil {
             pending = next
@@ -300,9 +688,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             return
         }
         let routes = host.padWorkspace?.detailRoutes(next) ?? next.routes
+        let listing = host.padWorkspace == nil || next.kind == "trash" ? next.listing : nil
+        let settings = next.sharing_title == nil ? next.settings : nil
         let oldKeys = navigation.viewControllers.compactMap { ($0 as? FeiRouteController)?.routeKey }
         let newKeys = routes.map(\.key)
-        if nativePopTarget != nil && newKeys.last != nativePopSource { nativePopTarget=nil; nativePopSource=nil }
+        if nativePopTarget != nil { nativePopTarget = nil }
         let oldState = state
         if let pendingCreation,let ack = next.creation_ack,ack >= pendingCreation {
             self.pendingCreation = nil
@@ -310,6 +700,8 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         }
         if oldState?.confirmation != nil && next.confirmation == nil && next.current == oldState?.current { focusAfterTransition = false }
         state = next
+        if next.restore_shared_sync && oldState?.restore_shared_sync != true { sharedSyncRestoreScope = next.editor_scope }
+        else if !next.restore_shared_sync || sharedSyncRestoreScope != next.editor_scope { sharedSyncRestoreScope = nil }
         let appearance: UIUserInterfaceStyle = next.appearance == "dark" ? .dark : next.appearance == "light" ? .light : .unspecified
         if navigation.overrideUserInterfaceStyle != appearance { navigation.overrideUserInterfaceStyle = appearance }
         let palette = next.theme ?? .system
@@ -342,11 +734,15 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 controller.routeKey = route.key
                 controller.applyTheme(palette)
                 if controller.title != route.title { controller.title = route.title }
+                controller.configureNavigationTitleMode()
                 controller.navigationItem.backButtonTitle = next.labels["back"]
                 controller.navigationItem.backButtonDisplayMode = .minimal
-                if index == routes.count-1 { controller.updateListing(host.padWorkspace == nil ? next.listing : nil,labels: next.labels,busy: next.busy,coordinator: self) }
                 if index == routes.count-1 {
-                    controller.updateSettings(next.document_sharing ? nil : next.settings,busy: next.busy,coordinator: self)
+                    controller.updateSettings(settings,busy: next.busy,coordinator: self)
+                    controller.updateListing(listing,labels: next.labels,busy: next.busy,coordinator: self)
+                    if host.padWorkspace == nil {
+                        controller.notesList?.configureSearch(in: controller,expanded: false,preparing: true)
+                    }
                     controller.updateSharedOpening(next, coordinator: self)
                 }
                 return controller
@@ -375,8 +771,8 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             if controller.navigationItem.backButtonTitle != next.labels["back"] { controller.navigationItem.backButtonTitle = next.labels["back"] }
         }
         if let top = navigation.viewControllers.compactMap({ $0 as? FeiRouteController }).last {
-            top.updateSettings(next.document_sharing ? nil : next.settings,busy: next.busy,coordinator: self)
-            top.updateListing(host.padWorkspace == nil || next.kind == "trash" ? next.listing : nil,labels: next.labels,busy: next.busy,coordinator: self)
+            top.updateSettings(settings,busy: next.busy,coordinator: self)
+            top.updateListing(listing,labels: next.labels,busy: next.busy,coordinator: self)
             top.updateSharedOpening(next, coordinator: self)
             top.applyTheme(palette)
             host.attachEditor(to: top)
@@ -384,15 +780,35 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         host.updateEditorToolbar(next)
         updateButtons()
         syncDocumentSheet()
+        updateSharedSync(next)
+        restoreSharedSyncIfNeeded()
         if let choice = navigation.topViewController as? FeiSettingsChoiceController,let settings = next.settings { choice.update(settings,busy: next.busy) }
         if next.information != oldState?.information { showInformation(next.information) }
         if next.reorder != oldState?.reorder { showReorder(next.reorder) }
         if next.confirmation != oldState?.confirmation || (next.confirmation?.versions != nil && (next.busy != oldState?.busy || next.cloud_history != oldState?.cloud_history)) { showConfirmation(next.confirmation) }
         host.deliverPendingInvitation()
+        #if FEI_MOBILE_QA
+        if next.kind == "note",next.shared_session,oldState?.editor_scope != next.editor_scope,
+           ProcessInfo.processInfo.environment["FEI_QA_SYNC_BADGE"] == "1" {
+            let states = ProcessInfo.processInfo.environment["FEI_QA_SHARED_SYNC_SETTINGS"] == "1"
+                ? [(0.0,"signed-out")] : [(0.0,"ready"),(5.0,"uploading"),(11.0,"stalled"),(27.0,"ready")]
+            for (delay,value) in states {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard self?.state?.editor_scope == next.editor_scope else { return }
+                    self?.send("qa-sync-state",value: value,scope: next.editor_scope)
+                }
+            }
+        }
+        #endif
     }
 
     private func desiredDocumentSheet(_ state: FeiNavigationState) -> DocumentSheet? {
-        if state.document_sharing, state.settings != nil { return .sharing(state.editor_scope) }
+        if state.sharing_title != nil,let settings = state.settings {
+            if settings.sections.contains(where: { $0.rows.contains(where: { $0.kind == "invitation-link" }) }) {
+                return .invitation(state.editor_scope)
+            }
+            return .sharing(state.editor_scope)
+        }
         if let history = state.local_history, !history.previewing { return .history(history.token) }
         return nil
     }
@@ -407,6 +823,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 self.documentSheet = nil
                 self.documentSheetKey = nil
                 self.documentSheetChanging = false
+                self.refreshSharedToolbarTint()
                 self.syncDocumentSheet()
             }
             return
@@ -426,13 +843,21 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             let content: UIViewController
             switch desired {
             case .sharing: content = FeiSettingsController(coordinator: self)
+            case .invitation: content = FeiShareAcceptController(coordinator: self)
             case .history: content = FeiLocalHistoryController(coordinator: self)
             }
             sheet = UINavigationController(rootViewController: content)
             if case .history = desired { sheet.setToolbarHidden(false,animated: false) }
-            sheet.modalPresentationStyle = .pageSheet
-            sheet.sheetPresentationController?.detents = [.large()]
-            sheet.sheetPresentationController?.prefersGrabberVisible = true
+            let isInvitation: Bool
+            if case .invitation = desired { isInvitation = true } else { isInvitation = false }
+            if (content is FeiSettingsController || isInvitation) && presenter.traitCollection.horizontalSizeClass == .regular {
+                sheet.modalPresentationStyle = .formSheet
+                sheet.preferredContentSize = CGSize(width: 520,height: isInvitation ? 320 : 600)
+            } else {
+                sheet.modalPresentationStyle = .pageSheet
+                sheet.sheetPresentationController?.detents = isInvitation ? [.medium(),.large()] : [.large()]
+                sheet.sheetPresentationController?.prefersGrabberVisible = true
+            }
             sheet.presentationController?.delegate = self
             documentSheet = sheet
             documentSheetKey = desired
@@ -445,9 +870,15 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         done.isEnabled = !state.busy
         switch desired {
         case .sharing:
-            content.title = state.labels["share-note"]
+            content.title = state.sharing_title
             done.accessibilityIdentifier = "fei.share.done"
             if let settings = state.settings { (content as? FeiSettingsController)?.update(settings,busy: state.busy,theme: theme) }
+        case .invitation:
+            content.title = state.sharing_title
+            done.style = .plain
+            done.title = state.labels["cancel"]
+            done.accessibilityIdentifier = "fei.share.done"
+            if let settings = state.settings { (content as? FeiShareAcceptController)?.update(settings,busy: state.busy,theme: theme) }
         case .history:
             content.title = state.labels["history"]
             done.accessibilityIdentifier = "fei.history.close"
@@ -457,6 +888,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         if needsPresentation {
             presenter.view.endEditing(true)
             documentSheetChanging = true
+            refreshSharedToolbarTint()
             presenter.present(sheet,animated: true) { [weak self] in
                 self?.documentSheetChanging = false
                 self?.syncDocumentSheet()
@@ -467,7 +899,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     @objc private func closeDocumentSheet() {
         guard let state, !state.busy, let key = documentSheetKey, desiredDocumentSheet(state) == key else { return }
         switch key {
-        case .sharing(let scope): send("close-document-sharing",scope: scope)
+        case .sharing(let scope), .invitation(let scope): send("close-document-sharing",scope: scope)
         case .history: sendHistory("close")
         }
     }
@@ -477,6 +909,23 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         closeDocumentSheet()
         documentSheet = nil
         documentSheetKey = nil
+        refreshSharedToolbarTint()
+    }
+
+    private var sharedToolbarTint: UIColor? {
+        // Let the navigation bar choose its inactive foreground behind a sheet.
+        documentSheet == nil ? theme.accentColor : nil
+    }
+
+    private func refreshSharedToolbarTint() {
+        guard let state,state.shared_session else { return }
+        let identifiers = ["fei.share","fei.more","fei.folder.share","fei.library-actions"]
+        let detail = host?.navigationController?.topViewController?.navigationItem.rightBarButtonItems ?? []
+        let browser = state.browser?.personal == false
+            ? host?.padWorkspace?.visibleBrowserController?.navigationItem.rightBarButtonItems ?? [] : []
+        for item in detail + browser where identifiers.contains(item.accessibilityIdentifier ?? "") {
+            item.tintColor = sharedToolbarTint
+        }
     }
 
     private func showInformation(_ information: FeiNavigationState.Information?) {
@@ -523,6 +972,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         let generation = confirmationGeneration
         guard let confirmation else {
             confirmationAlert?.dismiss(animated: true); confirmationAlert = nil
+            cloudSwitchSheet?.dismiss(animated: true); cloudSwitchSheet = nil
             versionHistory?.dismissForReplacement(); versionHistory = nil
             return
         }
@@ -546,6 +996,55 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             return
         }
         versionHistory?.dismissForReplacement(); versionHistory = nil
+        if confirmation.enable_cloud,let choice = confirmation.choice {
+            let form = UIViewController()
+            form.view.backgroundColor = .systemGroupedBackground
+            form.title = confirmation.title
+            let body = UILabel()
+            body.text = confirmation.message; body.numberOfLines = 0
+            body.font = .preferredFont(forTextStyle: .body); body.adjustsFontForContentSizeCategory = true
+            let caption = UILabel()
+            caption.text = choice; caption.numberOfLines = 0
+            caption.font = .preferredFont(forTextStyle: .body); caption.adjustsFontForContentSizeCategory = true
+            let toggle = UISwitch()
+            toggle.isOn = confirmation.choice_on
+            toggle.accessibilityLabel = choice; toggle.accessibilityIdentifier = "fei.confirm.choice"
+            let row = UIStackView(arrangedSubviews: [caption,toggle]); row.alignment = .center; row.spacing = 10
+            let stack = UIStackView(arrangedSubviews: [body,row]); stack.axis = .vertical; stack.spacing = 18
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            form.view.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: form.view.layoutMarginsGuide.leadingAnchor),
+                stack.trailingAnchor.constraint(equalTo: form.view.layoutMarginsGuide.trailingAnchor),
+                stack.topAnchor.constraint(equalTo: form.view.safeAreaLayoutGuide.topAnchor,constant: 15)
+            ])
+            let navigation = UINavigationController(rootViewController: form)
+            navigation.view.accessibilityIdentifier = "fei.cloud-enable-confirm"
+            navigation.overrideUserInterfaceStyle = controller.navigationController?.overrideUserInterfaceStyle ?? .unspecified
+            navigation.isModalInPresentation = true
+            let regular = controller.traitCollection.horizontalSizeClass == .regular
+            navigation.modalPresentationStyle = regular ? .formSheet : .pageSheet
+            if regular { navigation.preferredContentSize = CGSize(width: 460,height: 270) }
+            else {
+                navigation.sheetPresentationController?.detents = [.medium(),.large()]
+                navigation.sheetPresentationController?.prefersGrabberVisible = true
+            }
+            form.navigationItem.leftBarButtonItem = UIBarButtonItem(title: label("cancel"),image: nil,
+                primaryAction: UIAction { [weak self] _ in self?.send("cancel-confirm",serial: confirmation.serial) })
+            let confirm = UIBarButtonItem(title: confirmation.action,image: nil,primaryAction: UIAction { [weak self,weak toggle] _ in
+                self?.send("confirm-enable-cloud",value: toggle?.isOn == true ? "true" : "false",serial: confirmation.serial)
+            })
+            confirm.style = .done
+            confirm.accessibilityIdentifier = "fei.confirm.ok"
+            form.navigationItem.rightBarButtonItem = confirm
+            let present = { [weak self] in
+                guard let self,self.confirmationGeneration == generation,self.state?.confirmation == confirmation else { return }
+                self.cloudSwitchSheet = navigation
+                controller.present(navigation,animated: true)
+            }
+            if let previous = controller.presentedViewController { previous.dismiss(animated: true,completion: present) } else { present() }
+            return
+        }
         let alert = UIAlertController(title: confirmation.title, message: confirmation.message, preferredStyle: .alert)
         alert.view.accessibilityIdentifier = "fei.confirm"
         func action(_ title: String, _ command: String, _ style: UIAlertAction.Style = .default, _ identifier: String) {
@@ -592,10 +1091,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             host?.navigationController?.navigationBar.accessibilityValue="fei-nav kind=\(state.kind) top=\(route.routeKey) pop=\(nativePopTarget ?? "none")"
             #endif
             controller.navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = !state.busy }
-            controller.navigationItem.rightBarButtonItems?.forEach { $0.isEnabled = !state.busy }
-            controller.navigationItem.rightBarButtonItems?.filter { $0.accessibilityIdentifier == "fei.edit.block-actions" }.forEach { $0.isEnabled = !state.busy && state.can_edit && state.block_actions }
-            if state.kind == "note" {
-                controller.navigationItem.rightBarButtonItems?.first(where: { $0.accessibilityIdentifier == "fei.new" })?.isEnabled = allowsCompose
+            let editorActionsEnabled = !state.busy && !state.conflict_review
+            controller.navigationItem.rightBarButtonItems?.forEach { $0.isEnabled = editorActionsEnabled }
+            controller.navigationItem.rightBarButtonItems?.filter { $0.accessibilityIdentifier == "fei.edit.block-actions" }.forEach {
+                $0.isEnabled = editorActionsEnabled && state.can_edit && state.block_actions &&
+                    (host?.editorHasKeyboardFocus == true || state.block_selected)
             }
             if state.kind == "note",state.current == nil { controller.navigationItem.rightBarButtonItems?.filter { ["fei.more","fei.share"].contains($0.accessibilityIdentifier ?? "") }.forEach { $0.isEnabled = false } }
             if state.kind == "trash" { controller.navigationItem.rightBarButtonItem?.isEnabled = !state.busy && state.items.contains(where: { $0.trashed }) }
@@ -605,7 +1105,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             if state.board_open { controller.navigationItem.leftBarButtonItems = nil }
             else { host?.padWorkspace?.configureDetailButtons(controller,state: state,coordinator: self) }
         }
-        let overlapsChrome = ["note","history-preview"].contains(state.kind) && !state.board_open && !state.find_active
+        let overlapsChrome = state.editorOverlapsChrome
         if route.overlapsChrome != overlapsChrome || route.chromeTheme != theme {
             route.overlapsChrome = overlapsChrome
             route.chromeTheme = theme
@@ -628,9 +1128,30 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         } else { host?.navigationController?.setToolbarHidden(true,animated: false) }
         // Keep bar items stable when only note state changes.
         let typing = host?.editorHasKeyboardFocus == true
-        let identity = FeiRouteController.BarIdentity(kind: state.kind,shared: state.shared_session,editing: state.kind == "note" && state.can_edit,typing: state.kind == "note" && typing,blockSelected: state.block_selected,expanded: expanded,topTools: host?.navigationEditorTools.isEmpty == false,composing: state.can_create,board: state.board_open,collaborators: state.editing_collaborators,labels: state.labels)
-        if route.barIdentity == identity { return }
+        let identity = FeiRouteController.BarIdentity(kind: state.kind,shared: state.shared_session,editing: state.kind == "note" && state.can_edit,typing: state.kind == "note" && typing,blockSelected: state.block_selected,expanded: expanded,topTools: host?.navigationEditorTools.isEmpty == false,composing: state.can_create,board: state.board_open,collaborators: state.editing_collaborators,appearance: state.appearance,theme: state.theme,labels: state.labels)
+        if let overview = shareOverview {
+            if shareOverviewScope == state.editor_scope && state.kind == "note" && !state.board_open {
+                overview.updateNames(state.editing_collaborators)
+            } else {
+                overview.dismiss(animated: false)
+                shareOverview = nil
+                shareOverviewScope = nil
+            }
+        }
+        if route.barIdentity == identity {
+            controller.navigationItem.rightBarButtonItems?.first { $0.accessibilityIdentifier == "fei.share" || $0.accessibilityIdentifier == "fei.folder.share" }?.isEnabled = !state.busy
+            let presentation = (state.shared_sync?.attention == true, state.theme ?? .system)
+            if moreBadgeRevision?.0 != presentation.0 || moreBadgeRevision?.1 != presentation.1 {
+                moreBadgeRevision = presentation
+                updateSharedSyncButton(controller.navigationItem.rightBarButtonItems?.first(where: {
+                    $0.accessibilityIdentifier == "fei.more" || $0.accessibilityIdentifier == "fei.library-actions"
+                }),state: state,folder: state.kind == "folder")
+                if state.browser?.personal == false { updateSharedSyncButton(browserMore,state: state,folder: true) }
+            }
+            return
+        }
         route.barIdentity = identity
+        moreBadgeRevision = (state.shared_sync?.attention == true,state.theme ?? .system)
         buttonsController = controller
         buttonsKind = state.kind
         buttonsShared = state.shared_session
@@ -638,9 +1159,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         buttonsTyping = typing
         buttonsExpanded = expanded
         buttonsLabels = state.labels
-        let isList=["notes","folder"].contains(state.kind)
-        controller.navigationItem.largeTitleDisplayMode = isList ? .always : .never
-        host?.navigationController?.navigationBar.prefersLargeTitles = true
         controller.navigationItem.rightBarButtonItems = nil
         if state.board_open {
             let done = UIBarButtonItem(title: state.labels["done"],style: .done,target: self,action: #selector(closeBoard))
@@ -650,24 +1168,27 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             let more = UIBarButtonItem(image: UIImage(systemName: "ellipsis"),primaryAction: nil,menu: deferredActions(note: true))
             more.accessibilityLabel = state.labels["note-more"]
             more.accessibilityIdentifier = "fei.more"
-            let share = UIBarButtonItem(image: UIImage(systemName: "square.and.arrow.up"),style: .plain,target: self,action: #selector(shareNote))
-            share.accessibilityLabel = state.labels["share-note"]; share.accessibilityIdentifier = "fei.share"
-            var items = [more,share]+(host?.navigationEditorTools.reversed() ?? [].reversed())
-            if UIDevice.current.userInterfaceIdiom == .phone && state.can_create {
-                let create = UIBarButtonItem(systemItem: .compose,primaryAction: UIAction { [weak self] _ in self?.composeNote() })
-                create.accessibilityIdentifier = "fei.new"
-                create.accessibilityLabel = state.labels["new"]
-                items.append(create)
+            updateSharedSyncButton(more,state: state,folder: false)
+            let share = UIBarButtonItem(image: shareImage(shared: state.shared_session,count: state.editing_collaborators.count),style: .plain,target: self,action: #selector(shareNote))
+            share.accessibilityLabel = state.labels[state.shared_session ? "already-shared" : "share-object"]
+            share.accessibilityIdentifier = "fei.share"
+            share.isEnabled = !state.busy
+            if state.shared_session {
+                share.tintColor = sharedToolbarTint
+                if #available(iOS 26.0,*), !state.editing_collaborators.isEmpty {
+                    let count = state.editing_collaborators.count
+                    var badge = UIBarButtonItem.Badge.string(count > 99 ? "99+" : String(count))
+                    badge.backgroundColor = .secondarySystemFill
+                    badge.foregroundColor = .label
+                    badge.font = .monospacedDigitSystemFont(ofSize: 8,weight: .semibold)
+                    share.badge = badge
+                }
             }
             if !state.editing_collaborators.isEmpty {
-                let editing = label("editing-collaborators")
-                let people = state.editing_collaborators.map { UIAction(title: $0,attributes: .disabled) { _ in } }
-                let participants = UIBarButtonItem(image: UIImage(systemName: "person.2"),primaryAction: nil,menu: UIMenu(title: editing,children: people))
-                participants.accessibilityLabel = editing
-                participants.accessibilityValue = state.editing_collaborators.joined(separator: ", ")
-                participants.accessibilityIdentifier = "fei.collaboration.editing"
-                items.insert(participants,at: 2)
+                share.accessibilityValue = "\(state.editing_collaborators.count) \(label("online-collaborators"))"
             }
+            shareOverview?.popoverPresentationController?.sourceItem = share
+            var items = [more,share]+(host?.navigationEditorTools.reversed() ?? [].reversed())
             if state.can_edit && typing {
                 let done = UIBarButtonItem(image: UIImage(systemName: "checkmark"),style: .done,target: self,action: #selector(endTyping))
                 done.accessibilityLabel = state.labels["end-typing"]
@@ -694,11 +1215,9 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             let more = UIBarButtonItem(image: UIImage(systemName: "ellipsis"),primaryAction: nil,menu: deferredActions(note: false))
             more.accessibilityLabel = state.labels["folder-more"]
             more.accessibilityIdentifier = "fei.library-actions"
-            if expanded && state.can_create {
-                let create = UIBarButtonItem(barButtonSystemItem: .compose,target: self,action: #selector(newNote))
-                create.accessibilityLabel = state.labels["new"]; create.accessibilityIdentifier = "fei.new"
-                controller.navigationItem.rightBarButtonItems = [create,more]
-            } else { controller.navigationItem.rightBarButtonItems = [more] }
+            updateSharedSyncButton(more,state: state,folder: true)
+            let share = state.kind == "folder" ? folderShareItem(state,browser: false) : nil
+            controller.navigationItem.rightBarButtonItems = [more] + (share.map { [$0] } ?? [])
             if state.kind == "notes" && state.routes.count == 1 {
                 let settings = UIBarButtonItem(image: UIImage(systemName: "gearshape"), style: .plain,
                     target: self, action: #selector(openSettings))
@@ -712,14 +1231,14 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     func navigationController(_ navigationController: UINavigationController,willShow viewController: UIViewController,animated: Bool) {
         let list = (viewController as? FeiRouteController)?.notesList
         if let route = viewController as? FeiRouteController {
-            let list=route.routeKey == "notes" || route.routeKey == "shared" || route.routeKey.hasPrefix("folder:")
-            route.navigationItem.largeTitleDisplayMode=list ? .always : .never
-            if list { route.navigationItem.title=route.title }
+            if route.configureNavigationTitleMode() { route.navigationItem.title=route.title }
             else if route.routeKey.hasPrefix("note:") { route.navigationItem.title = "" }
         }
         if let route = viewController as? FeiRouteController { host?.prepareEditorTransition(to: route) }
-        let compactList = list?.view.isHidden == false && (viewController as? FeiRouteController)?.routeKey != "trash" && host?.padWorkspace == nil
-        navigationController.setToolbarHidden(!compactList,animated: animated)
+        let compactList = list?.requiresListToolbar == true && host?.padWorkspace == nil
+        if navigationController.isToolbarHidden == compactList {
+            navigationController.setToolbarHidden(!compactList,animated: animated)
+        }
     }
 
     func navigationController(_ navigationController: UINavigationController,
@@ -730,10 +1249,15 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             return
         }
         host.attachEditor(to: shown)
-        if !applying, let state, (host.padWorkspace?.detailRoutes(state) ?? state.routes).last?.key != shown.routeKey,nativePopTarget != shown.routeKey {
-            nativePopTarget=shown.routeKey; nativePopSource=(host.padWorkspace?.detailRoutes(state) ?? state.routes).last?.key
-            let remaining = (host.padWorkspace?.detailRoutes(state) ?? state.routes).count - navigationController.viewControllers.count
-            for _ in 0..<max(0, remaining) { send("back") }
+        if !applying, let state, nativePopTarget == nil {
+            let expected = (host.padWorkspace?.detailRoutes(state) ?? state.routes).map(\.key)
+            let actual = navigationController.viewControllers.compactMap { ($0 as? FeiRouteController)?.routeKey }
+            if actual.count < expected.count && expected.starts(with: actual) {
+                nativePopTarget = shown.routeKey
+                for _ in actual.count..<expected.count { send("back") }
+                postPopRevision = fei_ios_publish_navigation_after_pop()
+                if let pending, pending.revision < postPopRevision { self.pending = nil }
+            }
         }
         applying = false
         if focusAfterTransition,state?.kind == "note",state?.can_edit == true {
@@ -744,6 +1268,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         syncDocumentSheet()
         drainPendingAfterTransition()
         host.deliverPendingInvitation()
+        DispatchQueue.main.async { [weak self] in self?.restoreSharedSyncIfNeeded() }
     }
 
     func searchPresentationDidEnd() { drainPendingAfterTransition() }
@@ -774,11 +1299,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         if action == "toolbar-command",["done","styles","insert","quick-insert","slash","block-actions","undo","redo"].contains(value ?? ""),let state,state.kind == "note",state.current == id,state.editor_scope == scope,state.can_edit,state.write_allowed,!state.busy {
             host?.settleEditorComposition()
         }
-        if state?.kind == "note",["share-note","settings","shared-library-settings","browse-open","browse-scope","back","return-personal","history-open"].contains(action) {
+        if state?.kind == "note",["share-note","shared-folder-access","settings","shared-library-settings","browse-open","browse-scope","back","history-open"].contains(action) {
             host?.settleEditorComposition()
             host?.navigationController?.topViewController?.view.endEditing(true)
         }
-        if ["list-open","compose","browse-compose","new","new-document","new-markdown","settings","sharing","trash","back"].contains(action),let sender = host?.navigationController?.topViewController as? FeiRouteController {
+        if ["list-open","compose","browse-compose","new","new-document","new-markdown","settings","shared-folder-access","trash","back"].contains(action),let sender = host?.navigationController?.topViewController as? FeiRouteController {
             sender.freezeContent()
             DispatchQueue.main.asyncAfter(deadline: .now()+0.2) { [weak self,weak sender] in
                 guard let sender,self?.host?.navigationController?.topViewController === sender,self?.host?.navigationController?.transitionCoordinator == nil else { return }
@@ -823,7 +1348,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         action.accessibilityIdentifier = "fei.history.confirm"; alert.addAction(action); present(alert,from: documentSheet?.topViewController)
     }
 
-    @objc private func newNote() { guard let scope = state?.listing?.scope else { return }; composeNote(listingScope: scope) }
     @objc private func closeBoard() {
         guard let state,state.board_open else { return }
         send("toolbar-command",value: "board-close",id: state.current,scope: state.editor_scope)
@@ -837,12 +1361,97 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         guard let state,state.kind == "note",state.can_edit,!state.busy else { return }
         send("toolbar-command",value: redo ? "redo" : "undo",id: state.current,scope: state.editor_scope)
     }
+    private func shareImage(shared: Bool,count: Int = 0) -> UIImage? {
+        guard shared else { return UIImage(systemName: "person.badge.plus") }
+        guard let symbol = UIImage(systemName: "person.2",withConfiguration: UIImage.SymbolConfiguration(pointSize: 16)) else { return nil }
+        let badge: String?
+        if #available(iOS 26.0,*) { badge = nil }
+        else { badge = count > 99 ? "99+" : count > 0 ? String(count) : nil }
+        return toolbarGlyph(symbol,size: CGSize(width: max(27,ceil(symbol.size.width)),height: 24),verticalOffset: 1,badge: badge)
+    }
+
+    private func toolbarGlyph(_ symbol: UIImage,size: CGSize,verticalOffset: CGFloat = 0,badge: String?) -> UIImage {
+        UIGraphicsImageRenderer(size: size).image { context in
+            let origin = CGPoint(x: (size.width-symbol.size.width)/2,y: (size.height-symbol.size.height)/2 + verticalOffset)
+            symbol.draw(at: origin)
+            guard let badgeText = badge else { return }
+            // Older systems use a template badge so the complete icon inherits modal dimming.
+            let badge = badgeText as NSString
+            let font = UIFont.monospacedDigitSystemFont(ofSize: badge.length > 2 ? 6.5 : 7.5,weight: .semibold)
+            let attributes: [NSAttributedString.Key:Any] = [.font:font,.foregroundColor:UIColor.black]
+            let textSize = badge.size(withAttributes: attributes)
+            let width = max(10,ceil(textSize.width) + 3)
+            let bounds = CGRect(x: size.width - width,y: 0,width: width,height: 10)
+            context.cgContext.setBlendMode(.clear)
+            UIBezierPath(roundedRect: bounds.insetBy(dx: -0.75,dy: -0.75),cornerRadius: 6).fill()
+            context.cgContext.setBlendMode(.normal)
+            UIColor.black.setFill()
+            UIBezierPath(roundedRect: bounds,cornerRadius: 5).fill()
+            context.cgContext.setBlendMode(.destinationOut)
+            badge.draw(at: CGPoint(x: bounds.midX - textSize.width / 2,y: bounds.midY - textSize.height / 2),withAttributes: attributes)
+        }.withRenderingMode(.alwaysTemplate)
+    }
+
+    private func hasSharedFolderShortcut(_ state: FeiNavigationState,browser: Bool) -> Bool {
+        state.folder_access && (browser ? state.browser?.personal == false && state.browser?.folder != nil : state.kind == "folder")
+    }
+
+    func folderShareItem(_ state: FeiNavigationState,browser: Bool) -> UIBarButtonItem? {
+        let shared = hasSharedFolderShortcut(state,browser: browser)
+        let candidate = browser ? state.browser?.folder : state.routes.last?.key.replacingOccurrences(of: "folder:",with: "")
+        let folder = state.items.first { $0.id == candidate && $0.folder && !$0.id.hasPrefix("collection-") }
+        guard shared || folder != nil else { return nil }
+        let item = UIBarButtonItem(image: shareImage(shared: shared),primaryAction: UIAction { [weak self] _ in
+            guard let self,let current = self.state,!current.busy else { return }
+            if shared {
+                guard current.folder_access else { return }
+                self.send("shared-folder-access",id: current.current,scope: current.editor_scope)
+            } else if let folder {
+                self.send("share-folder",id: folder.id,scope: browser ? current.browser?.listing.scope : current.listing?.scope)
+            }
+        })
+        item.accessibilityIdentifier = "fei.folder.share"
+        item.accessibilityLabel = state.labels[shared ? "shared-folder-access" : "share-object"]
+        item.isEnabled = !state.busy
+        if shared { item.tintColor = sharedToolbarTint }
+        return item
+    }
+
     @objc private func shareNote(_ sender: UIBarButtonItem) {
         guard let state,let id = state.current,!state.busy else { return }
-        send("share-note",id: id,scope: state.editor_scope)
+        let scope = state.editor_scope
+        if !state.shared_session || state.editing_collaborators.isEmpty {
+            send("share-note",id: id,scope: scope)
+            return
+        }
+        guard let controller = host?.navigationController?.topViewController,controller.presentedViewController == nil else { return }
+        let overview = FeiShareOverviewController(names: state.editing_collaborators,labels: state.labels) { [weak self] in
+            guard let self,let overview = self.shareOverview else { return }
+            overview.dismiss(animated: true) { [weak self] in
+                guard let self,let next = self.state,next.current == id,next.editor_scope == scope,!next.busy else { return }
+                self.send("share-note",id: id,scope: scope)
+            }
+        }
+        overview.modalPresentationStyle = .popover
+        overview.popoverPresentationController?.sourceItem = sender
+        overview.popoverPresentationController?.delegate = self
+        overview.loadViewIfNeeded()
+        shareOverview = overview
+        shareOverviewScope = scope
+        controller.present(overview,animated: true)
     }
+
+    func adaptivePresentationStyle(for controller: UIPresentationController,traitCollection: UITraitCollection) -> UIModalPresentationStyle {
+        if controller.presentedViewController is FeiShareOverviewController { return .none }
+        if let navigation = controller.presentedViewController as? UINavigationController,
+           navigation.viewControllers.first is FeiSharedSyncController {
+            return traitCollection.horizontalSizeClass == .compact ? .pageSheet : .none
+        }
+        return .automatic
+    }
+
     private func newFolder(parentID: String? = nil) {
-        guard let state, !state.busy, !state.shared_session, let listing = state.listing, listing.kind == "notes" else { return }
+        guard let state, !state.busy, state.can_create, !isVirtualListing, let listing = state.listing, listing.kind == "notes" else { return }
         presentNewFolder(action: "new-folder", parentID: parentID, scope: listing.scope)
     }
     @objc private func openSettings() { send("settings") }
@@ -909,52 +1518,86 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             self.host?.settleEditorComposition(); perform()
         }
     }
+    private func menuSection(_ items: [UIMenuElement]) -> UIMenu {
+        UIMenu(options: .displayInline,children: items)
+    }
+    private func collaborationSection(_ access: UIAction?,state: FeiNavigationState,browser: Bool = false) -> UIMenu? {
+        var items = access.map { [$0] } ?? []
+        if state.shared_sync != nil { items.append(sharedSyncAction(state,browser: browser)) }
+        return items.isEmpty ? nil : menuSection(items)
+    }
     private func listActionsMenu(browser: Bool) -> UIMenu {
         guard let state else { return UIMenu() }
         if state.shared_session && !(browser && state.browser?.personal == true) {
-            var actions: [UIMenuElement] = [menuAction("sharing","person.2") { [weak self] in self?.send("sharing") },
-                menuAction("library","books.vertical") { [weak self] in self?.send("shared-library-settings",id: state.current,scope: state.editor_scope) },
-                menuAction("return-personal","arrow.uturn.backward") { [weak self] in self?.send("return-personal") }]
-            if state.can_create {
-                actions.insert(menuAction("new","square.and.pencil") { [weak self] in self?.composeNote() },at: 0)
-                if browser { actions.insert(menuAction("new-folder","folder.badge.plus") { [weak self] in self?.createSidebarFolder() },at: 1) }
+            var groups: [UIMenuElement] = []
+            if browser ? state.browser?.can_create == true : state.can_create {
+                let create = [
+                    menuAction("new","square.and.pencil") { [weak self] in self?.composeNote() },
+                    menuAction("new-folder","folder.badge.plus") { [weak self] in
+                        if browser { self?.createSidebarFolder() } else { self?.newFolder() }
+                    }
+                ]
+                groups.append(UIMenu(title: label("new-in-folder"),image: UIImage(systemName: "plus"),children: create))
             }
-            return UIMenu(children: actions)
+            let access = hasSharedFolderShortcut(state,browser: browser) ? nil : menuAction("shared-folder-access","person.2") { [weak self] in
+                self?.send("shared-folder-access",id: state.current,scope: state.editor_scope)
+            }
+            if let collaboration = collaborationSection(access,state: state,browser: browser) { groups.append(collaboration) }
+            return UIMenu(children: groups)
         }
         let listing = browser ? state.browser?.listing : state.listing
         let shared = listing?.kind == "shared"
-        var create: [UIMenuElement] = []
-        if shared {
-            create.append(menuAction("accept-invitation","envelope.open") { [weak self] in self?.send("accept-invitation") })
-        } else if listing?.tab == 0 {
-            create = [
-                menuAction("new","square.and.pencil") { [weak self] in self?.composeNote() },
-                menuAction("new-folder","folder.badge.plus") { [weak self] in if browser { self?.createSidebarFolder() } else { self?.newFolder() } }]
+        let sortRules = ["manual","visited","modified","created","title"].map { key in
+            UIAction(title: label(key),state: listing?.sort_rule == key ? .on : .off) { [weak self] _ in
+                guard let self,let listing,self.state?.busy == false,
+                      (browser ? self.state?.browser?.listing.scope : self.state?.listing?.scope) == listing.scope else { return }
+                self.send("sort",value: key,scope: listing.scope)
+                if key == "manual" && listing.can_reorder {
+                    if browser { self.host?.padWorkspace?.beginBrowserReorder() }
+                    else { (self.host?.navigationController?.topViewController as? FeiRouteController)?.notesList?.beginReordering() }
+                }
+            }
         }
-        let sort = UIMenu(title: label("sort"),image: UIImage(systemName: "arrow.up.arrow.down"),children: ["manual","visited","modified","created","title"].map { key in
-            menuAction(key,"line.3.horizontal") { [weak self] in self?.send("sort",value: key,scope: listing?.scope) }
-        })
+        var sortEntries: [UIMenuElement] = sortRules
+        if let listing,let foldersFirst = listing.folders_first {
+            let folders = UIAction(title: label("folders-first"),attributes: listing.sort_rule == "manual" ? .disabled : [],
+                                   state: foldersFirst && listing.sort_rule != "manual" ? .on : .off) { [weak self] _ in
+                self?.send("sort",value: "folders-first",scope: listing.scope)
+            }
+            sortEntries.append(menuSection([folders]))
+        }
+        let sort = UIMenu(title: label("sort"),image: UIImage(systemName: "arrow.up.arrow.down"),children: sortEntries)
         var organize: [UIMenuElement] = []
         if (!browser && !state.shared_session) || listing?.can_select == true {
             organize.append(menuAction("batch","checkmark.circle") { [weak self] in self?.beginListSelection(browser: browser) })
         }
-        if listing?.can_reorder == true || browser && listing?.can_sort == true {
-            organize.append(menuAction("reorder","line.3.horizontal",enabled: listing?.can_reorder == true) { [weak self] in
-                if browser { self?.host?.padWorkspace?.beginBrowserReorder() } else { (self?.host?.navigationController?.topViewController as? FeiRouteController)?.notesList?.beginReordering() }
-            })
-        }
         if listing?.can_sort == true { organize.append(sort) }
         var menus: [UIMenuElement] = []
-        if !create.isEmpty { menus.append(UIMenu(options: .displayInline,children: create)) }
-        if !organize.isEmpty { menus.append(UIMenu(options: .displayInline,children: organize)) }
-        if !shared && (!state.shared_session || browser && state.browser?.personal == true) {
-            var transfer: [UIMenuElement] = []
-            if let id = browser ? state.browser?.folder : state.routes.last?.key.replacingOccurrences(of: "folder:",with: ""),
-               let item = state.items.first(where: { $0.id == id && $0.folder }) {
-                transfer.append(menuAction("rename","pencil") { [weak self] in self?.rename(id: id,title: item.title,browserScope: browser ? listing?.scope : nil) })
-            }
-            transfer.append(menuAction("import","square.and.arrow.down") { [weak self] in self?.send(browser ? "browse-import" : "import",scope: browser ? listing?.scope : nil) })
-            menus.append(UIMenu(options: .displayInline,children: transfer))
+        if let listing,listing.shared_create {
+            menus.append(menuSection([UIMenu(title: label("new-and-share"),image: UIImage(systemName: "person.badge.plus"),children: [
+                menuAction("new-shared-document","square.and.pencil") { [weak self] in self?.send("new-shared-document",scope: listing.scope) },
+                menuAction("new-shared-folder","folder.badge.plus") { [weak self] in self?.send("new-shared-folder",scope: listing.scope) }
+            ])]))
+        } else if !isVirtualListing {
+            let create = [
+                menuAction("new","square.and.pencil") { [weak self] in self?.composeNote() },
+                menuAction("new-folder","folder.badge.plus") { [weak self] in
+                    if browser { self?.createSidebarFolder() } else { self?.newFolder() }
+                }
+            ]
+            menus.append(menuSection(create))
+        }
+        if !organize.isEmpty { menus.append(menuSection(organize)) }
+        if shared {
+            menus.append(menuSection([menuAction("accept-invitation","envelope.open") { [weak self] in self?.send("accept-invitation") }]))
+        } else if let id = browser ? state.browser?.folder : state.routes.last?.key.replacingOccurrences(of: "folder:",with: ""),
+                  let item = state.items.first(where: { $0.id == id && $0.folder }) {
+            let share = menuAction("share-object","person.badge.plus") { [weak self] in self?.send("share-folder",id: id,scope: listing?.scope) }
+            menus.append(menuSection([menuAction("rename","pencil") { [weak self] in self?.rename(id: id,title: item.title,browserScope: browser ? listing?.scope : nil) }]))
+            menus.append(menuSection([share]))
+        }
+        if !isVirtualListing {
+            menus.append(menuSection([menuAction("import","square.and.arrow.down") { [weak self] in self?.send(browser ? "browse-import" : "import",scope: browser ? listing?.scope : nil) }]))
         }
         return UIMenu(children: menus)
     }
@@ -968,121 +1611,143 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         let search = UIMenu(options: .displayInline,children: [menuAction("find","magnifyingglass") { [weak self] in self?.send("find") },menuAction("outline","list.bullet") { [weak self] in self?.send("outline-menu") }])
         var editing: [UIMenuElement] = [menuAction("format-text","textformat.size",enabled: state.write_allowed) { [weak self] in self?.send("toolbar-command",value: "styles",id: id,scope: state.editor_scope) },menuAction("insert","plus",enabled: state.write_allowed) { [weak self] in self?.send("insert-menu") },menuAction("objects","slider.horizontal.3",enabled: state.write_allowed || state.has_code) { [weak self] in self?.send("objects-menu") }]
         if state.table_active { editing.append(menuAction("table-controls","tablecells",enabled: state.can_edit) { [weak self] in self?.send("table-menu") }) }
+        let standaloneShare = state.shared_session && !state.folder_access
+        let item = state.items.first(where: { $0.id == id })
         var organization: [UIMenuElement] = []
-        if !state.shared_session {
-            organization = [menuAction("rename","pencil",enabled: state.write_allowed) { [weak self] in self?.rename(id: id,title: self?.state?.title ?? "") },menuAction("move","folder",enabled: state.write_allowed) { [weak self] in self?.showMove(id) },menuAction("duplicate","doc.on.doc",enabled: state.write_allowed) { [weak self] in self?.send("duplicate",id: id) }]
-            if let item = state.items.first(where: { $0.id == id }) {
-                organization += [menuAction(item.pinned ? "unpin" : "pin","pin") { [weak self] in self?.send("pin",id: id) },menuAction(item.starred ? "unstar" : "star","star") { [weak self] in self?.send("star",id: id) }]
-            }
+        if let item {
+            let scope: String? = standaloneShare ? state.editor_scope : nil
+            organization += [
+                menuAction(item.pinned ? "unpin" : "pin","pin") { [weak self] in self?.send(standaloneShare ? "shared-pin" : "pin",id: id,scope: scope) },
+                menuAction(item.starred ? "unstar" : "star","star") { [weak self] in self?.send(standaloneShare ? "shared-star" : "star",id: id,scope: scope) }
+            ]
         }
-        if state.shared_session {
-            organization = [menuAction("rename","pencil",enabled: state.write_allowed) { [weak self] in self?.rename(id: id,title: self?.state?.title ?? "") },
-                menuAction("sharing","person.2") { [weak self] in self?.send("sharing") }]
-            if let item = state.items.first(where: { $0.id == id }) {
-                organization += [menuAction(item.pinned ? "unpin" : "pin","pin") { [weak self] in self?.send("shared-pin",id: id,scope: state.editor_scope) },
-                    menuAction(item.starred ? "unstar" : "star","star") { [weak self] in self?.send("shared-star",id: id,scope: state.editor_scope) },
-                    menuAction("duplicate","doc.on.doc") { [weak self] in self?.send("shared-copy",id: id,scope: state.editor_scope) },
-                    menuAction(item.owned ? "delete-shared" : "leave-shared","trash",destructive: true) { [weak self] in self?.send("shared-end",id: id,scope: state.editor_scope) }]
-            }
+        organization.append(menuAction("rename","pencil",enabled: state.write_allowed) { [weak self] in self?.rename(id: id,title: self?.state?.title ?? "") })
+        if !standaloneShare {
+            organization.append(menuAction("move","folder",enabled: state.write_allowed) { [weak self] in self?.showMove(id) })
         }
+        organization.append(menuAction(standaloneShare ? "copy-shared-to-personal" : "duplicate","doc.on.doc",enabled: standaloneShare || state.write_allowed) { [weak self] in
+            self?.send(standaloneShare ? "shared-copy" : "duplicate",id: id,scope: standaloneShare ? state.editor_scope : nil)
+        })
         editing.append(menuAction(state.reading ? "editing" : "reading","book",enabled: state.write_allowed) { [weak self] in self?.send(state.reading ? "editing" : "reading",id: id) })
         let info = UIMenu(title: label("doc-info"),image: UIImage(systemName: "info.circle"),children: [menuAction("doc-info","info.circle") { [weak self] in self?.send("doc-info",id: id) },menuAction("history","clock.arrow.circlepath") { [weak self] in self?.send("history-open",id: id,scope: state.editor_scope) },menuAction("attachments","paperclip") { [weak self] in self?.send("attachments-menu") }])
-        var export: [UIMenuElement] = [menuAction("export","square.and.arrow.up") { [weak self] in self?.showExport(id) },menuAction("pdf","doc.richtext") { [weak self] in self?.send("pdf",id: id) },menuAction("print","printer") { [weak self] in self?.send("print",id: id) }]
-        export.insert(menuAction("share-note","person.badge.plus") { [weak self] in self?.send("share-note",id: id,scope: state.editor_scope) },at: 0)
+        let export: [UIMenuElement] = [menuAction("export","square.and.arrow.up") { [weak self] in self?.showExport(id) },menuAction("pdf","doc.richtext") { [weak self] in self?.send("pdf",id: id) },menuAction("print","printer") { [weak self] in self?.send("print",id: id) }]
         var groups: [UIMenuElement] = [search,UIMenu(title: label("format"),image: FeiEditorToolbar.formatIcon,children: editing)]
-        if !organization.isEmpty { groups.append(UIMenu(title: label("options"),image: UIImage(systemName: "folder"),children: organization)) }
-        groups += [info,UIMenu(title: localized("分享与导出","Share and export"),image: UIImage(systemName: "square.and.arrow.up"),children: export)]
+        groups.append(UIMenu(title: label("options"),image: UIImage(systemName: "folder"),children: organization))
         if state.shared_session {
-            groups.append(menuAction("library","books.vertical") { [weak self] in self?.send("shared-library-settings",id: id,scope: state.editor_scope) })
-            groups.append(menuAction("return-personal","arrow.uturn.backward") { [weak self] in self?.send("return-personal") })
-        } else { groups.append(UIMenu(options: .displayInline,children: [menuAction("delete","trash",destructive: true,enabled: state.write_allowed) { [weak self] in self?.send("delete",id: id) }])) }
+            if let collaboration = collaborationSection(nil,state: state) { groups.append(collaboration) }
+        } else {
+            groups.append(menuSection([menuAction("share-object","person.badge.plus") { [weak self] in
+                self?.send("share-note",id: id,scope: state.editor_scope)
+            }]))
+        }
+        groups += [info,UIMenu(title: label("export-copy"),image: UIImage(systemName: "square.and.arrow.up"),children: export)]
+        if standaloneShare {
+            if let end = item?.share_end {
+                groups.append(menuSection([menuAction(end,"trash",destructive: true) { [weak self] in self?.send("shared-end",id: id,scope: state.editor_scope) }]))
+            }
+        } else {
+            groups.append(menuSection([menuAction("delete","trash",destructive: true,enabled: state.write_allowed) { [weak self] in self?.send("delete",id: id) }]))
+        }
         return UIMenu(children: groups)
     }
 
-    @objc private func showLibraryActions(_ sender: UIBarButtonItem) {
-        if state?.shared_session == true {
-            sheet(actions: [("return-personal",.default,{ [weak self] in self?.send("return-personal") }),
-                ("sharing",.default,{ [weak self] in self?.send("sharing") })],sender: sender)
-            return
+    private func sharedSyncAction(_ state: FeiNavigationState,browser: Bool = false) -> UIAction {
+        menuAction("shared-sync-status",state.shared_sync?.attention == true ? "exclamationmark.circle" : "arrow.triangle.2.circlepath") { [weak self] in
+            self?.showSharedSync(scope: state.editor_scope,browser: browser)
         }
-        let actions: [(String, UIAlertAction.Style, () -> Void)] = [
-            ("library", .default, { [weak self] in self?.showLibraryChoice() }),
-            ("sharing", .default, { [weak self] in self?.send("sharing") }),
-            ("new-document", .default, { [weak self] in self?.send("new-document") }),
-            ("new-folder", .default, { [weak self] in self?.newFolder() }),
-            ("batch", .default, { [weak self] in self?.send("batch-open") }),
-            ("sort", .default, { [weak self] in self?.showSort() }),
-            ("import", .default, { [weak self] in self?.send("import") }),
-            ("backup", .default, { [weak self] in self?.send("backup") }),
-            ("restore-backup", .default, { [weak self] in self?.send("restore-backup") }),
-            ("trash", .default, { [weak self] in self?.send("trash") }),
-        ]
-        sheet(actions: actions.filter { $0.0 != "new-folder" || state?.listing?.kind == "notes" }, sender: sender)
     }
 
-    private func showLibraryChoice() {
-        guard let state else { return }
-        let choice = UIAlertController(title: label("library"), message: nil, preferredStyle: .actionSheet)
-        for key in state.cloud_active ? ["library-local","library-cloud"] : ["library-local","library-cloud","library-copy"] {
-            let action = UIAlertAction(title: label(key), style: .default) { [weak self] _ in self?.send(key) }
-            action.isEnabled = key == "library-local" ? state.cloud_active : !state.cloud_active
-            choice.addAction(action)
+    private func updateSharedSyncButton(_ item: UIBarButtonItem?,state: FeiNavigationState,folder: Bool) {
+        guard let item else { return }
+        item.accessibilityLabel = folder ? state.labels["folder-more"] : state.labels["note-more"]
+        let attention = state.shared_sync?.attention == true
+        item.accessibilityValue = attention ? state.labels["sync-needs-attention"] : nil
+        let symbol = UIImage(systemName: "ellipsis",withConfiguration: UIImage.SymbolConfiguration(pointSize: 17))
+        let theme = state.theme ?? .system
+        let shared = state.shared_session
+        item.tintColor = shared ? sharedToolbarTint : nil
+        if #available(iOS 26.0,*) {
+            var badge = UIBarButtonItem.Badge.string("!")
+            badge.backgroundColor = theme.syncWarningColor
+            badge.foregroundColor = theme.syncWarningInk
+            badge.font = .systemFont(ofSize: 8,weight: .bold)
+            item.badge = shared && attention ? badge : nil
         }
-        choice.addAction(UIAlertAction(title: label("cancel"), style: .cancel))
-        if let controller = host?.navigationController?.topViewController, let popover = choice.popoverPresentationController {
-            popover.sourceView = controller.view
-            popover.sourceRect = CGRect(x: controller.view.bounds.midX, y: 0, width: 1, height: 1)
-        }
-        present(choice)
+        guard shared,let symbol else { item.image = symbol; return }
+        // Both states use the same fixed canvas and never change bar-item identity.
+        let badge: String?
+        if #available(iOS 26.0,*) { badge = nil }
+        else { badge = attention ? "!" : nil }
+        item.image = toolbarGlyph(symbol,size: CGSize(width: 27,height: 25),badge: badge)
     }
 
-    @objc private func showMore(_ sender: UIBarButtonItem) {
-        guard let state, let id = state.current else { return }
-        if state.shared_session {
-            var sharedActions: [(String,UIAlertAction.Style,() -> Void)] = [("find",.default,{ [weak self] in self?.send("find") }),
-                ("outline",.default,{ [weak self] in self?.send("outline-menu") }),
-                ("attachments",.default,{ [weak self] in self?.send("attachments-menu") }),
-                ("doc-info",.default,{ [weak self] in self?.send("doc-info",id: id) }),
-                ("sharing",.default,{ [weak self] in self?.send("sharing") }),
-                ("export",.default,{ [weak self] in self?.showExport(id) }),
-                ("pdf",.default,{ [weak self] in self?.send("pdf",id: id) }),
-                ("print",.default,{ [weak self] in self?.send("print",id: id) }),
-                ("return-personal",.default,{ [weak self] in self?.send("return-personal") })]
-            if state.can_edit || state.has_code { sharedActions.insert((state.can_edit ? "objects" : "code-tools",.default,{ [weak self] in self?.send("objects-menu") }),at: 1) }
-            if state.can_edit { sharedActions.insert(("format",.default,{ [weak self] in self?.showFormat() }),at: 1) }
-            if state.can_edit { sharedActions.insert(("insert",.default,{ [weak self] in self?.send("insert-menu") }),at: 1) }
-            if state.table_active { sharedActions.insert(("table-controls",.default,{ [weak self] in self?.send("table-menu") }),at: 1) }
-            sharedActions.insert(("history",.default,{ [weak self] in self?.send("history-open",id: id,scope: state.editor_scope) }),at: 1)
-            sheet(actions: sharedActions,sender: sender)
+    private func restoreSharedSyncIfNeeded() {
+        guard let scope = sharedSyncRestoreScope,let state,state.editor_scope == scope,
+              state.shared_sync != nil,!state.busy,!applying,
+              let navigation = host?.navigationController,navigation.transitionCoordinator == nil else { return }
+        sharedSyncRestoreScope = nil
+        showSharedSync(scope: scope,browser: state.kind == "folder" && host?.padWorkspace?.visibleBrowserController != nil)
+    }
+
+    private func showSharedSync(scope: String,browser: Bool) {
+        guard let state,state.editor_scope == scope,state.shared_sync != nil,!state.busy,
+              let host,let presenter = host.navigationController?.topViewController else { return }
+        let card = FeiSharedSyncController()
+        let navigation = UINavigationController(rootViewController: card)
+        let anchor = browser ? browserMore : presenter.navigationItem.rightBarButtonItems?.first {
+            $0.accessibilityIdentifier == "fei.more" || $0.accessibilityIdentifier == "fei.library-actions"
+        }
+        if presenter.traitCollection.horizontalSizeClass == .regular,let anchor {
+            navigation.modalPresentationStyle = .popover
+            navigation.popoverPresentationController?.sourceItem = anchor
+            navigation.popoverPresentationController?.delegate = self
+            navigation.preferredContentSize = CGSize(width: 340,height: 320)
+        } else {
+            navigation.modalPresentationStyle = .pageSheet
+            navigation.sheetPresentationController?.detents = [.medium(),.large()]
+            navigation.sheetPresentationController?.prefersGrabberVisible = true
+        }
+        let done = UIBarButtonItem(title: state.labels["done"],image: nil,
+            primaryAction: UIAction { [weak navigation] _ in navigation?.dismiss(animated: true) })
+        done.style = .done
+        done.accessibilityIdentifier = "fei.shared-sync.done"
+        card.navigationItem.rightBarButtonItem = done
+        navigation.overrideUserInterfaceStyle = presenter.navigationController?.overrideUserInterfaceStyle ?? .unspecified
+        navigation.view.tintColor = (state.theme ?? .system).accentColor
+        sharedSync = card
+        sharedSyncScope = scope
+        updateSharedSync(state)
+        present(navigation,from: presenter)
+    }
+
+    private func updateSharedSync(_ state: FeiNavigationState) {
+        guard let card = sharedSync else { return }
+        guard state.editor_scope == sharedSyncScope,let status = state.shared_sync else {
+            card.navigationController?.dismiss(animated: false)
+            sharedSync = nil; sharedSyncScope = nil
             return
         }
-        var actions: [(String,UIAlertAction.Style,() -> Void)] = [
-            ("find", .default, { [weak self] in self?.send("find") }),
-            ("outline", .default, { [weak self] in self?.send("outline-menu") }),
-            ("attachments", .default, { [weak self] in self?.send("attachments-menu") }),
-            ("objects", .default, { [weak self] in self?.send("objects-menu") }),
-            ("doc-info", .default, { [weak self] in self?.send("doc-info",id: id) }),
-            ("rename", .default, { [weak self] in self?.rename(id: id, title: state.title) }),
-            ("format", .default, { [weak self] in self?.showFormat() }),
-            ("insert", .default, { [weak self] in self?.send("insert-menu") }),
-            ("options", .default, { [weak self] in self?.showItemActions(id) }),
-            ("export", .default, { [weak self] in self?.showExport(id) }),
-            ("pdf", .default, { [weak self] in self?.send("pdf", id: id) }),
-            ("print", .default, { [weak self] in self?.send("print", id: id) }),
-            ("settings", .default, { [weak self] in self?.send("settings") }),
-            ("delete", .destructive, { [weak self] in self?.send("delete", id: id) }),
-        ]
-        if !state.can_edit && state.has_code { actions.insert(("code-tools",.default,{ [weak self] in self?.send("objects-menu") }),at: 1) }
-        if state.table_active { actions.insert(("table-controls",.default,{ [weak self] in self?.send("table-menu") }),at: 3) }
-        actions.insert(("history",.default,{ [weak self] in self?.send("history-open",id: id,scope: state.editor_scope) }),at: 1)
-        if state.cloud_history { actions.insert(("cloud-versions",.default,{ [weak self] in self?.send("cloud-versions",id: id) }),at: 4) }
-        if state.cloud_active { actions.insert(("share-note",.default,{ [weak self] in self?.send("share-note",id: id,scope: state.editor_scope) }),at: 4) }
-        if state.can_create { actions.insert(("new",.default,{ [weak self] in self?.composeNote() }),at: 0) }
-        sheet(actions: actions.filter { !["format","insert","objects"].contains($0.0) || state.can_edit },sender: sender)
+        let scope = state.editor_scope
+        let id = state.current
+        card.update(status,labels: state.labels,warning: (state.theme ?? .system).syncWarningColor) { [weak self,weak card] operation in
+            guard let self,let next = self.state,next.editor_scope == scope,next.current == id,next.shared_sync?.action == operation,!next.busy else { return }
+            if operation == "retry" { self.send("shared-sync-retry",id: id,scope: scope) }
+            else {
+                card?.navigationController?.dismiss(animated: true) { [weak self] in
+                    self?.send("shared-sync-settings",id: id,scope: scope)
+                }
+            }
+        }
     }
 
     private func itemActions(_ id: String) -> [(String,UIAlertAction.Style,() -> Void)] {
         guard let item = state?.items.first(where: { $0.id == id }) else { return [] }
+        if item.offline_recovery, let scope = state?.listing?.scope {
+            return [
+                ("keep-recovery", .default, { [weak self] in self?.send("keep-recovery", id: id, scope: scope) }),
+                ("discard-recovery", .destructive, { [weak self] in self?.send("discard-recovery", id: id, scope: scope) }),
+            ]
+        }
         if item.trashed {
             return [
                 ("restore", .default, { [weak self] in self?.send("restore", id: id) }),
@@ -1114,40 +1779,72 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     }
     func itemMenu(_ id: String,browsingWorkspace: Bool = false) -> UIMenu {
         guard let item = state?.items.first(where: { $0.id == id }) else { return UIMenu() }
-        let scope = browsingWorkspace ? state?.browser?.listing.scope : state?.listing?.scope
+        let fromBrowser = browsingWorkspace && !item.offline_recovery
+        let listing = fromBrowser ? state?.browser?.listing : state?.listing
+        let scope = listing?.scope
+        let inherited = isInsideSharedFolder(browser: fromBrowser) && !item.shared
+        let personalBrowser = fromBrowser && state?.shared_session == true && state?.browser?.personal == true && item.personal
         func action(_ key: String,_ symbol: String,_ command: String? = nil,danger: Bool = false,perform: (() -> Void)? = nil) -> UIAction {
             UIAction(title: label(key),image: UIImage(systemName: symbol),attributes: danger ? .destructive : []) { [weak self] _ in
-                guard let self,let scope,self.state?.busy == false,(browsingWorkspace ? self.state?.browser?.listing.scope : self.state?.listing?.scope) == scope else { return }
-                if let perform { perform() } else { self.send(command ?? key,id: id,scope: scope) }
+                guard let self,let scope,self.state?.busy == false,(fromBrowser ? self.state?.browser?.listing.scope : self.state?.listing?.scope) == scope else { return }
+                if let perform { perform() }
+                else if personalBrowser && ["delete","duplicate","pdf","print"].contains(command ?? key) {
+                    self.send("personal-row-action",value: (command ?? key) + ":",id: id,scope: scope)
+                } else { self.send(command ?? key,id: id,scope: scope) }
             }
         }
         func group(_ items: [UIMenuElement]) -> UIMenu { UIMenu(options: .displayInline,children: items) }
+        if item.offline_recovery { return UIMenu(children: [group([action("keep-recovery","doc.on.doc")]),group([action("discard-recovery","trash",danger: true)])]) }
         if item.trashed { return UIMenu(children: [group([action("restore","arrow.uturn.backward")]),group([action("purge","trash",danger: true)])]) }
         if item.id.hasPrefix("collection-") {
-            return UIMenu(children: [action("rename","pencil","collection-rename"),action("move","folder",perform: { [weak self] in self?.showMove(id) }),action("remove-personal-folder","folder.badge.minus","collection-remove")])
+            return UIMenu(children: [action("rename","pencil","collection-rename"),action("organize-shared-entry","folder",perform: { [weak self] in self?.showMove(id) }),action("remove-personal-folder","folder.badge.minus","collection-remove")])
         }
         let flags: [UIMenuElement] = item.folder ? [] : [action(item.pinned ? "unpin" : "pin","pin",item.shared ? "shared-pin" : "pin"),action(item.starred ? "unstar" : "star","star",item.shared ? "shared-star" : "star")]
-        if item.shared {
-            var organize: [UIMenuElement] = [action("move","folder",perform: { [weak self] in self?.showMove(id) })]
-            if !item.folder { organize.append(action("duplicate","doc.on.doc","shared-copy")) }
-            if item.owned { organize.append(action("sharing","person.2","shared-members")) }
-            return UIMenu(children: [group(flags),group(organize),group([action(item.owned ? "delete-shared" : "leave-shared","trash","shared-end",danger: true)])])
+        if item.inherited_share && !inherited {
+            return UIMenu(children: [group(flags),group([action("shared-folder-access","person.2","shared-child-access")])])
         }
-        if browsingWorkspace && state?.shared_session == true && state?.browser?.personal == true { return UIMenu() }
-        var organize: [UIMenuElement] = [action("rename","pencil",perform: { [weak self] in self?.rename(id: id,title: item.title) }),action("move","folder",perform: { [weak self] in self?.showMove(id) }),action("duplicate","doc.on.doc")]
-        if item.folder && (browsingWorkspace ? state?.browser?.shared == false : state?.listing?.kind == "notes" && state?.shared_session == false) {
+        if item.shared {
+            var organize: [UIMenuElement] = [action("organize-shared-entry","folder",perform: { [weak self] in self?.showMove(id) })]
+            if !item.folder { organize.append(action("copy-shared-to-personal","doc.on.doc","shared-copy")) }
+            let access = action(item.folder ? "shared-folder-access" : item.owned ? "members-and-access" : "view-share-access","person.2","shared-members")
+            let groups = (flags.isEmpty ? [] : [group(flags)]) + [group(organize),group([access])]
+            return UIMenu(children: groups + [group([action(item.share_end ?? "leave-shared","trash","shared-end",danger: true)])])
+        }
+        let row = listing?.rows.first { $0.id == id }
+        let shareActions: [UIMenuElement]
+        if inherited {
+            shareActions = [action("shared-folder-access","person.2",perform: { [weak self] in
+                guard let self,let state = self.state,self.isInsideSharedFolder(browser: fromBrowser) else { return }
+                self.send("shared-folder-access",id: state.current,scope: state.editor_scope)
+            })]
+        } else if let row {
+            if item.folder {
+                shareActions = [action(row.shared_folder ? "shared-folder-access" : "share-object",row.shared_folder ? "person.2" : "person.badge.plus","share-folder")]
+            } else {
+                shareActions = [action(row.shared_badge ? "members-and-access" : "share-object",row.shared_badge ? "person.2" : "person.badge.plus",row.shared_badge ? "shared-members" : "share-list-document")]
+            }
+        } else { shareActions = [] }
+        var organize: [UIMenuElement] = [action("rename","pencil",perform: { [weak self] in self?.rename(id: id,title: item.title,browserScope: fromBrowser ? scope : nil) }),action("move","folder",perform: { [weak self] in self?.showMove([id],serial: nil,personalBrowser: personalBrowser) }),action("duplicate","doc.on.doc")]
+        if item.folder && !inherited && listing?.kind == "notes" {
             organize.insert(action("new-folder","folder.badge.plus",perform: { [weak self] in if browsingWorkspace { self?.createSidebarFolder(parentID: id) } else { self?.newFolder(parentID: id) } }),at: 0)
         }
         var groups: [UIMenuElement] = flags.isEmpty ? [] : [group(flags)]
-        groups.append(group(organize))
-        if !item.folder { groups.append(UIMenu(title: localized("分享与导出","Share and export"),image: UIImage(systemName: "square.and.arrow.up"),children: [action("export","doc.text",perform: { [weak self] in self?.showExport(id,anchor: .row(id,browser: browsingWorkspace)) }),action("pdf","doc.richtext"),action("print","printer")])) }
-        groups.append(group([action("delete","trash",danger: true)]))
+        let canModify = !inherited || state?.can_create == true
+        if canModify { groups.append(group(organize)) }
+        if !shareActions.isEmpty { groups.append(group(shareActions)) }
+        if !item.folder { groups.append(UIMenu(title: label("export-copy"),image: UIImage(systemName: "square.and.arrow.up"),children: [action("export","doc.text",perform: { [weak self] in self?.showExport(id,anchor: .row(id,browser: browsingWorkspace),personalScope: personalBrowser ? scope : nil) }),action("pdf","doc.richtext"),action("print","printer")])) }
+        if canModify { groups.append(group([action(item.folder ? "delete-folder" : "delete","trash","delete",danger: true)])) }
         return UIMenu(children: groups)
     }
 
+    private func isInsideSharedFolder(browser: Bool) -> Bool {
+        state?.folder_access == true && (!browser || state?.browser?.personal == false)
+    }
+    func canModifyFolderContents(browser: Bool) -> Bool { !isInsideSharedFolder(browser: browser) || state?.can_create == true }
     func rowItem(_ id: String) -> FeiNavigationState.Item? { state?.items.first { $0.id == id } }
     func rowAction(_ key: String,id: String,scope: String,browser: Bool) {
         guard state?.busy == false,(browser ? state?.browser?.listing.scope : state?.listing?.scope)==scope,let item=state?.items.first(where: { $0.id==id }) else { return }
+        if ["delete","move"].contains(key) && !canModifyFolderContents(browser: browser) { return }
         if key=="more" { showItemActions(id); return }
         if key=="move" { showMove(id); return }
         let command = item.shared ? ["pin":"shared-pin","star":"shared-star","delete":"shared-end"][key] ?? key : key
@@ -1157,20 +1854,16 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
 
     func browserActionsItem() -> UIBarButtonItem {
         let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"),primaryAction: nil,menu: deferredActions(note: false,browser: true))
-        item.accessibilityIdentifier = "fei.library-actions"; item.accessibilityLabel = label("more"); item.isEnabled = state?.busy == false
+        item.accessibilityIdentifier = "fei.library-actions"
+        item.accessibilityLabel = label("more")
+        item.isEnabled = state?.busy == false
+        browserMore = item
+        if let state,state.browser?.personal == false { updateSharedSyncButton(item,state: state,folder: true) }
         return item
-    }
-    @objc private func showBrowserActions(_ sender: UIBarButtonItem) {
-        var actions: [(String,UIAlertAction.Style,() -> Void)] = [("sort",.default,{ [weak self] in self?.showSort() })]
-        if state?.browser?.shared == false { actions.append(("new-folder",.default,{ [weak self] in self?.createSidebarFolder() })) }
-        if let folder = state?.browser?.folder,let item = state?.items.first(where: { $0.id == folder }) {
-            actions.append(("rename",.default,{ [weak self] in self?.rename(id: folder,title: item.title) }))
-        }
-        sheet(actions: actions,sender: sender)
     }
 
     func createSidebarFolder(parentID: String? = nil) {
-        guard let state, let browser = state.browser, !browser.shared, !state.busy, browser.personal || state.can_create else { return }
+        guard let state, let browser = state.browser, browser.can_create, !state.busy else { return }
         presentNewFolder(action: "browse-new-folder", parentID: parentID, scope: browser.listing.scope)
     }
 
@@ -1183,43 +1876,44 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         present(navigation)
     }
 
-    private func showSort() {
-        var actions: [(String,UIAlertAction.Style,() -> Void)] = ["manual","visited","modified","created","title"].map { key in
-            (key, .default, { [weak self] in self?.send("sort", value: key,scope: self?.state?.listing?.scope) })
-        }
-        if state?.can_reorder == true { actions.append(("reorder",.default,{ [weak self] in self?.send("reorder-open") })) }
-        sheet(label("sort"),actions: actions)
-    }
-
     private func showMove(_ id: String) { showMove([id],serial: nil) }
 
-    func showMove(_ ids: [String], serial: UInt64?) {
+    func showMove(_ ids: [String], serial: UInt64?, personalBrowser: Bool = false) {
         guard let state else { return }
         if serial != nil && (state.shared_session || !["notes","folder"].contains(state.kind) && !hasPadWorkspace) { return }
         let selected = Set(ids)
         let shortcuts = ids.allSatisfy { id in state.items.contains { $0.id == id && ($0.shared || $0.id.hasPrefix("collection-")) } }
+        let rootRoute = hasPadWorkspace ? state.browser?.path.first : state.routes.first { $0.key.hasPrefix("folder:") }
+        let sharedRoot = !shortcuts && isInsideSharedFolder(browser: hasPadWorkspace) ? rootRoute?.key.replacingOccurrences(of: "folder:",with: "") : nil
         let folders = state.items.filter { item in
-            guard item.folder,!item.trashed,item.id.hasPrefix("collection-") == shortcuts else { return false }
+            guard item.folder,!item.trashed,item.id != sharedRoot,item.id.hasPrefix("collection-") == shortcuts, !personalBrowser || item.personal else { return false }
             var parent: String? = item.id
             var seen = Set<String>()
             while let current = parent {
                 if selected.contains(current) || !seen.insert(current).inserted { return false }
+                if current == sharedRoot { return true }
                 parent = state.items.first(where: { $0.id == current })?.parent
             }
-            return true
+            return sharedRoot == nil
         }
-        let picker = FeiFolderPicker(title: label("move"), cancel: label("cancel"), root: label("root"), folders: folders,cancelled: { [weak self] in if let serial { self?.send("batch-move-cancel",serial: serial) } }) { [weak self] folder in
+        let scope = visibleListing?.scope
+        let root = shortcuts ? label("sharing") : sharedRoot.flatMap { root in state.items.first { $0.id == root }?.title } ?? label("root")
+        let picker = FeiFolderPicker(title: label(shortcuts ? "organize-shared-entry" : "move"), cancel: label("cancel"), root: root, folders: folders,cancelled: { [weak self] in if let serial { self?.send("batch-move-cancel",serial: serial) } }) { [weak self] folder in
             if let serial { self?.send("batch-move",value: folder ?? "",serial: serial) }
-            else if let id = ids.first { self?.send("move",value: folder ?? "",id: id) }
+            else if let id = ids.first {
+                if personalBrowser { self?.send("personal-row-action",value: "move:" + (folder ?? ""),id: id,scope: scope) }
+                else { self?.send(shortcuts ? "organize-shared-entry" : "move",value: folder ?? sharedRoot ?? "",id: id,scope: scope) }
+            }
         }
         present(UINavigationController(rootViewController: picker))
     }
 
-    private func showExport(_ id: String,anchor: SheetAnchor? = nil) {
+    private func showExport(_ id: String,anchor: SheetAnchor? = nil,personalScope: String? = nil) {
         let scope = state?.editor_scope
         func export(_ mode: String) {
             guard self.state?.editor_scope == scope else { return }
-            self.send("export",value: mode,id: id)
+            if let personalScope { self.send("personal-row-action",value: "export:" + mode,id: id,scope: personalScope) }
+            else { self.send("export",value: mode,id: id) }
         }
         sheet(label("export"),actions: [
             ("text-only",.default,{ export("text") }),

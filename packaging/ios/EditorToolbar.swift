@@ -17,6 +17,8 @@ final class FeiEditorToolbar: UIToolbar {
     private weak var coordinator: FeiNavigationCoordinator?
     private var state: FeiNavigationState?
     private var mode: String?
+    private var topTools = false
+    private var showingCompose = false
     let componentBar = UIToolbar()
     private(set) var hasComponentRow = false
     var onComponentRowChanged: (() -> Void)?
@@ -105,9 +107,9 @@ final class FeiEditorToolbar: UIToolbar {
             }
         }
         super.layoutSubviews()
-        if let state,needsComponentRow(state) != hasComponentRow { update(state,coordinator: coordinator,typing: typing) }
+        if let state,needsComponentRow(state) != hasComponentRow { update(state,coordinator: coordinator,typing: typing,topTools: topTools) }
     }
-    func update(_ next: FeiNavigationState,coordinator: FeiNavigationCoordinator?,typing: Bool = false) {
+    func update(_ next: FeiNavigationState,coordinator: FeiNavigationCoordinator?,typing: Bool = false,topTools: Bool = false) {
         state = next; self.coordinator = coordinator
         self.typing = typing
         let phone = UIDevice.current.userInterfaceIdiom == .phone
@@ -125,9 +127,13 @@ final class FeiEditorToolbar: UIToolbar {
         }
         let nextMode = next.kind == "history-preview" ? "preview" : next.can_edit && typing ? "editing" : next.write_allowed && (next.can_edit || next.reading) ? "reading" : "locked"
         let stacked = needsComponentRow(next)
-        let blockTools = next.can_edit && (nextMode == "editing" || next.block_selected)
+        let blockTools = next.can_edit && (!phone || nextMode == "editing" || next.block_selected)
         let labelsChanged = labels != next.labels
-        if mode != nextMode || labelsChanged || hasComponentRow != stacked || editingAllowed != next.can_edit || showsBlockActions != blockTools {
+        let showCompose = phone && next.kind == "note" && next.current != nil && next.can_create && !typing
+        if mode != nextMode || labelsChanged || hasComponentRow != stacked || editingAllowed != next.can_edit || showsBlockActions != blockTools ||
+            self.topTools != topTools || showingCompose != showCompose {
+            self.topTools = topTools
+            showingCompose = showCompose
             let rowChanged = hasComponentRow != stacked
             hasComponentRow = stacked
             editingAllowed = next.can_edit
@@ -152,6 +158,7 @@ final class FeiEditorToolbar: UIToolbar {
                 navigationItems += [button("textformat.size","format-text","styles",#selector(stylesCommand)),button("paperclip","insert","insert",#selector(insertCommand))]
                 if blockTools { navigationItems.append(button("square.stack","block-actions","block-actions",#selector(blockActions))) }
             }
+            let compose: UIBarButtonItem? = showCompose ? makeComposeItem() : nil
             if nextMode == "preview" {
                 let marks = button("highlighter","history-marks","history-marks",#selector(historyMarks))
                 let restore = button("arrow.counterclockwise","history-restore","history-restore",#selector(historyRestore))
@@ -173,19 +180,17 @@ final class FeiEditorToolbar: UIToolbar {
                     items = stacked ? commands : editing.components + commands
                 }
                 updateKeyboardImage()
+            } else if topTools {
+                setItems(nil,animated: false)
             } else {
-                let status = UILabel()
-                status.font = .preferredFont(forTextStyle: .subheadline)
-                status.textColor = .secondaryLabel
-                status.adjustsFontForContentSizeCategory = true
-                status.text = labels[nextMode == "reading" ? "reading" : "not-editable"]
-                let text = UIBarButtonItem(customView: status)
                 if nextMode == "reading" {
                     let edit = next.can_edit ? button("keyboard","keyboard","mode",#selector(editCommand))
                         : button("pencil","edit-note","mode",#selector(editCommand))
                     let checklist = button("checklist","todo","quick-checklist",#selector(quickChecklist))
                     let insert = button("paperclip","insert","quick-insert",#selector(quickInsert))
-                    var list = [checklist,insert]
+                    var list: [UIBarButtonItem] = []
+                    if let compose { list += [compose,spacer()] }
+                    list += [checklist,insert]
                     if blockTools { list.append(block) }
                     list.append(spacer())
                     commandButtons = [checklist,insert,edit]
@@ -194,8 +199,26 @@ final class FeiEditorToolbar: UIToolbar {
                         list.append(undo); commandButtons.append(undo)
                     }
                     list.append(edit)
+                    if let compose { commandButtons.append(compose) }
                     items = list
-                } else { items = [text,spacer()] }
+                } else {
+                    let status = UILabel()
+                    status.font = .preferredFont(forTextStyle: .subheadline)
+                    status.textColor = .secondaryLabel
+                    status.adjustsFontForContentSizeCategory = true
+                    status.adjustsFontSizeToFitWidth = true
+                    status.minimumScaleFactor = 0.65
+                    status.textAlignment = .center
+                    status.text = labels["not-editable"]
+                    status.accessibilityIdentifier = "fei.editor.read-only"
+                    let message = [spacer(),UIBarButtonItem(customView: status),spacer()]
+                    if let compose {
+                        let balance = UIBarButtonItem(barButtonSystemItem: .fixedSpace,target: nil,action: nil)
+                        balance.width = compose.width
+                        items = [compose]+message+[balance]
+                        commandButtons.append(compose)
+                    } else { items = message }
+                }
             }
             if rowChanged { onComponentRowChanged?() }
         }
@@ -205,10 +228,22 @@ final class FeiEditorToolbar: UIToolbar {
         tableButton?.accessibilityLabel = next.labels[next.table_active ? "table-controls" : "table"]
         commandButtons.forEach { $0.isEnabled = !next.busy && ($0.accessibilityIdentifier != "fei.edit.history-restore" || next.local_history?.can_restore == true) }
         slashButton?.isEnabled = next.slash_available && !next.busy
-        blockButton?.isEnabled = next.block_actions && next.can_edit && !next.busy
+        blockButton?.isEnabled = next.block_actions && next.can_edit && !next.busy &&
+            (phone || typing || next.block_selected)
         if nextMode == "preview" { commandButtons.first?.tintColor = next.local_history?.marks == true ? palette.accentColor : .secondaryLabel }
         if phone { updatePhoneEditingStrip(visible: nextMode == "editing") }
     }
+    private func makeComposeItem() -> UIBarButtonItem {
+        let action = UIAction(title: labels["new"] ?? "") { [weak self] _ in
+            self?.coordinator?.composeFromEditor()
+        }
+        let item = UIBarButtonItem(systemItem: .compose,primaryAction: action)
+        item.width = 44
+        item.accessibilityLabel = action.title
+        item.accessibilityIdentifier = "fei.new.editor"
+        return item
+    }
+
     private func installPhoneEditingStrip() {
         let glass = phoneEditingGlass
         let scroll = phoneEditingScroll

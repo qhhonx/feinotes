@@ -146,6 +146,24 @@ private struct InventoryCursor: Codable {
     let token: Data
     let generation: String?
     let ready: Bool
+    let preferDeletionPage: Bool?
+}
+
+private let syncPageLimit = 20
+private let deletionPageLimit = 80
+
+private func fetchSyncPage<Page>(preferDeletionPage: Bool,
+                                 fitsStandardPayload: (Page) -> Bool,
+                                 fetch: (Int) async throws -> Page) async throws -> Page {
+    if preferDeletionPage {
+        do {
+            let page = try await fetch(deletionPageLimit)
+            if fitsStandardPayload(page) { return page }
+        } catch let error as CKError where error.code == .limitExceeded {
+            // Retry the same starting token at the standard limit.
+        }
+    }
+    return try await fetch(syncPageLimit)
 }
 private struct ChunkHeader: Codable {
     let path: String
@@ -397,7 +415,18 @@ private func exchange(_ request: Exchange, revision: UInt64, completion: SyncCom
             }
             let activityOnly = request.activityOnly == true
             let keys = activityOnly ? ["note"] : (tracksInventory ? ["note", "digest", "assetIndex"] : nil)
-            let page = try await db.recordZoneChanges(inZoneWith: syncZone, since: token, desiredKeys: keys, resultsLimit: 20)
+            // Probe only after a deletion-heavy page. Re-fetch from the same token
+            // if the larger result could increase the payload batch or combine
+            // a modification with a deletion of the same record.
+            let page = try await fetchSyncPage(preferDeletionPage: token != nil && saved?.preferDeletionPage == true,
+                fitsStandardPayload: { page in
+                    page.modificationResultsByID.count <= syncPageLimit &&
+                        page.deletions.allSatisfy { !page.modificationResultsByID.keys.contains($0.recordID) }
+                }, fetch: { limit in
+                    try checkCloudAccountRevision(revision)
+                    try Task.checkCancellation()
+                    return try await db.recordZoneChanges(inZoneWith: syncZone, since: token, desiredKeys: keys, resultsLimit: limit)
+                })
             var chunks: [ChunkEntry] = []
             var fetch: [CKRecord.ID] = []
             var authors: [CKRecord.ID: Bool] = [:]
@@ -452,7 +481,9 @@ private func exchange(_ request: Exchange, revision: UInt64, completion: SyncCom
             }
             let next = try NSKeyedArchiver.archivedData(withRootObject: page.changeToken, requiringSecureCoding: true)
             let ready = !page.moreComing
-            let cursor = tracksInventory ? try JSONEncoder().encode(InventoryCursor(token: next, generation: generation, ready: ready)) : next
+            let preferDeletionPage: Bool? = !ready && page.deletions.count >= syncPageLimit / 2 ? true : nil
+            let cursor = tracksInventory ? try JSONEncoder().encode(InventoryCursor(token: next, generation: generation, ready: ready,
+                preferDeletionPage: preferDeletionPage)) : next
             let receipt = tracksInventory ? InventoryReceipt(chunks: chunks, reset: token == nil, ready: ready,
                 deleted: page.deletions.map { $0.recordID.recordName }) : nil
             return Changes(retention: receipt, uploaded: uploaded, edits: edits, token: cursor, more: page.moreComing,
@@ -652,7 +683,7 @@ private func presence(_ request: PresenceRequest, revision: UInt64) async throws
                     }
                     let creator = author(record.creatorUserRecordID)
                     let modifier = author(record.lastModifiedUserRecordID)
-                    if let creator, let modifier, creator != modifier {
+                    if creator == account || modifier == account || (creator != nil && modifier != nil && creator != modifier) {
                         removed.append(record.recordID.recordName)
                         continue
                     }

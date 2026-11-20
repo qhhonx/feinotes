@@ -31,6 +31,8 @@ esac
 if [ "$configuration" = TestFlight ]; then
     [ "$profile" = release ] || { echo 'TestFlight requires the release Rust library'; exit 1; }
 fi
+# The acceptance checkout can retain this generated dependency between builds.
+sh "$SRCROOT/prepare-gpui.sh"
 cargo_bin="${CARGO:-$HOME/.cargo/bin/cargo}"
 "$cargo_bin" build --locked --manifest-path "$SRCROOT/Cargo.toml" \
     --features "$rust_features" --target "$RUST_TARGET" "$@"

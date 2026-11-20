@@ -270,6 +270,8 @@ pub enum View {
 pub enum Confirm {
     /// 删除 (to the 回收站); `batch` for the 批量操作 selection.
     Delete { ids: Vec<String>, batch: bool },
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    DeleteSharedFolder { room: crate::cloud_sync::shared::Room, id: String, title: String },
     /// 回收站 → 恢复.
     Restore(String),
     /// 回收站 → 彻底删除.
@@ -314,6 +316,7 @@ struct DeletedDocs { deleted: Vec<String>, errors: Vec<String>, changes: Vec<cra
 /// Inline 重命名 of a sidebar row.
 pub struct Rename {
     pub id: String,
+    pub(crate) sidebar_section: Option<crate::sidebar::SidebarSection>,
     pub field: Entity<TextField>,
     _subs: Vec<Subscription>,
 }
@@ -327,10 +330,12 @@ pub struct Workspace {
     pub settings_page: crate::settings::Page,
     #[cfg(target_os = "ios")]
     pub(crate) mobile_settings_root: bool,
-    #[cfg(target_os = "ios")]
-    pub(crate) mobile_settings_shared_library: bool,
+    #[cfg(not(target_os = "ios"))]
+    pub(crate) settings_return: View,
     #[cfg(target_os = "ios")]
     pub(crate) mobile_settings_parent: Option<crate::settings::Page>,
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) cloud_settings_from_share: bool,
     #[cfg(target_os = "ios")]
     pub(crate) mobile_settings_return: View,
     #[cfg(target_os = "ios")]
@@ -364,6 +369,8 @@ pub struct Workspace {
     pub subscription: crate::settings::Subscription,
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub sync_issues: Option<Vec<crate::cloud_sync::SyncIssue>>,
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) conflict_review: Option<crate::cloud_sync::conflict_ui::ConflictReview>,
     pub(crate) native_sidebar: crate::native_header::NativeSidebar,
     pub store: SharedStore,
     pub entries: Vec<Entry>,
@@ -516,6 +523,11 @@ impl Workspace {
     }
 
     pub(crate) fn build_window(quick: bool, document: Option<String>, store: Option<SharedStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::build_window_with_recent(quick, document, store, true, window, cx)
+    }
+
+    pub(crate) fn build_window_with_recent(quick: bool, document: Option<String>, store: Option<SharedStore>,
+        open_recent: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         #[cfg(target_os = "ios")]
         cx.observe_self(|workspace,cx| crate::ipad::publish_navigation(workspace,cx)).detach();
         crate::settings::load();
@@ -525,12 +537,15 @@ impl Workspace {
         }).detach();
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         cx.observe_global::<crate::cloud_sync::SyncStatuses>(|ws, cx| {
-            if matches!(ws.view, View::Settings | View::Shared) || ws.is_shared() || ws.sharing.sheet.is_some() {
-                if ws.sync_issues.is_some() {
-                    let Some(status) = crate::cloud_sync::status(ws.store.root(), cx) else { return };
-                    if status.held == 0 && status.attachments == 0 { ws.sync_issues = Some(vec![]); }
-                    else if status.uploads == 0 && status.downloads == 0
-                        && let Ok(issues) = crate::cloud_sync::issues(ws.store.root(), cx) { ws.sync_issues = Some(issues); }
+            if ws.conflict_review.is_some() && (!crate::cloud_sync::can_review_conflict(ws.store.root(), cx)
+                || !ws.current.as_deref().is_some_and(|id| crate::cloud_sync::document_conflict(ws.store.root(), id, cx)))
+            { ws.conflict_review = None; }
+            if matches!(ws.view, View::Doc | View::Settings | View::Shared | View::Trash) || ws.is_shared() || ws.sharing.sheet.is_some() {
+                if ws.sync_issues.is_some()
+                    && let Some(root) = ws.settings_sync_root(cx)
+                    && let Some(status) = crate::cloud_sync::status(&root, cx) {
+                    if status.held == 0 && status.attachments == 0 && status.conflicts == 0 { ws.sync_issues = Some(vec![]); }
+                    else if let Ok(issues) = crate::cloud_sync::issues(&root, cx) { ws.sync_issues = Some(issues); }
                 }
                 cx.notify();
             }
@@ -679,10 +694,12 @@ impl Workspace {
             settings_page: Default::default(),
             #[cfg(target_os = "ios")]
             mobile_settings_root: true,
-            #[cfg(target_os = "ios")]
-            mobile_settings_shared_library: false,
+            #[cfg(not(target_os = "ios"))]
+            settings_return: View::Home,
             #[cfg(target_os = "ios")]
             mobile_settings_parent: None,
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            cloud_settings_from_share: false,
             #[cfg(target_os = "ios")]
             mobile_settings_return: View::Home,
             #[cfg(target_os = "ios")]
@@ -709,6 +726,8 @@ impl Workspace {
             subscription: Default::default(),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             sync_issues: None,
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            conflict_review: None,
             store,
             entries,
             current: None,
@@ -780,7 +799,7 @@ impl Workspace {
         ws.load_home();
         // An empty library opens on 主页's empty state; only a quick note
         // window starts a document of its own.
-        match document.or_else(|| (!quick).then(|| ws.entries.first().map(|e| e.id.clone())).flatten()) {
+        match document.or_else(|| (!quick && open_recent).then(|| ws.entries.first().map(|e| e.id.clone())).flatten()) {
             Some(id) => {
                 if !ws.try_open(&id, window, cx) && ws.is_shared() { ws.view = View::Home; }
             }
@@ -821,6 +840,15 @@ impl Workspace {
     }
 
     pub fn open(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if self.is_shared() && self.sidebar_entry.is_some() {
+            let entry = crate::sidebar::SidebarEntry::new(self.shared_sidebar_section(), id);
+            if self.try_open(id, window, cx) {
+                self.reveal_shared_sidebar_entry(&entry, cx);
+                self.sidebar_entry = Some(entry);
+            }
+            return;
+        }
         self.try_open(id, window, cx);
     }
 
@@ -830,7 +858,7 @@ impl Workspace {
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         self.cancel_sidebar_open();
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        { self.sharing.pending_open = None; }
+        { self.sharing.pending_open = None; self.sharing.account_open = None; self.conflict_review = None; }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if !self.is_shared() && let Some(room) = crate::cloud_sync::shared::original::owner_room(&self.entries, id) {
             let target = id.to_owned();
@@ -883,6 +911,8 @@ impl Workspace {
                 return false;
             }
         };
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        self.close_sharing_for_navigation();
         self.view = View::Doc;
         let meta = self.entries.iter().find(|e| e.id == id).map(|e| e.meta.clone());
         let modified = meta.as_ref().map_or_else(crate::time::now, |m| m.modified);
@@ -945,7 +975,7 @@ impl Workspace {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         self.refresh_shared_entry(cx);
         crate::quick_note::used(id, cx);
-        self.reveal_in_tree(id);
+        if !cfg!(target_os = "macos") || !self.is_shared() { self.reveal_in_tree(id); }
         self.sync_sub_pages(cx);
         self.status = SaveStatus::Idle;
         self.row_menu = None;
@@ -1114,6 +1144,15 @@ impl Workspace {
         self.row_menu = None;
         self.doc_menu = false;
         self.doc_sub = None;
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if let Some((room, title)) = self.shared_folder_context(id, cx) {
+            if (id == room.scope.note && self.stopping_original(&room, cx))
+                || (id != room.scope.note && self.shared_sidebar_folder_writable(&room, cx)) {
+                self.confirm = Some(Confirm::DeleteSharedFolder { room, id: id.into(), title });
+                cx.notify();
+            }
+            return;
+        }
         self.confirm = Some(Confirm::Delete { ids: vec![id.to_string()], batch: false });
         cx.notify();
     }
@@ -1224,28 +1263,45 @@ impl Workspace {
     }
 
     pub fn toggle_pin(&mut self, id: &str, cx: &mut Context<Self>) {
-        let mut on = false;
-        if let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
-            e.meta.pinned = !e.meta.pinned;
-            on = e.meta.pinned;
-            let _ = self.store.set_pinned(id, e.meta.pinned);
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if self.toggle_shared_child_organization(id, true, cx) { return; }
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) else { return };
+        let on = !entry.meta.pinned;
+        if let Err(error) = self.store.set_pinned(id, on) {
+            self.show_toast_kind(crate::ui::ToastKind::Error, &crate::settings::diagnostic(&error.to_string()), cx);
+            return;
         }
+        entry.meta.pinned = on;
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if !self.is_shared() { self.organization_changed(id, Some(on), None, cx); }
         self.sort();
         self.row_menu = None;
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        self.organization_toast(true, on, cx);
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         self.show_toast(if on { crate::settings::text("已添加到“置顶”") } else { crate::settings::text("已从“置顶”移除") }, cx);
         cx.notify();
     }
 
-    /// 收藏 / 取消收藏 (listed under 主页 → 收藏).
+    /// Favorites are listed on Home.
     pub fn toggle_star(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(e) = self.entries.iter_mut().find(|e| e.id == id) else { return };
-        let on = e.meta.starred == 0;
-        if let Ok(t) = self.store.set_starred(id, on) {
-            e.meta.starred = t;
-        }
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if self.toggle_shared_child_organization(id, false, cx) { return; }
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) else { return };
+        let on = entry.meta.starred == 0;
+        let time = match self.store.set_starred(id, on) {
+            Ok(time) => time,
+            Err(error) => { self.show_toast_kind(crate::ui::ToastKind::Error, &crate::settings::diagnostic(&error.to_string()), cx); return; }
+        };
+        entry.meta.starred = time;
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if !self.is_shared() { self.organization_changed(id, None, Some(time), cx); }
         self.row_menu = None;
         self.doc_menu = false;
         self.doc_sub = None;
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        self.organization_toast(false, on, cx);
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         self.show_toast(if on { crate::settings::text("已添加到“收藏”") } else { crate::settings::text("已从“收藏”中移除") }, cx);
         cx.notify();
     }
@@ -1276,7 +1332,7 @@ impl Workspace {
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         self.cancel_sidebar_open();
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        { self.sharing.pending_open = None; }
+        { self.sharing.pending_open = None; self.sharing.account_open = None; self.conflict_review = None; }
         self.cancel_shortcut_recording(cx);
         self.close_history(cx);
         // 阅读位置: leaving the document with ⌘H or 回收站 also counts.
@@ -1289,9 +1345,16 @@ impl Workspace {
             self.trash = self.store.list_trash();
         }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        self.close_sharing_for_navigation();
+        {
+            self.close_sharing_for_navigation();
+            if view != View::Settings { self.cloud_settings_from_share = false; }
+        }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let view = if view == View::Shared { self.batch = None; self.home.tab = crate::home::HomeTab::Shared; View::Home } else { view };
+        #[cfg(not(target_os = "ios"))]
+        if matches!(view, View::Settings | View::Trash) && !matches!(self.view, View::Settings | View::Trash) {
+            self.settings_return = self.view;
+        }
         self.view = view;
         self.sidebar_entry = None;
         self.row_menu = None;
@@ -1327,10 +1390,18 @@ impl Workspace {
 
     /// 重命名: the row's title turns into an input; Enter or clicking away saves, Esc cancels.
     pub fn start_rename(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let section = self.is_shared().then(|| self.shared_sidebar_section());
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        let section = None;
+        self.start_rename_in_sidebar(id, section, window, cx);
+    }
+
+    pub(crate) fn start_rename_in_sidebar(&mut self, id: &str, section: Option<crate::sidebar::SidebarSection>, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.is_shared() {
             if !matches!(self.sharing_access(cx), Some(crate::cloud_sync::shared::Access::Owner | crate::cloud_sync::shared::Access::ReadWrite)) { return; }
-            self.sharing.folded = false;
+            if section.is_none() { self.sharing.folded = false; }
         }
         let Some(title) = self.entries.iter().find(|e| e.id == id).map(|e| e.title.trim().to_string()) else { return };
         let field = cx.new(|cx| {
@@ -1349,9 +1420,13 @@ impl Workspace {
             }),
             cx.on_blur(&focus, window, |w, window, cx| w.finish_rename(true, window, cx)),
         ];
-        self.rename = Some(Rename { id: id.to_string(), field, _subs: subs });
+        self.rename = Some(Rename { id: id.to_string(), sidebar_section: section, field, _subs: subs });
         // From 主页 the row may be hidden: show it in the sidebar.
         self.sidebar_open = true;
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if let Some(section) = section { self.reveal_shared_sidebar_entry(&crate::sidebar::SidebarEntry::new(section, id), cx); }
+        else { self.reveal_in_tree(id); }
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
         self.reveal_in_tree(id);
         self.row_menu = None;
         cx.notify();
@@ -1392,7 +1467,7 @@ impl Workspace {
             }
         self.sync_sub_pages(cx);
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        self.refresh_shared_entry(cx);
+        self.publish_shared_folder_change(cx);
         cx.notify();
     }
 
@@ -1967,7 +2042,7 @@ impl Workspace {
                     .items_center()
                     .child(crate::ui::toolbar_group(div().flex_none().flex().items_center().gap(px(4.)))
                     .children(sharing)
-                    .when(!self.is_shared() && self.current.is_some(), |d| {
+                    .when(self.current.is_some(), |d| {
                         d.child(
                             // No tooltip while its dropdown is open; the menu hangs
                             // from this button's right edge.
@@ -1977,6 +2052,8 @@ impl Workspace {
                                 .when(!self.doc_menu, |d| d.tip(crate::settings::tr("更多", "More"), None))
                                 .child(canvas(move |b, _, _| record_more.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
                                 .on_click(cx.listener(|w, _, _, cx| {
+                                    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                                    if w.is_shared() { w.close_sharing_for_navigation(); }
                                     w.doc_menu = !w.doc_menu;
                                     w.doc_sub = None;
                                     cx.notify();
@@ -1988,10 +2065,7 @@ impl Workspace {
                             .tip_label(crate::shortcuts::keys(crate::settings::text("搜索(⌘ + J)")).into(), TipSide::Below)
                             .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(FocusSearch), cx))),
                     )
-                    .when(!self.is_shared(), |d| d.child(
-                        // Straight to a new document: no 新建 menu, as 导入 is rare.
-                        seg("doc-new", "plus").tip(crate::settings::tr("新建文档", "New document"), None).on_click(cx.listener(|w, _, window, cx| w.new_doc(window, cx))),
-                    )).into_any_element()
+                    .into_any_element()
             )
     }
 
@@ -2266,6 +2340,8 @@ impl Render for Workspace {
         let doc_info = self.render_doc_info(cx);
         let history = self.render_history(cx);
         let confirm = self.render_confirm(window, cx);
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let conflict_review = self.render_conflict_review(window, cx);
         let trash_menu = self.render_trash_menu(cx);
         let home_menus = self.render_home_menus(cx);
         let theme_menu = self.render_theme_menu(cx);
@@ -2290,6 +2366,11 @@ impl Render for Workspace {
                 .flex_col()
                 .child(self.top_bar(f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w(window) } else { 0. }, window, cx))
                 .children(self.render_history_banner(cx))
+                .map(|d| {
+                    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                    let d = d.children(self.render_conflict_banner(cx));
+                    d
+                })
                 .child(
                     div()
                         .flex_1()
@@ -2388,6 +2469,11 @@ impl Render for Workspace {
             .children(lang_menu)
             .children(pref_menu)
             .children(confirm)
+            .map(|d| {
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                let d = d.children(conflict_review);
+                d
+            })
             .children(move_dlg)
             .children(export_md)
             .children(search)
@@ -2506,16 +2592,7 @@ impl Workspace {
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Zoom, window, _| window.zoom_window())
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
-            .on_action(cx.listener(|w, _: &OpenSettings, _window, cx| {
-                #[cfg(target_os = "ios")]
-                w.mobile_open_settings(cx);
-                #[cfg(not(target_os = "ios"))]
-                {
-                    w.show_view(View::Settings,cx);
-                    #[cfg(feature = "cloudkit-sync")]
-                    w.refresh_library_cloud(_window,cx);
-                }
-            }))
+            .on_action(cx.listener(|w, _: &OpenSettings, window, cx| w.open_global_settings(window, cx)))
             .on_action(cx.listener(|w, _: &ReplayOnboarding, window, cx| w.replay_onboarding(window,cx)))
             .on_action(cx.listener(|w, _: &OpenAbout, _, cx| w.open_settings(crate::settings::Page::About, cx)))
             .on_action(cx.listener(|w, _: &CheckForUpdates, _, cx| { w.open_settings(crate::settings::Page::About, cx); crate::update::check(true, cx); }))
@@ -2565,8 +2642,9 @@ impl Workspace {
                     cx.notify();
                 }
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                if ev.keystroke.key == "escape" && w.sharing.panel_open {
+                if ev.keystroke.key == "escape" && (w.sharing.panel_open || w.sharing.sync_panel_open) {
                     w.sharing.panel_open = false;
+                    w.sharing.sync_panel_open = false;
                     cx.stop_propagation();
                     cx.notify();
                 }

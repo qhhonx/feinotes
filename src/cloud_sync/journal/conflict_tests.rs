@@ -163,7 +163,7 @@ fn unrenderable_queued_branch_does_not_stop_upload_request_or_local_save() -> Re
     let mut core = Core::new(local_body);
     core.sel = Selection::caret(Pos::new(core.doc.blocks[0].id, "Initial".len()));
     core.insert_text(" plus local edits");
-    assert!(journal.save(&mut store, &id, &core)?.1);
+    assert!(!journal.save(&mut store, &id, &core)?.1);
     assert_eq!(store.load_for_edit(&id, false)?, core.doc);
     assert_eq!(note(&journal.db, &id)?.unwrap().snapshot, previous.snapshot);
     assert_eq!(queued(&journal.db, &id)?, originally_queued);
@@ -347,5 +347,295 @@ fn rejected_document_replay_keeps_inbox_and_other_documents_moving() -> Result<(
         |row| row.get::<_, Vec<u8>>(0))?, rejected.data.0);
     assert!(journal.request()?.edits.iter().any(|edit| edit.note == healthy));
     assert!(!journal.catalogue_paused()?);
+    Ok(())
+}
+
+fn divergent_tables(overlap: bool) -> Result<(crate::model::Block, crate::model::Block)> {
+    let mut left = crate::docxml::parse("<table><tbody><tr><td><p>Local cell</p></td></tr></tbody></table>")?.blocks.remove(0);
+    let mut right = crate::docxml::parse("<table><tbody><tr><td><p>Cloud cell</p></td><td><p>Second cell</p></td></tr></tbody></table>")?.blocks.remove(0);
+    right.id = left.id; // Reproduce the observed logical alias, independently of its origin.
+    if overlap {
+        table(&mut right).rows[0][0].blocks[0].id = table(&mut left).rows[0][0].blocks[0].id;
+    }
+    Ok((left, right))
+}
+
+fn table(block: &mut crate::model::Block) -> &mut crate::model::Table {
+    let BlockKind::Table(table) = &mut block.kind else { panic!("Missing fixture table") };
+    table
+}
+
+#[test]
+fn independent_tables_keep_late_cell_changes_and_stable_ids_after_reorder() -> Result<()> {
+    let base = crate::docxml::parse("<title>Table fixture</title><p>Common body</p>")?;
+    let snapshot = content::seed(&base)?;
+    let (mut a, b) = divergent_tables(false)?;
+    let asset = crate::docxml::parse("<figure view-type=\"Card\"><source path=\"assets/files/fixture.txt\" name=\"fixture.txt\"/></figure>")?.blocks.remove(0);
+    table(&mut a).rows[0][0].blocks.push(asset);
+    let mut left_body = base.clone();
+    let mut right_body = base;
+    left_body.blocks.push(a);
+    right_body.blocks.push(b);
+    let left = content::open(&snapshot)?;
+    let right = content::open(&snapshot)?;
+    let local = content::edit(&left, 42, &left_body)?.unwrap();
+    let received = content::edit(&right, 43, &right_body)?.unwrap();
+    table(&mut right_body.blocks[1]).rows[0][0].blocks[0].text = RichText::plain("Cloud cell, late offline edit");
+    let delayed = content::edit(&right, 43, &right_body)?.unwrap();
+    left.import(&received)?;
+    right.import(&local)?;
+    let (mut merged, recovered) = content::project(&left)?;
+    assert!(recovered);
+    let ids: HashSet<_> = merged.blocks[1..].iter().map(|b| b.id).collect();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(content::local_assets(&merged), HashSet::from(["assets/files/fixture.txt".to_owned()]));
+    assert!(content::edit(&left, 42, &merged)?.is_none());
+    merged.blocks.swap(1, 2);
+    let reordered = content::edit(&left, 42, &merged)?.unwrap();
+    right.import(&reordered)?;
+    left.import_batch(&[delayed.clone(), delayed])?;
+    let merged = content::render(&left)?;
+    assert_eq!(merged, content::render(&right)?);
+    assert_eq!(merged.blocks[1..].iter().map(|b| b.id).collect::<HashSet<_>>(), ids);
+    assert!(merged.plain_text().contains("Cloud cell, late offline edit"));
+    assert_eq!(merged.plain_text().matches("Local cell").count(), 1);
+
+    // Both upgraded clients continue writing the old cell containers.
+    let mut on_left = content::render(&left)?;
+    let mut on_right = content::render(&right)?;
+    table(&mut on_left.blocks[1]).rows[0][0].blocks[0].text = RichText::plain("Cloud cell, late offline edit + A");
+    table(&mut on_right.blocks[1]).rows[0][1].blocks[0].text = RichText::plain("Second cell + B");
+    let a = content::edit(&left, 42, &on_left)?.unwrap();
+    let b = content::edit(&right, 43, &on_right)?.unwrap();
+    left.import(&b)?;
+    right.import(&a)?;
+    let merged = content::render(&left)?;
+    assert_eq!(merged, content::render(&right)?);
+    assert!(merged.plain_text().contains("Cloud cell, late offline edit + A"));
+    assert!(merged.plain_text().contains("Second cell + B"));
+    let mut one = merged.clone();
+    one.blocks.pop();
+    content::edit(&left, 42, &one)?;
+    assert_eq!(content::render(&left)?, one);
+    content::edit(&left, 42, &merged)?;
+    assert_eq!(content::render(&left)?, merged);
+    Ok(())
+}
+
+#[test]
+fn normal_journals_project_the_same_tables_and_reuse_existing_outbox_after_restart() -> Result<()> {
+    let a = HistoryFixture::new()?;
+    let b = HistoryFixture::new()?;
+    let mut left = Journal::open(&a.0, None)?;
+    let mut right = Journal::open(&b.0, None)?;
+    let mut left_store = Store::open_sqlite_at(a.0.clone())?;
+    let mut right_store = Store::open_sqlite_at(b.0.clone())?;
+    let id = left_store.create_from(&crate::docxml::parse("<title>Journal fixture</title><p>Common body</p>")?)?;
+    left.merge(&Default::default())?;
+    let base = left.request()?.edits;
+    left.receive(page(vec![], base.iter().map(|edit| edit.id.clone()).collect(), 1))?;
+    right.receive(page(base, vec![], 1))?;
+    right.merge(&Default::default())?;
+    let (a_table, b_table) = divergent_tables(false)?;
+    for (journal, store, block) in [(&mut left, &mut left_store, a_table), (&mut right, &mut right_store, b_table)] {
+        let mut doc = store.load_for_edit(&id, false)?;
+        doc.blocks.push(block);
+        store.save(&id, &doc)?;
+        journal.merge(&Default::default())?;
+    }
+    let ours = left.request()?.edits;
+    let theirs = right.request()?.edits;
+    let left_queue = queued(&left.db, &id)?;
+    let right_queue = queued(&right.db, &id)?;
+    // One end is an older installation with a conflict parked before upgrade.
+    block_document(&left.db, &id)?;
+    left.receive(page(theirs.clone(), vec![], 2))?;
+    block_document(&left.db, &id)?;
+    left.db.execute("DELETE FROM state WHERE key = ?1", [DOCUMENT_REPLAY_UPGRADE])?;
+    drop(left);
+    let mut left = Journal::open(&a.0, None)?;
+    right.receive(page(ours.clone(), vec![], 2))?;
+    for journal in [&mut left, &mut right] {
+        assert_eq!(journal.merge(&Default::default())?.1.len(), 1);
+        assert!(!journal.document_conflict(&id));
+    }
+    assert_eq!(queued(&left.db, &id)?, left_queue);
+    assert_eq!(queued(&right.db, &id)?, right_queue);
+    let projected = left_store.load_for_edit(&id, false)?;
+    assert_eq!(projected, right_store.load_for_edit(&id, false)?);
+    assert_eq!(projected.blocks.len(), 3);
+    assert!(projected.plain_text().contains("Local cell") && projected.plain_text().contains("Cloud cell"));
+    drop(right);
+    let mut right = Journal::open(&b.0, None)?;
+    for (journal, duplicate, sent) in [(&mut left, theirs.clone(), ours.clone()), (&mut right, ours, theirs)] {
+        journal.retry_document(&id)?;
+        journal.receive(page(duplicate.clone(), sent.iter().map(|edit| edit.id.clone()).collect(), 3))?;
+        assert!(journal.merge(&Default::default())?.1.is_empty());
+        assert!(queued(&journal.db, &id)?.is_empty());
+        assert_eq!(content::render(&journal.text_state(&id)?.unwrap())?, projected);
+    }
+    let branch = right.text_state(&id)?.unwrap();
+    let mut latest = projected;
+    latest.title = RichText::plain("Later, ordinary edit");
+    let update = wire(&id, content::edit(&branch, right.peer, &latest)?.unwrap());
+    left.receive(page(vec![update], vec![], 4))?;
+    assert_eq!(left.merge(&Default::default())?.1[0].document, latest);
+    assert!(!left.db.query_row("SELECT recovery FROM sync_history WHERE note = ?1 ORDER BY sequence DESC LIMIT 1",
+        [&id], |row| row.get::<_, bool>(0))?);
+    Ok(())
+}
+
+#[test]
+fn overlapping_table_cell_ids_require_review_and_copy_selected_versions_atomically() -> Result<()> {
+    let fixture = HistoryFixture::new()?;
+    let mut journal = Journal::open(&fixture.0, None)?;
+    let mut store = Store::open_sqlite_at(fixture.0.clone())?;
+    let id = store.create_from(&crate::docxml::parse("<title>Compare tables</title><p>Common</p>")?)?;
+    journal.merge(&Default::default())?;
+    let sent = journal.request()?.edits.into_iter().map(|edit| edit.id).collect();
+    journal.receive(page(vec![], sent, 1))?;
+    let branch = journal.text_state(&id)?.unwrap();
+    let (a, b) = divergent_tables(true)?;
+    let mut local = store.load_for_edit(&id, false)?;
+    let mut received = local.clone();
+    local.blocks.push(a);
+    received.blocks.push(b);
+    let asset = "assets/files/table-review.txt";
+    let file = crate::docxml::parse(&format!("<figure view-type=\"Card\"><source path=\"{asset}\" name=\"table-review.txt\"/></figure>"))?.blocks.remove(0);
+    table(&mut received.blocks[1]).rows[0][1].blocks.push(file);
+    let remote = wire(&id, content::edit(&branch, journal.peer + 1, &received)?.unwrap());
+    store.save(&id, &local)?;
+    journal.merge(&Default::default())?;
+    let pending = queued(&journal.db, &id)?;
+    journal.receive(page(vec![remote.clone()], vec![], 2))?;
+    journal.merge(&Default::default())?;
+    assert!(journal.document_conflict(&id));
+    assert_eq!(journal.pending_work()?.2, 1);
+    let versions = journal.conflict_versions(&id)?;
+    assert_eq!(versions.local.document, local);
+    assert_eq!(versions.received.as_ref().unwrap().document, received);
+    assert!(!versions.received.unwrap().copyable);
+    assert!(journal.request()?.edits.iter().all(|e| e.note != id));
+
+    std::fs::create_dir_all(fixture.0.join("assets/files"))?;
+    std::fs::write(fixture.0.join(asset), b"synthetic attachment")?;
+    journal.retry_document(&id)?;
+    assert!(journal.merge(&Default::default())?.1.is_empty());
+    drop(journal);
+    let mut journal = Journal::open(&fixture.0, None)?;
+    let versions = journal.conflict_versions(&id)?;
+    let selected = [(false, versions.local.stamp), (true, versions.received.unwrap().stamp)];
+    let calls = std::cell::Cell::new(0);
+    assert!(journal.copy_conflict_versions(&id, &selected, || {
+        calls.set(calls.get() + 1);
+        ensure!(calls.get() == 1, "Synthetic account switch");
+        Ok(())
+    }).is_err());
+    assert_eq!(store.list().len(), 1);
+
+    local.title = RichText::plain("Local change after opening review");
+    store.save(&id, &local)?;
+    assert!(journal.copy_conflict_versions(&id, &selected, || Ok(())).is_err());
+    assert_eq!(store.list().len(), 1);
+    let versions = journal.conflict_versions(&id)?;
+    let selected = [(false, versions.local.stamp), (true, versions.received.unwrap().stamp)];
+    let copies = journal.copy_conflict_versions(&id, &selected, || Ok(()))?;
+    assert_eq!(copies.len(), 2);
+    assert_eq!(journal.copy_conflict_versions(&id, &selected, || Ok(()))?, copies);
+    assert_eq!(store.list().len(), 3);
+    assert_eq!(store.load(&copies[0])?.blocks, local.blocks);
+    assert_eq!(store.load(&copies[1])?.blocks, received.blocks);
+    assert_eq!(std::fs::read(fixture.0.join(asset))?, b"synthetic attachment");
+    assert_eq!(queued(&journal.db, &id)?, pending);
+    assert_eq!(journal.db.query_row("SELECT data FROM inbox WHERE id = ?1", [&remote.id], |row| row.get::<_, Vec<u8>>(0))?, remote.data.0);
+    assert!(journal.document_conflict(&id));
+    Ok(())
+}
+
+#[test]
+fn write_rejects_reused_cell_ids_before_creating_loro_operations() -> Result<()> {
+    let base = crate::docxml::parse("<title>Unique IDs</title><p>Common</p>")?;
+    let loro = content::open(&content::seed(&base)?)?;
+    let before = loro.oplog_vv();
+    let mut doc = base;
+    let (a, mut b) = divergent_tables(true)?;
+    b.id = crate::model::BlockId::new();
+    doc.blocks.extend([a, b]);
+    assert!(content::edit(&loro, 42, &doc).unwrap_err().is::<content::ConflictingBlockShapes>());
+    assert_eq!(loro.oplog_vv(), before);
+    Ok(())
+}
+
+#[test]
+fn shared_editors_and_readers_project_identical_tables_without_permission_changes() -> Result<()> {
+    for folder in [false, true] {
+        let origin = HistoryFixture::new()?;
+        let writer = HistoryFixture::new()?;
+        let reader = HistoryFixture::new()?;
+        let mut private = Store::open_sqlite_at(origin.0.clone())?;
+        let parent = folder.then(|| private.create_folder("Table folder", None)).transpose()?;
+        let seed = crate::docxml::parse("<title>Shared tables</title><p>Common body</p>")?;
+        let id = private.create_from_in(&seed, parent.as_deref())?;
+        let room = shared::original::prepare_local(&origin.0, parent.as_deref().unwrap_or(&id), "Shared tables".into(), false)?;
+        let owner_root = shared::room_root(&origin.0, &room.scope.note)?;
+        let mut owner = Journal::open(&owner_root, None)?;
+        let mut owner_store = SharedStore::from_shared_store(Store::open_sqlite_at(owner_root)?);
+        let mut invite = room.clone();
+        invite.scope.owner = Some("synthetic-share-owner".into());
+        let guest_root = |personal: &Path| -> Result<PathBuf> {
+            let root = shared::room_root(personal, &room.scope.note)?;
+            Store::initialize_shared_sqlite(&root, &shared::account(personal)?)?;
+            std::fs::write(root.join(shared::MARKER), serde_json::to_vec(&invite)?)?;
+            Ok(root)
+        };
+        let writer_root = guest_root(&writer.0)?;
+        let reader_root = guest_root(&reader.0)?;
+        let mut guest = Journal::open(&writer_root, None)?;
+        let mut observer = Journal::open(&reader_root, None)?;
+        let mut guest_store = SharedStore::from_shared_store(Store::open_sqlite_at(writer_root)?);
+        let observer_store = Store::open_sqlite_at(reader_root)?;
+        let page = |access, edits, uploaded| Changes { room_access: Some(access),
+            retention: None, token: (access != Access::Revoked).then(|| Bytes(vec![1])),
+            ..page(edits, uploaded, 1)
+        };
+        let seed = owner.request()?.edits;
+        owner.receive(page(Access::Owner, vec![], seed.iter().map(|e| e.id.clone()).collect()))?;
+        for (journal, access) in [(&mut guest, Access::ReadWrite), (&mut observer, Access::ReadOnly)] {
+            journal.receive(page(access, seed.clone(), vec![]))?;
+            journal.merge(&Default::default())?;
+        }
+        let (left, right) = divergent_tables(false)?;
+        for (journal, store, block) in [(&mut owner, &mut owner_store, left), (&mut guest, &mut guest_store, right)] {
+            let mut body = store.load_for_edit(&id, true)?;
+            body.blocks.push(block);
+            journal.save(store, &id, &Core::new(body))?;
+        }
+        let local = owner.request()?.edits;
+        let collaborator = guest.request()?.edits;
+        let guest_queue = queued(&guest.db, &id)?;
+        let both: Vec<_> = local.iter().chain(&collaborator).cloned().collect();
+        owner.receive(page(Access::Owner, collaborator, vec![]))?;
+        guest.receive(page(Access::ReadWrite, local, vec![]))?;
+        observer.receive(page(Access::ReadOnly, both.clone(), vec![]))?;
+        for journal in [&mut owner, &mut guest, &mut observer] {
+            assert_eq!(journal.merge(&Default::default())?.1.len(), 1);
+            assert!(!journal.document_conflict(&id));
+        }
+        let merged = owner_store.load_for_edit(&id, true)?;
+        assert_eq!(merged, guest_store.load_for_edit(&id, true)?);
+        assert_eq!(merged, observer_store.load_for_edit(&id, true)?);
+        assert_eq!(merged.blocks.len(), 3);
+        assert!(observer.request()?.edits.is_empty());
+        guest.receive(page(Access::ReadOnly, both, vec![]))?;
+        assert!(guest.merge(&Default::default())?.1.is_empty());
+        assert!(guest.save(&mut guest_store, &id, &Core::new(merged)).is_err());
+        assert!(guest.request()?.edits.is_empty());
+        assert_eq!(queued(&guest.db, &id)?, guest_queue);
+        guest.receive(page(Access::Revoked, vec![], vec![]))?;
+        assert!(guest.merge(&Default::default())?.1.is_empty());
+        assert!(guest.conflict_versions(&id).is_err());
+        assert!(guest.request()?.edits.is_empty());
+        assert_eq!(queued(&guest.db, &id)?, guest_queue);
+    }
     Ok(())
 }

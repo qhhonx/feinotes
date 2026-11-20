@@ -1,11 +1,8 @@
-Fei Notes 1.0.8 (1018) for Mac
+Fei Notes 1.0.8 (1019) for Mac
 
-• Fixed cases where an invalid cloud record could block synchronization of other documents.
-• Fixed a crash when replaying cloud changes after reopening the app, while retaining pending edits and conflicts.
-• Improved shared-document navigation, organization and member controls.
+• Added a dedicated iCloud page in Settings for account and sync status.
+• Improved sidebar navigation and the creation of shared documents and folders.
+• Other catalogue changes can continue applying when an individual record needs to be retried.
+• Updated theme previews and About Fei Notes.
 
-Update all participating devices to this round of builds. Please test editing the same sample document across devices, working offline, reopening the app and collaborating through an invitation to a specific Apple Account.
-
-Known limitations: some existing library catalogues and individual document conflicts still need separate recovery. Recovery work in progress is not included here. Creating or retrying public sharing links remains unavailable; private invitations to specific accounts remain available. Please preserve your library and report any problems.
-
-iCloud access is included during TestFlight testing without a subscription.
+Update your test devices to this round before checking cross-device sync and invitations to specific Apple Accounts.

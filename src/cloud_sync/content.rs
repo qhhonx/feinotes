@@ -37,6 +37,7 @@ pub fn open(snapshot: &[u8]) -> Result<LoroDoc> {
 }
 
 pub fn seed(content: &Document) -> Result<Vec<u8>> {
+    validate_ids(content)?;
     let doc = configured();
     doc.set_peer_id(SEED_PEER)?;
     write_document(&doc, content, 0, false)?;
@@ -48,6 +49,7 @@ pub fn edit(doc: &LoroDoc, peer: u64, content: &Document) -> Result<Option<Vec<u
 }
 
 pub fn edit_with_transfer(doc: &LoroDoc, peer: u64, content: &Document, transfer: Option<CloudTransfer>) -> Result<Option<Vec<u8>>> {
+    validate_ids(content)?;
     if doc.peer_id() != peer { doc.set_peer_id(peer)?; }
     let before = doc.oplog_vv();
     if let Some(transfer) = transfer { super::paragraphs::transfer(doc, transfer)?; }
@@ -85,6 +87,7 @@ struct TreeWrite<'a> {
     doc: &'a LoroDoc,
     tree: LoroTree,
     ids: HashMap<BlockId, TreeID>,
+    aliases: HashMap<BlockId, BlockId>,
     live: HashSet<TreeID>,
     order: Vec<(Option<TreeID>, Vec<TreeID>)>,
     fine_tables: bool,
@@ -110,12 +113,18 @@ impl TreeWrite<'_> {
             let mut shape = block.without_children();
             shape.text = RichText::default();
             let meta = self.tree.get_meta(id)?;
+            let storage = self.aliases.get(&block.id).copied().unwrap_or(block.id);
+            // Keep writes and late operations in the original CRDT containers.
+            if storage != block.id {
+                ensure!(matches!(shape.kind, BlockKind::Table(_)) && block.text.is_empty(), ConflictingBlockShapes);
+                shape.id = storage;
+            }
             if self.fine_tables && matches!(shape.kind, BlockKind::Table(_)) {
                 super::table::write(self.doc, &meta, &shape)?;
             } else {
                 put(&meta, "shape", &serde_json::to_string(&Payload::encode(&shape))?)?;
             }
-            if self.fine_tables { super::paragraphs::write(self.doc, block.id, &block.text)?; }
+            if self.fine_tables { super::paragraphs::write(self.doc, storage, &block.text)?; }
             else { write_legacy(&block_text(self.doc, block.id), &block.text)?; }
             self.visit(&block.children, Some(id))?;
         }
@@ -131,24 +140,28 @@ fn write_document(doc: &LoroDoc, content: &Document, jitter: u8, fine_tables: bo
     else { write_legacy(&doc.get_text("title"), &content.title)?; }
     let tree = doc.get_tree("blocks");
     tree.enable_fractional_index(jitter);
+    let aliases = table_aliases(doc, &tree)?;
+    let mut alias_sources = HashMap::new();
     let mut ids = HashMap::new();
     let mut duplicates = false;
     for node in tree.get_nodes(false) {
-        let key = block_id(&tree, node.id)?;
+        let raw = block_id(&tree, node.id)?;
+        let key = aliases.get(&node.id).copied().unwrap_or(raw);
+        if key != raw { alias_sources.insert(key, raw); }
         ids.entry(key).and_modify(|existing: &mut TreeID| {
             duplicates = true;
             *existing = (*existing).min(node.id);
         }).or_insert(node.id);
     }
     // Prefer a visible occurrence over an older copy under the undo root.
-    if duplicates { ids.extend(visible_ids(&tree)?); }
+    if duplicates { ids.extend(visible_ids(&tree, &aliases)?); }
     // Keep removed nodes under a hidden root so undo can reuse their identity.
     let trash = if let Some(id) = ids.remove(&BlockId(0)) { id } else {
         let id = tree.create(None)?;
         tree.get_meta(id)?.insert("block", "0")?;
         id
     };
-    let mut writer = TreeWrite { doc, tree, ids, live: HashSet::new(), order: vec![], fine_tables };
+    let mut writer = TreeWrite { doc, tree, ids, aliases: alias_sources, live: HashSet::new(), order: vec![], fine_tables };
     writer.visit(&content.blocks, None)?;
     let tree = writer.tree;
     for node in tree.get_nodes(false) {
@@ -216,29 +229,34 @@ fn first_occurrence(tree: &LoroTree, ids: &mut HashMap<BlockId, TreeID>, id: Blo
     Ok(true)
 }
 
-fn visible_ids(tree: &LoroTree) -> Result<HashMap<BlockId, TreeID>> {
-    fn visit(tree: &LoroTree, nodes: Vec<TreeID>, ids: &mut HashMap<BlockId, TreeID>) -> Result<()> {
+fn visible_ids(tree: &LoroTree, aliases: &TableAliases) -> Result<HashMap<BlockId, TreeID>> {
+    fn visit(tree: &LoroTree, nodes: Vec<TreeID>, aliases: &TableAliases, ids: &mut HashMap<BlockId, TreeID>) -> Result<()> {
         for node in nodes {
-            let id = block_id(tree, node)?;
-            if id == BlockId(0) { continue; }
+            let raw = block_id(tree, node)?;
+            if raw == TITLE { continue; }
+            let id = aliases.get(&node).copied().unwrap_or(raw);
             first_occurrence(tree, ids, id, node)?;
-            visit(tree, tree.children(node).unwrap_or_default(), ids)?;
+            visit(tree, tree.children(node).unwrap_or_default(), aliases, ids)?;
         }
         Ok(())
     }
     let mut ids = HashMap::new();
-    visit(tree, tree.roots(), &mut ids)?;
+    visit(tree, tree.roots(), aliases, &mut ids)?;
     Ok(ids)
 }
 
-pub fn render(doc: &LoroDoc) -> Result<Document> {
-    fn read_nodes(doc: &LoroDoc, tree: &LoroTree, ids: &mut HashMap<BlockId, TreeID>, nodes: Vec<TreeID>) -> Result<Vec<Block>> {
+pub fn render(doc: &LoroDoc) -> Result<Document> { Ok(project(doc)?.0) }
+
+pub(super) fn project(doc: &LoroDoc) -> Result<(Document, bool)> {
+    fn read_nodes(doc: &LoroDoc, tree: &LoroTree, aliases: &TableAliases, ids: &mut HashMap<BlockId, TreeID>,
+        nodes: Vec<TreeID>) -> Result<Vec<Block>> {
         let mut out = vec![];
         for node in nodes {
-            let id = block_id(tree, node)?;
-            if id == BlockId(0) { continue; }
+            let raw = block_id(tree, node)?;
+            if raw == TITLE { continue; }
+            let id = aliases.get(&node).copied().unwrap_or(raw);
             let first = first_occurrence(tree, ids, id, node)?;
-            let mut children = read_nodes(doc, tree, ids, tree.children(node).unwrap_or_default())?;
+            let mut children = read_nodes(doc, tree, aliases, ids, tree.children(node).unwrap_or_default())?;
             if !first {
                 // Retain distinct descendants contributed under the other occurrence.
                 out.append(&mut children);
@@ -246,11 +264,12 @@ pub fn render(doc: &LoroDoc) -> Result<Document> {
             }
             let meta = tree.get_meta(node)?;
             let shape = value(&meta, "shape").context("Missing block payload")?;
-            let mut block = serde_json::from_str::<Payload>(&shape)?.decode(id)?;
+            let mut block = serde_json::from_str::<Payload>(&shape)?.decode(raw)?;
             if matches!(block.kind, BlockKind::Table(_)) {
                 super::table::render(doc, &shape, &mut block)?;
             }
-            block.text = super::paragraphs::read(doc, id)?;
+            block.id = id;
+            block.text = super::paragraphs::read(doc, raw)?;
             let nests = block.kind.nests() || matches!(block.kind, BlockKind::Quote | BlockKind::Callout { .. } | BlockKind::Column { .. });
             if nests {
                 block.children = children;
@@ -282,9 +301,11 @@ pub fn render(doc: &LoroDoc) -> Result<Document> {
     let mut target = crate::docxml::parse(&header)?;
     target.title = super::paragraphs::read(doc, TITLE)?;
     let tree = doc.get_tree("blocks");
-    target.blocks = read_nodes(doc, &tree, &mut HashMap::new(), tree.roots())?;
+    let aliases = table_aliases(doc, &tree)?;
+    target.blocks = read_nodes(doc, &tree, &aliases, &mut HashMap::new(), tree.roots())?;
     if target.blocks.is_empty() { target.blocks.push(Block::text("")); }
-    Ok(target)
+    if !aliases.is_empty() { validate_ids(&target)?; }
+    Ok((target, !aliases.is_empty()))
 }
 
 fn style(marks: &Marks) -> Option<String> {
@@ -411,6 +432,60 @@ fn write_legacy(text: &LoroText, desired: &RichText) -> Result<()> {
     Ok(())
 }
 
+
+fn validate_ids(doc: &Document) -> Result<()> {
+    let mut used = HashSet::from([TITLE]);
+    let mut valid = true;
+    doc.for_each_block(|block| valid &= used.insert(block.id));
+    ensure!(valid, ConflictingBlockShapes);
+    Ok(())
+}
+
+type TableAliases = HashMap<TreeID, BlockId>;
+
+// A table's wire namespace is its original ID and exact legacy shape.
+// Derive a second editor ID from tree provenance, without copying cells or
+// changing either namespace. Concurrent repairs then emit no competing ops.
+fn table_aliases(doc: &LoroDoc, tree: &LoroTree) -> Result<TableAliases> {
+    use sha2::{Digest, Sha256};
+    let mut raw_ids = HashMap::new();
+    let mut groups: HashMap<BlockId, Vec<TreeID>> = HashMap::new();
+    for node in tree.get_nodes(true) {
+        let id = match block_id(tree, node.id) {
+            Ok(id) => id,
+            Err(_) if tree.is_node_deleted(&node.id)? => continue,
+            Err(error) => return Err(error),
+        };
+        if id == TITLE { continue; }
+        if let Some(&first) = raw_ids.get(&id) {
+            groups.entry(id).or_insert_with(|| vec![first]).push(node.id);
+        } else { raw_ids.insert(id, node.id); }
+    }
+    let mut aliases = HashMap::new();
+    let mut used = HashSet::new();
+    for (&id, nodes) in &groups {
+        let [a, b] = nodes.as_slice() else { continue };
+        let second = *a.max(b);
+        let shape_a = value(&tree.get_meta(*a)?, "shape").context("Missing block payload")?;
+        let shape_b = value(&tree.get_meta(*b)?, "shape").context("Missing block payload")?;
+        if shape_a == shape_b || nodes.iter().any(|node| tree.children(*node).is_some_and(|children| !children.is_empty()))
+            || !super::paragraphs::read(doc, id)?.is_empty() { continue; }
+        let Ok(Some(keys_a)) = super::table::branch_ids(doc, id, &shape_a) else { continue };
+        let Ok(Some(keys_b)) = super::table::branch_ids(doc, id, &shape_b) else { continue };
+        if !keys_a.is_disjoint(&keys_b) || keys_a.iter().chain(&keys_b).any(|block| raw_ids.contains_key(block)) { continue; }
+        let mut digest = Sha256::new();
+        digest.update(b"fei-table-logical-id-v1");
+        digest.update(second.peer.to_be_bytes());
+        digest.update(second.counter.to_be_bytes());
+        digest.update(id.0.to_be_bytes());
+        let hash = digest.finalize();
+        let bits = u64::from_be_bytes(hash[..8].try_into().unwrap());
+        let alias = BlockId((bits & ((1 << 61) - 1)) | (1 << 60));
+        ensure!(!raw_ids.contains_key(&alias) && used.insert(alias), ConflictingBlockShapes);
+        aliases.insert(second, alias);
+    }
+    Ok(aliases)
+}
 
 #[cfg(test)]
 mod tests {

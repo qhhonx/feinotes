@@ -34,6 +34,19 @@ pub unsafe extern "C" fn fei_ios_configure_library(base: *const c_char, channel:
         || CONFIG.get().is_some_and(|saved| saved.base == base && saved.channel == channel)
 }
 
+pub(crate) fn check_cloud_enable() -> cloud_restore::EnableCheck {
+    use cloud_restore::EnableCheck;
+    let Some(config) = CONFIG.get() else { return EnableCheck::Unavailable; };
+    cloud_restore::check_account(&cloud_restore::parent(&config.base,config.channel),config.channel)
+}
+
+#[cfg(feature = "mobile-qa")]
+pub(crate) fn sync_badge_fixture() -> bool {
+    std::env::var("FEI_QA_SYNC_BADGE").as_deref() == Ok("1") && !cloud_restore::production() && CONFIG.get().is_some_and(|config|
+        config.channel.to_string() == "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        && cloud_restore::parent(&config.base,config.channel).join("pause-cloud").is_file())
+}
+
 fn local_root(config: &Config) -> Result<PathBuf> {
     let target = config.base.join("local-only");
     if !target.join(crate::store::SQLITE_FILE).is_file() && config.base.join(crate::store::SQLITE_FILE).is_file() {
@@ -146,6 +159,11 @@ pub(crate) fn start(base: PathBuf, cx: &mut App) -> Result<()> {
     let cloud = PREPARED.lock().expect("prepared library lock").take();
     let local = if cloud.is_none() { Some(cloud_restore::lock_library(&Store::root_dir())?) } else { None };
     if let Some(cloud) = &cloud { crate::cloud_sync::start_personal_session(cx,cloud_restore::scope(cloud.channel),cloud.parent.clone())?; }
+    #[cfg(feature = "mobile-qa")]
+    if cloud.is_some() && sync_badge_fixture() && let Ok(name) = std::env::var("FEI_QA_PERSONAL_SYNC_STATE")
+        && let Some(phase) = crate::cloud_sync::personal_status_fixture(&name) {
+        crate::cloud_sync::fixture_status(&Store::root_dir(),phase,cx);
+    }
     cx.set_global(Session { config,cloud,_local: local });
     Ok(())
 }
@@ -159,7 +177,7 @@ fn sharing_ready(workspace: &mut Workspace, cx: &mut Context<Workspace>) -> bool
 }
 
 pub(crate) fn select(workspace: &mut Workspace, selection: LibrarySelection, window: &mut Window, cx: &mut Context<Workspace>) {
-    if workspace.library_switching || !sharing_ready(workspace,cx) { return; }
+    if workspace.library_switching || workspace.personal_settings_store(cx).is_none() || !sharing_ready(workspace,cx) { return; }
     if !workspace.save_before(cx, move |workspace,window,cx| select(workspace,selection,window,cx)) { return; }
     RESUME_CLOUD.store(false,Ordering::Release);
     let config = cx.global::<Session>().config.clone();
@@ -236,7 +254,7 @@ pub(crate) fn return_to_personal(cx: &mut App) {
 }
 
 pub(crate) fn restore(workspace: &mut Workspace, prepared: crate::cloud_sync::backup::Prepared, window: &mut Window, cx: &mut Context<Workspace>) {
-    if workspace.library_switching || !sharing_ready(workspace,cx) { return; }
+    if workspace.library_switching || workspace.personal_settings_store(cx).is_none() || !sharing_ready(workspace,cx) { return; }
     let pending = std::rc::Rc::new(std::cell::RefCell::new(Some(prepared)));
     let retry = pending.clone();
     if !workspace.save_before(cx,move |workspace,window,cx| {

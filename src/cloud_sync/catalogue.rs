@@ -41,6 +41,11 @@ pub(super) fn permanently_deleted(doc: &LoroDoc, id: &str) -> bool {
     purge_marker(doc, id) || content::value(&doc.get_map(format!("entry-{id}")), "life").as_deref() == Some("\"Purged\"")
 }
 
+pub(super) fn deleted_version(doc: &LoroDoc, id: &str) -> Result<Option<VersionVector>> {
+    Ok(content::value(&doc.get_map("purged-entries"), id)
+        .map(|clock| serde_json::from_str(&clock)).transpose()?)
+}
+
 fn fields(meta: &Meta, life: Life) -> Result<Fields> {
     let mut fields = serde_json::from_value::<Fields>(serde_json::to_value(meta)?)?;
     fields.remove("opened");
@@ -169,9 +174,8 @@ pub fn project(db: &Connection, doc: &LoroDoc, shared_folder: bool) -> Result<bo
         changed |= db.execute(&format!("DELETE FROM {other} WHERE id = ?1"), [&id])? != 0;
         if life == Life::Purged {
             changed |= db.execute("DELETE FROM library_trash WHERE id = ?1", [&id])? != 0;
-            let version = content::value(&doc.get_map("purged-entries"), &id)
-                .map(|clock| serde_json::from_str::<VersionVector>(&clock)).transpose()?;
-            journal::archive_body(db, &id, version.as_ref(), meta.markdown)?;
+            let version = deleted_version(doc, &id)?;
+            journal::archive_body(db, &id, version.as_ref(), meta.markdown, shared_folder.then(|| doc.peer_id()))?;
             db.execute("DELETE FROM outbox WHERE note = ?1", [&id])?;
             Store::remove_sync_body(db, &id)?;
             continue;

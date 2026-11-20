@@ -103,13 +103,93 @@ pub(super) fn reload(cx: &mut App) -> bool {
 }
 
 impl Workspace {
-    pub(crate) fn toggle_shared_organization(&mut self, id: &str, pin: bool, cx: &mut Context<Self>) {
-        if self.shared_list_room(id, cx).is_none() { return; }
+    pub(crate) fn shared_child_marks(&self, id: &str, cx: &App) -> Option<(bool, u64)> {
+        let scope = shared::scope(&self.store, cx)?;
+        if !scope.folder || scope.note == id || !self.entries.iter().any(|e| e.id == id && e.meta.folder.is_none()) { return None; }
+        let values = active(cx);
+        Some((values.get("pin", id) != 0, values.get("star", id)))
+    }
+
+    pub(crate) fn toggle_shared_child_organization(&mut self, id: &str, pin: bool, cx: &mut Context<Self>) -> bool {
+        if self.shared_child_marks(id,cx).is_none() && self.shared_child_room(id,cx).is_none() { return false; }
+        if self.is_shared() && self.sharing_access(cx) == Some(Access::Revoked) { return true; }
         let mut values = active(cx).clone();
         values.toggle(id, pin);
-        self.save_shared_preferences(values, &[], cx);
+        let on = values.get(if pin { "pin" } else { "star" }, id) != 0;
+        if self.save_shared_preferences(values, &[], cx) {
+            self.organization_toast(pin, on, cx);
+            self.row_menu = None;
+            self.doc_menu = false;
+            self.doc_sub = None;
+            cx.notify();
+        }
+        true
+    }
+
+    pub(crate) fn toggle_shared_organization(&mut self, id: &str, pin: bool, cx: &mut Context<Self>) {
+        let Some(room) = self.shared_list_room(id, cx) else { return; };
+        if room.scope.owner.is_none() && self.toggle_personal_organization(id, pin, true, cx) { return; }
+        let mut values = active(cx).clone();
+        values.toggle(id, pin);
+        let enabled = values.get(if pin { "pin" } else { "star" }, id) != 0;
+        if !self.save_shared_preferences(values, &[], cx) { return; }
+        self.organization_toast(pin, enabled, cx);
         self.row_menu = None;
         cx.notify();
+    }
+
+    pub(crate) fn toggle_personal_organization(&mut self, id: &str, pin: bool, shared_original: bool, cx: &mut Context<Self>) -> bool {
+        let mut personal = if self.is_shared() { cx.global::<crate::shared_store::SharedStore>().clone() } else { self.store.clone() };
+        let Some(entry) = personal.list().into_iter().find(|entry| entry.id == id && entry.meta.folder.is_none()
+            && (!shared_original || entry.meta.share_root.as_deref() == Some(id))) else { return false; };
+        let result = if pin {
+            personal.set_pinned(id, !entry.meta.pinned).map(|_| (!entry.meta.pinned, entry.meta.starred))
+        } else {
+            personal.set_starred(id, entry.meta.starred == 0).map(|starred| (entry.meta.pinned, starred))
+        };
+        match result {
+            Ok((pinned, starred)) => {
+                if !self.is_shared() {
+                    if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) { entry.meta.pinned = pinned; entry.meta.starred = starred; }
+                    self.sort();
+                }
+                self.organization_changed(id, pin.then_some(pinned), (!pin).then_some(starred), cx);
+                self.organization_toast(pin, if pin { pinned } else { starred > 0 }, cx);
+                self.row_menu = None;
+                cx.notify();
+            }
+            Err(error) => self.show_toast_kind(ui::ToastKind::Error, &settings::diagnostic(&error.to_string()), cx),
+        }
+        true
+    }
+
+    pub(crate) fn organization_changed(&self, id: &str, pinned: Option<bool>, starred: Option<u64>, cx: &mut Context<Self>) {
+        let id = id.to_owned();
+        let root = Store::root_dir();
+        cloud_sync::retry(&root, cx);
+        cx.defer(move |cx| {
+            for handle in cx.windows().into_iter().filter_map(|handle| handle.downcast::<Workspace>()) {
+                let _ = handle.update(cx, |ws, _, cx| {
+                    if ws.store.root() == root && let Some(entry) = ws.entries.iter_mut().find(|entry| entry.id == id) {
+                        if let Some(pinned) = pinned { entry.meta.pinned = pinned; }
+                        if let Some(starred) = starred { entry.meta.starred = starred; }
+                        ws.sort();
+                    }
+                    cx.notify();
+                });
+            }
+        });
+    }
+
+    pub(crate) fn organization_toast(&mut self, pin: bool, enabled: bool, cx: &mut Context<Self>) {
+        let message = match (pin, enabled) {
+            (true, true) if cfg!(target_os = "ios") => tr("已置顶，可在文档列表顶部查看", "Pinned at the top of the document list"),
+            (true, true) => tr("已置顶，可在侧栏查看", "Pinned in the sidebar"),
+            (true, false) => tr("已取消置顶", "Unpinned"),
+            (false, true) => tr("已收藏，可在「全部收藏」查看", "Saved to All Favorites"),
+            (false, false) => tr("已从「全部收藏」移除", "Removed from All Favorites"),
+        };
+        self.show_toast_kind(ui::ToastKind::Success, message, cx);
     }
 
     #[cfg(target_os = "ios")]

@@ -56,8 +56,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     private weak var coordinator: FeiNavigationCoordinator?
     var browsesWorkspace = false
     private var selectedNote: String?
-    var allowsCloudResume: Bool { !searchController.isActive && !tableView.isEditing && !isSelecting && pendingMove == nil && !openingResult && !pendingSelection && rowDrag == nil }
-    var allowsFolderBackGesture: Bool { !searchController.isActive && !isSelecting && !tableView.isEditing && rowDrag == nil && pendingMove == nil }
+    var allowsCloudResume: Bool { !isSearching && !tableView.isEditing && !isSelecting && pendingMove == nil && !openingResult && !pendingSelection && rowDrag == nil }
+    var allowsFolderBackGesture: Bool { !isSearching && !isSelecting && !tableView.isEditing && rowDrag == nil && pendingMove == nil }
     private var reorderButtons: [UIBarButtonItem]?
     private var isReordering = false
     private struct RowDrag {
@@ -75,15 +75,28 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     private let selectionCount = UILabel()
     private struct PendingMove { let scope:String; let order:[String]; var writing = false }
     private var pendingMove: PendingMove?
-    private struct ListAnchor { let id: String?; let delta: CGFloat; let fallback: CGPoint }
+    private enum ListAnchor {
+        case top
+        case position(id: String?,delta: CGFloat,fallback: CGPoint)
+    }
     private var browserOffsets: [String:ListAnchor] = [:]
     private var listing: FeiNavigationState.Listing?
+    private var canCompose = false
     private var rows: [String:FeiNavigationState.Listing.Row] = [:]
     private var source: FeiNotesDataSource!
     private let searchController = UISearchController(searchResultsController: nil)
-    private var search: UISearchBar { searchController.searchBar }
+    private let compactSearch = UISearchBar()
+    private var search: UISearchBar { usesLocalSearch ? compactSearch : searchController.searchBar }
+    private var compactSearching = false
+    private var isSearching: Bool { usesLocalSearch ? compactSearching : searchController.isActive }
+    private let searchGlass = UIVisualEffectView()
+    private let composeGlass = UIVisualEffectView()
+    private let compactSearchRow = UIStackView()
+    private let composeButton = UIButton(type: .system)
+    private var compactSearchHeight: NSLayoutConstraint?
+    private var usesLocalSearch = false
     private lazy var compose: UIBarButtonItem = {
-        let item = UIBarButtonItem(barButtonSystemItem: .compose,target: self,action: #selector(newNote))
+        let item = UIBarButtonItem(systemItem: .compose,primaryAction: nil)
         item.accessibilityIdentifier = "fei.new"; return item
     }()
     private lazy var closeSearch: UIBarButtonItem = {
@@ -133,10 +146,36 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         let delta: CGFloat = listing?.interface_size == "large" ? 2 : listing?.interface_size == "small" ? -1 : 0
         return base.withSize(base.pointSize+delta)
     }
+    private func updateSearchTypography() {
+        let field = search.searchTextField
+        let font = interfaceFont(.body)
+        if field.font != font { field.font = font }
+        guard let title = labels["search"] else { return }
+        let placeholder = NSAttributedString(string: title, attributes: [
+            .font: font, .foregroundColor: UIColor.placeholderText
+        ])
+        if field.attributedPlaceholder != placeholder { field.attributedPlaceholder = placeholder }
+    }
     private var disclosureSize: CGFloat { UIFontMetrics(forTextStyle: .body).scaledValue(for: 13) }
     private func disclosureImage(expanded: Bool = false) -> UIImage? {
         UIImage(systemName: expanded ? "chevron.down" : "chevron.forward",
             withConfiguration: UIImage.SymbolConfiguration(pointSize: disclosureSize,weight: .semibold))
+    }
+
+    private func folderImage(shared: Bool) -> UIImage? {
+        let size = UIFontMetrics(forTextStyle: .headline).scaledValue(for: 22)
+        guard let folder = UIImage(systemName: "folder",withConfiguration: UIImage.SymbolConfiguration(pointSize: size)),
+              let people = UIImage(systemName: "person.2.fill",withConfiguration: UIImage.SymbolConfiguration(pointSize: size * 0.34)) else { return nil }
+        let canvas = CGSize(width: folder.size.width,height: max(folder.size.height,size))
+        return UIGraphicsImageRenderer(size: canvas).image { renderer in
+            folder.draw(at: CGPoint(x: 0,y: (canvas.height - folder.size.height) / 2))
+            guard shared else { return }
+            let badge = CGRect(x: canvas.width - people.size.width,y: canvas.height - people.size.height,width: people.size.width,height: people.size.height)
+            renderer.cgContext.setBlendMode(.clear)
+            UIBezierPath(roundedRect: badge.insetBy(dx: -1,dy: -1),cornerRadius: 2).fill()
+            renderer.cgContext.setBlendMode(.normal)
+            people.draw(in: badge)
+        }.withRenderingMode(.alwaysTemplate)
     }
 
     private func applyPinnedHeader() {
@@ -156,6 +195,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         super.viewDidLoad()
         NotificationCenter.default.addObserver(self,selector: #selector(contentSizeChanged),name: UIContentSizeCategory.didChangeNotification,object: nil)
         tableView.translatesAutoresizingMaskIntoConstraints = false
+        tableView.contentInsetAdjustmentBehavior = .always
         tableView.delegate = self
         tableView.dragInteractionEnabled = false
         let reorderPress = FeiRowReorderGesture(target: self,action: #selector(reorderByTouch(_:)))
@@ -187,9 +227,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             content.textToSecondaryTextVerticalPadding = 4
             content.secondaryTextProperties.adjustsFontForContentSizeCategory = true
             content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 12,leading: 16,bottom: 12,trailing: 16)
-            content.image = row.folder ? UIImage(systemName: "folder") : nil
+            content.image = row.folder ? self.folderImage(shared: row.shared_folder) : nil
             content.imageProperties.tintColor = self.palette.folderColor
-            if row.folder { content.imageProperties.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: UIFontMetrics(forTextStyle: .headline).scaledValue(for: 22),weight: .regular) }
             cell.automaticallyUpdatesContentConfiguration = false
             cell.automaticallyUpdatesBackgroundConfiguration = false
             cell.selectionStyle = self.isSelecting ? .none : .default
@@ -217,6 +256,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
                 if cell.backgroundConfiguration != background { cell.backgroundConfiguration = background }
                 if cell.contentConfiguration as? UIListContentConfiguration != content { cell.contentConfiguration = content }
 
+                cell.accessibilityValue = [row.shared_folder ? self.labels["already-shared-folder"] : row.shared_badge ? self.labels["already-shared"] : nil,
+                    row.unread_update ? self.labels["unread-update"] : nil].compactMap { $0 }.joined(separator: ", ")
                 let image: UIImage?
                 let tint: UIColor
                 let size: CGSize
@@ -224,10 +265,19 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
                     image = UIImage(systemName: state.isSelected ? "checkmark.circle.fill" : "circle",withConfiguration: UIImage.SymbolConfiguration(pointSize: 20))
                     tint = state.isSelected ? self.palette.accentColor : .tertiaryLabel
                     size = CGSize(width: 24,height: 24)
+                } else if row.shared_badge && !self.isSelecting && !self.isReordering {
+                    image = UIImage(systemName: "person.2",withConfiguration: UIImage.SymbolConfiguration(
+                        pointSize: UIFontMetrics(forTextStyle: .footnote).scaledValue(for: 13),weight: .regular))
+                    tint = highlight ? self.palette.selectedTextColor : .secondaryLabel
+                    size = CGSize(width: 30,height: 24)
                 } else if row.folder && !self.isSelecting {
                     image = self.disclosureImage()
                     tint = highlight ? self.palette.selectedTextColor : .secondaryLabel
                     size = CGSize(width: max(16,self.disclosureSize),height: max(24,self.disclosureSize))
+                } else if row.unread_update && !self.isSelecting && !self.isReordering {
+                    image = UIImage(systemName: "circle.fill",withConfiguration: UIImage.SymbolConfiguration(pointSize: 7))
+                    tint = .systemBlue
+                    size = CGSize(width: 20,height: 24)
                 } else {
                     cell.accessoryView = nil
                     return
@@ -247,14 +297,16 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             return self.canDragRow(path)
         }
         source.moved = { [weak self] from,to in self?.moveRow(from: from,to: to) }
-        search.delegate = self
+        for bar in [searchController.searchBar, compactSearch] {
+            bar.delegate = self
+            bar.accessibilityIdentifier = "fei.notes.search"
+            bar.searchTextField.accessibilityIdentifier = "fei.notes.search-field"
+            bar.searchTextField.adjustsFontForContentSizeCategory = true
+            bar.returnKeyType = .search
+        }
         searchController.searchResultsUpdater = self; searchController.delegate = self
         searchController.obscuresBackgroundDuringPresentation = false
         searchController.hidesNavigationBarDuringPresentation = false
-        search.accessibilityIdentifier = "fei.notes.search"
-        search.searchTextField.accessibilityIdentifier = "fei.notes.search-field"
-        search.searchTextField.adjustsFontForContentSizeCategory = true
-        search.returnKeyType = .search
         tabs.apportionsSegmentWidthsByContent=true
         tabs.accessibilityIdentifier = "fei.notes.tabs"
         tabs.addTarget(self,action: #selector(changeTab),for: .valueChanged)
@@ -272,6 +324,9 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         NSLayoutConstraint.activate([empty.leadingAnchor.constraint(equalTo: emptyBackground.leadingAnchor,constant: 20),empty.trailingAnchor.constraint(equalTo: emptyBackground.trailingAnchor,constant: -20),empty.centerYAnchor.constraint(equalTo: emptyBackground.centerYAnchor)])
         tableView.backgroundView = emptyBackground
         view.addSubview(tableView)
+        // Rest at the view edge under the system toolbar, then follow a docked keyboard.
+        view.keyboardLayoutGuide.usesBottomSafeArea = false
+        view.keyboardLayoutGuide.followsUndockedKeyboard = false
         NSLayoutConstraint.activate([tableView.topAnchor.constraint(equalTo: view.topAnchor),tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),tableView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor)])
         noticeText.font = .preferredFont(forTextStyle: .subheadline); noticeText.adjustsFontForContentSizeCategory = true
         noticeText.textColor = .label; noticeText.numberOfLines = 2
@@ -281,16 +336,100 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         notice.layer.cornerRadius=22; notice.clipsToBounds=true; notice.translatesAutoresizingMaskIntoConstraints=false; notice.isHidden=true
         notice.accessibilityIdentifier="fei.notes.notice"; notice.isAccessibilityElement=true
         view.addSubview(notice)
+        if #available(iOS 26.0, *) { installCompactSearchRow() }
         NSLayoutConstraint.activate([notice.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor,constant: 8),notice.centerXAnchor.constraint(equalTo: view.centerXAnchor),notice.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor,constant: -40),notice.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),status.topAnchor.constraint(equalTo: notice.contentView.topAnchor,constant: 10),status.bottomAnchor.constraint(equalTo: notice.contentView.bottomAnchor,constant: -10),status.leadingAnchor.constraint(equalTo: notice.contentView.leadingAnchor,constant: 16),status.trailingAnchor.constraint(equalTo: notice.contentView.trailingAnchor,constant: -16),noticeIcon.widthAnchor.constraint(equalToConstant: 18),noticeIcon.heightAnchor.constraint(equalToConstant: 18)])
     }
+    @available(iOS 26.0, *)
+    private func installCompactSearchRow() {
+        for glass in [searchGlass, composeGlass] {
+            let effect = UIGlassEffect()
+            effect.isInteractive = true
+            glass.effect = effect
+            glass.cornerConfiguration = .capsule()
+            compactSearchRow.addArrangedSubview(glass)
+        }
+        compactSearch.searchBarStyle = .minimal
+        compactSearch.setSearchFieldBackgroundImage(UIImage(), for: .normal)
+        compactSearch.translatesAutoresizingMaskIntoConstraints = false
+        let searchContent = searchGlass.contentView
+        searchContent.addSubview(compactSearch)
+        composeButton.setImage(UIImage(systemName: "square.and.pencil",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .regular)), for: .normal)
+        composeButton.accessibilityIdentifier = "fei.new"
+        composeButton.addAction(UIAction { [weak self] _ in self?.coordinator?.composeNote() }, for: .touchUpInside)
+        composeButton.translatesAutoresizingMaskIntoConstraints = false
+        composeGlass.contentView.addSubview(composeButton)
+        compactSearchRow.spacing = 10
+        compactSearchRow.translatesAutoresizingMaskIntoConstraints = false
+        compactSearchRow.isHidden = true
+        view.addSubview(compactSearchRow)
+        let height = compactSearchRow.heightAnchor.constraint(equalToConstant: 48)
+        compactSearchHeight = height
+        let composeWidth = composeGlass.widthAnchor.constraint(equalTo: compactSearchRow.heightAnchor)
+        composeWidth.priority = UILayoutPriority(999)
+        let safe = view.safeAreaLayoutGuide
+        let docked = compactSearchRow.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8)
+        docked.priority = .defaultHigh
+        // The list and search move together during a push, pop or cancelled swipe.
+        NSLayoutConstraint.activate([
+            compactSearchRow.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 26),
+            compactSearchRow.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -26),
+            compactSearchRow.bottomAnchor.constraint(lessThanOrEqualTo: safe.bottomAnchor, constant: -8),
+            compactSearchRow.bottomAnchor.constraint(lessThanOrEqualTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
+            docked,
+            composeWidth,
+            compactSearch.leadingAnchor.constraint(equalTo: searchContent.leadingAnchor, constant: 5),
+            compactSearch.trailingAnchor.constraint(equalTo: searchContent.trailingAnchor, constant: -5),
+            compactSearch.topAnchor.constraint(equalTo: searchContent.topAnchor),
+            compactSearch.bottomAnchor.constraint(equalTo: searchContent.bottomAnchor),
+            composeButton.leadingAnchor.constraint(equalTo: composeGlass.contentView.leadingAnchor),
+            composeButton.trailingAnchor.constraint(equalTo: composeGlass.contentView.trailingAnchor),
+            composeButton.topAnchor.constraint(equalTo: composeGlass.contentView.topAnchor),
+            composeButton.bottomAnchor.constraint(equalTo: composeGlass.contentView.bottomAnchor),
+            height,
+        ])
+    }
+
+    @available(iOS 26.0, *)
+    private func updateCompactSearch(in controller: UIViewController, visible: Bool, showCompose: Bool) {
+        if visible, !usesLocalSearch {
+            searchController.isActive = false
+            controller.navigationItem.searchController = nil
+        } else if !visible, usesLocalSearch {
+            compactSearch.searchTextField.resignFirstResponder()
+            compactSearch.setShowsCancelButton(false, animated: false)
+            compactSearching = false
+        }
+        usesLocalSearch = visible
+        if !isSearching, let listing {
+            if search.text != listing.query { search.text = listing.query }
+            search.isUserInteractionEnabled = !isBusy && pendingMove == nil
+        }
+        search.accessibilityLabel = labels["search"]
+        compactSearchRow.isHidden = !visible
+        if composeGlass.isHidden == showCompose { composeGlass.isHidden = !showCompose }
+        composeButton.isEnabled = !isBusy
+        composeButton.accessibilityLabel = labels["new"]
+        let height = max(48, ceil(interfaceFont(.body).lineHeight) + 16)
+        compactSearchHeight?.constant = height
+        let inset = visible ? height + 16 : 0
+        if tableView.contentInset.bottom != inset {
+            tableView.contentInset.bottom = inset
+            tableView.verticalScrollIndicatorInsets.bottom = inset
+        }
+    }
+
     func applyTheme(_ theme: FeiMobileTheme) {
         loadViewIfNeeded()
         let changed = palette != theme
         palette = theme
-        view.tintColor = theme.accentColor; view.backgroundColor = theme.listColor
-        tableView.backgroundColor = theme.listColor
-        search.tintColor = theme.accentColor
+        let background = browsesWorkspace ? theme.workspaceListColor : theme.listColor
+        view.tintColor = theme.accentColor; view.backgroundColor = background
+        tableView.backgroundColor = background
+        searchController.searchBar.tintColor = theme.accentColor
+        compactSearch.tintColor = theme.accentColor
         compose.tintColor = theme.accentColor
+        composeButton.tintColor = theme.accentColor
         applyPinnedHeader()
         if changed {
             UIView.performWithoutAnimation {
@@ -298,10 +437,10 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             }
         }
     }
-    func update(_ next: FeiNavigationState.Listing,labels: [String:String],busy: Bool,theme: FeiMobileTheme) {
+    func update(_ next: FeiNavigationState.Listing,labels: [String:String],busy: Bool,canCompose: Bool,theme: FeiMobileTheme) {
         applyTheme(theme)
         let labelsChanged = self.labels != labels
-        self.labels = labels; isBusy=busy
+        self.labels = labels; isBusy=busy; self.canCompose=canCompose
         let previous = listing
         if browsesWorkspace,let previous,previous.scope != next.scope { browserOffsets[previous.scope] = captureAnchor() }
         if let previous,previous.scope == next.scope, (previous.selection == nil) != (next.selection == nil) {
@@ -320,18 +459,19 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             if isReordering { endReordering() }
             searchOrigin = nil; restoreOffset = nil
             resultReturn = nil
-            searchController.isActive = false
+            resetSearch()
+        }
+        if previous == nil || browsesWorkspace && previous?.scope != next.scope {
+            restoreOffset = SearchOrigin(scope: next.scope,query: next.query,anchor: browserOffsets[next.scope] ?? .top)
         }
         updateRowHeight()
-        search.searchTextField.font = interfaceFont(.body)
+        updateSearchTypography()
         empty.font = interfaceFont(.body); noticeText.font = interfaceFont(.subheadline)
         rows = Dictionary(uniqueKeysWithValues: next.rows.map { ($0.id,$0) })
         let key = !next.query.isEmpty ? "result-count" : next.rows.contains(where: { $0.folder }) ? "item-count" : "note-count"
         count.text = String(format: labels[key] ?? "%d items",next.rows.count)
-        search.placeholder = labels["search"]; search.accessibilityLabel = labels["search"]
-        if !searchController.isActive,search.text != next.query { search.text = next.query }
-        compose.accessibilityLabel = labels["new"]
-        compose.isEnabled = !busy && coordinator?.allowsCompose == true
+        search.accessibilityLabel = labels["search"]
+        if !isSearching,search.text != next.query { search.text = next.query }
         tabs.setTitle(labels["all-notes"],forSegmentAt: 0); tabs.setTitle(labels["favorites"],forSegmentAt: 1); tabs.setTitle(labels["sharing"],forSegmentAt: 2)
         tabs.selectedSegmentIndex = next.tab; tabs.isHidden = !next.tabs
         tabs.isUserInteractionEnabled = !isSelecting; tabs.accessibilityTraits = isSelecting ? [.notEnabled] : []
@@ -349,9 +489,6 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
                     source.snapshot().itemIdentifiers != ordered && view.window != nil && !UIAccessibility.isReduceMotionEnabled
                 source.apply(snapshot,animatingDifferences: animates,completion: settled)
             }
-        }
-        if browsesWorkspace,previous?.scope != next.scope {
-            restoreOffset = SearchOrigin(scope: next.scope,query: next.query,anchor: browserOffsets[next.scope] ?? ListAnchor(id: nil,delta: 0,fallback: CGPoint(x: 0,y: -tableView.adjustedContentInset.top)))
         }
         restoreSelection()
         let message = next.notice
@@ -392,7 +529,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     func deactivate() {
         finishRowDrag()
         if tableView.isEditing && !isSelecting { endReordering() }
-        searchOrigin = nil; searchController.isActive = false
+        searchOrigin = nil; resetSearch()
         parent?.navigationItem.searchController = nil
         view.endEditing(true); view.isHidden = true; notice.isHidden = true
     }
@@ -401,9 +538,16 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         tableView.accessibilityValue = "cloudResume=\(coordinator?.readyForCloudResume == true) cloudPending=\(coordinator?.cloudStartPending == true) emptyDragSlot=\(observedEmptyInsertionSlot)"
         #endif
     }
-    func configureSearch(in controller: UIViewController,expanded: Bool) {
-        guard isViewLoaded,!view.isHidden,controller.navigationController?.topViewController === controller else { return }
+    var requiresListToolbar: Bool {
+        guard isViewLoaded,!view.isHidden,listing?.kind != "trash" else { return false }
+        if #available(iOS 26.0, *) { return isSelecting }
+        return true
+    }
+    func configureSearch(in controller: UIViewController,expanded: Bool,preparing: Bool = false) {
+        let isTop = controller.navigationController?.topViewController === controller
+        guard isViewLoaded,!view.isHidden,preparing || isTop else { return }
         if let selection=listing?.selection {
+            if #available(iOS 26.0, *) { updateCompactSearch(in: controller,visible: false,showCompose: false) }
             controller.navigationItem.searchController=nil
             selectionCount.text=String(format: labels["selected-count"] ?? "%d selected",selection.selected.count)
             selectAllItem.title=labels[selection.selected.count == min(selection.ids.count,selection.limit) && !selection.ids.isEmpty ? "deselect-all" : "select-all"]
@@ -418,49 +562,50 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             }
             deleteSelection.tintColor = .systemRed
             controller.toolbarItems=[UIBarButtonItem(customView: selectionCount),.flexibleSpace(),copySelection,.flexibleSpace(),moveSelection,.flexibleSpace(),deleteSelection]
-            controller.navigationController?.setToolbarHidden(false,animated: false)
+            if !preparing { controller.navigationController?.setToolbarHidden(false,animated: false) }
             updateCloudResumeProbe(); searchLayout=nil; return
         }
         if listing?.kind == "trash" {
-            controller.navigationItem.searchController = nil; controller.toolbarItems = nil
-            controller.navigationController?.setToolbarHidden(true,animated: false)
+            if #available(iOS 26.0, *) { updateCompactSearch(in: controller,visible: false,showCompose: false) }
+            if controller.navigationItem.searchController != nil { controller.navigationItem.searchController = nil }
+            if controller.toolbarItems != nil { controller.toolbarItems = nil }
+            if !preparing,controller.navigationController?.isToolbarHidden == false { controller.navigationController?.setToolbarHidden(true,animated: false) }
             tabs.isHidden = true
             return
         }
-        controller.navigationItem.largeTitleDisplayMode = .always
-        controller.navigationController?.navigationBar.prefersLargeTitles = true
         controller.definesPresentationContext = true
-        if controller.navigationItem.searchController !== searchController { controller.navigationItem.searchController = searchController }
-        controller.navigationItem.hidesSearchBarWhenScrolling = expanded
+        definesPresentationContext = true
+        let showCompose = !isSearching && canCompose
         let compactToolbar: Bool
-        if #available(iOS 26.0,*) {
-            compactToolbar = !expanded
-            let placement: UINavigationItem.SearchBarPlacement = expanded ? .stacked : .integrated
-            if controller.navigationItem.preferredSearchBarPlacement != placement { controller.navigationItem.preferredSearchBarPlacement = placement }
-            if controller.navigationItem.searchBarPlacementAllowsToolbarIntegration != !expanded { controller.navigationItem.searchBarPlacementAllowsToolbarIntegration = !expanded }
-        } else {
-            compactToolbar = !expanded
-            if controller.navigationItem.preferredSearchBarPlacement != .stacked { controller.navigationItem.preferredSearchBarPlacement = .stacked }
+        if #available(iOS 26.0, *) {
+            compactToolbar = false
+            updateCompactSearch(in: controller,visible: !expanded,showCompose: showCompose)
+            controller.navigationItem.searchBarPlacementAllowsToolbarIntegration = false
+        } else { compactToolbar = !expanded }
+        if !usesLocalSearch,controller.navigationItem.searchController !== searchController {
+            controller.navigationItem.searchController = searchController
         }
+        controller.navigationItem.hidesSearchBarWhenScrolling = expanded
+        if controller.navigationItem.preferredSearchBarPlacement != .stacked { controller.navigationItem.preferredSearchBarPlacement = .stacked }
         let hasClose = controller.navigationItem.rightBarButtonItems?.contains(where: { $0 === closeSearch }) == true
         if expanded && searchController.isActive && !hasClose {
             controller.navigationItem.rightBarButtonItems = [closeSearch]+(controller.navigationItem.rightBarButtonItems ?? [])
-        } else if (!expanded || !searchController.isActive) && hasClose {
+        } else if (!expanded || !isSearching) && hasClose {
             controller.navigationItem.rightBarButtonItems?.removeAll(where: { $0 === closeSearch })
         }
-        let showCompose = !searchController.isActive && listing?.kind != "shared"
         updateCloudResumeProbe()
-        let canCompose = coordinator?.allowsCompose == true && showCompose
-        compose.isEnabled = canCompose
+        if compactToolbar && showCompose { coordinator?.configureListCompose(compose) }
         controller.navigationItem.rightBarButtonItems?.filter { $0.accessibilityIdentifier == "fei.new" }.forEach { $0.isHidden = searchController.isActive }
         let key = "\(compactToolbar)-\(showCompose)"
         if key != searchLayout {
             searchLayout = key
-            if #available(iOS 26.0,*),compactToolbar {
-                controller.toolbarItems = showCompose ? [controller.navigationItem.searchBarPlacementBarButtonItem,.flexibleSpace(),compose] : [controller.navigationItem.searchBarPlacementBarButtonItem]
-            } else { controller.toolbarItems = compactToolbar && showCompose ? [.flexibleSpace(),compose] : [] }
+            controller.toolbarItems = compactToolbar && showCompose ? [.flexibleSpace(),compose] : nil
         }
-        if controller.navigationController?.transitionCoordinator == nil,controller.navigationController?.isToolbarHidden != !compactToolbar { controller.navigationController?.setToolbarHidden(!compactToolbar,animated: false) }
+        if !preparing,controller.navigationController?.transitionCoordinator == nil,
+           controller.navigationController?.isToolbarHidden != !compactToolbar {
+            controller.navigationController?.setToolbarHidden(!compactToolbar,animated: false)
+        }
+        updateSearchTypography()
     }
     private func updateSelection(previous: FeiNavigationState.Listing.Selection?) {
         if isSelecting {
@@ -481,8 +626,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     func beginSelection() {
         guard let listing,!isBusy,!isSelecting else { return }
         view.endEditing(true)
-        if searchController.isActive {
-            pendingSelection=true; searchOrigin=nil; resultReturn=nil; searchController.isActive=false
+        if isSearching {
+            pendingSelection=true; searchOrigin=nil; resultReturn=nil; endSearch()
         } else { coordinator?.send("batch-open",scope: listing.scope) }
     }
     private func batch(_ value: String) { guard let selection=listing?.selection else { return }; coordinator?.send("batch-action",value: value,serial: selection.serial) }
@@ -519,12 +664,19 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         if isSelecting { batch("select:"+id); return }
         if !browsesWorkspace { tableView.deselectRow(at: indexPath,animated: true) }
         if listing.kind == "trash" { coordinator?.showItemActions(id); return }
-        if searchController.isActive {
+        if isSearching {
             resultReturn = SearchOrigin(scope: listing.scope,query: listing.query,anchor: captureAnchor())
-            resultToOpen = (id,listing.scope); openingResult = true; searchController.isActive = false
+            resultToOpen = (id,listing.scope); openingResult = true; endSearch()
         } else { view.endEditing(true); coordinator?.send(browsesWorkspace ? "browse-open" : "list-open",id: id,scope: listing.scope) }
     }
-    func willPresentSearchController(_ searchController: UISearchController) {
+    func willPresentSearchController(_ searchController: UISearchController) { beginSearch() }
+    func searchBarTextDidBeginEditing(_ searchBar: UISearchBar) {
+        guard searchBar === compactSearch, !compactSearching else { return }
+        compactSearching = true
+        compactSearch.setShowsCancelButton(true, animated: false)
+        beginSearch()
+    }
+    private func beginSearch() {
         finishRowDrag()
         if tableView.isEditing && !isSelecting { endReordering() }
         resultReturn = nil
@@ -535,7 +687,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         // UIKit can clear an inactive field before presenting Search again after pop.
         // The text-change delegate also covers this transition; the results updater
         // intentionally ignores inactive presentation updates.
-        guard !openingResult,!pendingSelection,!isSelecting,let listing,(searchText.isEmpty || searchBar.searchTextField.markedTextRange == nil) else { return }
+        guard searchBar === search,!openingResult,!pendingSelection,!isSelecting,let listing,(searchText.isEmpty || searchBar.searchTextField.markedTextRange == nil) else { return }
         resultReturn = nil
         commitSearchClear(searchText,in: listing.scope)
         coordinator?.send(browsesWorkspace ? "browse-search" : "list-search",value: searchText,scope: listing.scope)
@@ -555,7 +707,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         resultReturn = nil; restoreOffset = nil
     }
     func didPresentSearchController(_ searchController: UISearchController) { refreshSearchControls(); coordinator?.searchPresentationDidEnd() }
-    func didDismissSearchController(_ searchController: UISearchController) {
+    func didDismissSearchController(_ searchController: UISearchController) { finishSearch() }
+    private func finishSearch() {
         if !openingResult,let origin = searchOrigin,origin.scope == listing?.scope {
             restoreOffset = origin; search.text = origin.query
             coordinator?.send(browsesWorkspace ? "browse-search" : "list-search",value: origin.query,scope: origin.scope)
@@ -567,24 +720,42 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         if pendingSelection,let listing { pendingSelection=false; coordinator?.send("batch-open",scope: listing.scope) }
         coordinator?.searchPresentationDidEnd()
     }
-    @objc private func endSearch() { searchController.isActive = false }
+    private func resetSearch() {
+        if compactSearching {
+            compactSearching = false
+            compactSearch.searchTextField.resignFirstResponder()
+            compactSearch.setShowsCancelButton(false, animated: false)
+        }
+        searchController.isActive = false
+    }
+    @objc private func endSearch() {
+        if usesLocalSearch {
+            resetSearch()
+            finishSearch()
+        } else { searchController.isActive = false }
+    }
     func searchBarCancelButtonClicked(_ searchBar: UISearchBar) { endSearch() }
     private func captureAnchor() -> ListAnchor {
+        if tableView.contentOffset.y <= -tableView.adjustedContentInset.top { return .top }
         let first = tableView.indexPathsForVisibleRows?.sorted().first
         let id = first.flatMap { source.itemIdentifier(for: $0) }
         let top = first.map { tableView.rectForRow(at: $0).minY } ?? tableView.contentOffset.y
-        return ListAnchor(id: id,delta: tableView.contentOffset.y-top,fallback: tableView.contentOffset)
+        return .position(id: id,delta: tableView.contentOffset.y-top,fallback: tableView.contentOffset)
     }
     private func restoreSearchAnchor() {
-        guard let origin = restoreOffset,origin.scope == listing?.scope,origin.query == listing?.query else { return }
+        guard view.window != nil,let origin = restoreOffset,origin.scope == listing?.scope,origin.query == listing?.query else { return }
         restoreOffset = nil; tableView.layoutIfNeeded()
         let minimum = -tableView.adjustedContentInset.top
         let maximum = max(minimum,tableView.contentSize.height-tableView.bounds.height+tableView.adjustedContentInset.bottom)
-        let target = origin.anchor.id.flatMap { source.indexPath(for: $0) }.map { tableView.rectForRow(at: $0).minY+origin.anchor.delta } ?? origin.anchor.fallback.y
-        tableView.setContentOffset(CGPoint(x: origin.anchor.fallback.x,y: min(maximum,max(minimum,target))),animated: false)
+        switch origin.anchor {
+        case .top:
+            tableView.setContentOffset(CGPoint(x: tableView.contentOffset.x,y: minimum),animated: false)
+        case let .position(id,delta,fallback):
+            let target = id.flatMap { source.indexPath(for: $0) }.map { tableView.rectForRow(at: $0).minY+delta } ?? fallback.y
+            tableView.setContentOffset(CGPoint(x: fallback.x,y: min(maximum,max(minimum,target))),animated: false)
+        }
     }
-    func searchBarSearchButtonClicked(_ searchBar: UISearchBar) { searchBar.resignFirstResponder() }
-    @objc private func newNote() { guard let listing else { return }; view.endEditing(true); coordinator?.composeNote(listingScope: listing.scope) }
+    func searchBarSearchButtonClicked(_ searchBar: UISearchBar) { searchBar.searchTextField.resignFirstResponder() }
     @objc private func changeTab() {
         guard let listing else { return }
         if browsesWorkspace { coordinator?.send("browse-scope",value: ["all","favorites","shared"][tabs.selectedSegmentIndex],scope: listing.scope) }
@@ -636,8 +807,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         guard let listing,!isSelecting else { return nil }
         let config = UISwipeActionsConfiguration(actions: keys.map { key,symbol,color in
             let item = coordinator?.rowItem(id)
-            let labelKey = key == "delete" && item?.shared == true ? (item?.owned == true ? "delete-shared" : "leave-shared") : key == "pin" && item?.pinned == true ? "unpin" : key == "star" && item?.starred == true ? "unstar" : key
-            let action = UIContextualAction(style: key == "delete" || key == "purge" ? .destructive : .normal,title: labels[labelKey]) { [weak self] _,_,done in
+            let labelKey = key == "delete" && item?.shared == true ? (item?.share_end ?? "leave-shared") : key == "delete" && item?.folder == true ? "delete-folder" : key == "pin" && item?.pinned == true ? "unpin" : key == "star" && item?.starred == true ? "unstar" : key
+            let action = UIContextualAction(style: key == "delete" || key == "purge" || key == "discard-recovery" ? .destructive : .normal,title: labels[labelKey]) { [weak self] _,_,done in
                 guard let self else { done(false); return }
                 self.coordinator?.rowAction(key,id: id,scope: listing.scope,browser: self.browsesWorkspace); done(true)
             }
@@ -647,12 +818,15 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     }
     func tableView(_ tableView: UITableView,leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         guard rowDrag == nil,let id=source.itemIdentifier(for: indexPath),let row=rows[id] else { return nil }
+        if coordinator?.rowItem(id)?.offline_recovery == true { return swipe([("keep-recovery","doc.on.doc",.systemGreen)],id: id) }
         if listing?.kind == "trash" { return swipe([("restore","arrow.uturn.backward",.systemGreen)],id: id) }
         return row.folder ? nil : swipe([("pin","pin",palette.accentColor),("star","star",.systemOrange)],id: id)
     }
     func tableView(_ tableView: UITableView,trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         guard rowDrag == nil,let id=source.itemIdentifier(for: indexPath) else { return nil }
+        if coordinator?.rowItem(id)?.offline_recovery == true { return swipe([("discard-recovery","trash",.systemRed)],id: id) }
         if listing?.kind == "trash" { return swipe([("purge","trash",.systemRed)],id: id) }
+        guard coordinator?.canModifyFolderContents(browser: browsesWorkspace) == true else { return nil }
         return swipe(coordinator?.rowItem(id)?.shared == true ? [("delete","trash",.systemRed)] : [("delete","trash",.systemRed),("move","folder",.systemBlue)],id: id)
     }
     private func draggableRow(_ path: IndexPath) -> Bool {
@@ -670,7 +844,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
 
     func gestureRecognizer(_ recognizer: UIGestureRecognizer,shouldReceive touch: UITouch) -> Bool {
         guard recognizer is FeiRowReorderGesture else { return true }
-        guard listing?.can_reorder == true,!isBusy,!isSelecting,!isReordering,!searchController.isActive,pendingMove == nil,
+        guard listing?.can_reorder == true,!isBusy,!isSelecting,!isReordering,!isSearching,pendingMove == nil,
               let path = tableView.indexPathForRow(at: touch.location(in: tableView)) else { return false }
         return canDragRow(path)
     }

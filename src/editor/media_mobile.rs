@@ -75,7 +75,12 @@ impl Editor {
         let stamp = SelectionStamp::capture(self,if below { "insert-below" } else { "insert" });
         let items = self.mobile_insert_items();
         let action = |index,item: &SlashItem| {
-            let mut action = control(&insert_key(index,item.kind),crate::settings::text(item.label),false);
+            let title = match item.kind {
+                SlashKind::Image => tr("从文件选图片","Image from Files"),
+                SlashKind::File => tr("从文件选视频或附件","Video or attachment from Files"),
+                _ => crate::settings::text(item.label),
+            };
+            let mut action = control(&insert_key(index,item.kind),title,false);
             action["dismiss"] = json!(true);
             if item.kind == SlashKind::Link { action["enabled"] = json!(below || self.core.sel.head.block != super::core::TITLE && !self.core.is_code(self.core.sel.head.block)); }
             action

@@ -15,6 +15,7 @@ The PolyForm license applies to these Fei Notes files in this release:
 
 - `src/cloud_restore.rs`, `src/cloud_trial.rs`, `src/cloud_subscription.rs`
 - All Rust files in `src/cloud_sync/`
+- `src/settings/sync_status.rs`
 - `packaging/macos/CloudRestore.swift`, `CloudSync.swift`, `CloudShare.swift`, `CloudTrial.swift`, `CloudSubscription.swift`, `TestFlightInstall.swift`
 - `packaging/macos/apple-release.py`, `run-apple-release.sh`, `test-apple-release.py`, `build-cloud-app.sh`, `brand-app.sh`, `test-testflight-install.sh`
 - `scripts/check-cloud-sync.sh`, `scripts/fei-release-licenses.py`

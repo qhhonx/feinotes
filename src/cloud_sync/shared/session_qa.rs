@@ -74,6 +74,7 @@ pub(crate) fn verify(cx: &mut gpui::App) -> Result<()> {
     let owner = find(&room_root, cx);
     let reader = find(&reader_root, cx);
     let original = primary.update(cx, |ws, _, _| { let id = ws.entries[0].id.clone(); ws.store.load(&id).unwrap() })?;
+    verify_library_settings(cx, &primary, &owner, &personal, &room_root)?;
     let before_owner = journal_count(&room_root, cx)?;
     let before_reader = journal_count(&reader_root, cx)?;
     reader.update(cx, |ws, _, cx| -> Result<()> {
@@ -109,6 +110,50 @@ pub(crate) fn verify(cx: &mut gpui::App) -> Result<()> {
     Ok(())
 }
 
+fn verify_library_settings(cx: &mut gpui::App, primary: &gpui::WindowHandle<crate::app::Workspace>,
+    owner: &gpui::WindowHandle<crate::app::Workspace>, personal: &Path, shared: &Path) -> Result<()> {
+    use crate::{app::View, settings::Page};
+    let (id, personal_limit) = primary.update(cx, |ws, window, cx| -> Result<_> {
+        let id = ws.entries[0].id.clone();
+        ensure!(ws.try_open(&id, window, cx), "Could not open the personal fixture");
+        ws.open_settings(Page::Library, cx);
+        ensure!(ws.settings_sync_root(cx).as_deref() == Some(personal), "Wrong scope in personal settings");
+        let limit = ws.personal_history_limit(cx);
+        ws.close_settings(cx);
+        ensure!(ws.view == View::Doc && ws.current.as_deref() == Some(&id), "Personal settings lost their return document");
+        Ok((id, limit))
+    })??;
+    owner.update(cx, |ws, window, cx| -> Result<()> {
+        let note = ws.current.clone();
+        let shared_limit = ws.store.settings().history_limit();
+        let next = if personal_limit < 30 { personal_limit + 1 } else { personal_limit - 1 };
+        ws.open_settings(Page::Library, cx);
+        ensure!(ws.settings_sync_root(cx).as_deref() == Some(personal) && ws.personal_history_limit(cx) == personal_limit,
+            "Global settings opened against the active share");
+        ws.change_history_limit(next as i32 - personal_limit as i32, window, cx);
+        ensure!(ws.personal_history_limit(cx) == next && ws.store.settings().history_limit() == shared_limit,
+            "The global history change affected the shared store");
+        ws.change_history_limit(personal_limit as i32 - next as i32, window, cx);
+        ws.close_settings(cx);
+        ensure!(ws.view == View::Doc && ws.current == note && ws.store.root() == shared, "Global settings displaced the shared document");
+        ws.open_settings(Page::SharedSync, cx);
+        ensure!(ws.settings_sync_root(cx).as_deref() == Some(shared), "Share sync used the personal library");
+        ws.close_settings(cx);
+        ensure!(ws.view == View::Doc && ws.current == note, "Share sync displaced the shared document");
+        ws.open_global_settings(window, cx);
+        ensure!(ws.settings_page == Page::Library && ws.settings_sync_root(cx).as_deref() == Some(personal),
+            "The global Settings entry reopened the share sync page");
+        ws.close_settings(cx);
+        Ok(())
+    })??;
+    primary.update(cx, |ws, _, _| -> Result<()> {
+        ensure!(ws.current.as_deref() == Some(&id) && ws.history_limit == personal_limit, "Personal window settings cache did not recover");
+        Ok(())
+    })??;
+    eprintln!("LIBRARY_SETTINGS_SCOPE_OK personal=matched share=isolated return=preserved history=personal");
+    Ok(())
+}
+
 pub(crate) fn reopen(cx: &mut gpui::App) -> Result<()> {
     use crate::app::Workspace;
     let personal = Store::root_dir();
@@ -133,6 +178,15 @@ pub(crate) fn reopen(cx: &mut gpui::App) -> Result<()> {
 
 pub(crate) fn request_account_check(_cx: &mut gpui::App) { crate::cloud_sync::sync_resumed(3); }
 
+pub(crate) fn confirm_account_check(cx: &mut gpui::App) -> Result<()> {
+    let root = Store::root_dir();
+    let marker = root.join("require-account-verification");
+    ensure!(marker.is_file(), "No isolated account verification was pending");
+    super::super::complete_account_check(&root, super::super::account_revision())?;
+    super::super::fixture_status(&root, super::super::SyncPhase::Ready, cx);
+    Ok(())
+}
+
 pub(crate) fn verify_account_check(cx: &mut gpui::App) -> Result<()> {
     for window in cx.windows().into_iter().filter_map(|w| w.downcast::<crate::app::Workspace>()) {
         window.update(cx, |ws, _, cx| -> Result<()> {
@@ -150,3 +204,24 @@ pub(crate) fn verify_account_check(cx: &mut gpui::App) -> Result<()> {
 }
 
 fn journal_count(root: &Path, cx: &gpui::App) -> Result<u32> { Ok(crate::cloud_sync::journal(root, cx).counts()?.0) }
+
+pub(crate) fn readonly_folder(root: &Path, personal: &Path) -> Result<(String, String, String)> {
+    let source = root.join("folder-sidebar-sender");
+    fs::create_dir(&source)?;
+    Store::initialize_shared_sqlite(&source, &"c".repeat(64))?;
+    let mut store = Store::open_sqlite_at(source.clone())?;
+    let id = store.create_folder("收到的共享文件夹", None)?;
+    let doc = store.create_from_in(&Document { title: crate::model::RichText::plain("只读资料"), ..Default::default() }, Some(&id))?;
+    let empty = store.create_folder("空文件夹", Some(&id))?;
+    drop(store);
+    let mut room = original::prepare_local(&source, &id, "收到的共享文件夹".into(), false)?;
+    let edits = Journal::open(&room_root(&source, &id)?, None)?.request()?.edits;
+    room.scope.owner = Some("synthetic-folder-owner".into());
+    let guest = stage(personal, &room, None)?;
+    let mut reader = Journal::open(&guest, None)?;
+    reader.receive(crate::cloud_sync::Changes { retention: None, uploaded: vec![], edits,
+        token: Some(crate::cloud_sync::Bytes(vec![1])), more: false, legacy: false,
+        room_access: Some(Access::ReadOnly), cursor_replayed: false, upload_quota_exceeded: false })?;
+    reader.merge(&Default::default())?;
+    Ok((id, doc, empty))
+}

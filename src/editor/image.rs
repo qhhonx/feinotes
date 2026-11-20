@@ -333,6 +333,14 @@ fn decode(path: &Path, cap: u32) -> Decoded {
 /// is), shrunk while decoding as `decode` does (board image sources).
 pub fn decode_rgba(path: &Path, cap: u32) -> Option<image::RgbaImage> { shrunk(path, cap).ok().map(|(im, _, _)| im.into_rgba8()) }
 
+fn oriented_dimensions(w: u32, h: u32, orientation: image::metadata::Orientation) -> (u32, u32) {
+    use image::metadata::Orientation::*;
+    match orientation {
+        Rotate90 | Rotate270 | Rotate90FlipH | Rotate270FlipH => (h, w),
+        _ => (w, h),
+    }
+}
+
 /// `path` decoded with its long edge at most `cap` (0: as is), with the
 /// file's own size.
 fn shrunk(path: &Path, cap: u32) -> Result<(image::DynamicImage, u32, u32), ImageCacheError> {
@@ -347,7 +355,15 @@ fn shrunk(path: &Path, cap: u32) -> Result<(image::DynamicImage, u32, u32), Imag
             } else { None };
             match jpeg {
                 Some(j) => j,
-                None => { let im = image::load_from_memory_with_format(&bytes, format)?; let (w, h) = (im.width(), im.height()); (im, w, h) }
+                None => {
+                    use image::ImageDecoder as _;
+                    let mut decoder = image::ImageReader::with_format(std::io::Cursor::new(&bytes), format).into_decoder()?;
+                    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+                    let mut im = image::DynamicImage::from_decoder(decoder)?;
+                    im.apply_orientation(orientation);
+                    let (w, h) = (im.width(), im.height());
+                    (im, w, h)
+                }
             }
         }
     };
@@ -423,11 +439,15 @@ fn decode_jpeg(bytes: &[u8], cap: u32) -> Option<(image::DynamicImage, u32, u32)
     let pixels = d.decode().ok()?;
     let out = d.info()?;
     let (ow, oh) = (out.width as u32, out.height as u32);
-    let im = match out.pixel_format {
+    let mut im = match out.pixel_format {
         PixelFormat::RGB24 => image::DynamicImage::ImageRgb8(image::RgbImage::from_raw(ow, oh, pixels)?),
         PixelFormat::L8 => image::DynamicImage::ImageLuma8(image::GrayImage::from_raw(ow, oh, pixels)?),
         _ => return None,
     };
+    let orientation = d.exif_data().and_then(image::metadata::Orientation::from_exif_chunk)
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    im.apply_orientation(orientation);
+    let (w, h) = oriented_dimensions(w, h, orientation);
     Some((im, w, h))
 }
 
@@ -642,11 +662,16 @@ impl ImageUi {
         if let Some(d) = self.dims.borrow().get(p) {
             return *d;
         }
-        let d = image::ImageReader::open(p)
-            .ok()
+        use image::ImageDecoder as _;
+        let d = image::ImageReader::open(p).ok()
             .and_then(|r| r.with_guessed_format().ok())
-            .and_then(|r| r.into_dimensions().ok())
-            .map(|(w, h)| (w as f32, h as f32));
+            .and_then(|r| r.into_decoder().ok())
+            .map(|mut decoder| {
+                let (w, h) = decoder.dimensions();
+                let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+                let (w, h) = oriented_dimensions(w, h, orientation);
+                (w as f32, h as f32)
+            });
         self.dims.borrow_mut().insert(p.to_path_buf(), d);
         d
     }
@@ -1754,7 +1779,7 @@ impl Editor {
             bg.spawn(async move {
                 if crop == FULL {
                     let _ = std::fs::copy(&path, &dest);
-                } else if let Ok(im) = image::ImageReader::open(&path).and_then(|r| r.with_guessed_format()).map_err(anyhow::Error::from).and_then(|r| Ok(r.decode()?)) {
+                } else if let Ok((im, _, _)) = shrunk(&path, 0) {
                     let (w, h) = (im.width() as f32, im.height() as f32);
                     let (x, y) = ((crop[0] * w).round() as u32, (crop[1] * h).round() as u32);
                     let (cw, ch) = (((crop[2] - crop[0]) * w).round().max(1.) as u32, ((crop[3] - crop[1]) * h).round().max(1.) as u32);
@@ -2340,7 +2365,7 @@ fn download_ios(url: &str, destination: &Path) -> bool {
 
 /// Crops and turns the image `rot` quarter turns counter-clockwise (BGRA).
 fn decode_rotated(path: &Path, crop: [f32; 4], rot: u8) -> Option<Arc<RenderImage>> {
-    let im = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
+    let (im, _, _) = shrunk(path, 0).ok()?;
     let (w, h) = (im.width() as f32, im.height() as f32);
     let im = if crop == FULL {
         im
@@ -2588,7 +2613,7 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap, clipboard_image_data, decode, decode_png, pasted_remote, BAD_DIMS};
+    use super::{cap, clipboard_image_data, decode, decode_png, pasted_remote, shrunk, BAD_DIMS};
     use crate::model::{Block, BlockKind, RichText};
     use gpui::ImageFormat;
 
@@ -2633,6 +2658,36 @@ mod tests {
     #[test]
     fn caps_round_up_in_steps() {
         assert_eq!((cap(0.), cap(1.), cap(386.), cap(1380.), cap(2017.), cap(9000.)), (0, 128, 512, 1536, 2048, 0));
+    }
+
+    #[test]
+    fn portrait_jpeg_orientation_survives_scaled_and_full_decoding() {
+        let dir = std::env::temp_dir().join(format!("fei-photo-orientation-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("portrait.jpg");
+        let raw = image::RgbImage::from_fn(96, 64, |x, _| {
+            if x < 48 { image::Rgb([240, 10, 10]) } else { image::Rgb([10, 10, 240]) }
+        });
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg).encode_image(&raw).unwrap();
+        // An ordinary landscape JPEG with a camera's orientation=6 APP1 record.
+        let exif = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+        let mut segment = vec![0xff, 0xe1];
+        segment.extend(((exif.len() + 2) as u16).to_be_bytes());
+        segment.extend(exif);
+        jpeg.splice(2..2, segment);
+        std::fs::write(&path, jpeg).unwrap();
+
+        for cap in [0, 48] {
+            let (im, w, h) = shrunk(&path, cap).unwrap();
+            assert_eq!((w, h), (64, 96));
+            let im = im.into_rgb8();
+            assert!(im.height() > im.width());
+            let top = im.get_pixel(im.width() / 2, im.height() / 4);
+            let bottom = im.get_pixel(im.width() / 2, im.height() * 3 / 4);
+            assert!(top[0] > top[2] && bottom[2] > bottom[0]);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Shrunk at decode (the JPEG at most 15% under the cap), never above it;

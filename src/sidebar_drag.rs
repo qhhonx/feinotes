@@ -128,6 +128,7 @@ pub(crate) struct Drag {
     at: Point<Pixels>,
     offset: Point<Pixels>,
     started: bool,
+    navigation_only: bool,
     excluded: HashSet<String>,
     index: usize,
     depth: usize,
@@ -194,8 +195,8 @@ impl SidebarDrag {
 }
 
 /// A row's face without its controls: the drag ghost and rows on their way out.
-fn row_face(e: &Entry, open: bool, cx: &App) -> Div {
-    let folder = crate::sidebar::folder_glyph(e, open, cx);
+fn row_face(e: &Entry, open: bool, shared: bool, cx: &App) -> Div {
+    let folder = crate::sidebar::folder_glyph(e, open, !shared, cx);
     div().h(px(crate::sidebar::ROW_H)).w_full().pl(px(6.)).flex().items_center()
         .child(div().size(px(20.)).flex_none().flex().items_center().justify_center().map(|d| match &e.icon {
             _ if let Some(glyph) = folder => d.child(icon(glyph, crate::sidebar::ROW_ICON, crate::sidebar::folder_color())),
@@ -214,12 +215,18 @@ fn faded(shadows: Vec<BoxShadow>, a: f32) -> Vec<BoxShadow> {
 impl Workspace {
     pub(crate) fn with_sidebar<R>(&mut self, shared: bool, f: impl FnOnce(&mut Self) -> R) -> R {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        if shared { std::mem::swap(&mut self.folder_drag, &mut self.sharing.sidebar); }
+        if shared {
+            std::mem::swap(&mut self.folder_drag, &mut self.sharing.sidebar);
+            std::mem::swap(&mut self.expanded, &mut self.sharing.expanded);
+        }
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let _ = shared;
         let result = f(self);
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        if shared { std::mem::swap(&mut self.folder_drag, &mut self.sharing.sidebar); }
+        if shared {
+            std::mem::swap(&mut self.folder_drag, &mut self.sharing.sidebar);
+            std::mem::swap(&mut self.expanded, &mut self.sharing.expanded);
+        }
         result
     }
 
@@ -241,6 +248,7 @@ impl Workspace {
         let origin = bounds.origin + point(px(s.p[0]), px(s.p[1]));
         self.folder_drag.active = Some(Drag {
             id: id.to_string(), start: at, at, offset: at - origin, started: false,
+            navigation_only: self.folder_drag.shared_rows.is_some() && rows[index].entry.meta.share_root.is_some(),
             excluded: crate::tree::Tree::new(self.drag_entries()).subtree(id).into_iter().collect(),
             index, depth: rows[index].depth, initial_depth: rows[index].depth, parent: rows[index].entry.meta.parent.clone(),
             original_index: index, original_depth: rows[index].depth, hover: None,
@@ -253,6 +261,12 @@ impl Workspace {
         let Some(d) = self.folder_drag.active.as_mut() else { return };
         d.at = at;
         if !d.started && (f32::from(at.x - d.start.x).hypot(f32::from(at.y - d.start.y)) >= 4.) {
+            // The organizer can move rooms. Members belong to the room's catalogue.
+            if d.navigation_only {
+                self.folder_drag.active = None;
+                self.folder_drag.icon_press = false; self.folder_drag.icon_alt = false;
+                return;
+            }
             d.started = true; d.lift.to = 1.;
             self.folder_drag.icon_press = false;
             self.folder_drag.icon_alt = false;
@@ -266,6 +280,8 @@ impl Workspace {
     fn project_folder_drop(&mut self) {
         let Some(bounds) = self.folder_drag.bounds.get() else { return };
         let rows = self.drag_rows();
+        let shared = self.folder_drag.shared_rows.is_some();
+        let drop_folder = |row: &Row| row.entry.meta.folder.is_some() && (!shared || row.entry.id.starts_with("collection-"));
         let Some(d) = self.folder_drag.active.as_mut().filter(|d| d.started) else { return };
         let y = f32::from(d.at.y - d.offset.y - bounds.top()) + 15.;
         let desired = (d.initial_depth as i32 + (f32::from(d.at.x - d.start.x) / INDENT).round() as i32).max(0) as usize;
@@ -275,7 +291,7 @@ impl Workspace {
         let folder = rows.iter().enumerate().find(|(i, r)| {
             let top = self.folder_drag.springs.get(&r.entry.id).map_or(
                 (*i + usize::from(*i >= d.index)) as f32 * PITCH, |s| s.p[1]);
-            r.entry.meta.folder.is_some() && pointer_y > top + 5. && pointer_y < top + 26.
+            drop_folder(r) && pointer_y > top + 5. && pointer_y < top + 26.
                 && f32::from(d.at.x - bounds.left()) >= r.depth as f32 * INDENT
         });
         if let Some((i, r)) = folder {
@@ -299,10 +315,10 @@ impl Workspace {
             rows.iter().enumerate().filter(|(i, _)| y > (*i + usize::from(*i >= d.index)) as f32 * PITCH + 15.).count()
         };
         let prev = index.checked_sub(1).and_then(|i| rows.get(i));
-        let max = prev.map_or(0, |r| r.depth + usize::from(r.entry.meta.folder.is_some()));
+        let max = prev.map_or(0, |r| r.depth + usize::from(drop_folder(r)));
         let min = rows.get(index).map_or(0, |r| r.depth);
         let depth = desired.clamp(min.min(max), max);
-        let parent = if depth == 0 { None } else { rows[..index].iter().rev().find(|r| r.depth + 1 == depth && r.entry.meta.folder.is_some()).map(|r| r.entry.id.clone()) };
+        let parent = if depth == 0 { None } else { rows[..index].iter().rev().find(|r| r.depth + 1 == depth && drop_folder(r)).map(|r| r.entry.id.clone()) };
         d.index = index; d.depth = depth; d.parent = parent;
     }
 
@@ -345,6 +361,8 @@ impl Workspace {
         if !d.started { self.folder_drag.active = None; cx.notify(); return; }
         let b = self.list_scroll.bounds();
         let cancel = cancel || d.at.x < b.left() || d.at.x > b.right() || d.at.y < b.top() || d.at.y > b.bottom();
+        let cancel = cancel || (self.folder_drag.shared_rows.is_some() && (d.depth > 0 && d.parent.is_none()
+            || rows.get(d.index).is_some_and(|row| row.entry.meta.share_root.is_some())));
         let before = rows.get(d.index).filter(|r| r.entry.meta.parent == d.parent).map(|r| r.entry.id.clone());
         let movement = PendingMove { id: d.id.clone(), parent: d.parent.clone(), before, history: 0 };
         let depth = if cancel { d.original_depth } else { d.depth };
@@ -497,7 +515,9 @@ impl Workspace {
         let selection = self.sidebar_selection(pick.as_ref().is_some_and(|id| self.drag_entries().iter().any(|e| &e.id == id && e.meta.folder.is_some())));
         let mut moving = false;
 
-        let renaming = self.rename.as_ref().filter(|rename| rows.iter().any(|row| row.entry.id == rename.id)).map(|r| r.id.clone());
+        let section = if shared { crate::sidebar::SidebarSection::Shared } else { crate::sidebar::SidebarSection::Personal };
+        let renaming = self.rename.as_ref().and_then(|rename| self.sidebar_rename(&rename.id, section))
+            .filter(|rename| rows.iter().any(|row| row.entry.id == rename.id)).map(|r| r.id.clone());
         self.folder_drag.parents = self.drag_entries().iter().filter_map(|e| e.meta.parent.clone()).collect();
         let high = crate::settings::motion_high();
         // The visible band in this list's coordinates, from last frame's layout. Both edges are
@@ -522,7 +542,7 @@ impl Workspace {
             rows[i + 1..].iter().take_while(|r| r.depth > rows[i].depth).cloned().collect()
         };
         let primed = std::mem::replace(&mut fd.primed, true);
-        let open_now: HashSet<String> = if shared { HashSet::new() } else { self.expanded.clone() };
+        let open_now = self.expanded.clone();
         let mut started = false;
         // Rows that appear at once, without fading in (folding is instant).
         let mut instant: HashSet<String> = HashSet::new();
@@ -771,13 +791,13 @@ impl Workspace {
         for l in fd.leaving.values() {
             let [x, y, w] = l.pos.p;
             container = container.child(div().absolute().left(px(x)).top(px(y)).w(px(w)).opacity(l.alpha.unit())
-                .text_color(crate::sidebar::text_color()).child(row_face(&l.row.entry, false, cx)));
+                .text_color(crate::sidebar::text_color()).child(row_face(&l.row.entry, false, shared, cx)));
         }
         for (r, [x, y, w], band, a) in &closing {
             if band.1 - band.0 < 0.5 { continue; }
             if !on_screen(*y) { continue; }
             let el = div().id(SharedString::from(format!("fclose-{}", r.entry.id))).h(row_h).opacity(*a).text_color(crate::sidebar::text_color())
-                .child(row_face(&r.entry, self.expanded.contains(&r.entry.id), cx));
+                .child(row_face(&r.entry, self.expanded.contains(&r.entry.id), shared, cx));
             container = container.child(clipped(el, *x, *y - 4. * (1. - a), *w, Some(*band)));
         }
         if let Some((s, a)) = &fd.zone {
@@ -896,28 +916,41 @@ impl Workspace {
         }
         // Navigation can replace the workspace and carry both sidebar states into it.
         let Some(d) = self.sharing.sidebar.active.take() else { return };
+        use crate::sidebar::{SidebarEntry, SidebarSection};
         let id = d.id;
-        if id.starts_with("collection-") {
-            let sidebar = &mut self.sharing.sidebar;
-            let icon_press = std::mem::take(&mut sidebar.icon_press);
-            let recursive = std::mem::take(&mut sidebar.icon_alt);
-            let shown = self.view == crate::app::View::Home && self.home.tab == crate::home::HomeTab::Shared && self.sharing.collection.as_ref() == Some(&id);
-            if icon_press || shown {
-                let opening = !self.expanded.contains(&id);
+        let shown = self.sidebar_row_selected(SidebarSection::Shared, &id);
+        let sidebar = &mut self.sharing.sidebar;
+        let icon_press = std::mem::take(&mut sidebar.icon_press);
+        let recursive = std::mem::take(&mut sidebar.icon_alt);
+        let rows = sidebar.shared_rows.as_deref().unwrap_or_default();
+        let Some(entry) = rows.iter().find(|entry| entry.id == id) else { return; };
+        let room_id = entry.meta.share_root.clone().unwrap_or_else(|| id.clone());
+        let collection = id.starts_with("collection-");
+        if entry.meta.folder.is_some() {
+            let shown = shown && (collection || self.view == crate::app::View::Folder);
+            if (icon_press || shown) && sidebar.has_children(&id) {
+                let opening = !self.sharing.expanded.contains(&id);
                 let folders = if icon_press && recursive {
-                    crate::tree::Tree::new(sidebar.shared_rows.as_deref().unwrap_or_default()).subtree(&id).into_iter().filter(|key| key.starts_with("collection-")).collect()
-                } else { vec![id] };
-                for folder in folders { if opening { self.expanded.insert(folder); } else { self.expanded.remove(&folder); } }
-            } else {
-                self.expanded.insert(id.clone());
-                self.personal_action(window, cx, move |w, _, cx| {
-                    w.show_view(crate::app::View::Shared, cx); w.sharing.collection = Some(id); cx.notify();
-                });
+                    crate::tree::Tree::new(rows).subtree(&id).into_iter().filter(|key|
+                        rows.iter().any(|row| row.id == *key && row.meta.folder.is_some())).collect()
+                } else { vec![id.clone()] };
+                for folder in folders {
+                    if opening { self.sharing.expanded.insert(folder); } else { self.sharing.expanded.remove(&folder); }
+                }
+                sidebar.kick(&id, 3.5);
+                cx.notify();
+                return;
             }
-            cx.notify();
-        } else if let Some(room) = self.shared_list_room(&id, cx) {
-            self.navigate_shared_sidebar(room, crate::sidebar::SidebarEntry::new(crate::sidebar::SidebarSection::Shared, &id), window, cx);
+            self.sharing.expanded.insert(id.clone());
         }
+        if collection {
+            self.personal_action(window, cx, move |w, _, cx| {
+                w.show_view(crate::app::View::Shared, cx); w.sharing.collection = Some(id); cx.notify();
+            });
+        } else if let Some(room) = self.shared_list_room(&room_id, cx) {
+            self.navigate_shared_sidebar(room, SidebarEntry::new(SidebarSection::Shared, &id), window, cx);
+        }
+        cx.notify();
     }
 
     pub(crate) fn render_folder_drag_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -937,7 +970,7 @@ impl Workspace {
             let inside = d.excluded.len().saturating_sub(1);
             layer = layer.child(div().absolute().left(px(x - 3. * l)).top(px(y - l)).w(px(width + 6. * l)).h(px(crate::sidebar::ROW_H)).pr(px(6.)).rounded(px(crate::sidebar::ROW_R))
                 .bg(theme::raised(Theme::bg_body())).shadow(faded(theme::shadow_panel(), l.min(1.))).flex().items_center().text_color(Theme::text())
-                .child(row_face(e, self.expanded.contains(&e.id), cx).flex_1().min_w_0().pl(px(6. + 3. * l)))
+                .child(row_face(e, self.expanded.contains(&e.id), shared, cx).flex_1().min_w_0().pl(px(6. + 3. * l)))
                 .when(inside > 0, |g| g.child(div().flex_none().h(px(18.)).min_w(px(18.)).px(px(5.)).rounded(px(9.)).flex().items_center().justify_center()
                     .bg(Theme::sidebar_drop_slot()).text_size(px(11.)).text_color(crate::sidebar::text_color()).font_weight(FontWeight::MEDIUM)
                     .opacity(d.lift.unit()).child(inside.to_string()))));
@@ -958,6 +991,16 @@ impl Workspace {
         let sidebar = if shared { &self.sharing.sidebar } else { &self.folder_drag };
         sidebar.shown.iter().map(|row| (row.entry.id.clone(), row.depth)).collect()
     }
+
+
+    pub(crate) fn qa_sidebar_point(&self, shared: bool, id: &str, icon: bool) -> Option<Point<Pixels>> {
+        let sidebar = if shared { &self.sharing.sidebar } else { &self.folder_drag };
+        let row = sidebar.springs.get(id)?;
+        let bounds = sidebar.bounds.get()?;
+        Some(bounds.origin + point(px(row.p[0] + if icon { 16. } else { 85. }), px(row.p[1] + 15.)))
+    }
+
+    pub(crate) fn qa_sidebar_has_children(&self, id: &str) -> bool { self.sharing.sidebar.has_children(id) }
 
     pub(crate) fn qa_shared_reorder(&mut self, window: &mut Window, cx: &mut Context<Self>) -> anyhow::Result<()> {
         self.with_sidebar(true, |w| -> anyhow::Result<()> {

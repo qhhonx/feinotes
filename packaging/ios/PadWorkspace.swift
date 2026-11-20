@@ -26,7 +26,7 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         return item
     }
     private lazy var composeItem: UIBarButtonItem = {
-        let item = UIBarButtonItem(systemItem: .compose,primaryAction: UIAction { [weak self] _ in self?.editor.navigationCoordinator?.composeNote() })
+        let item = UIBarButtonItem(systemItem: .compose,primaryAction: nil)
         item.accessibilityIdentifier = "fei.new"; return item
     }()
     private lazy var settingsItem: UIBarButtonItem = {
@@ -48,24 +48,30 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
     private var sidebarSwipeScope: String?
     private var metricsScale: CGFloat = 0
     private var lastBrowserScope: String?
+    #if FEI_MOBILE_QA
+    private var lastFolderTransition: String?
+    #endif
     private let empty = UILabel()
 
     init(host: EditorHost) {
         editor = host
         let root = FeiRouteController()
+        root.isWorkspaceBrowser = true
+        root.routeKey = "ipad-browser"
+        root.configureNavigationTitleMode()
         browserRoot = root
         browserNavigation = UINavigationController(rootViewController: root)
         editorNavigation = UINavigationController(rootViewController: host)
         super.init(style: .doubleColumn)
         host.padWorkspace = self
-        root.isWorkspaceBrowser = true
-        root.routeKey = "ipad-browser"
         delegate = self
         primaryEdge = .leading
         preferredSplitBehavior = .tile
         showsSecondaryOnlyButton = false
         displayModeButtonVisibility = .never
         browserNavigation.navigationBar.prefersLargeTitles = true
+        host.navigationItem.largeTitleDisplayMode = .never
+        editorNavigation.navigationBar.prefersLargeTitles = true
         presentsWithGesture = true
         setViewController(browserNavigation,for: .primary)
         setViewController(editorNavigation,for: .secondary)
@@ -116,7 +122,11 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
 
     func detailRoutes(_ next: FeiNavigationState) -> [FeiNavigationState.Route] {
         let routes = next.routes.filter { $0.key != "notes" && $0.key != "shared" && !$0.key.hasPrefix("folder:") }
-        return routes.isEmpty ? [.init(key: "detail-empty",title: "")] : routes
+        let empty = FeiNavigationState.Route(key: "detail-empty",title: "")
+        if routes.isEmpty || ["settings:SharedSync","settings:SharedFolderAccess","settings:Cloud"].contains(routes[0].key) {
+            return [empty] + routes
+        }
+        return routes
     }
 
     func update(_ next: FeiNavigationState,coordinator: FeiNavigationCoordinator) {
@@ -128,6 +138,7 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         overrideUserInterfaceStyle = appearance
         view.tintColor = theme.accentColor
         if previousTheme != next.theme || previousAppearance != next.appearance {
+        browserNavigation.view.backgroundColor = theme.workspaceListColor
         for navigation in [browserNavigation,editorNavigation] {
             navigation.view.tintColor = theme.accentColor
             navigation.navigationBar.tintColor = theme.accentColor
@@ -147,17 +158,33 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
             page.routeKey = route.key
             page.isWorkspaceBrowser = true
             page.title = route.title
+            page.configureNavigationTitleMode()
             return page
         }
+        let title = next.browser?.title ?? next.labels["sharing"]
+        controllers.last?.title = title
+        controllers.last?.navigationItem.title = title
         if let destination = controllers.last, browserNavigation.viewControllers.map(ObjectIdentifier.init) != controllers.map(ObjectIdentifier.init) {
             destination.updateListing(next.browser?.listing,labels: next.labels,busy: next.busy,coordinator: coordinator)
-            let animated = previous != nil && next.browser?.personal == previous?.browser?.personal && primaryVisible && !UIAccessibility.isReduceMotionEnabled
-            browserNavigation.setViewControllers(controllers,animated: animated)
+            let from = browserNavigation.viewControllers
+            let animated = previous != nil && primaryVisible && !UIAccessibility.isReduceMotionEnabled
+                && browserNavigation.transitionCoordinator == nil
+            let prefix = zip(from,controllers).allSatisfy { $0.0 === $0.1 }
+            if animated && prefix && controllers.count == from.count + 1 {
+                browserNavigation.pushViewController(destination,animated: true)
+                #if FEI_MOBILE_QA
+                lastFolderTransition = browserNavigation.transitionCoordinator?.isAnimated == true ? "animated push" : "push without animation"
+                #endif
+            } else if animated && prefix && controllers.count < from.count {
+                browserNavigation.popToViewController(destination,animated: true)
+                #if FEI_MOBILE_QA
+                lastFolderTransition = browserNavigation.transitionCoordinator?.isAnimated == true ? "animated pop" : "pop without animation"
+                #endif
+            } else {
+                browserNavigation.setViewControllers(controllers,animated: false)
+            }
             browserNavigation.interactivePopGestureRecognizer?.isEnabled = false
         }
-        browser.title = next.browser?.title ?? next.labels["sharing"]
-        browser.navigationItem.title = browser.title
-        browser.navigationItem.largeTitleDisplayMode = .always
         browser.updateListing(next.browser?.listing,labels: next.labels,busy: next.busy,coordinator: coordinator)
         if let list = browser.notesList {
             list.browsesWorkspace = true
@@ -178,8 +205,30 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         let close = items.filter { $0.accessibilityIdentifier == "fei.notes.search-close" }
         let more = items.first { $0.accessibilityIdentifier == "fei.library-actions" } ?? coordinator.browserActionsItem()
         more.isEnabled = !next.busy
+        #if FEI_MOBILE_QA
+        if ProcessInfo.processInfo.environment["FEI_QA_FOLDER_TRANSITIONS"] == "1" {
+            more.accessibilityValue = lastFolderTransition
+        }
+        #endif
         let dismiss = items.first { $0.accessibilityIdentifier == "fei.ipad.dismiss-sidebar" }
-        let trailing = close+[more]+(usesOverlay && !isCollapsed ? [dismiss ?? sidebarDismissButton()] : [])
+        var actions = [more]
+        // The browser may stay open while switching between unrelated document sessions.
+        if let share = coordinator.folderShareItem(next,browser: true) {
+            if next.browser?.folder == previous?.browser?.folder,
+               next.browser?.personal == previous?.browser?.personal,
+               next.folder_access == previous?.folder_access,
+               next.appearance == previous?.appearance,next.theme == previous?.theme,
+               let existing = items.first(where: { $0.accessibilityIdentifier == "fei.folder.share" }) {
+                existing.isEnabled = !next.busy
+                actions.append(existing)
+            } else { actions.append(share) }
+        }
+        if !isCollapsed && close.isEmpty && coordinator.showsComposeShortcut {
+            composeItem.tintColor = (next.theme ?? .system).accentColor
+            coordinator.configureListCompose(composeItem)
+            actions.append(composeItem)
+        }
+        let trailing = close+actions+(usesOverlay && !isCollapsed ? [dismiss ?? sidebarDismissButton()] : [])
         if browser.notesList?.isSelecting != true && browser.notesList?.tableView.isEditing != true && browser.navigationItem.rightBarButtonItems?.map(ObjectIdentifier.init) != trailing.map(ObjectIdentifier.init) { browser.navigationItem.rightBarButtonItems = trailing }
         browser.notesList?.configureSearch(in: browser,expanded: !isCollapsed)
         empty.text = next.labels["select-note"]
@@ -210,14 +259,7 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         updateSidebarButton(state)
         controller.navigationItem.leftItemsSupplementBackButton = !settingsRoot && (controller.navigationController?.viewControllers.count ?? 0) > 1
         if controller.navigationItem.leftBarButtonItem !== focusItem { controller.navigationItem.leftBarButtonItems = [focusItem] }
-        if ordinaryDetail && state.can_create {
-            composeItem.tintColor=(state.theme ?? .system).accentColor
-            composeItem.accessibilityLabel = state.labels["new"]; composeItem.isEnabled = coordinator.allowsCompose
-            var items = (controller.navigationItem.rightBarButtonItems ?? []).filter { $0.accessibilityIdentifier != "fei.new" }
-            let position = items.first?.accessibilityIdentifier == "fei.edit.done" ? 1 : 0
-            items.insert(composeItem,at: position)
-            if controller.navigationItem.rightBarButtonItems?.map(ObjectIdentifier.init) != items.map(ObjectIdentifier.init) { controller.navigationItem.rightBarButtonItems = items }
-        }
+
     }
 
     private func updateSidebarButton(_ state: FeiNavigationState) {
@@ -229,7 +271,7 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
 
     private func returnToBrowserParent() {
         guard let browser = state?.browser,browser.folder != nil,state?.busy == false,browser.listing.selection == nil else { return }
-        let target = browser.path.dropLast().last?.key ?? (browser.shared ? "shared" : "all")
+        let target = browser.path.dropLast().last?.key ?? (!browser.personal ? "shared-origin" : browser.shared ? "shared" : "all")
         editor.navigationCoordinator?.send("browse-scope",value: target,scope: browser.listing.scope)
     }
 

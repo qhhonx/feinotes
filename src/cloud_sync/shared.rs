@@ -63,7 +63,7 @@ pub(crate) fn select_session(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn account(root: &Path) -> Result<String> {
+pub(super) fn account(root: &Path) -> Result<String> {
     let marker = fs::read_to_string(root.join(".cloud-restore-ready"))?;
     let key = marker.lines().next().context("Missing library account")?;
     ensure!(key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit()), "Invalid library account");
@@ -263,7 +263,7 @@ impl<'a> Command<'a> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Member {
     pub id: String,
     pub name: String,
@@ -280,10 +280,12 @@ impl Audience {
     pub fn can_invite(self) -> bool { matches!(self, Self::Invited | Self::LinkDraft) }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Reply {
     scope: Option<Scope>,
     title: Option<String>,
+    #[serde(default, rename = "ownerName")]
+    owner_name: Option<String>,
     pub url: Option<String>,
     #[serde(default)]
     pub audience: Audience,
@@ -293,6 +295,8 @@ pub(crate) struct Reply {
     error_kind: Option<String>,
     #[serde(rename = "ownedRooms")]
     owned_rooms: Option<Vec<Room>>,
+    #[serde(rename = "verifiedAccess", default, skip_serializing_if = "Option::is_none")]
+    verified_access: Option<Access>,
 }
 
 #[cfg(feature = "devtools")]
@@ -431,7 +435,30 @@ pub(crate) fn accept(personal: &Path, url: &str) -> Result<Room> {
     let room = descriptor(&root)?.unwrap_or_else(|| Room { scope: scope.clone(), title: reply.title.unwrap_or_default() });
     ensure!(room.scope == scope, "Conflicting shared document");
     stage(personal, &room, None)?;
+    if room.scope.owner.is_some() && let Some(name) = super::presence::display_name(reply.owner_name.as_deref()) {
+        // This optional, locally cached label must never fail an accepted invitation.
+        let _ = fs::write(root.join("shared-owner-name"), name.as_bytes());
+    }
     Ok(room)
+}
+
+pub(crate) fn access_summary(room: &Room, cx: &gpui::App) -> (Option<gpui::SharedString>, Option<Access>) {
+    let Ok(root) = room_root(&Store::root_dir(), &room.scope.note) else { return (None,None) };
+    let access = super::session(&root,cx).and_then(|session| session.journal.access()).or_else(|| {
+        let db = rusqlite::Connection::open_with_flags(root.join(crate::store::SQLITE_FILE),rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+        cached_access(&db)
+    });
+    (owner_display_name(&root),access)
+}
+
+pub(super) fn cached_access(db: &rusqlite::Connection) -> Option<Access> {
+    let value: Vec<u8> = db.query_row("SELECT value FROM state WHERE key = 'shared_access'", [], |row| row.get(0)).ok()?;
+    serde_json::from_slice(&value).ok()
+}
+
+pub(crate) fn owner_display_name(root: &Path) -> Option<gpui::SharedString> {
+    let name = fs::read_to_string(root.join("shared-owner-name")).ok()?;
+    super::presence::display_name(Some(&name))
 }
 
 pub(crate) fn rooms(personal: &Path) -> Result<Vec<Room>> {
@@ -565,11 +592,7 @@ pub(crate) fn launch(room: &Room, cx: &mut gpui::App) -> gpui::Task<Result<()>> 
 pub(crate) fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
     room.scope.validate()?;
     let personal = Store::root_dir();
-    ensure!(!crate::cloud_restore::local_only() && !personal.join("require-account-verification").exists(),
-        "{}", crate::settings::tr("请先在文档库设置中重新连接 iCloud。", "Reconnect to iCloud in Documents settings first."));
-    ensure!(super::status(&personal, cx).is_some_and(|s| !s.access_paused && !matches!(s.phase,
-        super::SyncPhase::AccountChecking | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut)),
-        "{}", crate::settings::tr("请先确认 iCloud 账户和云功能状态。", "Check your iCloud account and cloud access first."));
+    check_room_account(&personal, cx)?;
     let root = room_root(&personal, &room.scope.note)?;
     if !root.exists() && original::is_original(&personal, room)? {
         stage(&personal, room, None)?;
@@ -600,12 +623,51 @@ pub(crate) fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RoomAccount { Ready, Verifying, SignedOut, Changed, AccessRequired, Unavailable }
+
+pub(crate) fn room_account(personal: &Path, cx: &gpui::App) -> RoomAccount {
+    use super::SyncPhase::*;
+    if crate::cloud_restore::local_only() { return RoomAccount::Unavailable; }
+    let Some(status) = super::status(personal, cx) else { return RoomAccount::Unavailable; };
+    match status.phase {
+        SignedOut => RoomAccount::SignedOut,
+        AccountChanged => RoomAccount::Changed,
+        _ if status.access_paused || status.phase == SubscriptionRequired => RoomAccount::AccessRequired,
+        Account | AccountChecking => RoomAccount::Verifying,
+        _ if !super::account_is_current(personal, cx) => RoomAccount::Verifying,
+        TestFlightVerification => RoomAccount::Unavailable,
+        _ => RoomAccount::Ready,
+    }
+}
+
 fn check_room_account(personal: &Path, cx: &gpui::App) -> Result<()> {
-    ensure!(!crate::cloud_restore::local_only() && !personal.join("require-account-verification").exists(),
-        "{}", crate::settings::tr("请先在文档库设置中重新连接 iCloud。", "Reconnect to iCloud in Documents settings first."));
-    ensure!(super::status(personal, cx).is_some_and(|s| !s.access_paused && !matches!(s.phase,
-        super::SyncPhase::AccountChecking | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut)),
-        "{}", crate::settings::tr("请先确认 iCloud 账户和云功能状态。", "Check your iCloud account and cloud access first."));
+    ensure!(room_account(personal, cx) == RoomAccount::Ready, "{}", crate::settings::tr(
+        "请先确认 iCloud 账户和云功能状态。", "Check your iCloud account and cloud access first."));
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct VerifiedRoomAccess { access: Access, revision: u64 }
+
+pub(crate) fn verify_room_access(personal: &Path, room: &Room) -> Result<VerifiedRoomAccess> {
+    let revision = super::account_revision();
+    let reply = Command::new(&account(personal)?, "checkRoomAccess", Some(&room.scope))?.send()?;
+    ensure!(reply.scope.as_ref() == Some(&room.scope), "CloudKit returned the wrong sharing scope");
+    let access = reply.verified_access.filter(|access| *access != Access::Revoked).context("Missing shared access")?;
+    super::check_account_revision(revision)?;
+    Ok(VerifiedRoomAccess { access, revision })
+}
+
+pub(crate) fn apply_verified_room_access(store: &crate::shared_store::SharedStore, verified: VerifiedRoomAccess, cx: &mut gpui::App) -> Result<()> {
+    super::check_account_revision(verified.revision)?;
+    let root = store.root();
+    ensure!(access(store,cx) != Some(Access::Revoked), "Shared access has ended or changed");
+    // Apply a restrictive change before opening the cache. The normal exchange owns upgrades.
+    if verified.access == Access::ReadOnly && super::journal_mut(root,cx).restrict_to_read_only()? {
+        let root = root.to_path_buf();
+        cx.defer(move |cx| crate::app::cloud_notes_changed(&root, &[], false, cx));
+    }
     Ok(())
 }
 
@@ -613,6 +675,7 @@ fn check_room(personal: &Path, root: &Path, room: &Room) -> Result<()> {
     ensure!(!root.join("shared-note-ended").exists(), "This shared document has been removed");
     ensure!(descriptor(root)?.is_some_and(|saved| saved.scope == room.scope) && account(root)? == account(personal)?,
         "Shared document belongs to another library");
+    ensure!(!original::new_pending(personal, root, room)?, "The invitation is still pending");
     ensure!(!original::awaiting_publication(personal, room), "{}", crate::settings::tr("请从原位置打开并完成共享邀请。", "Open the original item to finish sharing."));
     Ok(())
 }
@@ -724,6 +787,15 @@ pub(crate) fn access(store: &crate::shared_store::SharedStore, cx: &gpui::App) -
 pub(crate) fn editing_paused(store: &crate::shared_store::SharedStore, cx: &gpui::App) -> bool {
     store.is_shared() && super::status(store.root(), cx).is_some_and(|status| status.access_paused
         || matches!(status.phase, super::SyncPhase::AccountChecking | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn live_room_writable(room: &Room, cx: &gpui::App) -> Option<bool> {
+    let root = room_root(&Store::root_dir(), &room.scope.note).ok()?;
+    let session = super::session(&root, cx)?;
+    Some(scope(&session.store, cx) == Some(&room.scope)
+        && access(&session.store, cx).is_some_and(Access::can_write)
+        && !editing_paused(&session.store, cx))
 }
 
 #[cfg(target_os = "ios")]
@@ -1070,7 +1142,19 @@ mod tests {
         fs::write(personal_asset,b"shared attachment fixture")?;
         let writable_root = stage(&personal,&writable,Some((&doc,"")))?;
         fs::write(writable_root.join("seed-published"),b"1")?;
-        fs::write(output.join("fixture.json"),serde_json::to_vec(&serde_json::json!({ "personal_note": personal_note,"readonly": guest,"writable": writable }))?)?;
+        let mut personal_store = Store::open_sqlite_at(personal.clone())?;
+        let folder = personal_store.create_folder("FEI_SHARED_FOLDER", None)?;
+        let nested = personal_store.create_folder("FEI_SHARED_CHILD_FOLDER", Some(&folder))?;
+        let child = personal_store.create_from_in(&Document {
+            title: crate::model::RichText::plain("FEI_SHARED_FOLDER_DOCUMENT"), ..Default::default()
+        }, Some(&nested))?;
+        drop(personal_store);
+        let shared_folder = original::prepare_local(&personal, &folder, "FEI_SHARED_FOLDER".into(), false)?;
+        fs::write(room_root(&personal,&folder)?.join("seed-published"), b"1")?;
+        fs::write(output.join("fixture.json"),serde_json::to_vec(&serde_json::json!({
+            "personal_note": personal_note, "readonly": guest, "writable": writable,
+            "folder": shared_folder, "nested_folder": nested, "folder_document": child,
+        }))?)?;
         Ok(())
     }
 

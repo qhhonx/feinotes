@@ -70,7 +70,7 @@ func shareAccount(_ container: CKContainer, expected: String) async throws {
     do { account = try await container.userRecordID().recordName }
     catch let error as CKError where error.code == .notAuthenticated {
         let status = try? await container.accountStatus()
-        if status == .noAccount || status == .restricted { throw ShareError.signedOut }
+        if status == .noAccount { throw ShareError.signedOut }
         throw error
     }
     let hash = SHA256.hash(data: Data(account.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -242,6 +242,8 @@ private struct ShareReply: Encodable {
     var error: String?
     var errorKind: String?
     var ownedRooms: [OwnedRoom]?
+    var ownerName: String?
+    var verifiedAccess: ShareAccess?
 }
 
 private struct OwnedRoom: Encodable {
@@ -361,13 +363,13 @@ private func acceptShare(_ value: String, container: CKContainer, revision: UInt
             throw ShareError.unavailableLink
         }
     }
-    if metadata.participantRole == .owner || metadata.participantStatus == .accepted {
-        return ShareReply(scope: scope, title: title)
-    }
+    let ownerName = scope.owner == nil ? nil : metadata.ownerIdentity.nameComponents.map { PersonNameComponentsFormatter().string(from: $0) }
+    let reply = ShareReply(scope: scope, title: title, ownerName: ownerName)
+    if metadata.participantRole == .owner || metadata.participantStatus == .accepted { return reply }
     guard metadata.participantStatus == .pending else { throw ShareError.deniedLink }
     try checkCloudAccountRevision(revision)
     _ = try await container.accept(metadata)
-    return ShareReply(scope: scope, title: title)
+    return reply
 }
 
 private func manageShare(_ request: ShareRequest, revision: UInt64, trace: ShareTrace?) async throws -> ShareReply {
@@ -383,6 +385,13 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
     try checkCloudAccountRevision(revision)
     trace?.event("accountAndAccess", "ok")
     if request.action == "checkAccess" { return ShareReply() }
+    if request.action == "checkRoomAccess" {
+        guard let scope = request.scope else { throw ShareError.invalid }
+        let access = try await shareAccess(shareDatabase(container, scope), scope, in: scope.zone())
+        try checkCloudAccountRevision(revision)
+        guard access != .revoked else { throw ShareError.deniedLink }
+        return ShareReply(scope: scope, verifiedAccess: access)
+    }
     if request.action == "discoverOwned" {
         return ShareReply(ownedRooms: try await discoverOwned(container.privateCloudDatabase,
             known: Set(request.knownOwned ?? []), revision: revision))

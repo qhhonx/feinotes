@@ -1,0 +1,25 @@
+diff --git a/src/ios/text_system.rs b/src/ios/text_system.rs
+--- a/src/ios/text_system.rs
++++ b/src/ios/text_system.rs
+@@ -364,6 +364,21 @@
+ 
+     fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
+         let font = &self.fonts[params.font_id.0];
++        if params.is_emoji {
++            // Bitmap strikes depend on point size. Measure the same CTFont
++            // and strike that rasterize_glyph draws, rather than scaling the base strike.
++            let rect = font.native_font()
++                .clone_with_font_size(f32::from(params.font_size) as CGFloat)
++                .get_bounding_rects_for_glyphs(
++                    core_text::font_descriptor::kCTFontDefaultOrientation,
++                    &[params.glyph_id.0 as CGGlyph],
++                );
++            let rect = RectF::new(
++                Vector2F::new(rect.origin.x as f32, -(rect.origin.y + rect.size.height) as f32),
++                Vector2F::new(rect.size.width as f32, rect.size.height as f32),
++            );
++            return Ok(recti_to_bounds_device_pixels((rect * params.scale_factor).round_out().to_i32()));
++        }
+         let scale = Transform2F::from_scale(params.scale_factor);
+         Ok(recti_to_bounds_device_pixels(font.raster_bounds(
+             params.glyph_id.0,

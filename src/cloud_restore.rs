@@ -43,6 +43,24 @@ fn request(action: i32, path: Option<&Path>, scope: Option<&str>) -> Result<Repl
     Ok(reply)
 }
 
+#[cfg(feature = "cloudkit-sync")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnableCheck { Ready, SignedOut, AccessRequired, Unavailable }
+
+#[cfg(feature = "cloudkit-sync")]
+pub(crate) fn check_enable() -> EnableCheck {
+    #[cfg(feature = "devtools")]
+    let channel = crate::cloud_trial::test_channel().ok().flatten();
+    #[cfg(not(feature = "devtools"))]
+    let channel: Option<String> = None;
+    match request(11,None,channel.as_deref()).ok().and_then(|reply|reply.source).as_deref() {
+        Some("ready") => EnableCheck::Ready,
+        Some("signedOut") => EnableCheck::SignedOut,
+        Some("accessRequired") => EnableCheck::AccessRequired,
+        _ => EnableCheck::Unavailable,
+    }
+}
+
 #[cfg(all(test, feature = "cloudkit-sync"))]
 #[test]
 fn local_fallback_keeps_the_reason_from_the_swift_bridge() -> Result<()> {

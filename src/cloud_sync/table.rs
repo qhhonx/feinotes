@@ -242,6 +242,30 @@ fn render_spans(grid: &LoroMap, table: &mut Table) -> Result<()> {
     Ok(())
 }
 
+// The owner index includes removed cells that can still receive offline
+// updates. Also check the legacy payload, which can be read by older peers.
+pub(super) fn branch_ids(doc: &LoroDoc, id: BlockId, legacy: &str) -> Result<Option<HashSet<BlockId>>> {
+    let mut block = serde_json::from_str::<Payload>(legacy)?.decode(id)?;
+    if !matches!(block.kind, BlockKind::Table(_)) { return Ok(None); }
+    let mut ids = HashSet::new();
+    for projected in [false, true] {
+        if projected { render(doc, legacy, &mut block)?; }
+        let BlockKind::Table(table) = &block.kind else { unreachable!() };
+        // Cell descendants can share text containers not tracked by owners.
+        let mut current = HashSet::from([id, BlockId(0)]);
+        for cell in table.rows.iter().flatten() {
+            for child in &cell.blocks {
+                if !child.children.is_empty() || matches!(child.kind, BlockKind::Table(_)) || !current.insert(child.id) {
+                    return Ok(None);
+                }
+                ids.insert(child.id);
+            }
+        }
+    }
+    for key in owners(doc, &key(id, legacy)).keys() { ids.insert(BlockId(key.parse()?)); }
+    Ok(Some(ids))
+}
+
 pub(super) fn render(doc: &LoroDoc, legacy: &str, block: &mut Block) -> Result<()> {
     let key = key(block.id, legacy);
     let store = grid(doc, &key);

@@ -30,10 +30,11 @@ pub(crate) fn project(w: &Workspace,cx: &App) -> Option<serde_json::Value> {
     let title = path.last().map(|(_,title)|title.clone()).unwrap_or_else(||tr("主页","Home").into());
     let path = path.into_iter().map(|(id,title)|serde_json::json!({"key":format!("folder:{id}"),"title":title})).collect::<Vec<_>>();
     let query = w.query(cx);
-    let rows = entries(w,cx).into_iter().map(|entry|serde_json::json!({"id":entry.id,"title":display_title(&entry.title),"folder":entry.meta.folder.is_some(),"pinned":entry.meta.pinned,"reorderable":w.mobile_row_reorderable(&entry,cx),
+    let rows = entries(w,cx).into_iter().map(|entry|serde_json::json!({"id":entry.id,"title":display_title(&entry.title),"folder":entry.meta.folder.is_some(),"pinned":entry.meta.pinned,"reorderable":w.mobile_row_reorderable(&entry),
+        "shared_badge":!w.mobile_shared_list_context(cx) && w.published_document_share(&entry,cx),"shared_folder":w.mobile_folder_share_mark(&entry,cx),"unread_update":shared && w.shared_document_unread(&entry.id,cx),
         "summary":if entry.meta.folder.is_some() { String::new() } else { crate::mobile::list_summary(&entry.body,&query) }})).collect::<Vec<_>>();
-    Some(serde_json::json!({"folder":folder,"favorites":w.home.tab==crate::home::HomeTab::Starred,"shared":shared,"personal":personal,"title":title,"path":path,
-        "listing":{"kind":if shared { "shared" } else { "notes" },"can_select":w.mobile_can_select(cx),"can_sort":w.mobile_can_sort(cx),"can_reorder":w.mobile_can_reorder(cx),"selection":w.mobile_batch_state(cx),"shared_count":w.shared_entries(cx).len(),"notice_kind":w.toast.as_ref().map(|(kind,_,_)|match kind { crate::ui::ToastKind::Success=>"success",crate::ui::ToastKind::Error=>"error",crate::ui::ToastKind::Info=>"info" }),"interface_size":settings::prefs().ui_font,"notice":w.toast.as_ref().filter(|(_,_,time)|time.elapsed().as_secs_f32()<3.).map(|(_,text,_)|text.to_string()),"scope":scope(w,cx),"query":w.search.read(cx).text,"tab":match w.home.tab { crate::home::HomeTab::Starred=>1,crate::home::HomeTab::Shared=>2,_=>0 },"tabs":folder.is_none() && query.is_empty() && personal,
+    Some(serde_json::json!({"folder":folder,"favorites":w.home.tab==crate::home::HomeTab::Starred,"shared":shared,"personal":personal,"can_create":if personal { !shared && w.home.tab == crate::home::HomeTab::Recent } else { w.can_create_in_shared_folder(folder.as_deref(),cx) },"title":title,"path":path,
+        "listing":{"kind":if shared { "shared" } else { "notes" },"can_select":w.mobile_can_select(cx),"can_sort":w.mobile_can_sort(cx),"can_reorder":w.mobile_can_reorder(cx),"shared_create":shared && folder.is_none() && query.is_empty() && !crate::cloud_restore::local_only(),"sort_rule":w.mobile_sort_key(),"folders_first":w.mobile_folders_first(cx),"selection":w.mobile_batch_state(cx),"shared_count":w.shared_entries(cx).len(),"notice_kind":w.toast.as_ref().map(|(kind,_,_)|match kind { crate::ui::ToastKind::Success=>"success",crate::ui::ToastKind::Error=>"error",crate::ui::ToastKind::Info=>"info" }),"interface_size":settings::prefs().ui_font,"notice":w.toast.as_ref().filter(|(_,_,time)|time.elapsed().as_secs_f32()<3.).map(|(_,text,_)|text.to_string()),"scope":scope(w,cx),"query":w.search.read(cx).text,"tab":match w.home.tab { crate::home::HomeTab::Starred=>1,crate::home::HomeTab::Shared=>2,_=>0 },"tabs":folder.is_none() && query.is_empty() && personal,
         "empty":if !query.is_empty() { tr("没有找到匹配的结果","No matching documents") } else if w.home.tab==crate::home::HomeTab::Starred { tr("暂无收藏文档","No favorite documents yet") } else if w.home.tab==crate::home::HomeTab::Shared { tr("暂无共享文档。你可以从菜单接受邀请，或邀请他人一起编辑文档。","No shared documents yet. Accept an invitation from the menu, or invite someone to edit a document with you.") } else { tr("点新建按钮创建文档","Tap New to start a document") },"rows":rows}}))
 }
 
@@ -69,6 +70,11 @@ pub(crate) fn command(w:&mut Workspace,action:&str,value:Option<&str>,id:Option<
     if unsafe { crate::ipad::fei_ios_is_phone() } || w.library_switching || w.store.file_task_busy() || w.file_history.busy
         || w.confirm.is_some() || expected!=Some(scope(w,cx).as_str()) { return; }
     match action {
+        "browse-scope" if value == Some("shared-origin") => {
+            if w.current_room(cx).is_some_and(|room|room.scope.folder && w.folder_current.as_ref() == Some(&room.scope.note)) {
+                w.mobile_return_from_share(window,cx);
+            }
+        }
         "browse-scope"=>if let Some(value)=value { select_scope(w,value.into(),window,cx); },
         "browse-search"=>if let Some(value)=value {
             w.search.update(cx,|field,cx|field.set_text(value,cx));
@@ -77,7 +83,7 @@ pub(crate) fn command(w:&mut Workspace,action:&str,value:Option<&str>,id:Option<
         },
         "browse-open"=>if let Some(id)=id { if let Some(entry)=entries(w,cx).iter().find(|e|e.id==id) { if entry.meta.folder.is_some() && w.shared_list_room(id,cx).is_none() { select_scope(w,format!("folder:{id}"),window,cx); } else { w.mobile_open_entry(id,window,cx); } } },
         "browse-new-folder"=>if let Some(name)=value.map(str::trim).filter(|v|!v.is_empty()) {
-            if (!w.is_shared() || w.mobile_personal_browser(cx)) && w.home.shared() { return; }
+            if (!w.is_shared() || w.mobile_personal_browser(cx)) && w.home.tab!=crate::home::HomeTab::Recent { return; }
             if w.mobile_personal_browser(cx) {
                 let name=name.to_owned(); let id=id.map(str::to_owned);
                 w.personal_action(window,cx,move|w,window,cx|{ let expected=scope(w,cx); command(w,"browse-new-folder",Some(&name),id.as_deref(),Some(&expected),window,cx); });
@@ -88,9 +94,14 @@ pub(crate) fn command(w:&mut Workspace,action:&str,value:Option<&str>,id:Option<
         },
         "browse-import" if !w.is_shared() || w.mobile_personal_browser(cx) =>
             w.personal_action(window,cx,|w,window,cx|w.open_import(window,cx)),
-        "browse-compose"=>if w.mobile_personal_browser(cx) {
-            w.personal_action(window,cx,|w,window,cx|w.create_doc(false,w.folder_current.clone(),window,cx));
-        } else { w.create_doc(false,w.folder_current.clone(),window,cx); },
+        "browse-compose" if w.mobile_personal_browser(cx) => {
+            let parent = (w.home.tab==crate::home::HomeTab::Recent).then(||w.folder_current.clone()).flatten();
+            w.personal_action(window,cx,move|w,window,cx|w.create_doc(false,parent,window,cx));
+        }
+        "browse-compose" => {
+            let parent = if w.is_shared() || w.home.tab==crate::home::HomeTab::Recent { w.folder_current.clone() } else { None };
+            w.create_doc(false,parent,window,cx);
+        }
         _=>{}
     }
 }

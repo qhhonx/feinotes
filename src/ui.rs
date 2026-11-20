@@ -25,13 +25,13 @@ pub(crate) fn share_toolbar_icon() -> AnyElement {
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 pub(crate) fn participants_icon(feishu: bool) -> AnyElement {
     let color = toolbar_color("toolbar.button.color").unwrap_or_else(Theme::icon);
-    if cfg!(target_os = "macos") && feishu { return svg().path("editor-icons/user.svg").size(px(18.)).flex_none().text_color(color).into_any_element(); }
+    if cfg!(target_os = "macos") && feishu { return icon("shared-document", 18., color).into_any_element(); }
     #[cfg(target_os = "ios")]
-    return svg().path("editor-icons/user.svg").size(px(20.)).text_color(color).into_any_element();
+    return icon("shared-document", 20., color).into_any_element();
     #[cfg(target_os = "macos")]
     match system_toolbar_symbol(c"person.2.circle", color) {
         Some(image) => img(image).size(px(22.)).object_fit(ObjectFit::Contain).flex_none().into_any_element(),
-        None => svg().path("editor-icons/user.svg").size(px(20.)).text_color(color).into_any_element(),
+        None => icon("shared-document", 20., color).into_any_element(),
     }
 }
 

@@ -1,0 +1,8 @@
+Fei Notes 1.0.8 (1020) for iPhone and iPad
+
+• Added a dedicated iCloud page in Settings for account and sync status.
+• Simplified sharing permissions and accepting invitations, and improved navigation back from documents and folders.
+• Refined the iPad editor toolbar. Create documents from the list and find block actions in the editor controls.
+• Fixed clipped checklist emoji and incorrect orientation when inserting some photos from the library.
+
+Update your test devices to this round before checking iCloud sync, invitations, and the one- and two-column layouts on iPad.

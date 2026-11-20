@@ -11,7 +11,114 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
     ensure!(handles.len() == 1, "Sharing navigation created a second window");
     let primary = handles[0];
     primary.update(cx, |_, window, _| crate::devtools::select_script_window(window))?;
+    if name.starts_with("folder-sidebar-") { return folder_sidebar_step(name, &root, primary, cx); }
     match name {
+        name if name.starts_with("personal-sync-") => primary.update(cx, |ws,window,cx| -> Result<()> {
+            if let Some(phase) = name.strip_prefix("personal-sync-").and_then(cloud_sync::personal_status_fixture) {
+                ensure!(root.join("pause-cloud").is_file(), "Expected a paused synthetic cloud session");
+                cloud_sync::fixture_status(&personal,phase,cx);
+            } else {
+                ensure!(name == "personal-sync-page","Unknown personal sync fixture");
+            }
+            ws.open_cloud_settings(window,cx);
+            Ok(())
+        })??,
+        "shared-sync-settings-panel" | "shared-sync-settings-open" | "shared-sync-settings-back" =>
+            primary.update(cx, |ws,window,cx| -> Result<()> {
+                ensure!(ws.is_shared(), "Expected the synthetic shared workspace");
+                match name {
+                    "shared-sync-settings-panel" => {
+                        cloud_sync::fixture_status(ws.store.root(),cloud_sync::SyncPhase::SignedOut,cx);
+                        ws.open_shared_sync(window,cx);
+                    }
+                    "shared-sync-settings-open" => {
+                        ws.open_cloud_settings_from_share(window,cx);
+                        ensure!(ws.view == View::Settings && ws.settings_page == settings::Page::Cloud
+                            && ws.cloud_settings_from_share, "Expected contextual iCloud settings");
+                    }
+                    _ => {
+                        ws.close_settings(cx);
+                        ensure!(ws.view == View::Doc && ws.sharing.sync_panel_open, "Shared sync panel did not reopen");
+                        eprintln!("SHARED_SYNC_SETTINGS_RETURN_OK");
+                    }
+                }
+                Ok(())
+            })??,
+        "account-open-wait" | "account-open-denied" => primary.update(cx, |ws,window,cx| -> Result<()> {
+            ensure!(!ws.is_shared(), "Expected a personal workspace");
+            let rooms: Vec<Room> = serde_json::from_slice(&std::fs::read(root.join("qa-session-rooms.json"))?)?;
+            cloud_sync::fixture_status(&personal,cloud_sync::SyncPhase::AccountChecking,cx);
+            std::fs::write(personal.join("require-account-verification"),[])?;
+            if name.ends_with("denied") { std::fs::write(root.join("qa-room-access-denied"),[])?; }
+            let room = rooms[1].clone();
+            ws.open_shared_item_interactive(room.clone(),room.scope.note.clone(),None,window,cx);
+            ensure!(ws.sharing.account_open.is_some() && !ws.is_shared(), "The share opened before account verification");
+            Ok(())
+        })??,
+        "account-open-verify" => shared::session_qa::confirm_account_check(cx)?,
+        "account-open-cancel" => primary.update(cx, |ws,_,cx| ws.show_view(View::Trash,cx))?,
+        "account-open-kept-route" => primary.update(cx, |ws,_,_| -> Result<()> {
+            ensure!(!ws.is_shared() && ws.sharing.account_open.is_none(), "The deferred share replaced a newer route");
+            eprintln!("ACCOUNT_OPEN_BLOCKED_OK");
+            Ok(())
+        })??,
+        "account-open-resumed" => primary.update(cx, |ws,_,cx| -> Result<()> {
+            let rooms: Vec<Room> = serde_json::from_slice(&std::fs::read(root.join("qa-session-rooms.json"))?)?;
+            ensure!(ws.current.as_deref() == Some(rooms[1].scope.note.as_str()) && shared::scope(&ws.store,cx) == Some(&rooms[1].scope),
+                "The original shared destination did not resume");
+            ensure!(ws.editor.as_ref().is_some_and(|editor|editor.read(cx).read_only), "The shared document lost read-only access");
+            eprintln!("ACCOUNT_OPEN_RESUMED_OK");
+            Ok(())
+        })??,
+        "sync-badge-open" => primary.update(cx, |ws,window,cx| -> Result<()> {
+            let [id,_,_]: [String;3] = serde_json::from_slice(&std::fs::read(root.join("qa-sidebar-original-ids"))?)?;
+            ws.open(&id,window,cx);
+            Ok(())
+        })??,
+        "sync-badge-light" | "sync-badge-dark" | "sync-badge-notes-light" | "sync-badge-notes-dark" =>
+            primary.update(cx, |ws,_,cx| {
+                let dark = name.ends_with("dark");
+                let feishu = !name.contains("notes");
+                let theme = if feishu { "feishu" } else { "notes" };
+                crate::themes::load(theme,true,||cx.text_system().all_font_names());
+                ws.set_pref(|p| { p.feishu = feishu; p.theme = theme.into();
+                    p.appearance = if dark { "dark" } else { "light" }.into(); },cx);
+            })?,
+        "sync-badge-ready" | "sync-badge-uploading" | "sync-badge-stalled" => primary.update(cx, |ws,_,cx| -> Result<()> {
+            ensure!(ws.is_shared() && ws.view == View::Doc, "Synthetic shared editor expected");
+            let phase = match name {
+                "sync-badge-stalled" => cloud_sync::SyncPhase::Failed,
+                "sync-badge-uploading" => cloud_sync::SyncPhase::Uploading,
+                _ => cloud_sync::SyncPhase::Ready,
+            };
+            cloud_sync::fixture_status(ws.store.root(),phase,cx);
+            let shown = settings::sync_status::shared(ws,cx).context("Shared status missing")?;
+            ensure!(shown.attention == name.ends_with("stalled"),"Incorrect alert visibility for {name}");
+            cx.notify();
+            Ok(())
+        })??,
+        "sync-badge-position" | "sync-badge-check-position" => primary.update(cx, |ws,_,cx| -> Result<()> {
+            let editor = ws.editor.as_ref().context("Synthetic editor missing")?;
+            let view = editor.read(cx);
+            let anchor = ws.sharing.share_bounds.get().context("Shared toolbar anchor missing")?;
+            let position = format!("{:?} {:?} {:?} {:?}",editor.entity_id(),view.content_origin.get(),view.list.logical_scroll_top(),anchor);
+            let saved = root.join("qa-sync-position");
+            if name == "sync-badge-position" { std::fs::write(saved,&position)?; }
+            else { ensure!(position == std::fs::read_to_string(saved)?,"Toolbar or body moved after a sync state change"); }
+            eprintln!("SYNC_BADGE_POSITION_OK {name} {position}");
+            Ok(())
+        })??,
+        "sidebar-entry-click-personal" | "sidebar-entry-click-shared" => {
+            let [id, _, _]: [String; 3] = serde_json::from_slice(&std::fs::read(root.join("qa-sidebar-original-ids"))?)?;
+            let at = primary.read(cx)?.qa_sidebar_point(name.ends_with("shared"), &id, false).context("Original row not rendered")?;
+            cx.update_window(primary.into(), |_, window, cx| {
+                let modifiers = Modifiers::default();
+                window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers }), cx);
+                window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1, first_mouse: false }), cx);
+                window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1 }), cx);
+            })?;
+        }
+        "sidebar-entry-fold-personal" => primary.update(cx, |ws, _, cx| { ws.folded[1] = true; cx.notify(); })?,
         "sidebar-entry-personal" | "sidebar-entry-shared" | "sidebar-entry-none" => primary.update(cx, |ws, _, cx| -> Result<()> {
             let [id, _, _]: [String; 3] = serde_json::from_slice(&std::fs::read(root.join("qa-sidebar-original-ids"))?)?;
             let personal = ws.qa_sidebar_pick(false);
@@ -128,6 +235,23 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             else { ensure!(entity == std::fs::read_to_string(root.join("qa-sidebar-original-editor"))?, "Clicking the displayed original replaced its editor"); }
             Ok(())
         })??,
+        "original-organization" => primary.update(cx, |ws, _, cx| -> Result<()> {
+            let [id, _, _]: [String; 3] = serde_json::from_slice(&std::fs::read(root.join("qa-sidebar-original-ids"))?)?;
+            ensure!(!ws.is_shared(), "Expected the personal workspace");
+            let actual = |ws: &Workspace, cx: &App| ws.shared_entries(cx).into_iter().find(|entry| entry.id == id).unwrap().meta;
+            ws.toggle_star(&id, cx);
+            ws.toggle_shared_organization(&id, true, cx);
+            ensure!(actual(ws, cx).pinned && actual(ws, cx).starred > 0, "Shared list did not see the original's marks");
+            ensure!(ws.favorite_entries(cx).iter().filter(|entry| entry.id == id).count() == 1, "All Favorites must contain one shortcut to the original");
+            ws.toggle_shared_organization(&id, false, cx);
+            ws.toggle_pin(&id, cx);
+            ensure!(!actual(ws, cx).pinned && actual(ws, cx).starred == 0, "Removing marks from either route left a duplicate");
+            ensure!(!ws.favorite_entries(cx).iter().any(|entry| entry.id == id), "Cleared favorite is still visible");
+            let entry = ws.store.list().into_iter().find(|entry| entry.id == id).context("Missing personal original")?;
+            ensure!(!entry.meta.pinned && entry.meta.starred == 0, "Original's marks were not cleared on disk");
+            eprintln!("SHARED_ORIGINAL_ORGANIZATION_OK");
+            Ok(())
+        })??,
         "sidebar-original-other-room" | "sidebar-original-newer-route" => primary.update(cx, |ws, _, cx| -> Result<()> {
             let rooms: Vec<Room> = serde_json::from_slice(&std::fs::read(root.join("qa-session-rooms.json"))?)?;
             ensure!(shared::scope(&ws.store, cx) == Some(&rooms[0].scope) && ws.current.as_ref() == Some(&rooms[0].scope.note), "The other shared document did not stay open");
@@ -182,6 +306,23 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             ws.show_view(View::Home, cx);
             Ok(())
         })??,
+        "show-toolbar-panel" | "hide-toolbar-panel" => primary.update(cx, |ws, _, cx| -> Result<()> {
+            let id = ws.current.as_deref().context("Missing presence fixture")?;
+            let show = name == "show-toolbar-panel";
+            cloud_sync::presence::qa_online(ws.store.root(), id, show, cx);
+            ws.sharing.permissions_only = false;
+            ws.sharing.panel_open = show;
+            cx.notify();
+            Ok(())
+        })??,
+        "check-offline-toolbar" => primary.update(cx, |ws, window, cx| -> Result<()> {
+            ensure!(ws.online_collaborators(cx).is_empty(), "Expected nobody online");
+            ws.sharing.permissions_only = false;
+            ws.sharing.panel_open = true;
+            ensure!(ws.render_sharing_toolbar_panel(window, cx).is_none() && !ws.sharing.panel_open,
+                "The online panel should close when nobody is online");
+            Ok(())
+        })??,
         "check-toolbar-panel" => primary.update(cx, |ws, window, cx| -> Result<()> {
             ensure!(ws.sharing.panel_open && ws.render_sharing_toolbar_panel(window, cx).is_some(), "The participants control did not open the panel");
             Ok(())
@@ -190,17 +331,44 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let shared = name.starts_with("shared");
             let feishu = name.ends_with("feishu");
             ensure!(ws.is_shared() == shared && ws.view == View::Doc && ws.sharing_toolbar(window, cx).is_some(), "Missing document toolbar fixture");
-            ensure!(!shared || ws.online_collaborators(cx).is_empty(), "Expected the participants fallback without anyone else online");
+            ensure!(!shared || ws.online_collaborators(cx).is_empty(), "Expected a sharing control without anyone else online");
             ws.set_pref(|p| { p.appearance = "light".into(); p.feishu = feishu; p.theme = if feishu { "feishu" } else { "notes" }.into(); }, cx);
             ws.reload_themes(cx);
             ensure!(settings::feishu() == feishu, "Sharing toolbar theme did not change");
             Ok(())
         })??,
         "check-shared-add" => primary.update(cx, |w, _, _| -> Result<()> {
-            ensure!(matches!(w.create_menu, Some((crate::folders::CreateTarget::Shared, _))), "Sidebar plus did not open the shared menu"); Ok(())
+            ensure!(matches!(w.create_menu, Some((crate::folders::CreateTarget::SharedSidebar, _))), "Sidebar plus did not open the shared creation menu"); Ok(())
         })??,
         "check-sidebar-invite" => primary.update(cx, |w, _, _| -> Result<()> {
-            ensure!(w.accept_invitation_open() && w.sharing.accept_at == Some("accept-sidebar"), "Sidebar menu did not open the invitation form"); Ok(())
+            ensure!(w.accept_invitation_open() && w.sharing.accept_at == Some("accept-sidebar"), "Sidebar invitation button did not open the invitation form"); Ok(())
+        })??,
+        "home-menu-fixture" | "home-menu-personal" => primary.update(cx, |w, window, cx| -> Result<()> {
+            ensure!(!w.is_shared(), "Expected to capture menus in the personal workspace");
+            w.show_view(if name == "home-menu-fixture" { View::Shared } else { View::Home }, cx);
+            if name == "home-menu-personal" { w.home.tab = crate::home::HomeTab::Recent; }
+            w.sidebar_open = true;
+            w.folded[1] = true;
+            w.sharing.folded = true;
+            w.set_pref(|p| { p.appearance = "light".into(); p.feishu = true; p.theme = "feishu".into(); }, cx);
+            w.reload_themes(cx);
+            crate::gpui_compat::focus(window, &w.focus, cx);
+            Ok(())
+        })??,
+        "check-sidebar-create-shared-document" => primary.update(cx, |w, window, cx| -> Result<()> {
+            ensure!(matches!(w.sharing.sheet, Some(Sheet::CreateNew(false, None))), "Sidebar did not start a shared document");
+            ensure!(w.home.tab == crate::home::HomeTab::Recent, "Sidebar creation unexpectedly changed the Home tab");
+            w.close_sharing(window, cx);
+            eprintln!("SIDEBAR_SHARED_CREATION_OK"); Ok(())
+        })??,
+        "cloud-version-row-fixture" => primary.update(cx, |w, _, cx| -> Result<()> {
+            w.confirm = Some(crate::app::Confirm::CloudVersions {
+                id: String::new(),
+                versions: vec![(3,"2026-11-20 11:23".into(),String::new()), (2,"2026-11-20 11:22".into(),"Version preview fixture".into()), (1,"2026-11-20 11:21".into(),"   ".into())],
+                selected: Some(3),
+            });
+            cx.notify();
+            Ok(())
         })??,
         "collections" => primary.update(cx, |ws, window, cx| -> Result<()> {
             use crate::folders::CreateTarget;
@@ -216,7 +384,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             ws.show_view(View::Shared, cx);
             let count = ws.store.list().len();
             let before = organizer::Organizer::load()?;
-            for target in [CreateTarget::Shared, CreateTarget::Library(None), CreateTarget::Library(Some(parent.clone()))] {
+            for target in [CreateTarget::SharedSidebar, CreateTarget::Library(None), CreateTarget::Library(Some(parent.clone()))] {
                 ws.new_folder(target, Some("Unexpected folder".into()), window, cx);
             }
             ws.rename_collection(room.scope.note.clone(), window, cx);
@@ -237,7 +405,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let doc = ws.store.create_from(&crate::model::Document { title: crate::model::RichText::plain("议程"), ..Default::default() })?;
             ws.store.set_parent(&doc, Some(&nested))?; ws.entries = ws.store.list();
             ws.show_view(View::Shared, cx);
-            ws.expanded.insert(parent.clone()); ws.expanded.insert(child); ws.sharing.collection = Some(parent); ws.sharing.folded = false; cx.notify();
+            ws.sharing.expanded.insert(parent.clone()); ws.sharing.expanded.insert(child); ws.sharing.collection = Some(parent); ws.sharing.folded = false; cx.notify();
             std::fs::write(root.join("qa-team-folder"), &folder)?;
             eprintln!("SHARED_PERSONAL_FOLDER_REMOVAL_OK");
             Ok(())
@@ -255,8 +423,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             ws.open(&child, window, cx);
             let count = ws.store.list().len();
             ws.new_folder(crate::folders::CreateTarget::Library(None), Some("Invalid shared root folder".into()), window, cx);
-            ws.new_folder(crate::folders::CreateTarget::PersonalSidebar(None), Some("Invalid personal folder".into()), window, cx);
-            ensure!(ws.store.list().len() == count && ws.folder_current.as_ref() == Some(&child), "A shared session accepted creation without a valid shared parent");
+            ensure!(ws.store.list().len() == count && ws.folder_current.as_ref() == Some(&child), "A shared session accepted library creation without a valid shared parent");
             ws.create_doc(false, Some(child.clone()), window, cx);
             ensure!(ws.current.as_ref().is_some_and(|id| ws.entries.iter().any(|e| &e.id == id && e.meta.parent.as_ref() == Some(&child))), "New document missed its shared parent");
             ws.open(&child, window, cx);
@@ -558,10 +725,16 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
                     "revoked" => {
                         ensure!(ws.sharing.reply.as_ref().context("Missing members")?.members.is_empty(), "Revocation was not reflected");
                         ws.close_sharing(window, cx);
+                        let id = ws.current.as_deref().context("Missing presence fixture")?;
+                        cloud_sync::presence::qa_online(ws.store.root(), id, true, cx);
+                        ws.sharing.permissions_only = false;
                         ws.sharing.panel_open = true;
+                        cx.notify();
                     }
                     "collaboration" => {
                         ensure!(ws.render_sharing_toolbar_panel(window, cx).is_some(), "Contextual collaboration panel is missing");
+                        let id = ws.current.as_deref().context("Missing presence fixture")?;
+                        cloud_sync::presence::qa_online(ws.store.root(), id, false, cx);
                         ws.sharing.panel_open = false;
                     }
                     _ => unreachable!(),
@@ -598,8 +771,10 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             reader.update(cx, |ws, window, cx| -> Result<()> {
                 crate::devtools::select_script_window(window);
                 ensure!(ws.sharing_access(cx) == Some(Access::ReadOnly) && ws.editor.as_ref().is_some_and(|e| e.read(cx).read_only), "Accepted note lost read-only access");
+                ws.sharing.permissions_only = true;
                 ws.sharing.panel_open = true;
-                ensure!(ws.sharing_toolbar(window, cx).is_some(), "Reader lost the collaboration entry");
+                ensure!(ws.sharing_toolbar(window, cx).is_some(), "Reader lost the sharing access entry");
+                cx.notify();
                 Ok(())
             })??;
         }
@@ -616,5 +791,545 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
         }
         _ => anyhow::bail!("Unknown sharing UI QA step"),
     }
+    Ok(())
+}
+
+fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle<Workspace>, cx: &mut App) -> Result<()> {
+    let ids = root.join("qa-folder-sidebar-ids");
+    if name == "folder-sidebar-setup" {
+        primary.update(cx, |ws, window, cx| -> Result<()> {
+            let owner = ws.store.create_folder("项目共享", None)?;
+            let nested = ws.store.create_folder("会议资料", Some(&owner))?;
+            let document = ws.store.create_from_in(&crate::model::Document { title: crate::model::RichText::plain("已有的议程"), ..Default::default() }, Some(&nested))?;
+            let (received, readonly, empty) = shared::session_qa::readonly_folder(root, &crate::store::Store::root_dir())?;
+            std::fs::write(&ids, serde_json::to_vec(&[owner.clone(), nested.clone(), document, received, readonly, empty])?)?;
+            ws.entries = ws.store.list(); ws.sort();
+            ws.sidebar_open = true; ws.sharing.folded = false; ws.folded[1] = false;
+            ws.expanded.extend([owner.clone(), nested]);
+            ws.create_shared_note(&owner, window, cx);
+            ws.sharing.email.update(cx, |field, cx| field.set_text("participant@example.test", cx));
+            ws.submit_sharing(window, cx);
+            Ok(())
+        })??;
+        return Ok(());
+    }
+    let [owner, nested, document, received, readonly, empty]: [String; 6] = serde_json::from_slice(&std::fs::read(ids)?)?;
+    #[cfg(target_os = "macos")]
+    if let Some(step) = name.strip_prefix("folder-sidebar-create-click-") {
+        let ws = primary.read(cx)?;
+        let bounds = match step {
+            "personal-header" => ws.home.anchor("create-sidebar"),
+            "personal-shortcut" => ws.more_bounds.borrow().get(&format!("add-doc-true-{owner}")).copied(),
+            "shared-shortcut" => ws.more_bounds.borrow().get(&format!("add-shared-folder-true-{owner}")).copied(),
+            "nested-shortcut" => ws.more_bounds.borrow().get(&format!("add-shared-folder-true-{nested}")).copied(),
+            "personal-folder-choice" => ws.create_menu.as_ref().map(|(_, pos)| Bounds::new(
+                point(pos.x + px(12.), pos.y + px(ui::MENU_PAD_Y + ui::MENU_ROW_H * 2.)), size(px(130.), px(ui::MENU_ROW_H)))),
+            _ => anyhow::bail!("Unknown sidebar creation control"),
+        }.context("Sidebar creation control was not rendered")?;
+        let at = bounds.center();
+        cx.update_window(primary.into(), |_, window, cx| {
+            let modifiers = Modifiers::default();
+            window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers }), cx);
+            window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1, first_mouse: false }), cx);
+            window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1 }), cx);
+        })?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(step) = name.strip_prefix("folder-sidebar-consistency-click-") {
+        let ws = primary.read(cx)?;
+        let target = std::fs::read_to_string(root.join("qa-consistency-folder")).unwrap_or_else(|_| nested.clone());
+        let bounds = match step {
+            "personal-more" => ws.more_bounds.borrow().get(&format!("doc-{target}")).copied(),
+            "shared-more" => ws.more_bounds.borrow().get(&format!("shared-folder-{target}")).copied(),
+            "root-more" => ws.more_bounds.borrow().get(&format!("shared-folder-{owner}")).copied(),
+            "shared-create" => ws.more_bounds.borrow().get(&format!("add-shared-folder-false-{target}")).copied(),
+            "delete" => ws.home.anchor("qa-shared-folder-delete"),
+            "confirm" => ws.home.anchor("qa-confirm-ok"),
+            _ => anyhow::bail!("Unknown consistency control"),
+        }.context(format!("Sidebar control {step} was not rendered"))?;
+        let at = bounds.center();
+        cx.update_window(primary.into(), |_, window, cx| {
+            let modifiers = Modifiers::default();
+            window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers }), cx);
+            window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1, first_mouse: false }), cx);
+            window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1 }), cx);
+        })?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(kind) = name.strip_prefix("folder-sidebar-origin-click-home-") {
+        let id = if kind == "document" { std::fs::read_to_string(root.join("qa-new-original-id"))? } else { owner.clone() };
+        let at = primary.read(cx)?.qa_home_card_point(&id).context("Expected a rendered Home card")?;
+        cx.update_window(primary.into(), |_, window, cx| {
+            let modifiers = Modifiers::default();
+            window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers }), cx);
+            window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1, first_mouse: false }), cx);
+            window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1 }), cx);
+        })?;
+        return Ok(());
+    }
+    if let Some(row) = name.strip_prefix("folder-sidebar-click-") {
+        let (in_shared, id, icon) = match row {
+            "owner" => (true, &owner, false),
+            "owner-chevron" => (true, &owner, true),
+            "nested" => (true, &nested, false),
+            "document" => (true, &document, false),
+            "personal-document" => (false, &document, false),
+            "received" => (true, &received, false),
+            "readonly" => (true, &readonly, false),
+            "empty" => (true, &empty, false),
+            _ => anyhow::bail!("Unknown folder sidebar row"),
+        };
+        let at = primary.read(cx)?.qa_sidebar_point(in_shared, id, icon).context("Sidebar row did not render")?;
+        cx.update_window(primary.into(), |_, window, cx| {
+            let modifiers = Modifiers::default();
+            window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers }), cx);
+            window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1, first_mouse: false }), cx);
+            window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1 }), cx);
+        })?;
+        return Ok(());
+    }
+    if matches!(name,"folder-sidebar-toolbar-click" | "folder-sidebar-document-more") {
+        let ws = primary.read(cx)?;
+        let bounds = if name.ends_with("document-more") { ws.more_btn_bounds.get() } else { ws.sharing.share_bounds.get() }
+            .context("Sharing toolbar anchor missing")?;
+        let at = point(bounds.left()+bounds.size.width/2.,bounds.top()+bounds.size.height/2.);
+        cx.update_window(primary.into(), |_, window, cx| {
+            let modifiers = Modifiers::default();
+            window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1, first_mouse: false }), cx);
+            window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1 }), cx);
+        })?;
+        return Ok(());
+    }
+    primary.update(cx, |ws, window, cx| -> Result<()> {
+        let shared_rows = ws.qa_rendered_sidebar_rows(true);
+        let personal_rows = ws.qa_rendered_sidebar_rows(false);
+        let exactly_once = |rows: &[(String, usize)], id: &str, depth| {
+            rows.iter().filter(|(key, _)| key == id).count() == 1 && rows.iter().any(|(key, d)| key == id && *d == depth)
+        };
+        let scope = shared::scope(&ws.store, cx);
+        match name {
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-create-capture" => {
+                ensure!(ws.current.as_ref() == Some(&document), "Expected the shared document before opening the personal menu");
+                let editor = ws.editor.as_ref().context("Missing editor")?;
+                std::fs::write(root.join("qa-sidebar-editor"), format!("{:?}", editor.entity_id()))?;
+                std::fs::write(root.join("qa-sidebar-count"), ws.personal_navigation_entries(cx).len().to_string())?;
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-create-menu" | "folder-sidebar-create-dismissed" => {
+                use crate::folders::CreateTarget;
+                let editor = ws.editor.as_ref().context("Menu closed the editor")?;
+                ensure!(ws.current.as_ref() == Some(&document) && scope.is_some_and(|scope| scope.note == owner)
+                    && format!("{:?}", editor.entity_id()) == std::fs::read_to_string(root.join("qa-sidebar-editor"))?,
+                    "Toggling the new menu changed the current document or editor");
+                ensure!(ws.personal_navigation_entries(cx).len().to_string() == std::fs::read_to_string(root.join("qa-sidebar-count"))?,
+                    "Toggling the create menu wrote to the personal library");
+                if name.ends_with("-dismissed") {
+                    ensure!(ws.create_menu.is_none(), "Second click left the menu open");
+                    eprintln!("SIDEBAR_CREATE_MENU_STABLE");
+                } else {
+                    ensure!(matches!(ws.create_menu.as_ref(), Some((CreateTarget::PersonalSidebar(None), _)))
+                        && ws.can_create_folder(&CreateTarget::PersonalSidebar(None), cx), "The personal menu was missing its root destination");
+                }
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-create-personal-made" | "folder-sidebar-create-shared-made" | "folder-sidebar-create-nested-made" => {
+                use crate::sidebar::SidebarSection;
+                let section = if name.ends_with("-personal-made") { SidebarSection::Personal } else { SidebarSection::Shared };
+                let parent = if name.ends_with("-nested-made") { &nested } else { &owner };
+                let new = ws.folder_current.as_ref().context("New folder did not open")?;
+                ensure!(scope.is_some_and(|scope| scope.note == owner) && ws.entries.iter().any(|e| &e.id == new
+                    && e.meta.folder.is_some() && e.meta.parent.as_ref() == Some(parent)),
+                    "New folder missed its collaborative parent");
+                let other = if section == SidebarSection::Shared { SidebarSection::Personal } else { SidebarSection::Shared };
+                ensure!(ws.sidebar_rename(new, section).is_some() && ws.sidebar_rename(new, other).is_none()
+                    && ws.sidebar_entry.as_ref().is_some_and(|entry| &entry.id == new && entry.section == section),
+                    "New folder did not confine the name field to its invoking sidebar");
+                let rows = if section == SidebarSection::Shared { &shared_rows } else { &personal_rows };
+                ensure!(rows.iter().any(|(id, _)| id == new), "New folder did not appear in the invoking sidebar");
+                eprintln!("SIDEBAR_SHARED_CHILD_CREATED {name}");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-create-readonly-absent" => {
+                let bounds = ws.more_bounds.borrow();
+                for id in [&received, &empty] {
+                    ensure!(!bounds.contains_key(&format!("add-shared-folder-true-{id}")), "Read-only folder offered a creation shortcut");
+                }
+                eprintln!("SIDEBAR_CREATE_READONLY_PROTECTED");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-create-personal-root-made" => {
+                let new = ws.folder_current.as_ref().context("New personal folder did not open")?;
+                ensure!(!ws.is_shared() && ws.entries.iter().any(|e| &e.id == new
+                    && e.meta.folder.is_some() && e.meta.parent.is_none() && e.meta.share_root.is_none()),
+                    "Personal root creation wrote to the shared workspace");
+                eprintln!("SIDEBAR_CREATE_PERSONAL_ROOT");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-consistency-fixture" => {
+                let made = ws.folder_current.clone().context("Expected the new folder")?;
+                ws.finish_rename(false, window, cx);
+                let child = ws.store.create_from_in(&crate::model::Document { title: crate::model::RichText::plain("恢复用测试文档"), ..Default::default() }, Some(&made))?;
+                std::fs::write(root.join("qa-consistency-folder"), &made)?;
+                std::fs::write(root.join("qa-consistency-child"), &child)?;
+                ws.entries = ws.store.list();
+                ws.publish_shared_folder_change(cx);
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-consistency-presentation" => {
+                let folder = std::fs::read_to_string(root.join("qa-consistency-folder"))?;
+                let child = std::fs::read_to_string(root.join("qa-consistency-child"))?;
+                for rows in [&shared_rows, &personal_rows] {
+                    ensure!(exactly_once(rows, &folder, 1) && exactly_once(rows, &child, 2), "Folder and its contents did not appear in both sections");
+                }
+                let slot_bounds = ws.more_bounds.borrow();
+                for (personal, shared) in [(format!("doc-{folder}"), format!("shared-folder-{folder}")),
+                    (format!("add-doc-true-{folder}"), format!("add-shared-folder-true-{folder}")),
+                    (format!("add-doc-false-{folder}"), format!("add-shared-folder-false-{folder}"))] {
+                    let x = slot_bounds.get(&personal).with_context(|| format!("Missing My Documents shortcut: {personal}"))?.center().x;
+                    let y = slot_bounds.get(&shared).with_context(|| format!("Missing Shared Documents shortcut: {shared}"))?.center().x;
+                    ensure!((f32::from(x) - f32::from(y)).abs() <= 0.5, "Folder controls use different columns: {x:?}, {y:?}");
+                }
+                eprintln!("SIDEBAR_FOLDER_CONTROLS_ALIGNED");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-consistency-expand" => {
+                let folder = std::fs::read_to_string(root.join("qa-consistency-folder"))?;
+                ws.expanded.insert(folder.clone());
+                ws.sharing.expanded.extend([owner.clone(), folder]);
+                cx.notify();
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-consistency-menu-stable" => {
+                let editor = ws.editor.as_ref().context("Opening the folder menu released the editor")?;
+                ensure!(ws.current.as_ref() == Some(&document) && scope.is_some_and(|scope| scope.note == owner)
+                    && format!("{:?}", editor.entity_id()) == std::fs::read_to_string(root.join("qa-sidebar-editor"))?,
+                    "Opening the folder menu switched to another workspace");
+                ensure!(ws.row_menu.is_some() || ws.create_menu.is_some(), "Expected a sidebar popover");
+                eprintln!("SIDEBAR_FOLDER_MENU_STABLE");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-consistency-deleted" => {
+                let folder = std::fs::read_to_string(root.join("qa-consistency-folder"))?;
+                let child = std::fs::read_to_string(root.join("qa-consistency-child"))?;
+                for rows in [&shared_rows, &personal_rows] {
+                    ensure!(!rows.iter().any(|(id, _)| id == &folder || id == &child), "The deleted folder survived in a sidebar");
+                }
+                ensure!(ws.current.as_ref() == Some(&document) && scope.is_some_and(|scope| scope.note == owner),
+                    "Deleting a sibling changed the open document");
+                let personal = cx.global::<crate::shared_store::SharedStore>().clone().list_trash();
+                ensure!(personal.iter().any(|item| item.id == folder && item.share_root.as_ref() == Some(&owner)), "Recovery item missed the personal Trash");
+                ensure!(ws.store.list_trash().iter().any(|item| item.id == folder), "Canonical folder missed the shared Trash");
+                eprintln!("SIDEBAR_FOLDER_DELETE_BOTH");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-consistency-restore" => {
+                let folder = std::fs::read_to_string(root.join("qa-consistency-folder"))?;
+                ws.change_shared_trash(ws.current_room(cx).context("Expected the owner room")?, folder,
+                    crate::sharing::SharedTrashAction::Restore, window, cx);
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-consistency-root-deleted" => {
+                ensure!(!ws.is_shared(), "Deleting the sharing root did not leave its workspace");
+                ensure!(!shared_rows.iter().any(|(id, _)| id == &owner) && !personal_rows.iter().any(|(id, _)| id == &owner),
+                    "Deleted root survived in a sidebar");
+                ensure!(ws.store.list_trash().iter().any(|item| item.id == owner && item.share_root.is_none()),
+                    "Deleted root did not become a locally restorable item");
+                eprintln!("SIDEBAR_FOLDER_ROOT_DELETED");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-personal-home-folder" | "folder-sidebar-origin-personal-home-document" |
+            "folder-sidebar-origin-shared-home-folder" => {
+                let shared = name.contains("shared-home");
+                ensure!(!ws.is_shared(), "Expected the personal workspace before clicking Home");
+                ws.show_view(if shared { View::Shared } else { View::Home }, cx);
+                ws.home.tab = if shared { crate::home::HomeTab::Shared } else { crate::home::HomeTab::Recent };
+                ws.sharing.folded = false;
+                ws.folded[1] = false;
+                ws.home.grid = true;
+                cx.notify();
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-check-personal-folder" | "folder-sidebar-origin-check-personal-document" |
+            "folder-sidebar-origin-check-shared-folder" => {
+                let shared = name.contains("check-shared");
+                let made = name.ends_with("document").then(|| std::fs::read_to_string(root.join("qa-new-original-id"))).transpose()?;
+                let id = made.as_ref().unwrap_or(&owner);
+                ensure!(scope.is_some_and(|scope| &scope.note == id)
+                    && (ws.folder_current.as_ref() == Some(id) || ws.current.as_ref() == Some(id)), "Home opened the wrong shared item");
+                let picks = if shared { (None, Some(id.as_str())) } else { (Some(id.as_str()), None) };
+                ensure!((ws.qa_sidebar_pick(false), ws.qa_sidebar_pick(true)) == picks, "Home highlighted the wrong sidebar section");
+                eprintln!("SIDEBAR_HOME_ORIGIN_OK {name}");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-fold-personal" => {
+                ws.folded[1] = true;
+                cx.notify();
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-no-jump" => {
+                ensure!(ws.qa_sidebar_pick(false).is_none() && ws.qa_sidebar_pick(true).is_none(), "Folding the selected section moved selection to its duplicate");
+                eprintln!("SIDEBAR_COLLAPSE_SELECTION_OK");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-make-personal-folder" | "folder-sidebar-origin-make-shared-folder" |
+            "folder-sidebar-origin-make-personal-document" | "folder-sidebar-origin-make-shared-document" => {
+                use crate::sidebar::SidebarSection;
+                let personal = name.contains("make-personal");
+                let folder = name.ends_with("folder");
+                let section = if personal { SidebarSection::Personal } else { SidebarSection::Shared };
+                let kind = if folder { crate::folders::SharedFolderCreation::Folder(None) } else { crate::folders::SharedFolderCreation::Document };
+                ws.expanded.remove(&nested);
+                ws.sharing.expanded.remove(&nested);
+                // Test collapsed groups for folders and collapsed branches in an open group for documents.
+                ws.folded[1] = !personal && folder;
+                ws.sharing.folded = personal && folder;
+                let state = if personal { (ws.sharing.folded, &ws.sharing.expanded) } else { (ws.folded[1], &ws.expanded) };
+                let saved = (personal, folder, state);
+                std::fs::write(root.join("qa-sidebar-origin-state"), serde_json::to_vec(&saved)?)?;
+                let room = ws.shared_list_room(&owner, cx).context("Shared owner is missing")?;
+                ws.create_in_shared_sidebar(room, nested.clone(), kind, section, window, cx);
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-check-creation" => {
+                let (personal, folder, (folded, expanded)): (bool, bool, (bool, std::collections::HashSet<String>)) =
+                    serde_json::from_slice(&std::fs::read(root.join("qa-sidebar-origin-state"))?)?;
+                let actual = if personal { (ws.sharing.folded, &ws.sharing.expanded) } else { (ws.folded[1], &ws.expanded) };
+                ensure!(actual == (folded, &expanded), "Creation changed the other sidebar's fold state");
+                let id = if folder { ws.folder_current.as_ref() } else { ws.current.as_ref() }.context("The new item did not open")?;
+                ensure!(ws.entries.iter().any(|entry| &entry.id == id && entry.meta.parent.as_ref() == Some(&nested)),
+                    "The new item did not land in the intended folder");
+                let picks = if personal { (Some(id.as_str()), None) } else { (None, Some(id.as_str())) };
+                ensure!((ws.qa_sidebar_pick(false), ws.qa_sidebar_pick(true)) == picks, "Creation selected the wrong section");
+                if folder { ws.finish_rename(false, window, cx); }
+                eprintln!("SIDEBAR_CREATE_ORIGIN_OK personal={personal} folder={folder}");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-new-document" | "folder-sidebar-origin-new-folder" => {
+                use crate::folders::CreateTarget;
+                let folder = name.ends_with("new-folder");
+                ensure!(!ws.is_shared(), "Expected Home before starting a top-level creation");
+                let count = ws.store.list().len();
+                std::fs::write(root.join("qa-new-original-count"), count.to_string())?;
+                ws.show_view(View::Shared, cx);
+                ws.folded[1] = true;
+                ws.sharing.folded = false;
+                ws.open_new_shared_item(folder, window, cx);
+                let title = if folder { "验收共享目录" } else { "验收共享文档" };
+                ws.sharing.folder_name.update(cx, |field, cx| field.set_text(title, cx));
+                ws.sharing.email.update(cx, |field, cx| field.set_text("participant@example.test", cx));
+                std::fs::write(root.join("fail-invite-once"), b"fixture")?;
+                ws.submit_sharing(window, cx);
+                ensure!(matches!(ws.sharing.sheet, Some(Sheet::CreateNew(_, Some(_)))) && ws.sharing.busy
+                    && ws.store.list().len() == count && !ws.can_create_folder(&CreateTarget::Library(None), cx),
+                    "Submitting the invitation exposed a personal item");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-form-keeps-editor" => {
+                ws.open(&document, window, cx);
+                let before = ws.editor.as_ref().context("Shared editor is missing")?.entity_id();
+                ws.open_new_shared_item(false, window, cx);
+                ensure!(matches!(ws.sharing.sheet, Some(Sheet::CreateNew(false, None))) && ws.sharing_allowed(cx)
+                    && ws.editor.as_ref().is_some_and(|editor| editor.entity_id() == before),
+                    "Opening the shared creation form navigated away");
+                ws.close_sharing(window, cx);
+                eprintln!("SIDEBAR_NEW_FORM_KEEPS_EDITOR");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-invite-failed" => {
+                let Some(Sheet::CreateNew(_, Some(id))) = &ws.sharing.sheet else { anyhow::bail!("The failure closed the creation form"); };
+                ensure!(!ws.sharing.busy && ws.sharing.message.as_ref().is_some_and(|(error, _)| *error), "Expected an editable failed invitation");
+                ensure!(!ws.sharing.email.read(cx).text.is_empty() && !ws.sharing.folder_name.read(cx).text.is_empty(), "The failed form lost its input");
+                let personal = crate::store::Store::root_dir();
+                let room = shared::rooms(&personal)?.into_iter().find(|room| room.scope.note == *id).context("Missing staged share")?;
+                ensure!(cloud_sync::activity::row(&personal, room)?.is_none() && ws.shared_list_room(id, cx).is_none()
+                    && ws.store.list().len().to_string() == std::fs::read_to_string(root.join("qa-new-original-count"))?,
+                    "Failed invitation left a visible blank item");
+                std::fs::write(root.join("qa-new-original-id"), id)?;
+                eprintln!("SIDEBAR_INVITE_FAILURE_HIDDEN");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-invite-retry" => {
+                ws.sharing.email.update(cx, |field, cx| field.set_text("corrected@example.test", cx));
+                ws.submit_sharing(window, cx);
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-invite-success" => {
+                let id = std::fs::read_to_string(root.join("qa-new-original-id"))?;
+                ensure!(scope.is_some_and(|scope| scope.note == id) && matches!(ws.sharing.sheet, Some(Sheet::Members(_))),
+                    "Retry did not open the original staged share");
+                let before: usize = std::fs::read_to_string(root.join("qa-new-original-count"))?.parse()?;
+                let personal = ws.personal_navigation_entries(cx);
+                ensure!(personal.len() == before + 1 && personal.iter().filter(|entry| entry.id == id).count() == 1
+                    && ws.shared_list_room(&id, cx).is_some(), "Retry created duplicate library items");
+                ensure!(ws.folded[1] && ws.qa_sidebar_pick(false).is_none() && ws.qa_sidebar_pick(true) == Some(id.as_str()),
+                    "Submitting the invitation unfolded or selected My Documents");
+                ws.close_sharing(window, cx);
+                eprintln!("SIDEBAR_INVITE_RETRY_ONE_ITEM");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-invite-cancel" => {
+                let id = std::fs::read_to_string(root.join("qa-new-original-id"))?;
+                ws.close_sharing(window, cx);
+                ensure!(ws.sharing.sheet.is_none() && ws.shared_list_room(&id, cx).is_none()
+                    && ws.store.list().iter().all(|entry| entry.id != id) && ws.store.list_trash().iter().all(|entry| entry.id != id),
+                    "Cancel left a library or Trash item");
+                eprintln!("SIDEBAR_INVITE_CANCEL_NO_ITEM");
+            }
+            "folder-sidebar-ready" => {
+                ensure!(scope.is_some_and(|scope| scope.note == owner && scope.owner.is_none()), "Expected the newly shared owner folder");
+                ws.close_sharing(window, cx);
+                ws.navigate_home(window, cx);
+            }
+            "folder-sidebar-expanded" => {
+                ensure!(ws.folder_current.as_ref() == Some(&owner) && exactly_once(&shared_rows, &nested, 1), "Opening the owner folder did not expand its children");
+                ensure!(exactly_once(&personal_rows, &document, 2), "Owner's personal subtree disappeared");
+                let personal = ws.personal_navigation_entries(cx);
+                let nested = personal.iter().find(|entry| entry.id == nested).context("Missing the owned nested folder")?;
+                use crate::sidebar::folder_glyph;
+                ensure!(folder_glyph(nested, false, true, cx) == Some("folder-shared") && folder_glyph(nested, true, true, cx) == Some("folder-shared-open"), "My Documents did not identify the folder's inherited share");
+                ensure!(folder_glyph(nested, false, false, cx) == Some("folder") && folder_glyph(nested, true, false, cx) == Some("folder-open"), "Shared Documents duplicated the sharing mark");
+            }
+            "folder-sidebar-opened" | "folder-sidebar-personal-opened" => {
+                ensure!(scope.is_some_and(|scope| scope.note == owner) && ws.current.as_ref() == Some(&document), "Click opened the wrong document or library");
+                ensure!(!ws.editor.as_ref().context("Missing owner editor")?.read(cx).read_only, "Owner editor is unexpectedly read-only");
+                ensure!(exactly_once(&shared_rows, &document, 2) && exactly_once(&personal_rows, &document, 2), "The original was duplicated or missing");
+                let (shared_pick, personal_pick) = if name == "folder-sidebar-opened" { (Some(document.as_str()), None) } else { (None, Some(document.as_str())) };
+                ensure!(ws.qa_sidebar_pick(true) == shared_pick && ws.qa_sidebar_pick(false) == personal_pick, "Shared and personal selection leaked");
+            }
+            "folder-sidebar-collapsed" => {
+                ensure!(!shared_rows.iter().any(|(id, _)| id == &nested || id == &document), "Shared collapse left descendants visible");
+                ensure!(exactly_once(&personal_rows, &document, 2) && ws.current.as_ref() == Some(&document), "Shared collapse affected the personal tree or current document");
+            }
+            "folder-sidebar-create" => {
+                #[cfg(target_os = "macos")]
+                ws.create_in_shared_sidebar(ws.current_room(cx).context("Expected owner room")?, nested.clone(),
+                    crate::folders::SharedFolderCreation::Document, crate::sidebar::SidebarSection::Shared, window, cx);
+                #[cfg(target_os = "ios")]
+                ws.create_doc(false, Some(nested.clone()), window, cx);
+                let id = ws.current.as_ref().context("New shared document did not open")?;
+                ensure!(id != &document && ws.entries.iter().any(|entry| &entry.id == id && entry.meta.parent.as_ref() == Some(&nested)), "New document missed the shared folder");
+                std::fs::write(root.join("qa-new-shared-child"), id)?;
+            }
+            "folder-sidebar-created" => {
+                let id = std::fs::read_to_string(root.join("qa-new-shared-child"))?;
+                ensure!(exactly_once(&shared_rows, &id, 2), "New shared document did not appear immediately");
+            }
+            "folder-sidebar-received-open" => {
+                ensure!(ws.folder_current.as_ref() == Some(&received) && exactly_once(&shared_rows, &readonly, 1), "Received folder cache did not populate the sidebar");
+                ensure!(exactly_once(&shared_rows, &empty, 1) && !ws.qa_sidebar_has_children(&empty), "Empty folder received a chevron");
+                ensure!(!personal_rows.iter().any(|(id, _)| id == &received || id == &readonly || id == &empty), "Received folder leaked into My Documents");
+            }
+            "folder-sidebar-empty" => {
+                ensure!(scope.is_some_and(|scope| scope.note == received) && ws.folder_current.as_ref() == Some(&empty), "Empty child did not open in its own room");
+                ensure!(!ws.entries.iter().any(|entry| entry.meta.parent.as_ref() == Some(&empty)), "Empty child has unexpected contents");
+            }
+            "folder-sidebar-overview" => {
+                if ws.is_shared() { ws.navigate_personal(View::Shared,None,window,cx); }
+                else { ws.show_view(View::Shared,cx); }
+            }
+            "folder-sidebar-compare-glyphs" => {
+                ensure!(!ws.is_shared(), "Expected the personal workspace for folder comparisons");
+                let ordinary = ws.store.create_folder("Personal folder fixture", None)?;
+                ws.store.create_from_in(&crate::model::Document::default(), Some(&ordinary))?;
+                std::fs::write(root.join("qa-ordinary-folder"), &ordinary)?;
+                ws.entries = ws.store.list(); ws.sort();
+                ws.expanded.remove(&owner);
+                ws.sharing.expanded.remove(&owner);
+                ws.home.tab = crate::home::HomeTab::Recent;
+                ws.home.grid = false;
+                ws.set_pref(|p| { p.appearance = "light".into(); p.feishu = true; p.theme = "feishu".into(); }, cx);
+                ws.reload_themes(cx); cx.notify();
+            }
+            "folder-sidebar-open-glyphs" => {
+                let ordinary = std::fs::read_to_string(root.join("qa-ordinary-folder"))?;
+                ws.expanded.extend([owner.clone(),ordinary]);
+                cx.notify();
+            }
+            "folder-sidebar-shared-batch" => {
+                ensure!(ws.shared_batch(), "Shared sidebar did not enter batch selection");
+                ws.home.grid = true;
+                cx.notify();
+            }
+            "folder-sidebar-batch-only-documents" => {
+                let selected = ws.batch.as_ref().context("Missing shared batch selection")?;
+                ensure!(!selected.is_empty() && selected.iter().all(|id| ws.shared_list_room(id, cx).is_some_and(|room| !room.scope.folder)),
+                    "Header selected a folder with no visible checkbox");
+                eprintln!("SHARED_BATCH_CHECKBOX_SCOPE_OK");
+            }
+            "folder-sidebar-personal-batch" => {
+                ws.begin_personal_batch();
+                ws.home.tab = crate::home::HomeTab::Recent;
+                cx.notify();
+            }
+            "folder-sidebar-new-form" | "folder-sidebar-new-folder-form" => {
+                let folder = name.contains("folder-form");
+                let count = ws.store.list().len();
+                ws.new_and_share(folder,window,cx);
+                ensure!(matches!(ws.sharing.sheet,Some(Sheet::CreateNew(kind,None)) if kind == folder), "Shared overview form did not open");
+                ensure!(ws.store.list().len() == count, "Showing the form prematurely created a personal item");
+                let title = if folder { "新共享文件夹" } else { "新共享文档" };
+                ws.sharing.folder_name.update(cx, |field,cx| field.set_text(title,cx));
+                ws.sharing.email.update(cx, |field,cx| field.set_text("participant@example.test",cx));
+                ws.sharing.permission = Access::ReadWrite;
+            }
+            "folder-sidebar-new-submit" => ws.submit_sharing(window,cx),
+            "folder-sidebar-new-document-published" | "folder-sidebar-new-folder-published" => {
+                let folder = name.contains("folder-published");
+                let room = ws.current_room(cx).context("New item did not open as shared")?;
+                ensure!(room.scope.folder == folder && room.scope.owner.is_none(), "New shared item opened with a different role or kind");
+                ensure!(ws.personal_navigation_entries(cx).iter().any(|entry| entry.id == room.scope.note), "Shared creation lost the original identity");
+                eprintln!("SHARED_NEW_PUBLISHED {folder}");
+            }
+            "folder-sidebar-accept-form" => {
+                ws.open_accept_invitation(window,cx);
+                ensure!(ws.accept_invitation_open(), "Expected the independent invitation form");
+            }
+            "folder-sidebar-toolbar-ready" | "folder-sidebar-toolbar-warning" => {
+                ensure!(ws.is_shared() && ws.view == View::Folder, "Expected a shared folder page");
+                let warning = name.ends_with("warning");
+                cloud_sync::fixture_status(ws.store.root(),if warning { cloud_sync::SyncPhase::Failed } else { cloud_sync::SyncPhase::Ready },cx);
+                ensure!(settings::sync_status::needs_attention(ws,cx) == warning, "Wrong shared folder warning state");
+                cx.notify();
+            }
+            "folder-sidebar-document-menu" => {
+                ensure!(ws.is_shared() && ws.view == View::Doc && ws.doc_menu && !ws.render_doc_menu(window,cx).is_empty(),
+                    "Shared document toolbar did not open the document menu");
+                eprintln!("SHARED_DOCUMENT_MENU_OK {:?}",ws.sharing_access(cx));
+            }
+            "folder-sidebar-toolbar-panel" => {
+                ensure!(ws.view == View::Folder && ws.sharing.panel_open && ws.sharing.permissions_only, "Folder sharing shortcut did not open the permissions panel");
+                ensure!(ws.render_sharing_toolbar_panel(window,cx).is_some(), "Folder permissions panel was not anchored");
+                eprintln!("SHARED_FOLDER_TOOLBAR_PANEL_OK");
+            }
+            "folder-sidebar-toolbar-sync" => {
+                ws.open_shared_sync(window,cx);
+                ensure!(ws.sharing.sync_panel_open && ws.render_sharing_toolbar_panel(window,cx).is_some(), "Folder sync details did not use the sharing anchor");
+                eprintln!("SHARED_FOLDER_TOOLBAR_SYNC_OK");
+            }
+            "folder-sidebar-favorite" => {
+                ensure!(ws.current.as_ref() == Some(&readonly),"Expected the received child document");
+                ws.toggle_star(&readonly,cx);
+                ensure!(ws.favorite_entries(cx).iter().filter(|entry| entry.id == readonly).count() == 1,"Received child missing from All Favorites");
+                ws.toggle_star(&readonly,cx);
+                ensure!(!ws.favorite_entries(cx).iter().any(|entry| entry.id == readonly),"Removed favorite is still shown");
+                eprintln!("SHARED_CHILD_FAVORITES_OK");
+            }
+            "folder-sidebar-dark" => {
+                ws.set_pref(|p| p.appearance = "dark".into(), cx);
+                ws.reload_themes(cx);
+            }
+            "folder-sidebar-readonly" => {
+                ensure!(scope.is_some_and(|scope| scope.note == received && scope.owner.is_some()) && ws.current.as_ref() == Some(&readonly), "Received child opened outside its room");
+                ensure!(ws.editor.as_ref().context("Missing read-only editor")?.read(cx).read_only && !ws.can_create_in_shared_folder(Some(&received), cx), "Received child elevated permissions");
+                ensure!(ws.qa_sidebar_pick(true) == Some(readonly.as_str()) && ws.qa_sidebar_pick(false).is_none(), "Received child did not select the correct row");
+                eprintln!("SHARED_FOLDER_SIDEBAR_OK nesting=2 immediate=visible owner=editable received=readonly empty=no-chevron selection=isolated");
+            }
+            _ => anyhow::bail!("Unknown shared folder sidebar step"),
+        }
+        Ok(())
+    })??;
     Ok(())
 }

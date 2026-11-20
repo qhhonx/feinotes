@@ -29,6 +29,22 @@ pub(crate) fn parent(base: &Path, channel: uuid::Uuid) -> PathBuf {
 }
 pub(crate) fn scope(channel: uuid::Uuid) -> Option<String> { (!production()).then(||channel.to_string()) }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnableCheck { Ready, SignedOut, AccessRequired, Unavailable }
+
+pub(crate) fn check_enable() -> EnableCheck { crate::ipad_session::check_cloud_enable() }
+
+pub(crate) fn check_account(parent: &Path, channel: uuid::Uuid) -> EnableCheck {
+    #[cfg(feature = "mobile-qa")]
+    if std::env::var("FEI_QA_CLOUD_SWITCH_FAILURE").as_deref() == Ok("1") { return EnableCheck::Ready; }
+    match request(parent,channel,11).ok().and_then(|reply|reply.source).as_deref() {
+        Some("ready") => EnableCheck::Ready,
+        Some("signedOut") => EnableCheck::SignedOut,
+        Some("accessRequired") => EnableCheck::AccessRequired,
+        _ => EnableCheck::Unavailable,
+    }
+}
+
 pub(crate) fn cached(parent: &Path, channel: uuid::Uuid) -> Result<Option<PathBuf>> {
     let reply = request(parent,channel,8)?;
     if reply.path.is_none() || reply.source.as_deref() == Some("localOnly") { return Ok(None); }

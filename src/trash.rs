@@ -87,10 +87,10 @@ pub(crate) fn empty_state(illus: &'static str, text: &'static str) -> Div {
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 pub(crate) fn backup_confirmation(prepared: &crate::cloud_sync::backup::Prepared) -> (String,String,&'static str,bool) {
     let info = &prepared.summary;
-    (crate::settings::tr("恢复已校验的备份？", "Restore this verified backup?").into(),
+    (crate::settings::tr("从整库文件恢复？", "Restore from this library file?").into(),
         crate::localized_format!(
-            "备份包含 {} 篇文档、{} 个文件夹、回收站 {} 项、共享文档 {} 篇和 {} 条待上传改动。恢复前的文档库会保留。",
-            "The backup contains {} documents, {} folders, {} items in Trash, {} shared documents and {} pending uploads. The library before restoration will be kept.",
+            "整库文件包含 {} 篇文档、{} 个文件夹、回收站 {} 项、共享文档 {} 篇和 {} 条待上传改动。恢复前的文档库会保留。",
+            "The library file contains {} documents, {} folders, {} items in Trash, {} shared documents and {} pending uploads. The library before restoration will be kept.",
             info.notes,info.folders,info.trash,info.shared,info.pending),crate::settings::tr("恢复","Restore"),false)
 }
 
@@ -226,8 +226,8 @@ impl Workspace {
             .border_1().border_color(list_line())
             .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(tr("离线恢复副本", "Offline Recovery Copies")))
             .child(div().mt(px(4.)).text_size(px(13.)).text_color(Theme::text_caption()).child(ui_para(tr(
-                "原文档已删除。这台 Mac 保留了删除时未包含的改动。",
-                "The original document was deleted. This Mac kept changes that had not synced."))))
+                "可以将这台设备保留的离线改动另存为个人文档。",
+                "Save offline changes kept on this device as a personal document."))))
             .children(recoveries.into_iter().map(|(id, title)| {
                 let discard = id.clone();
                 div().mt(px(10.)).flex().flex_wrap().items_center().gap(px(8.))
@@ -236,7 +236,7 @@ impl Workspace {
                         .on_click(cx.listener(move |w, _, window, cx| {
                             w.resolve_offline_recovery(&id, true, window, cx);
                         })))
-                    .child(button(SharedString::from(format!("discard-recovery-{discard}")), tr("删除副本", "Delete Copy"))
+                    .child(button(SharedString::from(format!("discard-recovery-{discard}")), tr("移除恢复项", "Remove Recovery Item"))
                         .on_click(cx.listener(move |w, _, _, cx| {
                             w.confirm = Some(Confirm::DiscardOfflineRecovery(discard.clone()));
                             cx.notify();
@@ -245,7 +245,8 @@ impl Workspace {
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-    fn resolve_offline_recovery(&mut self, id: &str, keep: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn resolve_offline_recovery(&mut self, id: &str, keep: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_shared() || self.library_switching || self.store.file_task_busy() { return; }
         match crate::cloud_sync::resolve_offline_recovery(self.store.root(), id, keep, cx) {
             Ok(Some(new)) => {
                 self.entries = self.store.list();
@@ -323,10 +324,36 @@ impl Workspace {
     }
 
     /// 清空回收站: purges every trashed page; stops at the first failure.
-    fn empty_trash(&mut self, cx: &mut Context<Self>) {
-        let ids: Vec<String> = self.trash.iter().map(|t| t.id.clone()).collect();
-        let success = crate::settings::text("已清空回收站");
+    fn empty_trash(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let ids: Vec<String> = self.trash.iter().filter(|t| t.share_root.is_none()).map(|t| t.id.clone()).collect();
+        let linked = self.trash.iter().any(|t| t.share_root.is_some());
+        let success = if linked { crate::settings::tr("已清空个人回收站", "Personal Trash cleared") }
+            else { crate::settings::text("已清空回收站") };
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        {
+            let mut groups = std::collections::BTreeMap::<String, Vec<String>>::new();
+            for item in &self.trash {
+                if let Some(scope) = &item.share_root { groups.entry(scope.clone()).or_default().push(item.id.clone()); }
+            }
+            for (scope, ids) in groups {
+                if let Some(room) = self.shared_list_room(&scope, cx) {
+                    self.change_shared_trash_items(room, ids, crate::sharing::SharedTrashAction::Purge, _window, cx);
+                } else {
+                    self.show_toast_kind(crate::ui::ToastKind::Error, crate::settings::tr(
+                        "部分共享文件夹暂不可用，请稍后重试。", "Some shared folders are unavailable. Try again shortly."), cx);
+                }
+            }
+        }
         self.purge_trash(ids, success, cx);
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn handle_linked_trash(&mut self, id: &str, action: crate::sharing::SharedTrashAction, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(scope) = self.trash.iter().find(|item| item.id == id).and_then(|item| item.share_root.as_ref()) else { return false; };
+        if let Some(room) = self.shared_list_room(scope, cx) { self.change_shared_trash(room, id.into(), action, window, cx); }
+        else { self.show_toast_kind(crate::ui::ToastKind::Error, crate::settings::tr(
+            "共享文件夹暂不可用，请稍后重试。", "The shared folder is unavailable. Try again shortly."), cx); }
+        true
     }
 
     fn purge_trash(&mut self, ids: Vec<String>, success: &'static str, cx: &mut Context<Self>) {
@@ -386,11 +413,23 @@ impl Workspace {
                 if batch {
                     self.batch = None;
                 }
-                self.delete_docs(&ids, window, cx);
+                if self.is_shared() && ids.iter().all(|id| !self.entries.iter().any(|e| &e.id == id)) {
+                    self.personal_action(window, cx, move |w, window, cx| w.delete_docs(&ids, window, cx));
+                } else { self.delete_docs(&ids, window, cx); }
             }
-            Confirm::Restore(id) => self.restore_doc(&id, cx),
-            Confirm::Purge(id) => self.purge_doc(&id, cx),
-            Confirm::EmptyTrash => self.empty_trash(cx),
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            Confirm::DeleteSharedFolder { room, id, .. } => self.delete_shared_folder(room, id, window, cx),
+            Confirm::Restore(id) => {
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                if self.handle_linked_trash(&id, crate::sharing::SharedTrashAction::Restore, window, cx) { return; }
+                self.restore_doc(&id, cx);
+            }
+            Confirm::Purge(id) => {
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                if self.handle_linked_trash(&id, crate::sharing::SharedTrashAction::Purge, window, cx) { return; }
+                self.purge_doc(&id, cx);
+            }
+            Confirm::EmptyTrash => self.empty_trash(window, cx),
             Confirm::Migrate(_) => self.migrate_library(window,cx),
             Confirm::SwitchLibrary(root) => cx.defer(move |cx|crate::app::switch_library(root,cx)),
             Confirm::Import { what,target } => self.import_dropped(what,target,window,cx),
@@ -428,12 +467,24 @@ impl Workspace {
         let title_of = |id: &str| {
             self.entries
                 .iter()
+                .chain(self.folder_drag.personal_rows.iter().flatten())
                 .find(|e| e.id == id)
                 .map(|e| display_title(&e.title))
                 .or_else(|| self.trash.iter().find(|t| t.id == id).map(|t| display_title(&t.title)))
                 .unwrap_or_default()
         };
         Some(match c {
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            Confirm::DeleteSharedFolder { room, id, title } => (
+                crate::localized_format!("是否删除： {}？", "Delete {}?", display_title(title)),
+                if id == &room.scope.note {
+                    crate::settings::tr("删除会结束此文件夹的共享，内容将进入回收站。", "Deleting ends sharing for this folder and moves its contents to Trash.")
+                } else {
+                    crate::settings::tr("此文件夹及其内容将从协作成员的列表移除，并进入回收站。", "The folder and its contents will be removed for collaborators and moved to Trash.")
+                }.into(),
+                crate::settings::text("删除"),
+                true,
+            ),
             Confirm::Delete { ids, batch } => (
                 if *batch || ids.len() > 1 { crate::localized_count!(ids.len(), "是否删除所选的 {} 项？", "Delete the {} selected item?", "Delete the {} selected items?", ids.len()) } else { crate::localized_format!("是否删除： {}？", "Delete {}?", title_of(&ids[0])) },
                 crate::settings::text("删除的内容将进入回收站，30 天后自动彻底删除").to_string(),
@@ -450,9 +501,9 @@ impl Workspace {
             Confirm::Purge(_) => (crate::settings::text("确认彻底删除？").to_string(), crate::settings::text("彻底删除后，该页面及其子页面将无法恢复").to_string(), crate::settings::text("删除"), true),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::DiscardOfflineRecovery(_) => (
-                crate::settings::tr("删除离线恢复副本？", "Delete Offline Recovery Copy?").into(),
-                crate::settings::tr("此副本将从这台 Mac 移除。", "This copy will be removed from this Mac.").into(),
-                crate::settings::text("删除"), true,
+                crate::settings::tr("移除离线恢复项？", "Remove Offline Recovery Item?").into(),
+                crate::settings::tr("此恢复项将从这台设备的回收站移除。", "Remove this recovery item from Trash on this device.").into(),
+                crate::settings::tr("移除", "Remove"), true,
             ),
             Confirm::Refs { show: false, .. } => (
                 crate::settings::text("是否隐藏引用列表？").to_string(),
@@ -525,7 +576,7 @@ impl Workspace {
             ),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::SwitchCloudLibrary { cloud: false, .. } => (
-                crate::settings::tr("打开本机文档库？", "Open the local library?").into(),
+                crate::settings::tr("关闭 iCloud 同步？", "Turn off iCloud sync?").into(),
                 if cfg!(target_os = "ios") { crate::settings::tr("飞记将打开本机文档库，iCloud 文档和待上传的改动会保留。",
                     "Fei Notes will open your local library and keep your iCloud documents and pending changes.").into() }
                 else { crate::settings::tr("飞记将自动重启并打开本机文档库。iCloud 文档和待上传的改动会保留。",
@@ -573,9 +624,10 @@ impl Workspace {
                     div().id(SharedString::from(format!("cloud-version-{sequence}"))).flex().items_center().gap(px(8.))
                         .px(px(8.)).py(px(6.)).rounded(px(8.)).cursor_pointer().hover(row_hover)
                         .child(crate::transfer::radio(active))
-                        .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(20.))
+                        .child(div().flex_1().min_w_0().flex().flex_col().text_size(px(13.)).line_height(px(20.))
                             .child(time.clone())
-                            .child(div().truncate().text_size(px(12.)).text_color(Theme::text_caption()).child(preview.clone())))
+                            .when(!preview.trim().is_empty(), |column| column
+                                .child(div().truncate().text_size(px(12.)).text_color(Theme::text_caption()).child(preview.clone()))))
                         .on_click(cx.listener(move |w, _, _, cx| {
                             if let Some(Confirm::CloudVersions { selected, .. }) = &mut w.confirm { *selected = Some(sequence); cx.notify(); }
                         }))
@@ -584,11 +636,13 @@ impl Workspace {
         } else { (None, true) };
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let (version_list, ready) = (None::<Stateful<Div>>, true);
+        let attached = copy_choice.is_some() && cfg!(target_os = "macos");
         let no_ask = match c {
             Confirm::Refs { show: false, no_ask } => Some(*no_ask),
             _ => None,
         };
         let ok = if danger { crate::ui::danger_button("confirm-ok", action) } else { primary_button("confirm-ok", action) };
+        let ok = ok.when(cfg!(feature = "devtools"), |button| button.relative().child(self.home.track("qa-confirm-ok")));
         let max_width = px(if matches!(c, Confirm::SaveFailed) || version_list.is_some() { 520. } else { 400. });
         let width = (window.viewport_size().width - px(32.)).min(max_width);
         let dialog = dialog("confirm-dialog")
@@ -651,7 +705,8 @@ impl Workspace {
                     .absolute()
                     .inset_0()
                     .flex()
-                    .items_center()
+                    .when(attached, |d| d.items_start().pt(px(44.)))
+                    .when(!attached, |d| d.items_center())
                     .justify_center()
                     .bg(scrim())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

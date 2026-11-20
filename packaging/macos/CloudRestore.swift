@@ -394,7 +394,7 @@ public func quietCloudRestore(_ action: Int32, _ path: UnsafePointer<CChar>?, _ 
     let syncParent: URL?
     do {
         #if !FEI_CLOUD_QA
-        guard [2, 4, 5, 7, 8, 9, 10].contains(action), input == nil, channel == nil else {
+        guard [2, 4, 5, 7, 8, 9, 10, 11].contains(action), input == nil, channel == nil else {
             throw RestoreError.invalid("不支持此文档库操作")
         }
         #endif
@@ -448,6 +448,24 @@ public func quietCloudRestore(_ action: Int32, _ path: UnsafePointer<CChar>?, _ 
             #endif
             let identity = syncParent == nil ? nil : deviceIdentity()
             let container = CKContainer(identifier: containerID)
+            if action == 11 {
+                let revision = quietCloudAccountRevision()
+                switch try await accountStatus(container, startupTestRoot: input) {
+                case .noAccount, .restricted: completion.reply = Reply(source: "signedOut")
+                case .available:
+                    let account = try await container.userRecordID().recordName
+                    do {
+                        try await CloudAccess.shared.require(account: sha256(Data(account.utf8)), channel: channel)
+                        try checkCloudAccountRevision(revision)
+                        completion.reply = Reply(source: "ready")
+                    } catch CloudAccessError.required {
+                        try checkCloudAccountRevision(revision)
+                        completion.reply = Reply(source: "accessRequired")
+                    }
+                default: completion.reply = Reply(source: "unavailable")
+                }
+                return
+            }
             let account: String
             do {
                 let status = try await accountStatus(container, startupTestRoot: [2, 10].contains(action) ? input : nil)

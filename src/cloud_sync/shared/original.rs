@@ -2,7 +2,7 @@
 // Copyright 2026 Fei Notes contributors. See LICENSES.md.
 //! Keep the personal catalogue position while the shared library owns editing.
 use super::*;
-use crate::store::{Meta, SQLITE_FILE};
+use crate::store::{Meta, SQLITE_FILE, Trashed};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,6 +14,14 @@ fn connect(root: &Path) -> Result<Connection> {
 
 fn entries(db: &Connection) -> Result<BTreeMap<String, Meta>> {
     let mut stmt = db.prepare("SELECT id,meta FROM library_entries")?;
+    let mut rows = stmt.query([])?;
+    let mut entries = BTreeMap::new();
+    while let Some(row) = rows.next()? { entries.insert(row.get(0)?, serde_json::from_str(&row.get::<_, String>(1)?)?); }
+    Ok(entries)
+}
+
+fn trash_entries(db: &Connection) -> Result<BTreeMap<String, Trashed>> {
+    let mut stmt = db.prepare("SELECT id,meta FROM library_trash")?;
     let mut rows = stmt.query([])?;
     let mut entries = BTreeMap::new();
     while let Some(row) = rows.next()? { entries.insert(row.get(0)?, serde_json::from_str(&row.get::<_, String>(1)?)?); }
@@ -44,6 +52,12 @@ fn store_meta(db: &Connection, id: &str, meta: &Meta) -> Result<()> {
     Ok(())
 }
 
+fn remove_purged_link(db: &Connection, id: &str) -> Result<()> {
+    db.execute("DELETE FROM library_entries WHERE id = ?1", [id])?;
+    db.execute("DELETE FROM library_trash WHERE id = ?1", [id])?;
+    Store::remove_sync_body(db, id)
+}
+
 fn copy_entry(source: (&Connection, &Path), dest: (&Connection, &Path), id: &str, meta: &Meta) -> Result<()> {
     if meta.folder.is_none() {
         let (doc, _, front) = Store::read_sync_body(source.0, id, false)?;
@@ -53,12 +67,81 @@ fn copy_entry(source: (&Connection, &Path), dest: (&Connection, &Path), id: &str
     store_meta(dest.0, id, meta)
 }
 
+const NEW_PENDING: &str = "new-shared-pending";
+const NEW_INVITED: &str = "new-shared-invited";
+
+pub(crate) fn prepare_new(personal: &Path, id: String, title: String, folder: bool) -> Result<Room> {
+    Command::new(&account(personal)?, "checkAccess", None)?.send()?;
+    let room = Room { scope: Scope { note: id, owner: None, folder }, title };
+    stage_with(personal, &room, |staged| {
+        let mut journal = Journal::open(staged, None)?;
+        if folder {
+            let db = connect(staged)?;
+            let time = crate::time::now();
+            let meta = Meta { folder: Some(room.title.clone()), created: time, modified: time, ..Default::default() };
+            store_meta(&db, &room.scope.note, &meta)?;
+            journal.merge(&Default::default())?;
+        } else {
+            let doc = Document { title: crate::model::RichText::plain(&room.title), ..Default::default() };
+            journal.seed_shared(&doc, "")?;
+        }
+        fs::write(staged.join(NEW_PENDING), b"1")?;
+        Ok(())
+    })?;
+    Ok(room)
+}
+
+pub(crate) fn invite_new(personal: &Path, room: &Room, email: &str, access: Access, revision: u64) -> Result<Reply> {
+    ensure_created(personal, room)?;
+    super::super::check_account_revision(revision)?;
+    let reply = manage(personal, room, "invite", email, Some(access))?;
+    let root = room_root(personal, &room.scope.note)?;
+    fs::write(root.join(NEW_INVITED), b"1")?;
+    super::super::check_account_revision(revision)?;
+    finish_new(personal, &root, room)?;
+    Ok(reply)
+}
+
+pub(crate) fn pending_new(root: &Path) -> bool { root.join(NEW_PENDING).is_file() }
+
+pub(in crate::cloud_sync) fn new_pending(personal: &Path, root: &Path, room: &Room) -> Result<bool> {
+    if !pending_new(root) { return Ok(false); }
+    if !root.join(NEW_INVITED).is_file() { return Ok(true); }
+    finish_new(personal, root, room)?;
+    Ok(false)
+}
+
+fn finish_new(personal: &Path, root: &Path, room: &Room) -> Result<()> {
+    ensure!(room.scope.owner.is_none() && account(personal)? == account(root)?, "Invalid new shared item");
+    let mut db = connect(personal)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let id = &room.scope.note;
+    let old: Option<String> = tx.query_row("SELECT meta FROM library_entries WHERE id=?1", [id], |row| row.get(0)).optional()?;
+    if let Some(old) = old {
+        ensure!(serde_json::from_str::<Meta>(&old)?.share_root.as_ref() == Some(id), "Conflicting personal item");
+    } else {
+        let cache = connect(root)?;
+        let raw: String = cache.query_row("SELECT meta FROM library_entries WHERE id=?1", [id], |row| row.get(0))?;
+        let mut meta = serde_json::from_str::<Meta>(&raw)?;
+        ensure!(meta.folder.is_some() == room.scope.folder, "Invalid new shared item kind");
+        meta.share_root = Some(id.clone());
+        copy_entry((&cache, root), (&tx, personal), id, &meta)?;
+    }
+    tx.commit()?;
+    match fs::remove_file(root.join(NEW_PENDING)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 pub(crate) fn prepare(personal: &Path, id: &str, title: String, public_link: bool) -> Result<Room> {
     Command::new(&account(personal)?, "checkAccess", None)?.send()?;
     prepare_local(personal, id, title, public_link)
 }
 
-pub(super) fn prepare_local(personal: &Path, id: &str, title: String, public_link: bool) -> Result<Room> {
+pub(in crate::cloud_sync) fn prepare_local(personal: &Path, id: &str, title: String, public_link: bool) -> Result<Room> {
     let mut db = connect(personal)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let all = entries(&tx)?;
@@ -136,6 +219,7 @@ pub(super) fn restore(personal: &Path, room: &Room, revoke: impl FnOnce() -> Res
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let all = entries(&cache)?;
     let old = entries(&tx)?;
+    let catalogue = room.scope.folder.then(|| super::super::journal::stored_catalogue(&cache)).transpose()?;
     let ids = subtree(&all, &room.scope.note)?;
     for key in &ids {
         let source = &all[key];
@@ -148,6 +232,10 @@ pub(super) fn restore(personal: &Path, room: &Room, revoke: impl FnOnce() -> Res
     }
     for (key, mut meta) in old {
         if meta.share_root.as_ref() == Some(&room.scope.note) && !all.contains_key(&key) {
+            if catalogue.as_ref().is_some_and(|doc| super::super::catalogue::permanently_deleted(doc, &key)) {
+                remove_purged_link(&tx, &key)?;
+                continue;
+            }
             meta.share_root = None;
             let deleted: Option<String> = cache.query_row("SELECT meta FROM library_trash WHERE id=?1", [&key], |row| row.get(0)).optional()?;
             let mut trash = deleted.map(|raw| serde_json::from_str::<crate::store::Trashed>(&raw)).transpose()?
@@ -156,6 +244,15 @@ pub(super) fn restore(personal: &Path, room: &Room, revoke: impl FnOnce() -> Res
             tx.execute("INSERT OR REPLACE INTO library_trash(id,meta) VALUES (?1,?2)", params![key, serde_json::to_string(&trash)?])?;
             tx.execute("UPDATE library_documents SET trashed=1 WHERE id=?1", [&key])?;
             tx.execute("DELETE FROM library_entries WHERE id=?1", [&key])?;
+        }
+    }
+    for (id, mut trash) in trash_entries(&tx)? {
+        if trash.meta.share_root.as_ref() == Some(&room.scope.note) {
+            if all.contains_key(&id) { tx.execute("DELETE FROM library_trash WHERE id=?1", [&id])?; }
+            else {
+                trash.meta.share_root = None;
+                tx.execute("UPDATE library_trash SET meta=?2 WHERE id=?1", params![id, serde_json::to_string(&trash)?])?;
+            }
         }
     }
     revoke()?;
@@ -176,13 +273,49 @@ pub(crate) fn refresh_owner(cache: &Path, scope: &Scope, document: Option<&str>)
     let mut dest = connect(personal)?;
     let dest = dest.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let old = entries(&dest)?;
+    let old_trash = trash_entries(&dest)?;
     if !old.get(&scope.note).is_some_and(|m| m.share_root.as_ref() == Some(&scope.note)) { return Ok(()); }
+    let linked = |meta: &Meta| meta.share_root.as_ref() == Some(&scope.note);
+    if document.is_none() && scope.folder {
+        let catalogue = super::super::journal::stored_catalogue(&source)?;
+        let source_trash = trash_entries(&source)?;
+        for (id, meta) in old.iter().chain(old_trash.iter().map(|(id, trash)| (id, &trash.meta))) {
+            if linked(meta) && !all.contains_key(id)
+                && super::super::catalogue::permanently_deleted(&catalogue, id) {
+                remove_purged_link(&dest, id)?;
+            }
+        }
+        for (id, mut trash) in source_trash {
+            if !scope.permits(&id) || all.contains_key(&id) { continue; }
+            ensure!(old.get(&id).is_none_or(linked) && old_trash.get(&id).is_none_or(|old| linked(&old.meta)), "Conflicting personal trash item");
+            trash.meta.share_root = Some(scope.note.clone());
+            if trash.meta.folder.is_none() {
+                // A pending remote document can have catalogue metadata before its body arrives.
+                let body_exists: bool = source.query_row("SELECT EXISTS(SELECT 1 FROM library_documents WHERE id=?1 AND trashed=1)", [&id], |row| row.get(0))?;
+                if body_exists {
+                    let (doc, _, front) = Store::read_sync_body(&source, &id, true)?;
+                    if Store::read_sync_body(&dest, &id, true).ok().is_none_or(|(previous, _, previous_front)| doc != previous || front != previous_front) {
+                        copy_assets(cache, personal, &doc)?;
+                        Store::write_sync_body(&dest, &id, true, &doc, &front)?;
+                    }
+                } else if old.contains_key(&id) || old_trash.contains_key(&id) {
+                    dest.execute("UPDATE library_documents SET trashed=1 WHERE id=?1", [&id])?;
+                } else { continue; }
+            }
+            let raw = serde_json::to_string(&trash)?;
+            if old_trash.get(&id).map(serde_json::to_string).transpose()?.as_deref() != Some(&raw) {
+                dest.execute("INSERT OR REPLACE INTO library_trash VALUES (?1,?2)", params![id, raw])?;
+            }
+            if old.contains_key(&id) { dest.execute("DELETE FROM library_entries WHERE id=?1", [&id])?; }
+        }
+    }
     let has_history: bool = dest.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='sync_history')", [], |r| r.get(0))?;
     let ids = match document { Some(id) if all.contains_key(id) => vec![id.to_owned()], Some(_) => vec![], None => subtree(&all, &scope.note)? };
     for id in ids {
         let src = &all[&id];
-        let mut meta = old.get(&id).cloned().unwrap_or_else(|| src.clone());
-        ensure!(old.get(&id).is_none_or(|m| m.share_root.as_ref() == Some(&scope.note)), "Conflicting personal document");
+        let previous_meta = old.get(&id).or_else(|| old_trash.get(&id).map(|trash| &trash.meta));
+        let mut meta = previous_meta.cloned().unwrap_or_else(|| src.clone());
+        ensure!(previous_meta.is_none_or(linked), "Conflicting personal document");
         meta.share_root = Some(scope.note.clone());
         meta.folder = src.folder.clone(); meta.name = src.name.clone();
         if id != scope.note { meta.parent = src.parent.clone(); meta.order = src.order; }
@@ -200,6 +333,7 @@ pub(crate) fn refresh_owner(cache: &Path, scope: &Scope, document: Option<&str>)
                 Store::write_sync_body(&dest, &id, false, &doc, &front)?;
             }
         }
+        if old_trash.contains_key(&id) { dest.execute("DELETE FROM library_trash WHERE id=?1", [&id])?; }
         meta.modified = meta.modified.max(src.modified);
         if old.get(&id).map(serde_json::to_string).transpose()? != Some(serde_json::to_string(&meta)?) { store_meta(&dest, &id, &meta)?; }
     }
@@ -250,6 +384,43 @@ pub(crate) fn move_into(personal: &Path, room: &Room, selection: &[String], dest
 mod tests {
     use super::*;
     use crate::cloud_sync::{Bytes, Changes};
+
+    #[test]
+    fn owner_folder_trash_and_restore_follow_the_shared_catalogue() -> Result<()> {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        let temp = Fixture(std::env::temp_dir().join(format!("fei-owner-folder-trash-{}", uuid::Uuid::new_v4())));
+        let personal = temp.0.as_path();
+        Store::initialize_local_sqlite(personal)?;
+        fs::write(personal.join(".cloud-restore-ready"), format!("{}\n", "a".repeat(64)))?;
+        let mut original = Store::open_sqlite_at(personal.to_path_buf())?;
+        let root = original.create_folder("Shared", None)?;
+        let folder = original.create_folder("Nested", Some(&root))?;
+        let document = original.create_from_in(&Document::default(), Some(&folder))?;
+        let room = prepare_local(personal, &root, "Shared".into(), false)?;
+        let cache = room_root(personal, &root)?;
+        let mut writer = Store::open_sqlite_at(cache.clone())?;
+
+        // Build 119 could write a linked deletion to the personal copy alone.
+        original.delete(&folder, None)?;
+        refresh_owner(&cache, &room.scope, None)?;
+        assert!(original.list().iter().any(|e| e.id == folder));
+        assert!(original.list_trash().is_empty());
+
+        writer.trash_sqlite_folder(&folder)?;
+        refresh_owner(&cache, &room.scope, None)?;
+        assert!(original.list().iter().all(|e| e.id != folder && e.id != document));
+        let trash = original.list_trash();
+        assert_eq!(trash.len(), 1);
+        assert_eq!(trash[0].id, folder);
+        assert_eq!(trash[0].share_root.as_deref(), Some(root.as_str()));
+
+        writer.restore(&folder)?;
+        refresh_owner(&cache, &room.scope, None)?;
+        assert!(original.list().iter().any(|e| e.id == document && e.meta.parent.as_ref() == Some(&folder)));
+        assert!(original.list_trash().is_empty());
+        Ok(())
+    }
 
     #[test]
     fn folder_checkpoints_restore_nested_content_without_granting_cleanup_to_readers() -> Result<()> {

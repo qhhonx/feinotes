@@ -37,7 +37,8 @@ final class FeiVersionHistoryController: UITableViewController, UIAdaptivePresen
         let version = state.versions![indexPath.row]
         let cell = UITableViewCell(style: .subtitle,reuseIdentifier: nil)
         var content = cell.defaultContentConfiguration()
-        content.text = version.time; content.secondaryText = version.preview
+        content.text = version.time
+        content.secondaryText = version.preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : version.preview
         content.textProperties.font = .preferredFont(forTextStyle: .body)
         content.textProperties.adjustsFontForContentSizeCategory = true
         content.secondaryTextProperties.font = .preferredFont(forTextStyle: .subheadline)

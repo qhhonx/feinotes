@@ -104,6 +104,9 @@ The staged dependency in `packaging/ios/.gpui-mobile` is reconstructed by
   unchanged. This preserves shared paragraph/list/code and single-line Submit
   behavior without adding a second editor command implementation.
 
+- `gpui-mobile-ios-emoji-bounds.patch`: measure color glyphs with the same
+  point-sized Core Text font used to draw them, so differently sized bitmap
+  strikes are not cut off at the atlas edge.
 - `gpui-mobile-ios-gallery.patch`: add an iOS `pick_gallery_image` receiver for
   the existing image-picker package. Schedule presentation and completion on the
   UIKit main queue, keep picker/delegate ownership until completion, reject an

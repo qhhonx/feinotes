@@ -249,7 +249,7 @@ final class MobileFeedbackUITests: XCTestCase {
         wait("Even an empty native search protects its focus") { (self.list.value as? String)?.hasPrefix("cloudResume=false") == true }
         app.buttons.matching(NSPredicate(format: "label IN {'Cancel','Close','Cancel Search','取消','关闭'}")).firstMatch.tap()
         wait("Closing Search makes home available") { (self.list.value as? String)?.hasPrefix("cloudResume=true") == true }
-        app.buttons["fei.library-actions"].tap(); app.buttons["Reorder"].tap()
+        app.buttons["fei.library-actions"].tap(); app.buttons["Sort by"].tap(); app.buttons["Manual order"].tap()
         XCTAssertTrue(app.buttons["fei.notes.reorder.done"].waitForExistence(timeout: 5))
         XCTAssertTrue((list.value as? String)?.hasPrefix("cloudResume=false") == true)
         app.buttons["fei.notes.reorder.done"].tap()
@@ -362,11 +362,12 @@ final class MobileFeedbackUITests: XCTestCase {
         shot("iphone46-native-shared-list")
         back(); wait("Back restores personal notes") { self.row("QA45 一、标题与正文").exists }
         app.buttons["fei.settings"].tap()
-        XCTAssertFalse(app.cells["fei.setting.page:Cloud"].exists)
+        XCTAssertTrue(app.cells["fei.setting.page:Cloud"].exists)
         XCTAssertFalse(app.cells["fei.setting.page:Shared"].exists)
         app.cells["fei.setting.page:Library"].tap()
-        XCTAssertTrue(app.cells["fei.setting.library-switch"].waitForExistence(timeout: 5))
-        shot("iphone46-documents-inline-sync-settings")
+        XCTAssertTrue(app.cells["fei.setting.library-info"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.cells["fei.setting.page:Cloud"].exists)
+        shot("iphone46-document-library-settings")
     }
     func testPadSharedSidebarKeepsWorkspace() {
         start(pad: true)
@@ -645,15 +646,16 @@ final class MobileFeedbackUITests: XCTestCase {
     func testPadOrganizationMenuAcrossTabs() {
         start(pad: true)
         let tabs = app.segmentedControls["fei.notes.tabs"]
-        for name in ["Favorites","Shared documents","My documents"] {
+        for name in ["All Favorites","Shared documents","My documents"] {
             tabs.buttons[name].tap()
             app.buttons["fei.library-actions"].tap()
             XCTAssertTrue(app.buttons["Select documents"].exists)
-            XCTAssertTrue(app.buttons["Reorder"].exists)
             XCTAssertTrue(app.buttons["Sort by"].exists)
             app.buttons["Sort by"].tap()
             XCTAssertTrue(app.buttons["Manual order"].exists)
             app.buttons["Manual order"].tap()
+            let done = app.buttons["fei.notes.reorder.done"]
+            if done.exists { done.tap() }
         }
         app.buttons["fei.library-actions"].tap()
         app.buttons["Select documents"].tap()
@@ -667,6 +669,8 @@ final class MobileFeedbackUITests: XCTestCase {
         start(pad: pad)
         app.buttons["fei.library-actions"].tap()
         app.buttons["Sort by"].tap(); app.buttons["Manual order"].tap()
+        let done = app.buttons["fei.notes.reorder.done"]
+        if done.exists { done.tap() }
         let pinned = app.buttons["fei.notes.pinned-header"]
         if pinned.exists && pinned.value as? String == "expanded" { pinned.tap() }
         let cells = list.cells.matching(NSPredicate(format: "identifier BEGINSWITH 'fei.note.'"))
@@ -705,7 +709,7 @@ final class MobileFeedbackUITests: XCTestCase {
         list.swipeDown(); list.swipeDown(); list.swipeDown()
         let pinned = app.buttons["fei.notes.pinned-header"]
         if pinned.exists && pinned.value as? String == "expanded" { pinned.tap() }
-        app.buttons["fei.library-actions"].tap(); app.buttons["Reorder"].tap()
+        app.buttons["fei.library-actions"].tap(); app.buttons["Sort by"].tap(); app.buttons["Manual order"].tap()
         XCTAssertTrue(app.buttons["fei.notes.reorder.done"].waitForExistence(timeout: 5))
         let cells=list.cells.matching(NSPredicate(format: "identifier BEGINSWITH 'fei.note.'")).allElementsBoundByIndex.filter { $0.isHittable && $0.frame.maxY < list.frame.maxY-5 }
         XCTAssertGreaterThan(cells.count,2)

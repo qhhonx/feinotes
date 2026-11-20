@@ -253,6 +253,8 @@ pub struct Settings {
     pub home_list: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_sort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_favorites_sort: Option<String>,
     #[serde(default)]
     pub home_folders_first: bool,
     #[serde(default)]
@@ -297,6 +299,8 @@ pub struct TrashEntry {
     pub deleted: u64,
     /// Where it was: its parent page, `None` for the top of 我的文档库.
     pub parent: Option<String>,
+    /// The shared room which owns this trash item, when listed in the personal library.
+    pub share_root: Option<String>,
 }
 
 /// The 回收站 is emptied after 30 days.
@@ -1987,6 +1991,7 @@ impl Store {
                     icon: doc.icon.clone(),
                     deleted: t.deleted,
                     parent: t.meta.parent.clone(),
+                    share_root: t.meta.share_root.clone(),
                 }
             })
             .collect();

@@ -335,6 +335,7 @@ pub struct Home {
     /// The 搜索 dialog's results (`search.rs`).
     pub(crate) search_scrollbar: Rc<scrollbar::Scrollbar>,
     sort: HomeSort,
+    favorites_sort: HomeSort,
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     shared_sort: Option<HomeSort>,
     folders_first: bool,
@@ -360,6 +361,7 @@ impl Default for Home {
             search_scrollbar: Default::default(),
             // Manual: the sidebar's order (`Meta::place`), so both lists read the same.
             sort: HomeSort::Manual,
+            favorites_sort: HomeSort::Modified,
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             shared_sort: None,
             folders_first: false,
@@ -375,6 +377,7 @@ impl Home {
     #[cfg(target_os = "ios")]
     pub(crate) fn inherit_mobile_list_order(&mut self, source: &Self) {
         self.sort = source.sort;
+        self.favorites_sort = source.favorites_sort;
         self.shared_sort = source.shared_sort;
         self.folders_first = source.folders_first;
     }
@@ -403,6 +406,7 @@ impl Home {
     fn order(&self) -> HomeSort {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.shared() { return self.shared_sort.unwrap_or(HomeSort::Modified); }
+        if self.tab == HomeTab::Starred { return self.favorites_sort; }
         self.sort
     }
 
@@ -445,8 +449,8 @@ fn weight3(mut d: Div) -> Div {
 }
 
 /// A document's icon: its emoji, or the monochrome page glyph.
-fn entry_icon(e: &Entry, cx: &App) -> AnyElement {
-    if let Some(glyph) = crate::sidebar::folder_glyph(e, false, cx) { return icon(glyph, 22., Theme::icon()).mr(px(13.)).into_any_element(); }
+fn entry_icon(e: &Entry, mark_shared: bool, cx: &App) -> AnyElement {
+    if let Some(glyph) = crate::sidebar::folder_glyph(e, false, mark_shared, cx) { return icon(glyph, 22., Theme::icon()).mr(px(13.)).into_any_element(); }
     match &e.icon {
         _ if e.meta.named_by_file() => crate::search::doc_icon_named(crate::search::file_glyph(&e.meta)).mr(px(12.)).into_any_element(),
         Some(em) => div().size(px(24.)).mr(px(12.)).flex_none().flex().items_center().justify_center().text_size(px(18.)).child(em.clone()).into_any_element(),
@@ -459,13 +463,29 @@ impl Workspace {
     pub(crate) fn home_click(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if id.starts_with("collection-") { self.sharing.collection = Some(id.into()); cx.notify(); return; }
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if self.shared_batch() && self.shared_list_room(id, cx).is_some_and(|room| room.scope.folder) { return; }
         if self.batch.is_some() { self.toggle_check(id); cx.notify(); return; }
         if self.is_shared() && self.view == crate::app::View::Folder { self.open(id, window, cx); return; }
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if matches!(self.view, crate::app::View::Home | crate::app::View::Folder) && !self.is_shared()
+            && (self.view == crate::app::View::Folder || self.home.tab == HomeTab::Recent)
+            && self.open_personal_sidebar_item(id, crate::sidebar::SidebarSection::Personal, window, cx) { return; }
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if self.home.tab == HomeTab::Shared && let Some(room) = self.shared_list_room(id, cx) {
+            self.navigate_shared_sidebar(room, crate::sidebar::SidebarEntry::new(crate::sidebar::SidebarSection::Shared, id), window, cx);
+            return;
+        }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if let Some(room) = self.shared_list_room(id, cx) { self.open_shared_note(&room, window, cx); return; }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if self.home.tab == HomeTab::Starred
+            && let Some(room) = self.shared_child_room(id, cx) {
+            self.open_shared_item_interactive(room, id.into(), None, window, cx);
+            return;
+        }
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.home.tab == HomeTab::Shared {
-            if let Some(room) = self.shared_list_room(id, cx) { self.open_shared_note(&room, window, cx); }
             return;
         }
         if self.batch.is_none() { return self.open(id, window, cx) }
@@ -479,6 +499,7 @@ impl Workspace {
     fn home_check(&self, e: &Entry) -> Option<Div> {
         use crate::sidebar::{BATCH_LIMIT, Check, checkbox};
         let sel = self.batch.as_ref()?;
+        if self.shared_batch() && e.meta.folder.is_some() { return None; }
         let on = sel.contains(&e.id);
         Some(checkbox(if on { Check::On } else { Check::Off }, !on && sel.len() >= BATCH_LIMIT, "home-card"))
     }
@@ -490,11 +511,34 @@ impl Workspace {
             HomeTab::Recent => self.level_entries(None),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             HomeTab::Shared => self.sorted_shared_entries(self.shared_collection_entries(cx)),
-            HomeTab::Starred => self.sorted_entries({ let entries = self.entries.iter().filter(|e| e.meta.folder.is_none() && e.meta.starred > 0).cloned().collect::<Vec<_>>();
+            HomeTab::Starred => self.sorted_entries({
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                let entries = entries.into_iter().chain(self.shared_entries(cx).into_iter().filter(|entry| entry.meta.starred > 0)).collect();
-                entries }),
+                let entries = self.favorite_entries(cx);
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+                let entries = self.entries.iter().filter(|e| e.meta.folder.is_none() && e.meta.starred > 0).cloned().collect();
+                entries
+            }),
         }
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) fn favorite_entries(&self, cx: &App) -> Vec<Entry> {
+        let mut ids = std::collections::HashSet::new();
+        self.shared_sidebar_entries(cx).into_iter().chain(self.personal_navigation_entries(cx))
+            .filter(|entry| entry.meta.folder.is_none() && entry.meta.starred > 0 && ids.insert(entry.id.clone())).collect()
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn mobile_home_sort_key(&self) -> &'static str { self.home.order().key() }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn folder_priority(&self) -> bool { self.home.folders_first }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn toggle_folder_priority(&mut self, cx: &mut Context<Self>) {
+        self.home.folders_first = !self.home.folders_first;
+        self.save_home();
+        cx.notify();
     }
 
     #[cfg(target_os = "ios")]
@@ -510,7 +554,7 @@ impl Workspace {
 
     /// One level of the tree as 主页 shows it (a folder's page uses it too).
     pub(crate) fn level_entries(&self, parent: Option<&str>) -> Vec<Entry> {
-        self.sorted_entries(self.entries.iter().filter(|e| e.meta.parent.as_deref() == parent).cloned().collect())
+        self.sorted_entries_by(self.entries.iter().filter(|e| e.meta.parent.as_deref() == parent).cloned().collect(), self.home.sort)
     }
 
     pub(crate) fn prepare_manual_order(&mut self, cx: &mut Context<Self>) -> bool {
@@ -560,7 +604,7 @@ impl Workspace {
                 HomeSort::Created => b.meta.created.cmp(&a.meta.created),
                 HomeSort::Title => a.title.cmp(&b.title),
             };
-            (if self.home.folders_first && sort != HomeSort::Manual { b.meta.folder.is_some().cmp(&a.meta.folder.is_some()) } else { std::cmp::Ordering::Equal }).then(order).then_with(|| a.id.cmp(&b.id))
+            (if self.home.folders_first && self.home.tab == HomeTab::Recent && sort != HomeSort::Manual { b.meta.folder.is_some().cmp(&a.meta.folder.is_some()) } else { std::cmp::Ordering::Equal }).then(order).then_with(|| a.id.cmp(&b.id))
         });
         v
     }
@@ -656,6 +700,11 @@ impl Workspace {
         let id = e.id.clone();
         let (rec, k2) = (self.more_bounds.clone(), key.clone());
         let open = self.row_menu.as_ref().is_some_and(|m| m.id == e.id && m.pos.x > px(0.) && m.corner == Corner::TopRight);
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let badge = !self.home.shared() && self.published_document_share(e, cx) && !open;
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+        let badge = false;
+        let group = if key.starts_with("home-gmore-") { "home-card" } else { "home-document-row" };
         div()
             .id(SharedString::from(key.clone()))
             .relative()
@@ -668,7 +717,16 @@ impl Workspace {
             .cursor_pointer()
             .hover(|s| s.bg(Theme::fill_hover_strong()))
             .when(open, |d| d.bg(Theme::fill_hover_strong()))
-            .child(icon("ellipsis", 16., Theme::icon()))
+            .child(div().flex().items_center().when(badge, |d| d.opacity(0.).group_hover(group, |s| s.opacity(1.)))
+                .child(icon("ellipsis", 16., Theme::icon())))
+            .map(|d| {
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                return d.when(badge, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center()
+                    .group_hover(group, |s| s.opacity(0.)).child(crate::sidebar::shared_document_icon()))
+                    .tip(crate::settings::tr("已共享", "Shared"), None));
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+                d
+            })
             .child(canvas(move |b, _, _| {
                 rec.borrow_mut().insert(key.clone(), b);
             }, |_, _, _, _| {}).absolute().inset_0())
@@ -723,12 +781,14 @@ impl Workspace {
         self.home.grid = !s.home_list;
         self.home.folders_first = s.home_folders_first;
         self.home.sort = s.home_sort.as_deref().map(HomeSort::of).unwrap_or(HomeSort::Manual);
+        self.home.favorites_sort = s.home_favorites_sort.as_deref().map(HomeSort::of).filter(|sort| *sort != HomeSort::Manual).unwrap_or(HomeSort::Modified);
     }
 
     fn save_home(&mut self) {
         let mut s = self.store.settings();
         s.home_folders_first = self.home.folders_first;
         (s.home_list, s.home_sort) = (!self.home.grid, Some(self.home.sort.key().to_string()));
+        s.home_favorites_sort = Some(self.home.favorites_sort.key().into());
         if let Err(e) = self.store.save_settings(&s) { eprintln!("无法保存主页视图：{e}"); }
     }
 
@@ -736,15 +796,26 @@ impl Workspace {
         // Too narrow for the search box: a search icon beside +, in the same style.
         let search = self.header_search(window, cx);
         let narrow = search.is_none();
+        let personal_destination = self.home.tab != HomeTab::Recent;
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let shared_create = self.home.shared() && self.sharing.collection.is_none() && !crate::cloud_restore::local_only();
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+        let shared_create = false;
+        let create_target = if shared_create {
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            { crate::folders::CreateTarget::ShareNew }
+            #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+            { unreachable!() }
+        } else { crate::folders::CreateTarget::Library(None) };
         let header = page_header(self, crate::settings::text("主页"), 26., cx).relative().children(search)
             .when(narrow, |d| d.child(crate::ui::header_icon("home-search", "search").mr(px(4.))
                 .tip(crate::settings::tr("搜索文档", "Search documents"), Some(crate::shortcuts::hint("workspace::FocusSearch", "⌘ + J")))
                 .on_click(cx.listener(|w, _, window, cx| w.open_search(window, cx)))))
-            .child(self.place_button("home-more", None, cx))
-            .child(self.import_button("home-import", None, cx))
+            .when(!personal_destination, |d| d.child(self.place_button("home-more", None, cx)))
+            .when(!personal_destination, |d| d.child(self.import_button("home-import", None, cx)))
             .children({
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                { (!crate::cloud_restore::local_only()).then(|| crate::ui::header_icon("home-shared-accept", "mail-check")
+                { (self.home.shared() && !crate::cloud_restore::local_only()).then(|| crate::ui::header_icon("home-shared-accept", "mail-check")
                     .child(self.home.track("accept-home"))
                     .when(self.accept_invitation_open(), |d| d.bg(Theme::fill_hover()))
                     .tip(crate::settings::tr("接受邀请", "Accept invitation"), None)
@@ -753,14 +824,17 @@ impl Workspace {
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { None::<Stateful<Div>> }
             })
-            .child(
-            crate::ui::header_icon("home-new", "plus")
+            .when(!personal_destination || shared_create, |d| d.child(crate::ui::header_icon("home-new", "plus")
                 .child(self.home.track("create-home"))
                 .when(self.create_menu.as_ref().is_some_and(|(_, pos)| self.home.anchor("create-home").is_some_and(|b| point(b.left(), b.bottom() + px(4.)) == *pos)), |d| d.bg(Theme::fill_hover()))
-                .tip(crate::settings::tr("新建", "New"), Some(crate::shortcuts::hint("workspace::NewDoc", "⌘ + N")))
+                .tip(if shared_create { crate::settings::tr("新建并共享", "Create and share") } else { crate::settings::tr("新建", "New") }, (!shared_create).then(|| crate::shortcuts::hint("workspace::NewDoc", "⌘ + N")))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(|w, ev: &ClickEvent, _, cx| { let pos = w.home.anchor("create-home").map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.))); w.create_menu = if w.create_menu.is_some() { None } else { Some((crate::folders::CreateTarget::Library(None), pos)) }; cx.notify(); })).into_any_element()
-        );
+                .on_click(cx.listener(move |w, ev: &ClickEvent, _, cx| {
+                    let pos = w.home.anchor("create-home").map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.)));
+                    let open = w.create_menu.as_ref().is_some_and(|(target, at)| target == &create_target && *at == pos);
+                    w.create_menu = (!open).then(|| (create_target.clone(), pos));
+                    cx.notify();
+                }))));
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let shared_tab = self.home.tab == HomeTab::Shared;
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
@@ -810,9 +884,10 @@ impl Workspace {
             .flex()
             .items_center();
         let toolbar = if let Some(sel) = &self.batch {
-            let ids: Vec<String> = self.home_entries(cx).into_iter().take(crate::sidebar::BATCH_LIMIT).map(|e| e.id).collect();
+            let ids: Vec<String> = self.home_entries(cx).into_iter().filter(|e| !self.shared_batch() || e.meta.folder.is_none())
+                .take(crate::sidebar::BATCH_LIMIT).map(|e| e.id).collect();
             let n = sel.len();
-            let all = n > 0 && ids.iter().all(|id| sel.contains(id));
+            let all = !ids.is_empty() && ids.iter().all(|id| sel.contains(id));
             use crate::sidebar::{Check, checkbox};
             toolbar
                 .child(div().id("home-batch-all").flex_none().ml(px(10.)).size(px(14.)).cursor_pointer().group("home-batch-all")
@@ -833,7 +908,12 @@ impl Workspace {
                     .on_click(cx.listener(|w, _, _, cx| { w.batch = None; w.row_menu = None; cx.notify(); })))
         } else { toolbar
             .child(tab("home-tab-recent", crate::settings::text("我的文档"), HomeTab::Recent))
-            .child(tab("home-tab-star", crate::settings::text("收藏"), HomeTab::Starred))
+            .child(tab("home-tab-star", {
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                { crate::settings::tr("全部收藏", "All Favorites") }
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+                { crate::settings::text("收藏") }
+            }, HomeTab::Starred))
             .children({
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 { (!crate::cloud_restore::local_only()).then(|| tab("home-tab-shared", crate::settings::tr("共享文档", "Shared documents"), HomeTab::Shared)) }
@@ -940,6 +1020,7 @@ impl Workspace {
             let check = self.home_check(e);
             let mut row = div()
                 .id(SharedString::from(format!("home-row-{}", e.id)))
+                .group("home-document-row")
                 .h(px(56.))
                 .flex()
                 .items_center()
@@ -948,7 +1029,7 @@ impl Workspace {
                 .hover(row_hover)
                 .when(menu_on, |d| d.bg(Theme::fill_hover()).border_color(transparent_black()).rounded(px(ROW_RADIUS)))
                 .on_click(cx.listener(move |w, _, window, cx| w.home_click(&id, window, cx)))
-                .when(check.is_none(), |d| d.on_mouse_down(
+                .when(self.batch.is_none(), |d| d.on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
                         w.row_menu = Some(RowMenu { id: id2.clone(), pos: ev.position, corner: Corner::TopLeft, sub: false, batch: false });
@@ -961,8 +1042,8 @@ impl Workspace {
                         .pr(px(16.))
                         .flex()
                         .items_center()
-                        .when_some(check, |d, c| d.child(c.mr(px(12.))))
-                        .child(entry_icon(e, cx))
+                        .when(self.batch.is_some(), |d| d.child(div().w(px(14.)).mr(px(12.)).flex_none().children(check)))
+                        .child(entry_icon(e, !self.home.shared() && !self.is_shared(), cx))
                         .child(div().min_w_0().text_size(px(15.)).line_height(px(22.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(display_title(&e.title))))
                         .when(e.meta.pinned, |d| d.child(icon("pin-filled", 14., Theme::pinned()).ml(px(6.))))
                         .children({
@@ -1069,6 +1150,10 @@ impl Workspace {
             let page = self.thumb_page_with(e, &thumb, 18.);
             let radius = 32.;
             let menu_on = self.row_menu.as_ref().is_some_and(|m| m.id == e.id);
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            let shared_badge = !self.home.shared() && self.published_document_share(e, cx);
+            #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+            let shared_badge = false;
             let check = self.home_check(e);
             let arm = e.id.clone();
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -1111,7 +1196,7 @@ impl Workspace {
                     .when_some(check, |d, c| d.child(div().absolute().top(px(12.)).left(px(12.)).child(c)))
                     .when(self.batch.is_none(), |d| d.child(
                         div().absolute().top(px(8.)).right(px(8.))
-                            .when(!menu_on, |d| d.opacity(0.).group_hover("home-card", |s| s.opacity(1.)))
+                            .when(!menu_on && !shared_badge, |d| d.opacity(0.).group_hover("home-card", |s| s.opacity(1.)))
                             .child(self.home_more(e, format!("home-gmore-{}", e.id), cx).rounded_full().bg(Theme::bg_overlay())),
                     ))
             .into_any_element()
@@ -1136,6 +1221,7 @@ impl Workspace {
                     .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.home.sort_menu = false; cx.notify(); }));
                 for (index, order) in [HomeSort::Manual, HomeSort::Visited, HomeSort::Modified, HomeSort::Created, HomeSort::Title].into_iter().enumerate() {
 
+                    if self.home.tab == HomeTab::Starred && order == HomeSort::Manual { continue; }
                     let g = SharedString::from(format!("home-order-{index}"));
                     menu = menu.child(menu_row(g.clone(), g.clone()).when(selected_order == HomeSort::Manual, |d| d.opacity(0.4))
                         .child(menu_label(order.label(), g.clone(), gpui::white()).flex_1())
@@ -1146,8 +1232,11 @@ impl Workspace {
                                 w.home.shared_sort = Some(order); w.home.sort_menu = false;
                                 w.home.list_scroll.set_offset(point(px(0.), px(0.))); cx.notify(); return;
                             }
-                            if order == HomeSort::Manual && !w.home.shared() && !w.prepare_manual_order(cx) { return; }
-                            w.home.sort = order;
+                            if w.home.tab == HomeTab::Starred { w.home.favorites_sort = order; }
+                            else {
+                                if order == HomeSort::Manual && !w.prepare_manual_order(cx) { return; }
+                                w.home.sort = order;
+                            }
                             w.save_home();
                             w.home.sort_menu = false;
                             w.home.grid_scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -1156,7 +1245,7 @@ impl Workspace {
                         })));
                 }
                 let g = SharedString::from("home-folders-first");
-                menu = menu.when(!self.home.shared(), |d| d.child(menu_row(g.clone(), g.clone()).when(self.home.order() == HomeSort::Manual, |d| d.opacity(0.4))
+                menu = menu.when(self.home.tab == HomeTab::Recent, |d| d.child(menu_row(g.clone(), g.clone()).when(self.home.order() == HomeSort::Manual, |d| d.opacity(0.4))
                     .child(menu_label(crate::settings::tr("文件夹优先", "Folders first"), g.clone(), gpui::white()).flex_1())
                     .when(self.home.folders_first && self.home.order() != HomeSort::Manual, |d| d.child(menu_glyph("check", 14., g)))
                     .on_click(cx.listener(|w, _, _, cx| { if w.home.sort == HomeSort::Manual { return; } w.home.folders_first = !w.home.folders_first; w.save_home(); w.home.sort_menu = false; cx.notify(); }))));

@@ -13,7 +13,7 @@ fn root() -> Option<PathBuf> {
 
 pub(super) fn enabled() -> bool { root().is_some() }
 
-fn reply() -> Reply { Reply { scope: None, title: None, url: None, audience: Audience::Invited, members: vec![], error: None, error_kind: None, owned_rooms: None } }
+fn reply() -> Reply { Reply { scope: None, title: None, url: None, audience: Audience::Invited, members: vec![], error: None, error_kind: None, owned_rooms: None, verified_access: None, owner_name: None } }
 
 pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
     let root = root()?;
@@ -26,6 +26,13 @@ pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
             return Ok(result);
         }
         let scope = command.scope.context("Missing synthetic scope")?;
+        if command.action == "checkRoomAccess" {
+            ensure!(!root.join("qa-room-access-denied").is_file(), "Synthetic shared permission denied");
+            let mut result = reply();
+            result.scope = Some(scope.clone());
+            result.verified_access = Some(if scope.owner.is_some() { Access::ReadOnly } else { Access::Owner });
+            return Ok(result);
+        }
         if command.action == "delete" || command.action == "leave" {
             ensure!((command.action == "delete") == scope.owner.is_none(), "Synthetic removal role mismatch");
             if root.join("fail-end-once").exists() { fs::remove_file(root.join("fail-end-once"))?; anyhow::bail!("Synthetic removal failed. Recovery copy retained."); }

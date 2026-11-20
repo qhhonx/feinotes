@@ -409,6 +409,11 @@ impl Workspace {
         canvas(move |b, _, _| { record.borrow_mut().insert(id.clone(), b); }, |_, _, _, _| {}).absolute().inset_0()
     }
 
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync", feature = "devtools"))]
+    pub(crate) fn qa_home_card_point(&self, id: &str) -> Option<Point<Pixels>> {
+        self.home.folders.bounds.borrow().get(id).map(Bounds::center)
+    }
+
     /// A document card picked up on Home or a folder page: it is carried as a
     /// small page skeleton and can be dropped into a folder (cards are not
     /// reordered by dragging).

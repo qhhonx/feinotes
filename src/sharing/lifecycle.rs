@@ -1,7 +1,149 @@
 //! User-confirmed removal retains a recovery copy before changing remote access.
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(crate) enum SharedTrashAction {
+    #[cfg(target_os = "macos")]
+    DeleteFolder,
+    Restore,
+    Purge,
+}
+
+impl SharedTrashAction {
+    fn apply(self, writer: &mut crate::store::Store, ids: &[String]) -> anyhow::Result<()> {
+        let id = ids.first().ok_or_else(|| anyhow::anyhow!("No Trash item selected"))?;
+        match self {
+            #[cfg(target_os = "macos")]
+            Self::DeleteFolder => writer.trash_sqlite_folder(id),
+            Self::Restore => {
+                let item = writer.list_trash().into_iter().find(|entry| &entry.id == id)
+                    .ok_or_else(|| anyhow::anyhow!("The item is no longer in Trash"))?;
+                anyhow::ensure!(item.parent.is_some_and(|parent| writer.list().iter().any(|entry| entry.id == parent)),
+                    "{}", tr("请先恢复上级文件夹。", "Restore the parent folder first."));
+                writer.restore(id).map(|_| ())
+            }
+            Self::Purge => writer.purge_sqlite_trash_groups(ids),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            #[cfg(target_os = "macos")]
+            Self::DeleteFolder => tr("删除成功", "Moved to Trash"),
+            Self::Restore => tr("恢复成功", "Restored"),
+            Self::Purge => tr("已彻底删除", "Permanently deleted"),
+        }
+    }
+}
+
 impl Workspace {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn delete_shared_folder(&mut self, room: Room, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if id == room.scope.note {
+            if room.scope.owner.is_none() && self.stopping_original(&room, cx) {
+                self.end_shared_documents(vec![room], vec![id], window, cx);
+            }
+        } else {
+            self.change_shared_trash(room, id, SharedTrashAction::DeleteFolder, window, cx);
+        }
+    }
+
+    pub(crate) fn change_shared_trash(&mut self, room: Room, id: String, action: SharedTrashAction, window: &mut Window, cx: &mut Context<Self>) {
+        self.change_shared_trash_items(room, vec![id], action, window, cx);
+    }
+
+    pub(crate) fn change_shared_trash_items(&mut self, room: Room, ids: Vec<String>, action: SharedTrashAction, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sharing.busy || !room.scope.folder || ids.iter().any(|id| id == &room.scope.note) { return; }
+        let (retry_room, retry_ids) = (room.clone(), ids.clone());
+        if !self.save_before(cx, move |w, window, cx| w.change_shared_trash_items(retry_room, retry_ids, action, window, cx)) { return; }
+        let workspace = cx.entity_id();
+        let window_id = window.window_handle().window_id();
+        let handle = WindowHandle::<Self>::new(window_id);
+        let requested = room.clone();
+        let loaded = move |store: Result<crate::shared_store::SharedStore, String>, cx: &mut App| {
+            let _ = handle.update(cx, |ws, _, cx| {
+                if cx.entity_id() != workspace { return; }
+                match store {
+                    Ok(store) => ws.apply_shared_trash(requested, ids, action, store, window_id, cx),
+                    Err(error) => ws.show_toast_kind(ui::ToastKind::Error, &settings::diagnostic(&error), cx),
+                }
+            });
+        };
+        #[cfg(target_os = "macos")]
+        if let Err(error) = shared::load_sidebar_store(room, cx, Box::new(loaded)) {
+            self.show_toast_kind(ui::ToastKind::Error, &settings::diagnostic(&error.to_string()), cx);
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let store = shared::store_for(&room, cx).map_err(|error| error.to_string());
+            cx.defer(move |cx| loaded(store, cx));
+        }
+    }
+
+    fn apply_shared_trash(&mut self, room: Room, ids: Vec<String>, action: SharedTrashAction,
+        store: crate::shared_store::SharedStore, _window_id: WindowId, cx: &mut Context<Self>) {
+        let prepare = (|| -> anyhow::Result<_> {
+            let store = shared::check_opened_store(store, &room, cx)?;
+            anyhow::ensure!(shared::access(&store, cx).is_some_and(Access::can_write) && !shared::editing_paused(&store, cx),
+                "{}", tr("此共享文件夹当前不可写入。", "You cannot write to this shared folder right now."));
+            #[cfg(target_os = "macos")]
+            if matches!(action, SharedTrashAction::DeleteFolder) {
+                let listing = store.clone().list();
+                let id = ids.first().filter(|id| listing.iter().any(|entry| &entry.id == *id && entry.meta.folder.is_some()))
+                    .ok_or_else(|| anyhow::anyhow!("Folder no longer exists"))?;
+                let affected = crate::tree::Tree::new(&listing).subtree(id);
+                if self.store.root() == store.root() && self.current.as_ref().is_some_and(|id| affected.contains(id)) {
+                    anyhow::ensure!(self.flush(cx), "{}", tr("请先保存正在编辑的文档。", "Save the open document before deleting."));
+                }
+                anyhow::ensure!(!cx.windows().into_iter().filter(|handle| handle.window_id() != _window_id)
+                    .filter_map(|handle| handle.downcast::<Workspace>())
+                    .filter_map(|window| window.read(cx).ok()).any(|ws|
+                        ws.store.root() == store.root() && ws.current.as_ref().is_some_and(|id| affected.contains(id))),
+                    "{}", tr("请先关闭正在编辑这些文档的其他窗口，再删除。", "Close other windows editing these documents before deleting."));
+            }
+            let guard = store.begin_file_task().ok_or_else(|| anyhow::anyhow!(
+                "{}", tr("正在处理文件，请稍后再试。", "Another file operation is in progress. Try again shortly.")))?;
+            Ok((store, guard))
+        })();
+        let (store, guard) = match prepare {
+            Ok(ready) => ready,
+            Err(error) => { self.show_toast_kind(ui::ToastKind::Error, &settings::diagnostic(&error.to_string()), cx); return; }
+        };
+        let root = store.root().to_path_buf();
+        let personal = crate::store::Store::root_dir();
+        let mut writer = store.tree_writer();
+        let scope = room.scope;
+        let written_scope = scope.clone();
+        let written_root = root.clone();
+        let revision = cloud_sync::account_revision();
+        let task = cx.background_executor().spawn(async move {
+            cloud_sync::check_account_revision(revision)?;
+            action.apply(&mut writer, &ids)?;
+            if let Err(error) = shared::original::refresh_owner(&written_root, &written_scope, None) {
+                crate::logging::write(&format!("Shared folder trash projection: {error:#}"));
+            }
+            Ok::<_, anyhow::Error>(writer.list())
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            drop(guard);
+            if let Ok(listing) = &result {
+                let _ = crate::gpui_compat::async_update(cx, |cx| {
+                    if personal != crate::store::Store::root_dir() || cloud_sync::account_revision() != revision { return; }
+                    cloud_sync::activity::update_folder_items(&scope, listing, cx);
+                    crate::app::cloud_notes_changed(&root, &[], false, cx);
+                    if scope.owner.is_none() { crate::app::cloud_notes_changed(&personal, &[], false, cx); }
+                    cloud_sync::recheck_account(&root, cx);
+                });
+            }
+            let _ = this.update(cx, |w, cx| match result {
+                Ok(_) => w.show_toast(action.label(), cx),
+                Err(error) => w.show_toast_kind(ui::ToastKind::Error, &settings::diagnostic(&error.to_string()), cx),
+            });
+            drop(store);
+        }).detach();
+    }
+
     pub(crate) fn open_end_shared(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
         self.sharing_sheet(Sheet::End(room), window, cx);
     }
@@ -55,7 +197,10 @@ impl Workspace {
                 }
                 w.batch = None; w.close_sharing(window, cx); cloud_sync::retry(&personal, cx);
                 if personal_ids.is_empty() { w.navigate_personal(View::Shared, None, window, cx); }
-                else { w.personal_action(window, cx, move |w, window, cx| w.delete_docs(&personal_ids, window, cx)); }
+                else { w.personal_action(window, cx, move |w, window, cx| {
+                    w.entries = w.store.list();
+                    w.delete_docs(&personal_ids, window, cx);
+                }); }
             });
         }).detach();
     }

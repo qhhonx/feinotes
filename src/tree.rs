@@ -204,6 +204,8 @@ impl Workspace {
     pub(crate) fn move_docs(&mut self, ids: &[String], target: Option<String>, cx: &mut Context<Self>) {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.confirm_shared_move(ids, target.as_deref(), cx) { return; }
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let target = target.or_else(|| self.current_room(cx).filter(|room| room.scope.folder).map(|room| room.scope.note));
         let file_before = self.store.track_file_changes();
         let mut failed = false;
         for id in ids {
@@ -227,6 +229,8 @@ impl Workspace {
         self.sync_sub_pages(cx);
         self.entries = self.store.list(); self.sort();
         if !failed { self.show_toast(crate::settings::text("移动成功"), cx); }
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        self.publish_shared_folder_change(cx);
         self.remember_files(file_before, crate::settings::tr("移动", "Move"));
         cx.notify();
     }
@@ -301,7 +305,7 @@ impl Workspace {
         };
         let mut list = div().id("move-tree").flex_1().min_w_0().px(px(8.)).py(px(12.)).overflow_y_scroll().track_scroll(&dlg.scroll);
         if q.is_empty() {
-            list = list.child(
+            list = list.when(!self.is_shared(), |list| list.child(
                 row("move-root".into(), dlg.target == Some(None))
                     .pl(px(16.))
                     .child(icon("library", 16., Theme::icon()))
@@ -312,7 +316,7 @@ impl Workspace {
                         }
                         cx.notify();
                     })),
-            );
+            ));
             for (e, depth) in tree.rows(|id| dlg.expanded.contains(id)) {
                 if hidden.contains(&e.id) || e.meta.folder.is_none() {
                     continue;

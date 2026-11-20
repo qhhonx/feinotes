@@ -20,6 +20,74 @@ pub(crate) struct SharedRow {
     pub created: u64,
     pub opened: u64,
     pub icon: Option<String>,
+    pub folder_items: Vec<FolderItem>,
+    #[cfg(target_os = "macos")]
+    pub access: Option<Access>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct FolderItem {
+    id: String,
+    title: String,
+    icon: Option<String>,
+    folder: bool,
+    parent: String,
+    created: u64,
+    modified: u64,
+    order: u64,
+    markdown: bool,
+    kind: crate::store::DocKind,
+}
+
+impl FolderItem {
+    pub(crate) fn from_listing(id: &str, title: &str, icon: Option<&str>, meta: &crate::store::Meta, scope: &shared::Scope) -> Option<Self> {
+        if id == scope.note || !scope.permits(id) || meta.local() { return None; }
+        Some(Self { id: id.into(), title: title.into(), icon: icon.map(str::to_owned), folder: meta.folder.is_some(),
+            parent: meta.parent.clone()?, created: meta.created, modified: meta.modified, order: meta.order, markdown: meta.markdown, kind: meta.kind })
+    }
+
+    pub(crate) fn entry(&self, scope: &shared::Scope) -> crate::store::Entry {
+        crate::store::Entry { id: self.id.clone(), title: self.title.clone(), icon: self.icon.clone(),
+            meta: crate::store::Meta { parent: Some(self.parent.clone()), folder: self.folder.then(|| self.title.clone()),
+                share_root: Some(scope.note.clone()), created: self.created, modified: self.modified, order: self.order, markdown: self.markdown,
+                kind: self.kind, ..Default::default() }, body: Default::default(), reminders: vec![], links: vec![] }
+    }
+}
+
+// A background read that began before a local write must not roll the sidebar back.
+#[derive(Default)]
+struct LocalActivity {
+    sequence: u64,
+    rooms: std::collections::HashMap<String, u64>,
+}
+impl Global for LocalActivity {}
+
+fn updated_locally(note: &str, cx: &mut App) {
+    if !cx.has_global::<LocalActivity>() { cx.set_global(LocalActivity::default()); }
+    let local = cx.global_mut::<LocalActivity>();
+    local.sequence += 1;
+    local.rooms.insert(note.to_owned(), local.sequence);
+}
+
+pub(crate) fn remove_room(note: &str, cx: &mut App) {
+    updated_locally(note, cx);
+    cx.update_global::<ActivityView, _>(|view, _| view.0.retain(|row| row.room.scope.note != note));
+}
+
+pub(crate) fn update_folder_items(scope: &shared::Scope, entries: &[crate::store::Entry], cx: &mut App) {
+    let Some(row) = cx.try_global::<ActivityView>().and_then(|view| view.0.iter().find(|row| row.room.scope == *scope)) else { return; };
+    let items = folder_items(scope, entries);
+    if row.folder_items == items { return; }
+    updated_locally(&scope.note, cx);
+    cx.update_global::<ActivityView, _>(|view, _| {
+        if let Some(row) = view.0.iter_mut().find(|row| row.room.scope == *scope) { row.folder_items = items; }
+    });
+}
+
+pub(crate) fn folder_items(scope: &shared::Scope, entries: &[crate::store::Entry]) -> Vec<FolderItem> {
+    let mut items: Vec<_> = entries.iter().filter_map(|e| FolderItem::from_listing(&e.id, &e.title, e.icon.as_deref(), &e.meta, scope)).collect();
+    items.sort_by(|a, b| a.id.cmp(&b.id));
+    items
 }
 
 #[derive(Default, PartialEq, Eq)]
@@ -29,13 +97,27 @@ impl Global for ActivityView {}
 pub(crate) fn update_entry(scope: &shared::Scope, entry: &crate::store::Entry, cx: &mut App) {
     if !cx.has_global::<ActivityView>() { return; }
     if cx.global::<ActivityView>().0.iter().any(|row| row.room.scope == *scope && row.room.title == entry.title && row.icon == entry.icon && row.created == entry.meta.created && row.modified == entry.meta.modified && row.opened == entry.meta.opened && row.body == entry.body) { return; }
+    updated_locally(&scope.note, cx);
     cx.update_global::<ActivityView, _>(|view, _| {
         if let Some(row) = view.0.iter_mut().find(|row| row.room.scope == *scope) {
             row.room.title = entry.title.clone(); row.icon = entry.icon.clone();
             row.created = entry.meta.created; row.modified = entry.meta.modified; row.opened = entry.meta.opened; row.body = entry.body.clone();
         } else {
-            view.0.push(SharedRow { room: shared::Room { scope: scope.clone(), title: entry.title.clone() }, unread: false, summary: String::new(), body: entry.body.clone(), modified: entry.meta.modified, created: entry.meta.created, opened: entry.meta.opened, icon: entry.icon.clone() });
+            view.0.push(SharedRow { room: shared::Room { scope: scope.clone(), title: entry.title.clone() }, unread: false, summary: String::new(), body: entry.body.clone(), modified: entry.meta.modified, created: entry.meta.created, opened: entry.meta.opened, icon: entry.icon.clone(), folder_items: vec![],
+                #[cfg(target_os = "macos")]
+                access: None,
+            });
         }
+        sort_rows(&mut view.0);
+    });
+}
+
+pub(crate) fn publish_row(row: SharedRow, cx: &mut App) {
+    if !cx.has_global::<ActivityView>() { cx.set_global(ActivityView::default()); }
+    updated_locally(&row.room.scope.note, cx);
+    cx.update_global::<ActivityView, _>(|view, _| {
+        view.0.retain(|previous| previous.room.scope.note != row.room.scope.note);
+        view.0.push(row);
         sort_rows(&mut view.0);
     });
 }
@@ -135,15 +217,19 @@ fn poll(personal: &Path, account: &str, room: &Room) -> Result<bool> {
     observe(&tx, &room.scope.note, &page.edits)?;
     if let Some(token) = page.token { put(&tx, "shared-activity-token", &token.0)?; }
     else { tx.execute("DELETE FROM library_values WHERE key = 'shared-activity-token'", [])?; }
-    if let Some(access) = page.room_access { remember_access(&tx, access)?; }
+    if let Some(access) = page.room_access {
+        remember_access(&tx, access)?;
+        if access == Access::Revoked { super::journal::archive_owner_ended(&tx, &room.scope)?; }
+    }
     super::check_account_revision(revision)?;
     tx.commit()?;
     Ok(page.more)
 }
 
-pub(super) fn row(personal: &Path, mut room: Room) -> Result<Option<SharedRow>> {
+pub(crate) fn row(personal: &Path, mut room: Room) -> Result<Option<SharedRow>> {
     let root = shared::room_root(personal, &room.scope.note)?;
-    if root.join("shared-note-ended").exists() { return Ok(None); }
+    if root.join("shared-note-ended").exists() || shared::original::awaiting_publication(personal, &room)
+        || shared::original::new_pending(personal, &root, &room)? { return Ok(None); }
     let db = room_db(personal, &room)?;
     if value(&db, "shared-activity-revoked")?.is_some() { return Ok(None); }
     let has_activity: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'shared_activity')",
@@ -166,7 +252,30 @@ pub(super) fn row(personal: &Path, mut room: Room) -> Result<Option<SharedRow>> 
     });
     if let Some(title) = meta.folder.as_ref() { room.title = title.clone(); }
     let icon = db.query_row("SELECT icon FROM library_documents WHERE id = ?1", [&room.scope.note], |row| row.get::<_, Option<String>>(0)).optional().ok().flatten().flatten();
-    Ok(Some(SharedRow { room, unread, summary, body, modified: meta.modified, created: meta.created, opened: meta.opened, icon }))
+    let folder_items = if room.scope.folder { cached_folder_items(&db, &room.scope)? } else { vec![] };
+    #[cfg(target_os = "macos")]
+    let access = if room.scope.folder { shared::cached_access(&db) } else { None };
+    Ok(Some(SharedRow { room, unread, summary, body, modified: meta.modified, created: meta.created, opened: meta.opened, icon, folder_items,
+        #[cfg(target_os = "macos")]
+        access,
+    }))
+}
+
+// Read only the catalogue fields needed for the sidebar. Closed rooms stay closed.
+fn cached_folder_items(db: &Connection, scope: &shared::Scope) -> Result<Vec<FolderItem>> {
+    let mut stmt = db.prepare("SELECT e.id, e.meta, d.title, d.icon FROM library_entries e
+        LEFT JOIN library_documents d ON d.id = e.id AND d.trashed = 0 WHERE e.id != ?1 ORDER BY e.id")?;
+    let mut rows = stmt.query([&scope.note])?;
+    let mut items = vec![];
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        let Ok(meta) = serde_json::from_str::<crate::store::Meta>(row.get_ref(1)?.as_str()?) else { continue; };
+        let title: Option<String> = row.get(2)?;
+        let icon: Option<String> = row.get(3)?;
+        if let Some(title) = meta.folder.as_deref().or(title.as_deref())
+            && let Some(item) = FolderItem::from_listing(&id, title, icon.as_deref(), &meta, scope) { items.push(item); }
+    }
+    Ok(items)
 }
 
 pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Option<PathBuf>, generation: uuid::Uuid, discover_owned: bool) {
@@ -194,19 +303,27 @@ pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Opt
     }
     cx.spawn(async move |cx| {
         let mut index = 0usize;
+        // Show the local catalogue before the first CloudKit activity request.
+        let mut loading_cache = true;
         let mut delay = Duration::ZERO;
         let mut last_error = None;
         loop {
             cx.background_executor().timer(delay).await;
             if !crate::gpui_compat::async_update(cx, |cx| super::current(&personal, generation, cx)).unwrap_or(false) { break; }
+            let revision = crate::gpui_compat::async_update(cx, |cx|
+                cx.try_global::<LocalActivity>().map_or(0, |local| local.sequence)).unwrap_or(0);
             let (root, key, pause) = (personal.clone(), account.clone(), pause.clone());
             let lease = crate::store::Store::session_lease(&personal);
+            let cache_only = std::mem::take(&mut loading_cache);
             let (view, next, more, error) = cx.background_executor().spawn(async move {
                 let _lease = lease;
                 let rooms = shared::rooms(&root).unwrap_or_default();
                 let current = if rooms.is_empty() { 0 } else { index % rooms.len() };
-                let result = if pause.as_ref().is_some_and(|path| path.exists()) { Ok(false) }
-                    else { rooms.get(current).map_or(Ok(false), |room| poll(&root, &key, room)) };
+                let result = if cache_only || pause.as_ref().is_some_and(|path| path.exists()) { Ok(false) }
+                    else { rooms.get(current).map_or(Ok(false), |room| {
+                        let cache = shared::room_root(&root, &room.scope.note)?;
+                        if shared::original::pending_new(&cache) { Ok(false) } else { poll(&root, &key, room) }
+                    }) };
                 let mut view = rooms.into_iter().filter_map(|room| row(&root, room).ok().flatten()).collect::<Vec<_>>();
                 sort_rows(&mut view);
                 (view, current + 1, result.as_ref().is_ok_and(|more| *more), result.err())
@@ -217,12 +334,17 @@ pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Opt
                 if last_error.as_ref() != Some(&error) { crate::logging::write(&format!("Shared note activity: {error}")); }
                 last_error = Some(error);
             } else { last_error = None; }
-            index = if more { next - 1 } else { next };
-            delay = if more { Duration::from_secs(1) } else if view.is_empty() { Duration::from_secs(8) }
+            if !cache_only { index = if more { next - 1 } else { next }; }
+            delay = if cache_only { Duration::ZERO } else if more { Duration::from_secs(1) } else if view.is_empty() { Duration::from_secs(8) }
                 else { Duration::from_secs(4) };
             if !crate::gpui_compat::async_update(cx, |cx| {
                 if !super::current(&personal, generation, cx) { return false; }
                 let mut view = ActivityView(view, list_error);
+                if let Some(local) = cx.try_global::<LocalActivity>() {
+                    let recent = |row: &SharedRow| local.rooms.get(&row.room.scope.note).is_some_and(|seq| *seq > revision);
+                    view.0.retain(|row| !recent(row));
+                    view.0.extend(cx.global::<ActivityView>().0.iter().filter(|row| recent(row)).cloned());
+                }
                 // A poll can read metadata just before the editor records an open.
                 let opened: std::collections::HashMap<_, _> = cx.global::<ActivityView>().0.iter()
                     .map(|row| (&row.room.scope.note, row.opened)).collect();

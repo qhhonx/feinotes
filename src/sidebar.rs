@@ -28,7 +28,7 @@ const ROW_ITEM: f32 = crate::ui::MENU_ROW_H;
 const ROW_DIVIDER: f32 = 11.;
 const ROW_ITEMS: usize = 9;
 const ROW_DIVIDERS: usize = 2;
-const DOWNLOAD_INDEX: usize = 5;
+const DOWNLOAD_INDEX: usize = 6;
 const DIVIDERS_BEFORE_DOWNLOAD: usize = 1;
 
 const fn row_menu_height(items: usize, dividers: usize) -> f32 {
@@ -40,7 +40,7 @@ const fn row_sub_top(menu_top: f32) -> f32 {
 }
 
 const _: () = assert!(row_menu_height(ROW_ITEMS, ROW_DIVIDERS) == 324.);
-const _: () = assert!(row_sub_top(0.) == 171.);
+const _: () = assert!(row_sub_top(0.) == 203.);
 
 /// Sidebar geometry (measured from the window edge), shared by the
 /// document sidebar and 设置's: selection pills start 14pt in, every row is
@@ -67,31 +67,37 @@ pub(crate) fn folder_color() -> Hsla { crate::themes::active().color("sidebar.fo
 pub(crate) fn hover() -> Hsla { crate::themes::active().color("sidebar.hover").unwrap_or_else(Theme::sidebar_hover) }
 pub(crate) fn selection_fill() -> Hsla { crate::themes::active().color("sidebar.selected").unwrap_or_else(Theme::sidebar_selected) }
 
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+pub(crate) fn shared_document_icon() -> Svg {
+    icon("shared-document", 15., Theme::icon())
+}
+
 pub(crate) fn shared_unread_dot() -> Div { div().size(px(6.)).flex_none().rounded_full().bg(Theme::primary()) }
 
 pub(crate) fn row_action_slot() -> Div {
     div().relative().size(px(22.)).mr(px(4.)).flex_none().flex().items_center().justify_center()
 }
 
-pub(crate) fn folder_glyph(entry: &Entry, open: bool, _cx: &App) -> Option<&'static str> {
+pub(crate) fn folder_glyph(entry: &Entry, open: bool, _mark_shared: bool, _cx: &App) -> Option<&'static str> {
+    entry.meta.folder.as_ref()?;
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-    if (entry.meta.folder.is_some() && entry.meta.share_root.as_ref() == Some(&entry.id))
+    if _mark_shared && (entry.meta.share_root.is_some()
         || _cx.try_global::<crate::cloud_sync::activity::ActivityView>().is_some_and(|view|
-            view.0.iter().any(|row| row.room.scope.folder && row.room.scope.note == entry.id)) {
+            view.0.iter().any(|row| row.room.scope.folder && row.room.scope.note == entry.id))) {
         return Some(if open { "folder-shared-open" } else { "folder-shared" });
     }
-    entry.meta.folder.as_ref().map(|_| if open { "folder-open" } else { "folder" })
+    Some(if open { "folder-open" } else { "folder" })
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-pub(crate) fn entry_icon(entry: &Entry, open: bool, cx: &App) -> Div {
-    let folder = folder_glyph(entry, open, cx);
+pub(crate) fn entry_icon(entry: &Entry, open: bool, mark_shared: bool, cx: &App) -> Div {
+    let folder = folder_glyph(entry, open, mark_shared, cx);
     div().size(px(20.)).flex_none().flex().items_center().justify_center().relative().map(|d| match &entry.icon {
         _ if let Some(glyph) = folder => d.child(icon(glyph, ROW_ICON, folder_color())),
         _ if entry.meta.markdown => d.child(icon("doc-md", ROW_ICON, Theme::icon())),
         Some(emoji) => d.text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).child(emoji.clone()),
         None => d.child(icon("doc", ROW_ICON, Theme::icon())),
-    }).when(folder.is_none() && entry.meta.share_root.is_some(), |d| d.child(div().absolute().right_0().bottom_0().rounded_full().bg(Theme::bg_body()).child(icon("share", 9., Theme::primary()))))
+    })
 }
 
 /// The footer row: like 主页 (same pill, glyph and label columns) under
@@ -146,6 +152,10 @@ pub(crate) fn checkbox(state: Check, disabled: bool, group: &'static str) -> Div
         .when(state == Check::Partial, |d| d.child(div().w(px(8.)).h(px(2.)).rounded(px(1.)).bg(white)))
 }
 
+pub(crate) fn batch_check_slot() -> Div {
+    div().size(px(20.)).flex_none().flex().items_center().justify_center()
+}
+
 impl Workspace {
     pub(crate) fn sidebar_selection(&self, folder: bool) -> Hsla {
         let key = if folder { "sidebar.folder.focused" } else { "sidebar.focused" };
@@ -170,14 +180,14 @@ impl Workspace {
 
     pub(crate) fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let entries = self.personal_navigation_entries(cx);
-        self.folder_drag.personal_rows = self.is_shared().then(|| entries.clone());
+        self.folder_drag.personal_rows = (self.is_shared() || cfg!(all(target_os = "macos", feature = "cloudkit-sync"))).then(|| entries.clone());
         let mut pinned: Vec<Entry> = entries.iter().filter(|entry| entry.meta.pinned).cloned().collect();
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        pinned.extend(self.shared_entries(cx).into_iter().filter(|entry| entry.meta.pinned));
+        pinned.extend(self.shared_sidebar_entries(cx).into_iter().filter(|entry| entry.meta.pinned));
         let mut seen = std::collections::HashSet::new();
         pinned.retain(|entry| seen.insert(entry.id.clone()));
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let shared_rows = (!crate::cloud_restore::local_only() && !self.sharing.folded).then(|| self.organized_shared_entries(cx));
+        let shared_rows = (!crate::cloud_restore::local_only() && !self.sharing.folded).then(|| self.shared_sidebar_entries(cx));
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let shared_rows: Option<Vec<Entry>> = None;
         self.sidebar_selection_row = self.resolve_sidebar_entry(&entries, shared_rows.as_deref(), &pinned, cx);
@@ -248,7 +258,7 @@ impl Workspace {
             if !self.folded[0] {
                 for e in pinned {
                     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                    if self.shared_list_room(&e.id, cx).is_some() { list = list.child(self.shared_shortcut_row(&e, cx)); continue; }
+                    if self.shared_list_room(&e.id, cx).is_some() || e.meta.share_root.as_deref().is_some_and(|root| root != e.id) { list = list.child(self.shared_shortcut_row(&e, cx)); continue; }
                     list = list.child(self.doc_row(&e, "pinned", 0, false, cx));
                 }
             }
@@ -309,7 +319,7 @@ impl Workspace {
             .when(self.batch.is_none(), |d| {
                 d.child(footer_slot(
                     footer_row("ft-settings", "settings-gear", crate::settings::tr("设置", "Settings"))
-                        .on_click(cx.listener(|w, _, _, cx| w.show_view(View::Settings, cx))),
+                        .on_click(cx.listener(|w, _, window, cx| w.open_global_settings(window, cx))),
                 ))
             })
             // 批量操作 toolbar: 创建副本 | 移动到 | 删除, minus the cloud ones.
@@ -342,10 +352,10 @@ impl Workspace {
         let folded = self.sharing.folded;
         let rows = cx.try_global::<crate::cloud_sync::activity::ActivityView>().map(|view| view.0.clone()).unwrap_or_default();
         let header = if self.shared_batch() {
-            self.batch_section(true, rows.iter().take(BATCH_LIMIT).map(|row| row.room.scope.note.clone()).collect(), cx)
+            self.batch_section(true, rows.iter().filter(|row| !row.room.scope.folder).take(BATCH_LIMIT).map(|row| row.room.scope.note.clone()).collect(), cx)
         } else {
             self.section_heading(None, crate::settings::tr("共享文档", "Shared documents"), folded, folded && rows.iter().any(|row| row.unread), cx)
-                .child(self.section_batch_button(true, cx)).child(self.section_add_button(true, cx))
+                .child(self.section_invitation_button(cx)).child(self.section_batch_button(true, cx)).child(self.section_add_button(true, cx))
         };
         let mut section = div().flex().flex_col().child(header);
         if let Some(entries) = entries { section = section.child(self.render_shared_sidebar_rows(entries, window, cx)); }
@@ -483,6 +493,7 @@ impl Workspace {
 
     fn section_batch_button(&self, shared: bool, cx: &mut Context<Self>) -> Stateful<Div> {
         Self::section_trigger(if shared { "shared-section-batch" } else { "section-batch" }, "batch")
+            .when(shared, |d| d.ml(px(2.)))
             .tip(crate::settings::text("批量操作"), None).on_click(cx.listener(move |w, _, window, cx| {
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 if shared {
@@ -498,26 +509,33 @@ impl Workspace {
             }))
     }
 
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn section_invitation_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        Self::section_trigger("shared-section-accept", "mail-check").ml(px(2.))
+            .child(self.home.track("accept-sidebar"))
+            .when(self.accept_invitation_open(), |d| d.bg(selection_fill()))
+            .tip(crate::settings::tr("接受邀请", "Accept invitation"), None)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|w, _, window, cx| w.open_accept_invitation_from("accept-sidebar", window, cx)))
+    }
+
     fn section_add_button(&self, shared: bool, cx: &mut Context<Self>) -> Stateful<Div> {
         use crate::folders::CreateTarget;
-        let key = if shared { "accept-sidebar" } else { "create-sidebar" };
+        let key = if shared { "create-shared-sidebar" } else { "create-sidebar" };
         let target = CreateTarget::PersonalSidebar(None);
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let target = if shared { CreateTarget::Shared } else { target };
+        let target = if shared { CreateTarget::SharedSidebar } else { target };
         let open = self.create_menu.as_ref().is_some_and(|(item, _)| *item == target);
         Self::section_trigger(if shared { "shared-section-add" } else { "section-add" }, "plus")
-            .ml(px(2.)).mr(px(4.)).child(self.home.track(key)).when(open, |d| d.bg(selection_fill())).tip(crate::settings::tr("新建", "New"), None)
+            .ml(px(2.)).mr(px(4.)).child(self.home.track(key)).when(open, |d| d.bg(selection_fill()))
+            .tip(if shared { crate::settings::tr("新建并共享", "Create and share") } else { crate::settings::tr("新建", "New") }, None)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| {
+            .on_click(cx.listener(move |w, ev: &ClickEvent, _window, cx| {
                 let pos = w.home.anchor(key).map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.)));
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                if shared {
-                    if w.accept_invitation_open() { w.close_sharing(window, cx); }
-                    w.create_menu = (!open).then_some((CreateTarget::Shared, pos)); cx.notify(); return;
-                }
-                w.personal_action(window, cx, move |w, _, cx| {
-                    w.create_menu = (!open).then_some((CreateTarget::PersonalSidebar(None), pos)); cx.notify();
-                });
+                if shared && w.accept_invitation_open() { w.close_sharing(_window, cx); }
+                w.create_menu = (!open).then(|| (target.clone(), pos));
+                cx.notify();
             }))
     }
 
@@ -590,6 +608,7 @@ impl Workspace {
     fn row_base(&self, e: &Entry, key: &str, cx: &mut Context<Self>) -> Stateful<Div> {
         let id = e.id.clone();
         let id2 = e.id.clone();
+        let stable_menu = cfg!(target_os = "macos") && e.meta.folder.is_some();
         let in_lib = key == "doc";
         div()
             .id(SharedString::from(format!("{key}-{}", e.id)))
@@ -628,6 +647,12 @@ impl Workspace {
                 MouseButton::Right,
                 cx.listener(move |w, ev: &MouseDownEvent, window, cx| {
                     let id2 = id2.clone(); let pos = ev.position;
+                    if stable_menu {
+                        w.row_menu = Some(RowMenu { id: id2, pos, corner: Corner::TopLeft, sub: false, batch: false });
+                        w.create_menu = None;
+                        cx.notify();
+                        return;
+                    }
                     w.personal_action(window, cx, move |w, _, cx| {
                     let batch = in_lib && w.batch.is_some();
                     if batch && !w.batch.as_ref().is_some_and(|b| b.contains(&id2)) && !w.toggle_check(&id2) {
@@ -641,11 +666,17 @@ impl Workspace {
     }
 
     pub(crate) fn more_button(&self, e: &Entry, key: &str, cx: &mut Context<Self>) -> Stateful<Div> {
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if matches!(key, "doc" | "pinned" | "shared-pinned") && self.published_document_share(e, cx) {
+            return self.more_button_with_status(e, key, Some(div().child(shared_document_icon())), cx)
+                .tip(crate::settings::tr("已共享", "Shared"), None);
+        }
         self.more_button_with_status(e, key, None, cx)
     }
 
     pub(crate) fn more_button_with_status(&self, e: &Entry, key: &str, status: Option<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
         let id = if key.starts_with("shared") { format!("shared:{}", e.id) } else { e.id.clone() };
+        let stable_menu = cfg!(target_os = "macos") && e.meta.folder.is_some();
         let shared = key.starts_with("shared");
         let slot = format!("{key}-{}", e.id);
         let slot2 = slot.clone();
@@ -677,7 +708,11 @@ impl Workspace {
                     let b = lookup.borrow().get(&slot2).copied();
                     let pos = b.map_or(ev.position, |b| point(-b.left() - px(1.), b.top()));
                     let id = id.clone();
-                    if shared || id.starts_with("collection-") { w.row_menu = Some(RowMenu { id, pos, corner: Corner::TopLeft, sub: false, batch: false }); cx.notify(); }
+                    if shared || stable_menu || id.starts_with("collection-") {
+                        w.row_menu = Some(RowMenu { id, pos, corner: Corner::TopLeft, sub: false, batch: false });
+                        w.create_menu = None;
+                        cx.notify();
+                    }
                     else { w.personal_action(window, cx, move |w, _, cx| { w.row_menu = Some(RowMenu { id, pos, corner: Corner::TopLeft, sub: false, batch: false }); cx.notify(); }); }
                 }),
             )
@@ -685,13 +720,11 @@ impl Workspace {
 
     /// Creation inside a folder: the folder button makes one directly; the plus
     /// opens the same 新建 menu as 我的文档's, hung from the button.
-    fn add_button(&self, e: &Entry, key: &str, folder: bool, cx: &mut Context<Self>) -> Stateful<Div> {
-        let id = e.id.clone();
-        let slot = format!("add-{key}-{}", e.id);
+    pub(crate) fn add_button(&self, e: &Entry, key: &str, folder: bool, target: crate::folders::CreateTarget, cx: &mut Context<Self>) -> Stateful<Div> {
+        let slot = format!("add-{key}-{folder}-{}", e.id);
         let (record, lookup) = (self.more_bounds.clone(), self.more_bounds.clone());
         let anchor = |b: Bounds<Pixels>| point(b.left(), b.bottom() + px(4.));
-        let target = crate::folders::CreateTarget::PersonalSidebar(Some(id));
-        let open = !folder && self.create_menu.as_ref().is_some_and(|(p, pos)| p == &target && self.more_bounds.borrow().get(&slot).is_some_and(|b| anchor(*b) == *pos));
+        let open = !folder && self.create_menu.as_ref().is_some_and(|(item, _)| item == &target);
         div()
             .id(SharedString::from(format!("add-{key}-{folder}-{}", e.id)))
             .relative()
@@ -699,27 +732,37 @@ impl Workspace {
             .p(px(3.))
             .flex_none()
             .rounded(px(6.))
-            .opacity(if open { 1. } else { self.folder_drag.reveal(&e.id) })
+            .when(!open, |d| if key == "shared-folder" {
+                d.opacity(0.).group_hover("doc-row", |s| s.opacity(1.))
+            } else { d.opacity(self.folder_drag.reveal(&e.id)) })
             .when(open, |d| d.bg(selection_fill()))
             .hover(|s| s.bg(selection_fill()))
             .child(icon(if folder { "folder-plus" } else { "plus" }, 16., Theme::icon()))
-            .when(!folder, |d| { let slot = slot.clone(); d.child(canvas(move |b, _, _| { record.borrow_mut().insert(slot.clone(), b); }, |_, _, _, _| {}).absolute().inset_0()) })
+            .child({ let slot = slot.clone(); canvas(move |b, _, _| { record.borrow_mut().insert(slot.clone(), b); }, |_, _, _, _| {}).absolute().inset_0() })
             .tip(crate::settings::tr(if folder { "新建文件夹" } else { "新建" }, if folder { "New folder" } else { "New" }), None)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| {
                 cx.stop_propagation();
                 w.row_menu = None;
                 let pos = lookup.borrow().get(&slot).copied().map_or(ev.position(), anchor);
-                let target = target.clone(); w.personal_action(window, cx, move |w, window, cx| {
-                    if folder { w.new_folder(target, None, window, cx); }
-                    else { w.create_menu = if open { None } else { Some((target, pos)) }; }
-                    cx.notify();
-                });
+                if folder { w.new_folder(target.clone(), None, window, cx); }
+                else { w.create_menu = (!open).then(|| (target.clone(), pos)); cx.notify(); }
             }))
     }
 
-    pub(crate) fn sidebar_title(&self, e: &Entry, selected: bool, drop_target: bool) -> AnyElement {
-        let renaming = self.rename.as_ref().filter(|r| r.id == e.id).map(|r| r.field.clone());
+    pub(crate) fn folder_row_actions(&self, entry: &Entry, key: &str, target: Option<crate::folders::CreateTarget>, cx: &mut Context<Self>) -> Div {
+        div().absolute().top_0().bottom_0().right_0().flex().items_center()
+            .child(self.more_button(entry, key, cx))
+            .when_some(target, |d, target| d.child(self.add_button(entry, key, true, target.clone(), cx).ml(px(2.)))
+                .child(self.add_button(entry, key, false, target, cx).ml(px(2.)).mr(px(4.))))
+    }
+
+    pub(crate) fn sidebar_rename(&self, id: &str, section: SidebarSection) -> Option<&crate::app::Rename> {
+        self.rename.as_ref().filter(|r| r.id == id && r.sidebar_section.is_none_or(|origin| origin == section))
+    }
+
+    pub(crate) fn sidebar_title(&self, e: &Entry, section: SidebarSection, selected: bool, drop_target: bool) -> AnyElement {
+        let renaming = self.sidebar_rename(&e.id, section).map(|r| r.field.clone());
         match renaming {
             // The field opens with the text exactly where the name was (2 + 1 + 6 = the
             // label's 9): a white well with a thin edge, wrapped in a soft focus ring.
@@ -775,11 +818,20 @@ impl Workspace {
         let selected = self.sidebar_row_selected(section, &e.id);
         let folder = e.meta.folder.is_some();
         let lib_batch = self.batch.is_some() && key == "doc";
-        let float = key == "doc" && !lib_batch && self.rename.as_ref().is_none_or(|r| r.id != e.id);
-        let menu_open = self.row_menu.as_ref().is_some_and(|m| m.id == e.id && !m.batch && m.pos.x < px(0.)) || (folder && self.create_menu.as_ref().is_some_and(|(p, _)| matches!(p, crate::folders::CreateTarget::Library(Some(parent)) | crate::folders::CreateTarget::PersonalSidebar(Some(parent)) if parent == &e.id)));
+        let renaming = self.sidebar_rename(&e.id, section).is_some();
+        let float = key == "doc" && !lib_batch && !renaming;
+        let target = (float && folder).then(|| {
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            { self.sidebar_create_target(e) }
+            #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+            { crate::folders::CreateTarget::PersonalSidebar(Some(e.id.clone())) }
+        });
+        let menu_open = self.row_menu.as_ref().is_some_and(|m| m.id == e.id && !m.batch && m.pos.x < px(0.))
+            || self.create_menu.as_ref().is_some_and(|(item, _)| target.as_ref() == Some(item));
         let give = if float { (if folder { 74. } else { 28. }) * if menu_open { 1. } else { self.folder_drag.reveal(&e.id) } } else { 0. };
-        let title = div().flex_1().min_w_0().flex().mr(px(give)).child(self.sidebar_title(e, selected, drop_target));
-        let renaming = self.rename.as_ref().is_some_and(|r| r.id == e.id);
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let give = if float && self.published_document_share(e, cx) { give.max(28.) } else { give };
+        let title = div().flex_1().min_w_0().flex().mr(px(give)).child(self.sidebar_title(e, section, selected, drop_target));
         // 批量操作: 我的文档 rows get a checkbox and lose "…"; checked rows are tinted.
         let batch = self.batch.as_ref().filter(|_| key == "doc" && !self.shared_batch());
         let checked = batch.is_some_and(|b| b.contains(&e.id));
@@ -796,14 +848,9 @@ impl Workspace {
             .pl(px(6. + 18. * depth as f32))
             .when(batch.is_some(), |d| {
                 d.child(
-                    div()
+                    batch_check_slot()
                         .id(SharedString::from(format!("check-{}", e.id)))
-                        .size(px(20.))
                         .mr(px(4.))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
                         .when(blocked, |d| d.tip(crate::settings::text("无法选中，选择的页面数已到达上限"), None))
                         .child(checkbox(if checked { Check::On } else { Check::Off }, blocked, "doc-row")),
                 )
@@ -825,7 +872,7 @@ impl Workspace {
                     _ if folder => {
                         let s = if key == "doc" { self.folder_drag.pop(&e.id) } else { 1. };
                         d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(1. - chevron)
-                            .child(icon(if drop_target { "folder-input" } else { folder_glyph(e, open, cx).unwrap_or("folder") }, ROW_ICON, if selected && self.sidebar_focused && self.sidebar_window_active { crate::themes::active().color("sidebar.folder.focused.text").unwrap_or_else(folder_color) } else { folder_color() })
+                            .child(icon(if drop_target { "folder-input" } else { folder_glyph(e, open, true, cx).unwrap_or("folder") }, ROW_ICON, if selected && self.sidebar_focused && self.sidebar_window_active { crate::themes::active().color("sidebar.folder.focused.text").unwrap_or_else(folder_color) } else { folder_color() })
                                 .with_transformation(Transformation::scale(size(s, s)))))
                         .when(chevron > 0.005, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(chevron)
                             .child(icon("disclosure", ROW_ICON, if selected { self.sidebar_selection_text(true) } else { Theme::icon() })
@@ -839,11 +886,7 @@ impl Workspace {
             .child(title)
             // A folder's "…", "new folder" and "+" sit in the same columns as the header's
             // 批量操作, 新建文件夹 and 新建文档.
-            .when(float, |d| {
-                let end = div().absolute().top_0().bottom_0().right_0().flex().items_center();
-                d.child(if folder { end.child(self.more_button(e, key, cx).mr(px(0.))).child(self.add_button(e, key, true, cx).ml(px(2.))).child(self.add_button(e, key, false, cx).ml(px(2.)).mr(px(4.))) }
-                    else { end.child(self.more_button(e, key, cx)) })
-            })
+            .when(float, |d| d.child(self.folder_row_actions(e, key, target.filter(|target| self.can_create_folder(target, cx)), cx)))
             .when(!renaming && key != "doc" && batch.is_none(), |d| d.child(self.more_button(e, key, cx)))
     }
 
@@ -851,8 +894,22 @@ impl Workspace {
         let Some(m) = self.row_menu.clone() else { return vec![] };
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         {
-            if let Some(id) = m.id.strip_prefix("shared:") { let mut shared = m.clone(); shared.id = id.to_string(); return self.shared_row_menu(shared, window, cx); }
-            if self.shared_list_room(&m.id, cx).is_some() { return self.shared_row_menu(m, window, cx); }
+            let shared_id = m.id.strip_prefix("shared:").unwrap_or(&m.id);
+            #[cfg(target_os = "macos")]
+            if !m.batch && let Some((room, _)) = self.shared_folder_context(shared_id, cx)
+                && shared_id != room.scope.note {
+                let section = if m.id.starts_with("shared:") || room.scope.owner.is_some() { SidebarSection::Shared } else { SidebarSection::Personal };
+                return self.shared_nested_folder_menu(&m, room, SidebarEntry::new(section, shared_id), cx);
+            }
+            if self.shared_list_room(shared_id, cx).is_some() {
+                let mut menu = m.clone();
+                menu.id = shared_id.to_owned();
+                let section = if m.id.starts_with("shared:") || self.home.shared() { SidebarSection::Shared } else { SidebarSection::Personal };
+                return self.shared_row_menu(menu, section, window, cx);
+            }
+            if (m.id.starts_with("shared:") || !self.is_shared()) && let Some(room) = self.shared_child_room(shared_id,cx) {
+                return self.shared_child_row_menu(&m,shared_id,room,cx);
+            }
         }
         // The context menu: rows on the quiet hover fill.
         let item_c = |id: &'static str, ic: &'static str, label: &'static str, color: Hsla, icon_color: Hsla| {
@@ -874,9 +931,12 @@ impl Workspace {
                 .child(item("private-folder-remove", "folder", crate::settings::tr("移除分类并保留文档", "Remove folder, keep items")).on_click(cx.listener(move |w, _, _, cx| w.remove_collection(&remove, cx))))))
                 .with_priority(2).into_any_element()];
         }
-        if !m.batch && self.entries.iter().any(|e| e.id == m.id && e.meta.folder.is_some()) { return self.folder_row_menu(m, cx); }
+        if !m.batch && self.entries.iter().chain(self.folder_drag.personal_rows.iter().flatten())
+            .any(|e| e.id == m.id && e.meta.folder.is_some()) { return self.folder_row_menu(m, cx); }
         if !m.batch && self.entries.iter().any(|e| e.id == m.id && e.meta.local()) { return self.local_row_menu(m, cx); }
         let Some((pinned, starred)) = self.entries.iter().find(|e| e.id == m.id).map(|e| (e.meta.pinned, e.meta.starred > 0)) else { return vec![] };
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let (pinned, starred) = self.shared_child_marks(&m.id,cx).map_or((pinned,starred), |(pin,star)| (pin,star>0));
         let divider = || div().mx(px(8.)).my(px(5.)).h(px(1.)).bg(Theme::line_border());
         if m.batch {
             // Right-click in 批量操作: the batch menu minus 添加快捷方式到, 转移所有权.
@@ -914,8 +974,10 @@ impl Workspace {
         let pdf = m.id.clone();
         let new_window = m.id.clone();
         let sub_bounds = self.row_sub_bounds.clone();
-        // The row menu leaves out the cloud entries 在新标签页打开, 分享,
-        // 复制链接, 添加快捷方式到, 转移所有权, 设置密级.
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let share_row = !self.is_shared() && !crate::cloud_restore::local_only();
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+        let share_row = false;
         let menu = popover()
             .id("row-menu")
             .occlude()
@@ -939,14 +1001,29 @@ impl Workspace {
                     })),
             )
             .child(
-                item("rm-copy", "copy", crate::settings::text("创建副本"))
+                item("rm-pin", if pinned { "pin-off" } else { "pin" }, if pinned { crate::settings::text("从“置顶”移除") } else { crate::settings::text("添加到“置顶”") })
                     .on_hover(set_sub(false))
-                    .on_click(cx.listener(move |w, _, window, cx| w.duplicate_doc(&dup, window, cx))),
+                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_pin(&pin, cx))),
+            )
+            .child(
+                item("rm-star", if starred { "star-off" } else { "star" }, if starred { crate::settings::text("取消收藏") } else { crate::settings::tr("收藏", "Add to favorites") })
+                    .on_hover(set_sub(false))
+                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_star(&star, cx))),
+            )
+            .child(
+                item("rm-rename", "square-pen", crate::settings::text("重命名"))
+                    .on_hover(set_sub(false))
+                    .on_click(cx.listener(move |w, _, window, cx| w.start_rename(&ren, window, cx))),
             )
             .child(
                 item("rm-move", "folder-input", crate::settings::text("移动到"))
                     .on_hover(set_sub(false))
                     .on_click(cx.listener(move |w, _, window, cx| w.open_move(vec![mv.clone()], window, cx))),
+            )
+            .child(
+                item("rm-copy", "copy", crate::settings::text("创建副本"))
+                    .on_hover(set_sub(false))
+                    .on_click(cx.listener(move |w, _, window, cx| w.duplicate_doc(&dup, window, cx))),
             )
             .child(
                 item("rm-path", "copy", crate::settings::text("复制文件地址"))
@@ -959,16 +1036,6 @@ impl Workspace {
                         }
                     })),
             )
-            .child(
-                item("rm-pin", if pinned { "pin-off" } else { "pin" }, if pinned { crate::settings::text("从“置顶”移除") } else { crate::settings::text("添加到“置顶”") })
-                    .on_hover(set_sub(false))
-                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_pin(&pin, cx))),
-            )
-            .child(
-                item("rm-star", if starred { "star-off" } else { "star" }, if starred { crate::settings::text("取消收藏") } else { crate::settings::tr("收藏", "Add to favorites") })
-                    .on_hover(set_sub(false))
-                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_star(&star, cx))),
-            )
             .child(divider())
             .child(
                 item("rm-download", "export", crate::settings::text("下载"))
@@ -976,11 +1043,19 @@ impl Workspace {
                     .child(icon("chevron-right", 10., Theme::icon()))
                     .on_hover(set_sub(true)),
             )
-            .child(
-                item("rm-rename", "square-pen", crate::settings::text("重命名"))
-                    .on_hover(set_sub(false))
-                    .on_click(cx.listener(move |w, _, window, cx| w.start_rename(&ren, window, cx))),
-            )
+            .map(|d| {
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                {
+                    let target = m.id.clone();
+                    d.when(share_row, |d| d.child(divider()).child(item("rm-share", "share", crate::settings::tr("共享", "Share"))
+                        .on_hover(set_sub(false)).on_click(cx.listener(move |w, _, window, cx| {
+                            w.row_menu = None;
+                            w.create_shared_note(&target,window,cx);
+                        }))))
+                }
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+                { d }
+            })
             .child(divider())
             .child(
                 item_c("rm-del", "bin", crate::settings::text("删除"), Theme::danger(), Theme::danger())
@@ -988,7 +1063,8 @@ impl Workspace {
                     .on_click(cx.listener(move |w, _, _, cx| w.ask_delete(&del, cx))),
             );
         let vh = f32::from(window.viewport_size().height);
-        let menu_h = row_menu_height(ROW_ITEMS, ROW_DIVIDERS);
+        let shared_rows = usize::from(share_row);
+        let menu_h = row_menu_height(ROW_ITEMS + shared_rows, ROW_DIVIDERS + shared_rows);
         // From the "…" button: hang 2px below it, or sit 2px above it when
         // there's no room below. From a right-click: at the pointer.
         let (origin, corner) = if m.pos.x < px(0.) {
@@ -1049,7 +1125,13 @@ type PersonalAction = Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<W
 impl Workspace {
     fn resolve_sidebar_entry(&self, personal: &[Entry], shared_rows: Option<&[Entry]>, pinned: &[Entry], cx: &App) -> Option<SidebarEntry> {
         let shared_tree = shared_rows.unwrap_or_default();
-        let in_tree = |rows: &[Entry], id: &str| crate::tree::Tree::new(rows).rows(|id| self.expanded.contains(id)).iter().any(|(row, _)| row.id == id);
+        let in_tree = |rows: &[Entry], expanded: &std::collections::HashSet<String>, id: &str| {
+            crate::tree::Tree::new(rows).rows(|id| expanded.contains(id)).iter().any(|(row, _)| row.id == id)
+        };
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let shared_expanded = &self.sharing.expanded;
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+        let shared_expanded = &self.expanded;
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let scope = crate::cloud_sync::shared::scope(&self.store, cx);
         let id = match self.view {
@@ -1060,7 +1142,7 @@ impl Workspace {
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             View::Home if self.home.tab == crate::home::HomeTab::Shared => {
                 let id = self.sharing.collection.as_deref()?;
-                return in_tree(shared_tree, id).then(|| SidebarEntry::new(SidebarSection::Shared, id));
+                return in_tree(shared_tree, shared_expanded, id).then(|| SidebarEntry::new(SidebarSection::Shared, id));
             }
             _ => None,
         }?;
@@ -1069,17 +1151,24 @@ impl Workspace {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if let Some(scope) = scope {
             if crate::cloud_sync::shared::access(&self.store, cx) == Some(crate::cloud_sync::shared::Access::Revoked) { return None; }
-            shared_item = scope.note == id;
+            shared_item = scope.note == id || (scope.folder && shared_tree.iter().any(|row|
+                row.id == id && row.meta.share_root.as_ref() == Some(&scope.note)));
             personal_item = crate::cloud_sync::shared::original::owner_room(personal, id).is_some_and(|room| room.scope == *scope);
         }
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let _ = (cx, &mut personal_item, &mut shared_item);
         let visible = |section| match section {
-            SidebarSection::Personal => personal_item && !self.folded[1] && in_tree(personal, id),
-            SidebarSection::Shared => shared_item && in_tree(shared_tree, id),
+            SidebarSection::Personal => personal_item && !self.folded[1] && in_tree(personal, &self.expanded, id),
+            SidebarSection::Shared => shared_item && in_tree(shared_tree, shared_expanded, id),
             SidebarSection::Pinned => (personal_item || shared_item) && !self.folded[0] && pinned.iter().any(|row| row.id == id),
             SidebarSection::Local => personal_item && !self.folded[2] && personal.iter().any(|row| row.id == id && row.meta.local()),
         };
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if let Some(entry) = self.sidebar_entry.as_ref().filter(|entry| entry.id == id
+            && matches!(entry.section, SidebarSection::Personal | SidebarSection::Shared)) {
+            // Folding the originating tree hides its selection without selecting its duplicate.
+            return visible(entry.section).then(|| entry.clone());
+        }
         self.sidebar_entry.as_ref().filter(|entry| entry.id == id && visible(entry.section)).cloned()
             .or_else(|| [SidebarSection::Shared, SidebarSection::Personal, SidebarSection::Local, SidebarSection::Pinned]
                 .into_iter().find(|section| visible(*section)).map(|section| SidebarEntry::new(section, id)))
@@ -1091,9 +1180,17 @@ impl Workspace {
 
     pub(crate) fn personal_navigation_entries(&self, cx: &App) -> Vec<Entry> {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        if self.is_shared() { return cx.global::<crate::shared_store::SharedStore>().clone().list(); }
+        let entries = if self.is_shared() { cx.global::<crate::shared_store::SharedStore>().clone().list() } else { self.entries.clone() };
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+        let entries = self.entries.clone();
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let entries = {
+            let mut entries = entries;
+            self.project_owned_sidebar_folders(&mut entries, cx);
+            entries
+        };
         let _ = cx;
-        self.entries.clone()
+        entries
     }
 
     pub(crate) fn open_personal_sidebar_item(&mut self, id: &str, section: SidebarSection, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -1102,10 +1199,13 @@ impl Workspace {
         {
             use crate::cloud_sync::shared::original;
             let personal;
-            let entries = if self.is_shared() { personal = self.personal_navigation_entries(cx); &personal } else { &self.entries };
+            let entries = if self.is_shared() || cfg!(target_os = "macos") { personal = self.personal_navigation_entries(cx); &personal } else { &self.entries };
             if !entries.iter().any(|entry| entry.id == id) { return false; }
             if let Some(room) = original::owner_room(entries, id)
                 && !original::awaiting_publication(&crate::store::Store::root_dir(), &room) {
+                if !cfg!(target_os = "macos") && room.scope.folder && entries.iter().any(|entry| entry.id == id && entry.meta.folder.is_some()) {
+                    self.expanded.insert(id.to_owned());
+                }
                 self.navigate_shared_sidebar(room, origin, window, cx);
                 return true;
             }
@@ -1169,13 +1269,16 @@ impl Workspace {
         let n = self.batch.as_ref().map_or(0, Vec::len);
         let all = !ids.is_empty() && self.batch.as_ref().is_some_and(|selected| ids.iter().all(|id| selected.contains(id)));
         let id = if shared { "shared-batch-all" } else { "batch-all" };
-        let row = div().h(px(SECTION_H)).pl(px(4.)).pt(px(SECTION_TOP)).flex().items_center()
-            .child(div().id(id).ml(px(6.)).size(px(14.)).flex().items_center().justify_center().cursor_pointer().group(id)
+        let row = div().h(px(SECTION_H)).pl(px(6.)).pt(px(SECTION_TOP)).flex().items_center()
+            .child(batch_check_slot().id(id).cursor_pointer().group(id)
                 .child(checkbox(if all { Check::On } else if n > 0 { Check::Partial } else { Check::Off }, false, id))
                 .on_click(cx.listener(move |w, _, _, cx| { w.batch = Some(if all { vec![] } else { ids.clone() }); cx.notify(); })))
-            .child(div().flex_1().min_w_0().ml(px(8.)).text_size(px(theme::ui_font())).text_color(Theme::text()).child(crate::localized_format!("已选 {n} 项", "Selected: {n}")))
-            .child(Self::section_trigger(if shared { "shared-batch-exit" } else { "batch-exit" }, "x").ml(px(8.)).tip(crate::settings::text("退出批量操作"), None)
-                .on_click(cx.listener(|w, _, _, cx| { w.batch = None; w.row_menu = None; cx.notify(); })));
-        row.child(self.section_add_button(shared, cx))
+            .child(div().flex_1().min_w_0().ml(px(6.)).text_size(px(theme::ui_font())).text_color(Theme::text()).child(crate::localized_format!("已选 {n} 项", "Selected: {n}")));
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let row = row.when(shared, |row| row.child(self.section_invitation_button(cx)));
+        row.child(Self::section_trigger(if shared { "shared-batch-exit" } else { "batch-exit" }, "x").ml(px(if shared { 2. } else { 8. }))
+            .tip(crate::settings::text("退出批量操作"), None)
+            .on_click(cx.listener(|w, _, _, cx| { w.batch = None; w.row_menu = None; cx.notify(); })))
+            .child(self.section_add_button(shared, cx))
     }
 }

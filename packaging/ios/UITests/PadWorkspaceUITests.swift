@@ -44,7 +44,7 @@ final class PadWorkspaceUITests: XCTestCase {
     }
     func testHomeTabsNestedFoldersSearchAndRotation() {
         start(); XCTAssertEqual(tabs.buttons.count,3); assertTwoColumns(); shot("ipad-home-two-columns")
-        tabs.buttons["Favorites"].tap(); XCTAssertTrue(tabs.buttons["Favorites"].isSelected)
+        tabs.buttons["All Favorites"].tap(); XCTAssertTrue(tabs.buttons["All Favorites"].isSelected)
         tabs.buttons["Shared documents"].tap(); XCTAssertTrue(tabs.buttons["Shared documents"].isSelected)
         XCTAssertTrue(app.navigationBars["Home"].exists); shot("ipad-home-shared-tab")
         tabs.buttons["My documents"].tap()

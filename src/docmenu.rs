@@ -199,8 +199,14 @@ impl Workspace {
         }
         let Some(id) = self.current.clone() else { return vec![] };
         let entry = self.entries.iter().find(|e| e.id == id);
+        let shared = self.is_shared();
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let show_share = !crate::cloud_restore::local_only() && entry.is_some_and(|entry| !entry.meta.local());
+        let editable = !shared || (self.sharing_access(cx).is_some_and(crate::cloud_sync::shared::Access::can_write)
+            && !crate::cloud_sync::shared::editing_paused(&self.store,cx));
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+        let editable = true;
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let show_share = !shared && !crate::cloud_restore::local_only() && entry.is_some_and(|entry| !entry.meta.local());
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let show_share = false;
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -209,6 +215,12 @@ impl Workspace {
         let show_local_copy = false;
         let pinned = entry.is_some_and(|e| e.meta.pinned);
         let starred = entry.is_some_and(|e| e.meta.starred > 0);
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let (pinned,starred) = if shared {
+            self.shared_child_marks(&id,cx).map(|(pin,star)| (pin,star>0))
+                .or_else(|| self.shared_entries(cx).into_iter().find(|entry| entry.id == id).map(|entry| (entry.meta.pinned,entry.meta.starred>0)))
+                .unwrap_or((pinned,starred))
+        } else { (pinned,starred) };
         let width = entry.map(|e| e.meta.width).unwrap_or_default();
         let refs_shown = !entry.is_some_and(|e| e.meta.refs_hidden);
         // An open board isn't the page: no page width, find in its text or
@@ -226,6 +238,7 @@ impl Workspace {
         };
         let sub_bounds = self.doc_sub_bounds.clone();
         let (pin_id, star_id, mv_id, del_id, dup_id, print_id) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
+        let rename = id.clone();
         let menu = popover()
             .id("doc-menu")
             .occlude()
@@ -245,19 +258,26 @@ impl Workspace {
             )
             .child(divider())
             .child(
-                menu_item("dm-find", "text-search", crate::settings::text("查找和替换"), false, false)
+                menu_item("dm-find", "text-search", if editable { crate::settings::text("查找和替换") } else { crate::settings::tr("查找", "Find") }, false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(|w, _, window, cx| w.find_in_doc(false, window, cx))),
             )
             .child(divider()))
-            .child(
+            .when(!shared, |d| d.child(
                 menu_item("dm-move", "folder-input", crate::settings::text("移动到"), false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(move |w, _, window, cx| {
                         w.close_doc_menu(cx);
                         w.open_move(vec![mv_id.clone()], window, cx);
                     })),
-            )
+            ))
+            .when(shared && editable, |d| d.child(
+                menu_item("dm-rename", "square-pen", crate::settings::tr("重命名", "Rename"), false, false)
+                    .on_hover(hover_sub(None)).on_click(cx.listener(move |w, _, window, cx| {
+                        w.close_doc_menu(cx);
+                        w.start_rename(&rename,window,cx);
+                    })),
+            ))
             .child(
                 menu_item(
                     "dm-pin",
@@ -268,6 +288,12 @@ impl Workspace {
                 )
                 .on_hover(hover_sub(None))
                 .on_click(cx.listener(move |w, _, _, cx| {
+                    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                    if w.is_shared() && w.shared_list_room(&pin_id,cx).is_some() {
+                        w.toggle_shared_organization(&pin_id,true,cx);
+                        w.close_doc_menu(cx);
+                        return;
+                    }
                     w.toggle_pin(&pin_id, cx);
                     w.close_doc_menu(cx);
                 })),
@@ -275,14 +301,22 @@ impl Workspace {
             .child(
                 menu_item("dm-star", if starred { "star-off" } else { "star" }, if starred { crate::settings::text("取消收藏") } else { crate::settings::text("添加到收藏") }, false, false)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_star(&star_id, cx))),
+                    .on_click(cx.listener(move |w, _, _, cx| {
+                        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                        if w.is_shared() && w.shared_list_room(&star_id,cx).is_some() {
+                            w.toggle_shared_organization(&star_id,false,cx);
+                            w.close_doc_menu(cx);
+                            return;
+                        }
+                        w.toggle_star(&star_id, cx);
+                    })),
             )
             .child(divider())
-            .child(
+            .when(!shared, |d| d.child(
                 menu_item("dm-copy", "copy", crate::settings::text("创建副本"), false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(move |w, _, window, cx| w.duplicate_doc(&dup_id, window, cx))),
-            )
+            ))
             .children({
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 {
@@ -298,7 +332,7 @@ impl Workspace {
                 {
                     let note = id.clone();
                     show_share.then(|| {
-                        menu_item("dm-create-share", "copy", crate::settings::tr("共享原文…", "Share document…"), false, false)
+                        menu_item("dm-create-share", "share", crate::settings::tr("共享", "Share"), false, false)
                             .on_hover(hover_sub(None))
                             .on_click(cx.listener(move |w, _, window, cx| {
                                 w.close_doc_menu(cx);
@@ -324,22 +358,22 @@ impl Workspace {
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(|w, _, window, cx| w.open_doc_info(window, cx))),
             )
-            .child(
+            .when(editable, |d| d.child(
                 menu_item("dm-history", "restore", crate::settings::tr("版本历史", "Version history"), false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(|w, _, window, cx| {
                         w.close_doc_menu(cx);
                         if let Some(id) = w.current.clone() { w.open_history(&id, window, cx) }
                     })),
-            )
+            ))
             .child(divider())
             // 更多 and 删除 share the last group.
             .when(!board_file, |d| d.child(menu_item("dm-more", "ellipsis", crate::settings::text("更多"), true, sub == Some(DocSub::More)).on_hover(hover_sub(Some(DocSub::More)))))
-            .child(
+            .when(!shared, |d| d.child(
                 menu_item("dm-delete", "bin", crate::settings::text("删除"), false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(move |w, _, _, cx| w.ask_delete(&del_id, cx))),
-            )
+            ))
             // (a board has its own shortcut help, `?`)
             .when(!board, |d| d.child(divider())
             .child(
@@ -364,6 +398,8 @@ impl Workspace {
         let sub_at = point(right - px(MENU_W + 4.), px(0.));
         let item_top = |k: usize, d: usize| f32::from(menu_top) + item_top(k, d);
         let extra_rows = usize::from(show_share) + usize::from(show_local_copy);
+        let hidden_actions = usize::from(shared) + usize::from(shared && !editable);
+        let hidden_history = usize::from(!editable);
         let record = self.doc_sub_bounds.clone();
         record.set(None);
         let recorder = move || {
@@ -376,7 +412,7 @@ impl Workspace {
             Some(DocSub::Width) => Some((item_top(0, 0) - 1. - PAD, self.width_panel(width, cx).child(recorder()).into_any_element())),
             // Level the submenu's first item with 下载为.
             Some(DocSub::Download) => Some((
-                item_top(6 + extra_rows - hidden.0, 3 - hidden.1) - 1. - PAD,
+                item_top(6 + extra_rows - hidden.0 - hidden_actions, 3 - hidden.1) - 1. - PAD,
                 {
                     let pdf = id.clone();
                     popover()
@@ -392,7 +428,7 @@ impl Workspace {
                 },
             )),
             Some(DocSub::More) => Some((
-                if crate::printing::SUPPORTED { item_top(10 + extra_rows - hidden.0, 6 - hidden.1) } else { item_top(9 + extra_rows - hidden.0, 5 - hidden.1) } - 1. - PAD,
+                if crate::printing::SUPPORTED { item_top(10 + extra_rows - hidden.0 - hidden_actions - hidden_history, 6 - hidden.1) } else { item_top(9 + extra_rows - hidden.0 - hidden_actions - hidden_history, 5 - hidden.1) } - 1. - PAD,
                 popover()
                     .id("dm-more-menu")
                     .occlude()
@@ -407,7 +443,7 @@ impl Workspace {
                             w.show_toast(crate::settings::text("已复制为 Markdown"), cx);
                         }
                     })))
-                    .child(
+                    .when(editable, |d| d.child(
                         sub_item("dm-refs", crate::settings::text("显示引用列表"))
                             .justify_between()
                             .child(
@@ -426,10 +462,10 @@ impl Workspace {
                                 w.close_doc_menu(cx);
                                 w.ask_refs(!refs_shown, cx);
                             })),
-                    )
+                    ))
                     .children({
                         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                        { (!crate::cloud_restore::local_only()).then(|| sub_item("dm-sync-history", crate::settings::tr("iCloud 历史版本", "iCloud Version History"))
+                        { (editable && !crate::cloud_restore::local_only()).then(|| sub_item("dm-sync-history", crate::settings::tr("iCloud 历史版本", "iCloud Version History"))
                             .on_click(cx.listener(move |w, _, _, cx| w.recover_cloud_version(id.clone(), cx)))) }
                         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                         { None::<Stateful<Div>> }

@@ -67,7 +67,25 @@ impl Workspace {
         entries.sort_by_key(|entry|!entry.meta.pinned);
         entries
     }
+    pub(crate) fn mobile_sort_key(&self) -> String {
+        self.private_order_key().and_then(|key| self.private_order(&key))
+            .map(|order| order.rule).filter(|rule| !rule.is_empty())
+            .unwrap_or_else(|| self.mobile_home_sort_key().into())
+    }
+
+    pub(crate) fn mobile_folders_first(&self, cx: &App) -> Option<bool> {
+        if self.home.tab != HomeTab::Recent || !self.mobile_can_sort(cx) { return None; }
+        let rows = self.mobile_visible_entries(cx);
+        (rows.iter().any(|entry| entry.meta.folder.is_some()) && rows.iter().any(|entry| entry.meta.folder.is_none()))
+            .then(|| self.folder_priority())
+    }
+
     pub(crate) fn mobile_native_sort(&mut self,key:&str,cx:&mut Context<Self>) -> bool {
+        if key == "folders-first" {
+            if self.mobile_folders_first(cx).is_none() || self.mobile_sort_key() == "manual" { return false; }
+            self.toggle_folder_priority(cx);
+            return true;
+        }
         if !matches!(key,"manual"|"visited"|"modified"|"created"|"title") || !self.mobile_can_sort(cx) { return false; }
         if self.is_shared() && self.private_order_key().is_none() { return false; }
         if let Some(scope)=self.private_order_key() {
@@ -86,18 +104,20 @@ impl Workspace {
         personal &&
             (matches!(self.view,View::Home|View::Folder) || browser && self.view==View::Doc)
     }
-    pub(crate) fn mobile_row_reorderable(&self,entry:&crate::store::Entry,cx:&App) -> bool {
-        self.private_order_key().is_some() || !entry.meta.local() && self.shared_list_room(&entry.id,cx).is_none()
+    pub(crate) fn mobile_row_reorderable(&self,entry:&crate::store::Entry) -> bool {
+        // My Documents lists actual entries in the personal store, including
+        // owned shares. Reordering a sibling only updates its position.
+        self.private_order_key().is_some() || !entry.meta.local()
     }
     pub(crate) fn mobile_can_reorder(&self,cx:&App) -> bool {
         if !self.mobile_can_sort(cx) || self.tree_writes_pending() { return false; }
         let rows=self.mobile_visible_entries(cx);
-        [false,true].into_iter().any(|pinned|rows.iter().filter(|e| (e.meta.pinned && e.meta.folder.is_none())==pinned && self.mobile_row_reorderable(e,cx)).take(2).count()==2)
+        [false,true].into_iter().any(|pinned|rows.iter().filter(|e| (e.meta.pinned && e.meta.folder.is_none())==pinned && self.mobile_row_reorderable(e)).take(2).count()==2)
     }
     pub(crate) fn mobile_move_row(&mut self,id:&str,before:Option<&str>,cx:&mut Context<Self>) -> bool {
         if !self.mobile_can_reorder(cx) { return false; }
         let rows = self.mobile_visible_entries(cx);
-        let Some(entry)=rows.iter().find(|e|e.id==id && self.mobile_row_reorderable(e,cx)) else { return false; };
+        let Some(entry)=rows.iter().find(|e|e.id==id && self.mobile_row_reorderable(e)) else { return false; };
         let group=|row:&crate::store::Entry|row.meta.pinned && row.meta.folder.is_none();
         let before=before.filter(|v|!v.is_empty());
         if before.is_some_and(|next|next==id || !rows.iter().any(|e|e.id==next && group(e)==group(entry))) { return false; }
@@ -111,7 +131,7 @@ impl Workspace {
             ids.insert(index,id.into());
             return self.save_private_order(key,PrivateOrder { rule:"manual".into(),ids },cx);
         }
-        if before.is_some_and(|next|!rows.iter().any(|e|e.id==next && self.mobile_row_reorderable(e,cx))) { return false; }
+        if before.is_some_and(|next|!rows.iter().any(|e|e.id==next && self.mobile_row_reorderable(e))) { return false; }
         if !self.mobile_native_sort("manual",cx) { return false; }
         self.queue_tree_move(id,self.folder_current.clone(),before.map(str::to_owned),cx);
         true
@@ -131,7 +151,7 @@ impl Workspace {
         if !self.reorder_matches(session.serial,cx) { return None; }
         let saving=self.tree_writes_pending();
         let prompt=if saving { tr("正在保存…","Saving…").into() } else { session.error.clone().unwrap_or_else(||tr("拖动右侧手柄调整顺序。","Drag the handles to change the order.").into()) };
-        let items=self.mobile_visible_entries(cx).into_iter().filter(|entry|self.mobile_row_reorderable(entry,cx))
+        let items=self.mobile_visible_entries(cx).into_iter().filter(|entry|self.mobile_row_reorderable(entry))
             .map(|entry|Item { id:entry.id,title:display_title(&entry.title),folder:entry.meta.folder.is_some(),pinned:entry.meta.pinned }).collect();
         Some(ReorderRequest {serial:session.serial,response:session.response,title:tr("调整顺序","Reorder"),prompt,done:tr("完成","Done"),saving,items})
     }

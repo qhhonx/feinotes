@@ -7,21 +7,27 @@ struct FeiMobileTheme: Decodable, Equatable, Sendable {
     let folder: [CGFloat]
     let chrome: [CGFloat]?
     let list: [CGFloat]?
+    let workspace_list: [CGFloat]?
     let text: [CGFloat]?
     let row: [CGFloat]?
     let selected: [CGFloat]?
     let selected_text: [CGFloat]?
+    let sync_warning: [CGFloat]?
+    let sync_warning_ink: [CGFloat]?
 
-    static let system = FeiMobileTheme(id: "",accent: [],paper: [],folder: [],chrome: nil,list: nil,text: nil,row: nil,selected: nil,selected_text: nil)
+    static let system = FeiMobileTheme(id: "",accent: [],paper: [],folder: [],chrome: nil,list: nil,workspace_list: nil,text: nil,row: nil,selected: nil,selected_text: nil,sync_warning: nil,sync_warning_ink: nil)
     @MainActor private func color(_ components: [CGFloat]?) -> UIColor? {
         guard let c = components,c.count == 4,c.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { return nil }
         return UIColor(red: c[0],green: c[1],blue: c[2],alpha: c[3])
     }
+    @MainActor var syncWarningColor: UIColor { color(sync_warning) ?? .systemOrange }
+    @MainActor var syncWarningInk: UIColor { color(sync_warning_ink) ?? .white }
     @MainActor var accentColor: UIColor { color(accent) ?? .systemBlue }
     @MainActor var paperColor: UIColor { color(paper) ?? .systemBackground }
     @MainActor var folderColor: UIColor { color(folder) ?? accentColor }
     @MainActor var chromeColor: UIColor? { color(chrome) }
     @MainActor var listColor: UIColor { color(list) ?? .systemGroupedBackground }
+    @MainActor var workspaceListColor: UIColor { color(list) ?? color(workspace_list) ?? .secondarySystemGroupedBackground }
     @MainActor var textColor: UIColor { color(text) ?? .label }
     @MainActor var rowColor: UIColor { color(row) ?? .secondarySystemGroupedBackground }
     @MainActor var selectedColor: UIColor { color(selected) ?? .tertiarySystemFill }

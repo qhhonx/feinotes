@@ -51,12 +51,10 @@ impl Workspace {
 
     pub(crate) fn mobile_share_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.current.clone() else { return; };
+        if self.is_shared() { return self.mobile_open_shared_access(window, cx); }
         if !self.flush(cx) { return; }
         gpui_mobile::ios::ffi::gpui_ios_hide_keyboard(gpui_mobile::ios::ffi::gpui_ios_get_window());
-        if self.is_shared() {
-            self.mobile_present_sharing(cx);
-            self.mobile_shared_settings(window,cx);
-        } else if self.store.local_path(&id).is_some() {
+        if self.store.local_path(&id).is_some() {
             self.show_toast_kind(ui::ToastKind::Info,tr("请先将此文件导入文档库。","Import this file into your library to share it."),cx);
         } else if !self.sharing_allowed(cx) {
             self.mobile_present_sharing(cx);
@@ -66,9 +64,53 @@ impl Workspace {
         }
     }
 
+    pub(crate) fn mobile_open_shared_access(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_shared() || !self.save_before(cx, |w, window, cx| w.mobile_open_shared_access(window, cx)) { return; }
+        gpui_mobile::ios::ffi::gpui_ios_hide_keyboard(gpui_mobile::ios::ffi::gpui_ios_get_window());
+        if let Some(room) = self.current_room(cx) {
+            self.mobile_open_room_access(room,window,cx);
+        }
+    }
+
+    pub(crate) fn mobile_open_room_access(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
+        if room.scope.owner.is_none() { self.open_member_management(room,window,cx); }
+        else { self.sharing_sheet(Sheet::Access(room),window,cx); }
+    }
+
+    pub(crate) fn mobile_share_personal_item(&mut self,id: &str,window: &mut Window,cx: &mut Context<Self>) {
+        let entries = self.personal_navigation_entries(cx);
+        if !entries.iter().any(|entry|entry.id == id && !entry.meta.local()) { return; }
+        if let Some(room) = shared::original::owner_room(&entries,id) {
+            if !shared::original::awaiting_publication(&crate::store::Store::root_dir(),&room) {
+                self.open_member_management(room,window,cx);
+                return;
+            }
+        }
+        if !self.is_shared() { self.create_shared_note(id,window,cx); }
+        else if self.mobile_personal_browser(cx) && self.flush(cx) {
+            self.sharing_sheet(super::Sheet::Create(id.to_owned()),window,cx);
+        }
+    }
+
+    pub(crate) fn mobile_sharing_title(&self,cx: &App) -> Option<&'static str> {
+        if !self.mobile_contextual_sharing() { return None; }
+        Some(match self.sharing.sheet.as_ref() {
+            Some(super::Sheet::Create(id)) if self.personal_navigation_entries(cx).iter().any(|e| &e.id == id && e.meta.folder.is_some()) => tr("共享文件夹","Share folder"),
+            Some(super::Sheet::Create(_)) => tr("共享","Share"),
+            Some(super::Sheet::CreateNew(folder, _)) => super::new_shared_title(*folder),
+            Some(super::Sheet::Accept) => tr("接受邀请","Accept invitation"),
+            Some(super::Sheet::End(room)) => self.shared_end_label(room,cx),
+            Some(super::Sheet::EndMany(..)) => tr("移除共享文档","Remove shared documents"),
+            Some(super::Sheet::MoveInto(..)) => tr("移入共享文件夹","Move into shared folder"),
+            Some(super::Sheet::RenameCollection(_)) => tr("重命名个人文件夹","Rename personal folder"),
+            _ => super::shared_access_title(self.sheet_room().or(self.current_room(cx).as_ref()).is_some_and(|room|room.scope.folder)),
+        })
+    }
+
     pub(crate) fn mobile_present_sharing(&mut self, cx: &mut Context<Self>) {
         if self.view != View::Settings { self.mobile_settings_return = self.view.clone(); }
         self.mobile_settings_root = false;
+        self.mobile_settings_parent = None;
         self.open_settings(settings::Page::Shared,cx);
     }
     pub(crate) fn mobile_shared_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -100,11 +142,11 @@ impl Workspace {
             out.push((id,row.title.clone().unwrap_or_default())); current=row.parent.clone(); }
         out.reverse();out
     }
-    pub(crate) fn mobile_move_shortcut(&mut self, id: &str, parent: Option<String>, cx: &mut Context<Self>) -> bool {
-        if self.is_shared() || self.home.tab != crate::home::HomeTab::Shared { return false; }
-        if self.shared_list_room(id,cx).is_none() && !cx.global::<organizer::Organizer>().0.contains_key(id) { return false; }
-        if !self.is_shared() { self.update_organizer(cx,|tree|tree.place(id,parent.as_deref())); }
-        true
+    pub(crate) fn mobile_place_shared_entry(&mut self,id:&str,parent:Option<&str>,cx:&mut Context<Self>) {
+        if self.is_shared() && !self.mobile_personal_browser(cx) { return; }
+        if self.shared_list_room(id,cx).is_some() || self.mobile_collection_exists(id,cx) {
+            self.update_organizer(cx,|tree|tree.place(id,parent));
+        }
     }
 
 }
