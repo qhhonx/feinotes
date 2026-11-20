@@ -203,11 +203,34 @@ pub(crate) fn awaiting_publication(personal: &Path, room: &Room) -> bool {
         root.join("original-stage").exists() && !root.join("shared-note-ended").exists() && !root.join("seed-published").is_file())
 }
 
+fn standalone_trash(db: &Connection, id: &str) -> Result<Option<Trashed>> {
+    let raw: Option<String> = db.query_row("SELECT meta FROM library_trash WHERE id=?1", [id], |row| row.get(0)).optional()?;
+    Ok(raw.map(|raw| serde_json::from_str::<Trashed>(&raw)).transpose()?
+        .filter(|trash| trash.meta.folder.is_none()))
+}
+
 pub(super) fn is_original(personal: &Path, room: &Room) -> Result<bool> {
     if room.scope.owner.is_some() { return Ok(false); }
     let id = &room.scope.note;
-    let meta: Option<String> = connect(personal)?.query_row("SELECT meta FROM library_entries WHERE id=?1", [id], |r| r.get(0)).optional()?;
-    Ok(meta.map(|s| serde_json::from_str::<Meta>(&s)).transpose()?.is_some_and(|m| m.share_root.as_ref() == Some(id)))
+    let db = connect(personal)?;
+    let meta: Option<String> = db.query_row("SELECT meta FROM library_entries WHERE id=?1", [id], |r| r.get(0)).optional()?;
+    if let Some(meta) = meta { return Ok(serde_json::from_str::<Meta>(&meta)?.share_root.as_ref() == Some(id)); }
+    Ok(!room.scope.folder && standalone_trash(&db, id)?.is_some_and(|trash| trash.meta.share_root.as_ref() == Some(id)))
+}
+
+pub(super) fn detach_ended_standalone_trash(personal: &Path, id: &str) -> Result<bool> {
+    let mut db = connect(personal)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some(mut trash) = standalone_trash(&tx, id)? else { return Ok(false); };
+    match trash.meta.share_root.as_deref() {
+        None => return Ok(true),
+        Some(root) if root == id => {}
+        _ => return Ok(false),
+    }
+    trash.meta.share_root = None;
+    tx.execute("UPDATE library_trash SET meta=?2 WHERE id=?1", params![id, serde_json::to_string(&trash)?])?;
+    tx.commit()?;
+    Ok(true)
 }
 
 // Save the latest materialized collaboration before removing anyone's access.
@@ -219,6 +242,19 @@ pub(super) fn restore(personal: &Path, room: &Room, revoke: impl FnOnce() -> Res
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let all = entries(&cache)?;
     let old = entries(&tx)?;
+    let id = &room.scope.note;
+    if !room.scope.folder && !old.contains_key(id)
+        && let Some(mut trash) = standalone_trash(&tx, id)?
+        && trash.meta.share_root.as_ref() == Some(id) {
+        let (doc, _, front) = Store::read_sync_body(&cache, id, false)?;
+        copy_assets(&root, personal, &doc)?;
+        Store::write_sync_body(&tx, id, true, &doc, &front)?;
+        trash.meta.share_root = None;
+        tx.execute("UPDATE library_trash SET meta=?2 WHERE id=?1", params![id, serde_json::to_string(&trash)?])?;
+        revoke()?;
+        tx.commit()?;
+        return Ok(());
+    }
     let catalogue = room.scope.folder.then(|| super::super::journal::stored_catalogue(&cache)).transpose()?;
     let ids = subtree(&all, &room.scope.note)?;
     for key in &ids {
@@ -419,6 +455,69 @@ mod tests {
         refresh_owner(&cache, &room.scope, None)?;
         assert!(original.list().iter().any(|e| e.id == document && e.meta.parent.as_ref() == Some(&folder)));
         assert!(original.list_trash().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn ending_a_trashed_standalone_original_keeps_one_personal_trash_item() -> Result<()> {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        let temp = Fixture(std::env::temp_dir().join(format!("fei-ended-standalone-trash-{}", uuid::Uuid::new_v4())));
+        let personal = temp.0.as_path();
+        Store::initialize_local_sqlite(personal)?;
+        fs::write(personal.join(".cloud-restore-ready"), format!("{}\n", "a".repeat(64)))?;
+        let mut store = Store::open_sqlite_at(personal.to_path_buf())?;
+        let document = store.create_from(&crate::docxml::parse("<title>Original</title><p>before sharing</p>")?)?;
+        let room = prepare_local(personal, &document, "Original".into(), false)?;
+        let cache = room_root(personal, &document)?;
+        let latest = crate::docxml::parse("<title>Latest</title><p>shared edit</p>")?;
+        Store::write_sync_body(&connect(&cache)?, &document, false, &latest, "")?;
+
+        store.delete(&document, None)?;
+        let deleted = store.list_trash()[0].deleted;
+        assert!(is_original(personal, &room)?);
+        assert!(!super::super::detach_ended_standalone_trash(personal, &document)?);
+        assert!(restore(personal, &room, || anyhow::bail!("simulated revoke failure")).is_err());
+        assert_eq!(store.list_trash()[0].title, "Original");
+        assert_eq!(store.list_trash()[0].share_root.as_deref(), Some(document.as_str()));
+
+        restore(personal, &room, || Ok(()))?;
+        let items = store.list_trash();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, document);
+        assert_eq!(items[0].title, "Latest");
+        assert_eq!(items[0].deleted, deleted);
+        assert_eq!(items[0].parent, None);
+        assert_eq!(items[0].share_root, None);
+        assert!(store.list().is_empty());
+        store.purge(&document)?;
+        assert!(store.list_trash().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_ended_standalone_trash_can_be_purged_as_personal() -> Result<()> {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        let temp = Fixture(std::env::temp_dir().join(format!("fei-legacy-standalone-trash-{}", uuid::Uuid::new_v4())));
+        let personal = temp.0.as_path();
+        Store::initialize_local_sqlite(personal)?;
+        fs::write(personal.join(".cloud-restore-ready"), format!("{}\n", "a".repeat(64)))?;
+        let mut store = Store::open_sqlite_at(personal.to_path_buf())?;
+        let document = store.create_from(&Document::default())?;
+        prepare_local(personal, &document, "Shared".into(), false)?;
+        let cache = room_root(personal, &document)?;
+        store.delete(&document, None)?;
+        fs::write(cache.join("shared-note-ended"), b"Ended")?;
+
+        fs::write(cache.join(".cloud-restore-ready"), format!("{}\n", "b".repeat(64)))?;
+        assert!(!super::super::detach_ended_standalone_trash(personal, &document)?);
+        fs::write(cache.join(".cloud-restore-ready"), format!("{}\n", "a".repeat(64)))?;
+        assert!(super::super::detach_ended_standalone_trash(personal, &document)?);
+        assert!(super::super::detach_ended_standalone_trash(personal, &document)?);
+        assert_eq!(store.list_trash()[0].share_root, None);
+        store.purge(&document)?;
+        assert!(store.list_trash().is_empty());
         Ok(())
     }
 

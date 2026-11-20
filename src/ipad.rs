@@ -476,6 +476,8 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         ("undo",tr("撤销","Undo")),("redo",tr("重做","Redo")),
         ("format-text",tr("文字样式","Text style")),("format-block",tr("段落类型","Block type")),("block-actions",tr("块操作","Block actions")),
         ("restore",tr("恢复","Restore")),("purge",tr("彻底删除","Delete permanently")),
+        ("restore-folder",tr("恢复文件夹","Restore folder")),("purge-folder",tr("彻底删除文件夹","Delete folder permanently")),
+        ("trash-document-kind",tr("文档","Document")),("trash-folder-kind",tr("文件夹","Folder")),
         ("keep-recovery",tr("另存为新文档","Save as New Document")),("discard-recovery",tr("移除恢复项","Remove Recovery Item")),
         ("empty-trash",tr("清空","Empty")),
     ].into_iter().collect();
@@ -507,7 +509,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
     if workspace.view == View::Trash {
         items.extend(workspace.trash.iter().map(|entry| NavigationItem {
             id: entry.id.clone(), title: display_title(&entry.title), parent: entry.parent.clone(),
-            folder: false, pinned: false, starred: false, trashed: true, shared:false, owned:false, offline_recovery: false, personal: true, inherited_share: false, share_end: None,
+            folder: entry.folder, pinned: false, starred: false, trashed: true, shared:false, owned:false, offline_recovery: false, personal: true, inherited_share: false, share_end: None,
         }));
         items.extend(recoveries.iter().map(|(id, title)| NavigationItem {
             id: id.clone(), title: display_title(title), parent: None, folder: false, pinned: false, starred: false,
@@ -543,7 +545,8 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         rows:if body_view==View::Trash { workspace.trash.iter().map(|entry|NativeListingRow {
             id:entry.id.clone(),title:display_title(&entry.title),
             summary:format!("{} · {}",workspace.trash_location(entry),crate::trash::remaining(entry.deleted)),
-            folder:false,pinned:false,reorderable:false,shared_badge:false,shared_folder:false,unread_update:false })
+            folder:entry.folder,pinned:false,reorderable:false,shared_badge:!entry.folder && entry.share_root.is_some(),
+            shared_folder:entry.folder && entry.share_root.is_some(),unread_update:false })
             .chain(recoveries.iter().map(|(id,title)| NativeListingRow { id:id.clone(),title:display_title(title),
                 summary:tr("离线恢复副本","Offline Recovery Copy").into(),folder:false,pinned:false,reorderable:false,shared_badge:false,shared_folder:false,unread_update:false })).collect() } else { workspace.mobile_visible_entries(cx).into_iter().map(|entry|NativeListingRow {
             id:entry.id.clone(),title:display_title(&entry.title),folder:entry.meta.folder.is_some(),pinned:entry.meta.pinned,

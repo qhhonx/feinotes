@@ -296,6 +296,7 @@ pub struct TrashEntry {
     pub id: String,
     pub title: String,
     pub icon: Option<String>,
+    pub folder: bool,
     pub deleted: u64,
     /// Where it was: its parent page, `None` for the top of 我的文档库.
     pub parent: Option<String>,
@@ -1989,6 +1990,7 @@ impl Store {
                     id: id.clone(),
                     title: t.meta.folder.clone().or_else(|| t.meta.name.clone()).unwrap_or_else(|| doc.title.text.clone()),
                     icon: doc.icon.clone(),
+                    folder: t.meta.folder.is_some(),
                     deleted: t.deleted,
                     parent: t.meta.parent.clone(),
                     share_root: t.meta.share_root.clone(),

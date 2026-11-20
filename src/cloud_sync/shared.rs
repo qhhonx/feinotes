@@ -465,6 +465,16 @@ pub(crate) fn owned_trash_room(personal: &Path, note: &str) -> Result<Option<Roo
     Ok(Some(room))
 }
 
+pub(crate) fn detach_ended_standalone_trash(personal: &Path, id: &str) -> Result<bool> {
+    let root = room_root(personal, id)?;
+    if !root.join("shared-note-ended").is_file() { return Ok(false); }
+    let Some(room) = descriptor(&root)? else { return Ok(false); };
+    if room.scope.note != id || room.scope.folder || room.scope.owner.is_some() || account(&root)? != account(personal)? {
+        return Ok(false);
+    }
+    original::detach_ended_standalone_trash(personal, id)
+}
+
 pub(crate) fn purge_folder_trash(writer: &mut Store, ids: &[String]) -> Result<()> {
     writer.purge_sqlite_trash_groups(ids, |db, removed| super::journal::record_shared_trash_purge(db, ids, removed))
 }

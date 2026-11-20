@@ -196,9 +196,17 @@ impl Workspace {
                             .pl(px(24.))
                             .flex()
                             .items_center()
-                            .child(match &t.icon {
-                                Some(e) => div().size(px(24.)).mr(px(10.)).flex_none().flex().items_center().justify_center().text_size(px(18.)).child(e.clone()),
-                                None => doc_icon(),
+                            .child(if t.folder || t.share_root.is_some() {
+                                let glyph = if t.folder {
+                                    if t.share_root.is_some() { "folder-shared" } else { "folder" }
+                                } else { "shared-document" };
+                                div().size(px(24.)).mr(px(10.)).flex_none().flex().items_center().justify_center()
+                                    .child(icon(glyph, 18., Theme::icon()))
+                            } else {
+                                match &t.icon {
+                                    Some(e) => div().size(px(24.)).mr(px(10.)).flex_none().flex().items_center().justify_center().text_size(px(18.)).child(e.clone()),
+                                    None => doc_icon(),
+                                }
                             })
                             .child(div().min_w_0().text_size(px(15.)).line_height(px(22.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(title))),
                     )
@@ -327,16 +335,22 @@ impl Workspace {
         self.purge_trash(vec![id.to_string()], success, cx);
     }
 
-    /// Purge personal Trash and route linked items to their authoritative folders.
+    /// Purge personal Trash and route active linked items to their authoritative folders.
     fn empty_trash(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let ids: Vec<String> = self.trash.iter().filter(|t| t.share_root.is_none()).map(|t| t.id.clone()).collect();
-        let linked = self.trash.iter().any(|t| t.share_root.is_some());
-        let success = if linked { crate::settings::tr("已清空个人回收站", "Personal Trash cleared") }
+        let (personal, linked): (Vec<_>, Vec<_>) = self.trash.iter().partition(|item| {
+            if item.share_root.is_none() { return true; }
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            { self.detach_ended_trash_document(item) }
+            #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+            { false }
+        });
+        let ids = personal.into_iter().map(|item| item.id.clone()).collect();
+        let success = if !linked.is_empty() { crate::settings::tr("已清空个人回收站", "Personal Trash cleared") }
             else { crate::settings::text("已清空回收站") };
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         {
             let mut groups = std::collections::BTreeMap::<String, Vec<String>>::new();
-            for item in &self.trash {
+            for item in linked {
                 if let Some(scope) = &item.share_root { groups.entry(scope.clone()).or_default().push(item.id.clone()); }
             }
             for (scope, ids) in groups {
@@ -344,7 +358,7 @@ impl Workspace {
                     self.change_shared_trash_items(room, ids, crate::sharing::SharedTrashAction::Purge, _window, cx);
                 } else {
                     self.show_toast_kind(crate::ui::ToastKind::Error, crate::settings::tr(
-                        "部分共享文件夹暂不可用，请稍后重试。", "Some shared folders are unavailable. Try again shortly."), cx);
+                        "部分共享项目当前无法删除，请确认其共享状态后重试。", "Some shared items cannot be deleted. Check their sharing status and try again."), cx);
                 }
             }
         }
@@ -353,11 +367,24 @@ impl Workspace {
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     fn handle_linked_trash(&mut self, id: &str, action: crate::sharing::SharedTrashAction, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(scope) = self.trash.iter().find(|item| item.id == id).and_then(|item| item.share_root.as_ref()) else { return false; };
+        let Some(item) = self.trash.iter().find(|item| item.id == id) else { return false; };
+        let Some(scope) = item.share_root.as_ref() else { return false; };
+        if self.detach_ended_trash_document(item) { return false; }
         if let Some(room) = self.linked_trash_room(scope, cx) { self.change_shared_trash(room, id.into(), action, window, cx); }
-        else { self.show_toast_kind(crate::ui::ToastKind::Error, crate::settings::tr(
-            "共享文件夹暂不可用，请稍后重试。", "The shared folder is unavailable. Try again shortly."), cx); }
+        else {
+            let message = if scope == id { crate::settings::tr(
+                "请确认此项目已停止共享，再操作回收站。", "Confirm that sharing has ended before changing this Trash item.") }
+            else { crate::settings::tr("共享文件夹暂不可用，请稍后重试。", "The shared folder is unavailable. Try again shortly.") };
+            self.show_toast_kind(crate::ui::ToastKind::Error, message, cx);
+        }
         true
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn detach_ended_trash_document(&self, item: &TrashEntry) -> bool {
+        item.share_root.as_deref() == Some(item.id.as_str())
+            && crate::cloud_sync::shared::detach_ended_standalone_trash(self.store.root(), &item.id)
+                .inspect_err(|error| crate::logging::write(&format!("Detach ended Trash document: {error:#}"))).unwrap_or(false)
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -508,6 +535,10 @@ impl Workspace {
                 crate::settings::text("删除"),
                 true,
             ),
+            Confirm::Restore(id) if self.trash.iter().any(|item| item.id == *id && item.folder) => (
+                crate::settings::tr("恢复文件夹？", "Restore folder?").into(),
+                crate::settings::tr("将恢复此文件夹和其中的项目。", "The folder and its contents will be restored.").into(),
+                crate::settings::text("恢复"), false),
             Confirm::Restore(_) => (crate::settings::text("确认恢复？").to_string(), crate::settings::text("确认后将恢复至原位置").to_string(), crate::settings::text("恢复"), false),
             Confirm::EmptyTrash => (
                 crate::settings::text("确认清空回收站？").to_string(),
@@ -515,6 +546,10 @@ impl Workspace {
                 crate::settings::text("清空"),
                 true,
             ),
+            Confirm::Purge(id) if self.trash.iter().any(|item| item.id == *id && item.folder) => (
+                crate::settings::tr("彻底删除文件夹？", "Permanently delete folder?").into(),
+                crate::settings::tr("此文件夹及其中的项目将无法恢复。", "The folder and its contents cannot be recovered.").into(),
+                crate::settings::text("删除"), true),
             Confirm::Purge(_) => (crate::settings::text("确认彻底删除？").to_string(), crate::settings::text("彻底删除后，该页面及其子页面将无法恢复").to_string(), crate::settings::text("删除"), true),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::DiscardOfflineRecovery(_) => (

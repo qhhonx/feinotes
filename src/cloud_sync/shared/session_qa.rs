@@ -50,15 +50,28 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
         let mut store = Store::open_sqlite_at(personal.clone())?;
         let private = store.create_from(&crate::docxml::parse("<title>QA personal trash</title><p>throwaway</p>")?)?;
         store.delete(&private, None)?;
+        let personal_folder = store.create_folder("QA personal folder", None)?;
+        store.delete(&personal_folder, None)?;
+        for title in ["QA ended standalone single", "QA ended standalone batch"] {
+            let document = store.create_from(&crate::docxml::parse(&format!("<title>{title}</title><p>throwaway</p>"))?)?;
+            original::prepare_local(&personal, &document, title.into(), false)?;
+            store.delete(&document, None)?;
+            let cache = room_root(&personal, &document)?;
+            fs::write(cache.join("shared-note-ended"), b"Legacy ended standalone share")?;
+        }
         for (title, legacy) in [("QA shared trash", false), ("QA stale shared trash", true)] {
             let folder = store.create_folder(&format!("{title} parent"), None)?;
             let removed = store.create_folder(title, Some(&folder))?;
             store.create_from_in(&crate::docxml::parse("<title>QA nested trash</title><p>throwaway</p>")?, Some(&removed))?;
+            let removed_document = if legacy { None } else {
+                Some(store.create_from_in(&crate::docxml::parse("<title>QA shared document</title><p>throwaway</p>")?, Some(&folder))?)
+            };
             let room = original::prepare_local(&personal, &folder, title.into(), false)?;
             let cache = room_root(&personal, &folder)?;
             fs::write(cache.join("seed-published"), b"synthetic shared owner")?;
             let mut writer = Store::open_sqlite_at(cache.clone())?;
             writer.trash_sqlite_folder(&removed)?;
+            if let Some(document) = removed_document { writer.delete(&document, None)?; }
             Journal::open(&cache, None)?.merge(&Default::default())?;
             original::refresh_owner(&cache, &room.scope, None)?;
             if legacy { writer.purge(&removed)?; }

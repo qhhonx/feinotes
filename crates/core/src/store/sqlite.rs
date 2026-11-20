@@ -566,7 +566,7 @@ impl Store {
         let new = uuid::Uuid::new_v4().to_string();
         let batch = format!("shared-recovery-{new}"); let prefix = Path::new("assets").join(&batch);
         let stage = root.join(format!(".{batch}")); let assets = root.join(&prefix);
-        meta.parent = None; meta.root_order = None; meta.order = 0; meta.opened = 0; meta.pinned = false; meta.starred = 0;
+        meta.parent = None; meta.share_root = None; meta.root_order = None; meta.order = 0; meta.opened = 0; meta.pinned = false; meta.starred = 0;
         let result = (|| {
             stage_copy_assets(&mut doc, &source, &stage, &prefix, &HashMap::from([(id.to_owned(), new.clone())]))?;
             write_document(&tx, &new, true, &doc, &front)?;
@@ -973,7 +973,8 @@ impl Store {
         for (id, trashed) in self.trash.iter().filter(|(_, t)| t.root.as_ref().is_none_or(|r| !self.trash.contains_key(r))) {
             let (title, icon) = if let Some(name) = &trashed.meta.folder { (name.clone(), None) }
             else { db.query_row("SELECT title, icon FROM library_documents WHERE id = ?1 AND trashed = 1", [id], |row| Ok((row.get(0)?, row.get(1)?)))? };
-            entries.push(TrashEntry { id: id.clone(), title, icon, deleted: trashed.deleted, parent: trashed.meta.parent.clone(), share_root: trashed.meta.share_root.clone() });
+            entries.push(TrashEntry { id: id.clone(), title, icon, folder: trashed.meta.folder.is_some(),
+                deleted: trashed.deleted, parent: trashed.meta.parent.clone(), share_root: trashed.meta.share_root.clone() });
         }
         entries.sort_by(|a, b| b.deleted.cmp(&a.deleted).then_with(|| a.id.cmp(&b.id)));
         Ok(entries)
