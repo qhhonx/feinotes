@@ -658,7 +658,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     private var presentationGeneration: UInt64 = 0
     private var focusAfterTransition = false
     private enum SheetAnchor {
-        case button(UIBarButtonItem)
         case row(String,browser: Bool)
     }
 
@@ -1456,10 +1455,10 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
 
     func localized(_ zh: String, _ en: String) -> String { state?.labels["cancel"] == "Cancel" ? en : zh }
 
-    private func sheet(_ title: String? = nil, actions: [(String, UIAlertAction.Style, () -> Void)], sender: UIBarButtonItem? = nil,anchor: SheetAnchor? = nil) {
+    private func sheet(_ title: String? = nil, actions: [(String, UIAlertAction.Style, () -> Void)],anchor: SheetAnchor? = nil) {
         let rowAnchor: (String,Bool)?
         if case .row(let id,let browser) = anchor { rowAnchor = (id,browser) } else { rowAnchor = nil }
-        guard let controller = (rowAnchor?.1 == true ? host?.padWorkspace?.visibleBrowserController : nil) ?? host?.navigationController?.topViewController else { return }
+        guard let controller = rowAnchor?.1 == true ? host?.padWorkspace?.visibleBrowserController : host?.navigationController?.topViewController else { return }
         host?.settleEditorComposition()
         fei_ipad_flush()
         controller.view.endEditing(true)
@@ -1469,23 +1468,19 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         }
         sheet.addAction(UIAlertAction(title: label("cancel"), style: .cancel))
         if let popover = sheet.popoverPresentationController {
-            if let sender { popover.sourceItem = sender }
-            else if case .button(let item) = anchor { popover.sourceItem = item }
-            else if let (id,_) = rowAnchor,let rect = (controller as? FeiRouteController)?.notesList?.anchor(for: id) {
+            if let (id,_) = rowAnchor {
+                guard let rect = (controller as? FeiRouteController)?.notesList?.anchor(for: id) else { return }
                 popover.sourceView = controller.view; popover.sourceRect = rect
-            } else if let item = actionButton(in: controller) { popover.sourceItem = item }
-            else {
-                popover.sourceView = controller.view
-                let area = controller.view.safeAreaLayoutGuide.layoutFrame
-                let x = controller.view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? area.minX+22 : area.maxX-22
-                popover.sourceRect = CGRect(x: x,y: area.minY,width: 1,height: 1)
+            } else {
+                guard let item = actionButton(in: controller) else { return }
+                popover.sourceItem = item
             }
         }
         present(sheet,from: controller)
     }
 
     private func actionButton(in controller: UIViewController?) -> UIBarButtonItem? {
-        controller?.navigationItem.rightBarButtonItems?.first { ["fei.more","fei.library-actions","fei.share"].contains($0.accessibilityIdentifier ?? "") }
+        controller?.navigationItem.rightBarButtonItems?.first { ["fei.more","fei.library-actions"].contains($0.accessibilityIdentifier ?? "") }
     }
 
     private func present(_ view: UIViewController,from source: UIViewController? = nil) {
@@ -1686,12 +1681,10 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
 
     private func showSharedSync(scope: String,browser: Bool) {
         guard let state,state.editor_scope == scope,state.shared_sync != nil,!state.busy,
-              let host,let presenter = host.navigationController?.topViewController else { return }
+              let host,let presenter = browser ? host.padWorkspace?.visibleBrowserController : host.navigationController?.topViewController else { return }
         let card = FeiSharedSyncController()
         let navigation = UINavigationController(rootViewController: card)
-        let anchor = browser ? browserMore : presenter.navigationItem.rightBarButtonItems?.first {
-            $0.accessibilityIdentifier == "fei.more" || $0.accessibilityIdentifier == "fei.library-actions"
-        }
+        let anchor = actionButton(in: presenter)
         if presenter.traitCollection.horizontalSizeClass == .regular,let anchor {
             navigation.modalPresentationStyle = .popover
             navigation.popoverPresentationController?.sourceItem = anchor
@@ -1735,43 +1728,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         }
     }
 
-    private func itemActions(_ id: String) -> [(String,UIAlertAction.Style,() -> Void)] {
-        guard let item = state?.items.first(where: { $0.id == id }) else { return [] }
-        if item.offline_recovery, let scope = state?.listing?.scope {
-            return [
-                ("keep-recovery", .default, { [weak self] in self?.send("keep-recovery", id: id, scope: scope) }),
-                ("discard-recovery", .destructive, { [weak self] in self?.send("discard-recovery", id: id, scope: scope) }),
-            ]
-        }
-        if item.trashed {
-            return [
-                ("restore", .default, { [weak self] in self?.send("restore", id: id) }),
-                ("purge", .destructive, { [weak self] in self?.send("purge", id: id) }),
-            ]
-        }
-        var actions: [(String, UIAlertAction.Style, () -> Void)] = [
-            ("rename", .default, { [weak self] in self?.rename(id: id, title: item.title) }),
-            ("move", .default, { [weak self] in self?.showMove(id) }),
-            ("duplicate", .default, { [weak self] in self?.send("duplicate", id: id) }),
-        ]
-        if !item.folder {
-            actions += [
-                (item.pinned ? "unpin" : "pin", .default, { [weak self] in self?.send("pin", id: id) }),
-                (item.starred ? "unstar" : "star", .default, { [weak self] in self?.send("star", id: id) }),
-                ("reading", .default, { [weak self] in self?.send("reading", id: id) }),
-                ("editing", .default, { [weak self] in self?.send("editing", id: id) }),
-                ("export", .default, { [weak self] in self?.showExport(id) }),
-                ("pdf", .default, { [weak self] in self?.send("pdf", id: id) }),
-                ("print", .default, { [weak self] in self?.send("print", id: id) }),
-            ]
-        }
-        actions.append(("delete", .destructive, { [weak self] in self?.send("delete", id: id) }))
-        return actions
-    }
-
-    func showItemActions(_ id: String) {
-        sheet(state?.items.first(where: { $0.id == id })?.title,actions: itemActions(id),anchor: .row(id,browser: hasPadWorkspace))
-    }
     func itemMenu(_ id: String,browsingWorkspace: Bool = false) -> UIMenu {
         guard let item = state?.items.first(where: { $0.id == id }) else { return UIMenu() }
         let fromBrowser = browsingWorkspace && !item.offline_recovery
@@ -1790,7 +1746,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         }
         func group(_ items: [UIMenuElement]) -> UIMenu { UIMenu(options: .displayInline,children: items) }
         if item.offline_recovery { return UIMenu(children: [group([action("keep-recovery","doc.on.doc")]),group([action("discard-recovery","trash",danger: true)])]) }
-        if item.trashed { return UIMenu(children: [group([action("restore","arrow.uturn.backward")]),group([action("purge","trash",danger: true)])]) }
+        if item.trashed {
+            let restore = action(item.folder ? "restore-folder" : "restore","arrow.uturn.backward","restore")
+            let purge = action(item.folder ? "purge-folder" : "purge","trash","purge",danger: true)
+            return UIMenu(children: [group([restore]),group([purge])])
+        }
         if item.id.hasPrefix("collection-") {
             return UIMenu(children: [action("rename","pencil","collection-rename"),action("organize-shared-entry","folder",perform: { [weak self] in self?.showMove(id) }),action("remove-personal-folder","folder.badge.minus","collection-remove")])
         }
@@ -1840,7 +1800,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     func rowAction(_ key: String,id: String,scope: String,browser: Bool) {
         guard state?.busy == false,(browser ? state?.browser?.listing.scope : state?.listing?.scope)==scope,let item=state?.items.first(where: { $0.id==id }) else { return }
         if ["delete","move"].contains(key) && !canModifyFolderContents(browser: browser) { return }
-        if key=="more" { showItemActions(id); return }
         if key=="move" { showMove(id); return }
         let command = item.shared ? ["pin":"shared-pin","star":"shared-star","delete":"shared-end"][key] ?? key : key
         send(command,id: id,scope: scope)
@@ -1914,17 +1873,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             ("text-only",.default,{ export("text") }),
             ("all-content",.default,{ export("all") }),
         ],anchor: anchor)
-    }
-
-    private func showFormat() {
-        sheet(label("format"), actions: [
-            ("undo", .default, { [weak self] in self?.send("format", value: "undo") }),
-            ("redo", .default, { [weak self] in self?.send("format", value: "redo") }),
-            ("format-text", .default, { [weak self] in self?.send("format-menu") }),
-            ("format-block", .default, { [weak self] in self?.send("format-menu",value: "blocks") }),
-            ("divider", .default, { [weak self] in self?.send("format",value: "divider") }),
-            ("table", .default, { [weak self] in self?.send("format",value: "table") }),
-        ])
     }
 
     private func rename(id: String?, title: String,browserScope: String? = nil) {

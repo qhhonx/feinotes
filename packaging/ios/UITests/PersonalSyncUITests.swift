@@ -33,18 +33,31 @@ final class PersonalSyncUITests: XCTestCase {
             XCTAssertTrue(app.staticTexts[title].exists, title)
         }
         let items = app.tables["fei.notes.list"]
+        let legacySingle = items.cells.containing(.staticText,identifier: "QA ended standalone single").firstMatch
+        let legacyBatch = app.staticTexts["QA ended standalone batch"]
+        XCTAssertTrue(legacySingle.exists && legacyBatch.exists)
         let personal = items.cells.containing(.staticText,identifier: "QA personal trash").firstMatch
         let metadata = personal.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "My documents · ")).firstMatch
         XCTAssertTrue(metadata.exists)
         XCTAssertTrue(metadata.label.contains("days"))
+        let personalFolder = items.cells.containing(.staticText,identifier: "QA personal folder").firstMatch
+        let sharedFolder = items.cells.containing(.staticText,identifier: "QA shared trash").firstMatch
+        let sharedDocument = items.cells.containing(.staticText,identifier: "QA shared document").firstMatch
+        XCTAssertEqual(personal.value as? String,"Document")
+        XCTAssertEqual(personalFolder.value as? String,"Folder")
+        XCTAssertEqual(sharedDocument.value as? String,"Document, Shared")
+        XCTAssertEqual(sharedFolder.value as? String,"Folder, Shared folder")
         let retention = app.staticTexts["fei.notes.trash-retention"]
         XCTAssertTrue(retention.exists)
         XCTAssertEqual(personal.frame.minX,retention.frame.minX,accuracy: 24)
         XCTAssertLessThanOrEqual(personal.frame.maxX,app.frame.maxX + 1)
         capture("trash-mixed-before")
-        personal.press(forDuration: 1)
         let restore = app.buttons["Restore"].firstMatch
         let purge = app.buttons["Delete permanently"].firstMatch
+        personal.tap()
+        XCTAssertFalse(restore.exists)
+        XCTAssertFalse(purge.exists)
+        personal.press(forDuration: 1)
         XCTAssertTrue(restore.waitForExistence(timeout: 5))
         XCTAssertTrue(purge.exists)
         capture("trash-row-menu")
@@ -53,6 +66,23 @@ final class PersonalSyncUITests: XCTestCase {
         XCTAssertTrue(alert.waitForExistence(timeout: 5))
         alert.buttons["fei.confirm.cancel"].firstMatch.tap()
         XCTAssertTrue(personal.exists)
+        legacySingle.press(forDuration: 1)
+        XCTAssertTrue(purge.waitForExistence(timeout: 5))
+        purge.tap()
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        alert.buttons["fei.confirm.ok"].firstMatch.tap()
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: legacySingle)
+        XCTAssertEqual(XCTWaiter.wait(for: [removed],timeout: 10),.completed)
+        XCTAssertTrue(legacyBatch.exists)
+        sharedFolder.press(forDuration: 1)
+        XCTAssertTrue(app.buttons["Restore folder"].firstMatch.waitForExistence(timeout: 5))
+        let purgeFolder = app.buttons["Delete folder permanently"].firstMatch
+        XCTAssertTrue(purgeFolder.exists)
+        capture("trash-folder-menu")
+        purgeFolder.tap()
+        XCTAssertTrue(alert.staticTexts["Permanently delete folder?"].waitForExistence(timeout: 5))
+        alert.buttons["fei.confirm.cancel"].firstMatch.tap()
+        XCTAssertTrue(sharedFolder.exists)
         empty.tap()
         XCTAssertTrue(alert.waitForExistence(timeout: 5))
         alert.buttons["fei.confirm.cancel"].firstMatch.tap()

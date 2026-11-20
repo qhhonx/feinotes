@@ -66,7 +66,7 @@ final class FeiFilePreview: UIViewController {
     @objc private func share(_ sender: UIBarButtonItem) {
         let sheet = UIActivityViewController(activityItems: [file],applicationActivities: nil)
         sheet.view.accessibilityIdentifier = "fei.file.share-sheet"
-        sheet.popoverPresentationController?.barButtonItem = sender
+        sheet.popoverPresentationController?.sourceItem = sender
         present(sheet,animated: true)
     }
 }

@@ -228,11 +228,11 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             content.textToSecondaryTextVerticalPadding = 4
             content.secondaryTextProperties.adjustsFontForContentSizeCategory = true
             content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 12,leading: 16,bottom: 12,trailing: 16)
-            content.image = row.folder ? self.folderImage(shared: row.shared_folder) : nil
-            content.imageProperties.tintColor = self.palette.folderColor
+            content.image = row.folder ? self.folderImage(shared: row.shared_folder) : isTrash ? UIImage(systemName: "doc.text") : nil
+            content.imageProperties.tintColor = row.folder ? self.palette.folderColor : self.palette.textColor
             cell.automaticallyUpdatesContentConfiguration = false
             cell.automaticallyUpdatesBackgroundConfiguration = false
-            cell.selectionStyle = self.isSelecting ? .none : .default
+            cell.selectionStyle = self.isSelecting || isTrash ? .none : .default
             cell.accessoryType = .none
             let baseContent = content
             let configure: (UITableViewCell,UICellConfigurationState) -> Void = { [weak self] cell,state in
@@ -250,14 +250,15 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
                 let highlight = state.isSelected && !self.isSelecting
                 content.textProperties.color = highlight ? self.palette.selectedTextColor : self.palette.textColor
                 content.secondaryTextProperties.color = highlight ? self.palette.selectedTextColor.withAlphaComponent(0.75) : .secondaryLabel
-                content.imageProperties.tintColor = highlight ? self.palette.selectedTextColor : self.palette.folderColor
+                content.imageProperties.tintColor = highlight ? self.palette.selectedTextColor : row.folder ? self.palette.folderColor : self.palette.textColor
                 var background = UIBackgroundConfiguration.listGroupedCell()
                 background.backgroundColor = highlight ? self.palette.selectedColor : self.palette.rowColor
                 background.backgroundColorTransformer = nil
                 if cell.backgroundConfiguration != background { cell.backgroundConfiguration = background }
                 if cell.contentConfiguration as? UIListContentConfiguration != content { cell.contentConfiguration = content }
 
-                cell.accessibilityValue = [row.shared_folder ? self.labels["already-shared-folder"] : row.shared_badge ? self.labels["already-shared"] : nil,
+                cell.accessibilityValue = [isTrash ? self.labels[row.folder ? "trash-folder-kind" : "trash-document-kind"] : nil,
+                    row.shared_folder ? self.labels["already-shared-folder"] : row.shared_badge ? self.labels["already-shared"] : nil,
                     row.unread_update ? self.labels["unread-update"] : nil].compactMap { $0 }.joined(separator: ", ")
                 let image: UIImage?
                 let tint: UIColor
@@ -271,7 +272,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
                         pointSize: UIFontMetrics(forTextStyle: .footnote).scaledValue(for: 13),weight: .regular))
                     tint = highlight ? self.palette.selectedTextColor : .secondaryLabel
                     size = CGSize(width: 30,height: 24)
-                } else if row.folder && !self.isSelecting {
+                } else if row.folder && !isTrash && !self.isSelecting {
                     image = self.disclosureImage()
                     tint = highlight ? self.palette.selectedTextColor : .secondaryLabel
                     size = CGSize(width: max(16,self.disclosureSize),height: max(24,self.disclosureSize))
@@ -669,7 +670,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         guard let id = source.itemIdentifier(for: indexPath),let listing else { return }
         if isSelecting { batch("select:"+id); return }
         if !browsesWorkspace { tableView.deselectRow(at: indexPath,animated: true) }
-        if listing.kind == "trash" { coordinator?.showItemActions(id); return }
+        if listing.kind == "trash" { return }
         if isSearching {
             resultReturn = SearchOrigin(scope: listing.scope,query: listing.query,anchor: captureAnchor())
             resultToOpen = (id,listing.scope); openingResult = true; endSearch()
@@ -991,6 +992,9 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     func tableView(_ tableView: UITableView,editingStyleForRowAt indexPath: IndexPath) -> UITableViewCell.EditingStyle { isSelecting ? .delete : .none }
     func tableView(_ tableView: UITableView,shouldIndentWhileEditingRowAt indexPath: IndexPath) -> Bool { false }
     func anchor(for id: String) -> CGRect? {
-        guard let index = source.indexPath(for: id) else { return nil }; return tableView.convert(tableView.rectForRow(at: index),to: parent?.view)
+        guard let index = source.indexPath(for: id),let cell = tableView.cellForRow(at: index),let view = parent?.view else { return nil }
+        let visible = tableView.convert(tableView.bounds,to: view).intersection(view.bounds)
+        let rect = cell.convert(cell.bounds,to: view).intersection(visible)
+        return rect.isEmpty ? nil : rect
     }
 }
