@@ -95,6 +95,14 @@ final class PersonalSyncUITests: XCTestCase {
             XCTAssertTrue(table.cells["fei.setting.backup"].exists)
             let history = table.cells["fei.setting.history-limit"]
             assertSettingRow(history,title: "Version history",value: "20",detail: "Snapshots kept for each document")
+            let historyTitle = history.staticTexts["Version history"]
+            let historyDetail = history.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Snapshots kept")).firstMatch
+            let migration = table.cells["fei.setting.import-legacy"]
+            let migrationTitle = migration.staticTexts["Migrate from Quiet.md"]
+            let migrationDetail = migration.staticTexts["Copy documents into your current library."]
+            XCTAssertTrue(migrationTitle.exists && migrationDetail.exists)
+            XCTAssertEqual(historyDetail.frame.minY - historyTitle.frame.maxY,
+                           migrationDetail.frame.minY - migrationTitle.frame.maxY,accuracy: 2)
             capture("documents-library-" + mode)
             library.buttons.firstMatch.tap()
             if mode == "cloud" {
@@ -143,6 +151,7 @@ final class PersonalSyncUITests: XCTestCase {
         XCTAssertTrue(label.exists && summary.exists,file: file,line: line)
         XCTAssertGreaterThan(summary.frame.minX,label.frame.minX,file: file,line: line)
         XCTAssertEqual(summary.frame.midY,label.frame.midY,accuracy: 3,file: file,line: line)
+        XCTAssertGreaterThanOrEqual(summary.frame.width,CGFloat(value.count) * 5,file: file,line: line)
         if let detail {
             let description = row.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@",detail)).firstMatch
             XCTAssertTrue(description.exists,file: file,line: line)

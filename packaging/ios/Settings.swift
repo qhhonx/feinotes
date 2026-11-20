@@ -353,7 +353,8 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         if let preview = row.preview { return themePreviewCell(preview) }
         let cell = UITableViewCell(style: .subtitle,reuseIdentifier: nil)
         let value = row.kind == "choice" ? row.selectedTitle : row.kind == "shortcut" ? prettyShortcut(row.value) : row.kind == "toggle" ? "" : row.value
-        var content = value.isEmpty ? cell.defaultContentConfiguration() : UIListContentConfiguration.valueCell()
+        let hasValueAndDetail = !value.isEmpty && !row.detail.isEmpty
+        var content = value.isEmpty || hasValueAndDetail ? cell.defaultContentConfiguration() : UIListContentConfiguration.valueCell()
         content.text = row.title
         if row.id.hasPrefix("page:") {
             let symbols = ["General":"gearshape","Appearance":"paintpalette","Library":"folder","Shortcuts":"keyboard","Cloud":"icloud","Trash":"trash","Shared":"person.2","About":"info.circle"]
@@ -365,7 +366,7 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         content.secondaryTextProperties.font = font(.subheadline)
         content.secondaryTextProperties.numberOfLines = 0; content.secondaryTextProperties.adjustsFontForContentSizeCategory = true
         content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 13,leading: 16,bottom: 13,trailing: 16)
-        let secondary = value.isEmpty ? row.detail : value
+        let secondary = value.isEmpty || hasValueAndDetail ? row.detail : value
         content.secondaryText = secondary.isEmpty ? nil : secondary
         let enabled = row.enabled && !busy
         content.textProperties.color = row.kind == "info" || !enabled ? .secondaryLabel : row.danger ? .systemRed : .label
@@ -377,21 +378,8 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
             if let file = (primary?["CFBundleIconFiles"] as? [String])?.last { content.image = UIImage(named: file) }
             content.imageProperties.maximumSize = CGSize(width: 64,height: 64); content.imageProperties.cornerRadius = 14
         }
-        if !value.isEmpty && !row.detail.isEmpty {
-            let margins = content.directionalLayoutMargins
-            content.directionalLayoutMargins = .zero
-            content.axesPreservingSuperviewLayoutMargins = []
-            let detail = UILabel()
-            detail.text = row.detail
-            detail.font = font(.subheadline)
-            detail.textColor = .secondaryLabel
-            detail.numberOfLines = 0
-            detail.adjustsFontForContentSizeCategory = true
-            let stack = UIStackView(arrangedSubviews: [UIListContentView(configuration: content),detail])
-            stack.axis = .vertical; stack.spacing = 3
-            stack.isLayoutMarginsRelativeArrangement = true
-            stack.directionalLayoutMargins = margins
-            cell.installContent(stack)
+        if hasValueAndDetail {
+            installSettingValue(value,content: content,in: cell)
         } else { cell.contentConfiguration = content }
         cell.accessibilityIdentifier = "fei.setting."+row.id
         cell.selectionStyle = enabled && !["info","brand","toggle"].contains(row.kind) ? .default : .none
@@ -407,6 +395,38 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
             cell.accessibilityTraits.insert(.notEnabled)
         }
         return cell
+    }
+    private func installSettingValue(_ value:String,content:UIListContentConfiguration,in cell:UITableViewCell) {
+        var textContent = content
+        textContent.directionalLayoutMargins.trailing = 8
+        let labels = UIListContentView(configuration: textContent)
+        guard let title = labels.textLayoutGuide else {
+            cell.contentConfiguration = content
+            return
+        }
+        let valueLabel = UILabel()
+        valueLabel.text = value
+        valueLabel.font = content.secondaryTextProperties.font
+        valueLabel.textColor = content.secondaryTextProperties.color
+        valueLabel.adjustsFontForContentSizeCategory = true
+        valueLabel.lineBreakMode = .byTruncatingMiddle
+        valueLabel.setContentHuggingPriority(.required,for: .horizontal)
+        valueLabel.setContentCompressionResistancePriority(UILayoutPriority(999),for: .horizontal)
+        let rowContent = UIView()
+        cell.installContent(rowContent)
+        labels.translatesAutoresizingMaskIntoConstraints = false
+        valueLabel.translatesAutoresizingMaskIntoConstraints = false
+        rowContent.addSubview(labels)
+        rowContent.addSubview(valueLabel)
+        NSLayoutConstraint.activate([
+            labels.topAnchor.constraint(equalTo: rowContent.topAnchor),
+            labels.leadingAnchor.constraint(equalTo: rowContent.leadingAnchor),
+            labels.bottomAnchor.constraint(equalTo: rowContent.bottomAnchor),
+            labels.trailingAnchor.constraint(equalTo: valueLabel.leadingAnchor),
+            valueLabel.trailingAnchor.constraint(equalTo: rowContent.trailingAnchor,constant: -content.directionalLayoutMargins.trailing),
+            valueLabel.centerYAnchor.constraint(equalTo: title.centerYAnchor),
+            valueLabel.widthAnchor.constraint(lessThanOrEqualTo: rowContent.widthAnchor,multiplier: 0.45),
+        ])
     }
     private func themePreviewCell(_ preview:FeiSettingsState.Preview) -> UITableViewCell {
         let cell = UITableViewCell(); cell.selectionStyle = .none; cell.accessibilityIdentifier = "fei.setting.theme-preview"
