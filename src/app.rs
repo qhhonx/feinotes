@@ -210,6 +210,7 @@ pub(crate) fn save_windows_before(cx: &mut App, retry: fn(&mut App)) -> bool {
 /// set up as a library if it isn't one, the current preferences go with
 /// it when it has none, and the app restarts into it. The old library
 /// stays where it is. Call it outside any window update (`cx.defer`).
+#[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
 pub fn switch_library(root: std::path::PathBuf, cx: &mut App) {
     if cfg!(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-restore")) { return; }
     let ready = cx
@@ -297,6 +298,7 @@ pub enum Confirm {
     /// (it is synced, or used from another computer): 改用文件夹 / 稍后.
     Migrate(crate::store::ConsentReason),
     /// 设置 › 文档库 › 更改…: open this folder as the library (#94), after a restart.
+    #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
     SwitchLibrary(std::path::PathBuf),
     /// Dropped on the sidebar from outside: import it into the library there?
     Import { what: DropImport, target: crate::sidebar_drop::SidebarDropAt },

@@ -85,10 +85,10 @@ final class MobileFeedbackUITests: XCTestCase {
             app.buttons["fei.notes.selection.all"].tap(); XCTAssertEqual(list.cells.matching(NSPredicate(format:"selected == true")).count,0)
             app.buttons["fei.notes.selection.done"].tap()
         }
-        app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:Library"].tap(); app.cells["fei.setting.open-trash"].tap()
+        app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:Trash"].tap()
         XCTAssertTrue(app.buttons["fei.empty-trash"].waitForExistence(timeout:5));back()
-        XCTAssertTrue(app.navigationBars["Documents"].waitForExistence(timeout:5)); shot(prefix+"-trash-returns-library")
-        closeSettings(pad: pad)
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout:5)); shot(prefix+"-trash-returns-settings")
+        if pad { closeSettings(pad: true) } else { back() }
         open("QA49 Linked source")
         func follow(_ target:String) {
           for _ in 0..<(pad ? 2 : 1) {
@@ -234,7 +234,7 @@ final class MobileFeedbackUITests: XCTestCase {
             XCUIDevice.shared.orientation = .landscapeLeft
             app.cells["fei.sidebar.trash"].coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.5)).tap()
         } else {
-            app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:Library"].tap(); app.cells["fei.setting.open-trash"].tap()
+            app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:Trash"].tap()
         }
         XCTAssertTrue(app.buttons["fei.empty-trash"].waitForExistence(timeout: 5)); XCTAssertEqual(app.buttons["fei.empty-trash"].label,"Empty")
         shot(pad ? "ipad48-trash-empty-label" : "iphone48-trash-empty-label")
@@ -304,9 +304,9 @@ final class MobileFeedbackUITests: XCTestCase {
         note.swipeLeft(); XCTAssertTrue(app.buttons["Move to"].waitForExistence(timeout: 5)); shot("iphone47-trailing-swipe-actions")
         list.tap()
         app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:Library"].tap()
-        XCTAssertTrue(app.cells["fei.setting.open-trash"].exists)
+        XCTAssertFalse(app.cells["fei.setting.page:Trash"].exists)
         shot("iphone47-library-settings-groups")
-        app.cells["fei.setting.open-trash"].tap()
+        back(); app.cells["fei.setting.page:Trash"].tap()
         XCTAssertTrue(list.waitForExistence(timeout: 5)); XCTAssertFalse(search.exists)
         XCTAssertFalse(app.buttons["fei.new"].exists)
         shot("iphone47-native-trash")
@@ -732,8 +732,8 @@ final class MobileFeedbackUITests: XCTestCase {
         app.cells["fei.setting.appearance"].tap(); app.cells["fei.setting.option.appearance.dark"].tap(); back(); back()
         XCTAssertTrue(app.buttons["fei.new"].isHittable); shot("iphone47-dark-home")
         app.buttons["fei.settings"].tap(); app.cells["fei.setting.page:Library"].tap(); shot("iphone47-dark-library-settings")
-        app.cells["fei.setting.open-trash"].tap(); XCTAssertTrue(list.waitForExistence(timeout: 8)); shot("iphone47-dark-native-trash")
-        back(); open("QA45 一、标题与正文")
+        back(); app.cells["fei.setting.page:Trash"].tap(); XCTAssertTrue(list.waitForExistence(timeout: 8)); shot("iphone47-dark-native-trash")
+        back(); back(); open("QA45 一、标题与正文")
         app.buttons["fei.edit.mode"].tap(); app.buttons["fei.edit.styles"].tap()
         XCTAssertFalse(app.tables["fei.format.controls"].exists); shot("iphone47-dark-inline-format")
         app.buttons["fei.edit.insert"].tap()

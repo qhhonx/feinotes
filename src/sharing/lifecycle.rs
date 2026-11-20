@@ -22,7 +22,7 @@ impl SharedTrashAction {
                     "{}", tr("请先恢复上级文件夹。", "Restore the parent folder first."));
                 writer.restore(id).map(|_| ())
             }
-            Self::Purge => writer.purge_sqlite_trash_groups(ids),
+            Self::Purge => shared::purge_folder_trash(writer, ids),
         }
     }
 
@@ -53,7 +53,11 @@ impl Workspace {
     }
 
     pub(crate) fn change_shared_trash_items(&mut self, room: Room, ids: Vec<String>, action: SharedTrashAction, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sharing.busy || !room.scope.folder || ids.iter().any(|id| id == &room.scope.note) { return; }
+        if !room.scope.folder || ids.iter().any(|id| id == &room.scope.note) { return; }
+        if self.sharing.busy {
+            self.show_toast_kind(ui::ToastKind::Info, tr("正在处理共享项目，请稍后再试。", "A shared operation is in progress. Try again shortly."), cx);
+            return;
+        }
         let (retry_room, retry_ids) = (room.clone(), ids.clone());
         if !self.save_before(cx, move |w, window, cx| w.change_shared_trash_items(retry_room, retry_ids, action, window, cx)) { return; }
         let workspace = cx.entity_id();
@@ -119,15 +123,13 @@ impl Workspace {
         let task = cx.background_executor().spawn(async move {
             cloud_sync::check_account_revision(revision)?;
             action.apply(&mut writer, &ids)?;
-            if let Err(error) = shared::original::refresh_owner(&written_root, &written_scope, None) {
-                crate::logging::write(&format!("Shared folder trash projection: {error:#}"));
-            }
-            Ok::<_, anyhow::Error>(writer.list())
+            let projection = shared::original::refresh_owner(&written_root, &written_scope, None);
+            Ok::<_, anyhow::Error>((writer.list(), projection))
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             drop(guard);
-            if let Ok(listing) = &result {
+            if let Ok((listing, _)) = &result {
                 let _ = crate::gpui_compat::async_update(cx, |cx| {
                     if personal != crate::store::Store::root_dir() || cloud_sync::account_revision() != revision { return; }
                     cloud_sync::activity::update_folder_items(&scope, listing, cx);
@@ -136,8 +138,8 @@ impl Workspace {
                     cloud_sync::recheck_account(&root, cx);
                 });
             }
-            let _ = this.update(cx, |w, cx| match result {
-                Ok(_) => w.show_toast(action.label(), cx),
+            let _ = this.update(cx, |w, cx| match result.and_then(|(_, projection)| projection) {
+                Ok(()) => w.show_toast(action.label(), cx),
                 Err(error) => w.show_toast_kind(ui::ToastKind::Error, &settings::diagnostic(&error.to_string()), cx),
             });
             drop(store);

@@ -46,6 +46,24 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
         let db = rusqlite::Connection::open(personal.join(crate::store::SQLITE_FILE))?;
         db.execute("INSERT INTO library_values (key, value) VALUES ('shared-sidebar-order', ?1)", [serde_json::to_vec(&order)?])?;
     }
+    if std::env::var_os("QUIET_SYNC_QA_TRASH_PURGE").is_some() {
+        let mut store = Store::open_sqlite_at(personal.clone())?;
+        let private = store.create_from(&crate::docxml::parse("<title>QA personal trash</title><p>throwaway</p>")?)?;
+        store.delete(&private, None)?;
+        for (title, legacy) in [("QA shared trash", false), ("QA stale shared trash", true)] {
+            let folder = store.create_folder(&format!("{title} parent"), None)?;
+            let removed = store.create_folder(title, Some(&folder))?;
+            store.create_from_in(&crate::docxml::parse("<title>QA nested trash</title><p>throwaway</p>")?, Some(&removed))?;
+            let room = original::prepare_local(&personal, &folder, title.into(), false)?;
+            let cache = room_root(&personal, &folder)?;
+            fs::write(cache.join("seed-published"), b"synthetic shared owner")?;
+            let mut writer = Store::open_sqlite_at(cache.clone())?;
+            writer.trash_sqlite_folder(&removed)?;
+            Journal::open(&cache, None)?.merge(&Default::default())?;
+            original::refresh_owner(&cache, &room.scope, None)?;
+            if legacy { writer.purge(&removed)?; }
+        }
+    }
     fs::write(root.join("pause-cloud"), b"isolated local session regression")?;
     fs::write(root.join("qa-session-rooms.json"), serde_json::to_vec(&rooms)?)?;
     Ok(personal)

@@ -8,6 +8,112 @@ final class PersonalSyncUITests: XCTestCase {
         add(screenshot)
     }
 
+    func testEmptyMixedTrash() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
+        XCUIDevice.shared.orientation = pad ? .landscapeLeft : .portrait
+        app.launchArguments += ["-AppleLanguages", "(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_PERSONAL_SYNC_STATE"] = "ready"
+        app.launch()
+        let settings = app.buttons["fei.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 15))
+        settings.tap()
+        let trashEntry = app.cells["fei.setting.page:Trash"]
+        XCTAssertTrue(trashEntry.waitForExistence(timeout: 5))
+        trashEntry.tap()
+        let trash = app.navigationBars["Trash"]
+        XCTAssertTrue(trash.waitForExistence(timeout: 5))
+        let empty = trash.buttons["fei.empty-trash"]
+        XCTAssertTrue(empty.isEnabled)
+        for title in ["QA personal trash", "QA shared trash", "QA stale shared trash"] {
+            XCTAssertTrue(app.staticTexts[title].exists, title)
+        }
+        capture("trash-mixed-before")
+        empty.tap()
+        let alert = app.alerts["fei.confirm"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        alert.buttons["fei.confirm.cancel"].firstMatch.tap()
+        XCTAssertTrue(empty.isEnabled)
+        empty.tap()
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        capture("trash-mixed-confirm")
+        alert.buttons["fei.confirm.ok"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Trash is empty"].waitForExistence(timeout: 12))
+        XCTAssertFalse(empty.isEnabled)
+        capture("trash-mixed-cleared")
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(settings.waitForExistence(timeout: 15))
+        settings.tap()
+        XCTAssertTrue(trashEntry.waitForExistence(timeout: 5))
+        trashEntry.tap()
+        XCTAssertTrue(app.staticTexts["Trash is empty"].waitForExistence(timeout: 5))
+        XCTAssertFalse(empty.isEnabled)
+    }
+
+    func testSettingsLibraryAndTrashNavigation() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
+        XCUIDevice.shared.orientation = pad ? .landscapeLeft : .portrait
+        app.launchArguments += ["-AppleLanguages", "(en)"]
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_PERSONAL_SYNC_STATE"] = "ready"
+        for (mode, libraryLabel) in [("cloud", "iCloud"), ("local", "On this device")] {
+            app.launchEnvironment["FEI_NOTES_MODE"] = mode
+            app.launch()
+            let settings = app.buttons["fei.settings"]
+            XCTAssertTrue(settings.waitForExistence(timeout: 12))
+            settings.tap()
+            let table = app.tables["fei.settings.list"]
+            XCTAssertTrue(table.waitForExistence(timeout: 5))
+            let rows = ["General", "Appearance", "Shortcuts", "Library", "Cloud", "Trash", "About"]
+            let actual = table.cells.allElementsBoundByIndex.map(\.identifier)
+            XCTAssertEqual(actual, rows.map { "fei.setting.page:" + $0 })
+            let settingsTitles = app.navigationBars["Settings"].staticTexts.matching(identifier: "Settings").allElementsBoundByIndex.filter { $0.isHittable }
+            XCTAssertFalse(settingsTitles.isEmpty)
+            XCTAssertTrue(settingsTitles.allSatisfy { $0.frame.height < 32 }, "Settings uses an inline navigation title")
+            if pad { XCTAssertTrue(app.tables["fei.notes.list"].firstMatch.isHittable) }
+            capture("settings-root-" + mode)
+
+            table.cells["fei.setting.page:Library"].tap()
+            let library = app.navigationBars["Library"]
+            XCTAssertTrue(library.waitForExistence(timeout: 5))
+            let active = table.cells["fei.setting.library-info"]
+            let title = active.staticTexts["Current library"]
+            let value = active.staticTexts[libraryLabel]
+            XCTAssertTrue(value.waitForExistence(timeout: 5))
+            XCTAssertGreaterThan(value.frame.minX, title.frame.maxX)
+            XCTAssertEqual(title.frame.midY, value.frame.midY, accuracy: 3)
+            XCTAssertFalse(table.cells["fei.setting.page:Trash"].exists)
+            XCTAssertFalse(table.cells["fei.setting.open-trash"].exists)
+            XCTAssertTrue(table.cells["fei.setting.backup"].exists)
+            capture("documents-library-" + mode)
+            library.buttons.firstMatch.tap()
+
+            let entry = table.cells["fei.setting.page:Trash"]
+            XCTAssertTrue(entry.waitForExistence(timeout: 5))
+            entry.tap()
+            let trash = app.navigationBars["Trash"]
+            XCTAssertTrue(trash.waitForExistence(timeout: 5))
+            let rule = app.staticTexts["fei.notes.trash-retention"]
+            XCTAssertTrue(rule.waitForExistence(timeout: 5))
+            XCTAssertTrue(rule.label.contains("30 days"))
+            let trashTitles = trash.staticTexts.matching(identifier: "Trash").allElementsBoundByIndex.filter { $0.isHittable }
+            XCTAssertFalse(trashTitles.isEmpty)
+            XCTAssertTrue(trashTitles.allSatisfy { $0.frame.height < 32 }, "Trash uses an inline navigation title")
+            capture("trash-" + mode)
+            trash.buttons.firstMatch.tap()
+            XCTAssertTrue(entry.waitForExistence(timeout: 5))
+            app.terminate()
+        }
+    }
+
     func testPersonalICloudStates() {
         continueAfterFailure = false
         let app = XCUIApplication()

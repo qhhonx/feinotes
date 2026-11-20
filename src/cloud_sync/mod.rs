@@ -249,9 +249,14 @@ pub(crate) fn shared_access_ended(root: &Path, note: &str, cx: &mut App) -> Resu
     Ok(())
 }
 
+fn idle_shared_session(session: &Session) -> bool {
+    session.store.only_session_reference() &&
+        !(session.journal.access().is_some_and(shared::Access::can_write) && session.journal.has_queued_catalogue().unwrap_or(true))
+}
+
 pub(crate) fn release_unused(cx: &mut App) {
     let roots = cx.try_global::<Sync>().into_iter().flat_map(|sync| &sync.0)
-        .filter(|(_, session)| session.store.is_shared() && session.store.only_session_reference())
+        .filter(|(_, session)| session.store.is_shared() && idle_shared_session(session))
         .map(|(root, _)| root.clone()).collect::<Vec<_>>();
     for root in roots { release(&root, cx); }
 }
@@ -607,7 +612,7 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
             }).await;
             if !crate::gpui_compat::async_update(cx, |cx| {
                 if !current(&root, generation, cx) { return false; }
-                if room && session(&root, cx).unwrap().store.only_session_reference() { release(&root, cx); return false; }
+                if room && idle_shared_session(session(&root, cx).unwrap()) { release(&root, cx); return false; }
                 true
             }).unwrap_or(false) { break; }
             let mut round = progress::Round::default();

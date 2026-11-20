@@ -1152,6 +1152,7 @@ impl Workspace {
         let content_width = f32::from(window.viewport_size().width)
             - if self.sidebar_open { self.sidebar_w(window) } else { 0. };
         let margin = if content_width < 400. { 16. } else { 32. };
+        let compact_title = cfg!(all(target_os = "macos", feature = "cloudkit-sync")) && page == Page::Library;
         div().flex_1().min_w_0().h_full().flex().flex_col().bg(Theme::bg_body()).text_color(Theme::text()).font_family(theme::UI_FONT)
             // The bar only drags the window; the page title heads the centred column.
             .child(div().h(px(crate::app::HEADER_H)).flex_none().flex().items_center().title_bar()
@@ -1160,8 +1161,10 @@ impl Workspace {
             .child(div().id("settings-content").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.settings_scroll)
                 .child(div().w_full().flex().flex_col().items_center().px(px(margin)).pb(px(64.))
                     .child(div().w_full().max_w(px(if page == Page::Shortcuts { 760. } else { COLUMN_W })).flex().flex_col().gap(px(28.))
+                        .when(compact_title, |d| d.gap(px(16.)))
                         .child(div().flex().items_center().gap(px(16.))
-                            .child(div().flex_1().min_w_0().px(px(4.)).text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).child(page.title()))
+                            .child(div().flex_1().min_w_0().px(px(4.)).text_size(px(if compact_title { 17. } else { 22. }))
+                                .line_height(px(if compact_title { 24. } else { 28. })).font_weight(FontWeight::SEMIBOLD).child(page.title()))
                             .when(page == Page::Shortcuts, |d| d.child(self.shortcut_actions(cx))))
                         .child(body))))
             .into_any_element()
@@ -1347,28 +1350,35 @@ impl Workspace {
         if self.personal_settings_store(cx).is_none() {
             return div().child(tr("请在飞记主窗口打开个人文档库设置。", "Open your personal library settings in the main Fei Notes window.")).into_any_element();
         }
-        let root = crate::store::Store::root_dir();
-        let location = if cfg!(target_os = "windows") { root.display().to_string() } else {
-            dirs::home_dir().and_then(|h| root.strip_prefix(h).ok().map(|r| format!("~/{}", r.display()))).unwrap_or_else(|| root.display().to_string())
-        };
-        let reveal = if cfg!(target_os = "macos") { tr("在访达中显示", "Show in Finder") } else if cfg!(target_os = "windows") {
-            tr("在文件资源管理器中显示", "Show in File Explorer")
-        } else { tr("在文件管理器中显示", "Show in File Manager") };
-        div().w_full().flex().flex_col().gap(px(8.))
-            .child(group(None, vec![
+        let mut rows = Vec::new();
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        rows.push(self.library_mode_row(cx).into_any_element());
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+        {
+            let root = crate::store::Store::root_dir();
+            let location = if cfg!(target_os = "windows") { root.display().to_string() } else {
+                dirs::home_dir().and_then(|h| root.strip_prefix(h).ok().map(|r| format!("~/{}", r.display()))).unwrap_or_else(|| root.display().to_string())
+            };
+            let reveal = if cfg!(target_os = "macos") { tr("在访达中显示", "Show in Finder") } else if cfg!(target_os = "windows") {
+                tr("在文件资源管理器中显示", "Show in File Explorer")
+            } else { tr("在文件管理器中显示", "Show in File Manager") };
+            rows.extend([
                 row(tr("文档库文件夹", "Documents folder"), Some(location.into()), div().flex_none().flex().gap(px(8.))
                     .child(button("reveal-library", reveal).on_click(|_, _, cx| cx.reveal_path(&crate::store::Store::root_dir())))
                     // A test run's library (`QUIET_MD_HOME`) is fixed: a restart would lose it.
                     .when(!cfg!(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-restore")) && std::env::var_os("QUIET_MD_HOME").is_none(), |d| d.child(button("change-library", tr("更改…", "Change…")).on_click(cx.listener(|w, _, _, cx| w.pick_library(cx)))))).into_any_element(),
-                row(tr("回收站", "Trash"), Some(crate::localized_format!("删除的文档保留 {} 天后自动清除。", "Deleted documents are kept for {} days.", crate::store::TRASH_DAYS).into()),
+                row(tr("回收站", "Trash"), Some(crate::trash::retention_note().into()),
                     button("open-trash", tr("打开", "Open")).on_click(cx.listener(|w, _, _, cx| w.open_settings_trash(cx)))).into_any_element(),
-                row(tr("版本历史", "Version history"),
-                    desc(tr("每篇文档保留的历史版本数（1–30 份）", "Snapshots kept for each document (1–30)")),
-                    div().flex_none().flex().items_center().gap(px(12.))
-                        .child(button("history-minus", "−").on_click(cx.listener(|w, _, window, cx| w.change_history_limit(-1, window, cx))))
-                        .child(div().w(px(40.)).flex().items_center().justify_center().text_size(px(theme::ui_font())).text_color(Theme::text()).child(self.personal_history_limit(cx).to_string()))
-                        .child(button("history-plus", "+").on_click(cx.listener(|w, _, window, cx| w.change_history_limit(1, window, cx))))).into_any_element(),
-            ]))
+            ]);
+        }
+        rows.push(row(tr("版本历史", "Version history"),
+            desc(tr("每篇文档保留的历史版本数（1–30 份）", "Snapshots kept for each document (1–30)")),
+            div().flex_none().flex().items_center().gap(px(12.))
+                .child(button("history-minus", "−").on_click(cx.listener(|w, _, window, cx| w.change_history_limit(-1, window, cx))))
+                .child(div().w(px(40.)).flex().items_center().justify_center().text_size(px(theme::ui_font())).text_color(Theme::text()).child(self.personal_history_limit(cx).to_string()))
+                .child(button("history-plus", "+").on_click(cx.listener(|w, _, window, cx| w.change_history_limit(1, window, cx))))).into_any_element());
+        div().w_full().flex().flex_col().gap(px(8.))
+            .child(group(None,rows))
             .children({
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 { Some(self.product_library_groups(cx)) }
@@ -1401,18 +1411,14 @@ impl Workspace {
         self.personal_settings_store(cx).map(|store| store.root().to_path_buf())
     }
 
-    /// Keep product additions after the upstream library rows so new upstream settings stay together.
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     fn product_library_groups(&self, cx: &mut Context<Self>) -> Div {
-        let root = crate::store::Store::root_dir();
         let mut files = vec![row(tr("从 Quiet.md 迁移", "Migrate from Quiet.md"),
             desc(tr("将文档复制到当前文档库。", "Copy documents into your current library.")),
             button("import-legacy-library", tr("选择文件夹…", "Choose Folder…"))
                 .on_click(cx.listener(|w, _, window, cx| w.import_legacy_library(window, cx)))).into_any_element()];
         files.extend(self.backup_rows(cx));
-        div().w_full().flex().flex_col().pt(px(8.)).gap(px(16.))
-            .child(group(None,vec![self.library_mode_row(&root,cx).into_any_element()]))
-            .child(group(Some(tr("导入与导出","Import and Export")),files))
+        group(Some(tr("导入与导出","Import and Export")),files).pt(px(8.))
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -1515,13 +1521,14 @@ impl Workspace {
             Some(EnableCheck::SignedOut) => tr("请在系统设置中登录 iCloud，再回来重试。","Sign in to iCloud in system settings, then try again."),
             Some(EnableCheck::Unavailable) => tr("暂时无法确认 iCloud。连接恢复后可重试。","Could not verify iCloud. Retry when the connection returns."),
             Some(EnableCheck::AccessRequired) => crate::cloud_trial::access_required(),
-            _ => tr("当前使用本机文档库。开启后可跨设备同步和多人实时协作。",
-                "You’re using your local library. Turn on iCloud to sync between devices and collaborate in real time."),
+            _ => crate::cloud_restore::startup_fallback().unwrap_or(tr("当前使用本机文档库。开启后可跨设备同步和多人实时协作。",
+                "You’re using your local library. Turn on iCloud to sync between devices and collaborate in real time.")),
         }
     }
 
     /// 更改…: a folder picked as the next library; `library_in` decides
     /// whether it is used as it is or gets a Quiet.md folder inside.
+    #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
     fn pick_library(&mut self, cx: &mut Context<Self>) {
         if cfg!(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-restore")) { return; }
         let picked = crate::devtools::take_pick();
@@ -1949,16 +1956,14 @@ impl Workspace {
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-    fn library_mode_row(&self, root: &std::path::Path, cx: &App) -> Div {
-        use crate::cloud_sync::SyncPhase;
-        let local = crate::cloud_restore::local_only();
-        let fallback = crate::cloud_restore::startup_fallback();
-        let detail = if local { fallback.unwrap_or(tr("文档保存在这台 Mac。", "Documents are stored on this Mac.")) }
-        else if crate::cloud_sync::status(root, cx).is_some_and(|status| matches!(status.phase, SyncPhase::AccountChanged | SyncPhase::SignedOut)) {
-            tr("当前打开的是原 iCloud 文档库的本机副本。", "A local copy of the previous iCloud library is open.")
-        }
-        else { tr("正在使用 iCloud 文档库。", "Using your iCloud library.") };
-        row(tr("当前文档库","Current library"),desc(detail),div().text_color(Theme::text_caption()).child(self.cloud_library_label(cx)))
+    fn library_mode_row(&self, cx: &App) -> Div {
+        div().w_full().flex().flex_col().gap(px(6.)).pb(px(10.))
+            .child(row(tr("当前文档库","Current library"),None,
+                div().text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 7.))
+                    .text_color(Theme::text_caption()).child(self.cloud_library_label(cx))).min_h(px(0.)).pb(px(0.)))
+            .child(div().px(px(16.)).flex().child(
+                button("reveal-library",tr("在访达中显示数据文件夹","Show Data Folder in Finder"))
+                    .on_click(|_, _, cx| cx.reveal_path(&crate::store::Store::root_dir()))))
     }
 
     #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]

@@ -112,6 +112,46 @@ pub(super) fn stored_catalogue(db: &Connection) -> Result<LoroDoc> {
     Ok(open_replay_snapshot(&get_state(db, "catalogue")?.context("Missing shared catalogue")?)?)
 }
 
+pub(super) fn record_shared_trash_purge(db: &Connection, requested: &[String], removed: &[String]) -> Result<()> {
+    let doc = stored_catalogue(db)?;
+    let peer: i64 = db.query_row("SELECT value FROM state WHERE key='peer'", [], |row| row.get(0))?;
+    doc.set_peer_id(peer as u64)?;
+    let before = doc.oplog_vv();
+    let mut seen: catalogue::Catalogue = serde_json::from_slice(&get_state(db, "catalogue_seen")?.context("Missing catalogue projection")?)?;
+    let mut purged: std::collections::BTreeSet<_> = removed.iter().cloned().collect();
+    for id in requested.iter().filter(|id| removed.binary_search(id).is_err()) {
+        if catalogue::permanently_deleted(&doc, id) { continue; }
+        // Older builds could erase a cached Trash group before publishing its
+        // deletion. Recover only items recorded as trashed and still absent.
+        let was_trashed = seen.get(id).and_then(|entry| entry.get("life"))
+            .is_some_and(|life| life.get("Trash").is_some());
+        ensure!(was_trashed, "{}", crate::settings::tr(
+            "共享回收站尚未同步或该项目已恢复，请刷新后重试。",
+            "The shared Trash has not synced or the item was restored. Refresh and try again."));
+        for (entry_id, entry) in &seen {
+            let root = entry.get("life").and_then(|life| life.get("Trash"))
+                .and_then(|trash| trash.get("root")).and_then(serde_json::Value::as_str);
+            if entry_id != id && root != Some(id.as_str()) { continue; }
+            let live: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM library_entries WHERE id=?1)", [entry_id], |row| row.get(0))?;
+            if entry_id == id {
+                ensure!(!live, "{}", crate::settings::tr("该共享项目已恢复。", "The shared item was restored."));
+            }
+            if !live { purged.insert(entry_id.clone()); }
+        }
+    }
+    for id in purged {
+        catalogue::capture_purge(db, &doc, &id)?;
+        seen.remove(&id);
+    }
+    doc.commit();
+    if doc.oplog_vv() != before {
+        enqueue(db, catalogue::SCOPE, doc.export(ExportMode::updates(&before))?)?;
+        put_state(db, "catalogue", &doc.export(ExportMode::Snapshot)?)?;
+        put_state(db, "catalogue_seen", &serde_json::to_vec(&seen)?)?;
+    }
+    Ok(())
+}
+
 fn put_state(db: &Connection, key: &str, data: &[u8]) -> Result<()> {
     db.execute("INSERT OR REPLACE INTO state VALUES (?1, ?2)", params![key, data])?;
     Ok(())
@@ -1017,6 +1057,10 @@ impl Journal {
 
     pub(super) fn catalogue_paused(&self) -> Result<bool> {
         Ok(get_state(&self.db, CATALOGUE_PAUSED)?.is_some())
+    }
+
+    pub(super) fn has_queued_catalogue(&self) -> Result<bool> {
+        Ok(self.db.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE note=?1)", [catalogue::SCOPE], |row| row.get(0))?)
     }
 
     pub(super) fn pending_work(&self) -> Result<(u32, u32, u32)> {

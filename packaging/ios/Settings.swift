@@ -352,11 +352,11 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         let row = sections[indexPath.section].rows[indexPath.row]
         if let preview = row.preview { return themePreviewCell(preview) }
         let cell = UITableViewCell(style: .subtitle,reuseIdentifier: nil)
-        let trailingStatus = row.id == "page:Cloud" && model?.page == "root"
+        let trailingStatus = (row.id == "page:Cloud" && model?.page == "root") || row.id == "library-info"
         var content = trailingStatus ? UIListContentConfiguration.valueCell() : cell.defaultContentConfiguration()
         content.text = row.title
         if row.id.hasPrefix("page:") {
-            let symbols = ["General":"gearshape","Appearance":"paintpalette","Library":"folder","Shortcuts":"keyboard","Cloud":"icloud","Shared":"person.2","About":"info.circle"]
+            let symbols = ["General":"gearshape","Appearance":"paintpalette","Library":"folder","Shortcuts":"keyboard","Cloud":"icloud","Trash":"trash","Shared":"person.2","About":"info.circle"]
             content.image = UIImage(systemName: symbols[String(row.id.dropFirst(5))] ?? "gearshape")
             content.imageProperties.tintColor = palette?.accentColor ?? view.tintColor
         }

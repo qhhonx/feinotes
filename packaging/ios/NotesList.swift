@@ -469,7 +469,9 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         empty.font = interfaceFont(.body); noticeText.font = interfaceFont(.subheadline)
         rows = Dictionary(uniqueKeysWithValues: next.rows.map { ($0.id,$0) })
         let key = !next.query.isEmpty ? "result-count" : next.rows.contains(where: { $0.folder }) ? "item-count" : "note-count"
-        count.text = String(format: labels[key] ?? "%d items",next.rows.count)
+        count.text = next.header_detail ?? String(format: labels[key] ?? "%d items",next.rows.count)
+        count.numberOfLines = next.header_detail == nil ? 1 : 0
+        count.accessibilityIdentifier = next.header_detail == nil ? "fei.notes.count" : "fei.notes.trash-retention"
         search.accessibilityLabel = labels["search"]
         if !isSearching,search.text != next.query { search.text = next.query }
         tabs.setTitle(labels["all-notes"],forSegmentAt: 0); tabs.setTitle(labels["favorites"],forSegmentAt: 1); tabs.setTitle(labels["sharing"],forSegmentAt: 2)

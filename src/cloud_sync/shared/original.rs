@@ -423,6 +423,49 @@ mod tests {
     }
 
     #[test]
+    fn cached_owned_trash_purge_records_deletion_before_removing_private_projection() -> Result<()> {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        let temp = Fixture(std::env::temp_dir().join(format!("fei-owned-trash-purge-{}", uuid::Uuid::new_v4())));
+        let personal = temp.0.as_path();
+        Store::initialize_local_sqlite(personal)?;
+        fs::write(personal.join(".cloud-restore-ready"), format!("{}\n", "a".repeat(64)))?;
+        let mut private = Store::open_sqlite_at(temp.0.clone())?;
+        let folder = private.create_folder("Shared", None)?;
+        let live = private.create_folder("Keep", Some(&folder))?;
+        let legacy = private.create_from_in(&Document::default(), Some(&folder))?;
+        let current = private.create_folder("Trash group", Some(&folder))?;
+        let child = private.create_from_in(&Document::default(), Some(&current))?;
+        let room = prepare_local(personal, &folder, "Shared".into(), false)?;
+        assert_eq!(owned_trash_room(personal, &folder)?, Some(room.clone()));
+        let cache = room_root(personal, &folder)?;
+        let mut shared = Store::open_sqlite_at(cache.clone())?;
+        shared.delete(&legacy, None)?;
+        shared.trash_sqlite_folder(&current)?;
+        Journal::open(&cache, None)?.merge(&Default::default())?;
+        refresh_owner(&cache, &room.scope, None)?;
+        assert_eq!(private.list_trash().len(), 2);
+
+        shared.purge(&legacy)?;
+        assert!(purge_folder_trash(&mut shared, &[current.clone(), live.clone()]).is_err());
+        assert_eq!(shared.list_trash().len(), 1);
+        let before: i64 = connect(&cache)?.query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))?;
+        let selected = [legacy.clone(), current.clone()];
+        purge_folder_trash(&mut shared, &selected)?;
+        purge_folder_trash(&mut shared, &selected)?;
+        let db = connect(&cache)?;
+        let stored = crate::cloud_sync::journal::stored_catalogue(&db)?;
+        assert!([&legacy, &current, &child].into_iter().all(|id| crate::cloud_sync::catalogue::permanently_deleted(&stored, id)));
+        let after: i64 = db.query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))?;
+        assert_eq!(after, before + 1);
+        refresh_owner(&cache, &room.scope, None)?;
+        assert!(private.list_trash().is_empty());
+        assert!(shared.list_trash().is_empty());
+        assert!(shared.list().iter().any(|entry| entry.id == live));
+        Ok(())
+    }
+
+    #[test]
     fn folder_checkpoints_restore_nested_content_without_granting_cleanup_to_readers() -> Result<()> {
         use super::super::super::retention;
         let temp = std::env::temp_dir().join(format!("fei-folder-checkpoint-{}", uuid::Uuid::new_v4()));

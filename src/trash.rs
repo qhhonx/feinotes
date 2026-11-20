@@ -15,14 +15,16 @@ use gpui::Anchor as Corner;
 
 pub const TRASH_MENU_W: f32 = 160.;
 
-struct ListedTrash { trash: Vec<TrashEntry>, warnings: Vec<String> }
-struct PurgedTrash { errors: Vec<String> }
 
 /// 剩余时间: whole days left before the automatic 彻底删除.
 pub(crate) fn remaining(deleted: u64) -> String {
     let end = deleted + TRASH_DAYS * 86_400;
     let left = end.saturating_sub(crate::time::now());
     if left < 86_400 { crate::settings::text("即将彻底删除").into() } else { crate::localized_count!(left.div_ceil(86_400), "{} 天", "{} day", "{} days", left.div_ceil(86_400)) }
+}
+
+pub(crate) fn retention_note() -> String {
+    crate::localized_format!("删除的文档保留 {} 天后自动清除。", "Deleted documents are automatically removed after {} days.", crate::store::TRASH_DAYS)
 }
 
 /// The page header, as tall as the document's so the header pills sit in
@@ -115,7 +117,9 @@ impl Workspace {
                 .tip_label(crate::shortcuts::keys(crate::settings::text("搜索(⌘ + J)")).into(), crate::ui::TipSide::Below)
                 .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::FocusSearch), cx))),
         );
-        let mut page = div().flex_1().min_w_0().h_full().flex().flex_col().child(header);
+        let mut page = div().flex_1().min_w_0().h_full().flex().flex_col().child(header)
+            .when(cfg!(all(target_os = "macos", feature = "cloudkit-sync")), |d| d.child(div().mx(px(26.)).pb(px(10.))
+                .text_size(px(13.)).line_height(px(19.)).text_color(Theme::text_caption()).child(ui_para(retention_note()))));
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let recoveries = self.render_offline_recoveries(cx);
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
@@ -323,7 +327,7 @@ impl Workspace {
         self.purge_trash(vec![id.to_string()], success, cx);
     }
 
-    /// 清空回收站: purges every trashed page; stops at the first failure.
+    /// Purge personal Trash and route linked items to their authoritative folders.
     fn empty_trash(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let ids: Vec<String> = self.trash.iter().filter(|t| t.share_root.is_none()).map(|t| t.id.clone()).collect();
         let linked = self.trash.iter().any(|t| t.share_root.is_some());
@@ -336,7 +340,7 @@ impl Workspace {
                 if let Some(scope) = &item.share_root { groups.entry(scope.clone()).or_default().push(item.id.clone()); }
             }
             for (scope, ids) in groups {
-                if let Some(room) = self.shared_list_room(&scope, cx) {
+                if let Some(room) = self.linked_trash_room(&scope, cx) {
                     self.change_shared_trash_items(room, ids, crate::sharing::SharedTrashAction::Purge, _window, cx);
                 } else {
                     self.show_toast_kind(crate::ui::ToastKind::Error, crate::settings::tr(
@@ -350,14 +354,26 @@ impl Workspace {
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     fn handle_linked_trash(&mut self, id: &str, action: crate::sharing::SharedTrashAction, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(scope) = self.trash.iter().find(|item| item.id == id).and_then(|item| item.share_root.as_ref()) else { return false; };
-        if let Some(room) = self.shared_list_room(scope, cx) { self.change_shared_trash(room, id.into(), action, window, cx); }
+        if let Some(room) = self.linked_trash_room(scope, cx) { self.change_shared_trash(room, id.into(), action, window, cx); }
         else { self.show_toast_kind(crate::ui::ToastKind::Error, crate::settings::tr(
             "共享文件夹暂不可用，请稍后重试。", "The shared folder is unavailable. Try again shortly."), cx); }
         true
     }
 
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn linked_trash_room(&self, scope: &str, cx: &App) -> Option<crate::cloud_sync::shared::Room> {
+        crate::cloud_sync::shared::owned_trash_room(self.store.root(), scope)
+            .inspect_err(|error| crate::logging::write(&format!("Find shared Trash folder: {error:#}"))).ok().flatten()
+            .or_else(|| self.shared_list_room(scope, cx).filter(|room| room.scope.folder && room.scope.owner.is_none()))
+    }
+
     fn purge_trash(&mut self, ids: Vec<String>, success: &'static str, cx: &mut Context<Self>) {
-        if self.store.file_task_busy() || self.file_history.busy || self.tree_writes_pending() || ids.is_empty() { return; }
+        if ids.is_empty() { return; }
+        if self.file_history.busy || self.tree_writes_pending() || self.store.file_task_busy() {
+            self.show_toast_kind(crate::ui::ToastKind::Info, crate::settings::tr(
+                "文档库正在处理文件，请稍后再试。", "The library is processing files. Try again shortly."), cx);
+            return;
+        }
         let Some(task_guard) = self.store.begin_file_task() else { return };
         let mut writer = self.store.tree_writer();
         let task = cx.background_executor().spawn(async move {
@@ -370,19 +386,19 @@ impl Workspace {
             }
             if let Err(e) = result { errors.push(e.to_string()); }
             if batch && let Err(e) = writer.end_batch() { errors.push(e.to_string()); }
-            let warnings = writer.take_warnings();
-            let trash = writer.list_trash();
-            (PurgedTrash { errors }, ListedTrash { trash, warnings })
+            errors.extend(writer.take_warnings());
+            errors
         });
         self.trash_menu = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let (done, listed) = task.await;
+            let mut errors = task.await;
             drop(task_guard);
             let _ = this.update(cx, |w, cx| {
-                w.trash = listed.trash;
-                let mut errors = done.errors;
-                errors.extend(listed.warnings.iter().map(|s| crate::settings::diagnostic(s)));
+                w.trash = w.store.list_trash();
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                crate::cloud_sync::recheck_account(w.store.root(), cx);
+                errors.extend(w.store.take_warnings());
                 if errors.is_empty() { w.show_toast(success, cx); }
                 else {
                     let msg = errors.iter().map(|e| crate::localized_format!("删除失败：{}", "Could not delete document: {}", crate::settings::diagnostic(e))).collect::<Vec<_>>().join("；");
@@ -431,6 +447,7 @@ impl Workspace {
             }
             Confirm::EmptyTrash => self.empty_trash(window, cx),
             Confirm::Migrate(_) => self.migrate_library(window,cx),
+            #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
             Confirm::SwitchLibrary(root) => cx.defer(move |cx|crate::app::switch_library(root,cx)),
             Confirm::Import { what,target } => self.import_dropped(what,target,window,cx),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -530,6 +547,7 @@ impl Workspace {
                     false,
                 )
             }
+            #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
             Confirm::SwitchLibrary(root) => (
                 crate::settings::tr("换用这个文档库？", "Switch to this library?").to_string(),
                 crate::localized_format!("Quiet.md 会保存当前文档并重启，然后打开 {}。原来的文档库留在原处，不会移动或删除，之后可以再换回来。", "Quiet.md saves the open document, restarts and opens {}. The current library stays where it is, nothing is moved or deleted, and you can switch back later.", root.display()),

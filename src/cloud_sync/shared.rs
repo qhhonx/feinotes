@@ -456,6 +456,19 @@ pub(super) fn cached_access(db: &rusqlite::Connection) -> Option<Access> {
     serde_json::from_slice(&value).ok()
 }
 
+pub(crate) fn owned_trash_room(personal: &Path, note: &str) -> Result<Option<Room>> {
+    let root = room_root(personal, note)?;
+    if root.join("shared-note-ended").exists() { return Ok(None); }
+    let Some(room) = descriptor(&root)? else { return Ok(None); };
+    ensure!(room.scope.note == note && room.scope.folder && room.scope.owner.is_none()
+        && account(&root)? == account(personal)?, "Invalid owned shared folder");
+    Ok(Some(room))
+}
+
+pub(crate) fn purge_folder_trash(writer: &mut Store, ids: &[String]) -> Result<()> {
+    writer.purge_sqlite_trash_groups(ids, |db, removed| super::journal::record_shared_trash_purge(db, ids, removed))
+}
+
 pub(crate) fn owner_display_name(root: &Path) -> Option<gpui::SharedString> {
     let name = fs::read_to_string(root.join("shared-owner-name")).ok()?;
     super::presence::display_name(Some(&name))

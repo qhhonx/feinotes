@@ -933,18 +933,23 @@ impl Store {
         Ok(moved)
     }
 
-    pub fn purge_sqlite_trash_groups(&mut self, ids: &[String]) -> Result<()> {
+    pub fn purge_sqlite_trash_groups(&mut self, ids: &[String], record: impl FnOnce(&Transaction<'_>, &[String]) -> Result<()>) -> Result<()> {
         let _lock = self.begin_write()?;
         self.check_shared_writer(None)?;
         let mut grouped: Vec<_> = ids.iter().filter(|id| self.trash.contains_key(*id)).flat_map(|id| self.trash_group(id)).collect();
         grouped.sort();
         grouped.dedup();
-        self.purge_sqlite(grouped)
+        self.purge_sqlite_with(grouped, record)
     }
 
     pub(super) fn purge_sqlite(&mut self, ids: Vec<String>) -> Result<()> {
+        self.purge_sqlite_with(ids, |_, _| Ok(()))
+    }
+
+    fn purge_sqlite_with(&mut self, ids: Vec<String>, record: impl FnOnce(&Transaction<'_>, &[String]) -> Result<()>) -> Result<()> {
         let mut db = self.sqlite.as_ref().unwrap().connect()?;
-        let tx = db.transaction()?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        record(&tx, &ids)?;
         for id in &ids {
             if tx.execute("DELETE FROM library_documents WHERE id = ?1 AND trashed = 1", [id])? != 0 {
                 tx.execute("DELETE FROM library_blocks WHERE document = ?1", [id])?;

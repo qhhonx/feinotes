@@ -1,0 +1,8 @@
+Fei Notes 1.0.9 (1021) beta
+
+• Settings provides direct access to the document library, iCloud sync, and Trash. Turn off syncing from the iCloud page.
+• The library page shows whether you are using the local or iCloud library. Mac offers an Open in Finder button.
+• Improved Trash navigation and fixed cases where Empty Trash could fail.
+• Includes the previous shared navigation, editor, and cross-device sync fixes.
+
+Use sample documents to check updating from 1.0.8, syncing across devices, and the Empty Trash confirmation and result. Cloud features are included during TestFlight testing without a subscription.

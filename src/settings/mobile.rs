@@ -24,7 +24,7 @@ fn choices(id:&str,title:&str,value:&str,items:&[(&str,&str)]) -> Row {
     Row::new(id,title).value(value).choices(items.iter().map(|(value,title)|(value.to_string(),title.to_string())))
 }
 fn section(title:&str,rows:Vec<Row>) -> Value { json!({"title":title,"rows":rows}) }
-fn pages() -> Vec<Page> { vec![Page::General,Page::Appearance,Page::Library,Page::Cloud,Page::Shortcuts,Page::About] }
+const TRASH_PAGE_ID: &str = "page:Trash";
 
 fn theme_preview(st: &themes::Style) -> Value {
     use crate::editor_theme::{body_line_for, body_size_for, heading_metrics_for, title_for};
@@ -80,7 +80,10 @@ impl Workspace {
         let p = prefs();
         let mut sections = vec![];
         if self.mobile_settings_root {
-            sections.push(section("",pages().into_iter().map(|page| {
+            sections.push(section("",NAV.iter().copied().map(|page| {
+                let Some(page) = page else {
+                    return Row::new(TRASH_PAGE_ID,tr("回收站","Trash")).kind("page").enabled(self.personal_settings_store(cx).is_some());
+                };
                 let row = Row::new(format!("page:{page:?}"),page.title()).kind("page");
                 if page == Page::Cloud { row.value(self.cloud_summary(cx)) } else { row }
             }).collect()));
@@ -123,10 +126,9 @@ impl Workspace {
                 if self.personal_settings_store(cx).is_some() {
                     let rows = vec![
                         Row::new("library-info",tr("当前文档库","Current library")).kind("info").value(self.cloud_library_label(cx)),
-                        Row::new("open-trash",tr("回收站","Trash")).kind("page").detail(crate::localized_format!("删除的文档保留 {} 天后自动清除。","Deleted documents are kept for {} days.",crate::store::TRASH_DAYS)),
                         Row::new("history-limit",tr("版本历史","Version history")).value(self.personal_history_limit(cx).to_string()).detail(tr("每篇文档保留的历史版本数（1–30 份）","Snapshots kept for each document (1–30)")).choices((1..=30).map(|n|(n.to_string(),n.to_string()))),
                     ];
-                    sections.push(section(tr("文档库","Library"),rows));
+                    sections.push(section("",rows));
                     sections.push(section(tr("导入与导出","Import and Export"),vec![
                         Row::new("import-legacy",tr("从 Quiet.md 迁移","Migrate from Quiet.md")).detail(tr("将文档复制到当前文档库。","Copy documents into your current library.")),
                         Row::new("backup",tr("导出整库文件","Export Library File")).detail(tr("包含文档、文件夹、回收站、附件和待同步改动。","Includes documents, folders, Trash, attachments and pending changes.")),
@@ -418,7 +420,13 @@ impl Workspace {
     pub(crate) fn native_settings_command(&mut self,id:&str,value:&str,scope:&str,window:&mut Window,cx:&mut Context<Self>) {
         if self.library_switching || self.view!=View::Settings || scope!=self.native_settings_scope() { return; }
         if self.mobile_settings_root {
-            let Some(page) = pages().into_iter().find(|page|format!("page:{page:?}")==id) else { return; };
+            if id == TRASH_PAGE_ID {
+                if self.personal_settings_store(cx).is_some() {
+                    self.personal_action(window,cx,|w,_,cx|w.mobile_open_trash(cx));
+                }
+                return;
+            }
+            let Some(page) = NAV.iter().flatten().copied().find(|page|format!("page:{page:?}")==id) else { return; };
             self.mobile_settings_parent = None;
             self.mobile_settings_root = false;
             if page == Page::Cloud { self.open_cloud_settings(window,cx); }
@@ -435,7 +443,6 @@ impl Workspace {
         match id {
             "language"=>self.set_pref(|p|{p.language=value.into(); p.english=value!="zh";},cx),
             "remote-images" if matches!(value,"true"|"false")=>self.set_pref(|p|p.remote_images=value=="true",cx),
-            "open-trash"=>self.personal_action(window,cx,|w,_,cx|w.mobile_open_trash(cx)),
             "search-engine"=>self.set_pref(|p|p.search_engine=value.into(),cx),
             "appearance"=>self.set_pref(|p|p.appearance=value.into(),cx),
             "motion"=>self.set_pref(|p|p.motion=value.into(),cx),

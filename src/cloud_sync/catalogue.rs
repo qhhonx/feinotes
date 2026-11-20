@@ -103,8 +103,16 @@ pub fn capture(db: &Connection, doc: &LoroDoc, old: &Catalogue, new: &Catalogue)
         }
     }
     for id in old.keys().filter(|id| !new.contains_key(*id)) {
-        mark_purged(doc, id, journal::note_version(db, id)?)?;
-        doc.get_map(format!("entry-{id}")).insert("life", serde_json::to_string(&Life::Purged)?)?;
+        capture_purge(db, doc, id)?;
+    }
+    Ok(())
+}
+
+pub(super) fn capture_purge(db: &Connection, doc: &LoroDoc, id: &str) -> Result<()> {
+    mark_purged(doc, id, journal::note_version(db, id)?)?;
+    let entry = doc.get_map(format!("entry-{id}"));
+    if content::value(&entry, "life").as_deref() != Some("\"Purged\"") {
+        entry.insert("life", serde_json::to_string(&Life::Purged)?)?;
     }
     Ok(())
 }

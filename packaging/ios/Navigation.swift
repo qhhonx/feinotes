@@ -5,7 +5,7 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
         struct Row: Decodable, Equatable, Sendable { let id:String; let title:String; let summary:String; let folder:Bool; let pinned:Bool; let reorderable:Bool; let shared_badge:Bool; let shared_folder:Bool; let unread_update:Bool }
         struct Selection: Decodable,Equatable,Sendable { let serial:UInt64; let ids:[String]; let selected:[String]; let limit:Int; let can_move:Bool; let moving:Bool }
         let kind:String; let can_select:Bool; let can_sort:Bool; let can_reorder:Bool; let shared_create:Bool; let sort_rule:String; let folders_first:Bool?; let shared_count:Int; let selection:Selection?; let notice_kind:String?
-        let interface_size:String; let notice:String?; let scope:String; let query:String; let tab:Int; let tabs:Bool; let empty:String; let rows:[Row]
+        let interface_size:String; let notice:String?; let scope:String; let query:String; let tab:Int; let tabs:Bool; let header_detail:String?; let empty:String; let rows:[Row]
     }
     struct Browser: Decodable,Equatable,Sendable { let folder:String?; let favorites:Bool; let shared:Bool; let personal:Bool; let can_create:Bool; let title:String; let path:[Route]; let listing:Listing }
     struct QA: Decodable,Equatable,Sendable {
@@ -118,7 +118,6 @@ class FeiRouteController: UIViewController {
     var barIdentity: BarIdentity?
     var overlapsChrome = false
     var chromeTheme: FeiMobileTheme?
-    private var emptyTrash = false
     private var sharedOpening: UIStackView?
     private let openingSpinner = UIActivityIndicatorView(style: .medium)
     private let openingMessage = UILabel()
@@ -128,11 +127,7 @@ class FeiRouteController: UIViewController {
 
     @discardableResult
     func configureNavigationTitleMode() -> Bool {
-        let isList = isWorkspaceBrowser || ["notes","shared","settings","trash"].contains(routeKey) || routeKey.hasPrefix("folder:")
-        // Keep the empty Trash message in view at the largest type size in a narrow column.
-        let compactEmptyTrash = routeKey == "trash" && emptyTrash &&
-            traitCollection.horizontalSizeClass == .compact && traitCollection.preferredContentSizeCategory == .accessibilityExtraExtraExtraLarge
-        let large = isList && !compactEmptyTrash
+        let large = isWorkspaceBrowser || ["notes","shared"].contains(routeKey) || routeKey.hasPrefix("folder:")
         let mode: UINavigationItem.LargeTitleDisplayMode = large ? .always : .never
         if navigationItem.largeTitleDisplayMode != mode { navigationItem.largeTitleDisplayMode = mode }
         return large
@@ -189,7 +184,6 @@ class FeiRouteController: UIViewController {
             return
         }
         if isWorkspaceBrowser { view.backgroundColor = coordinator.theme.workspaceListColor }
-        emptyTrash = routeKey == "trash" && listing.rows.isEmpty
         configureNavigationTitleMode()
         if notesList == nil {
             let list = FeiNotesListController(coordinator: coordinator,theme: coordinator.theme)

@@ -73,7 +73,7 @@ final class PadWorkspaceUITests: XCTestCase {
         XCTAssertTrue(app.buttons["fei.notes.selection.done"].waitForExistence(timeout: 5)); XCTAssertTrue(tabs.exists)
         app.buttons["fei.notes.selection.done"].tap(); XCTAssertTrue(tabs.waitForExistence(timeout: 5))
         app.buttons["fei.settings"].tap(); XCTAssertTrue(app.cells["fei.setting.page:Library"].waitForExistence(timeout: 5))
-        app.cells["fei.setting.page:Library"].tap(); app.cells["fei.setting.open-trash"].tap()
+        app.cells["fei.setting.page:Trash"].tap()
         XCTAssertTrue(app.buttons["fei.empty-trash"].waitForExistence(timeout: 5)); shot("ipad-home-trash-from-settings")
     }
     func testPadOverlaySidebarReturnsToParent() {
