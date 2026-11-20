@@ -1352,7 +1352,7 @@ impl Workspace {
         }
         let mut rows = Vec::new();
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        rows.push(self.library_mode_row(cx).into_any_element());
+        rows.extend(self.library_mode_rows(cx));
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         {
             let root = crate::store::Store::root_dir();
@@ -1956,14 +1956,15 @@ impl Workspace {
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-    fn library_mode_row(&self, cx: &App) -> Div {
-        div().w_full().flex().flex_col().gap(px(6.)).pb(px(10.))
-            .child(row(tr("当前文档库","Current library"),None,
+    fn library_mode_rows(&self, cx: &App) -> [AnyElement; 2] {
+        [
+            row(tr("当前文档库","Current library"),None,
                 div().text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 7.))
-                    .text_color(Theme::text_caption()).child(self.cloud_library_label(cx))).min_h(px(0.)).pb(px(0.)))
-            .child(div().px(px(16.)).flex().child(
-                button("reveal-library",tr("在访达中显示数据文件夹","Show Data Folder in Finder"))
-                    .on_click(|_, _, cx| cx.reveal_path(&crate::store::Store::root_dir()))))
+                    .text_color(Theme::text_caption()).child(self.cloud_library_label(cx))).into_any_element(),
+            row(tr("本机数据文件夹","Local data folder"),None,
+                button("reveal-library",tr("在访达中显示","Show in Finder"))
+                    .on_click(|_, _, cx| cx.reveal_path(&crate::store::Store::root_dir()))).into_any_element(),
+        ]
     }
 
     #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]

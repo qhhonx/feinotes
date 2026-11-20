@@ -93,8 +93,30 @@ final class PersonalSyncUITests: XCTestCase {
             XCTAssertFalse(table.cells["fei.setting.page:Trash"].exists)
             XCTAssertFalse(table.cells["fei.setting.open-trash"].exists)
             XCTAssertTrue(table.cells["fei.setting.backup"].exists)
+            let history = table.cells["fei.setting.history-limit"]
+            assertSettingRow(history,title: "Version history",value: "20",detail: "Snapshots kept for each document")
             capture("documents-library-" + mode)
             library.buttons.firstMatch.tap()
+            if mode == "cloud" {
+                let appearance = table.cells["fei.setting.page:Appearance"]
+                XCTAssertTrue(appearance.waitForExistence(timeout: 5))
+                appearance.tap()
+                let motion = table.cells["fei.setting.motion"]
+                assertSettingRow(motion,title: "Animation",value: "Low",detail: "Controls folding")
+                capture("settings-appearance-value-detail")
+                app.navigationBars["Appearance"].buttons.firstMatch.tap()
+
+                let general = table.cells["fei.setting.page:General"]
+                XCTAssertTrue(general.waitForExistence(timeout: 5))
+                general.tap()
+                let search = table.cells["fei.setting.search-engine"]
+                assertSettingRow(search,title: "Web search",value: "Google")
+                let images = table.cells["fei.setting.remote-images"]
+                XCTAssertTrue(images.switches["fei.setting.switch.remote-images"].exists)
+                XCTAssertTrue(images.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "When off")).firstMatch.exists)
+                capture("settings-general-value-detail")
+                app.navigationBars["General"].buttons.firstMatch.tap()
+            }
 
             let entry = table.cells["fei.setting.page:Trash"]
             XCTAssertTrue(entry.waitForExistence(timeout: 5))
@@ -111,6 +133,21 @@ final class PersonalSyncUITests: XCTestCase {
             trash.buttons.firstMatch.tap()
             XCTAssertTrue(entry.waitForExistence(timeout: 5))
             app.terminate()
+        }
+    }
+
+    private func assertSettingRow(_ row:XCUIElement,title:String,value:String,detail:String?=nil,file:StaticString=#filePath,line:UInt=#line) {
+        XCTAssertTrue(row.waitForExistence(timeout: 5),file: file,line: line)
+        let label = row.staticTexts[title]
+        let summary = row.staticTexts[value]
+        XCTAssertTrue(label.exists && summary.exists,file: file,line: line)
+        XCTAssertGreaterThan(summary.frame.minX,label.frame.minX,file: file,line: line)
+        XCTAssertEqual(summary.frame.midY,label.frame.midY,accuracy: 3,file: file,line: line)
+        if let detail {
+            let description = row.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@",detail)).firstMatch
+            XCTAssertTrue(description.exists,file: file,line: line)
+            XCTAssertGreaterThanOrEqual(description.frame.minY,label.frame.maxY-3,file: file,line: line)
+            XCTAssertEqual(description.frame.minX,label.frame.minX,accuracy: 3,file: file,line: line)
         }
     }
 

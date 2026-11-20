@@ -138,14 +138,14 @@ private final class FeiThemePreviewView: UIView {
 }
 
 private extension UITableViewCell {
-    func installPreview(_ preview:UIView) {
-        preview.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(preview)
+    func installContent(_ view:UIView) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(view)
         NSLayoutConstraint.activate([
-            preview.topAnchor.constraint(equalTo: contentView.topAnchor),
-            preview.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            preview.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            preview.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            view.topAnchor.constraint(equalTo: contentView.topAnchor),
+            view.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            view.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
         ])
     }
 }
@@ -352,8 +352,8 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         let row = sections[indexPath.section].rows[indexPath.row]
         if let preview = row.preview { return themePreviewCell(preview) }
         let cell = UITableViewCell(style: .subtitle,reuseIdentifier: nil)
-        let trailingStatus = (row.id == "page:Cloud" && model?.page == "root") || row.id == "library-info"
-        var content = trailingStatus ? UIListContentConfiguration.valueCell() : cell.defaultContentConfiguration()
+        let value = row.kind == "choice" ? row.selectedTitle : row.kind == "shortcut" ? prettyShortcut(row.value) : row.kind == "toggle" ? "" : row.value
+        var content = value.isEmpty ? cell.defaultContentConfiguration() : UIListContentConfiguration.valueCell()
         content.text = row.title
         if row.id.hasPrefix("page:") {
             let symbols = ["General":"gearshape","Appearance":"paintpalette","Library":"folder","Shortcuts":"keyboard","Cloud":"icloud","Trash":"trash","Shared":"person.2","About":"info.circle"]
@@ -365,8 +365,8 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         content.secondaryTextProperties.font = font(.subheadline)
         content.secondaryTextProperties.numberOfLines = 0; content.secondaryTextProperties.adjustsFontForContentSizeCategory = true
         content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 13,leading: 16,bottom: 13,trailing: 16)
-        let value = row.kind == "choice" ? row.selectedTitle : row.kind == "shortcut" ? prettyShortcut(row.value) : row.kind == "toggle" ? "" : row.value
-        content.secondaryText = [value,row.detail].filter { !$0.isEmpty }.joined(separator: "\n")
+        let secondary = value.isEmpty ? row.detail : value
+        content.secondaryText = secondary.isEmpty ? nil : secondary
         let enabled = row.enabled && !busy
         content.textProperties.color = row.kind == "info" || !enabled ? .secondaryLabel : row.danger ? .systemRed : .label
         content.secondaryTextProperties.color = .secondaryLabel
@@ -377,7 +377,22 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
             if let file = (primary?["CFBundleIconFiles"] as? [String])?.last { content.image = UIImage(named: file) }
             content.imageProperties.maximumSize = CGSize(width: 64,height: 64); content.imageProperties.cornerRadius = 14
         }
-        cell.contentConfiguration = content
+        if !value.isEmpty && !row.detail.isEmpty {
+            let margins = content.directionalLayoutMargins
+            content.directionalLayoutMargins = .zero
+            content.axesPreservingSuperviewLayoutMargins = []
+            let detail = UILabel()
+            detail.text = row.detail
+            detail.font = font(.subheadline)
+            detail.textColor = .secondaryLabel
+            detail.numberOfLines = 0
+            detail.adjustsFontForContentSizeCategory = true
+            let stack = UIStackView(arrangedSubviews: [UIListContentView(configuration: content),detail])
+            stack.axis = .vertical; stack.spacing = 3
+            stack.isLayoutMarginsRelativeArrangement = true
+            stack.directionalLayoutMargins = margins
+            cell.installContent(stack)
+        } else { cell.contentConfiguration = content }
         cell.accessibilityIdentifier = "fei.setting."+row.id
         cell.selectionStyle = enabled && !["info","brand","toggle"].contains(row.kind) ? .default : .none
         if row.kind == "toggle" {
@@ -395,7 +410,7 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
     }
     private func themePreviewCell(_ preview:FeiSettingsState.Preview) -> UITableViewCell {
         let cell = UITableViewCell(); cell.selectionStyle = .none; cell.accessibilityIdentifier = "fei.setting.theme-preview"
-        cell.installPreview(FeiThemePreviewView(preview))
+        cell.installContent(FeiThemePreviewView(preview))
         return cell
     }
     private func font(_ style:UIFont.TextStyle) -> UIFont {
@@ -496,7 +511,7 @@ final class FeiSettingsChoiceController: UITableViewController {
             sample.accessibilityElementsHidden = true
             let stack = UIStackView(arrangedSubviews: [header,divider,sample])
             stack.axis = .vertical
-            cell.installPreview(stack)
+            cell.installContent(stack)
             cell.isAccessibilityElement = true
             cell.accessibilityLabel = item.title
             cell.accessibilityTraits.insert(.button)
