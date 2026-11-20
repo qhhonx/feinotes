@@ -196,10 +196,10 @@ impl Workspace {
         if self.is_shared() { return false; }
         let Some((target, room)) = target.and_then(|t| shared::original::owner_room(&self.entries, t).map(|r| (t, r))).filter(|(_, r)| r.scope.folder) else { return false; };
         if !self.sharing.busy {
-            self.sharing.sheet = Some(Sheet::MoveInto(ids.to_vec(), target.into(), room));
-            self.sharing.message = None; self.row_menu = None;
             #[cfg(target_os = "ios")]
             self.mobile_present_sharing(cx);
+            self.sharing.sheet = Some(Sheet::MoveInto(ids.to_vec(), target.into(), room));
+            self.sharing.message = None; self.row_menu = None;
             cx.notify();
         }
         true
