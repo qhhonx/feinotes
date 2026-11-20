@@ -248,7 +248,8 @@ impl Workspace {
         let origin = bounds.origin + point(px(s.p[0]), px(s.p[1]));
         self.folder_drag.active = Some(Drag {
             id: id.to_string(), start: at, at, offset: at - origin, started: false,
-            navigation_only: self.folder_drag.shared_rows.is_some() && rows[index].entry.meta.share_root.is_some(),
+            navigation_only: rows[index].entry.meta.share_root.as_deref().is_some_and(|root|
+                self.folder_drag.shared_rows.is_some() || root != id),
             excluded: crate::tree::Tree::new(self.drag_entries()).subtree(id).into_iter().collect(),
             index, depth: rows[index].depth, initial_depth: rows[index].depth, parent: rows[index].entry.meta.parent.clone(),
             original_index: index, original_depth: rows[index].depth, hover: None,
@@ -261,7 +262,7 @@ impl Workspace {
         let Some(d) = self.folder_drag.active.as_mut() else { return };
         d.at = at;
         if !d.started && (f32::from(at.x - d.start.x).hypot(f32::from(at.y - d.start.y)) >= 4.) {
-            // The organizer can move rooms. Members belong to the room's catalogue.
+            // A shared child is only a projection in either sidebar tree.
             if d.navigation_only {
                 self.folder_drag.active = None;
                 self.folder_drag.icon_press = false; self.folder_drag.icon_alt = false;

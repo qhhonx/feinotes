@@ -7,7 +7,7 @@ use crate::settings::display_title;
 use crate::editor::view::SubPage;
 use crate::input::{TextField, TextFieldEvent};
 use crate::store::Entry;
-use crate::theme::{self, Theme, craft};
+use crate::theme::{self, Theme};
 use crate::trash::{close_button, dialog, primary_button, scrim, secondary_button};
 use crate::ui::{ROW_RADIUS, icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
@@ -243,6 +243,10 @@ impl Workspace {
         let hidden: HashSet<String> = dlg.ids.iter().flat_map(|id| tree.subtree(id)).collect();
         let q = dlg.search.read(cx).text.trim().to_lowercase();
         let border = Theme::line_border();
+        let library = crate::settings::tr("我的文档", "My documents").to_owned();
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let library = self.current_room(cx).filter(|room| room.scope.folder).map_or(library, |room| room.title);
+        let heading = crate::localized_format!("从「{}」移动到", "Move from “{}” to", library);
 
         let search = div()
             .mt(px(12.))
@@ -280,8 +284,8 @@ impl Workspace {
                     .items_center()
                     .rounded(px(9.))
                     .bg(Theme::fill_hover_strong())
-                    .child(icon("library", 15., Theme::icon()))
-                    .child(div().ml(px(8.)).text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).child(crate::settings::tr("我的文档", "My documents"))),
+                    .child(icon(if self.is_shared() { "folder-shared" } else { "library" }, 15., Theme::icon()))
+                    .child(div().ml(px(8.)).min_w_0().text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(library))),
             );
 
         let row = |key: String, selected: bool| {
@@ -363,11 +367,12 @@ impl Workspace {
             if hits.is_empty() {
                 list = list.child(div().pt(px(80.)).flex().justify_center().text_size(px(theme::ui_font())).text_color(Theme::text_caption()).child(crate::settings::text("无搜索结果")));
             }
-            for e in hits {
+            for (index, e) in hits.into_iter().enumerate() {
                 let pick = e.id.clone();
                 list = list.child(
                     row(format!("move-hit-{}", e.id), dlg.target.as_ref().is_some_and(|t| t.as_deref() == Some(e.id.as_str())))
                         .pl(px(16.))
+                        .when(cfg!(feature = "devtools") && index == 0, |d| d.relative().child(self.home.track("qa-move-first-hit")))
                         .child(page_icon(e))
                         .child(title(display_title(&e.title)))
                         .on_click(cx.listener(move |w, _, _, cx| {
@@ -382,20 +387,15 @@ impl Workspace {
 
         let ready = dlg.target.is_some();
         // 确定 waits for a target: the accent, faded, until one is picked.
-        let ok = primary_button("move-ok", crate::settings::text("确定"));
-        let ok = if ready {
-            ok
-        } else {
-            let faded = theme::ca(craft::B500, 0.4);
-            ok.bg(faded).cursor_default().hover(move |s| s.bg(faded)).active(move |s| s.bg(faded))
-        };
+        let ok = primary_button("move-ok", crate::settings::text("确定"))
+            .when(!ready, |d| d.opacity(0.4).cursor_default());
         let dialog = dialog("move-dialog")
             .relative()
             .w(px(828.))
             .flex()
             .flex_col()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().pt(px(24.)).pr(px(56.)).pl(px(24.)).text_size(px(15.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).child(crate::settings::text("从 我的文档 移动到")))
+            .child(div().pt(px(24.)).pr(px(56.)).pl(px(24.)).text_size(px(15.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).child(heading))
             .child(close_button("move-close").absolute().top(px(27.)).right(px(25.)).on_click(cx.listener(|w, _, window, cx| w.close_move(window, cx))))
             .child(
                 div().px(px(24.)).mt(px(16.)).mb(px(24.)).child(
@@ -418,14 +418,15 @@ impl Workspace {
                     .justify_end()
                     .gap(px(12.))
                     .child(secondary_button("move-cancel", crate::settings::text("取消")).on_click(cx.listener(|w, _, window, cx| w.close_move(window, cx))))
-                    .child(ok.on_click(cx.listener(|w, _, window, cx| {
-                        let Some(d) = w.move_dlg.as_ref() else { return };
-                        let Some(target) = d.target.clone() else { return };
-                        let ids = d.ids.clone();
-                        w.batch = None;
-                        w.move_docs(&ids, target, cx);
-                        w.close_move(window, cx);
-                    }))),
+                    .child(ok.when(cfg!(feature = "devtools"), |d| d.relative().child(self.home.track("qa-move-confirm")))
+                        .when(ready, |d| d.on_click(cx.listener(|w, _, window, cx| {
+                            let Some(d) = w.move_dlg.as_ref() else { return };
+                            let Some(target) = d.target.clone() else { return };
+                            let ids = d.ids.clone();
+                            w.batch = None;
+                            w.move_docs(&ids, target, cx);
+                            w.close_move(window, cx);
+                        })))),
             );
         Some(
             deferred(

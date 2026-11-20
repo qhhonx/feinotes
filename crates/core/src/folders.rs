@@ -91,6 +91,8 @@ impl Store {
     pub fn move_in_tree(&mut self, id: &str, parent: Option<&str>, before: Option<&str>) -> Result<()> {
         let _lock = self.begin_write()?;
         anyhow::ensure!(self.index_has(id), "文档或文件夹不存在");
+        anyhow::ensure!(self.index[id].share_root.as_deref().is_none_or(|root| root == id),
+            "请在共享文件夹内移动项目 / Move this item from inside its shared folder");
         self.validate_folder(Some(id), parent)?;
         if let Some(anchor) = before {
             anyhow::ensure!(self.index.get(anchor).is_some_and(|m| m.parent.as_deref() == parent) && self.index_has(anchor), "目标位置已改变，请重试");

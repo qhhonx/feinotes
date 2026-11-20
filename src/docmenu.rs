@@ -205,6 +205,9 @@ impl Workspace {
             && !crate::cloud_sync::shared::editing_paused(&self.store,cx));
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let editable = true;
+        let movable = !shared;
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let movable = movable || editable && self.current_room(cx).is_some_and(|room| room.scope.folder);
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let show_share = !shared && !crate::cloud_restore::local_only() && entry.is_some_and(|entry| !entry.meta.local());
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
@@ -263,8 +266,9 @@ impl Workspace {
                     .on_click(cx.listener(|w, _, window, cx| w.find_in_doc(false, window, cx))),
             )
             .child(divider()))
-            .when(!shared, |d| d.child(
+            .when(movable, |d| d.child(
                 menu_item("dm-move", "folder-input", crate::settings::text("移动到"), false, false)
+                    .when(cfg!(feature = "devtools"), |d| d.relative().child(self.home.track("qa-document-move")))
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(move |w, _, window, cx| {
                         w.close_doc_menu(cx);
