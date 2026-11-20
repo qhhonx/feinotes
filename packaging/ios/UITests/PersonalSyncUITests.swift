@@ -32,9 +32,28 @@ final class PersonalSyncUITests: XCTestCase {
         for title in ["QA personal trash", "QA shared trash", "QA stale shared trash"] {
             XCTAssertTrue(app.staticTexts[title].exists, title)
         }
+        let items = app.tables["fei.notes.list"]
+        let personal = items.cells.containing(.staticText,identifier: "QA personal trash").firstMatch
+        let metadata = personal.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "My documents · ")).firstMatch
+        XCTAssertTrue(metadata.exists)
+        XCTAssertTrue(metadata.label.contains("days"))
+        let retention = app.staticTexts["fei.notes.trash-retention"]
+        XCTAssertTrue(retention.exists)
+        XCTAssertEqual(personal.frame.minX,retention.frame.minX,accuracy: 24)
+        XCTAssertLessThanOrEqual(personal.frame.maxX,app.frame.maxX + 1)
         capture("trash-mixed-before")
-        empty.tap()
+        personal.press(forDuration: 1)
+        let restore = app.buttons["Restore"].firstMatch
+        let purge = app.buttons["Delete permanently"].firstMatch
+        XCTAssertTrue(restore.waitForExistence(timeout: 5))
+        XCTAssertTrue(purge.exists)
+        capture("trash-row-menu")
+        purge.tap()
         let alert = app.alerts["fei.confirm"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        alert.buttons["fei.confirm.cancel"].firstMatch.tap()
+        XCTAssertTrue(personal.exists)
+        empty.tap()
         XCTAssertTrue(alert.waitForExistence(timeout: 5))
         alert.buttons["fei.confirm.cancel"].firstMatch.tap()
         XCTAssertTrue(empty.isEnabled)

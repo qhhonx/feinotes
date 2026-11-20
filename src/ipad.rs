@@ -540,7 +540,10 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         tabs:body_view == View::Home && query.is_empty(),
         header_detail:(body_view == View::Trash).then(crate::trash::retention_note),
         empty:if body_view==View::Trash { tr("回收站为空","Trash is empty") } else if !query.is_empty() { tr("没有找到匹配的结果","No matching documents") } else if workspace.home.tab == crate::home::HomeTab::Starred { tr("暂无收藏文档","No favorite documents yet") } else if workspace.home.tab == crate::home::HomeTab::Shared { tr("暂无共享文档。你可以从菜单接受邀请，或邀请他人一起编辑文档。","No shared documents yet. Accept an invitation from the menu, or invite someone to edit a document with you.") } else { tr("点新建按钮创建文档","Tap New to start a document") }.into(),
-        rows:if body_view==View::Trash { workspace.trash.iter().map(|entry|NativeListingRow { id:entry.id.clone(),title:display_title(&entry.title),summary:crate::trash::remaining(entry.deleted),folder:false,pinned:false,reorderable:false,shared_badge:false,shared_folder:false,unread_update:false })
+        rows:if body_view==View::Trash { workspace.trash.iter().map(|entry|NativeListingRow {
+            id:entry.id.clone(),title:display_title(&entry.title),
+            summary:format!("{} · {}",workspace.trash_location(entry),crate::trash::remaining(entry.deleted)),
+            folder:false,pinned:false,reorderable:false,shared_badge:false,shared_folder:false,unread_update:false })
             .chain(recoveries.iter().map(|(id,title)| NativeListingRow { id:id.clone(),title:display_title(title),
                 summary:tr("离线恢复副本","Offline Recovery Copy").into(),folder:false,pinned:false,reorderable:false,shared_badge:false,shared_folder:false,unread_update:false })).collect() } else { workspace.mobile_visible_entries(cx).into_iter().map(|entry|NativeListingRow {
             id:entry.id.clone(),title:display_title(&entry.title),folder:entry.meta.folder.is_some(),pinned:entry.meta.pinned,

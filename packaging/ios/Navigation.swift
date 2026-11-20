@@ -188,8 +188,9 @@ class FeiRouteController: UIViewController {
         if notesList == nil {
             let list = FeiNotesListController(coordinator: coordinator,theme: coordinator.theme)
             list.browsesWorkspace = isWorkspaceBrowser
+            let usesSafeWidth = isWorkspaceBrowser || listing.kind == "trash"
             addChild(list); list.view.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(list.view)
-            NSLayoutConstraint.activate([list.view.topAnchor.constraint(equalTo: view.topAnchor),list.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),list.view.leadingAnchor.constraint(equalTo: isWorkspaceBrowser ? view.safeAreaLayoutGuide.leadingAnchor : view.leadingAnchor),list.view.trailingAnchor.constraint(equalTo: isWorkspaceBrowser ? view.safeAreaLayoutGuide.trailingAnchor : view.trailingAnchor)])
+            NSLayoutConstraint.activate([list.view.topAnchor.constraint(equalTo: view.topAnchor),list.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),list.view.leadingAnchor.constraint(equalTo: usesSafeWidth ? view.safeAreaLayoutGuide.leadingAnchor : view.leadingAnchor),list.view.trailingAnchor.constraint(equalTo: usesSafeWidth ? view.safeAreaLayoutGuide.trailingAnchor : view.trailingAnchor)])
             list.didMove(toParent: self); notesList = list
             setContentScrollView(list.tableView,for: .all)
         }

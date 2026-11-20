@@ -98,7 +98,7 @@ pub(crate) fn backup_confirmation(prepared: &crate::cloud_sync::backup::Prepared
 
 impl Workspace {
     /// Where a trashed page goes back to: its parent if that page is live.
-    fn trash_location(&self, t: &TrashEntry) -> String {
+    pub(crate) fn trash_location(&self, t: &TrashEntry) -> String {
         t.parent
             .as_ref()
             .and_then(|p| self.entries.iter().find(|e| &e.id == p))

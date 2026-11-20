@@ -214,6 +214,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         source = FeiNotesDataSource(tableView: tableView) { [weak self] table,index,id in
             guard let self else { return nil }
             guard let row=self.rows[id] else { return nil }
+            let isTrash = self.listing?.kind == "trash"
             let cell = table.dequeueReusableCell(withIdentifier: "note",for: index)
             var content = cell.defaultContentConfiguration()
             content.text = row.title; content.textProperties.numberOfLines = 1; content.textProperties.font = self.interfaceFont(.headline)
@@ -223,7 +224,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             content.secondaryTextProperties.font = self.interfaceFont(.subheadline)
             content.secondaryTextProperties.color = .secondaryLabel
             content.secondaryTextProperties.numberOfLines = 1
-            content.secondaryTextProperties.lineBreakMode = .byTruncatingTail
+            content.secondaryTextProperties.lineBreakMode = isTrash ? .byTruncatingMiddle : .byTruncatingTail
             content.textToSecondaryTextVerticalPadding = 4
             content.secondaryTextProperties.adjustsFontForContentSizeCategory = true
             content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 12,leading: 16,bottom: 12,trailing: 16)
@@ -450,6 +451,9 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             finishRowDrag(restore: previous?.scope == next.scope)
         }
         listing = next
+        if previous?.kind != next.kind {
+            tableView.contentInsetAdjustmentBehavior = next.kind == "trash" ? .scrollableAxes : .always
+        }
         let ordered = listingSnapshot(next).itemIdentifiers
         if var pending = pendingMove {
             if pending.scope != next.scope || ordered == pending.order && next.can_reorder || pending.writing && next.can_reorder || next.notice != nil && next.notice != previous?.notice { pendingMove = nil }
