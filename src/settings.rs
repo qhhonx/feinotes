@@ -1203,6 +1203,7 @@ impl Workspace {
                     switch("pref-remote", p.remote_images).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.remote_images = !p.remote_images, cx)))).into_any_element(),
                 // 网页搜索 opens the selection in the browser; which site is the
                 // user's habit, so it is a preference rather than a constant.
+                #[cfg(not(target_os = "ios"))]
                 row(tr("网页搜索", "Web search"), desc(tr("选中文字后「网页搜索」用哪个网站。", "Which site “Web search” opens the selected text in.")), {
                     let sel = match p.search_engine.as_str() { "baidu" => 1, "bing" => 2, "duckduckgo" => 3, _ => 0 };
                     self.select("search-engine", vec!["Google", tr("百度", "Baidu"), "Bing", "DuckDuckGo"], sel,
@@ -1272,6 +1273,7 @@ impl Workspace {
                 segmented("appearance", &[tr("跟随系统", "System"), tr("浅色", "Light"), tr("深色", "Dark")], at,
                     |w, i, cx| w.set_pref(|p| p.appearance = ["", "light", "dark"][i].into(), cx), cx)
             }).into_any_element(),
+            #[cfg(not(target_os = "ios"))]
             row(tr("动画", "Animation"), Some(tr("克制：切换即时，只有拖拽带动画。丰富：展开收起、选中和悬停也带动画。", "Low: switching is instant, only dragging animates. High: folding, selection and hover animate too.").into()),
                 segmented("motion", &[tr("克制", "Low"), tr("丰富", "High")], usize::from(prefs().motion == "high"),
                     |w, i, cx| w.set_pref(|p| p.motion = ["", "high"][i].into(), cx), cx)).into_any_element(),

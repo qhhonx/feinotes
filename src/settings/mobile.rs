@@ -92,14 +92,12 @@ impl Workspace {
                 sections.push(section("",vec![
                     Row::new("language",tr("界面语言","Interface language")).value(p.lang().code()).choices(Lang::ALL.into_iter().map(|l|(l.code().into(),l.name().into()))),
                     Row::new("remote-images",tr("自动下载网络图片","Download web images")).kind("toggle").value(p.remote_images.to_string()).detail(tr("关闭后，网络图片显示为占位，可点击单独加载。","When off, web images show a placeholder you can tap to load.")),
-                    choices("search-engine",tr("网页搜索","Web search"),&p.search_engine,&[("","Google"),("baidu",tr("百度","Baidu")),("bing","Bing"),("duckduckgo","DuckDuckGo")]),
                     Row::new("reminders",tr("日期提醒通知","Reminder notifications")).kind("page").detail(tr("查看通知权限和已安排的提醒。","View notification permission and scheduled reminders.")),
                 ]));
             }
             Page::Appearance => {
                 sections.push(section("",vec![
                     choices("appearance",tr("外观","Appearance"),&p.appearance,&[("",tr("跟随系统","System")),("light",tr("浅色","Light")),("dark",tr("深色","Dark"))]),
-                    choices("motion",tr("动画","Animation"),&p.motion,&[("",tr("克制","Low")),("high",tr("丰富","High"))]).detail(tr("控制正文展开、选中等效果。页面切换遵循系统的减少动态效果设置。","Controls folding and selection in the editor. Navigation follows the system Reduce Motion setting.")),
                     choices("ui-font",tr("界面字号","Interface size"),&p.ui_font,&[("small",tr("小","Small")),("",tr("标准","Default")),("large",tr("大","Large"))]),
                 ]));
                 let list = themes::themes();
@@ -443,9 +441,7 @@ impl Workspace {
         match id {
             "language"=>self.set_pref(|p|{p.language=value.into(); p.english=value!="zh";},cx),
             "remote-images" if matches!(value,"true"|"false")=>self.set_pref(|p|p.remote_images=value=="true",cx),
-            "search-engine"=>self.set_pref(|p|p.search_engine=value.into(),cx),
             "appearance"=>self.set_pref(|p|p.appearance=value.into(),cx),
-            "motion"=>self.set_pref(|p|p.motion=value.into(),cx),
             "ui-font"=>self.set_pref(|p|p.ui_font=value.into(),cx),
             "theme"=>apply_theme(self,value.into(),cx),
             "theme-edit"=>self.edit_theme(&prefs().theme_id(),cx),

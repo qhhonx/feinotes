@@ -128,21 +128,32 @@ final class PersonalSyncUITests: XCTestCase {
                 let appearance = table.cells["fei.setting.page:Appearance"]
                 XCTAssertTrue(appearance.waitForExistence(timeout: 5))
                 appearance.tap()
-                let motion = table.cells["fei.setting.motion"]
-                assertSettingRow(motion,title: "Animation",value: "Low",detail: "Controls folding")
-                capture("settings-appearance-value-detail")
+                XCTAssertFalse(table.cells["fei.setting.motion"].exists)
+                XCTAssertTrue(table.cells["fei.setting.theme"].exists)
+                capture("settings-appearance")
                 app.navigationBars["Appearance"].buttons.firstMatch.tap()
 
                 let general = table.cells["fei.setting.page:General"]
                 XCTAssertTrue(general.waitForExistence(timeout: 5))
                 general.tap()
-                let search = table.cells["fei.setting.search-engine"]
-                assertSettingRow(search,title: "Web search",value: "Google")
+                XCTAssertFalse(table.cells["fei.setting.search-engine"].exists)
+                XCTAssertTrue(table.cells["fei.setting.reminders"].exists)
                 let images = table.cells["fei.setting.remote-images"]
                 XCTAssertTrue(images.switches["fei.setting.switch.remote-images"].exists)
                 XCTAssertTrue(images.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "When off")).firstMatch.exists)
                 capture("settings-general-value-detail")
                 app.navigationBars["General"].buttons.firstMatch.tap()
+
+                table.cells["fei.setting.page:Shortcuts"].tap()
+                XCTAssertTrue(app.navigationBars["Shortcuts"].waitForExistence(timeout: 5))
+                let newDocument = table.cells["fei.setting.shortcut:workspace::NewDoc"]
+                XCTAssertTrue(newDocument.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "⌘")).firstMatch.exists)
+                XCTAssertTrue(table.cells["fei.setting.shortcut:workspace::CloseWindow"].staticTexts["Go back"].exists)
+                for action in ["QuickNew","ToggleSidebar","ToggleFullScreen"] {
+                    XCTAssertFalse(table.cells.matching(NSPredicate(format: "identifier ENDSWITH %@", "::" + action)).firstMatch.exists)
+                }
+                capture("settings-shortcuts")
+                app.navigationBars["Shortcuts"].buttons.firstMatch.tap()
             }
 
             let entry = table.cells["fei.setting.page:Trash"]

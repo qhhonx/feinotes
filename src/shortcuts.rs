@@ -192,6 +192,7 @@ fn info(name: &str) -> Option<(usize, &'static str, &'static str)> {
     Some(match name.rsplit("::").next().unwrap_or(name) {
         "NewDoc" => (0, "新建文档", "New document"),
         "QuickNew" => (0, "新建文档窗口", "New document window"),
+        "CloseWindow" if cfg!(target_os = "ios") => (0, "返回上一级", "Go back"),
         "CloseWindow" => (0, "关闭窗口", "Close window"),
         "HideApp" if crate::FEI_NOTES => (0, "隐藏飞记", "Hide Fei Notes"),
         "HideApp" => (0, "隐藏 Quiet.md", "Hide Quiet.md"),
@@ -255,7 +256,7 @@ pub fn label(name: &str) -> Option<&'static str> { info(name).map(|(_, zh, en)| 
 fn default_key(s: &Shortcuts, id: &str) -> String {
     if id == "global" { return GLOBAL_DEFAULT.into(); }
     if id == LAST_ID { return LAST_DEFAULT.into(); }
-    if id.ends_with("::NewDoc") { return if cfg!(not(target_os = "macos")) { "ctrl-n" } else { "cmd-n" }.into(); }
+    if id.ends_with("::NewDoc") { return if cfg!(any(target_os = "macos",target_os = "ios")) { "cmd-n" } else { "ctrl-n" }.into(); }
     s.base.iter().find(|b| b.action().name() == id).map(|b| b.keystrokes().iter().map(binding_key).collect::<Vec<_>>().join(" ")).unwrap_or_default()
 }
 /// The key an action runs on now.

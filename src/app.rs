@@ -110,6 +110,7 @@ pub fn bind_keys(cx: &mut App) {
         #[cfg(target_os = "ios")]
         KeyBinding::new("cmd-y", crate::editor::keymap::Redo, Some("Workspace")),
         KeyBinding::new("cmd-n", NewDoc, None),
+        #[cfg(not(target_os = "ios"))]
         KeyBinding::new("cmd-shift-n", crate::quick_note::QuickNew, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
         // For trying the first-launch pages; not listed in Settings › Shortcuts.
@@ -118,7 +119,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-o", OpenFile, None),
         KeyBinding::new("cmd-alt-home", GoHome, None),
         KeyBinding::new("cmd-w", CloseWindow, None),
+        #[cfg(not(target_os = "ios"))]
         KeyBinding::new("cmd-]", ToggleSidebar, None),
+        #[cfg(not(target_os = "ios"))]
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
         KeyBinding::new("cmd-j", FocusSearch, None),
         KeyBinding::new("cmd-f", FindInDoc, None),
@@ -137,8 +140,10 @@ pub fn bind_keys(cx: &mut App) {
     // Windows: F11 for full screen, and Ctrl+H for 查找和替换 as in Office
     // and Notepad (written cmd-h: `shortcuts::pc_binding` maps cmd to
     // ctrl and drops a literal ctrl-h, Cocoa's backspace).
+    #[cfg(not(any(target_os = "macos",target_os = "ios")))]
+    cx.bind_keys([KeyBinding::new("f11", ToggleFullScreen, None)]);
     #[cfg(not(target_os = "macos"))]
-    cx.bind_keys([KeyBinding::new("f11", ToggleFullScreen, None), KeyBinding::new("cmd-h", ReplaceInDoc, None)]);
+    cx.bind_keys([KeyBinding::new("cmd-h", ReplaceInDoc, None)]);
     cx.on_action(|_: &HideApp, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
