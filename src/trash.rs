@@ -196,10 +196,8 @@ impl Workspace {
                             .pl(px(24.))
                             .flex()
                             .items_center()
-                            .child(if t.folder || t.share_root.is_some() {
-                                let glyph = if t.folder {
-                                    if t.share_root.is_some() { "folder-shared" } else { "folder" }
-                                } else { "shared-document" };
+                            .child(if t.folder {
+                                let glyph = if t.share_root.is_some() { "folder-shared" } else { "folder" };
                                 div().size(px(24.)).mr(px(10.)).flex_none().flex().items_center().justify_center()
                                     .child(icon(glyph, 18., Theme::icon()))
                             } else {
@@ -208,7 +206,12 @@ impl Workspace {
                                     None => doc_icon(),
                                 }
                             })
-                            .child(div().min_w_0().text_size(px(15.)).line_height(px(22.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(title))),
+                            .child(div().min_w_0().text_size(px(15.)).line_height(px(22.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(title)))
+                            .when(!t.folder && t.share_root.is_some(), |d| {
+                                d.child(div().id("trash-shared-mark").ml(px(8.)).flex_none()
+                                    .tip(crate::settings::tr("已共享", "Shared"), None)
+                                    .child(icon("shared-document", 15., Theme::text_caption())))
+                            }),
                     )
                     .child(
                         div()
