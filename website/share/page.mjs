@@ -3,6 +3,7 @@ const english = !navigator.language.toLowerCase().startsWith('zh');
 if (english) {
   document.documentElement.lang = 'en';
   document.title = 'Shared document invitation · Fei Notes';
+  document.getElementById('get-app').href = '/en/#testflight';
   document.querySelectorAll('[data-en]').forEach(el => { el.textContent = el.dataset.en; });
 }
 const status = document.getElementById('invite-status');

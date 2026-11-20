@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
-  <meta name="description" content="飞书文档般顺手，苹果备忘录般安心。">
+  <meta name="description" content="原生 Markdown 文档应用。开启 iCloud，即可跨设备接着写，和他人实时协作。">
   <link rel="canonical" href="https://feinotes.app/">
   <title>飞记 · 写得自在，记得安心。</title>
   <link rel="icon" href="assets/fei-notes.png" type="image/png">
   <link rel="preload" as="image" href="assets/coastal-canopy-v1.jpg">
-  <link rel="stylesheet" href="landing.css?v=20261118g">
+  <link rel="stylesheet" href="landing.css?v=20261120e">
   <link rel="stylesheet" href="sync-preview.css?v=20261118f">
   <link rel="stylesheet" href="collab-preview.css?v=20261118f">
 </head>
@@ -27,18 +27,23 @@
     </header>
     <main id="main" class="wrap">
       <div class="hero">
-        <p class="release"><span aria-hidden="true"></span>Mac 版 · TestFlight</p>
         <h1>写得自在，<br><span>记得安心。</span></h1>
-        <p class="lead">飞书文档般顺手，苹果备忘录般安心。</p>
+        <div class="hero-intro">
+          <p class="hero-description">支持 iCloud 的原生 Markdown 文档应用。</p>
+          <p class="hero-benefits">跨设备接着写，和他人实时协作。</p>
+        </div>
         <div id="testflight" class="beta-access" data-language="zh" data-status="testflight-status.json">
-          <div class="beta-platform" data-beta-platform="MAC_OS">
-            <a class="beta-download" data-beta-link aria-disabled="true" tabindex="-1" aria-live="polite">测试版准备中</a>
-            <p class="beta-details beta-platform-status">Mac · macOS 14+<span data-beta-review hidden aria-live="polite"></span></p>
+          <div class="beta-actions" hidden>
+            <div class="beta-offer" data-beta-offer hidden>
+              <a class="beta-download" data-beta-link aria-describedby="beta-version-primary"></a>
+              <p class="beta-details beta-version" data-beta-version id="beta-version-primary"></p>
+            </div>
+            <div class="beta-offer" data-beta-offer hidden>
+              <a class="beta-download" data-beta-link aria-describedby="beta-version-secondary"></a>
+              <p class="beta-details beta-version" data-beta-version id="beta-version-secondary"></p>
+            </div>
           </div>
-          <div class="beta-mobile" data-beta-platform="IOS">
-            <a class="beta-mobile-link" data-beta-link aria-disabled="true" tabindex="-1" aria-live="polite">iPhone / iPad · 测试版准备中</a>
-            <span class="beta-details" data-beta-review hidden aria-live="polite"></span>
-          </div>
+          <p class="beta-details" data-beta-status role="status">正在查看测试版状态…</p>
         </div>
       </div>
       <div class="theme-switch" role="group" aria-label="查看功能">
@@ -76,6 +81,6 @@
     </footer>
   </div>
   <script src="theme-gallery.js?v=20261118f" defer></script>
-  <script src="testflight.js?v=3" defer></script>
+  <script src="testflight.js?v=6" defer></script>
 </body>
 </html>
