@@ -2,7 +2,6 @@
 .collab-story { container-type: inline-size; overflow: visible; background: transparent; border: 0; box-shadow: none; }
 .collab-preview {
   --toolbar-midline: 2.174cqw;
-  --capture: url('assets/editor-feishu.webp?v=20261118f');
   position: relative;
   aspect-ratio: 1840 / 1142;
   overflow: hidden;
@@ -13,44 +12,10 @@
   background: #fff;
   color: #263145;
 }
-html[lang="en"] .collab-preview { --capture: url('assets/editor-feishu-en.webp?v=20261118f'); }
 .collab-preview img { display: block; width: 100%; height: auto; }
-.collab-preview .traffic { top: var(--toolbar-midline); transform: translateY(-50%); }
 .collab-controls { display: flex; align-items: center; gap: 12px; padding: 16px 1cqw 0; color: #f8faee; font-size: 11px; }
 .collab-toggle { border: 1px solid rgb(255 255 255 / 35%); border-radius: 999px; background: rgb(255 255 255 / 15%); color: inherit; padding: 6px 11px; font: inherit; cursor: pointer; }
 .collab-toggle:hover { background: rgb(255 255 255 / 25%); }
 .collab-toggle:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
-.collab-edit { display: none; position: absolute; height: 3.9cqw; }
-.is-writing .collab-edit { display: block; }
-.collab-edit-first {
-  --progress: var(--first-progress, 0); --text-width: 12.337cqw;
-  --paper: #f0f5ff; --ink: #2d9f20; /* Sampled from the native capture. */
-  --label-x: -62.065cqw; --label-y: -20.815cqw;
-  left: 49.728cqw; top: 20.815cqw; width: 15.4cqw;
-}
-.collab-edit-second {
-  --progress: var(--second-progress, 0); --text-width: 4.13cqw;
-  --paper: #fff; --ink: #7022cf;
-  --label-x: -50.109cqw; --label-y: -40.978cqw;
-  left: 45.978cqw; top: 40.978cqw; width: 6.9cqw; height: 3.35cqw;
-}
-.collab-remainder { position: absolute; inset: 0 0 0 calc(var(--text-width) * var(--progress)); background: var(--paper); }
-.collab-writer {
-  position: absolute; left: calc(var(--text-width) * var(--progress)); top: 0;
-  width: 2.9cqw; height: 1.5cqw;
-  background-image: var(--capture); background-size: 100cqw auto;
-  background-position: var(--label-x) var(--label-y); background-repeat: no-repeat;
-}
-.collab-writer::after { content: ""; position: absolute; top: 1.5cqw; left: 0; height: 1.75cqw; border-left: max(1px, .11cqw) solid var(--ink); }
-html[lang="en"] .collab-edit-first { --text-width: 14.239cqw; --label-x: -72.011cqw; left: 57.772cqw; width: 17.4cqw; }
-html[lang="en"] .collab-edit-second { --text-width: 6.957cqw; --label-x: -52.935cqw; width: 10cqw; }
-html[lang="en"] .collab-writer { width: 3.1cqw; }
 @media (max-width: 760px) { .collab-preview { border-radius: 10px; } }
-@media (prefers-reduced-motion: reduce) { .collab-edit, .collab-toggle { display: none !important; } }
-/* Keep the table row rule visible while masking the original participant label. */
-.is-writing .collab-edit-second::before { content: ""; position: absolute; z-index: 1; left: 0; right: 0; top: .38cqw; height: .09cqw; background: #dedede; }
-.collab-writer { z-index: 2; }
-
-.collab-story[data-capture="still"] .collab-preview {
-  aspect-ratio: 8 / 5;
-}
+@media (prefers-reduced-motion: reduce) { .collab-toggle { display: none !important; } }

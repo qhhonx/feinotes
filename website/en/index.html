@@ -10,8 +10,9 @@
   <link rel="icon" href="../assets/fei-notes.png" type="image/png">
   <link rel="preload" as="image" href="../assets/coastal-canopy-v1.jpg">
   <link rel="stylesheet" href="../landing.css?v=20261120e">
-  <link rel="stylesheet" href="../sync-preview.css?v=20261121">
-  <link rel="stylesheet" href="../collab-preview.css?v=20261121">
+  <link rel="stylesheet" href="../sync-preview.css?v=20261121-collab">
+  <link rel="stylesheet" href="../collab-preview.css?v=20261121-collab">
+  <link rel="stylesheet" href="../preview-140.css?v=20261121-collab">
 </head>
 <body>
   <div class="page">
@@ -51,23 +52,28 @@
         <button type="button" data-theme="collab" aria-pressed="false">Real-time Editing</button>
       </div>
       <div class="scene-gallery">
-      <figure class="shot story sync-story sync-preview" data-scene="sync" data-capture="still" aria-label="The same seaside document in Fei Notes on Mac and iPhone.">
+      <figure class="shot story sync-story sync-preview" data-scene="sync" aria-label="The same seaside document in Fei Notes on Mac and iPhone.">
         <div class="sync-stage">
           <div class="sync-window sync-window-primary">
-            <img src="../assets/sync-mac-140-en.webp" width="1840" height="1150" alt="A weekend by the sea in Fei Notes on Mac, with a lighthouse photo and a checklist." fetchpriority="high">
+            <img src="../assets/native-140-sync-mac-en.png" width="2560" height="1600" alt="Fei Notes in the Notes theme. Below the title A weekend by the sea, the document continues “If there’s time, follow the coast until dark.” above the lighthouse photo and yellow circular checkboxes." fetchpriority="high">
+            <span class="sync-type sync-type-mac" aria-hidden="true" style="--x:26.99219%;--y:15.50000%;--w:21.09375%;--h:2.37500%;--paper:rgb(255 255 255)"></span>
           </div>
           <div class="sync-window sync-window-secondary sync-phone">
-            <div class="phone-screen"><img src="../assets/sync-iphone-140-en.webp" width="660" height="1434" alt="The same seaside document in Fei Notes on iPhone.">
-            </div>
+            <div class="phone-screen"><img src="../assets/native-140-sync-phone-en.png" width="1320" height="2868" alt="Fei Notes on iPhone. The same seaside document continues: If there’s time, follow the coast until dark.">
+            <span class="sync-type sync-type-phone" aria-hidden="true" style="--x:4.01515%;--y:22.28033%;--w:67.42424%;--h:2.37099%;--paper:rgb(255 255 255)"></span></div>
           </div>
-          <div class="sync-controls"><span class="sync-caption">Notes theme</span></div>
+          <div class="sync-controls"><span class="sync-caption">Notes theme</span><button class="sync-replay" data-animation-toggle type="button" aria-label="Pause animation">Ⅱ Pause animation</button></div>
         </div>
       </figure>
-      <figure class="shot story collab-story" data-scene="collab" data-capture="still" hidden aria-label="Real-time Editing · native Lark Docs theme">
+      <figure class="shot story collab-story" data-scene="collab" hidden aria-label="Real-time Editing · native Lark Docs theme">
         <div class="collab-preview">
-          <img src="../assets/collaboration-140-en.webp" width="1840" height="1150" alt="Two people editing Seaside Book Fair. A green cursor and label identify the other collaborator in the table." loading="lazy">
+          <img src="../assets/native-140-collab-mac-en.png" width="2560" height="1600" alt="Seaside Book Fair. The local editor is on the goal while Riley selects In progress in the table." loading="lazy">
+          <span class="collab-overlay collab-typing collab-typing-local" aria-hidden="true" style="--x:39.88281%;--y:28.87500%;--w:16.01562%;--h:3.50000%"></span>
+          <span class="collab-overlay collab-native-caret" aria-hidden="true" style="--x:53.00781%;--y:56.25000%;--w:0.19531%;--h:2.12500%"></span>
+          <span class="collab-overlay collab-typing collab-typing-remote" aria-hidden="true" style="--x:47.34375%;--y:55.87500%;--w:5.66406%;--h:2.87500%;--ink:#945019"></span>
+          <span class="collab-overlay collab-remote" aria-hidden="true" style="--x:53.00781%;--y:54.31250%;--w:6.01562%;--h:1.87500%;--label-bg:rgb(209 125 45)">Riley</span>
         </div>
-        <figcaption class="collab-controls"><span>Lark Docs theme</span></figcaption>
+        <figcaption class="collab-controls"><span>Lark Docs theme</span><button class="collab-toggle" data-animation-toggle type="button" aria-label="Pause animation">Ⅱ Pause animation</button></figcaption>
       </figure>
       </div>
     </main>
@@ -76,7 +82,7 @@
       <div class="footer-links"><a href="https://t.me/+eKIYrdIFufxmYzJl">Telegram feedback ↗</a><a href="https://github.com/s1dashu/quiet-md">Based on Quiet.md</a></div>
     </footer>
   </div>
-  <script src="../theme-gallery.js?v=20261121" defer></script>
+  <script src="../theme-gallery.js?v=20261121-collab" defer></script>
   <script src="../testflight.js?v=6" defer></script>
 </body>
 </html>

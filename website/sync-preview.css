@@ -48,29 +48,7 @@
   box-shadow: none;
 }
 
-/* Looping continuation using native before/after captures. */
-.sync-preview .sync-window img.sync-before { position: absolute; inset: 0; display: none; }
-.sync-preview.is-writing .sync-window img.sync-before {
-  display: block;
-  clip-path: inset(0 0 0 calc(14% + 14% * var(--mac-progress, 0)));
-}
-html[lang="en"] .sync-preview.is-writing .sync-window img.sync-before {
-  clip-path: inset(0 0 0 calc(17% + 22% * var(--mac-progress, 0)));
-}
 .phone-screen { position: relative; overflow: hidden; border-radius: 2.65cqw; }
-.phone-line-mask { display: none; position: absolute; background: #fff; }
-.is-writing .phone-line-mask {
-  display: block;
-  top: 25.15%;
-  height: 2.8%;
-  left: calc(25% + 39% * var(--phone-progress, 0));
-  width: calc(39% * (1 - var(--phone-progress, 0)));
-  border-left: max(1px, .12cqw) solid #fcb827;
-}
-html[lang="en"] .is-writing .phone-line-mask {
-  left: calc(34.1% + 52.4% * var(--phone-progress, 0));
-  width: calc(52.4% * (1 - var(--phone-progress, 0)));
-}
 .sync-controls {
   position: absolute; z-index: 3; left: 1cqw; bottom: 0;
   display: flex; align-items: center; gap: 12px;
@@ -84,14 +62,9 @@ html[lang="en"] .is-writing .phone-line-mask {
 .sync-replay:hover { background: rgb(255 255 255 / 25%); }
 .sync-replay:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) {
-  .sync-before, .phone-line-mask, .sync-replay { display: none !important; }
+  .sync-replay { display: none !important; }
 }
 @media (max-width: 600px) {
   .sync-stage { margin-bottom: 44px; }
   .sync-controls { top: calc(100% + 10px); bottom: auto; }
-}
-
-.sync-preview[data-capture="still"] .sync-stage,
-.sync-preview[data-capture="still"] .sync-window-primary img {
-  aspect-ratio: 8 / 5;
 }

@@ -1,4 +1,17 @@
-# Website scene captures — 2026-11-18
+# Website scene captures
+
+## Current homepage, November 21, 2026
+
+The homepage uses six captures from Fei Notes 1.0.9 (140). Each language has a
+Mac and iPhone view of the same seaside document and a Mac view of the book-fair
+collaboration. The captures use synthetic documents. The collaborator names and
+avatar initials are examples drawn from the book-fair document.
+
+The animations reveal existing text and the captured selection in place. Their
+timing illustrates sync and collaboration. It is independent of live CloudKit
+activity. Pausing or enabling reduced motion shows the complete captures.
+
+## Earlier homepage, November 18, 2026
 
 Editable source documents and attachments are in `documents/`. The seaside note
 uses the Notes theme for sync; the book-fair plan uses Feishu for collaboration.

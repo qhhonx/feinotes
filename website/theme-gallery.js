@@ -3,8 +3,18 @@
   const scenes = [...document.querySelectorAll('.story[data-scene]')];
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const english = document.documentElement.lang === 'en';
+  // Each stop is an empty column between glyphs in the corresponding capture.
+  const revealStops = (english ? [
+    [1021, 1046, 1057, 1075, 1093, 1110, 1122, 1143, 1159, 1176, 1197, 1218, 1230, 1247, 1254, 1261, 1281, 1303, 1321, 1343, 1360, 1377, 1384, 1401, 1417, 1431],
+    [1212, 1219, 1238, 1260, 1270, 1286, 1302, 1313, 1328, 1342, 1357],
+  ] : [
+    [999, 1033, 1065, 1098, 1131, 1163, 1196, 1229, 1261, 1295, 1334],
+    [1232, 1259, 1289, 1318],
+  ]).map(stops => {
+    const start = stops[0], width = stops[stops.length - 1] - start;
+    return stops.map(stop => (stop - start) / width);
+  });
   const controllers = scenes.map(scene => {
-    if (scene.dataset.capture === "still") return { refresh() {} };
     const toggle = scene.querySelector('[data-animation-toggle]');
     const collaboration = scene.dataset.scene === 'collab';
     let frame = 0, timer = 0, run = 0;
@@ -19,10 +29,14 @@
       scene.dataset.phase = 'complete';
     };
     const progress = (elapsed, delay, duration, steps) => Math.floor(Math.min(1, Math.max(0, (elapsed - delay) / duration)) * steps) / steps;
+    const letters = (elapsed, delay, duration, stops) => {
+      const steps = stops.length - 1;
+      return stops[Math.round(progress(elapsed, delay, duration, steps) * steps)];
+    };
     const paint = elapsed => {
       if (collaboration) {
-        scene.style.setProperty('--first-progress', progress(elapsed, 650, 2100, english ? 20 : 8));
-        scene.style.setProperty('--second-progress', progress(elapsed, 1500, 1500, english ? 11 : 3));
+        scene.style.setProperty('--first-progress', letters(elapsed, 650, 2100, revealStops[0]));
+        scene.style.setProperty('--second-progress', letters(elapsed, 1500, 1500, revealStops[1]));
       } else {
         scene.style.setProperty('--phone-progress', progress(elapsed, 650, 1800, english ? 27 : 9));
         scene.style.setProperty('--mac-progress', progress(elapsed, 1200, 1800, english ? 27 : 9));
@@ -40,7 +54,8 @@
       scene.classList.add('is-writing');
       const started = performance.now();
       const tick = now => {
-        if (request !== run || !eligible()) return;
+        if (request !== run) return;
+        if (!eligible()) { finish(); return; }
         const elapsed = now - started;
         paint(elapsed);
         if (elapsed < 3600) frame = requestAnimationFrame(tick);

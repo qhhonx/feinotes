@@ -1,0 +1,74 @@
+/* Coordinates are normalized separately for each locale and each 140 capture. */
+.sync-preview .sync-window-primary img, .collab-preview { aspect-ratio: 8 / 5; }
+.sync-type { display: none; position: absolute; pointer-events: none; top: var(--y); height: var(--h); }
+.sync-type-mac { --progress: var(--mac-progress, 0); }
+.sync-type-phone { --progress: var(--phone-progress, 0); }
+.sync-preview.is-writing .sync-type {
+  display: block;
+  --reveal: calc(.29 + .71 * var(--progress));
+  left: calc(var(--x) + var(--w) * var(--reveal));
+  width: calc(var(--w) * (1 - var(--reveal)));
+  background: var(--paper);
+}
+.sync-preview.is-writing .sync-type::before {
+  position: absolute;
+  content: "";
+  inset: 13% auto 13% 0;
+  border-left: max(1px, .10cqw) solid #756019;
+}
+/* The masks reveal pixels from the capture at the original line and cell positions. */
+.collab-overlay {
+  position: absolute;
+  pointer-events: none;
+  left: var(--x);
+  top: var(--y);
+  width: var(--w);
+  height: var(--h);
+}
+.collab-remote {
+  display: flex;
+  align-items: center;
+  min-width: max-content;
+  padding-inline: .23cqw;
+  border-radius: .17cqw;
+  font-size: max(8px, .81cqw);
+  font-weight: 650;
+  line-height: 1;
+  background: var(--label-bg);
+  color: #102411;
+}
+.collab-typing, .collab-native-caret { display: none; }
+.is-writing .collab-typing, .is-writing .collab-native-caret { display: block; }
+.collab-typing-local {
+  --progress: var(--first-progress, 0);
+  --paper: #f1f4fe;
+  --ink: #335ad3;
+}
+.collab-typing-remote {
+  --progress: var(--second-progress, 0);
+  --paper: #fff;
+}
+.collab-typing::before, .collab-typing::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--progress) * 100%);
+}
+.collab-typing::before {
+  inset-block: 0;
+  right: 0;
+  background: var(--paper);
+}
+.collab-typing::after {
+  inset-block: 13%;
+  width: max(2px, .17cqw);
+  border-radius: 1px;
+  background: var(--ink);
+  opacity: clamp(0, (1 - var(--progress)) * 12, 1);
+}
+.collab-native-caret {
+  background: #fff;
+  opacity: clamp(0, (1 - var(--second-progress, 0)) * 12, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .sync-type, .collab-typing, .collab-native-caret { display: none !important; }
+}
