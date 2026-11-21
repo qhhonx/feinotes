@@ -575,6 +575,7 @@ private struct PresenceEntry: Encodable {
     let age: Double
     let identity: String?
     let displayName: String?
+    let isOwner: Bool
 }
 
 private struct PresencePage: Encodable {
@@ -587,29 +588,51 @@ private struct PresencePage: Encodable {
     var error: String?
 }
 
-private struct PresenceMember: Sendable {
+#if FEI_CLOUD_QA
+private func tracePresence(_ message: @autoclosure () -> String) {
+    if ProcessInfo.processInfo.environment["FEI_QA_PRESENCE_TRACE"] == "1" {
+        FileHandle.standardError.write(Data("Presence QA \(message())\n".utf8))
+    }
+}
+#endif
+
+struct PresenceMember: Sendable {
     let identity: String
     let displayName: String?
     let canEdit: Bool
 }
 
-private actor PresenceMembers {
+actor PresenceMembers {
     static let shared = PresenceMembers()
     private var cached: (zone: CKRecordZone.ID, revision: UInt64, until: ContinuousClock.Instant, members: [String: PresenceMember])?
+    private var namesRevision: UInt64?
+    private var namesByZone: [CKRecordZone.ID: [String: String]] = [:]
+
+    func rememberNames(_ names: [String: String], zone: CKRecordZone.ID, revision: UInt64) {
+        guard quietCloudAccountRevision() == revision else { return }
+        if namesRevision != revision {
+            namesByZone.removeAll()
+            namesRevision = revision
+        }
+        guard !names.isEmpty else { return }
+        namesByZone[zone, default: [:]].merge(names) { _, current in current }
+        if cached?.zone == zone { cached = nil }
+    }
 
     func fetch(_ db: CKDatabase, zone: CKRecordZone.ID, account: String, revision: UInt64, refresh: Bool) async throws -> [String: PresenceMember] {
         let clock = ContinuousClock()
         if !refresh, let cached, cached.zone == zone, cached.revision == revision, cached.until > clock.now { return cached.members }
         let share = try await getShare(db, in: zone)
         try checkCloudAccountRevision(revision)
+        rememberNames(cloudShareDisplayNames(share), zone: zone, revision: revision)
+        let knownNames = namesByZone[zone] ?? [:]
         var members: [String: PresenceMember] = [:]
         for participant in share.participants where participant.acceptanceStatus == .accepted || participant.role == .owner {
             let current = share.currentUserParticipant?.participantID == participant.participantID
             guard let record = current ? account : participant.userIdentity.userRecordID?.recordName else { continue }
             let key = Data((zone.zoneName + ":" + participant.participantID).utf8)
             let identity = SHA256.hash(data: key).prefix(8).map { String(format: "%02x", $0) }.joined()
-            let displayName = participant.userIdentity.nameComponents.map { PersonNameComponentsFormatter().string(from: $0) }
-            members[record] = PresenceMember(identity: identity, displayName: displayName,
+            members[record] = PresenceMember(identity: identity, displayName: knownNames[participant.participantID],
                 canEdit: participant.role == .owner || participant.permission == .readWrite)
         }
         cached = (zone, revision, clock.now.advanced(by: .seconds(15)), members)
@@ -654,8 +677,14 @@ private func presence(_ request: PresenceRequest, revision: UInt64) async throws
             let response = try await db.modifyRecords(saving: [record], deleting: [], savePolicy: .allKeys, atomically: true)
             guard let saved = response.saveResults[id] else { throw SyncError.invalid }
             _ = try saved.get()
+            #if FEI_CLOUD_QA
+            tracePresence("write accepted")
+            #endif
         } catch where request.room != nil && shareIsGone(error) {
             // The account may still be able to read after a permission change.
+            #if FEI_CLOUD_QA
+            tracePresence("write rejected by shared zone code=\((error as NSError).code)")
+            #endif
         }
     }
     while true {
@@ -677,26 +706,41 @@ private func presence(_ request: PresenceRequest, revision: UInt64) async throws
                       let name = record["name"] as? String, let date = record.modificationDate,
                       UInt64(record.recordID.recordName) != nil else { continue }
                 var member: PresenceMember?
-                if request.room != nil {
+                var isOwner = false
+                if let room = request.room {
                     func author(_ id: CKRecord.ID?) -> String? {
                         id?.recordName == CKCurrentUserDefaultName ? account : id?.recordName
                     }
                     let creator = author(record.creatorUserRecordID)
                     let modifier = author(record.lastModifiedUserRecordID)
-                    if creator == account || modifier == account || (creator != nil && modifier != nil && creator != modifier) {
+                    let sameAccount = creator == account || modifier == account
+                    let authorsDiffer = creator != nil && modifier != nil && creator != modifier
+                    if sameAccount || authorsDiffer {
+                        #if FEI_CLOUD_QA
+                        tracePresence("record filtered sameAccount=\(sameAccount) authorsDiffer=\(authorsDiffer)")
+                        #endif
                         removed.append(record.recordID.recordName)
                         continue
                     }
-                    if let creator, creator == modifier { member = members?[creator] }
+                    // CloudKit can omit one of the user record IDs. A single
+                    // server-provided author can still be matched to a member.
+                    if let author = creator ?? modifier {
+                        member = members?[author]
+                        isOwner = author == room.owner
+                    }
                     if member?.canEdit == false {
                         removed.append(record.recordID.recordName)
                         continue
                     }
                 }
                 devices.append(PresenceEntry(peer: record.recordID.recordName, name: request.room == nil ? String(name.prefix(48)) : "Collaborator", state: state,
-                                             age: max(0, -date.timeIntervalSinceNow), identity: member?.identity, displayName: member?.displayName))
+                                             age: max(0, -date.timeIntervalSinceNow), identity: member?.identity,
+                                             displayName: member?.displayName, isOwner: isOwner))
             }
             let next = try NSKeyedArchiver.archivedData(withRootObject: page.changeToken, requiringSecureCoding: true)
+            #if FEI_CLOUD_QA
+            tracePresence("read kept=\(devices.count) named=\(devices.filter { $0.displayName != nil }.count) removed=\(removed.count) membershipRead=\(members != nil)")
+            #endif
             return PresencePage(devices: devices, removed: removed, token: next,
                                 more: page.moreComing, replay: token == nil,
                                 editableIdentities: refresh ? members?.values.filter(\.canEdit).map(\.identity) : nil)
@@ -724,6 +768,9 @@ public func quietCloudPresence(_ json: UnsafePointer<CChar>) -> UnsafeMutablePoi
             try checkCloudAccountRevision(revision)
             completion.reply = reply
         } catch {
+            #if FEI_CLOUD_QA
+            tracePresence("exchange error kind=\(syncErrorKind(error)) code=\((error as NSError).code)")
+            #endif
             completion.reply = PresencePage(error: error.localizedDescription)
         }
         completion.done.signal()

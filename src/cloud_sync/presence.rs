@@ -142,6 +142,8 @@ struct Device {
     identity: Option<String>,
     #[serde(rename = "displayName")]
     display_name: Option<String>,
+    #[serde(default, rename = "isOwner")]
+    is_owner: bool,
 }
 
 #[derive(Deserialize)]
@@ -180,6 +182,7 @@ struct Online {
     name: String,
     identity: Option<String>,
     display_name: Option<String>,
+    is_owner: bool,
     alias: usize,
     state: State,
     until: Instant,
@@ -230,11 +233,58 @@ fn editing_presence_can_precede_anchors_and_tracks_the_document_within_a_folder(
     Ok(())
 }
 
+#[cfg(test)]
+#[test]
+fn table_text_presence_resolves_after_another_peer_receives_the_edit() -> Result<()> {
+    use crate::model::{Block, BlockKind, Document, RichText, Table, TableCell};
+    let mut cell = TableCell::empty();
+    cell.blocks.push(Block::text("现场确认"));
+    let table = Table { rows: vec![vec![cell]], col_widths: vec![140.], ..Default::default() };
+    let mut document = Document { blocks: vec![Block::new(BlockKind::Table(table), RichText::default())], ..Default::default() };
+    let seed = content::seed(&document)?;
+    let owner = content::open(&seed)?;
+    let guest = content::open(&seed)?;
+    let BlockKind::Table(table) = &mut document.blocks[0].kind else { unreachable!() };
+    let paragraph = &mut table.rows[0][0].blocks[0];
+    paragraph.text = RichText::plain("走场确认");
+    let selection = Selection { anchor: Pos::new(paragraph.id, 0), head: Pos::new(paragraph.id, "走场".len()) };
+    let update = content::edit(&guest, 23, &document)?.expect("fixture table edit");
+    let sent = State::editing(uuid::Uuid::new_v4().to_string(), Some(selection), Some(&guest));
+    owner.import(&update)?;
+    assert_eq!(sent.anchor.and_then(|anchor| anchor.resolve(&owner)), Some(selection.anchor));
+    assert_eq!(sent.head.and_then(|head| head.resolve(&owner)), Some(selection.head));
+    Ok(())
+}
+
+fn available_member_names<'a>(devices: impl Iterator<Item = &'a Online>) -> HashMap<&'a str, SharedString> {
+    devices.filter_map(|device| {
+        Some((device.identity.as_deref()?, display_name(device.display_name.as_deref())?))
+    }).collect()
+}
+
+#[cfg(test)]
+#[test]
+fn a_named_device_supplies_the_label_for_the_same_member() {
+    fn device(identity: Option<&str>, name: Option<&str>) -> Online {
+        Online { name: String::new(), identity: identity.map(str::to_owned), display_name: name.map(str::to_owned),
+            is_owner: false, alias: 1, state: State::default(), until: Instant::now() }
+    }
+    let devices = [device(Some("member"), Some("林夏")), device(Some("member"), None),
+        device(Some("other"), Some("private@example.test")), device(None, Some("Unverified"))];
+    let names = available_member_names(devices.iter());
+    assert_eq!(names.len(), 1);
+    assert_eq!(names["member"].as_ref(), "林夏");
+}
+
 fn publish(root: &Path, online: &mut HashMap<u64, Online>, room: Option<&super::shared::Scope>, cx: &mut App) {
     let now = Instant::now();
     online.retain(|_, device| device.until > now);
     let mut devices: Vec<_> = online.iter().collect();
     devices.sort_by_key(|entry| *entry.0);
+    let names = available_member_names(devices.iter().map(|(_, device)| *device));
+    let owner_name = if room.is_some() && devices.iter().any(|(_, device)| device.is_owner) {
+        super::shared::owner_display_name(root)
+    } else { None };
     let mut view = View::default();
     let mut participants = HashMap::new();
     for (&peer, device) in devices {
@@ -243,7 +293,8 @@ fn publish(root: &Path, online: &mut HashMap<u64, Online>, room: Option<&super::
         let collaborator = if room.is_some() {
             let key = (note, device.identity.as_deref(), device.identity.is_none().then_some(peer));
             participants.entry(key).or_insert_with(|| {
-                let name = device.identity.as_ref().and_then(|_| display_name(device.display_name.as_deref()));
+                let name = device.identity.as_deref().and_then(|identity| names.get(identity)).cloned()
+                    .or_else(|| if device.is_owner { owner_name.clone() } else { None });
                 let initials = name.as_ref().and_then(|name| name.graphemes(true).next()).map(|value| value.to_owned().into())
                     .unwrap_or_else(|| device.alias.to_string().into());
                 let name = name.unwrap_or_else(|| crate::localized_format!("协作者 {}", "Collaborator {}", device.alias).into());
@@ -321,6 +372,10 @@ pub(super) fn start(cx: &mut App, root: PathBuf, generation: uuid::Uuid, pause: 
             let update = serde_json::to_vec(&state).ok().filter(|state| access.is_none_or(super::shared::Access::can_write)
                 && last.as_ref().is_none_or(|(time, old)| old != state || (room.is_none() || editing) && time.elapsed() >= HEARTBEAT));
             if editing && update.is_some() { announced_editing = true; }
+            #[cfg(feature = "devtools")]
+            if room.is_some() && update.is_some() && std::env::var_os("FEI_QA_PRESENCE_TRACE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+                crate::logging::write(&format!("Presence QA queued editing={editing} anchor={} head={}", state.anchor.is_some(), state.head.is_some()));
+            }
             let request = Request { account: account.clone(), channel: channel.clone(), peer: peer.to_string(),
                 token: token.clone(), state: update.clone().map(Bytes), room: room.clone() };
             let revision = super::account_revision();
@@ -345,7 +400,8 @@ pub(super) fn start(cx: &mut App, root: PathBuf, generation: uuid::Uuid, pause: 
                                 next_alias += 1;
                                 alias
                             });
-                            online.insert(id, Online { name: device.name, identity: device.identity, display_name: device.display_name, alias, state,
+                            online.insert(id, Online { name: device.name, identity: device.identity, display_name: device.display_name,
+                                is_owner: device.is_owner, alias, state,
                                 until: Instant::now() + TTL - Duration::from_secs_f64(device.age) });
                         }
                     }

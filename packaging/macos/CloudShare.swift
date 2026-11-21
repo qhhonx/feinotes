@@ -278,12 +278,25 @@ private func discoverOwned(_ db: CKDatabase, known: Set<String>, revision: UInt6
     return rooms
 }
 
-private func shareReply(_ share: CKShare, scope: ShareScope) -> ShareReply {
+func cloudShareDisplayName(_ identity: CKUserIdentity) -> String? {
+    guard let components = identity.nameComponents else { return nil }
+    let name = PersonNameComponentsFormatter().string(from: components).trimmingCharacters(in: .whitespacesAndNewlines)
+    return name.isEmpty ? nil : name
+}
+
+func cloudShareDisplayNames(_ share: CKShare) -> [String: String] {
+    share.participants.reduce(into: [:]) { result, member in
+        result[member.participantID] = cloudShareDisplayName(member.userIdentity)
+    }
+}
+
+private func shareReply(_ share: CKShare, scope: ShareScope, revision: UInt64) async -> ShareReply {
+    let names = cloudShareDisplayNames(share)
+    await PresenceMembers.shared.rememberNames(names, zone: share.recordID.zoneID, revision: revision)
     let members: [ShareMember] = share.participants.compactMap { member in
         guard member.role != .owner else { return nil }
         let id = member.participantID
-        let realName = member.userIdentity.nameComponents.map { PersonNameComponentsFormatter().string(from: $0) }.flatMap { $0.isEmpty ? nil : $0 }
-        let name = realName ?? member.userIdentity.lookupInfo?.emailAddress ?? ""
+        let name = names[id] ?? member.userIdentity.lookupInfo?.emailAddress ?? ""
         return ShareMember(id: id, name: name, permission: member.permission == .readWrite ? .readWrite : .readOnly,
                            accepted: member.acceptanceStatus == .accepted)
     }
@@ -363,7 +376,7 @@ private func acceptShare(_ value: String, container: CKContainer, revision: UInt
             throw ShareError.unavailableLink
         }
     }
-    let ownerName = scope.owner == nil ? nil : metadata.ownerIdentity.nameComponents.map { PersonNameComponentsFormatter().string(from: $0) }
+    let ownerName = scope.owner == nil ? nil : cloudShareDisplayName(metadata.ownerIdentity)
     let reply = ShareReply(scope: scope, title: title, ownerName: ownerName)
     if metadata.participantRole == .owner || metadata.participantStatus == .accepted { return reply }
     guard metadata.participantStatus == .pending else { throw ShareError.deniedLink }
@@ -436,14 +449,14 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
             trace?.event("draftZoneLookup", "error", error: error)
             throw error
         }
-        do { return shareReply(try await readManagedShare(db, in: zone, trace: trace, phase: "draftRead"), scope: scope) }
+        do { return await shareReply(try await readManagedShare(db, in: zone, trace: trace, phase: "draftRead"), scope: scope, revision: revision) }
         catch let error as CKError where error.code == .unknownItem {
             try checkCloudAccountRevision(revision)
             let share = CKShare(recordZoneID: zone)
             share.publicPermission = .none
             if request.action == "createLinkDraft" { share[CKShare.SystemFieldKey.shareType] = linkDraftType }
             share[CKShare.SystemFieldKey.title] = String((request.title ?? "Shared document").prefix(100))
-            do { return shareReply(try await saveShare(share, to: db, trace: trace, phase: "draftSave"), scope: scope) }
+            do { return await shareReply(try await saveShare(share, to: db, trace: trace, phase: "draftSave"), scope: scope, revision: revision) }
             catch where request.action == "createLinkDraft" { throw publicLinkWriteError(error, id: share.recordID) }
         }
     }
@@ -454,19 +467,19 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
     let audience = ShareAudience(share)
     switch request.action {
     case "members":
-        return shareReply(share, scope: scope)
+        return await shareReply(share, scope: scope, revision: revision)
     case "publishLink":
         guard scope.folder != true else { throw ShareError.invalid }
         if share[CKShare.SystemFieldKey.shareType] as? String == linkPublishedType {
             // A retried publication can observe an earlier success or a subsequent closure.
-            return shareReply(share, scope: scope)
+            return await shareReply(share, scope: scope, revision: revision)
         }
         guard audience == .linkDraft, share.participants.allSatisfy({ $0.role == .owner }) else { throw ShareError.invitationOnly }
         share.publicPermission = .readOnly
         share[CKShare.SystemFieldKey.shareType] = linkPublishedType
     case "closeLink":
         guard scope.folder != true else { throw ShareError.invalid }
-        if audience == .linkClosed { return shareReply(share, scope: scope) }
+        if audience == .linkClosed { return await shareReply(share, scope: scope, revision: revision) }
         guard audience == .linkReadOnly || audience == .linkReadWrite else { throw ShareError.linkOnly }
         share.publicPermission = .none
         share[CKShare.SystemFieldKey.shareType] = linkPublishedType
@@ -507,14 +520,14 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
         do { _ = try await saveShare(share, to: db, trace: trace, phase: "publicPermissionSave") }
         catch { throw publicLinkWriteError(error, id: share.recordID) }
         try checkCloudAccountRevision(revision)
-        do { return shareReply(try await readManagedShare(db, in: zone, trace: trace, phase: "publicPermissionReadback"), scope: scope) }
+        do { return await shareReply(try await readManagedShare(db, in: zone, trace: trace, phase: "publicPermissionReadback"), scope: scope, revision: revision) }
         catch { throw ShareError.linkWriteUnconfirmed }
     }
     let saved = try await saveShare(share, to: db, trace: trace, phase: "privateInvitationSave")
     if request.action == "closeLink" {
-        return shareReply(try await getShare(db, in: zone), scope: scope)
+        return await shareReply(try await getShare(db, in: zone), scope: scope, revision: revision)
     }
-    return shareReply(saved, scope: scope)
+    return await shareReply(saved, scope: scope, revision: revision)
 }
 
 private final class ShareCompletion: @unchecked Sendable {
