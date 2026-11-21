@@ -305,6 +305,9 @@ final class EditorHost: FeiRouteController {
         #if FEI_MOBILE_QA
         if let qa = state.qa {
             editorView?.isAccessibilityElement=true; editorView?.accessibilityValue=state.board_open ? qa.board : qa.scroll
+            if ProcessInfo.processInfo.environment["FEI_QA_SHARED_BROWSER_REFRESH"] == "1" {
+                editorView?.accessibilityValue = qa.body
+            }
             editorToolbar.accessibilityValue = "draft=\(qa.draft) gen=\(qa.generation) title=\(qa.title) body=\(qa.body) selection=\(qa.selection.anchor.block):\(qa.selection.anchor.offset)-\(qa.selection.head.block):\(qa.selection.head.offset) scroll=\(qa.scroll)"
         }
         #endif
@@ -312,6 +315,7 @@ final class EditorHost: FeiRouteController {
         editorToolbar.update(state,coordinator: navigationCoordinator,typing: editorHasKeyboardFocus,topTools: toolbarAtTop)
         layoutEditorToolbar()
         editorToolbarContainer.superview?.setNeedsLayout()
+        refreshEditorInput()
     }
     @objc private func contentSizeChanged() {
         navigationCoordinator?.send("type-scale")
@@ -325,8 +329,12 @@ final class EditorHost: FeiRouteController {
             let metrics = ["keyboard":rect(parent.keyboardLayoutGuide.layoutFrame),"toolbar":rect(editorToolbarContainer.convert(editorToolbarContainer.bounds,to: parent)),"editor":rect(editorView.convert(editorView.bounds,to: parent)),"safeArea":rect(parent.safeAreaLayoutGuide.layoutFrame)]
             if let data = try? JSONSerialization.data(withJSONObject: metrics,options: [.sortedKeys]),let json = String(data: data,encoding: .utf8),editorToolbar.accessibilityValue != json { editorToolbar.accessibilityValue = json }
         }
+        refreshEditorInput()
+    }
+
+    private func refreshEditorInput() {
         let focused = editorHasKeyboardFocus
-        let scope = focused ? toolbarState?.editor_scope : nil
+        let scope = editorOwnsFirstResponder ? toolbarState?.editor_scope : nil
         let focusChanged = focused != inputWasFocused
         inputWasFocused = focused
         if focusChanged || scope != inputPresenceScope {
@@ -367,9 +375,14 @@ final class EditorHost: FeiRouteController {
     }
     @objc private func editorKeyboardHidden() { keyboardEndFrame = .null }
 
-    var editorHasKeyboardFocus: Bool {
+    private var editorOwnsFirstResponder: Bool {
         func focused(_ view: UIView) -> Bool { view.isFirstResponder || view.subviews.contains(where: focused) }
-        guard toolbarState?.kind == "note",let editorView,!editorView.isHidden,let window = editorView.window,focused(editorView) else { return false }
+        guard toolbarState?.kind == "note",let editorView,!editorView.isHidden,editorView.window != nil else { return false }
+        return focused(editorView)
+    }
+
+    var editorHasKeyboardFocus: Bool {
+        guard editorOwnsFirstResponder,let window = editorView?.window else { return false }
         let keyboard = window.convert(keyboardEndFrame,from: window.screen.coordinateSpace)
         let softKeyboard = !keyboardEndFrame.isNull && window.bounds.intersects(keyboard) && keyboard.height > 1
         let parent = editorToolbarContainer.superview

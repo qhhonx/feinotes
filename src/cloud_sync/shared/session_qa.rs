@@ -114,6 +114,15 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
             fs::write(room_root(&personal, &room.scope.note)?.join("seed-published"), b"synthetic shared owner")?;
         }
     }
+    if std::env::var_os("QUIET_SYNC_QA_SHARED_BROWSER_REFRESH").is_some() {
+        let mut store = Store::open_sqlite_at(personal.clone())?;
+        let folder = store.create_folder("QA collaboration folder", None)?;
+        let title = "QA standalone collaboration";
+        let document = store.create_from_in(&Document { title: crate::model::RichText::plain(title),
+            blocks: vec![crate::model::Block::text("Original fixture paragraph")], ..Default::default() }, Some(&folder))?;
+        let room = original::prepare_local(&personal, &document, title.into(), false)?;
+        fs::write(room_root(&personal, &room.scope.note)?.join("seed-published"), b"synthetic shared owner")?;
+    }
     fs::write(root.join("pause-cloud"), b"isolated local session regression")?;
     fs::write(root.join("qa-session-rooms.json"), serde_json::to_vec(&rooms)?)?;
     Ok(personal)

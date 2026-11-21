@@ -94,6 +94,7 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
     let cloud_start_pending: Bool
     let cloud_active: Bool
     let shared_session: Bool
+    let document_shared: Bool
     let editing_collaborators: [String]
     let can_create: Bool
     let can_edit: Bool
@@ -782,6 +783,13 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         if next.confirmation != oldState?.confirmation || (next.confirmation?.versions != nil && (next.busy != oldState?.busy || next.cloud_history != oldState?.cloud_history)) { showConfirmation(next.confirmation) }
         host.deliverPendingInvitation()
         #if FEI_MOBILE_QA
+        if next.kind == "note",next.title == "QA standalone collaboration",next.shared_session,
+           oldState?.editor_scope != next.editor_scope,ProcessInfo.processInfo.environment["FEI_QA_SHARED_BROWSER_REFRESH"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                guard self?.state?.editor_scope == next.editor_scope else { return }
+                self?.send("qa-shared-browser-refresh",scope: next.editor_scope)
+            }
+        }
         if next.kind == "note",next.shared_session,oldState?.editor_scope != next.editor_scope,
            ProcessInfo.processInfo.environment["FEI_QA_SYNC_BADGE"] == "1" {
             let states = ProcessInfo.processInfo.environment["FEI_QA_SHARED_SYNC_SETTINGS"] == "1"
@@ -1122,7 +1130,8 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         } else { host?.navigationController?.setToolbarHidden(true,animated: false) }
         // Keep bar items stable when only note state changes.
         let typing = host?.editorHasKeyboardFocus == true
-        let identity = FeiRouteController.BarIdentity(kind: state.kind,shared: state.shared_session,editing: state.kind == "note" && state.can_edit,typing: state.kind == "note" && typing,blockSelected: state.block_selected,expanded: expanded,topTools: host?.navigationEditorTools.isEmpty == false,composing: state.can_create,board: state.board_open,collaborators: state.editing_collaborators,appearance: state.appearance,theme: state.theme,labels: state.labels)
+        let shared = state.kind == "note" ? state.document_shared : state.shared_session
+        let identity = FeiRouteController.BarIdentity(kind: state.kind,shared: shared,editing: state.kind == "note" && state.can_edit,typing: state.kind == "note" && typing,blockSelected: state.block_selected,expanded: expanded,topTools: host?.navigationEditorTools.isEmpty == false,composing: state.can_create,board: state.board_open,collaborators: state.editing_collaborators,appearance: state.appearance,theme: state.theme,labels: state.labels)
         if let overview = shareOverview {
             if shareOverviewScope == state.editor_scope && state.kind == "note" && !state.board_open {
                 overview.updateNames(state.editing_collaborators)
@@ -1163,11 +1172,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             more.accessibilityLabel = state.labels["note-more"]
             more.accessibilityIdentifier = "fei.more"
             updateSharedSyncButton(more,state: state,folder: false)
-            let share = UIBarButtonItem(image: shareImage(shared: state.shared_session,count: state.editing_collaborators.count),style: .plain,target: self,action: #selector(shareNote))
-            share.accessibilityLabel = state.labels[state.shared_session ? "already-shared" : "share-object"]
+            let share = UIBarButtonItem(image: shareImage(shared: shared,count: state.editing_collaborators.count),style: .plain,target: self,action: #selector(shareNote))
+            share.accessibilityLabel = state.labels[shared ? "already-shared" : "share-object"]
             share.accessibilityIdentifier = "fei.share"
             share.isEnabled = !state.busy
-            if state.shared_session {
+            if shared {
                 share.tintColor = sharedToolbarTint
                 if #available(iOS 26.0,*), !state.editing_collaborators.isEmpty {
                     let count = state.editing_collaborators.count

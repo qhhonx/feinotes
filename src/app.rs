@@ -2175,10 +2175,11 @@ pub(crate) fn cloud_active_selection(root: &std::path::Path, cx: &mut App) -> cr
         if ws.store.root() != root { return Idle; }
         let (Some(id), Some(editor)) = (&ws.current, &ws.editor) else { return Idle };
         let editor = editor.read(cx);
-        if ws.view != View::Doc || ws.history.is_some() || ws.preview.is_some() || !editor.cloud_history || editor.read_only
-            || (!crate::devtools::scripted() && !editor.focus.is_focused(window)) { return Idle; }
+        if ws.view != View::Doc || ws.history.is_some() || ws.preview.is_some() || !editor.cloud_history || editor.read_only { return Idle; }
+        #[cfg(target_os = "macos")]
+        if !crate::devtools::scripted() && (!window.is_window_active() || !editor.focus.is_focused(window)) { return Idle; }
         #[cfg(target_os = "ios")]
-        if !crate::ipad::editor_presence_active(ws) { return Idle; }
+        { let _ = window; if !crate::ipad::editor_presence_active(ws) { return Idle; } }
         let selection = (!ws.unsaved && !editor.composing() && !editor.core.in_block_mode() && editor.core.cell_sel.is_none())
             .then_some(editor.core.sel);
         Editing(id.clone(), selection)
@@ -2241,7 +2242,13 @@ fn apply_cloud_notes(root: &std::path::Path, notes: &[crate::cloud_sync::NoteCha
                 ws.save_task = None;
                 if ws.view == View::Doc { ws.view = View::Home; }
             }
-            if ws.folder_current.as_ref().is_some_and(|id| !ws.entries.iter().any(|e| &e.id == id)) {
+            // An iPad can show a personal folder alongside a standalone
+            // shared editor. A refresh of the share cannot remove that folder.
+            #[cfg(target_os = "ios")]
+            let folder_is_in_updated_library = !ws.mobile_personal_browser(cx);
+            #[cfg(not(target_os = "ios"))]
+            let folder_is_in_updated_library = true;
+            if folder_is_in_updated_library && ws.folder_current.as_ref().is_some_and(|id| !ws.entries.iter().any(|e| &e.id == id)) {
                 ws.folder_current = None;
                 if ws.view == View::Folder { ws.view = View::Home; }
             }

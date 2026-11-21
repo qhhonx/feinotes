@@ -18,7 +18,7 @@ pub(crate) fn editor_input_active() -> bool { EDITOR_INPUT.load(std::sync::atomi
 
 #[cfg(feature = "cloudkit-sync")]
 pub(crate) fn editor_presence_active(workspace: &crate::app::Workspace) -> bool {
-    SCENE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) && editor_input_active()
+    SCENE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
         && EDITOR_PRESENCE_SCOPE.with(|scope| scope.borrow().as_ref().is_some_and(|scope| scope == &editor_scope(workspace)))
 }
 
@@ -37,7 +37,7 @@ pub unsafe extern "C" fn fei_ios_set_editor_input(active: bool, _scope: *const c
     let changed = EDITOR_INPUT.swap(active,std::sync::atomic::Ordering::Relaxed) != active;
     #[cfg(feature = "cloudkit-sync")]
     EDITOR_PRESENCE_SCOPE.with(|scope| {
-        *scope.borrow_mut() = if active && !_scope.is_null() { unsafe { CStr::from_ptr(_scope) }.to_str().ok().map(str::to_owned) } else { None };
+        *scope.borrow_mut() = if !_scope.is_null() { unsafe { CStr::from_ptr(_scope) }.to_str().ok().map(str::to_owned) } else { None };
     });
     APPLICATION.with(|slot| {
         if let Some(app) = slot.borrow().as_ref() {
@@ -293,6 +293,7 @@ struct NavigationState {
     cloud_active: bool,
     cloud_start_pending: bool,
     shared_session: bool,
+    document_shared: bool,
     editing_collaborators: Vec<String>,
     can_create: bool,
     can_edit: bool,
@@ -571,6 +572,8 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         table_active: workspace.editor.as_ref().is_some_and(|ed| ed.read(cx).mobile_table_target().is_some()),
         block_actions: block_target.is_some(), block_selected: block_target.is_some_and(|(_,selected)|selected),
         current: workspace.current.clone(), busy: workspace.library_switching || workspace.store.file_task_busy() || workspace.file_history.busy || workspace.sharing_busy(), cloud_active: has_cloud(), cloud_start_pending: crate::ipad_session::resuming(), shared_session: workspace.is_shared(), can_create: !workspace.is_shared() || workspace.can_create_in_shared_folder(workspace.creation_parent().as_deref(),cx),
+        document_shared: kind == "note" && (workspace.is_shared() || workspace.current.as_ref().is_some_and(|id|
+            workspace.entries.iter().any(|entry| &entry.id == id && workspace.published_document_share(entry, cx)))),
         editing_collaborators: if kind == "note" && workspace.is_shared() { workspace.online_collaborators(cx).iter().filter_map(|person| person.name.as_ref().map(ToString::to_string)).collect() } else { vec![] },
         can_edit: crate::cloud_sync::shared::can_edit_in(workspace.store.root(),cx) && workspace.editor.as_ref().is_none_or(|ed| !ed.read(cx).read_only), confirmation, appearance: crate::settings::prefs().appearance, creation_ack:NAVIGATION.with(|p|p.borrow().creation_ack), theme: native_theme() };
     NAVIGATION.with(|published| {
@@ -653,6 +656,19 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                             if !marks && !edit_child && matches!(command.action.as_str(),"new" | "new-document" | "new-markdown" | "import" | "delete" | "move" | "pin" | "star" | "duplicate" | "backup" | "restore-backup" | "library-copy" | "restore" | "purge" | "empty-trash") { return; }
                         }
                         match command.action.as_str() {
+                            #[cfg(feature = "mobile-qa")]
+                            "qa-shared-browser-refresh" if workspace.mobile_personal_browser(cx)
+                                && crate::ipad_session::sync_badge_fixture()
+                                && command.scope.as_deref() == Some(editor_scope(workspace).as_str())
+                                && std::env::var_os("FEI_QA_SHARED_BROWSER_REFRESH").is_some() => {
+                                let (Some(id), Some(editor)) = (&workspace.current, &workspace.editor) else { return };
+                                let mut document = editor.read(cx).core.doc.clone();
+                                if document.title.text != "QA standalone collaboration" { return; }
+                                document.blocks.push(crate::model::Block::text("Remote fixture paragraph"));
+                                let change = crate::cloud_sync::NoteChange { id: id.clone(), document, positions: vec![] };
+                                let root = workspace.store.root().to_path_buf();
+                                cx.defer(move |cx| crate::app::cloud_notes_changed(&root, &[change], true, cx));
+                            }
                             #[cfg(feature = "mobile-qa")]
                             "qa-sync-state" if workspace.is_shared() && matches!(workspace.view,crate::app::View::Doc)
                                 && command.scope.as_deref() == Some(editor_scope(workspace).as_str())
