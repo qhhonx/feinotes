@@ -1,0 +1,7 @@
+Fei Notes 1.0.10 beta
+
+• Fixed cases where edits arrived across devices while the collaborator's online status, cursor, or selection was missing.
+• The online list and cursor labels use the name available in Members & Permissions. When a name is unavailable, Fei Notes shows a numbered collaborator label.
+• Fixed remote edits sending the iPad sidebar back to Home and an intermittent blank folder list on iPhone after leaving a shared document.
+
+To test, open the same editable shared document with two accounts. Take turns typing and selecting text in a table, then check that the online indicator clears after leaving.
