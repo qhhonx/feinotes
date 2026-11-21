@@ -38,6 +38,36 @@ final class PersonalSyncUITests: XCTestCase {
         capture("shared-refresh-keeps-personal-folder")
     }
 
+    func testPhoneReturnsToPersonalFolderAfterSharedRefresh() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone)
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = .portrait
+        app.launchArguments += ["-AppleLanguages", "(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_SHARED_BROWSER_REFRESH"] = "1"
+        app.launchEnvironment["FEI_QA_STALE_POP_SNAPSHOT"] = "1"
+        app.launchEnvironment["FEI_QA_REBUILD_SHARED_ANCESTOR"] = "1"
+        app.launch()
+        let folder = moveRow("QA collaboration folder",in: app)
+        XCTAssertTrue(folder.waitForExistence(timeout: 12))
+        folder.tap()
+        let row = moveRow("QA standalone collaboration",in: app)
+        XCTAssertTrue(row.waitForExistence(timeout: 8))
+        row.tap()
+        let update = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ AND value CONTAINS %@",
+            "fei.editor.surface","Remote fixture paragraph")).firstMatch
+        XCTAssertTrue(update.waitForExistence(timeout: 12))
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["QA collaboration folder"].waitForExistence(timeout: 8))
+        XCTAssertTrue(row.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["fei.library-actions"].exists)
+        XCTAssertTrue(app.searchFields["fei.notes.search-field"].exists)
+        capture("phone-personal-folder-after-shared-refresh")
+    }
+
     func testEmptyMixedTrash() {
         continueAfterFailure = false
         let app = XCUIApplication()

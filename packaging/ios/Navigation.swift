@@ -658,6 +658,9 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     private var confirmationGeneration: UInt64 = 0
     private var presentationGeneration: UInt64 = 0
     private var focusAfterTransition = false
+    #if FEI_MOBILE_QA
+    private var replacedSharedAncestorForQA = false
+    #endif
     private enum SheetAnchor {
         case row(String,browser: Bool)
     }
@@ -685,6 +688,16 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         let routes = host.padWorkspace?.detailRoutes(next) ?? next.routes
         let listing = host.padWorkspace == nil || next.kind == "trash" ? next.listing : nil
         let settings = next.sharing_title == nil ? next.settings : nil
+        #if FEI_MOBILE_QA
+        if !replacedSharedAncestorForQA, ProcessInfo.processInfo.environment["FEI_QA_REBUILD_SHARED_ANCESTOR"] == "1",
+           host.padWorkspace == nil, next.kind == "note", next.shared_session, next.current == state?.current,
+           next.qa?.body.contains("Remote fixture paragraph") == true, navigation.viewControllers.count > 2,
+           let editor = navigation.topViewController {
+            replacedSharedAncestorForQA = true
+            // Exercise route reconciliation when only the editor's ancestor changes.
+            navigation.setViewControllers([host, editor], animated: false)
+        }
+        #endif
         let oldKeys = navigation.viewControllers.compactMap { ($0 as? FeiRouteController)?.routeKey }
         let newKeys = routes.map(\.key)
         if nativePopTarget != nil { nativePopTarget = nil }
@@ -747,8 +760,10 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             if let target = controllers.last { host.attachEditor(to: target) }
             let replacesControllers = navigation.viewControllers.map(ObjectIdentifier.init) != controllers.map(ObjectIdentifier.init)
             if replacesControllers {
+                // UIKit does not send didShow when only an ancestor is replaced.
+                let changesTop = navigation.topViewController !== controllers.last
+                let animated = changesTop && oldState != nil && (host.padWorkspace == nil || next.kind == "settings" || oldState?.kind == "settings") && !UIAccessibility.isReduceMotionEnabled
                 applying = true
-                let animated = oldState != nil && (host.padWorkspace == nil || next.kind == "settings" || oldState?.kind == "settings") && !UIAccessibility.isReduceMotionEnabled
                 navigation.setViewControllers(controllers,animated: animated)
                 if !animated { applying = false }
             } else {
