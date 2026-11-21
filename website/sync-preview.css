@@ -90,3 +90,8 @@ html[lang="en"] .is-writing .phone-line-mask {
   .sync-stage { margin-bottom: 44px; }
   .sync-controls { top: calc(100% + 10px); bottom: auto; }
 }
+
+.sync-preview[data-capture="still"] .sync-stage,
+.sync-preview[data-capture="still"] .sync-window-primary img {
+  aspect-ratio: 8 / 5;
+}

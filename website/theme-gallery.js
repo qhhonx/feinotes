@@ -4,6 +4,7 @@
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   const english = document.documentElement.lang === 'en';
   const controllers = scenes.map(scene => {
+    if (scene.dataset.capture === "still") return { refresh() {} };
     const toggle = scene.querySelector('[data-animation-toggle]');
     const collaboration = scene.dataset.scene === 'collab';
     let frame = 0, timer = 0, run = 0;
