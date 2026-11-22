@@ -20,6 +20,16 @@ def record(kind, identifier, **attributes):
 
 
 class AppleReleaseTest(TestCase):
+    def test_ci_masks_cover_profile_and_certificate_owner(self):
+        fingerprint = "A" * 40
+        installer = '3rd Party Mac Developer Installer: Example Owner (EXAMPLE123)'
+        profile = {"UUID": "test-profile-uuid", "Name": "Test Distribution Profile", "TeamName": "Test Team",
+                   "TeamIdentifier": ["EXAMPLE123"], "ApplicationIdentifierPrefix": ["PREFIX1234"]}
+        masks = release.ci_signing_masks(profile, f'  1) {fingerprint} "{installer}"\n  1 valid identities found')
+        self.assertEqual(set(masks), {fingerprint, installer, "Example Owner", "EXAMPLE123", "PREFIX1234",
+                                      "test-profile-uuid", "Test Distribution Profile", "Test Team"})
+        self.assertLess(masks.index(installer), masks.index("Example Owner"))
+
     def setUp(self):
         switch = mock.patch.dict(os.environ, FEI_EXPIRE_SUPERSEDED_BETAS='0')
         switch.start()

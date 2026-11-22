@@ -16,7 +16,9 @@ Use the actual release version and available build number. Use a new number afte
 
 Advance the TestFlight marketing version together on Mac, iPhone, and iPad once the current version has passed external beta review. While that review is pending, a replacement build can use the same marketing version with a new build number.
 
-Branch pushes that change app sources, assets, packaging, or the Apple workflow trigger public TestFlight. The version comes from the repository variable `FEI_TESTFLIGHT_VERSION` and defaults to `1.0.0`. Automatic builds use `1000 + github.run_number`. Use build numbers below 1000 for manually chosen releases while this workflow owns the higher range. A website-only change does not trigger an Apple build.
+Set `FEI_TESTFLIGHT_VERSION` and `FEI_TESTFLIGHT_IOS_BUILD` in the repository before dispatching either platform. Select an unused even build number for iPhone and iPad. Mac uses that number plus one. Both workflows check these settings. Check both Apple upload records and keep both workflow dispatches on the same source commit.
+
+When enabled, the Mac branch-push workflow proposes the odd build number `1001 + 2 * github.run_number`. It proceeds only if the adjacent even number matches the configured iOS build. A website-only change does not trigger an Apple build.
 
 Apple requires the first subscription to go through the App Store Connect web interface with the app version. The `submit` command checks for an approved subscription before editing any review draft. For 1.0, use the store job to upload and attach the candidate, then assemble the first review draft in App Store Connect. Submit it after the release owner confirms. [Apple subscription submission API](https://developer.apple.com/documentation/appstoreconnectapi/submitting-subscriptions-and-subscription-groups-for-app-review)
 
@@ -33,13 +35,15 @@ Distribution packages are universal macOS apps with arm64 and x86_64 slices in b
 Enable Actions and restrict updates to the product branch and creation of release tags to maintainers. Allow the branch `product/quiet-sync` and the `testflight/**` and `public-testflight/**` release tags in the `feinotes-testflight` environment. Merge the workflow into the default branch when manual dispatch is needed. Protect the submission and publication environments with separate approvals. Pull requests run without release credentials.
 
 - All four environments need `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_PRIVATE_KEY_B64` secrets for an approved App Store Connect credential. Scope access as tightly as the account permits and use a separate release credential if available.
-- The build environments `feinotes-testflight` and `feinotes-store` also need secrets `FEI_APP_CERT_B64`, `FEI_INSTALLER_CERT_B64`, `FEI_STORE_PROFILE_B64`, and `FEI_CERT_PASSWORD`. The two certificate files are password-protected PKCS#12 files. Add public SHA-1 signing fingerprints as the `FEI_APP_CERT_SHA1` and `FEI_INSTALLER_CERT_SHA1` variables. The job uses an ephemeral signing keychain and removes it when finished.
-- The test environment needs `FEI_PUBLIC_BETA_GROUP_ID` for the external group and `FEI_BETA_GROUP_ID` for the existing internal group. Set `FEI_SUPPORT_URL` to the live support page to include it in the app's About section and the bilingual TestFlight notes. Add testers in App Store Connect.
+- The build environments `feinotes-testflight` and `feinotes-store` also need secrets `FEI_APP_CERT_B64`, `FEI_INSTALLER_CERT_B64`, `FEI_STORE_PROFILE_B64`, `FEI_CERT_PASSWORD`, `FEI_APP_CERT_SHA1`, and `FEI_INSTALLER_CERT_SHA1`. The two certificate files are password-protected PKCS#12 files. The job uses an ephemeral signing keychain and removes it when finished.
+- Both TestFlight environments use secrets `FEI_PUBLIC_BETA_GROUP_ID` and `FEI_BETA_GROUP_ID` for the external and internal groups. The iOS environment also uses secrets `FEI_IOS_APP_CERT_SHA1` and `FEI_IOS_PROFILE_UUID`. Set `FEI_SUPPORT_URL` to the live support page to include it in the app's About section and the bilingual TestFlight notes. Add testers in App Store Connect.
 - Set `FEI_EXPORT_EXEMPT=1` only for a channel whose build and distribution scope are confirmed exempt. Keep the internal beta's decision separate from the public App Store decision.
 - The store and submit environments need the `FEI_STOREKIT_MONTHLY_PRODUCT` and `FEI_STOREKIT_ANNUAL_PRODUCT` variables. The submit environment also needs `FEI_SUBSCRIPTION_GROUP_ID`. The store build requires published `FEI_SUPPORT_URL`, `FEI_PRIVACY_URL`, and `FEI_TERMS_URL` values.
 - Prepare the matching macOS version draft and its release-specific review materials in App Store Connect. Complete any outstanding export compliance and metadata requirements. The job stops on Apple errors and can resume from a processed build after corrections.
 
 Keep the release credentials out of the repository and all attachments. Production builds use Apple distribution signing. Direct-download Developer ID signing and notarization are separate.
+
+Set and verify the repository's Git author and committer name and GitHub noreply address in a temporary release checkout before creating a commit. Enable `user.useConfigOnly` in that checkout to prevent fallback to the machine's system identity.
 
 ## Website deployment
 

@@ -28,6 +28,28 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def ci_signing_masks(profile, identities):
+    values = [profile.get(key) for key in ("UUID", "Name", "TeamName")]
+    for key in ("TeamIdentifier", "ApplicationIdentifierPrefix"):
+        values.extend(profile.get(key, []))
+    for fingerprint, identity in re.findall(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"([^"\r\n]+)"', identities, re.M):
+        values.extend((fingerprint, identity))
+        owner = re.search(r':\s*(.+?)(?:\s+\([A-Z0-9]{10}\))?$', identity)
+        if owner:
+            values.append(owner[1])
+    return sorted({value for value in values if value and len(value.strip()) >= 3}, key=lambda value: (-len(value), value))
+
+
+def mask_ci_signing(profile, keychain):
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    metadata = plistlib.loads(subprocess.check_output(["security", "cms", "-D", "-i", profile]))
+    identities = subprocess.check_output(["security", "find-identity", "-v", keychain], text=True)
+    for value in ci_signing_masks(metadata, identities):
+        escaped = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::add-mask::{escaped}", flush=True)
+
+
 def encoded(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=")
 
@@ -227,13 +249,13 @@ def add_beta_build(identifier, group_id):
 
 
 def distribute(build, group_id, write_notes=True):
-    group = beta_group(group_id, internal=True)
+    beta_group(group_id, internal=True)
     if write_notes:
         beta_notes(build)
     identifier = build["id"]
     add_beta_build(identifier, group_id)
     state = request("GET", f"/v1/builds/{identifier}/buildBetaDetail")["data"]["attributes"]["internalBuildState"]
-    print(f"Internal group: {group['attributes']['name']}, internal state: {state}")
+    print(f"Internal TestFlight state: {state}")
     require(state in {"IN_BETA_TESTING", "READY_FOR_BETA_TESTING"}, f"TestFlight is not ready: {state}")
 
 
@@ -262,7 +284,7 @@ def distribute_public(build, group_id):
                 f"External TestFlight needs attention: {state}")
     add_beta_build(identifier, group_id)
     state = request("GET", f"/v1/builds/{identifier}/buildBetaDetail")["data"]["attributes"]["externalBuildState"]
-    print(f"External group: {group['attributes']['name']}, review state: {state}")
+    print(f"External TestFlight review state: {state}")
     print(f"Public invitation: {group['attributes'].get('publicLink') or 'not enabled'}")
 
 
@@ -513,6 +535,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     ops = parser.add_subparsers(dest="operation", required=True)
     pack = ops.add_parser("archive")
+    mask = ops.add_parser("mask-ci-signing")
+    mask.add_argument("profile")
+    mask.add_argument("keychain")
     pack.add_argument("channel", choices=AUDIENCES)
     for arg in ("app", "folder", "profile"):
         pack.add_argument(arg, type=Path)
@@ -534,6 +559,9 @@ def main():
         if name in {"submit", "publish"}:
             cmd.add_argument("--confirm", required=True)
     args = parser.parse_args()
+    if args.operation == "mask-ci-signing":
+        mask_ci_signing(args.profile, args.keychain)
+        return
     if args.operation == "archive":
         archive(args.channel, args.app, args.folder, args.profile, args.app_signer, args.installer_signer, args.destination)
         return

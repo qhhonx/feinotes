@@ -10,6 +10,9 @@ build=$3
 confirmation=$4
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected a three-component version.' >&2; exit 2; }
 [[ "$operation" == publish || "$build" =~ ^[1-9][0-9]{0,3}$ ]] || { echo 'Expected a positive integer build number.' >&2; exit 2; }
+if [[ "$operation" == testflight || "$operation" == public-testflight ]]; then
+    (( build % 2 == 1 )) || { echo 'Mac TestFlight requires an odd build number.' >&2; exit 2; }
+fi
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$repo"
@@ -68,7 +71,6 @@ if [[ "$existing" == new ]]; then
     password=$(/usr/bin/openssl rand -hex 24)
     security create-keychain -p "$password" "$keychain"
     security set-keychain-settings -lut 21600 "$keychain"
-    security show-keychain-info "$keychain"
     security unlock-keychain -p "$password" "$keychain"
     for name in FEI_APP_CERT_B64 FEI_INSTALLER_CERT_B64; do
         security import "$work/$name" -f pkcs12 -k "$keychain" -P "$FEI_CERT_PASSWORD" \
@@ -76,6 +78,8 @@ if [[ "$existing" == new ]]; then
         rm "$work/$name"
     done
     unset FEI_CERT_PASSWORD
+    profile="$work/FEI_STORE_PROFILE_B64"
+    "${release[@]}" mask-ci-signing "$profile" "$keychain"
     security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
     security list-keychains -d user -s "$keychain" "${previous_keychains[@]}"
     changed_keychains=1
@@ -91,7 +95,6 @@ subprocess.run(["/usr/bin/codesign", "--verify", "--strict", sys.argv[3]], timeo
 print("Noninteractive signing check passed.", flush=True)
 PYSIGN
 
-    profile="$work/FEI_STORE_PROFILE_B64"
     uuid=$(security cms -D -i "$profile" | plutil -extract UUID raw -)
     [[ "$uuid" =~ ^[[:xdigit:]-]{36}$ ]]
     profile_dir="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
@@ -111,7 +114,7 @@ PYSIGN
     for destination in export upload; do
         "${release[@]}" archive "$operation" "$app" "$work/$destination" "$profile" \
             "$FEI_APP_CERT_SHA1" "$FEI_INSTALLER_CERT_SHA1" "$destination"
-        xcodebuild -exportArchive -archivePath "$work/$destination/Fei Notes.xcarchive" \
+        xcodebuild -quiet -exportArchive -archivePath "$work/$destination/Fei Notes.xcarchive" \
             -exportOptionsPlist "$work/$destination/ExportOptions.plist" -exportPath "$work/$destination/result" \
             -authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"

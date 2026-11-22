@@ -93,7 +93,7 @@ def verify_app(app, version, build, signer, uuid):
                                ('SystemBootTime', {'35F9.1'}), ('UserDefaults', {'CA92.1'})]:
         require(required <= reasons.get('NSPrivacyAccessedAPICategory' + category, set()),
                 'Missing iOS required API reasons: ' + category)
-    profile = validate_profile(decode_profile(app / 'embedded.mobileprovision'), signer, uuid)
+    validate_profile(decode_profile(app / 'embedded.mobileprovision'), signer, uuid)
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
     result = subprocess.run(['codesign', '-d', '--entitlements', ':-', str(app)], capture_output=True, check=True)
     ent = plistlib.loads(result.stdout)
@@ -103,8 +103,7 @@ def verify_app(app, version, build, signer, uuid):
             'Expected a device arm64 executable')
     # Verify the actual leaf signing certificate, not only profile membership.
     validate_signer(app, signer)
-    return {'platform': 'IOS', 'version': version, 'build': build, 'profileUUID': profile['UUID'],
-            'signerSHA1': signer.upper(), 'bundle': BUNDLE, 'architectures': ['arm64']}
+    return {'platform': 'IOS', 'version': version, 'build': build, 'bundle': BUNDLE, 'architectures': ['arm64']}
 
 
 def export_options(profile, signer, destination):

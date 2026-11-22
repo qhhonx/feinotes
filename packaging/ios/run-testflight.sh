@@ -8,6 +8,7 @@ version=$2
 build=$3
 notes=$4
 [[ "$source_sha" =~ ^[0-9a-f]{40}$ && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$build" =~ ^[1-9][0-9]{0,3}$ ]]
+(( build % 2 == 0 )) || { echo 'iOS TestFlight requires an even build number.' >&2; exit 2; }
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$repo"
 test "$(git rev-parse HEAD)" = "$source_sha"
@@ -67,6 +68,8 @@ if [[ "$existing" == new ]]; then
     security import "$work/certificate.p12" -f pkcs12 -k "$keychain" -P "$FEI_IOS_CERT_PASSWORD" -T /usr/bin/codesign >/dev/null
     rm "$work/certificate.p12"
     unset FEI_IOS_CERT_PASSWORD
+    "${release[@]}" mask-ci-signing "$work/store.mobileprovision" "$keychain"
+    signing_team=$(security cms -D -i "$work/store.mobileprovision" | plutil -extract TeamIdentifier.0 raw -)
     security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
     security list-keychains -d user -s "$keychain" "${previous_keychains[@]}"
     changed_keychains=1
@@ -84,19 +87,19 @@ if [[ "$existing" == new ]]; then
     xcode_args=(-project packaging/ios/FeiNotesEditorProbe.xcodeproj -scheme FeiNotesTestFlight
         -configuration TestFlight -destination 'generic/platform=iOS'
         -derivedDataPath "$work/derived" MARKETING_VERSION="$version" CURRENT_PROJECT_VERSION="$build"
-        DEVELOPMENT_TEAM=95BC6VVXL8 CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$FEI_IOS_APP_CERT_SHA1"
+        DEVELOPMENT_TEAM="$signing_team" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$FEI_IOS_APP_CERT_SHA1"
         PROVISIONING_PROFILE="$FEI_IOS_PROFILE_UUID" "OTHER_CODE_SIGN_FLAGS=--keychain $keychain")
     xcodebuild "${xcode_args[@]}" -showBuildSettings -json > "$work/settings.json"
     python3 -B packaging/ios/release.py settings "$work/settings.json"
     umask 022
-    xcodebuild "${xcode_args[@]}" -archivePath "$work/FeiNotes.xcarchive" archive
+    xcodebuild -quiet "${xcode_args[@]}" -archivePath "$work/FeiNotes.xcarchive" archive
     app="$work/FeiNotes.xcarchive/Products/Applications/FeiNotes.app"
     python3 -B packaging/ios/release.py verify "$app" "$version" "$build" "$FEI_IOS_APP_CERT_SHA1" "$FEI_IOS_PROFILE_UUID"
     python3 -B packaging/ios/privacy-audit.py "$app"
     for destination in export upload; do
         python3 -B packaging/ios/release.py export-options "$work/store.mobileprovision" "$FEI_IOS_APP_CERT_SHA1" \
             "$FEI_IOS_PROFILE_UUID" "$destination" "$work/ExportOptions.plist"
-        xcodebuild -exportArchive -archivePath "$work/FeiNotes.xcarchive" \
+        xcodebuild -quiet -exportArchive -archivePath "$work/FeiNotes.xcarchive" \
             -exportOptionsPlist "$work/ExportOptions.plist" -exportPath "$work/$destination" \
             -authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
