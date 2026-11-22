@@ -83,7 +83,7 @@ history = database.parent / ".quiet/history" / notes[0][0]
 history.mkdir(parents=True, exist_ok=True)
 (history / f"{int(time.time() * 1000) + 1000}-aabbccdd.xml").write_text(
     "<title>Cloud UI synthetic</title>\n<p>SNAPSHOT_EXPECTED</p>\n")
-open_history = "click 1104 24\nwait 250\nclick 1030 412\nwait 500\n"
+open_history = "click 1140 24\nwait 250\nclick 1030 444\nwait 500\n"
 run("preview", open_history + "shot preview\ntype SHOULD_NOT_SAVE\nwait 700\nkey escape\nwait 300\nshot back\n")
 assert "BODY_ORIGINAL拼音" in body() and "SHOULD_NOT_SAVE" not in body(), body()
 print("preview: refused input and returned to the current body without writing history", flush=True)
