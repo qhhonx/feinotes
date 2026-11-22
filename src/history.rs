@@ -553,16 +553,16 @@ impl Workspace {
         } else {
             div().id("history-list").flex_1().min_h_0().overflow_y_scroll().track_scroll(&h.list_scroll).flex().flex_col().pb(px(6.)).children(rows).into_any_element()
         };
-        let act = |id: &'static str, text: &'static str| div().id(id).flex_none().h(px(28.)).px(px(8.)).flex().items_center().rounded(px(6.)).text_size(px(13.)).cursor_pointer()
-            .text_color(Theme::text_caption()).hover(|s| s.bg(Theme::fill_hover()).text_color(Theme::text())).child(text);
+        let act = |id: &'static str, text: &'static str, hover_color: Hsla| div().id(id).flex_none().h(px(28.)).px(px(8.)).flex().items_center().rounded(px(6.)).text_size(px(13.)).cursor_pointer()
+            .text_color(Theme::text_caption()).hover(|s| s.bg(Theme::fill_hover()).text_color(hover_color)).child(text);
         let footer = div().flex_none().border_t_1().border_color(Theme::line_divider()).p(px(12.)).flex().items_center().gap(px(4.))
             .child(crate::ui::secondary_button("history-snapshot", crate::settings::tr("保存当前版本", "Save a version"))
                 .on_click(cx.listener(|w, _, window, cx| w.save_version_now(window, cx))))
             .child(div().flex_1())
             // these act on the version being previewed: shown only while there is one
             .when(has_sel, |d| d
-                .child(act("history-copy", crate::settings::tr("另存副本", "Save as copy")).on_click(cx.listener(|w, _, window, cx| w.version_as_copy(window, cx))))
-                .child(act("history-delete", crate::settings::tr("删除", "Delete")).hover(|s| s.text_color(Theme::danger()))
+                .child(act("history-copy", crate::settings::tr("另存副本", "Save as copy"), Theme::text()).on_click(cx.listener(|w, _, window, cx| w.version_as_copy(window, cx))))
+                .child(act("history-delete", crate::settings::tr("删除", "Delete"), Theme::danger())
                     .on_click(cx.listener(|w, _, window, cx| w.delete_selected_version(window, cx)))));
         Some(
             crate::ui::popover().id("history-drawer").absolute().top(px(HEADER_H + 8.)).right(px(8.)).bottom(px(8.)).w(px(DRAWER_W))
