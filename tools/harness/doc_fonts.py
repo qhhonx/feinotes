@@ -120,8 +120,8 @@ def with_prefs(lib, name, **kv):
 
 
 # window coordinates (points) of 设置 › 外观 › 文档字体 and its list
-OPEN_LIST = "key cmd-,\nwait 600\nclick 85 136\nwait 600\nclick 1050 461\nwait 600\n"
-WENKAI_ROW, WENKAI_TRASH = (800, 565), (1058, 565)
+OPEN_LIST = "key cmd-,\nwait 600\nclick 85 136\nwait 600\nclick 1050 461\nwait 600\ntype WenKai\nwait 350\n"
+WENKAI_TRASH = (1033, 536)
 BACK = "key escape\nwait 300\nclick 62 775\nwait 800\n"
 
 
@@ -131,7 +131,7 @@ def flow(url):
     shutil.rmtree(cache, ignore_errors=True)
     wenkai = next(e for e in catalog if e["id"] == "lxgw-wenkai")
 
-    a = run("1-download", "move 700 700\nwait 1500\n" + OPEN_LIST + f"shot 1a-list\nclick {WENKAI_ROW[0]} {WENKAI_ROW[1]}\nwait 2500\nshot 1b-progress\nwait 6000\nshot 1c-done\n" + BACK + "move 1250 780\nwait 500\nshot 1d-article\n", lib, cache, url)
+    a = run("1-download", "move 700 700\nwait 1500\n" + OPEN_LIST + "shot 1a-list\nkey down\nkey enter\nwait 2500\nshot 1b-progress\nwait 12000\nshot 1c-done\n" + BACK + "move 1250 780\nwait 500\nshot 1d-article\n", lib, cache, url)
     assert sorted(hits) == sorted(f"/{f['name']}" for f in wenkai["files"]), hits
     assert prefs(a / "lib")["doc_family"] == "LXGW WenKai"
     assert all((cache / f["name"]).stat().st_size == f["size"] for f in wenkai["files"])
