@@ -291,6 +291,11 @@ PYBUILD
         [[ "$(lipo -archs "$file")" == "$architecture" ]]
         minos=$(xcrun vtool -show-build "$file" | awk '$1 == "minos" { print $2 }')
         [[ "$minos" == 14.0 ]] || { echo "Unexpected minimum macOS version: $minos" >&2; exit 1; }
+        linked_libraries=$(xcrun otool -L "$file")
+        if [[ "$linked_libraries" == *"/libsqlite3"* ]]; then
+            echo "Unexpected system SQLite dependency in ${file##*/} ($architecture)." >&2
+            exit 1
+        fi
     done
     slices+=("$slice/quiet_md")
     bridges+=("$slice/libQuietCloudRestore.dylib")
