@@ -333,7 +333,8 @@ unsafe extern "C" { pub(crate) fn fei_ios_is_phone() -> bool; }
 unsafe extern "C" { fn fei_ios_navigation_changed(json: *const c_char); }
 
 fn native_theme() -> serde_json::Value {
-    let style = crate::themes::active();
+    let document = crate::themes::active();
+    let style = crate::themes::interface();
     let rgba = |color:gpui::Hsla| { let c = color.to_rgb(); [c.r,c.g,c.b,c.a] };
     let optional = |key:&str| style.color(key).map(rgba);
     let (warning, warning_ink) = settings::sync_status::marker_colors();
@@ -341,7 +342,7 @@ fn native_theme() -> serde_json::Value {
         "sync_warning": rgba(warning), "sync_warning_ink": rgba(warning_ink),
         "id":crate::settings::prefs().theme_id(),
         "accent":rgba(style.color("mobile.accent").unwrap_or_else(||style.token("primary_500"))),
-        "paper":rgba(style.color("page.bg").unwrap_or_else(||style.token("bg_body"))),
+        "paper":rgba(document.color("page.bg").unwrap_or_else(||document.token("bg_body"))),
         "workspace_list":rgba(style.token("bg_overlay")),
         "folder":rgba(style.color("sidebar.folder").unwrap_or_else(||style.token("primary_500"))),
         "chrome":optional("mobile.chrome.bg"),"list":optional("mobile.list.bg"),

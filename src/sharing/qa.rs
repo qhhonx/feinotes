@@ -106,7 +106,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
                 let feishu = !name.contains("notes");
                 let theme = if feishu { "feishu" } else { "notes" };
                 crate::themes::load(theme,true,||cx.text_system().all_font_names());
-                ws.set_pref(|p| { p.feishu = feishu; p.theme = theme.into();
+                ws.set_pref(|p| { p.feishu = feishu; p.theme = theme.into(); p.interface_style = theme.into();
                     p.appearance = if dark { "dark" } else { "light" }.into(); },cx);
             })?,
         "sync-badge-ready" | "sync-badge-uploading" | "sync-badge-stalled" => primary.update(cx, |ws,_,cx| -> Result<()> {
@@ -357,9 +357,10 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let feishu = name.ends_with("feishu");
             ensure!(ws.is_shared() == shared && ws.view == View::Doc && ws.sharing_toolbar(window, cx).is_some(), "Missing document toolbar fixture");
             ensure!(!shared || ws.online_collaborators(cx).is_empty(), "Expected a sharing control without anyone else online");
-            ws.set_pref(|p| { p.appearance = "light".into(); p.feishu = feishu; p.theme = if feishu { "feishu" } else { "notes" }.into(); }, cx);
+            let style = if feishu { "feishu" } else { "notes" };
+            ws.set_pref(|p| { p.appearance = "light".into(); p.feishu = feishu; p.theme = style.into(); p.interface_style = style.into(); }, cx);
             ws.reload_themes(cx);
-            ensure!(settings::feishu() == feishu, "Sharing toolbar theme did not change");
+            ensure!(settings::interface_feishu() == feishu, "Sharing toolbar style did not change");
             Ok(())
         })??,
         "check-shared-add" => primary.update(cx, |w, _, _| -> Result<()> {
@@ -375,7 +376,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             w.sidebar_open = true;
             w.folded[1] = true;
             w.sharing.folded = true;
-            w.set_pref(|p| { p.appearance = "light".into(); p.feishu = true; p.theme = "feishu".into(); }, cx);
+            w.set_pref(|p| { p.appearance = "light".into(); p.feishu = true; p.theme = "feishu".into(); p.interface_style = "feishu".into(); }, cx);
             w.reload_themes(cx);
             crate::gpui_compat::focus(window, &w.focus, cx);
             Ok(())
@@ -1456,7 +1457,7 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
                 ws.sharing.expanded.remove(&owner);
                 ws.home.tab = crate::home::HomeTab::Recent;
                 ws.home.grid = false;
-                ws.set_pref(|p| { p.appearance = "light".into(); p.feishu = true; p.theme = "feishu".into(); }, cx);
+                ws.set_pref(|p| { p.appearance = "light".into(); p.feishu = true; p.theme = "feishu".into(); p.interface_style = "feishu".into(); }, cx);
                 ws.reload_themes(cx); cx.notify();
             }
             "folder-sidebar-open-glyphs" => {

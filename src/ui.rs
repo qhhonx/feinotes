@@ -1007,7 +1007,7 @@ pub fn continuous_surface(radius: f32, color: Hsla) -> Div {
     }).absolute().inset_0())
 }
 
-pub(crate) fn toolbar_color(key: &str) -> Option<Hsla> { crate::themes::active().color(key) }
+pub(crate) fn toolbar_color(key: &str) -> Option<Hsla> { crate::themes::interface().color(key) }
 
 /// Paint on the existing control without changing its layout or hit area.
 pub(crate) fn toolbar_control(d: Stateful<Div>, base_radius: f32, hover: fn() -> Hsla, active: Option<fn() -> Hsla>) -> Stateful<Div> {
@@ -1019,7 +1019,7 @@ pub(crate) fn grouped_toolbar_control(d: Stateful<Div>, base_radius: f32, hover:
 }
 
 fn paint_toolbar_control(d: Stateful<Div>, base_radius: f32, hover: fn() -> Hsla, active: Option<fn() -> Hsla>, grouped: bool) -> Stateful<Div> {
-    let radius = px(crate::themes::active().num_override("toolbar.button.radius").unwrap_or(base_radius));
+    let radius = px(crate::themes::interface().num_override("toolbar.button.radius").unwrap_or(base_radius));
     d.rounded(radius)
         .when_some((!grouped).then(|| toolbar_color("toolbar.button.bg")).flatten(), |d, c| d.bg(c))
         .when_some((!grouped).then(|| toolbar_color("toolbar.button.border")).flatten(), |d, c| d.child(
@@ -1029,7 +1029,7 @@ fn paint_toolbar_control(d: Stateful<Div>, base_radius: f32, hover: fn() -> Hsla
 }
 
 pub(crate) fn toolbar_group(d: Div) -> Div {
-    let radius = px(crate::themes::active().num_override("toolbar.button.radius").unwrap_or(8.));
+    let radius = px(crate::themes::interface().num_override("toolbar.button.radius").unwrap_or(8.));
     d.relative().rounded(radius)
         .when_some(toolbar_color("toolbar.group.bg"), |d, c| d.bg(c))
         .when_some(toolbar_color("toolbar.group.border"), |d, c| d.child(div().absolute().inset_0().rounded(radius).border_1().border_color(c)))
