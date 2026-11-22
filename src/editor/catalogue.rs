@@ -392,10 +392,12 @@ impl Editor {
         let collapsed = self.cat_collapsed.clone();
         let text_w = width - 11.;
         let mut style = window.text_style();
-        style.font_family = theme::UI_FONT.into();
+        style.font_family = theme::ui_family().into();
         let entity = cx.entity();
         let n = rows.len();
         let rows = Rc::new(rows);
+        let h = (n as f32 * ROW_H + 22.).min(max_h.max(ROW_H));
+        let scrolls = n as f32 * ROW_H + 22. > h;
         let list = uniform_list("catalogue-list", n, move |range, window, _| {
             range
                 .map(|ix| {
@@ -470,10 +472,13 @@ impl Editor {
                 })
                 .collect()
         })
+        .track_scroll(&self.cat_scroll)
         .w(px(width - 11.))
-        .h(px((n as f32 * ROW_H + 22.).min(max_h.max(ROW_H))))
-        .pb(px(22.));
-        div().w(px(width)).child(crate::gpui_compat::track_scroll(list, &self.cat_scroll)).into_any_element()
+        .h(px(h))
+        // A list that scrolls ends 44 below its last row: GPUI 0.2's
+        // uniform_list counted the bottom padding twice.
+        .pb(px(if scrolls { 44. } else { 22. }));
+        div().w(px(width)).child(list).into_any_element()
     }
 }
 

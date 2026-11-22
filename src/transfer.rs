@@ -3,6 +3,7 @@
 //! or DocxXML files picked straight away. The Word / PDF settings and
 //! 打印选项 only choose what happens to comments, so they are left out.
 
+use fdl_core::vfs::{PathExt as _, KindExt as _};
 use crate::app::Workspace;
 use crate::settings::display_title;
 use crate::model::{Block, BlockKind, Document, RichText};
@@ -11,8 +12,6 @@ use crate::theme::Theme;
 use crate::trash::{close_button, dialog, primary_button, scrim, secondary_button};
 use crate::ui::{TipExt, ToastKind};
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 use std::path::{Path, PathBuf};
 
 /// The open 导出 Markdown 设置 dialog: the page, and 所有内容 picked.
@@ -25,7 +24,7 @@ const MARKDOWN_EXTS: [&str; 4] = ["md", "markdown", "mark", "txt"];
 
 /// What the header's 导入 menu picks.
 #[derive(Clone, Copy)]
-pub(crate) enum ImportKind { Markdown, Folder, DocxXml }
+pub(crate) enum ImportKind { Markdown, Folder, DocxXml, Csv }
 
 /// 导入文件夹 refuses folders with more documents than this.
 pub(crate) const IMPORT_FOLDER_LIMIT: usize = 2000;
@@ -48,14 +47,14 @@ pub(crate) fn scan_folder(dir: &Path, depth: usize) -> Option<Scanned> {
     let name = dir.file_name()?.to_string_lossy().into_owned();
     let mut t = Scanned { name, dir: dir.to_path_buf(), dirs: vec![], docs: vec![], files: 0 };
     if depth > 32 { return Some(t); }
-    let mut items: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
+    let mut items: Vec<_> = fdl_core::vfs::read_dir(dir).ok()?.flatten().collect();
     items.sort_by_key(|e| e.file_name().to_string_lossy().to_lowercase());
     for e in items {
         let p = e.path();
         let n = e.file_name().to_string_lossy().into_owned();
         let Ok(ft) = e.file_type() else { continue };
         if n.starts_with('.') || ft.is_symlink() { continue; }
-        if ft.is_dir() {
+        if ft.fs_is_dir() {
             if matches!(n.as_str(), "node_modules" | "target") { continue; }
             if let Some(sub) = scan_folder(&p, depth + 1).filter(|s| s.files > 0) { t.files += sub.files; t.dirs.push(sub); }
         } else if crate::local_files::is_markdown_path(&p) || p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml")) {
@@ -125,7 +124,7 @@ fn save_path(name: &str, cx: &mut App) -> impl std::future::Future<Output = Opti
 fn open_paths(cx: &mut App) -> impl std::future::Future<Output = Option<Vec<PathBuf>>> + use<> {
     let picked = crate::devtools::take_pick();
     #[cfg(not(target_os = "ios"))]
-    let extensions = Some(MARKDOWN_EXTS.iter().chain(&["xml"]).map(|e| SharedString::from(*e)).collect());
+    let extensions = Some(MARKDOWN_EXTS.iter().chain(&["xml", "csv", "tsv"]).filter(|e| crate::DATATABLE || !matches!(**e, "csv" | "tsv")).map(|e| SharedString::from(*e)).collect());
     let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(crate::settings::text("导入").into()), #[cfg(not(target_os = "ios"))] extensions }));
     async move {
         match prompt {
@@ -133,6 +132,22 @@ fn open_paths(cx: &mut App) -> impl std::future::Future<Output = Option<Vec<Path
             None => picked,
         }
     }
+}
+
+/// A CSV or TSV file, imported as a 数据表 (only while they are offered).
+pub(crate) fn is_csv_path(p: &Path) -> bool { crate::DATATABLE && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("csv") || x.eq_ignore_ascii_case("tsv")) }
+
+/// A CSV or TSV file as a new 数据表 file named after it: the first row
+/// names the columns, each column's type is guessed from its cells.
+pub(crate) fn import_csv(store: &mut crate::store::Store, path: &Path, parent: Option<&str>) -> anyhow::Result<String> {
+    let bytes = crate::store::read_bounded(path, IMPORT_FILE_LIMIT)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim_start_matches('\u{feff}');
+    let name = path.file_stem().and_then(|s| s.to_str()).filter(|s| !s.trim().is_empty()).unwrap_or(crate::settings::text("未命名数据表"));
+    let mut base = crate::table::Base::default();
+    let t = crate::table::csv::import(&mut base, name, text);
+    base.tables.push(t);
+    store.create_table_in(name, &base, parent)
 }
 
 /// The page title as a file name.
@@ -216,7 +231,7 @@ fn resolve_images(blocks: &mut [Block], base: &Path) {
 /// A Markdown / TXT file as a page: titled after the file, its leading
 /// `# 标题` dropped when it repeats the name.
 pub fn markdown_document(path: &Path) -> std::io::Result<Document> {
-    let bytes = std::fs::read(path)?;
+    let bytes = fdl_core::vfs::read(path)?;
     let text = String::from_utf8_lossy(&bytes);
     let text = text.trim_start_matches('\u{feff}');
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().trim().to_string();
@@ -242,18 +257,18 @@ fn write_markdown_export(root: &Path, doc: &Document, subs: &[String], path: &Pa
     let out = crate::markdown::export(doc, &crate::markdown::Options { library_root: Some(root), sub_pages: subs, assets: all.then_some(assets.as_str()), ..Default::default() });
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut missing = out.missing;
-    std::fs::write(path, &out.text)?;
+    fdl_core::vfs::write(path, &out.text)?;
     for (rel, text) in &out.generated {
         let to = dir.join(rel);
-        if let Some(parent) = to.parent() { std::fs::create_dir_all(parent)?; }
-        std::fs::write(to, text)?;
+        if let Some(parent) = to.parent() { fdl_core::vfs::create_dir_all(parent)?; }
+        fdl_core::vfs::write(to, text)?;
     }
     for (src, rel) in &out.files {
         let to = dir.join(rel);
-        if let Some(parent) = to.parent() { std::fs::create_dir_all(parent)?; }
+        if let Some(parent) = to.parent() { fdl_core::vfs::create_dir_all(parent)?; }
         if crate::store::export_path_in(root, &src.to_string_lossy()).ok_or_else(|| anyhow::anyhow!("Asset outside library"))
             .and_then(|p| crate::store::read_bounded(&p, crate::store::EXPORT_FILE_LIMIT))
-            .and_then(|bytes| Ok(std::fs::write(&to, bytes)?)).is_err() { missing += 1; }
+            .and_then(|bytes| Ok(fdl_core::vfs::write(&to, bytes)?)).is_err() { missing += 1; }
     }
     Ok(missing)
 }
@@ -351,7 +366,7 @@ impl Workspace {
                 let mut p = path.into_os_string();
                 p.push(".pdf");
                 path = PathBuf::from(p);
-                if path.exists() {
+                if path.fs_exists() {
                     let msg = crate::localized_format!("已有同名文件：{}", "A file with this name already exists: {}", path.display());
                     let _ = this.update(cx, |w, cx| w.show_toast_kind(ToastKind::Error, &msg, cx));
                     return;
@@ -359,9 +374,9 @@ impl Workspace {
             }
             let _ = this.update(cx, |w, cx| w.show_toast_kind(ToastKind::Info, crate::settings::text("正在导出文档"), cx));
             let html = crate::html::to_html(&doc, &crate::html::Options { library_root: &library_root, sub_pages: &subs });
-            let _ = std::fs::remove_file(&path);
+            let _ = fdl_core::vfs::remove_file(&path);
             let res = printing::run(html, name, Job::Pdf(path.clone()), view, cx).await;
-            let ok = matches!(res, Ok(true)) && path.is_file();
+            let ok = matches!(res, Ok(true)) && path.fs_is_file();
             let _ = this.update(cx, |w, cx| {
                 if ok {
                     w.toast = None;
@@ -398,7 +413,7 @@ impl Workspace {
                 else { workspace.show_toast_kind(ToastKind::Error,result.as_ref().err().map(String::as_str)
                     .unwrap_or_else(|| crate::settings::text("导出失败，请重试")),cx); }
             });
-            if !ok || updated.is_err() { let _ = std::fs::remove_dir_all(folder); }
+            if !ok || updated.is_err() { let _ = fdl_core::vfs::remove_dir_all(folder); }
         }).detach();
     }
 
@@ -463,6 +478,7 @@ impl Workspace {
                     _ if crate::local_files::is_markdown_path(p) => import_markdown(&mut writer, p, None, parent.as_deref()),
                     e if MARKDOWN_EXTS.contains(&e) => markdown_document(p).map_err(anyhow::Error::from).and_then(|doc| writer.create_from_in(&doc, parent.as_deref())),
                     "xml" => writer.import_into(p, parent.as_deref()),
+                    "csv" | "tsv" if crate::DATATABLE => import_csv(&mut writer, p, parent.as_deref()),
                     _ => Err(anyhow::anyhow!("文件格式不支持")),
                 };
                 match made { Ok(id) => last = Some(id), Err(_) => failed = true }
@@ -499,6 +515,7 @@ impl Workspace {
             ImportKind::Markdown => (false, &["md", "markdown", "mdown"]),
             ImportKind::Folder => (true, &[]),
             ImportKind::DocxXml => (false, &["xml"]),
+            ImportKind::Csv => (false, &["csv", "tsv"]),
         };
         let options = PathPromptOptions {
             files: !folders, directories: folders, multiple: !folders, prompt: Some(crate::settings::text("导入").into()),
@@ -527,12 +544,13 @@ impl Workspace {
             let parent = parent.clone();
             row(id, glyph, label).on_click(cx.listener(move |w, _, window, cx| w.open_import_kind(kind, parent.clone(), window, cx)))
         };
-        Some(deferred(anchored().anchor(Corner::TopRight).position(pos).snap_to_window_with_margin(px(8.)).child(
-            crate::ui::popover().id("import-items").occlude().w(px(210.)).py(px(crate::ui::MENU_PAD_Y))
+        Some(deferred(anchored().anchor(Anchor::TopRight).position(pos).snap_to_window_with_margin(px(8.)).child(
+            crate::ui::popover().id("import-items").occlude().min_w(px(210.)).py(px(crate::ui::MENU_PAD_Y))
                 .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.import_menu = None; cx.notify(); }))
                 .child(item("import-md", "doc-md", crate::settings::tr("导入 Markdown 文件…", "Import Markdown Files…"), ImportKind::Markdown))
                 .child(item("import-folder", "folder", crate::settings::tr("导入文件夹…", "Import Folder…"), ImportKind::Folder))
-                .child(item("import-xml", "doc", crate::settings::tr("导入 DocxXML…", "Import DocxXML…"), ImportKind::DocxXml)),
+                .child(item("import-xml", "doc", crate::settings::tr("导入 DocxXML…", "Import DocxXML…"), ImportKind::DocxXml))
+                .when(crate::DATATABLE, |d| d.child(item("import-csv", "datatable", crate::settings::tr("从 CSV 新建数据表…", "New Data Table from CSV…"), ImportKind::Csv))),
         )).with_priority(3).into_any_element())
     }
 
@@ -543,7 +561,7 @@ impl Workspace {
         let label = if cfg!(target_os = "macos") { crate::settings::tr("在访达中打开", "Open in Finder") }
             else if cfg!(target_os = "windows") { crate::settings::tr("在文件资源管理器中打开", "Open in File Explorer") }
             else { crate::settings::tr("在文件管理器中打开", "Open in File Manager") };
-        Some(deferred(anchored().anchor(Corner::TopRight).position(pos).snap_to_window_with_margin(px(8.)).child(
+        Some(deferred(anchored().anchor(Anchor::TopRight).position(pos).snap_to_window_with_margin(px(8.)).child(
             crate::ui::popover().id("place-items").occlude().w(px(210.)).py(px(crate::ui::MENU_PAD_Y))
                 .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.place_menu = None; cx.notify(); }))
                 .child(crate::ui::menu_row("place-open", SharedString::from("place-open")).child(crate::ui::icon("folder", 16., Theme::icon())).child(label)
@@ -753,10 +771,10 @@ impl Workspace {
         use crate::model::*;
         let root = crate::store::Store::root_dir();
         assert!(std::env::var_os("FDL_SCRIPT").is_some() && std::env::var_os("QUIET_MD_HOME").is_some());
-        std::fs::create_dir_all(root.join("assets")).unwrap();
-        std::fs::write(root.join("assets/report.pdf"), b"attachment-content").unwrap();
+        fdl_core::vfs::create_dir_all(root.join("assets")).unwrap();
+        fdl_core::vfs::write(root.join("assets/report.pdf"), b"attachment-content").unwrap();
         let outside = root.parent().unwrap().join("outside-private.txt");
-        std::fs::write(&outside, b"PRIVATE-MUST-NOT-EXPORT").unwrap();
+        fdl_core::vfs::write(&outside, b"PRIVATE-MUST-NOT-EXPORT").unwrap();
         let file = FileBlock { src_kind: "path".into(), src: "assets/report.pdf".into(), name: "Report".into(), view: FileView::Card };
         let mut text = RichText::plain("Attachment: ");
         text.push("\u{fffc}", Marks { inline: Some(crate::docxml::to_inline(InlineKind::File(file))), ..Default::default() });
@@ -783,11 +801,36 @@ mod tests {
     use super::{BlockKind, markdown_document, percent_decode};
 
     #[test]
+    fn importing_many_small_notes_preserves_the_tree() {
+        let tmp = fdl_core::vfs::temp_dir().join(format!("quiet-many-notes-{}", uuid::Uuid::new_v4()));
+        let source = tmp.join("input");
+        for n in 0..600 {
+            let dir = source.join(format!("dir-{}", n % 253));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("note-{n}.md")), format!("body {n}")).unwrap();
+        }
+        let mut store = crate::store::Store::open_at(tmp.join("library")).unwrap();
+        let tree = super::scan_folder(&source, 0).unwrap();
+        let mut failed = 0;
+        store.batch(|s| super::import_tree(s, &tree, None, &mut failed)).unwrap().unwrap();
+        assert_eq!(failed, 0);
+        let entries = store.list();
+        for n in 0..600 {
+            let title = format!("note-{n}");
+            let entry = entries.iter().find(|e| e.title == title).unwrap();
+            let path = store.file_path(&entry.id).unwrap();
+            assert!(path.ends_with(std::path::Path::new(&format!("dir-{}", n % 253)).join(format!("{title}.md"))));
+            assert_eq!(std::fs::read_to_string(path).unwrap().trim(), format!("body {n}"));
+        }
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
     fn imports_markdown_file() {
-        let dir = std::env::temp_dir().join(format!("fdl-import-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = fdl_core::vfs::temp_dir().join(format!("fdl-import-{}", fdl_core::vfs::process_id()));
+        fdl_core::vfs::create_dir_all(&dir).unwrap();
         let path = dir.join("周报.md");
-        std::fs::write(&path, "\u{feff}# 周报\n\n第一段\n\n- a\n- b\n\n![图](https://e.com/a.png)\n\n## 小结\n").unwrap();
+        fdl_core::vfs::write(&path, "\u{feff}# 周报\n\n第一段\n\n- a\n- b\n\n![图](https://e.com/a.png)\n\n## 小结\n").unwrap();
         let doc = markdown_document(&path).unwrap();
         assert_eq!(doc.title.text, "周报");
         let kinds: Vec<_> = doc.blocks.iter().map(|b| std::mem::discriminant(&b.kind)).collect();
@@ -797,6 +840,6 @@ mod tests {
         assert!(matches!(&doc.blocks[3].kind, BlockKind::Image { src, .. } if src == "https://e.com/a.png"));
         assert!(matches!(doc.blocks[4].kind, BlockKind::Heading { level: 2, .. }));
         assert_eq!(percent_decode("a%20b%E5%9B%BE.png"), "a b图.png");
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = fdl_core::vfs::remove_dir_all(dir);
     }
 }

@@ -2,12 +2,13 @@ use super::*;
 
 impl Store {
     /// Independent handle for background tree writes; begin_write reloads under the library lock.
+    /// It takes the parsed documents along, so its `list` reads only files that changed.
     pub fn tree_writer(&self) -> Self {
         Self {
             #[cfg(feature = "sqlite-store")]
             sqlite: self.sqlite.clone(),
-            file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: self.trash.clone(), flat: self.flat,
-            loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), warnings: vec![], migrated: None, batch: Default::default() }
+            file_changes: vec![], root: self.root.clone(), index: self.index.clone(), foreign: self.foreign.clone(), trash: self.trash.clone(), flat: self.flat,
+            loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), warnings: vec![], migrated: None, batch: Default::default(), view: Default::default() }
     }
 
     pub fn take_warnings(&mut self) -> Vec<String> { std::mem::take(&mut self.warnings) }
@@ -39,6 +40,7 @@ impl Store {
     }
 
     pub fn create_folder(&mut self, title: &str, parent: Option<&str>) -> Result<String> {
+        if let Some(p) = parent.filter(|p| self.is_mounted(p)) { return self.create_folder_in_mount(p, title); }
         let _lock = self.begin_write()?;
         self.validate_folder(None, parent)?;
         let id = uuid::Uuid::new_v4().to_string();
@@ -52,10 +54,10 @@ impl Store {
         // A folder is a folder on disk, named after its title.
         let dir = parent.and_then(|p| self.index.get(p)).map(|m| m.rel.clone()).unwrap_or_default();
         let rel = join_rel(&dir, &self.free_name(&dir, &file_name_for(title), None, None));
-        std::fs::create_dir_all(self.abs(&rel))?;
+        crate::vfs::create_dir_all(self.abs(&rel))?;
         self.index.insert(id.clone(), Meta { folder: Some(String::new()), rel: rel.clone(), created: t, modified: t, ..Default::default() });
         derive_tree(&mut self.index);
-        if let Err(e) = self.save_index() { self.index.remove(&id); let _ = std::fs::remove_dir(self.abs(&rel)); return Err(e); }
+        if let Err(e) = self.save_index() { self.index.remove(&id); let _ = crate::vfs::remove_dir(self.abs(&rel)); return Err(e); }
         self.record_file_change(&id, None);
         Ok(id)
     }
@@ -89,6 +91,12 @@ impl Store {
 
     /// Persist one drop atomically; neither document content nor timestamps change.
     pub fn move_in_tree(&mut self, id: &str, parent: Option<&str>, before: Option<&str>) -> Result<()> {
+        // 本机文件夹: moves stay among them, on disk.
+        match (self.is_mounted(id), parent.is_some_and(|p| self.is_mounted(p))) {
+            (true, true) => return self.move_in_mount(id, parent.unwrap()),
+            (false, false) => {}
+            _ => anyhow::bail!("本机文件夹和文档库之间只能复制，不能移动"),
+        }
         let _lock = self.begin_write()?;
         anyhow::ensure!(self.index_has(id), "文档或文件夹不存在");
         anyhow::ensure!(self.index[id].share_root.as_deref().is_none_or(|root| root == id),
@@ -98,7 +106,10 @@ impl Store {
             anyhow::ensure!(self.index.get(anchor).is_some_and(|m| m.parent.as_deref() == parent) && self.index_has(anchor), "目标位置已改变，请重试");
             if anchor == id { return Ok(()); }
         }
-        let mut siblings: Vec<String> = self.index.iter().filter(|(k, m)| m.parent.as_deref() == parent && self.index_has(k)).map(|(k, _)| k.clone()).collect();
+        // Siblings straight from the index: a disk check per entry made an
+        // import of N files walk the whole library N times (#216); entries
+        // whose file vanished stay unlisted in `list` either way.
+        let mut siblings: Vec<String> = self.index.iter().filter(|(_, m)| m.parent.as_deref() == parent).map(|(k, _)| k.clone()).collect();
         // The sidebar's order (`Meta::place`, ties by id), so the numbers written
         // here match the order the drop was made in.
         siblings.sort_by(|ka, kb| (self.index[ka].place(), ka).cmp(&(self.index[kb].place(), kb)));

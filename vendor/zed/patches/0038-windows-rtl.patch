@@ -1,0 +1,131 @@
+DirectWrite lists a right-to-left run's glyphs in reading order and advances them leftwards from the run's right edge; place them left to right and return them in visual order as CoreText does. Lines that open with a right-to-left letter get a right-to-left reading direction (with a finite width and no wrapping, so run origins stay in the line), so neutral characters and embedded Latin words sit where macOS puts them. Laid left to right in reading order, Arabic letters were reversed and their joining forms fell apart.
+
+diff --git a/crates/gpui_windows/src/direct_write.rs b/crates/gpui_windows/src/direct_write.rs
+index d7037da57e4c5a993c60dfd2ed2f1679003f2d5c..13379933e86d681088b019101f51a14c448849a5 100644
+--- a/crates/gpui_windows/src/direct_write.rs
++++ b/crates/gpui_windows/src/direct_write.rs
+@@ -591,6 +591,20 @@ impl DirectWriteState {
+                 break_ligatures = !break_ligatures;
+             }
+ 
++            // quiet.md: a line that opens with a right-to-left letter reads right
++            // to left, so neutral characters and embedded left-to-right words
++            // take their places as on macOS (CoreText picks the paragraph
++            // direction from the text). A finite width keeps the run origins
++            // DirectWrite reports within the line.
++            let rtl_paragraph = text.chars().find(|c| c.is_alphabetic()).is_some_and(is_rtl_char);
++            if rtl_paragraph {
++                let mut metrics = DWRITE_TEXT_METRICS::default();
++                text_layout.GetMetrics(&mut metrics)?;
++                text_layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
++                text_layout.SetReadingDirection(DWRITE_READING_DIRECTION_RIGHT_TO_LEFT)?;
++                text_layout.SetMaxWidth(metrics.widthIncludingTrailingWhitespace)?;
++            }
++
+             let mut runs = Vec::new();
+             let mut renderer_context = RendererContext {
+                 text_system: self,
+@@ -599,6 +613,7 @@ impl DirectWriteState {
+                 runs: &mut runs,
+                 layout: &text_layout,
+                 width: 0.0,
++                rtl_paragraph,
+             };
+             text_layout.Draw(
+                 Some((&raw mut renderer_context).cast::<c_void>().cast_const()),
+@@ -607,6 +622,13 @@ impl DirectWriteState {
+                 0.0,
+             )?;
+             let width = px(renderer_context.width);
++            if rtl_paragraph {
++                // quiet.md: runs left to right, as CoreText returns them.
++                runs.sort_by(|a, b| {
++                    let x = |r: &ShapedRun| r.glyphs.first().map_or(0., |g| g.position.x.as_f32());
++                    x(a).total_cmp(&x(b))
++                });
++            }
+ 
+             Ok(LineLayout {
+                 font_size,
+@@ -1211,6 +1233,14 @@ struct RendererContext<'t, 'a, 'b> {
+     runs: &'b mut Vec<ShapedRun>,
+     layout: &'b IDWriteTextLayout,
+     width: f32,
++    /// quiet.md: the line reads right to left; run origins come from DirectWrite.
++    rtl_paragraph: bool,
++}
++
++/// quiet.md: characters of right-to-left scripts (Hebrew, Arabic, Syriac,
++/// Thaana, N'Ko and their presentation forms), as in `gpui::line_layout`.
++fn is_rtl_char(c: char) -> bool {
++    matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF)
+ }
+ 
+ #[derive(Debug)]
+@@ -1309,7 +1339,7 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
+     fn DrawGlyphRun(
+         &self,
+         clientdrawingcontext: *const ::core::ffi::c_void,
+-        _baselineoriginx: f32,
++        baselineoriginx: f32,
+         _baselineoriginy: f32,
+         _measuringmode: DWRITE_MEASURING_MODE,
+         glyphrun: *const DWRITE_GLYPH_RUN,
+@@ -1439,6 +1469,17 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
+                 )?
+             };
+ 
++            // quiet.md: a right-to-left run lists its glyphs in reading order and
++            // advances leftwards from its origin (its right edge); offsets
++            // point the reading way too. Place them left to right instead.
++            let rtl_run = glyphrun.bidiLevel % 2 == 1;
++            let run_width: f32 = glyph_advances.iter().sum();
++            let run_left = match (context.rtl_paragraph, rtl_run) {
++                (false, _) => context.width,
++                (true, false) => baselineoriginx,
++                (true, true) => baselineoriginx - run_width,
++            };
++            let mut pen = if rtl_run { run_left + run_width } else { run_left };
+             let cluster_analyzer = ClusterAnalyzer::new(cluster_map, glyph_count);
+             let mut utf16_idx = desc.textPosition as usize;
+             let mut glyph_idx = 0;
+@@ -1455,19 +1496,37 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
+                     let is_emoji =
+                         color_font && is_color_glyph(font_face, id, &context.components.factory);
+                     let this_glyph_idx = glyph_idx + cluster_glyph_idx;
++                    let offset = glyph_offsets[this_glyph_idx].advanceOffset;
++                    let x = if rtl_run {
++                        pen -= glyph_advances[this_glyph_idx];
++                        pen - offset
++                    } else {
++                        let x = pen + offset;
++                        pen += glyph_advances[this_glyph_idx];
++                        x
++                    };
+                     glyphs.push(ShapedGlyph {
+                         id,
+                         position: point(
+-                            px(context.width + glyph_offsets[this_glyph_idx].advanceOffset),
++                            px(x),
+                             px(-glyph_offsets[this_glyph_idx].ascenderOffset),
+                         ),
+                         index: context.index_converter.utf8_ix,
+                         is_emoji,
+                     });
+-                    context.width += glyph_advances[this_glyph_idx];
+                 }
+                 glyph_idx += cluster_glyph_count;
+             }
++            if rtl_run {
++                glyphs.reverse();
++            }
++            context.width = if context.rtl_paragraph {
++                context.width.max(run_left + run_width)
++            } else if rtl_run {
++                context.width + run_width
++            } else {
++                pen
++            };
+             context.runs.push(ShapedRun { font_id, glyphs });
+         }
+         Ok(())

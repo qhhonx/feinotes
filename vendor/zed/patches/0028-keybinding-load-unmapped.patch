@@ -1,0 +1,42 @@
+quiet.md: KeyBinding::load_unmapped
+
+Upstream's KeyBinding::load takes an &App and maps keystrokes through the
+platform keyboard mapper, which on Windows rewrites them even without key
+equivalents. The app builds its Windows and Linux bindings, and the user's
+own shortcuts, from strings at startup and wants them parsed as written, as
+GPUI 0.2's load with a DummyKeyboardMapper did: add load_unmapped(keys,
+action, predicate, action_input, os).
+
+diff --git a/crates/gpui/src/keymap/binding.rs b/crates/gpui/src/keymap/binding.rs
+index 1ca888b67bc592a742e6ab684e319872c91de420..c4f4503b361e79f145fdaff3f1f631a9e0f59a81 100644
+--- a/crates/gpui/src/keymap/binding.rs
++++ b/crates/gpui/src/keymap/binding.rs
+@@ -67,6 +67,28 @@ impl KeyBinding {
+         )
+     }
+ 
++    /// quiet.md: like [`Self::load`] without an `App`: keystrokes are parsed
++    /// for `os` and not mapped to the keyboard layout (GPUI 0.2's `load` with
++    /// a `DummyKeyboardMapper`, which the app's Windows and Linux key
++    /// bindings and the user's shortcuts were built with).
++    pub fn load_unmapped(
++        keystrokes: &str,
++        action: Box<dyn Action>,
++        context_predicate: Option<Rc<KeyBindingContextPredicate>>,
++        action_input: Option<SharedString>,
++        os: crate::OperatingSystem,
++    ) -> std::result::Result<Self, InvalidKeystrokeError> {
++        Self::load_internal(
++            keystrokes,
++            action,
++            context_predicate,
++            false,
++            action_input,
++            &DummyKeyboardMapper,
++            |source| Keystroke::parse_with_os(source, os),
++        )
++    }
++
+     fn load_internal<'a>(
+         keystrokes: &'a str,
+         action: Box<dyn Action>,

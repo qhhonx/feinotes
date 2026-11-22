@@ -1,0 +1,58 @@
+quiet.md #14: tell same-named fallback faces apart by glyph count
+
+CoreText's fallback copy of PingFang SC (PingFangUI.ttc) and the PingFang SC
+family in PingFang.ttc share the PostScript name PingFangSC-Regular but not
+their glyph tables. id_for_native_font looked the fallback face up by name,
+found the other copy, and Chinese text in the editor was drawn with the wrong
+glyphs. Keep every face under its name and pick the one with the same glyph
+count. The app checks this in editor::text::tests.
+
+diff --git a/crates/gpui_apple/src/text_system.rs b/crates/gpui_apple/src/text_system.rs
+index 9eee3e5e1a22de4a7496d106415e35fb1d802013..36cbf9291af2ef06bee2a026c790832d28987bd5 100644
+--- a/crates/gpui_apple/src/text_system.rs
++++ b/crates/gpui_apple/src/text_system.rs
+@@ -72,7 +72,10 @@ struct AppleTextSystemState {
+     system_source: SystemSource,
+     fonts: Vec<FontKitFont>,
+     font_selections: HashMap<Font, FontId>,
+-    font_ids_by_postscript_name: HashMap<String, FontId>,
++    /// quiet.md: several faces can share a PostScript name with different
++    /// glyph tables (CoreText's fallback copy of PingFang SC vs. the family
++    /// in PingFang.ttc), so keep them all and tell them apart by glyph count.
++    font_ids_by_postscript_name: HashMap<String, SmallVec<[FontId; 2]>>,
+     font_ids_by_font_key: HashMap<FontKey, SmallVec<[FontId; 4]>>,
+     postscript_names_by_font_id: HashMap<FontId, String>,
+ }
+@@ -383,7 +386,9 @@ impl AppleTextSystemState {
+             let font_id = FontId(self.fonts.len());
+             font_ids.push(font_id);
+             self.font_ids_by_postscript_name
+-                .insert(postscript_name.clone(), font_id);
++                .entry(postscript_name.clone())
++                .or_default()
++                .push(font_id);
+             self.postscript_names_by_font_id
+                 .insert(font_id, postscript_name);
+             self.fonts.push(font);
+@@ -403,12 +408,19 @@ impl AppleTextSystemState {
+ 
+     fn id_for_native_font(&mut self, requested_font: CTFont) -> FontId {
+         let postscript_name = requested_font.postscript_name();
+-        if let Some(font_id) = self.font_ids_by_postscript_name.get(&postscript_name) {
++        let glyph_count = requested_font.glyph_count() as u32;
++        if let Some(font_id) = self
++            .font_ids_by_postscript_name
++            .get(&postscript_name)
++            .and_then(|ids| ids.iter().find(|id| self.fonts[id.0].glyph_count() == glyph_count))
++        {
+             *font_id
+         } else {
+             let font_id = FontId(self.fonts.len());
+             self.font_ids_by_postscript_name
+-                .insert(postscript_name.clone(), font_id);
++                .entry(postscript_name.clone())
++                .or_default()
++                .push(font_id);
+             self.postscript_names_by_font_id
+                 .insert(font_id, postscript_name);
+             self.fonts

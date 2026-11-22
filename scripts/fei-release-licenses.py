@@ -41,6 +41,10 @@ def package_notices(package, supplemental):
     files = {p for p in root.iterdir() if p.is_file() and NOTICE_FILE.match(p.name)}
     if package["license_file"]:
         files.add(root / package["license_file"])
+    # The generated Zed manifests share the snapshot's Apache notice.
+    snapshot = REPO / "vendor/zed"
+    if package["source"] is None and snapshot in root.parents and package["license"] == "Apache-2.0":
+        files.add(snapshot / "LICENSE-APACHE")
     notices = [(p.name, p.read_text(encoding="utf-8-sig")) for p in sorted(files)]
     component = f"{package['name']}@{package['version']}"
     for notice in supplemental["components"].get(component, []):

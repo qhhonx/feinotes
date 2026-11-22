@@ -1,0 +1,23 @@
+quiet.md #3: load KaTeX symbol fonts without an "m" glyph
+
+KaTeX's symbol faces (Size1-4, AMS, Caligraphic, Script) have no lowercase
+letters and were refused by the "has an m" check, so formulas fell back to
+other fonts.
+
+diff --git a/crates/gpui_apple/src/text_system.rs b/crates/gpui_apple/src/text_system.rs
+index 63dd0fc62fb3dd21c87826842e9eb2c137c9f01f..9eee3e5e1a22de4a7496d106415e35fb1d802013 100644
+--- a/crates/gpui_apple/src/text_system.rs
++++ b/crates/gpui_apple/src/text_system.rs
+@@ -311,8 +311,11 @@ impl AppleTextSystemState {
+                 // but we need to be able to load it for rendering Windows icons in
+                 // the Storybook (on macOS).
+                 let is_segoe_fluent_icons = font.full_name() == "Segoe Fluent Icons";
++                // quiet.md: KaTeX's symbol faces (Size1-4, AMS, Caligraphic,
++                // Script) have no lowercase letters.
++                let is_katex = font.full_name().starts_with("KaTeX_");
+ 
+-                if !has_m_glyph && !is_segoe_fluent_icons {
++                if !has_m_glyph && !is_segoe_fluent_icons && !is_katex {
+                     // I spent far too long trying to track down why a font missing the 'm'
+                     // character wasn't loading. This log statement will hopefully save
+                     // someone else from suffering the same fate.

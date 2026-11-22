@@ -1,10 +1,9 @@
 //! The vello_cpu backend of the board's display list (docs/design/whiteboard-
 //! excalidraw.md, 渲染方案 2; every platform alike): the visible elements are
-//! drawn by vello_cpu (multithreaded) into a pixmap, copied as BGRA into one
-//! of three `PixelFrame`s (in turn, so the GPU never reads a frame being
-//! written) and shown with `Window::paint_pixels`, an image sprite whose atlas
-//! tile is written over in place (vendor/PATCHES.md #36). `render.rs` picks it
-//! above a number of visible elements; overlay and chrome stay GPUI.
+//! drawn by vello_cpu (multithreaded) straight into a BGRA buffer and shown
+//! as a new GPUI image each time the picture changes; the buffer comes back
+//! from the atlas two frames later and is drawn into again. `render.rs` picks
+//! it above a number of visible elements; overlay and chrome stay GPUI.
 //!
 //! Same geometry and colors as the GPUI backend: paths from `display.rs`
 //! (kurbo, cached per element version in `Cached::vello`), colors through
@@ -21,7 +20,7 @@ use super::geom::{Pt, Src};
 use crate::board::shape::PathCmd;
 use crate::board::types::TextAlign;
 use super::{Cached, VText, runs};
-use gpui::{Bounds, FontId, GlyphId, Hsla, ImageId, PixelFrame, Pixels, Window, px};
+use gpui::{Bounds, Corners, FontId, GlyphId, Hsla, Pixels, RenderImage, Window, px};
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,12 +34,13 @@ pub type Paths = Vec<BezPath>;
 
 pub struct Vello {
     ctx: RenderContext,
-    pixmap: Pixmap,
     res: Resources,
-    bufs: Vec<PixelFrame>,
-    next: usize,
-    /// Frames of an earlier size, their atlas tiles freed at the next `show`.
-    stale: Vec<ImageId>,
+    /// The last rendered frame, BGRA (GPUI's image layout), drawn 1:1.
+    frame: Option<Arc<RenderImage>>,
+    /// Frames shown before, their atlas tiles freed at the next `show`.
+    stale: Vec<Arc<RenderImage>>,
+    /// A shown frame's pixels, back from the atlas, for the next frame.
+    spare: Vec<u8>,
     size: (u16, u16),
     /// Scene → device pixels of the canvas, and its zoom.
     view: Affine,
@@ -50,10 +50,6 @@ pub struct Vello {
     upem: FxHashMap<FontId, f64>,
     /// Premultiplied image pixels by file id, with the cap they were decoded at.
     images: HashMap<String, (u32, Option<Arc<Pixmap>>)>,
-}
-
-fn pixel_frame(w: u16, h: u16) -> PixelFrame {
-    PixelFrame { id: ImageId::next(), width: w as u32, height: h as u32, generation: 0, bgra: vec![0; w as usize * h as usize * 4] }
 }
 
 fn rgba(h: Hsla) -> AlphaColor<Srgb> { let c = gpui::Rgba::from(h); AlphaColor::new([c.r, c.g, c.b, c.a]) }
@@ -89,7 +85,7 @@ fn poly_path(poly: &[Pt]) -> BezPath {
 
 impl Vello {
     pub fn new() -> Self {
-        Vello { ctx: RenderContext::new(1, 1), pixmap: Pixmap::new(1, 1), res: Resources::new(), bufs: vec![], next: 0, stale: vec![], size: (0, 0), view: Affine::IDENTITY, zoom: 1.,
+        Vello { ctx: RenderContext::new(1, 1), res: Resources::new(), frame: None, stale: vec![], spare: vec![], size: (0, 0), view: Affine::IDENTITY, zoom: 1.,
             glyphs: FxHashMap::default(), upem: FxHashMap::default(), images: HashMap::new() }
     }
 
@@ -100,9 +96,6 @@ impl Vello {
         if self.size != (w, h) {
             self.size = (w, h);
             self.ctx = RenderContext::new(w, h);
-            self.pixmap = Pixmap::new(w, h);
-            self.stale.extend(self.bufs.iter().map(|b| b.id));
-            self.bufs = (0..3).map(|_| pixel_frame(w, h)).collect();
         } else {
             self.ctx.reset();
         }
@@ -219,23 +212,35 @@ impl Vello {
         for _ in 0..layers { ctx.pop_layer(); }
     }
 
-    /// Renders the frame into the next pixel frame.
+    /// Renders the frame into a new image: vello_cpu draws straight into
+    /// the buffer of a frame shown before (back from the atlas), RGBA
+    /// premultiplied (the canvas is opaque), swapped to BGRA in place.
     pub fn render(&mut self) {
         self.ctx.flush();
-        self.ctx.render(&mut self.pixmap, &mut self.res);
-        if self.bufs.is_empty() { return; }
-        self.next = (self.next + 1) % self.bufs.len();
-        let buf = &mut self.bufs[self.next];
-        // RGBA (premultiplied; the canvas is opaque) → BGRA
-        let src = self.pixmap.data_as_u8_slice();
-        for (d, s) in buf.bgra.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0) { *d = [s[2], s[1], s[0], s[3]]; }
-        buf.generation += 1;
+        let (w, h) = self.size;
+        let mut buf = std::mem::take(&mut self.spare);
+        buf.resize(w as usize * h as usize * 4, 0);
+        let Some(target) = vello_cpu::PixmapMut::new(w, h, &mut buf) else { return };
+        self.ctx.render(target, &mut self.res);
+        for p in buf.as_chunks_mut::<4>().0 { let v = u32::from_le_bytes(*p); *p = (v & 0xff00_ff00 | (v >> 16 & 0xff) | (v & 0xff) << 16).to_le_bytes(); }
+        let Some(img) = image::RgbaImage::from_raw(w as u32, h as u32, buf) else { return };
+        if let Some(old) = self.frame.replace(Arc::new(RenderImage::new(vec![image::Frame::new(img)]))) { self.stale.push(old); }
     }
 
     /// Paints the last rendered frame at `bounds` (the canvas).
     pub fn show(&mut self, bounds: Bounds<Pixels>, window: &mut Window) {
-        for id in self.stale.drain(..) { window.drop_pixels(id); }
-        if let Some(buf) = self.bufs.get(self.next) { let _ = window.paint_pixels(bounds.origin, buf); }
+        for old in self.stale.drain(..) {
+            let _ = window.drop_image(old.clone());
+            #[cfg(not(target_os = "ios"))]
+            if let Some(f) = Arc::into_inner(old).and_then(|i| i.into_frames().into_iter().next()) { self.spare = f.into_buffer().into_raw(); }
+        }
+        if let Some(frame) = &self.frame {
+            // device pixels to logical, so the frame lands 1:1
+            let sf = window.scale_factor();
+            let size = gpui::size(px(self.size.0 as f32 / sf), px(self.size.1 as f32 / sf));
+            let at = Bounds::new(bounds.origin, size);
+            let _ = window.paint_image(at, at, Corners::default(), frame.clone(), 0, false);
+        }
     }
 
 }

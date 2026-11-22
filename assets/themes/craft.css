@@ -1,8 +1,8 @@
 /*
- * quiet.md 文档主题：Craft
+ * Quiet.md document theme: Craft
  *
- * 每个属性都写着当前的值。改完保存，应用里立即生效。
- * 选择器与属性的说明见 docs/THEMES.md。
+ * Each property shows its current value. Save edits to see them immediately.
+ * See docs/THEMES.md for selectors and properties.
  */
 
 :root {
@@ -10,10 +10,10 @@
   --theme-name-en: "Craft";
   --theme-author: "quiet.md";
   --theme-description: "Craft for macOS 的文档样式：SF Pro 15 / 22，虚点分隔线，蓝色强调。";
-  /* 块的画法：craft 或 feishu */
+  /* Block rendering style: craft or feishu */
   --theme-base: craft;
 
-  /* 文字颜色 */
+  /* Text colors */
   --color-gray: #868b90;
   --color-red: #cb0424;
   --color-orange: #d97c00;
@@ -22,7 +22,7 @@
   --color-blue: #003fa1;
   --color-purple: #4a00d9;
 
-  /* 文字高亮 */
+  /* Text highlights */
   --highlight-light-gray: #b8c0c559;
   --highlight-light-red: #ff989859;
   --highlight-light-orange: #ffb86a59;
@@ -39,7 +39,7 @@
   --highlight-blue: #72c2ffa6;
   --highlight-purple: #c49bffa6;
 
-  /* 块背景 */
+  /* Block backgrounds */
   --background-light-gray: #f8f8f9;
   --background-light-red: #feecef;
   --background-light-orange: #fff7ec;
@@ -56,7 +56,7 @@
   --background-medium-blue: #d9e4f5;
   --background-medium-purple: #e6d9ff;
 
-  /* 高亮块底色 */
+  /* Callout fills */
   --callout-light-gray: #f8f8f9;
   --callout-light-red: #feecef;
   --callout-light-orange: #fff7ec;
@@ -73,7 +73,7 @@
   --callout-medium-blue: #d9e4f5;
   --callout-medium-purple: #e6d9ff;
 
-  /* 高亮块边框 */
+  /* Callout borders */
   --border-gray: #e0e0e0;
   --border-red: #ffc9c9;
   --border-orange: #ffd6a8;
@@ -82,7 +82,7 @@
   --border-blue: #bedbff;
   --border-purple: #ddd6ff;
 
-  /* 其它界面细节（文档内的选中、悬停、表格工具等） */
+  /* Other document UI details (selection, hover, table tools, etc.) */
   --token-text-caption: #737477;
   --token-text-placeholder: #9c9fa0;
   --token-block-placeholder: #1f222540;

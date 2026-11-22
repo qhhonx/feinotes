@@ -51,7 +51,7 @@ pub fn open_document(document: Option<String>, cx: &mut App) {
     let display = previous.as_ref().and_then(|(_, d)| d.clone()).or_else(|| cx.primary_display());
     let mut bounds = Bounds::centered(display.as_ref().map(|d| d.id()), size(px(remembered[0].max(480.)), px(remembered[1].max(480.))), cx);
     if let Some(display) = display {
-        let screen = display.bounds();
+        let screen = display.visible_bounds();
         bounds.size.width = bounds.size.width.min(screen.size.width - px(32.));
         bounds.size.height = bounds.size.height.min(screen.size.height - px(64.));
         bounds.origin = screen.origin + point((screen.size.width - bounds.size.width) / 2., (screen.size.height - bounds.size.height) / 2.);
@@ -60,6 +60,8 @@ pub fn open_document(document: Option<String>, cx: &mut App) {
             if next.x + bounds.size.width <= screen.right() - px(8.) && next.y + bounds.size.height <= screen.bottom() - px(8.) { bounds.origin = next; }
         }
     }
+    // Whole points: see `main_window_options`.
+    bounds.origin = bounds.origin.map(|v| v.round());
     persist(cx);
     let result = cx.open_window(WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -72,6 +74,7 @@ pub fn open_document(document: Option<String>, cx: &mut App) {
             traffic_light_position: Some(point(px(20.), px(crate::app::HEADER_H / 2. - 7.))),
         }),
         window_min_size: Some(size(px(480.), px(480.))),
+        app_owns_titlebar_drag: true,
         ..Default::default()
     }, |window, cx| cx.new(|cx| crate::app::Workspace::new_document_window(document, window, cx)));
     match result {
@@ -105,7 +108,7 @@ mod hotkey {
         if release || repeated { return 0; }
         APP.with(|app| {
             if let Some(cx) = app.borrow().clone() {
-                cx.foreground_executor().clone().spawn(async move { let _ = cx.update(|cx| if id.id == 2 { super::open_last(cx) } else { super::open(cx) }); }).detach();
+                cx.foreground_executor().clone().spawn(async move { cx.update(|cx| if id.id == 2 { super::open_last(cx) } else { super::open(cx) }); }).detach();
             }
         });
         0
@@ -156,23 +159,56 @@ pub fn register(cx: &mut App) -> bool {
 }
 
 /// Window sizes seen this session (quick note and main), saved on quit.
-#[derive(Clone, Copy, Default)]
-struct Sizes { quick: Option<[f32; 2]>, main: Option<[f32; 2]> }
+#[derive(Clone, Default)]
+struct Sizes { quick: Option<[f32; 2]>, main: Option<[f32; 2]>, main_pos: Option<([f32; 2], Option<String>)> }
 impl Global for Sizes {}
 pub fn remember(window: &Window, quick: bool, cx: &mut App) {
     if let WindowBounds::Windowed(bounds) = window.window_bounds() {
         let s = [f32::from(bounds.size.width), f32::from(bounds.size.height)];
-        let mut sizes = cx.try_global::<Sizes>().copied().unwrap_or_default();
-        if quick { sizes.quick = Some(s) } else { sizes.main = Some(s) }
+        let mut sizes = cx.try_global::<Sizes>().cloned().unwrap_or_default();
+        if quick { sizes.quick = Some(s) } else {
+            sizes.main = Some(s);
+            // The display's UUID: a `DisplayId` is only meaningful inside one
+            // run, so it cannot be the thing we write down.
+            let display = window.display(cx).and_then(|d| d.uuid().ok()).map(|u| u.to_string());
+            sizes.main_pos = Some(([f32::from(bounds.origin.x), f32::from(bounds.origin.y)], display));
+        }
         cx.set_global(sizes);
     }
 }
 pub fn persist(cx: &mut App) {
-    let (Some(sizes), Some(store)) = (cx.try_global::<Sizes>().copied(), cx.try_global::<crate::shared_store::SharedStore>()) else { return };
+    let (Some(sizes), Some(store)) = (cx.try_global::<Sizes>().cloned(), cx.try_global::<crate::shared_store::SharedStore>()) else { return };
     let mut settings = store.settings();
     if sizes.quick.is_some() { settings.quick_note_size = sizes.quick }
     if sizes.main.is_some() { settings.window_size = sizes.main }
+    if let Some((o, d)) = sizes.main_pos { settings.window_origin = Some(o); settings.window_display = d; }
     if let Err(e) = store.save_settings(&settings) { eprintln!("无法保存窗口尺寸：{e}"); }
+}
+
+/// The main window's frame, and the display whose corner it is measured from:
+/// the remembered spot clamped into that display's work area (clear of the menu
+/// bar and Dock), else centred in the primary display's (#253). Before there is
+/// a library there is nothing remembered, and the first window's size centres
+/// in the same area.
+pub fn main_window_bounds(cx: &App) -> (Option<DisplayId>, gpui::Bounds<Pixels>) {
+    let wanted = main_window_size(cx);
+    let saved = cx.try_global::<crate::shared_store::SharedStore>().map(|s| s.settings());
+    let display = saved.as_ref().and_then(|s| s.window_display.as_deref())
+        .and_then(|uuid| cx.displays().into_iter().find(|d| d.uuid().ok().is_some_and(|u| u.to_string() == uuid)))
+        .or_else(|| cx.primary_display());
+    let Some(display) = display else { return (None, gpui::Bounds { origin: point(px(0.), px(0.)), size: wanted }) };
+    let usable = display.visible_bounds();
+    let size = wanted.min(&usable.size);
+    let mut bounds = match saved.as_ref().and_then(|s| s.window_origin) {
+        Some(o) => gpui::Bounds { origin: point(px(o[0]), px(o[1])), size },
+        None => Bounds::centered_at(usable.center(), size),
+    };
+    // The Dock may sit somewhere else since the position was saved, or the
+    // display changed; pull the frame back inside the work area.
+    let clamp = |o: Pixels, low: Pixels, high: Pixels| px(f32::from(o).max(f32::from(low)).min(f32::from(high)));
+    bounds.origin.x = clamp(bounds.origin.x, usable.origin.x, usable.right() - bounds.size.width);
+    bounds.origin.y = clamp(bounds.origin.y, usable.origin.y, usable.bottom() - bounds.size.height);
+    (Some(display.id()), bounds)
 }
 
 /// The main window's size: last used, or 1280 × 800 (also before there is a library).
@@ -200,7 +236,7 @@ pub fn set_last_hotkey(combo: &str, cx: &mut App) -> anyhow::Result<()> { set(2,
 #[cfg(target_os = "macos")]
 fn set(id: u32, combo: &str, cx: &mut App) -> anyhow::Result<()> {
     if combo.is_empty() { let _ = hotkey::install(cx, id, 0, 0, ""); HOTKEY_ERROR.lock().unwrap()[id as usize - 1] = None; return Ok(()); }
-    let key = Keystroke::parse(combo)?;
+    let key = crate::shortcuts::parse_key(combo)?;
     let keys = [("a",0),("s",1),("d",2),("f",3),("h",4),("g",5),("z",6),("x",7),("c",8),("v",9),("b",11),("q",12),("w",13),("e",14),("r",15),("y",16),("t",17),("1",18),("2",19),("3",20),("4",21),("6",22),("5",23),("9",25),("7",26),("8",28),("0",29),("o",31),("u",32),("i",34),("p",35),("l",37),("j",38),("k",40),("n",45),("m",46),("space",49)];
     let code = keys.iter().find(|(k,_)| *k == key.key).map(|(_,v)| *v).ok_or_else(|| anyhow::anyhow!(crate::settings::tr("全局快捷键请使用字母、数字或空格", "Use a letter, digit or Space for the global shortcut")))?;
     let m = key.modifiers;

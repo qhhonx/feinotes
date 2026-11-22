@@ -16,7 +16,7 @@ use super::consts::DEFAULT_COLLISION_THRESHOLD;
 use super::handles::has_bounding_box;
 use super::tools;
 use super::types::Element;
-use super::viewport::{Viewport, get_normalized_zoom, get_viewport_for_zoom};
+use super::viewport::{Viewport, get_normalized_zoom, get_viewport_for_zoom, zoom_by_pinch};
 use gpui::*;
 use rustc_hash::FxHashMap;
 
@@ -150,7 +150,7 @@ pub fn capture_layer(me: &BoardView, cx: &mut Context<BoardView>) -> Option<Div>
             if phase == DispatchPhase::Bubble { let _ = view.update(cx, |me, cx| moved(me, ev, window, cx)); }
         });
     }).absolute().size_full();
-    Some(div().absolute().inset_0().occlude().cursor(cursor(me)).on_scroll_wheel(cx.listener(wheel)).child(listen))
+    Some(div().absolute().inset_0().occlude().cursor(cursor(me)).on_scroll(cx.listener(wheel)).on_pinch(cx.listener(pinch)).child(listen))
 }
 
 /// Claim touches that start on the drawing surface. Chrome and text fields
@@ -196,7 +196,8 @@ fn touch_drag(me: &mut BoardView, ev: &TouchDragEvent, hitbox: &Hitbox, window: 
 }
 
 pub fn listeners(d: Stateful<Div>, cx: &mut Context<BoardView>) -> Stateful<Div> {
-    d.on_scroll_wheel(cx.listener(wheel))
+    d.on_scroll(cx.listener(wheel))
+        .on_pinch(cx.listener(pinch))
         .on_mouse_down(MouseButton::Left, cx.listener(down))
         .on_mouse_down(MouseButton::Middle, cx.listener(down))
         .on_mouse_down(MouseButton::Right, cx.listener(right_down))
@@ -227,7 +228,7 @@ pub fn listeners(d: Stateful<Div>, cx: &mut Context<BoardView>) -> Stateful<Div>
 }
 
 /// `handleWheel`: GPUI's deltas point the other way from the DOM's.
-fn wheel(me: &mut BoardView, ev: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<BoardView>) {
+fn wheel(me: &mut BoardView, ev: &ScrollEvent, _: &mut Window, cx: &mut Context<BoardView>) {
     let (dx, dy) = match ev.delta {
         ScrollDelta::Pixels(p) => (-f32::from(p.x) as f64, -f32::from(p.y) as f64),
         ScrollDelta::Lines(l) => (-l.x as f64 * 40., -l.y as f64 * 40.),
@@ -246,6 +247,13 @@ fn wheel(me: &mut BoardView, ev: &ScrollWheelEvent, _: &mut Window, cx: &mut Con
     }
     let (dx, dy) = if ev.modifiers.shift && dx == 0. { (dy, 0.) } else { (dx, dy) };
     me.set_viewport(Viewport { scroll_x: v.scroll_x - dx / v.zoom, scroll_y: v.scroll_y - dy / v.zoom, ..v }, cx);
+}
+
+/// A trackpad pinch (macOS magnify): zoom about the fingers. (Browsers turn
+/// it into a ⌘-wheel, which `wheel` handles; GPUI reports it on its own.)
+fn pinch(me: &mut BoardView, ev: &PinchEvent, _: &mut Window, cx: &mut Context<BoardView>) {
+    let next = zoom_by_pinch(f32::from(ev.position.x) as f64, f32::from(ev.position.y) as f64, ev.delta as f64, me.viewport(), me.canvas());
+    me.set_viewport(next, cx);
 }
 
 fn down(me: &mut BoardView, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<BoardView>) {

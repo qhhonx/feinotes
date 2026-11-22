@@ -10,12 +10,11 @@ impl Editor {
         self.changed_preserving_viewport(window,cx);
     }
 
-    pub(super) fn toggle_code_fold(&mut self, id: BlockId, cx: &mut Context<Self>) {
-        if !self.code_folded.remove(&id) {
-            self.code_folded.insert(id);
-            if self.core.sel.head.block == id || self.core.sel.anchor.block == id { self.core.select_block(id); }
+    pub(super) fn set_code_fold(&mut self, id: BlockId, folded: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.core.set_code_folded(id, folded) {
+            self.keep_read_only_fold();
+            self.changed_preserving_viewport(window, cx);
         }
-        cx.notify();
     }
 
     pub(super) fn copy_code(&self, id: BlockId, cx: &mut App) -> bool {
@@ -58,7 +57,7 @@ impl Editor {
         let mut wrapping = field("wrap",tr("自动换行","Wrap lines"),"toggle",if *wrap { "true" } else { "false" });
         wrapping["enabled"] = json!(editable);
         Some(json!({"kind":"code","title":tr("代码块工具","Code tools"),"live":true,"initial":(language && editable).then_some("language"),"fields":[name,languages,wrapping,
-            field("folded",tr("折叠代码","Fold code"),"toggle",if self.code_folded.contains(&block) { "true" } else { "false" }),field("copy",tr("复制代码","Copy code"),"action","")]}))
+            field("folded",tr("折叠代码","Fold code"),"toggle",if self.core.block(block).is_some_and(|b| b.folded) { "true" } else { "false" }),field("copy",tr("复制代码","Copy code"),"action","")]}))
     }
 
     pub(super) fn mobile_code_event(&mut self, block: BlockId, action: &str, edit: Option<(&str,&str)>, window: &mut Window, cx: &mut Context<Self>) {
@@ -75,7 +74,7 @@ impl Editor {
                 Some(("language-search",value))=>self.lang_field.update(cx,|f,cx|f.set_text(value,cx)),
                 Some(("language",value)) if crate::lang::LANGS.iter().any(|(name,_,_)|*name == value)=>{ self.set_lang(block,value,window,cx); self.menu = Some(Menu::NativeCode { block,language:false }); },
                 Some(("wrap",value)) if value == "true" || value == "false"=>if matches!(self.core.kind_of(block),Some(BlockKind::Code { wrap,.. }) if *wrap != (value == "true")) { self.toggle_code_wrap(block,window,cx); },
-                Some(("folded",value)) if value == "true" || value == "false"=>if self.code_folded.contains(&block) != (value == "true") { self.toggle_code_fold(block,cx); },
+                Some(("folded",value)) if value == "true" || value == "false"=>self.set_code_fold(block, value == "true", window, cx),
                 _=>{},
             },
             _=>{},

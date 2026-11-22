@@ -1,0 +1,36 @@
+quiet.md: build gpui_wgpu against wgpu 30.0.2 from crates.io
+
+Upstream takes wgpu from a git revision of gfx-rs/wgpu (30.0.0 plus later
+changes); we use the crates.io release so that a build never clones another
+repository (vendor/zed/upstream.toml, [git-to-crates-io]). Two API
+differences: DeviceDescriptor has no `default_queue` field yet, and
+TextureFormat::has_srgb_suffix is still called is_srgb. Linux only.
+
+diff --git a/crates/gpui_wgpu/src/wgpu_context.rs b/crates/gpui_wgpu/src/wgpu_context.rs
+index 37e9a0aab450026d5e380ef523d973af3546fd9e..3337986b353b0f6ec89ef73ce3a6e118e05aa52a 100644
+--- a/crates/gpui_wgpu/src/wgpu_context.rs
++++ b/crates/gpui_wgpu/src/wgpu_context.rs
+@@ -475,7 +475,8 @@ impl WgpuContext {
+                 memory_hints: wgpu::MemoryHints::MemoryUsage,
+                 trace: wgpu::Trace::Off,
+                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
+-                default_queue: wgpu::QueueDescriptor::default(),
++                // quiet.md: wgpu 30.0.2 from crates.io has no `default_queue`
++                // (upstream pins a later git revision).
+             })
+             .await
+             .map_err(|e| anyhow::anyhow!("Failed to create wgpu device: {e}"))?;
+diff --git a/crates/gpui_wgpu/src/wgpu_renderer.rs b/crates/gpui_wgpu/src/wgpu_renderer.rs
+index 53af304a9f6e796389950948d3df2d5bec61369c..5b0c11dbeeeb55f66ef1ce6f4819c7972a21e0a7 100644
+--- a/crates/gpui_wgpu/src/wgpu_renderer.rs
++++ b/crates/gpui_wgpu/src/wgpu_renderer.rs
+@@ -407,7 +407,8 @@ impl WgpuRenderer {
+                 surface_caps
+                     .formats
+                     .iter()
+-                    .find(|format| !format.has_srgb_suffix())
++                    // quiet.md: `is_srgb` in wgpu 30.0.2 (upstream's git wgpu: has_srgb_suffix).
++                    .find(|format| !format.is_srgb())
+                     .copied()
+             })
+             .or_else(|| surface_caps.formats.first().copied())

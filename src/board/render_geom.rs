@@ -1,11 +1,13 @@
 //! What GPUI can't do for the board painter, done on the CPU: frame clips
-//! and arrow label holes cut out of tessellated paths (triangle by triangle,
+//! and arrow label holes cut out of paths (their contours flattened, cut
 //! against a convex polygon), and images rotated, mirrored, cropped and
 //! clipped into a bitmap (GPUI draws images upright and unclipped but for
 //! an axis-aligned content mask).
 
-use crate::board::display::{Clip, ElementDisplay, ImageItem};
+#[cfg(target_os = "ios")]
 use gpui::{Path, Pixels, point, px};
+
+use crate::board::display::{Clip, ElementDisplay, ImageItem};
 
 pub type Pt = [f64; 2];
 
@@ -62,16 +64,16 @@ fn cut(poly: &[[f32; 2]], a: [f32; 2], b: [f32; 2], outside: bool) -> Vec<[f32; 
 
 fn inside_convex(poly: &[[f32; 2]], p: [f32; 2]) -> bool { (0..poly.len()).all(|i| cross(poly[i], poly[(i + 1) % poly.len()], p) >= 0.) }
 
-/// `path` cut to the inside of the convex `keep` and the outside of the
-/// convex `hole` (both in the path's coordinates, clockwise); None when
-/// nothing is left. Paths built by `PathBuilder` are flat triangles (no
-/// curve coordinates), so pieces are plain fans.
-pub fn clip_path(path: &Path<Pixels>, keep: Option<&[[f32; 2]]>, hole: Option<&[[f32; 2]]>) -> Option<Path<Pixels>> {
-    let tris: Vec<[[f32; 2]; 3]> = path.triangles().map(|(t, _)| t.map(|p| [f32::from(p.x), f32::from(p.y)])).collect();
-    // untouched when the whole path is inside `keep` and clear of `hole`
+/// Contours (`PathBuilder::build_polygons`) cut to the inside of the convex
+/// `keep` and the outside of the convex `hole` (both in the contours'
+/// coordinates, clockwise). Each contour is cut whole against one edge at a
+/// time, so the fill rule still holds: the hole's outside is split into
+/// disjoint pieces, one per hole edge.
+pub fn clip_polygons(polys: Vec<Vec<[f32; 2]>>, keep: Option<&[[f32; 2]]>, hole: Option<&[[f32; 2]]>) -> Vec<Vec<[f32; 2]>> {
     let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
-    for p in tris.iter().flatten() { lo = [lo[0].min(p[0]), lo[1].min(p[1])]; hi = [hi[0].max(p[0]), hi[1].max(p[1])]; }
-    if tris.is_empty() { return None; }
+    for p in polys.iter().flatten() { lo = [lo[0].min(p[0]), lo[1].min(p[1])]; hi = [hi[0].max(p[0]), hi[1].max(p[1])]; }
+    if polys.is_empty() { return polys; }
+    // untouched when the whole outline is inside `keep` and clear of `hole`
     let corners = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
     let keep = keep.filter(|k| !corners.iter().all(|c| inside_convex(k, *c)));
     let hole = hole.filter(|h| {
@@ -79,36 +81,28 @@ pub fn clip_path(path: &Path<Pixels>, keep: Option<&[[f32; 2]]>, hole: Option<&[
         for p in h.iter() { hl = [hl[0].min(p[0]), hl[1].min(p[1])]; hh = [hh[0].max(p[0]), hh[1].max(p[1])]; }
         hl[0] < hi[0] && hh[0] > lo[0] && hl[1] < hi[1] && hh[1] > lo[1]
     });
-    if keep.is_none() && hole.is_none() { return Some(path.clone()); }
-    let mut pieces: Vec<Vec<[f32; 2]>> = vec![];
-    for t in &tris {
-        let mut p = t.to_vec();
+    if keep.is_none() && hole.is_none() { return polys; }
+    let mut out = Vec::with_capacity(polys.len());
+    for mut p in polys {
         if let Some(k) = keep {
             for i in 0..k.len() { if p.len() < 3 { break; } p = cut(&p, k[i], k[(i + 1) % k.len()], false); }
         }
         if p.len() < 3 { continue; }
         match hole {
-            None => pieces.push(p),
+            None => out.push(p),
             Some(h) => {
                 let mut rest = p;
                 for i in 0..h.len() {
                     if rest.len() < 3 { break; }
                     let (a, b) = (h[i], h[(i + 1) % h.len()]);
-                    let out = cut(&rest, a, b, true);
-                    if out.len() >= 3 { pieces.push(out); }
+                    let piece = cut(&rest, a, b, true);
+                    if piece.len() >= 3 { out.push(piece); }
                     rest = cut(&rest, a, b, false);
                 }
             }
         }
     }
-    let first = pieces.first()?[0];
-    let mut out = Path::new(point(px(first[0]), px(first[1])));
-    let st = (point(0., 1.), point(0., 1.), point(0., 1.));
-    let pt = |p: [f32; 2]| point(px(p[0]), px(p[1]));
-    for p in &pieces {
-        for i in 1..p.len() - 1 { out.push_triangle((pt(p[0]), pt(p[i]), pt(p[i + 1])), st); }
-    }
-    Some(out)
+    out
 }
 
 /// Decoded image pixels, RGBA, straight alpha.
@@ -184,3 +178,49 @@ pub fn transform_image(src: &Src, img: &ImageItem, d: &ElementDisplay, clip: Opt
 }
 
 pub fn to_f32(poly: &[Pt], scale: f32) -> Vec<[f32; 2]> { poly.iter().map(|p| [p[0] as f32 * scale, p[1] as f32 * scale]).collect() }
+
+#[cfg(target_os = "ios")]
+pub fn clip_path(path: &Path<Pixels>, keep: Option<&[[f32; 2]]>, hole: Option<&[[f32; 2]]>) -> Option<Path<Pixels>> {
+    let tris: Vec<[[f32; 2]; 3]> = path.triangles().map(|(t, _)| t.map(|p| [f32::from(p.x), f32::from(p.y)])).collect();
+    // untouched when the whole path is inside `keep` and clear of `hole`
+    let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+    for p in tris.iter().flatten() { lo = [lo[0].min(p[0]), lo[1].min(p[1])]; hi = [hi[0].max(p[0]), hi[1].max(p[1])]; }
+    if tris.is_empty() { return None; }
+    let corners = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
+    let keep = keep.filter(|k| !corners.iter().all(|c| inside_convex(k, *c)));
+    let hole = hole.filter(|h| {
+        let (mut hl, mut hh) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+        for p in h.iter() { hl = [hl[0].min(p[0]), hl[1].min(p[1])]; hh = [hh[0].max(p[0]), hh[1].max(p[1])]; }
+        hl[0] < hi[0] && hh[0] > lo[0] && hl[1] < hi[1] && hh[1] > lo[1]
+    });
+    if keep.is_none() && hole.is_none() { return Some(path.clone()); }
+    let mut pieces: Vec<Vec<[f32; 2]>> = vec![];
+    for t in &tris {
+        let mut p = t.to_vec();
+        if let Some(k) = keep {
+            for i in 0..k.len() { if p.len() < 3 { break; } p = cut(&p, k[i], k[(i + 1) % k.len()], false); }
+        }
+        if p.len() < 3 { continue; }
+        match hole {
+            None => pieces.push(p),
+            Some(h) => {
+                let mut rest = p;
+                for i in 0..h.len() {
+                    if rest.len() < 3 { break; }
+                    let (a, b) = (h[i], h[(i + 1) % h.len()]);
+                    let out = cut(&rest, a, b, true);
+                    if out.len() >= 3 { pieces.push(out); }
+                    rest = cut(&rest, a, b, false);
+                }
+            }
+        }
+    }
+    let first = pieces.first()?[0];
+    let mut out = Path::new(point(px(first[0]), px(first[1])));
+    let st = (point(0., 1.), point(0., 1.), point(0., 1.));
+    let pt = |p: [f32; 2]| point(px(p[0]), px(p[1]));
+    for p in &pieces {
+        for i in 1..p.len() - 1 { out.push_triangle((pt(p[0]), pt(p[i]), pt(p[i + 1])), st); }
+    }
+    Some(out)
+}

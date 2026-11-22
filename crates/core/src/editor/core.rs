@@ -8,7 +8,8 @@ use crate::model::*;
 use std::cell::{Cell, RefCell};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::ops::Range;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 use unicode_segmentation::UnicodeSegmentation;
 
 pub const TITLE: BlockId = BlockId(0);
@@ -439,13 +440,16 @@ pub fn keep_outside_history(now: &Document, restored: &mut Document) {
     now.for_each_block(|b| {
         folded.insert(b.id, b.folded);
     });
-    // Blocks in table cells never fold.
+    // Of the blocks in table cells only code blocks fold.
     fn walk(blocks: &mut [Block], folded: &HashMap<BlockId, bool>) {
         for b in blocks {
             if let Some(f) = folded.get(&b.id) {
                 b.folded = *f;
             }
             walk(&mut b.children, folded);
+            if let BlockKind::Table(t) = &mut b.kind {
+                t.rows.iter_mut().flatten().for_each(|cell| walk(&mut cell.blocks, folded));
+            }
         }
     }
     walk(&mut restored.blocks, &folded);
@@ -499,12 +503,17 @@ pub struct Core {
     path_misses: Cell<(u32, u32)>,
     /// A message for the view to toast (e.g. 当前位置不支持粘贴表格).
     pub notice: Option<&'static str>,
+    /// Backspace at the start of the body merges the first paragraph into the
+    /// title and moves the caret there (设置 › 退格键回到标题).
+    pub backspace_to_title: bool,
 }
 
 impl Core {
     pub fn new(doc: Document) -> Self {
         let first = units(&doc).get(1).map(|u| u.id).unwrap_or(TITLE);
-        let start = if doc.title.is_empty() { TITLE } else { first };
+        // Not inside a folded code block: the caret there would open it.
+        let hidden = find_path(&doc.blocks, first).and_then(|p| block_at(&doc.blocks, &p)).is_some_and(|b| b.folded && matches!(b.kind, BlockKind::Code { .. }));
+        let start = if doc.title.is_empty() || hidden { TITLE } else { first };
         Core {
             doc,
             sel: Selection::caret(Pos::new(start, 0)),
@@ -524,6 +533,7 @@ impl Core {
             path_hits: Cell::new(u32::MAX),
             path_misses: Cell::new((0, 1)),
             notice: None,
+            backspace_to_title: false,
         }
     }
 
@@ -764,6 +774,29 @@ impl Core {
         let hit = walk(&mut self.doc.blocks, from, to);
         if hit { self.generation += 1; }
         hit
+    }
+
+    /// Every file source this editor can still bring back: the cover, images,
+    /// attachments (inline ones too) and 数据表 files of the open document, and
+    /// of the undo and redo snapshots behind it. The unused-asset sweep reads
+    /// the disk, so without these a picture deleted a moment ago — still one
+    /// Undo away — would be taken as unused (#237).
+    pub fn asset_refs(&self) -> Vec<String> {
+        fn take(doc: &Document, out: &mut Vec<String>) {
+            out.extend(doc.cover.as_ref().map(|c| c.src.clone()));
+            doc.for_each_block(|b| {
+                match &b.kind {
+                    BlockKind::Image { src, .. } | BlockKind::File(FileBlock { src, .. }) => out.push(src.clone()),
+                    BlockKind::DataTable(t) => out.push(t.src.clone()),
+                    _ => {}
+                }
+                out.extend(b.text.runs.iter().filter_map(|r| r.marks.inline.as_ref().and_then(Inline::file)).map(|f| f.src.clone()));
+            });
+        }
+        let mut out = vec![];
+        take(&self.doc, &mut out);
+        for s in self.undo.iter().chain(self.redo.iter()) { take(&s.doc, &mut out); }
+        out
     }
 
     pub fn break_coalescing(&mut self) {
@@ -1230,6 +1263,15 @@ impl Core {
         true
     }
 
+    /// 数据表: which table and view block `id` shows, and its height. False when nothing changed.
+    pub fn set_table_ref(&mut self, id: BlockId, t: crate::table::TableRef) -> bool {
+        if !matches!(self.kind_of(id), Some(BlockKind::DataTable(old)) if *old != t) { return false; }
+        self.checkpoint(EditKind::Other);
+        self.break_coalescing();
+        if let Some(b) = self.block_mut(id) { b.kind = BlockKind::DataTable(t); }
+        true
+    }
+
     /// 文本视图: the block becomes a paragraph holding the attachment
     /// inline (same alignment); the caret lands after it.
     pub fn file_to_inline(&mut self, id: BlockId) {
@@ -1453,6 +1495,30 @@ impl Core {
             self.delete_atomic(p.block);
             return;
         }
+        // Unless 退格键回到标题 is on, a plain paragraph opening the body never
+        // merges into the title and the caret stays in the body (an empty one
+        // goes when text follows).
+        if !self.backspace_to_title && matches!(block.kind, BlockKind::Text) && !self.parent_is_text_block(p.block) && !self.first_in_quote(p.block) {
+            let us = self.units();
+            if let Some(i) = self.unit_index(&us, p.block)
+                && i > 0
+                && us[i - 1].id == TITLE
+                && us[i].scope.is_none()
+            {
+                if block.text.is_empty()
+                    && block.children.is_empty()
+                    && let Some(next) = us.get(i + 1).filter(|u| u.text && u.scope == us[i].scope && u.id != TITLE)
+                {
+                    let next = next.id;
+                    self.checkpoint(EditKind::Other);
+                    self.break_coalescing();
+                    self.remove_subtree(p.block);
+                    self.normalize();
+                    self.sel = Selection::caret(Pos::new(next, 0));
+                }
+                return;
+            }
+        }
         self.checkpoint(EditKind::Other);
         self.break_coalescing();
         match block.kind {
@@ -1476,16 +1542,18 @@ impl Core {
             return;
         }
         // First paragraph in a quote/callout: lift it out.
-        if let Some(parent) = self.parent_of(p.block).cloned()
-            && matches!(parent.kind, BlockKind::Quote | BlockKind::Callout { .. })
-            && parent.children.first().map(|c| c.id) == Some(p.block)
-        {
+        if self.first_in_quote(p.block) {
+            let parent = self.parent_of(p.block).unwrap().id;
             let b = self.remove_subtree(p.block).unwrap();
-            self.insert_before(parent.id, b);
+            self.insert_before(parent, b);
             self.normalize();
             return;
         }
         self.merge_into_previous(p.block);
+    }
+
+    fn first_in_quote(&self, id: BlockId) -> bool {
+        self.parent_of(id).is_some_and(|q| matches!(q.kind, BlockKind::Quote | BlockKind::Callout { .. }) && q.children.first().map(|c| c.id) == Some(id))
     }
 
     fn merge_into_previous(&mut self, id: BlockId) {
@@ -1934,9 +2002,11 @@ impl Core {
                 if let BlockKind::Code { .. } = k {
                     b.text = RichText::plain(b.text.plain_text());
                 }
-                // A folded heading hides its section, any other fold just the children: drop the fold
-                // rather than hide or reveal the blocks below.
-                if matches!(b.kind, BlockKind::Heading { .. }) != matches!(k, BlockKind::Heading { .. }) {
+                // A folded heading hides its section, a code block its code, any other fold just the
+                // children: drop the fold rather than hide or reveal something else.
+                if matches!(b.kind, BlockKind::Heading { .. }) != matches!(k, BlockKind::Heading { .. })
+                    || matches!(b.kind, BlockKind::Code { .. }) != matches!(k, BlockKind::Code { .. })
+                {
                     b.folded = false;
                 }
                 // Headings, lists and text can all hold children, so the
@@ -2011,6 +2081,23 @@ impl Core {
             b.folded = !b.folded;
         }
         self.fix_selection_after_fold(id);
+    }
+
+    /// Folds or opens a code block (saved like any fold, outside the edit
+    /// history). A caret inside the code it hides leaves for the block itself.
+    /// Returns whether anything changed.
+    pub fn set_code_folded(&mut self, id: BlockId, folded: bool) -> bool {
+        let Some(b) = self.block_mut(id) else { return false };
+        if !matches!(b.kind, BlockKind::Code { .. }) || b.folded == folded {
+            return false;
+        }
+        b.folded = folded;
+        self.generation += 1;
+        self.dirty = true;
+        if folded && self.block_sel.is_none() && (self.sel.head.block == id || self.sel.anchor.block == id) {
+            self.select_block(id);
+        }
+        true
     }
 
     /// The last block a folded heading hides (itself when nothing is hidden),
@@ -2467,6 +2554,34 @@ impl Core {
     /// Nearest enclosing table, if any (block navigation stays inside it).
     /// Tab / Shift+Tab inside a table: caret to the end of the next / previous
     /// cell; Tab in the last cell appends a row. False outside tables.
+    /// ↑/↓ out of a 表格 cell: the stop in the cell above / below, same
+    /// column, or the first stop past the table. `None` when `us[i]` is in no
+    /// table or the step stays inside its cell; `Some(None)` when nothing
+    /// follows the table.
+    pub fn cell_vertical(&self, us: &[Unit], i: usize, down: bool) -> Option<Option<usize>> {
+        let p = self.path(us[i].id)?;
+        let ci = p.iter().rposition(|s| matches!(s, Seg::Cell(..)))?;
+        let Seg::Cell(r, c, _) = p[ci] else { return None };
+        let BlockKind::Table(t) = &block_at(&self.doc.blocks, &p[..ci])?.kind else { return None };
+        // In this table, and in cell `rc` when one is given.
+        let inside = |id: BlockId, rc: Option<(usize, usize)>| {
+            self.path(id).is_some_and(|q| q.len() > ci && q[..ci] == p[..ci] && matches!(q[ci], Seg::Cell(qr, qc, _) if rc.is_none_or(|x| x == (qr, qc))))
+        };
+        let next = if down { Some(i + 1) } else { i.checked_sub(1) };
+        if next.and_then(|n| us.get(n)).is_some_and(|u| inside(u.id, Some((r, c)))) {
+            return None;
+        }
+        let tr = if down { Some(r + (t.rows[r][c].rowspan as usize).max(1)).filter(|&x| x < t.rows.len()) } else { r.checked_sub(1) };
+        let mut order: Box<dyn Iterator<Item = usize>> = if down { Box::new(i + 1..us.len()) } else { Box::new((0..i).rev()) };
+        Some(match tr {
+            Some(tr) => {
+                let to = t.origin(tr, c);
+                order.find(|&k| inside(us[k].id, Some(to)))
+            }
+            None => order.find(|&k| !inside(us[k].id, None)),
+        })
+    }
+
     pub fn cell_step(&mut self, forward: bool) -> bool {
         let h = self.sel.head;
         let Some(p) = self.path(h.block) else { return false };
@@ -3535,6 +3650,27 @@ mod tests {
         }
     }
 
+    /// A code block's fold is saved with the document, outside the edit history.
+    #[test]
+    fn code_folds_are_saved_not_undone() {
+        let mut c = doc("<title>T</title><p>a</p><pre lang=\"plaintext\"><code>x</code></pre>");
+        let code = id(&c, 2);
+        c.sel = Selection::caret(Pos::new(code, 1));
+        c.checkpoint(EditKind::Other);
+        c.insert_text("y");
+        assert!(c.set_code_folded(code, true));
+        assert!(!c.set_code_folded(code, true));
+        assert_eq!(c.block_sel_ids(), vec![code], "the caret leaves the hidden code");
+        assert!(xml(&c).contains("<pre lang=\"plaintext\" folded=\"true\"><code>xy</code></pre>"), "{}", xml(&c));
+        assert!(c.undo());
+        assert!(xml(&c).contains("<pre lang=\"plaintext\" folded=\"true\"><code>x</code></pre>"), "{}", xml(&c));
+        assert!(!c.set_code_folded(id(&c, 1), true), "only code blocks");
+        c.turn_into(&[code], BlockKind::Text);
+        assert!(!c.block(code).unwrap().folded, "{}", xml(&c));
+        let c = doc("<title>T</title><pre lang=\"plaintext\" folded=\"true\"><code>x</code></pre>");
+        assert_eq!(c.sel.head.block, TITLE, "opening never starts inside folded code");
+    }
+
     #[test]
     fn select_all_twice_deletes_a_folded_tail() {
         let mut c = doc("<title>T</title><h1>a</h1><h2 folded=\"true\">b</h2><p>hidden</p>");
@@ -3572,6 +3708,22 @@ mod tests {
         let mut c = doc("<title>T</title><hr/><p>a</p>");
         let (hr, a) = (id(&c, 1), id(&c, 2));
         assert!(!c.move_blocks(&[a], hr, DropPlace::FirstChild));
+    }
+
+    /// #237: the unused-asset sweep reads the disk, so an editor has to say
+    /// what it can still bring back — the document, and the snapshots behind it.
+    #[test]
+    fn asset_refs_keep_a_picture_undo_can_bring_back() {
+        let mut c = doc("<title>T</title><img src=\"/lib/.assets/a.png\"/><p>x</p>");
+        assert_eq!(c.asset_refs(), ["/lib/.assets/a.png".to_string()]);
+        c.delete_block(id(&c, 1));
+        assert!(!c.asset_refs().is_empty(), "the picture is one Undo away");
+        assert!(c.asset_refs().iter().any(|s| s.ends_with("a.png")));
+        assert!(c.undo());
+        assert_eq!(c.asset_refs(), ["/lib/.assets/a.png".to_string()]);
+        // The cover is a file of the library's assets as much as a picture is.
+        let c = doc("<title cover=\".assets/c.png\">T</title><p>x</p>");
+        assert_eq!(c.asset_refs(), [".assets/c.png".to_string()]);
     }
 
     #[test]
@@ -3673,6 +3825,51 @@ mod tests {
         assert_eq!(c.units().len(), 3);
         c.enter();
         assert_eq!(xml(&c), "<title>T</title>\n<h1 folded=\"true\">A</h1>\n<p>a1</p>\n<h2>B</h2>\n<p>b1</p>\n<h1></h1>\n<h1>C</h1>\n");
+    }
+
+    #[test]
+    fn backspace_at_body_start_stays_in_body() {
+        // Text, empty or not, never goes into the title, and no undo step is spent.
+        for body in ["abc", ""] {
+            let mut c = doc(&format!("<title>T</title><p>{body}</p>"));
+            let b = id(&c, 1);
+            c.sel = Selection::caret(Pos::new(b, 0));
+            let steps = c.undo.len();
+            c.backspace();
+            c.delete_to_start();
+            assert_eq!(xml(&c), format!("<title>T</title>\n<p>{body}</p>\n"));
+            assert_eq!(c.sel.head, Pos::new(b, 0));
+            assert_eq!(c.undo.len(), steps);
+        }
+        // An empty first line goes when text follows, caret moves down.
+        let mut c = doc("<title>T</title><p></p><h2>x</h2>");
+        c.sel = Selection::caret(Pos::new(id(&c, 1), 0));
+        c.backspace();
+        assert_eq!(xml(&c), "<title>T</title>\n<h2>x</h2>\n");
+        assert_eq!(c.sel.head, Pos::new(id(&c, 1), 0));
+        // Formatted blocks first turn into a paragraph, then stay put.
+        for src in ["<ul><li>a</li></ul>", "<h1>a</h1>", "<blockquote><p>a</p></blockquote>", "<checkbox done=\"false\">a</checkbox>"] {
+            let mut c = doc(&format!("<title>T</title>{src}"));
+            let first = c.units()[1].id;
+            c.sel = Selection::caret(Pos::new(first, 0));
+            c.backspace();
+            assert_eq!(xml(&c), "<title>T</title>\n<p>a</p>\n", "{src}");
+            c.backspace();
+            assert_eq!(xml(&c), "<title>T</title>\n<p>a</p>\n", "{src}");
+            assert_ne!(c.sel.head.block, TITLE);
+        }
+        // 退格键回到标题 brings the old merge back.
+        let mut c = doc("<title>T</title><p>a</p>");
+        c.backspace_to_title = true;
+        c.sel = Selection::caret(Pos::new(id(&c, 1), 0));
+        c.backspace();
+        assert_eq!(c.doc.title.text, "Ta");
+        assert_eq!(c.sel.head, Pos::new(TITLE, 1));
+        // Delete at the end of the title still pulls the body up.
+        let mut c = doc("<title>T</title><p>a</p><p>b</p>");
+        c.sel = Selection::caret(Pos::new(TITLE, 1));
+        c.delete_forward();
+        assert_eq!(xml(&c), "<title>Ta</title>\n<p>b</p>\n");
     }
 
     #[test]
@@ -3809,6 +4006,29 @@ mod tests {
         let p = c.units().last().unwrap().id;
         c.sel = Selection::caret(Pos::new(p, 0));
         assert!(!c.cell_step(true));
+    }
+
+    #[test]
+    fn up_down_keep_the_table_column() {
+        let row = |r: usize| format!("<tr>{}</tr>", ["A", "B", "C"].map(|k| format!("<td><p>{k}{r}</p></td>")).concat());
+        let c = doc(&format!("<title>T</title><p>before</p><table>{}{}{}</table><p>after</p>", row(1), row(2), row(3)));
+        let us = c.units();
+        let at = |name: &str| us.iter().position(|u| c.text_of(u.id).is_some_and(|t| t.text == name)).unwrap();
+        let name = |k: Option<usize>| k.map(|k| c.text_of(us[k].id).unwrap().text.clone());
+        assert_eq!(name(c.cell_vertical(&us, at("B2"), false).unwrap()).as_deref(), Some("B1"));
+        assert_eq!(name(c.cell_vertical(&us, at("B2"), true).unwrap()).as_deref(), Some("B3"));
+        assert_eq!(name(c.cell_vertical(&us, at("C1"), false).unwrap()).as_deref(), Some("before"));
+        assert_eq!(name(c.cell_vertical(&us, at("A3"), true).unwrap()).as_deref(), Some("after"));
+        assert_eq!(c.cell_vertical(&us, at("before"), true), None);
+        let c = doc("<title>T</title><table><tr><td><p>a</p></td><td><p>b</p></td></tr></table>");
+        let us = c.units();
+        assert_eq!(c.cell_vertical(&us, 1, true), Some(None));
+        // A cell holding two paragraphs steps between them first.
+        let c = doc("<title>T</title><table><tr><td><p>x</p><p>y</p></td></tr><tr><td><p>z</p></td></tr></table>");
+        let us = c.units();
+        assert_eq!(c.cell_vertical(&us, 1, true), None);
+        assert_eq!(c.cell_vertical(&us, 2, true), Some(Some(3)));
+        assert_eq!(c.cell_vertical(&us, 3, false), Some(Some(2)));
     }
 
     #[test]

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
+from hlib import doc_file, docs
 from PIL import Image, ImageChops
 
 here = Path(__file__).resolve().parent
@@ -75,7 +76,8 @@ def saved_matches(folder, expected):
 
 def setup(selection=False):
     return ("key cmd-f\ntype CARET_ANCHOR\nkey escape\n" + ("" if selection else "key left\n")
-            + "wheel 1100 500 700\nwait 500\nmove 1150 820\nwait 200\nshot before\n")
+            # The wheel waits for the find bar to close; earlier it is sometimes dropped.
+            + "wait 500\nwheel 1100 500 700\nwait 500\nmove 1150 820\nwait 200\nshot before\n")
 
 
 save = "wait 700\nkey cmd-s\nwait 300\n"

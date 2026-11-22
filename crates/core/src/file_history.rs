@@ -78,7 +78,7 @@ impl Store {
         if self.is_markdown(id) { return Ok(()); }
         let mut expected = docxml::parse(previous)?;
         expected.title = crate::model::RichText::plain(title);
-        let disk = std::fs::read_to_string(self.path(id))?;
+        let disk = crate::vfs::read_to_string(self.path(id))?;
         // Accept only our title change, never unrelated edits from another instance.
         if docxml::serialize(&expected) == docxml::serialize(&docxml::parse(&disk)?) { loaded.insert(id.to_string(), disk); }
         Ok(())
@@ -110,12 +110,12 @@ impl Store {
             match (from, to) {
                 (Some(_), None) => {
                     anyhow::ensure!(!self.index.iter().any(|(id, m)| m.parent.as_deref() == Some(&c.id) && !deleted.contains(id.as_str())), "文件夹里有后来新增的内容，不能撤销创建");
-                    anyhow::ensure!(!self.trash.contains_key(&c.id) && !self.trash_path(&c.id).try_exists()?, "回收站存在冲突，未覆盖");
+                    anyhow::ensure!(!self.trash.contains_key(&c.id) && !self.trash_path(&c.id).fs_try_exists()?, "回收站存在冲突，未覆盖");
                     projected.remove(&c.id);
                 }
                 (None, Some(target)) => {
                     let saved = self.trash.get(&c.id).ok_or_else(|| anyhow::anyhow!("恢复内容已不在回收站，无法重做或撤销"))?;
-                    anyhow::ensure!(target.folder || self.trash_path(&c.id).is_file(), "恢复内容已不在回收站，无法重做或撤销");
+                    anyhow::ensure!(target.folder || self.trash_path(&c.id).fs_is_file(), "恢复内容已不在回收站，无法重做或撤销");
                     let mut meta = saved.meta.clone();
                     meta.parent = target.parent.clone(); meta.order = target.order; meta.root_order = target.root_order;
                     projected.insert(c.id.clone(), meta);
@@ -169,7 +169,7 @@ impl Store {
                 if from.title != to.title {
                     if !to.folder && !self.index[&c.id].markdown && !self.index[&c.id].local() {
                         let path = self.path(&c.id);
-                        let text = std::fs::read_to_string(&path)?;
+                        let text = crate::vfs::read_to_string(&path)?;
                         let mut doc = docxml::parse(&text)?;
                         doc.title = crate::model::RichText::plain(&to.title);
                         // Only the title changes: links stay as written.

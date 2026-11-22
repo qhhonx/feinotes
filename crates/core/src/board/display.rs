@@ -300,7 +300,7 @@ fn sticky_items(e: &Element) -> Vec<DisplayItem> {
     // the creation-date footer (`getStickyNoteFooter`): 12px Helvetica in the
     // ink, right-aligned on its baseline; the label is absolute, so a cached
     // display only goes stale at a year boundary (as upstream's canvas)
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
     if let Some((text, x, y)) = super::sticky::get_sticky_note_footer(e, now, crate::time::local_offset() * 1000) && let Some(paint) = color(&e.stroke_color) {
         let mut run = text_run(&text, x, super::consts::font_family::HELVETICA, super::consts::STICKY_NOTE_FOOTER_FONT_SIZE, 1.25, TextAlign::Right, paint);
         for l in &mut run.lines { let dy = y - l.baseline; l.top += dy; l.baseline += dy; }

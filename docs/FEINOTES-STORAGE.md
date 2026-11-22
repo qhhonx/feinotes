@@ -71,6 +71,8 @@ schema deployment or real multi-account acceptance.
 
 ## Boards
 
+The November 18 GPUI migration changes rendering/platform dependencies, not SQLite schema 7, backup formats or the Loro 1.17.1 synchronization engine. File-backend access goes through `fdl_core::vfs`; it aliases the real filesystem on native builds and isolates browser sample notebooks in memory. The browser demo has no product CloudKit or personal-library access. Mobile continues to use the separately pinned GPUI backend, with conditional drawing and element conversions kept in the shared code.
+
 Standalone boards use `Meta::kind = Board` on both backends. The file backend writes `.excalidraw`; SQLite stores its document and embedded scene through the existing DocxXML block payload, with no schema migration. SQLite history keeps XML snapshots and restores through the normal cloud transaction. Scene image paths participate in attachment enumeration, import rebasing, cloud upload, shared-copy recovery and portable backups. Image downloads and live board views use the selected personal or shared library root.
 
 The cloud protocol treats one board scene as a block property, like other opaque block payloads. Independent paragraph edits merge with a scene edit; concurrent changes inside the same board use the existing block-property conflict behavior rather than an element-by-element board protocol. Older clients preserve unsupported whiteboard XML. Shared read-only notes and history previews show the thumbnail without exposing an editable board; permission changes and incoming document state discard an open board editor so stale scenes cannot be saved over newer state. Live multi-account CloudKit board behavior still requires separate acceptance.

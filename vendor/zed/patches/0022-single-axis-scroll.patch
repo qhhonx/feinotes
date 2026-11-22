@@ -1,0 +1,33 @@
+quiet.md #17: single-axis scrollers take only gestures that lean their way
+
+In a container that scrolls on one axis only, a scroll event counts only if
+it moves more along that axis than across it. Otherwise a vertical mouse
+wheel over a wide table was turned into sideways scrolling, and the small
+sideways drift of a vertical trackpad swipe slid the table while the page
+scrolled (the concurrent-scroll lock never fires there, one delta being
+zero). Upstream's opt-in restrict_scroll_to_axis only locks trackpad
+gestures for containers with a tracked scroll handle.
+
+diff --git a/crates/gpui/src/elements/div.rs b/crates/gpui/src/elements/div.rs
+index ce038047780c04b7888cb64ce305557f0ec6244c..f656c8ac57fb41aa910c8965408fd9616a470083 100644
+--- a/crates/gpui/src/elements/div.rs
++++ b/crates/gpui/src/elements/div.rs
+@@ -3474,6 +3474,18 @@ impl Interactivity {
+                         }
+                         _ => Pixels::ZERO,
+                     };
++                    // quiet.md: a container that scrolls on one axis only takes
++                    // gestures that lean its way. Otherwise a mouse wheel over a
++                    // wide table turned into sideways scrolling, and a trackpad
++                    // swipe's small sideways drift slid the table while the page
++                    // scrolled (the lock below never fires: one delta is zero).
++                    if overflow.x != overflow.y {
++                        if delta.x.abs() > delta.y.abs() {
++                            delta_y = Pixels::ZERO;
++                        } else {
++                            delta_x = Pixels::ZERO;
++                        }
++                    }
+                     if !allow_concurrent_scroll && !delta_x.is_zero() && !delta_y.is_zero() {
+                         if delta_x.abs() > delta_y.abs() {
+                             delta_y = Pixels::ZERO;

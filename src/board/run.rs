@@ -280,7 +280,7 @@ fn copy_picture(me: &mut BoardView, png: bool, cx: &mut Context<BoardView>) {
     let href = |f: &super::types::FileData| -> Option<String> {
         use base64::Engine;
         if let Some(u) = &f.data_url { return Some(u.clone()); }
-        let bytes = std::fs::read(crate::store::image_path_in(&root, f.path.as_deref()?)?).ok()?;
+        let bytes = fdl_core::vfs::read(crate::store::image_path_in(&root, f.path.as_deref()?)?).ok()?;
         Some(format!("data:{};base64,{}", f.mime_type, base64::engine::general_purpose::STANDARD.encode(bytes)))
     };
     let scene = super::json::serialize_as_json(&bd.elements, &bd.app, &bd.files, crate::whiteboard::FILE_SOURCE);

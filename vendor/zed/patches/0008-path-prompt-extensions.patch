@@ -1,0 +1,56 @@
+quiet.md #8: PathPromptOptions.extensions
+
+Limit the files an open panel offers to the given extensions (macOS
+NSOpenPanel allowedFileTypes; other platforms ignore it). The import dialog
+lists only Markdown / text and .xml files.
+
+diff --git a/crates/gpui/src/app/test_context.rs b/crates/gpui/src/app/test_context.rs
+index 4e6bf835798e6af39aafe729d2d08e8a0f3fda80..7f770442430bc9f543a09efa1c655669669f2467 100644
+--- a/crates/gpui/src/app/test_context.rs
++++ b/crates/gpui/src/app/test_context.rs
+@@ -1522,6 +1522,7 @@ mod tests {
+                 directories: true,
+                 multiple: true,
+                 prompt: None,
++                extensions: None,
+             })
+         });
+         assert!(cx.did_prompt_for_paths());
+@@ -1548,6 +1549,7 @@ mod tests {
+                 directories: false,
+                 multiple: false,
+                 prompt: None,
++                extensions: None,
+             })
+         });
+ 
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index 86520ab049857499e9be13d2b18e715d4ac83c24..3f087d54d31f9e3e7d9785460d4a53a0f0ffc4eb 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -2985,6 +2985,9 @@ pub struct PathPromptOptions {
+     pub multiple: bool,
+     /// The prompt to show to a user when selecting a path
+     pub prompt: Option<SharedString>,
++    /// quiet.md: file extensions (without the dot) the prompt lets the user
++    /// pick; `None` allows any file. Only honoured on macOS.
++    pub extensions: Option<Vec<SharedString>>,
+ }
+ 
+ /// What kind of prompt styling to show
+diff --git a/crates/gpui_macos/src/platform.rs b/crates/gpui_macos/src/platform.rs
+index 218b296d0f03627a32cd06b7a574188c600b94d6..1e53d12ce6fb44fb4346b7eccdcddee8aefc9add 100644
+--- a/crates/gpui_macos/src/platform.rs
++++ b/crates/gpui_macos/src/platform.rs
+@@ -914,6 +914,11 @@ impl Platform for MacPlatform {
+                 if let Some(prompt) = options.prompt {
+                     panel.setPrompt(Some(&NSString::from_str(prompt.as_str())));
+                 }
++                if let Some(exts) = &options.extensions {
++                    let types: Vec<Retained<NSString>> = exts.iter().map(|e| NSString::from_str(e)).collect();
++                    let types = NSArray::from_retained_slice(&types);
++                    let _: () = unsafe { msg_send![&*panel, setAllowedFileTypes: &*types] };
++                }
+ 
+                 panel.beginWithCompletionHandler(&handler);
+             })

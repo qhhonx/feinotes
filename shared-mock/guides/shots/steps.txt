@@ -1,4 +1,4 @@
-# The 开始指南 screenshots. SHOT is `shot` (offscreen check) or `deskshot`
+# The Getting Started screenshots. SHOT is `shot` (offscreen check) or `deskshot`
 # (on the wallpaper, via shots.sh). Window positions assume a 1352×878 screen.
 resize 1280 800
 place 126 104

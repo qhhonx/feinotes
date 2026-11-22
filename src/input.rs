@@ -436,8 +436,11 @@ impl TextField {
         #[cfg(target_os = "ios")]
         gpui_mobile::show_keyboard();
         let i = self.index_for(ev.position);
-        if ev.click_count >= 2 {
-            self.select_all_text(cx);
+        // double click: the word under the pointer (as in any text field); triple: everything
+        if ev.click_count >= 3 { self.select_all_text(cx); return; }
+        if ev.click_count == 2 {
+            let w = self.text.split_word_bound_indices().map(|(s, w)| s..s + w.len()).find(|r| r.contains(&i) || r.end == i && i == self.text.len());
+            match w { Some(r) => self.select_range(r, cx), None => self.select_all_text(cx) }
             return;
         }
         self.selecting = true;
@@ -639,7 +642,7 @@ impl Render for TextField {
                     move |bounds, _, window, cx| {
                         window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
                         if pointer_hidden {
-                            window.set_window_cursor_style(crate::gpui_compat::NO_CURSOR);
+                            crate::gpui_compat::hide_cursor(cx);
                             let e = entity.clone();
                             window.on_mouse_event(move |_: &MouseMoveEvent, phase, _, cx| {
                                 if phase == DispatchPhase::Bubble {

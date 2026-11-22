@@ -8,8 +8,6 @@
 //! draw-to-shape, bucket fill or "Generate" items.
 
 use super::*;
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 use super::menu::{dropdown, dropdown_item};
 use super::tip::ExTip;
 use crate::board::action::{BoardAction, Tool};
@@ -120,7 +118,7 @@ fn extra_tools(me: &BoardView, compact: bool, narrow: bool, cx: &mut Context<Boa
     }
     let menu = menu.on_mouse_down_out(cx.listener(|_, _, _, cx| if pop(cx) == Some(Pop::ExtraTools) { set_pop(None, cx) }));
     // below the trigger, right edges aligned (`sideOffset` 8 + `margin-top` 6)
-    trigger.child(div().absolute().top(px(style::LG_BUTTON + 14.)).right_0().child(deferred(anchored().anchor(Corner::TopRight).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3)))
+    trigger.child(div().absolute().top(px(style::LG_BUTTON + 14.)).right_0().child(deferred(anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3)))
 }
 
 pub(crate) fn render(me: &BoardView, window: &Window, cx: &mut Context<BoardView>) -> impl IntoElement {

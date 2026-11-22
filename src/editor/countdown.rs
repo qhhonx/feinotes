@@ -12,11 +12,12 @@ use crate::model::{Block, BlockId, BlockKind, COUNTDOWN_COLORS, Countdown};
 use crate::editor_theme::{self as theme, Theme, craft};
 use crate::editor_ui::{ROW_RADIUS, TipExt, ToastKind, icon, popover};
 use gpui::{prelude::FluentBuilder, *};
+use web_time::Instant;
 use std::{
     cell::RefCell,
     collections::HashMap,
     rc::Rc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 const COLOR_NAMES: [&str; 7] = ["红色", "橙色", "黄色", "绿色", "蓝色", "紫色", "灰色"];
@@ -858,7 +859,7 @@ impl Editor {
             .items_center()
             .justify_center()
             .bg(theme::rgbaf(0, 0, 0, 0.55))
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_family())
             .on_key_down(cx.listener(|e, ev: &KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" {
                     cx.stop_propagation();

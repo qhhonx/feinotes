@@ -3,12 +3,12 @@
 //! each page a column of grouped rows. Only what a
 //! user really needs to change lives here.
 
+use fdl_core::vfs::PathExt as _;
 use crate::{app::{View, Workspace}, theme::{self, craft, Theme}, themes, ui};
 use crate::ui::{TitleBarExt, TipExt};
+use crate::input::{TextField, TextFieldEvent};
 use crate::sidebar as sb;
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -58,14 +58,14 @@ pub(crate) fn set_base(feishu: bool) { FEISHU.store(feishu, Ordering::Relaxed); 
 /// 界面语言, in the order Settings lists them. Chinese strings are the keys:
 /// other languages look them up in `l10n` and fall back to English.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Lang { Zh, En, Ja, Ko, Fr, Es, Ar }
+pub enum Lang { Zh, ZhTw, En, Ja, Ko, Fr, Es, Ar, Tr }
 
 impl Lang {
-    pub const ALL: [Lang; 7] = [Lang::Zh, Lang::En, Lang::Ja, Lang::Ko, Lang::Fr, Lang::Es, Lang::Ar];
+    pub const ALL: [Lang; 9] = [Lang::Zh, Lang::ZhTw, Lang::En, Lang::Ja, Lang::Ko, Lang::Fr, Lang::Es, Lang::Ar, Lang::Tr];
     /// The `language` preference value.
-    pub fn code(self) -> &'static str { match self { Lang::Zh => "zh", Lang::En => "en", Lang::Ja => "ja", Lang::Ko => "ko", Lang::Fr => "fr", Lang::Es => "es", Lang::Ar => "ar" } }
+    pub fn code(self) -> &'static str { match self { Lang::Zh => "zh", Lang::ZhTw => "zh-TW", Lang::En => "en", Lang::Ja => "ja", Lang::Ko => "ko", Lang::Fr => "fr", Lang::Es => "es", Lang::Ar => "ar", Lang::Tr => "tr" } }
     /// The language's own name, as Settings lists it.
-    pub fn name(self) -> &'static str { match self { Lang::Zh => "简体中文", Lang::En => "English", Lang::Ja => "日本語", Lang::Ko => "한국어", Lang::Fr => "Français", Lang::Es => "Español", Lang::Ar => "العربية" } }
+    pub fn name(self) -> &'static str { match self { Lang::Zh => "简体中文", Lang::ZhTw => "繁體中文", Lang::En => "English", Lang::Ja => "日本語", Lang::Ko => "한국어", Lang::Fr => "Français", Lang::Es => "Español", Lang::Ar => "العربية", Lang::Tr => "Türkçe" } }
 }
 
 pub fn lang() -> Lang { Lang::ALL.get(LANG.load(Ordering::Relaxed) as usize).copied().unwrap_or(Lang::En) }
@@ -97,7 +97,7 @@ pub fn browsers() -> Vec<&'static str> {
         .into_iter()
         .filter(|name| {
             let app = format!("{name}.app");
-            Path::new("/Applications").join(&app).exists() || user.as_ref().is_some_and(|u| u.join(&app).exists())
+            Path::new("/Applications").join(&app).fs_exists() || user.as_ref().is_some_and(|u| u.join(&app).fs_exists())
         })
         .take(BROWSERS_SHOWN)
         .collect()
@@ -107,6 +107,10 @@ pub fn browsers() -> Vec<&'static str> {
 pub fn browser_at(i: usize) -> String {
     i.checked_sub(1).and_then(|i| browsers().get(i).copied()).unwrap_or_default().to_string()
 }
+fn upstream_attribution() -> String {
+    crate::localized_format!("基于 Quiet.md {} 开发", "Based on Quiet.md {}", fdl_core::UPSTREAM_VERSION)
+}
+
 pub(crate) fn product_about_description() -> &'static str {
     tr("飞记是一款原生 Markdown 文档应用。启用 iCloud 后，支持跨设备同步和多人实时协作。",
         "Fei Notes is a native Markdown document app. Enable iCloud to sync across devices and collaborate in real time.")
@@ -150,6 +154,9 @@ pub struct Preferences {
     pub last_new: String,
     /// 网页搜索 engine: "baidu", "bing", "duckduckgo"; empty is Google.
     pub search_engine: String,
+    /// 启动时打开: true shows the home page; false returns to the
+    /// document read last (#234).
+    pub start_home: bool,
     /// 打开链接: the browser a link opens in ("Safari", "Microsoft Edge"…),
     /// empty for the system default.
     pub browser: String,
@@ -158,13 +165,24 @@ pub struct Preferences {
     pub opaque_window: bool,
     /// 外观 › 界面字号: "small" or "large"; empty is the 13pt standard.
     pub ui_font: String,
+    /// 外观 › 界面字体: the family the sidebar, menus and settings are drawn in
+    /// (a system family name); empty is the platform's own sans.
+    pub ui_family: String,
+    /// 外观 › 文档字体: the family the note's body text and headings are drawn
+    /// in (a system family name); empty follows the document theme.
+    pub doc_family: String,
     /// When 稍后 put off moving the library to real folders (Unix seconds; 0 never).
     pub migrate_later: u64,
+    /// 查找 › `.*`: the find box takes regular expressions.
+    pub find_regex: bool,
+    /// 退格键回到标题: Backspace at the start of the body merges the first
+    /// paragraph into the title (the default); off keeps the caret in the body.
+    pub backspace_to_title: bool,
 }
 
 /// A week between asks to move the library to real folders.
 const MIGRATE_ASK_EVERY: u64 = 7 * 24 * 3600;
-fn unix_now() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
+fn unix_now() -> u64 { web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
 
 /// 稍后 on the move to real folders: remember when.
 pub fn migrate_later() {
@@ -176,18 +194,29 @@ pub fn migrate_later() {
 /// Whether to ask about the move now: never put off, or a week since.
 pub fn migrate_ask_due() -> bool { unix_now().saturating_sub(prefs().migrate_later) >= MIGRATE_ASK_EVERY }
 
+/// Map a BCP 47 / POSIX locale tag to a supported interface language.
+fn lang_for_locale(locale: &str) -> Option<Lang> {
+    let mut parts = locale.split(['.', '@']).next().unwrap_or("").split(['-', '_']);
+    let base = parts.next()?.to_ascii_lowercase();
+    if base.is_empty() { return None; }
+    if base == "zh" {
+        // A script subtag decides (zh-Hans-HK is Simplified); otherwise the region does.
+        let rest: Vec<String> = parts.map(str::to_ascii_lowercase).collect();
+        let trad = rest.iter().find(|p| *p == "hans" || *p == "hant").map_or_else(|| rest.iter().any(|p| matches!(p.as_str(), "tw" | "hk" | "mo")), |s| s == "hant");
+        return Some(if trad { Lang::ZhTw } else { Lang::Zh });
+    }
+    Lang::ALL.into_iter().find(|l| l.code() == base)
+}
+
 /// Pick the first supported system language; saved preferences still win.
 fn system_lang() -> Lang {
-    sys_locale::get_locales().find_map(|locale| {
-        let code = locale.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
-        Lang::ALL.into_iter().find(|l| l.code() == code)
-    }).unwrap_or(Lang::En)
+    sys_locale::get_locales().find_map(|l| lang_for_locale(&l)).unwrap_or(Lang::En)
 }
 
 impl Default for Preferences {
     fn default() -> Self {
         let lang = system_lang();
-        Preferences { theme: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), browser: String::new(), opaque_window: false, ui_font: String::new(), migrate_later: 0 }
+        Preferences { theme: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), start_home: false, browser: String::new(), opaque_window: false, ui_font: String::new(), ui_family: String::new(), doc_family: String::new(), migrate_later: 0, find_regex: false, backspace_to_title: true }
     }
 }
 
@@ -197,6 +226,7 @@ impl Preferences {
         crate::themes::supported_id(id).into()
     }
     pub fn lang(&self) -> Lang {
+        if matches!(self.language.as_str(), "zh-TW" | "zh-Hant") { return Lang::ZhTw; }
         Lang::ALL.into_iter().find(|l| l.code() == self.language).unwrap_or(if self.english { Lang::En } else { Lang::Zh })
     }
     pub fn set_lang(&mut self, lang: Lang) {
@@ -219,13 +249,13 @@ pub fn load() {
     let bytes = if crate::store::Store::sqlite_session() {
         crate::store::Store::sqlite_setting("preferences").ok().flatten().or({
             #[cfg(target_os = "ios")]
-            { std::fs::read(path()).ok() }
+            { fdl_core::vfs::read(path()).ok() }
             #[cfg(not(target_os = "ios"))]
             { None }
         })
-    } else { std::fs::read(path()).ok() };
+    } else { fdl_core::vfs::read(path()).ok() };
     #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-    let bytes = std::fs::read(path()).ok();
+    let bytes = fdl_core::vfs::read(path()).ok();
     let p = bytes.and_then(|b| serde_json::from_slice::<Preferences>(&b).ok()).unwrap_or_default();
     apply(p);
 }
@@ -233,10 +263,28 @@ pub fn load() {
 pub(crate) fn apply(p: Preferences) {
     FEISHU.store(p.feishu, Ordering::Relaxed);
     LANG.store(p.lang() as u8, Ordering::Relaxed);
+    crate::model::set_untitled(translate(crate::model::UNTITLED, p.lang()));
     MOTION_HIGH.store(p.motion == "high", Ordering::Relaxed);
     // Before the themes are read (startup) the base comes from `feishu`.
     themes::select(&p.theme_id());
+    themes::set_doc_font(&p.doc_family);
+    theme::set_ui_family(&p.ui_family);
     *PREFS.write().unwrap() = Some(p);
+}
+
+/// Startup and each new window: with a font chosen, read the installed
+/// families once so one that has been uninstalled since falls back to the
+/// default face (`fonts::store`) instead of GPUI's last resort, and note which
+/// punctuation it draws itself (`fonts::probe`). Without one, fonts stay
+/// unenumerated.
+pub fn check_fonts(cx: &App) {
+    let p = prefs();
+    if p.ui_family.trim().is_empty() && p.doc_family.trim().is_empty() { return }
+    crate::fonts::families(cx);
+    crate::fonts::probe(&p.doc_family, cx);
+    crate::fonts::probe(&p.ui_family, cx);
+    themes::set_doc_font(&p.doc_family);
+    theme::set_ui_family(&p.ui_family);
 }
 
 /// Tell the OS which look the app wants (macOS: the window material, menus
@@ -290,12 +338,12 @@ pub(crate) fn save(p: &Preferences) -> anyhow::Result<()> {
     }
     use std::io::Write;
     let root = crate::store::Store::internal_dir();
-    std::fs::create_dir_all(&root)?;
+    fdl_core::vfs::create_dir_all(&root)?;
     let tmp = root.join("preferences.json.tmp");
-    let mut f = std::fs::File::create(&tmp)?;
+    let mut f = fdl_core::vfs::File::create(&tmp)?;
     f.write_all(&serde_json::to_vec_pretty(p)?)?;
     f.sync_all()?;
-    std::fs::rename(tmp, path())?;
+    fdl_core::vfs::rename(tmp, path())?;
     apply(p.clone());
     Ok(())
 }
@@ -346,7 +394,7 @@ fn open_in_editor(p: &std::path::Path, cx: &mut App) {
 
 /// Theme files are watched: saving one in an editor redraws at once.
 pub(crate) fn watch_themes(cx: &mut Context<Workspace>) {
-    static LAST: Mutex<Option<Vec<(std::path::PathBuf, std::time::SystemTime, u64)>>> = Mutex::new(None);
+    static LAST: Mutex<Option<Vec<(std::path::PathBuf, web_time::SystemTime, u64)>>> = Mutex::new(None);
     *LAST.lock().unwrap() = Some(themes::stamp());
     cx.spawn(async |this, cx| loop {
         cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
@@ -514,6 +562,46 @@ pub struct PrefMenu {
     on: std::rc::Rc<dyn Fn(&mut Workspace, usize, &mut Context<Workspace>)>,
 }
 
+/// Which family a font list picks: the note's text or the interface's.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum FontTarget { Doc, Ui }
+
+impl FontTarget {
+    fn key(self) -> &'static str { match self { FontTarget::Doc => "doc", FontTarget::Ui => "ui" } }
+    /// The family in use ("" follows the theme / the platform).
+    fn current(self) -> String { match self { FontTarget::Doc => prefs().doc_family, FontTarget::Ui => prefs().ui_family } }
+    /// The first row of the list: put the setting back to the default.
+    fn reset_label(self) -> &'static str {
+        match self { FontTarget::Doc => tr("跟随主题", "Theme default"), FontTarget::Ui => tr("跟随系统字体", "System font") }
+    }
+}
+
+/// 外观 › 文档字体 / 界面字体: the open font list. Its search field filters the
+/// system's families (`crate::fonts`, read once per run); ↑ / ↓ walk the
+/// list, ↩ picks.
+pub struct FontMenu {
+    pub field: Entity<TextField>,
+    target: FontTarget,
+    /// The row the arrow keys point at, by family ("" is 跟随主题): filtering
+    /// the list would shift an index.
+    focused: Option<String>,
+    /// The list is virtual (hundreds of families, each shaped in its own
+    /// face) and follows the arrow keys.
+    scroll: UniformListScrollHandle,
+    _sub: gpui::Subscription,
+}
+
+/// 外观's font list: 跟随主题, then the installed families `term` matches. A
+/// search drops 跟随主题 — it is a reset, not a family.
+fn font_choices(term: &str, cx: &App) -> Vec<String> { filter_fonts(term, &crate::fonts::families(cx)) }
+
+fn filter_fonts(term: &str, families: &[String]) -> Vec<String> {
+    let term = term.trim().to_lowercase();
+    let mut list = if term.is_empty() { vec![String::new()] } else { vec![] };
+    list.extend(families.iter().filter(|f| f.to_lowercase().contains(&term)).cloned());
+    list
+}
+
 /// A segmented control: a grey groove and a white selected pill.
 fn segmented(id: &'static str, labels: &[&'static str], selected: usize, on: impl Fn(&mut Workspace, usize, &mut Context<Workspace>) + Clone + 'static, cx: &mut Context<Workspace>) -> Div {
     div().flex_none().h(px(crate::mobile::control(28.))).p(px(2.)).flex().gap(px(2.)).rounded(px(9.)).bg(Theme::fill_hover_strong())
@@ -647,7 +735,8 @@ fn sample_page(t: &themes::Theme, s: f32) -> Div {
     let sc = |v: f32| px((v * s).max(0.5));
     let text = st.color("page.color").unwrap_or_else(|| st.token("text"));
     let (body, line) = (st.num("page.size"), st.num("page.line"));
-    let (font, mono): (SharedString, SharedString) = (st.font("page.font").into(), st.font("pre.font").into());
+    // 文档字体 follows into the sample: what the page shows is what the note looks like.
+    let (font, mono): (SharedString, SharedString) = (themes::doc_font_in(st, "page.font").into(), st.font("pre.font").into());
     let gap = sc(st.num("p.gap")).clamp(px(4.), px(9.));
     let p = |c: Div| c.text_size(sc(body)).line_height(sc(line));
     let heading = |l: u8, s: &'static str| {
@@ -737,7 +826,7 @@ fn sample_page(t: &themes::Theme, s: f32) -> Div {
         // min_w_0: the column follows the frame, not its widest unbreakable line.
         .child(div().w_full().min_w_0().overflow_hidden().max_w((sc(st.num("page.width")) * 1.35).min(px(760.))).px(px(32.)).pt(px(22.)).flex().flex_col().gap(gap)
             .child(div().text_size(sc(st.num("title.size"))).line_height(sc(st.num("title.size") * 1.25)).font_weight(FontWeight(st.num("title.weight")))
-                .font_family(SharedString::from(st.font("title.font"))).text_color(st.color("title.color").unwrap_or(text)).child(tr("开始指南", "Getting started")))
+                .font_family(SharedString::from(themes::doc_font_in(st, "title.font"))).text_color(st.color("title.color").unwrap_or(text)).child(tr("开始指南", "Getting started")))
             .child(para)
             .child(callout)
             .child(heading(1, tr("五分钟上手", "Five minutes")))
@@ -760,7 +849,7 @@ fn badge(t: &themes::Theme) -> Option<&'static str> {
 /// A pop-up button (macOS): the current choice and a chevron on `button`'s white pill.
 fn popup_button(id: impl Into<ElementId>, label: impl Into<SharedString>, open: bool) -> Stateful<Div> {
     div().id(id).flex_none().max_w(px(220.)).h(px(crate::mobile::control(28.))).pl(px(12.)).pr(px(8.)).flex().items_center().gap(px(6.)).rounded(px(8.)).cursor_pointer()
-        .bg(if open { theme::c(craft::N100) } else { Theme::bg_body() }).border_1().border_color(Theme::button_border()).shadow(theme::shadow_button())
+        .bg(if open { theme::c(craft::N100) } else { crate::theme::raised(Theme::bg_body()) }).border_1().border_color(Theme::button_border()).shadow(theme::shadow_button())
         .hover(|s| s.bg(theme::c(craft::N100))).active(|s| s.bg(theme::c(craft::N200)))
         .text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 5.)).text_color(Theme::text())
         .child(div().min_w_0().truncate().child(label.into()))
@@ -803,7 +892,7 @@ impl Workspace {
                 cx.notify();
             }))
             .child(div().id("theme-menu-list").w(px(200.)).max_h(px(302.)).overflow_y_scroll().py(px(ui::MENU_PAD_Y)).flex().flex_col().children(rows));
-        Some(deferred(anchored().anchor(Corner::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
+        Some(deferred(anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
     /// A choice as a dropdown button, like 界面语言's: the picked label, a menu of the rest.
@@ -844,13 +933,149 @@ impl Workspace {
                 cx.notify();
             }))
             .child(div().min_w(px(160.)).py(px(ui::MENU_PAD_Y)).flex().flex_col().children(rows));
-        Some(deferred(anchored().anchor(Corner::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
+        Some(deferred(anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
     fn pick_pref(&mut self, i: usize, cx: &mut Context<Self>) {
         let Some(m) = self.pref_menu.take() else { return };
         (m.on)(self, i, cx);
         cx.notify();
+    }
+
+    /// 外观 › 文档字体 / 界面字体: open (or close) the font list, its search
+    /// field focused.
+    pub(crate) fn toggle_font_menu(&mut self, target: FontTarget, window: &mut Window, cx: &mut Context<Self>) {
+        if self.font_menu.take().is_some() {
+            window.focus(&self.focus, cx);
+            cx.notify();
+            return;
+        }
+        let field = cx.new(|cx| {
+            let mut f = TextField::new(tr("搜索字体", "Search fonts"), cx);
+            f.placeholder_color = Theme::text_disabled();
+            f
+        });
+        // Typing re-filters the list; the keys walk it (the field stops the
+        // window's own key handling, so the events come from here).
+        let sub = cx.subscribe_in(&field, window, |w, _, ev: &TextFieldEvent, window, cx| {
+            match ev {
+                TextFieldEvent::Changed => if let Some(m) = &mut w.font_menu { m.focused = None; m.scroll.scroll_to_item(0, ScrollStrategy::Top); },
+                TextFieldEvent::Down | TextFieldEvent::Up => w.move_font_focus(*ev == TextFieldEvent::Down, cx),
+                TextFieldEvent::Submit => w.pick_focused_font(window, cx),
+                TextFieldEvent::Cancel => { w.font_menu = None; window.focus(&w.focus, cx); }
+                _ => {}
+            }
+            cx.notify();
+        });
+        let focus = field.focus_handle(cx);
+        // Open on the family in use.
+        let scroll = UniformListScrollHandle::new();
+        let current = target.current();
+        if let Some(i) = font_choices("", cx).iter().position(|f| f.eq_ignore_ascii_case(&current)) { scroll.scroll_to_item(i, ScrollStrategy::Center); }
+        self.font_menu = Some(FontMenu { field, target, focused: None, scroll, _sub: sub });
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// The font list under its button: a search field, then 跟随主题 and the
+    /// installed families, each drawn in its own face.
+    pub(crate) fn render_font_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.font_menu.as_ref()?;
+        if self.view != View::Settings || self.settings_page != Page::Appearance { return None }
+        let b = *self.font_anchors.borrow().get(menu.target.key())?;
+        let target = menu.target;
+        let current = target.current();
+        let choices = std::rc::Rc::new(font_choices(&menu.field.read(cx).text, cx));
+        let n = choices.len();
+        let focused = menu.focused.clone();
+        let list = if n == 0 {
+            div().px(px(10.)).py(px(6.)).text_size(px(theme::ui_font_small())).line_height(px(theme::ui_font_small() + 5.))
+                .text_color(Theme::text_caption()).child(tr("没有匹配的字体", "No matching font")).into_any_element()
+        } else {
+            uniform_list("font-list", n, cx.processor(move |_, range: std::ops::Range<usize>, _, cx| {
+                range.map(|i| {
+                    let family = &choices[i];
+                    let g = SharedString::from(format!("font-{}-{i}", target.key()));
+                    let picked = family.eq_ignore_ascii_case(&current);
+                    let (label, face): (SharedString, SharedString) = if family.is_empty() {
+                        (target.reset_label().into(), theme::ui_family().into())
+                    } else { (family.clone().into(), family.clone().into()) };
+                    let value = family.clone();
+                    // A virtual list's rows don't stretch on their own.
+                    div().w_full().flex().flex_col().child(ui::menu_row(g.clone(), g.clone())
+                        .when(focused.as_deref() == Some(family.as_str()), |d| d.bg(Theme::fill_hover()))
+                        .child(div().flex_1().min_w_0().overflow_hidden().font_family(face).child(ui::menu_label(label, g.clone(), gpui::white())))
+                        .child(div().flex_none().w(px(14.)).when(picked, |d| d.child(ui::menu_glyph("check", 14., g.clone()))))
+                        .on_click(cx.listener(move |w, _, window, cx| w.pick_font(value.clone(), target, window, cx))))
+                }).collect()
+            }))
+            .track_scroll(&menu.scroll)
+            .h(px((n as f32 * ui::MENU_ROW_H).min(300.)))
+            .into_any_element()
+        };
+        let anchors = self.font_anchors.clone();
+        let key = target.key();
+        let popup = ui::popover().id("font-menu").occlude().flex()
+            .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, window, cx| {
+                // A press on the button itself: its click closes the list.
+                if anchors.borrow().get(key).is_some_and(|b| b.contains(&ev.position)) { return }
+                w.font_menu = None;
+                window.focus(&w.focus, cx);
+                cx.notify();
+            }))
+            .child(div().w(px(240.)).flex().flex_col()
+                .child(div().px(px(8.)).pt(px(8.)).pb(px(4.))
+                    .child(div().h(px(28.)).px(px(7.)).flex().items_center().gap(px(6.)).rounded(px(7.)).bg(Theme::fill_hover())
+                        .child(ui::icon("search", 13., Theme::icon()))
+                        .child(div().flex_1().min_w_0().child(menu.field.clone()))))
+                .child(div().pb(px(ui::MENU_PAD_Y)).child(list)));
+        Some(deferred(anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(popup)).with_priority(2).into_any_element())
+    }
+
+    fn pick_font(&mut self, family: String, target: FontTarget, window: &mut Window, cx: &mut Context<Self>) {
+        self.font_menu = None;
+        window.focus(&self.focus, cx);
+        self.set_pref(move |p| match target {
+            FontTarget::Doc => p.doc_family = family,
+            FontTarget::Ui => p.ui_family = family,
+        }, cx);
+    }
+
+    /// ↑ / ↓ in the font list: the first press moves from the family in use,
+    /// else lands on the first row (↓) or the last (↑).
+    fn move_font_focus(&mut self, down: bool, cx: &mut Context<Self>) {
+        let Some(menu) = &self.font_menu else { return };
+        let choices = font_choices(&menu.field.read(cx).text, cx);
+        if choices.is_empty() { return }
+        // Before the first press the family in use is the starting point.
+        let current = menu.target.current();
+        let at = match &menu.focused {
+            Some(f) => choices.iter().position(|c| c == f),
+            None => choices.iter().position(|c| !c.is_empty() && c.eq_ignore_ascii_case(&current)),
+        };
+        let next = match (at, down) {
+            (None, true) => 0,
+            (None, false) => choices.len() - 1,
+            (Some(i), true) => (i + 1).min(choices.len() - 1),
+            (Some(i), false) => i.saturating_sub(1),
+        };
+        if let Some(m) = &mut self.font_menu {
+            m.focused = Some(choices[next].clone());
+            m.scroll.scroll_to_item(next, ScrollStrategy::Nearest);
+        }
+    }
+
+    /// ↩ in the font list: the highlighted family, else the first match.
+    fn pick_focused_font(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = self.font_menu.as_ref().and_then(|m| {
+            let choices = font_choices(&m.field.read(cx).text, cx);
+            let family = match &m.focused {
+                Some(f) => choices.iter().find(|c| *c == f).cloned(),
+                None => choices.first().cloned(),
+            };
+            family.map(|f| (f, m.target))
+        });
+        if let Some((family, target)) = picked { self.pick_font(family, target, window, cx); }
     }
 
     /// Keys while a 通用 dropdown is open; true when used.
@@ -892,7 +1117,7 @@ impl Workspace {
             }))
             .child(div().id("lang-menu-list").w(px(160.)).py(px(ui::MENU_PAD_Y)).flex().flex_col()
                 .when(cfg!(target_os = "ios"), |d| d.max_h(px(360.)).overflow_y_scroll()).children(rows));
-        Some(deferred(anchored().anchor(Corner::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
+        Some(deferred(anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
     /// Keys while the language dropdown is open; true when used.
@@ -944,7 +1169,9 @@ impl Workspace {
             // the GPUI input update so those callbacks can refresh the windows.
             cx.spawn(async |_, _| apply_appearance(&prefs().appearance)).detach();
         }
-        if p.theme_id() != old.theme_id() || p.lang() != old.lang() || sync_dark(cx) {
+        if p.doc_family != old.doc_family { crate::fonts::probe(&p.doc_family, cx); }
+        if p.ui_family != old.ui_family { crate::fonts::probe(&p.ui_family, cx); }
+        if p.theme_id() != old.theme_id() || p.lang() != old.lang() || p.doc_family != old.doc_family || p.ui_family != old.ui_family || sync_dark(cx) {
             refresh_all(self, cx);
         }
         cx.notify();
@@ -1045,7 +1272,7 @@ impl Workspace {
                     None => w.open_settings_trash(cx),
                 }))
         };
-        div().w(px(self.sidebar_w(window))).h_full().flex_none().flex().flex_col().text_color(Theme::text()).font_family(theme::UI_FONT)
+        div().w(px(self.sidebar_w(window))).h_full().flex_none().flex().flex_col().text_color(Theme::text()).font_family(theme::ui_family())
             .when_some(sb::surface(), |d, c| d.bg(c))
             .child(div().h(px(crate::app::HEADER_H)).flex_none().flex().items_center().pl(px(theme::TRAFFIC_LIGHTS_W)).pr(px(12.)).title_bar().child(self.header_navigation(cx))
                 .child(div().flex_1()).children(update_pill(cx)))
@@ -1153,7 +1380,7 @@ impl Workspace {
             - if self.sidebar_open { self.sidebar_w(window) } else { 0. };
         let margin = if content_width < 400. { 16. } else { 32. };
         let compact_title = cfg!(all(target_os = "macos", feature = "cloudkit-sync")) && page == Page::Library;
-        div().flex_1().min_w_0().h_full().flex().flex_col().bg(Theme::bg_body()).text_color(Theme::text()).font_family(theme::UI_FONT)
+        div().flex_1().min_w_0().h_full().flex().flex_col().bg(Theme::bg_body()).text_color(Theme::text()).font_family(theme::ui_family())
             // The bar only drags the window; the page title heads the centred column.
             .child(div().h(px(crate::app::HEADER_H)).flex_none().flex().items_center().title_bar()
                 .when_some(ui::toolbar_color("toolbar.bg"), |d, c| d.bg(c))
@@ -1197,10 +1424,15 @@ impl Workspace {
                         .relative()
                         .on_click(cx.listener(move |w, _, _, cx| { w.pref_menu = None; w.lang_menu = if w.lang_menu.is_some() { None } else { Some(current) }; cx.notify(); }))
                 }).into_any_element(),
+                row(tr("启动时打开", "On launch"), desc(tr("上次阅读的文档，或主页。", "The document read last, or the home page.")),
+                    segmented("pref-start", &[tr("上次文档", "Last document"), tr("主页", "Home page")], p.start_home as usize,
+                        |w, i, cx| w.set_pref(|p| p.start_home = i == 1, cx), cx)).into_any_element(),
                 row(tr("自动下载网络图片", "Download web images"), desc(if crate::FEI_NOTES {
                     tr("关闭后，网络图片显示为占位，可点击单独加载。", "When off, web images show a placeholder you can click to load.")
                 } else { tr("关闭后不联网，网络图片显示为占位，点击单独加载。", "When off the app stays offline; web images show a placeholder you can click to load.") }),
                     switch("pref-remote", p.remote_images).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.remote_images = !p.remote_images, cx)))).into_any_element(),
+                row(tr("退格键回到标题", "Backspace returns to title"), desc(tr("在正文开头按退格键时回到标题，第一段文字并入标题。关闭后光标留在正文。", "Backspace at the start of the body moves to the title, joining the first paragraph to it. When off the caret stays in the body.")),
+                    switch("pref-backspace-title", p.backspace_to_title).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.backspace_to_title = !p.backspace_to_title, cx)))).into_any_element(),
                 // 网页搜索 opens the selection in the browser; which site is the
                 // user's habit, so it is a preference rather than a constant.
                 #[cfg(not(target_os = "ios"))]
@@ -1225,6 +1457,28 @@ impl Workspace {
         div().w_full().flex().flex_col().gap(px(28.))
             .child(group(None, rows))
             .into_any_element()
+    }
+
+    /// 外观's two font rows (界面字体, 文档字体): the family in use and a list of
+    /// every family the system has. `about` describes the row; a family that
+    /// was uninstalled since it was picked says so instead.
+    fn font_row(&self, target: FontTarget, title: &'static str, about: &'static str, cx: &mut Context<Self>) -> Div {
+        let family = target.current();
+        let description = if family.is_empty() || crate::fonts::installed(&family, cx) {
+            desc(about)
+        } else {
+            Some(tr("这个字体没有安装，暂时用默认字体显示。", "That font isn't installed; the default face stands in for now.").into())
+        };
+        row(title, description, {
+            let anchors = self.font_anchors.clone();
+            let key = target.key();
+            let label: SharedString = if family.is_empty() { target.reset_label().into() } else { family.clone().into() };
+            let open = self.font_menu.as_ref().is_some_and(|m| m.target == target);
+            popup_button(format!("{}-font-picker", target.key()), label, open)
+                .child(canvas(move |b, _, _| { anchors.borrow_mut().insert(key, b); }, |_, _, _, _| {}).absolute().inset_0())
+                .relative()
+                .on_click(cx.listener(move |w, _, window, cx| w.toggle_font_menu(target, window, cx)))
+        })
     }
 
     fn appearance_page(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1297,7 +1551,11 @@ impl Workspace {
                 segmented("ui-font", &[tr("小", "Small"), tr("标准", "Default"), tr("大", "Large")], sel,
                     |w, i, cx| w.set_pref(|p| p.ui_font = ["small", "", "large"][i].into(), cx), cx)
             }).into_any_element(),
+            self.font_row(FontTarget::Ui, tr("界面字体", "Interface font"),
+                tr("侧栏、菜单和设置页用这个字体；文档用下面的「文档字体」。", "The sidebar, menus and settings use it; the note has its own below."), cx).into_any_element(),
             row(tr("文档主题", "Document theme"), None, picker).into_any_element(),
+            self.font_row(FontTarget::Doc, tr("文档字体", "Document font"),
+                tr("正文和标题用这个字体，代码块仍用主题的等宽字体。", "Body text and headings use it; code keeps the theme's monospace face."), cx).into_any_element(),
             sample.into_any_element(),
         ]);
         if THEME_CSS { rows.push(row(tr("主题 CSS", "Theme CSS"), Some(where_),
@@ -1381,6 +1639,22 @@ impl Workspace {
                 .child(button("history-plus", "+").on_click(cx.listener(|w, _, window, cx| w.change_history_limit(1, window, cx))))).into_any_element());
         div().w_full().flex().flex_col().gap(px(8.))
             .child(group(None,rows))
+            .when(!crate::FEI_NOTES, |d| d.child(group(None, vec![
+                // #237: files no document (the Trash included) mentions.
+                row(tr("未使用资源", "Unused assets"), Some(tr("资源文件夹里没有任何文档（含回收站、版本历史和本机文件）引用的图片和文件。检查后确认才会移出。", "Images and files in the asset folder that no document mentions, including the Trash, version history and local files. Nothing is moved until you confirm.").into()),
+                    button("sweep-assets", tr("检查", "Check")).on_click(cx.listener(|w, _, window, cx| {
+                        let root = crate::store::Store::root_dir();
+                        let (live, outside) = w.sweep_inputs(window, cx);
+                        cx.spawn(async move |this, cx| {
+                            let sweep = cx.background_executor().spawn(async move { crate::store::Store::unused_assets_at(root, live, outside) }).await;
+                            let _ = this.update(cx, |w, cx| match sweep {
+                                Ok(files) if files.is_empty() => w.show_toast(crate::settings::text("没有未使用资源"), cx),
+                                Ok(files) => { w.confirm = Some(crate::app::Confirm::RemoveUnused(files)); cx.notify(); }
+                                Err(e) => w.sweep_failed(&e, cx),
+                            });
+                        }).detach();
+                    }))).into_any_element(),
+            ])))
             .children({
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 { Some(self.product_library_groups(cx)) }
@@ -1528,8 +1802,7 @@ impl Workspace {
         }
     }
 
-    /// 更改…: a folder picked as the next library; `library_in` decides
-    /// whether it is used as it is or gets a Quiet.md folder inside.
+    /// 更改…: a folder picked as the next library, used as it is (see `library_in`).
     #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
     fn pick_library(&mut self, cx: &mut Context<Self>) {
         if cfg!(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-restore")) { return; }
@@ -1879,14 +2152,14 @@ impl Workspace {
         self.library_switching = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            if !cx.update(|cx| crate::app::save_windows_before(cx, |_| {})).unwrap_or(false) {
+            if !cx.update(|cx| crate::app::save_windows_before(cx, |_| {})) {
                 let _ = this.update(cx, |w, cx| { w.library_switching = false; cx.notify(); });
                 return;
             }
             let _ = cx.update(crate::cloud_sync::release_unused);
             let result = cx.background_executor().spawn(async move { prepared.schedule(&root) }).await;
             match result {
-                Ok(()) => { let _ = cx.update(crate::app::restart); }
+                Ok(()) => { cx.update(crate::app::restart); }
                 Err(error) => {
                     let _ = this.update(cx, |w, cx| {
                         w.library_switching = false;
@@ -1981,12 +2254,12 @@ impl Workspace {
         self.library_switching = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            if !cx.update(|cx| crate::app::save_windows_before(cx, |_| {})).unwrap_or(false) {
+            if !cx.update(|cx| crate::app::save_windows_before(cx, |_| {})) {
                 let _ = this.update(cx, |w, cx| { w.library_switching = false; cx.notify(); });
                 return;
             }
             match cx.background_executor().spawn(async move { crate::cloud_restore::select_library(selection) }).await {
-                Ok(_) => { let _ = cx.update(crate::app::restart); }
+                Ok(_) => { cx.update(crate::app::restart); }
                 Err(error) => {
                     let _ = this.update(cx, |w, cx| {
                         w.library_switching = false;
@@ -2085,7 +2358,7 @@ impl Workspace {
             .children(release_rows)
             .when(crate::FEI_NOTES, |d| d.child(div().w_full().px(px(4.)).text_size(px(footer_size))
                 .line_height(px(footer_size + 5.)).text_color(Theme::text_caption())
-                .child(tr("基于 Quiet.md 开发", "Based on Quiet.md"))))
+                .child(upstream_attribution())))
             .when(!crate::FEI_NOTES, |d| d.child(group(None, vec![update_row(cx).into_any_element()])))
             .into_any_element()
     }
@@ -2574,6 +2847,10 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "已彻底删除" => "Permanently deleted",
         "清空" => "Empty",
         "已清空回收站" => "Trash emptied",
+        "清理未使用资源" => "Remove unused assets",
+        "没有未使用资源" => "No unused assets",
+        "没有可清理的资源" => "Nothing to remove",
+        "移出" => "Move out",
         "确认清空回收站？" => "Empty the Trash?",
         "删除的内容将进入回收站，30 天后自动彻底删除" => "Deleted items will be moved to Trash and permanently deleted after 30 days.",
         "确认恢复？" => "Restore this document?",
@@ -2639,6 +2916,10 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "识别图片宽高失败" => "Could not read image dimensions",
         "上传图片大小不能超过 20 MB" => "Images must be 20 MB or smaller",
         "文件不存在" => "File not found",
+        "文件夹不存在" => "Folder not found",
+        "这个文件夹在文档库里，它的内容已经在我的文档中" => "This folder is inside the library; its notes are already in My documents",
+        "这个文件夹里有文档库，不能作为本机文件夹打开" => "This folder holds the library, so it can't be opened as a folder on this computer",
+        "本机文件夹和文档库之间只能复制，不能移动" => "Between folders on this computer and the library, notes can be copied but not moved",
         "加载失败，" => "Could not load. ",
         "点击重试" => "Retry",
         "图片过小，请放大后重试" => "Image too small. Enlarge it and try again.",
@@ -2713,6 +2994,8 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "查找" => "Find",
         "替换为" => "Replace with",
         "全部替换" => "Replace all",
+        "正则表达式" => "Regular expression",
+        "正则有误" => "Invalid regex",
         "替换" => "Replace",
         "请输入代码块名称" => "Enter code block name",
         "输入图片描述" => "Enter image caption",
@@ -2777,6 +3060,240 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "文件读取失败" => "Could not read file",
         "未命名文档" => "Untitled",
         "画板" => "Board",
+        // 数据表
+        "查看" => "Open",
+        "退出全屏" => "Exit full screen",
+        "上周" => "Last week",
+        "上月" => "Last month",
+        "下周" => "Next week",
+        "下月" => "Next month",
+        "不为空" => "Is not empty",
+        "不包含" => "Does not contain",
+        "不展示" => "None",
+        "不等于" => "Is not",
+        "业务" => "Business",
+        "个隐藏字段" => "hidden fields",
+        "中等" => "Medium",
+        "为空" => "Is empty",
+        "人员" => "Person",
+        "人民币" => "Chinese yuan",
+        "任一" => "Any",
+        "位" => "places",
+        "位小数" => "decimal places",
+        "低" => "Short",
+        "俄罗斯卢布" => "Russian ruble",
+        "保留" => "Keep",
+        "修改字段/列" => "Edit field",
+        "倒序" => "Descending",
+        "允许关联多条记录" => "Allow linking to multiple records",
+        "全部展开" => "Expand all",
+        "全部折叠" => "Collapse all",
+        "全部显示" => "Show all",
+        "全部隐藏" => "Hide all",
+        "公式内容" => "Formula",
+        "公式有效" => "Formula is valid",
+        "关联" => "Link",
+        "关联到" => "Link to",
+        "关联字段" => "Link field",
+        "关联的数据表" => "Linked table",
+        "具体日期" => "Exact date",
+        "冻结至此字段/列" => "Freeze up to this field",
+        "函数" => "Functions",
+        "分组" => "Group",
+        "创建于" => "Created",
+        "删除字段/列" => "Delete field",
+        "个字段" => "fields",
+        "删除数据表" => "Delete table",
+        "删除视图" => "Delete view",
+        "删除记录" => "Delete record",
+        "删除选项" => "Delete option",
+        "加拿大元" => "Canadian dollar",
+        "包含" => "Contains",
+        "千分位" => "Thousands separator",
+        "千分位（小数点）" => "Thousands separator (decimal)",
+        "单选" => "Single select",
+        "印度卢比" => "Indian rupee",
+        "原样引用" => "Original values",
+        "去重" => "Unique values",
+        "双向关联" => "Two-way link",
+        "取消冻结" => "Unfreeze",
+        "取消选择" => "Deselect",
+        "合并文本" => "Join text",
+        "向上插入 1 行" => "Insert row above",
+        "向下插入 1 行" => "Insert row below",
+        "向右插入字段/列" => "Insert field right",
+        "向左插入字段/列" => "Insert field left",
+        "唯一值" => "Unique",
+        "地理位置" => "Location",
+        "填色" => "Color",
+        "复制为 Markdown 表格" => "Copy as Markdown table",
+        "复制字段/列" => "Duplicate field",
+        "复制视图" => "Duplicate view",
+        "复选框" => "Checkbox",
+        "多维表格" => "Base",
+        "多选" => "Multiple select",
+        "大于" => "Greater than",
+        "大于或等于" => "Greater than or equal",
+        "字段与函数" => "Fields and functions",
+        "字段引用" => "Field references",
+        "字段格式" => "Format",
+        "字段类型" => "Field type",
+        "字段配置" => "Fields",
+        "导入 CSV 为新数据表" => "Import CSV as new table",
+        "导出为 CSV" => "Export as CSV",
+        "小于" => "Less than",
+        "小于或等于" => "Less than or equal",
+        "小数位数" => "Decimal places",
+        "已勾选" => "Checked",
+        "已填写" => "Filled",
+        "已填写占比" => "Percent filled",
+        "已选" => "Selected",
+        "巴西雷亚尔" => "Brazilian real",
+        "常规" => "General",
+        "平均值" => "Average",
+        "成员" => "Members",
+        "所有" => "All",
+        "按 A 到 Z 排序" => "Sort A to Z",
+        "按 Z 到 A 排序" => "Sort Z to A",
+        "按此字段分组" => "Group by this field",
+        "按此字段筛选" => "Filter by this field",
+        "排序" => "Sort",
+        "搜索记录" => "Search records",
+        "数字" => "Number",
+        "数字格式" => "Number format",
+        "数据表" => "Data table",
+        "整数" => "Integer",
+        "新增字段" => "Add field",
+        "新增记录" => "Add record",
+        "新建数据表" => "New table",
+        "新建视图" => "New view",
+        "新建选项" => "Create option",
+        "新记录默认填入创建日期" => "Default to the creation date",
+        "无法读取数据表" => "Could not read the data table",
+        "无结果" => "No results",
+        "日历" => "Calendar",
+        "日历视图" => "Calendar view",
+        "日期格式" => "Date format",
+        "早于" => "Is before",
+        "显示时间" => "Include time",
+        "晚于" => "Is after",
+        "暂未支持" => " is not supported yet",
+        "最后更新于" => "Last modified",
+        "最后更新时间" => "Last modified time",
+        "最大值" => "Max",
+        "最大分值" => "Maximum",
+        "最小值" => "Min",
+        "最早" => "Earliest",
+        "最晚" => "Latest",
+        "未分类" => "Uncategorized",
+        "未勾选" => "Unchecked",
+        "未命名数据表" => "Untitled data table",
+        "未命名记录" => "Untitled record",
+        "未填写" => "Empty",
+        "未填写占比" => "Percent empty",
+        "未来 30 天内" => "Next 30 days",
+        "未来 7 天内" => "Next 7 days",
+        "本周" => "This week",
+        "本月" => "This month",
+        "条件" => "conditions",
+        "条码" => "Barcode",
+        "条记录" => "records",
+        "条，使用筛选缩小范围" => "more: narrow them down with a filter",
+        "查找引用" => "Lookup",
+        "查找或创建选项" => "Find or create an option",
+        "查看详情" => "Open record",
+        "欧元" => "Euro",
+        "求和" => "Sum",
+        "没有符合筛选条件的记录" => "No records match the filter",
+        "没有记录" => "No records",
+        "没有选项" => "No options",
+        "添加人员" => "Add person",
+        "添加成员" => "Add member",
+        "添加条件" => "Add condition",
+        "添加记录" => "Add record",
+        "添加选项" => "Add option",
+        "添加附件" => "Add attachment",
+        "港元" => "Hong Kong dollar",
+        "澳大利亚元" => "Australian dollar",
+        "瑞士法郎" => "Swiss franc",
+        "甘特图" => "Gantt",
+        "甘特视图" => "Gantt view",
+        "电话号码" => "Phone",
+        "百分比" => "Percent",
+        "百分比（小数点）" => "Percent (decimal)",
+        "看板" => "Kanban",
+        "看板视图" => "Kanban view",
+        "看板需要按单选字段分组，请先添加一个单选字段" => "A kanban is grouped by a single select field: add one first",
+        "空" => "Empty",
+        "符合以下" => "Match",
+        "等于" => "Is",
+        "筛选" => "Filter",
+        "统计" => "Summary",
+        "编号前缀" => "Prefix",
+        "编号前缀，例如 NO." => "Prefix, e.g. NO.",
+        "美元" => "US dollar",
+        "自动编号" => "Auto number",
+        "英镑" => "Pound sterling",
+        "行高" => "Row height",
+        "表单" => "Form",
+        "表单视图" => "Form view",
+        "表格视图" => "Grid view",
+        "要引用的字段" => "Field to look up",
+        "计数" => "Count",
+        "计数（非空）" => "Count (non-empty)",
+        "计算方式" => "Calculation",
+        "记录总数" => "Count",
+        "设置分组条件" => "Group by",
+        "设置填色条件" => "Color rows",
+        "设置排序条件" => "Sort by",
+        "设置筛选条件" => "Filter",
+        "设置行高" => "Row height",
+        "评分" => "Rating",
+        "请先添加关联字段" => "Add a link field first",
+        "已删除的数据表" => "Deleted table",
+        "是" => "Yes",
+        "否" => "No",
+        "已删除的字段" => "Deleted field",
+        "这个字段来自有多张数据表的旧文件：它照常显示，设置不能再修改。" => "This field comes from an older file with several tables. It still shows its values, but its settings can no longer be changed.",
+        "请输入" => "Enter",
+        "请输入字段标题" => "Field name",
+        "请输入选项" => "Option name",
+        "请输入默认值" => "Default value",
+        "请选择人员" => "Choose people",
+        "请选择关联字段" => "Choose a link field",
+        "请选择关联字段和要引用的字段" => "Choose a link field and the field to look up",
+        "请选择日期" => "Choose a date",
+        "请选择要引用的字段" => "Choose the field to look up",
+        "请选择记录" => "Choose records",
+        "请选择选项" => "Choose options",
+        "货币" => "Currency",
+        "超链接" => "URL",
+        "超高" => "Extra tall",
+        "输入名字后回车添加" => "Type a name and press Enter",
+        "输入名称后回车新建选项" => "Type a name and press Enter to create an option",
+        "过去 30 天内" => "Past 30 days",
+        "过去 7 天内" => "Past 7 days",
+        "还有" => "And",
+        "还没有附件" => "No attachments yet",
+        "进度" => "Progress",
+        "选择一个单选或人员字段作为看板的分组依据" => "Choose a single select or person field to stack the kanban by",
+        "选择字段" => "Choose a field",
+        "选择条件" => "Add",
+        "选项倒序" => "Options, last first",
+        "选项内容" => "Options",
+        "选项名称" => "Option name",
+        "选项顺序" => "Options, first to last",
+        "阿联酋迪拉姆" => "UAE dirham",
+        "附件" => "Attachment",
+        "隐藏字段/列" => "Hide field",
+        "韩元" => "South Korean won",
+        "顺序" => "Ascending",
+        "高" => "Tall",
+        "高级" => "Advanced",
+        "默认值" => "Default value",
+        "日期" => "Date",
+        "添加" => "Add",
+        "清除" => "Clear",
         "未命名画板" => "Untitled board",
         "退出画板" => "Exit board",
         "空画板" => "Empty board",
@@ -2787,6 +3304,7 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "关注文档更新" => "Follow document updates",
         "刚刚" => "just now",
         "文档不存在" => "Document not found",
+        "文档文件已不在原处，可能已被移动或删除" => "The document's file is no longer where it was. It may have been moved or deleted.",
         "文档已被另一个实例修改，未覆盖磁盘内容。请另存副本或重新载入磁盘版本" => "Another instance modified this document. The file was not overwritten. Save a copy or reload the version on disk.",
         "这个文档库由更新版本的 Quiet.md 创建，部分内容可能无法正确显示，请升级后再编辑" => "These documents were created by a newer version of Quiet.md. Update the app before editing them.",
         _ => text,
@@ -2802,10 +3320,7 @@ macro_rules! localized_format {
 }
 
 /// User titles are content, not translation keys.
-pub fn display_title(title: &str) -> String {
-    let title = title.trim();
-    if title.is_empty() { text(crate::model::UNTITLED).to_string() } else { title.to_string() }
-}
+pub fn display_title(title: &str) -> String { crate::model::display_title(title) }
 
 /// Core diagnostics stay independent of UI language. Only known message templates
 /// are translated here; captured paths, document IDs and OS errors are preserved.
@@ -2860,6 +3375,7 @@ fn diagnostic_for(message: &str, english: bool) -> String {
 
 #[cfg(test)]
 mod localization_tests {
+    use fdl_core::vfs::PathExt as _;
     use super::{localize, diagnostic_for, display_title};
 
     #[test]
@@ -2871,11 +3387,11 @@ mod localization_tests {
             }
         }
         fn walk(dir: &std::path::Path, pattern: &regex::Regex) {
-            for entry in std::fs::read_dir(dir).unwrap() {
+            for entry in fdl_core::vfs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
-                if path.is_dir() { walk(&path, pattern); }
+                if path.fs_is_dir() { walk(&path, pattern); }
                 else if path.extension().is_some_and(|ext| ext == "rs") {
-                    let source = std::fs::read_to_string(path).unwrap();
+                    let source = fdl_core::vfs::read_to_string(path).unwrap();
                     for hit in pattern.captures_iter(source.split("#[cfg(test)]").next().unwrap()) { check(&hit[1]); }
                 }
             }
@@ -2933,8 +3449,11 @@ mod preference_tests {
         for (json, expected) in [
             (r#"{"english":false}"#, Lang::Zh),
             (r#"{"english":true}"#, Lang::En),
+            (r#"{"english":true,"language":"zh-TW"}"#, Lang::ZhTw),
+            (r#"{"english":true,"language":"zh-Hant"}"#, Lang::ZhTw),
             (r#"{"english":true,"language":"ko"}"#, Lang::Ko),
             (r#"{"english":true,"language":"ar"}"#, Lang::Ar),
+            (r#"{"english":true,"language":"tr"}"#, Lang::Tr),
             (r#"{"english":true,"language":"xx"}"#, Lang::En),
         ] {
             let saved: Preferences = serde_json::from_str(json).unwrap();
@@ -2944,8 +3463,52 @@ mod preference_tests {
         p.set_lang(Lang::Ko);
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!((json["language"].as_str(), json["english"].as_bool()), (Some("ko"), Some(true)), "older builds read English");
+        p.set_lang(Lang::ZhTw);
+        assert_eq!((p.language.as_str(), p.english), ("zh-TW", true));
         p.set_lang(Lang::Zh);
         assert!(!p.english);
+    }
+
+    #[test]
+    fn system_locale_distinguishes_traditional_and_simplified_chinese() {
+        use super::{Lang, lang_for_locale};
+        for tag in ["zh-TW", "zh_TW.UTF-8", "zh-Hant", "zh-Hant-TW", "zh-Hant-HK", "zh-HK", "zh-MO"] {
+            assert_eq!(lang_for_locale(tag), Some(Lang::ZhTw), "{tag}");
+        }
+        for tag in ["zh", "zh-CN", "zh_CN.UTF-8", "zh-Hans", "zh-Hans-CN", "zh-SG", "zh-Hans-HK"] {
+            assert_eq!(lang_for_locale(tag), Some(Lang::Zh), "{tag}");
+        }
+        assert_eq!(lang_for_locale("fr_FR.UTF-8"), Some(Lang::Fr));
+        assert_eq!(lang_for_locale("tr-TR"), Some(Lang::Tr));
+        assert_eq!(lang_for_locale("C.UTF-8"), None);
+    }
+
+    /// `lang()` reads the stored discriminant back by its position in `ALL`.
+    #[test]
+    fn languages_are_listed_in_declaration_order() {
+        use super::Lang;
+        for (i, l) in Lang::ALL.into_iter().enumerate() { assert_eq!(l as usize, i, "{l:?}"); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{filter_fonts, Preferences};
+
+    #[test]
+    fn font_list_filters_and_drops_the_reset_while_searching() {
+        let all: Vec<String> = ["Georgia", "LXGW WenKai", "Songti SC"].map(String::from).to_vec();
+        assert_eq!(filter_fonts("", &all), ["", "Georgia", "LXGW WenKai", "Songti SC"]);
+        assert_eq!(filter_fonts(" wen ", &all), ["LXGW WenKai"]);
+        assert!(filter_fonts("zzz", &all).is_empty());
+    }
+
+    /// A preferences.json from before the font settings reads with both
+    /// empty: the theme's and the platform's faces.
+    #[test]
+    fn old_preferences_have_no_fonts() {
+        let p: Preferences = serde_json::from_str(r#"{"theme":"craft","ui_font":"large"}"#).unwrap();
+        assert_eq!((p.ui_family.as_str(), p.doc_family.as_str(), p.ui_font.as_str()), ("", "", "large"));
     }
 }
 

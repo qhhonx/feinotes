@@ -12,6 +12,7 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
+from hlib import doc_file, docs
 from PIL import Image, ImageChops
 
 here = Path(__file__).resolve().parent
@@ -107,7 +108,8 @@ def run(name, theme="craft", context="body", selection=False, below=False, finis
     setup = f"key cmd-f\ntype {anchor}\nkey escape\n"
     if not selection:
         setup += "key left\n"
-    setup += f"wheel 1100 500 {'-700' if below else '700'}\nwait 500\nmove 1150 820\nwait 200\nshot before"
+    # The wheel waits for the find bar to close; earlier it is sometimes dropped.
+    setup += f"wait 500\nwheel 1100 500 {'-700' if below else '700'}\nwait 500\nmove 1150 820\nwait 200\nshot before"
     # Calibrate using a disposable run; the second run starts from the same
     # untouched fixture so finding a task never changes the old text caret.
     probe = run_script(name + "-probe", source, setup)
@@ -115,7 +117,7 @@ def run(name, theme="craft", context="body", selection=False, below=False, finis
     folder = run_script(name, source, setup + f"\nclick {x} {y}\nmove 1150 820\nwait 600\nshot after\n"
                         + finish + f"\ntype {marker}\nwait 700\nkey cmd-s\nwait 300")
     unchanged_view(folder, y)
-    saved = ET.fromstring("<doc>" + (folder / "lib/docs" / f"{doc_id}.xml").read_text() + "</doc>")
+    saved = ET.fromstring("<doc>" + doc_file(folder / "lib").read_text() + "</doc>")
     expected = ET.fromstring("<doc>" + xml + "</doc>")
     expected.find('.//checkbox').set('done', 'true' if done else 'false')
     for paragraph in expected.findall('p'):

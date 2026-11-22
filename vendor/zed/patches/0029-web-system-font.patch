@@ -1,0 +1,33 @@
+WebPlatform::new_with_system_font: the family .SystemUIFont maps to on the web (upstream: IBM Plex Sans). The web demo loads Inter (src/web.rs)
+
+diff --git a/crates/gpui_web/src/platform.rs b/crates/gpui_web/src/platform.rs
+index b496aa4f2b57f71a8653e4adafbddb52078a10e2..e9ef2de91c21df56395cc5eb8acc1c8f037a4db9 100644
+--- a/crates/gpui_web/src/platform.rs
++++ b/crates/gpui_web/src/platform.rs
+@@ -167,6 +167,17 @@ impl WebPlatform {
+         allow_multi_threading: bool,
+         backend_preference: WebBackendPreference,
+         canvas_font_fallback: CanvasFontFallback,
++    ) -> Self {
++        Self::new_with_system_font(allow_multi_threading, backend_preference, canvas_font_fallback, "IBM Plex Sans")
++    }
++
++    /// Like `new_with_backend_and_font_fallback`, with the family that
++    /// `.SystemUIFont` stands for (the app loads it with `add_fonts`).
++    pub fn new_with_system_font(
++        allow_multi_threading: bool,
++        backend_preference: WebBackendPreference,
++        canvas_font_fallback: CanvasFontFallback,
++        system_font: &str,
+     ) -> Self {
+         let browser_window =
+             web_sys::window().expect("must be running in a browser window context");
+@@ -177,7 +188,7 @@ impl WebPlatform {
+         ));
+         let background_executor = BackgroundExecutor::new(dispatcher.clone());
+         let foreground_executor = ForegroundExecutor::new(dispatcher.clone());
+-        let text_system = Arc::new(WebTextSystem::new("IBM Plex Sans", canvas_font_fallback));
++        let text_system = Arc::new(WebTextSystem::new(system_font, canvas_font_fallback));
+         let text_system: Arc<dyn PlatformTextSystem> = text_system;
+         let active_display: Rc<dyn PlatformDisplay> =
+             Rc::new(WebDisplay::new(browser_window.clone()));

@@ -1,0 +1,19 @@
+RenderImage::into_frames: the frames back, so a caller redrawing an image every frame can reuse its buffer
+
+diff --git a/crates/gpui/src/assets.rs b/crates/gpui/src/assets.rs
+index e752722a886d7c53597824e331de511a89c57680..f3a521f069831e05a4608f815bc0469dac638fac 100644
+--- a/crates/gpui/src/assets.rs
++++ b/crates/gpui/src/assets.rs
+@@ -96,6 +96,12 @@ impl RenderImage {
+         self
+     }
+ 
++    /// quiet.md: the frames back, so a caller that redraws an image every
++    /// frame can reuse its buffer once the atlas let it go (`Window::drop_image`).
++    pub fn into_frames(self) -> SmallVec<[Frame; 1]> {
++        self.data
++    }
++
+     /// Convert this image into a byte slice.
+     pub fn as_bytes(&self, frame_index: usize) -> Option<&[u8]> {
+         self.data

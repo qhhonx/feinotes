@@ -1,8 +1,8 @@
 /*
- * quiet.md 文档主题：飞书
+ * Quiet.md document theme: Feishu
  *
- * 每个属性都写着当前的值。改完保存，应用里立即生效。
- * 选择器与属性的说明见 docs/THEMES.md。
+ * Each property shows its current value. Save edits to see them immediately.
+ * See docs/THEMES.md for selectors and properties.
  */
 
 :root {
@@ -10,10 +10,10 @@
   --theme-name-en: "Feishu";
   --theme-author: "quiet.md";
   --theme-description: "飞书文档的正文样式：16 / 26，标题 Medium，蓝色链接。";
-  /* 块的画法：craft 或 feishu */
+  /* Block rendering style: craft or feishu */
   --theme-base: feishu;
 
-  /* 文字颜色 */
+  /* Text colors */
   --color-gray: #8f959e;
   --color-red: #d83931;
   --color-orange: #de7802;
@@ -22,7 +22,7 @@
   --color-blue: #245bdb;
   --color-purple: #6425d0;
 
-  /* 文字高亮 */
+  /* Text highlights */
   --highlight-light-gray: #f2f3f5;
   --highlight-light-red: #fbbfbc;
   --highlight-light-orange: #fed4a4cc;
@@ -39,7 +39,7 @@
   --highlight-blue: #4e83fd8c;
   --highlight-purple: #935af68c;
 
-  /* 块背景 */
+  /* Block backgrounds */
   --background-light-gray: #f5f6f7e6;
   --background-light-red: #fef1f1;
   --background-light-orange: #fff5eb;
@@ -56,7 +56,7 @@
   --background-medium-blue: #e1eaff;
   --background-medium-purple: #ece2fe;
 
-  /* 高亮块底色 */
+  /* Callout fills */
   --callout-light-gray: #f5f6f7;
   --callout-light-red: #fef1f1;
   --callout-light-orange: #fff5eb;
@@ -73,7 +73,7 @@
   --callout-medium-blue: #e1eaff;
   --callout-medium-purple: #ece2fe;
 
-  /* 高亮块边框 */
+  /* Callout borders */
   --border-gray: #eff0f1;
   --border-red: #fbbfbc;
   --border-orange: #fed4a4;
@@ -82,7 +82,7 @@
   --border-blue: #bacefd;
   --border-purple: #cdb2fa;
 
-  /* 其它界面细节（文档内的选中、悬停、表格工具等） */
+  /* Other document UI details (selection, hover, table tools, etc.) */
   --token-text-caption: #646a73;
   --token-text-placeholder: #8f959e;
   --token-block-placeholder: #bbbfc4;

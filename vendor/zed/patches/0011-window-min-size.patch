@@ -1,0 +1,105 @@
+quiet.md #27: Window::set_window_min_size
+
+Change a window's minimum content size after it was created: macOS
+setContentMinSize, Windows the min_size WM_GETMINMAXINFO reports; other
+platforms keep the size given at creation. The window's minimum width is the
+document area's minimum plus the sidebar, and follows the sidebar as it opens,
+closes and is dragged wider.
+
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index 6adc3f9fa734cef24c595baa1906283c488e531d..10b8de97648e70f3630352f1793be0413a2cef3c 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -1336,6 +1336,8 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+     fn background_appearance(&self) -> WindowBackgroundAppearance;
+     fn set_title(&mut self, title: &str);
+     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
++    /// quiet.md: change the smallest content size the user can resize the window to.
++    fn set_min_size(&self, _size: Size<Pixels>) {}
+     fn minimize(&self);
+     fn zoom(&self);
+     fn toggle_fullscreen(&self);
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 2b654aae7caee7ba1606d434f1ab0f0a07d4cb63..4ca7dab50f1ed99848919b00cdebbf598dc71fd6 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -3414,6 +3414,12 @@ impl Window {
+         self.platform_window.window_controls()
+     }
+ 
++    /// quiet.md: change the smallest content size the user can resize the
++    /// window to (macOS and Windows; elsewhere the size given at creation stays).
++    pub fn set_window_min_size(&self, size: Size<Pixels>) {
++        self.platform_window.set_min_size(size);
++    }
++
+     /// Updates the window's title at the platform level.
+     pub fn set_window_title(&mut self, title: &str) {
+         self.platform_window.set_title(title);
+diff --git a/crates/gpui_macos/src/window.rs b/crates/gpui_macos/src/window.rs
+index 5fb128c485007a76379a31c9cf896a2d831e764b..6bc4ad8aae91954a073d5b318d60599d6e9dfb87 100644
+--- a/crates/gpui_macos/src/window.rs
++++ b/crates/gpui_macos/src/window.rs
+@@ -1913,6 +1913,16 @@ impl PlatformWindow for MacWindow {
+         false
+     }
+ 
++    fn set_min_size(&self, size: Size<Pixels>) {
++        let window = self.0.lock().native_window;
++        unsafe {
++            let _: () = msg_send![window, setContentMinSize: NSSize {
++                width: size.width.to_f64(),
++                height: size.height.to_f64(),
++            }];
++        }
++    }
++
+     fn set_title(&mut self, title: &str) {
+         unsafe {
+             let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+diff --git a/crates/gpui_windows/src/events.rs b/crates/gpui_windows/src/events.rs
+index d308bfa4e585840532566274602eda07f8c43009..5e3c68eb3c09815dd326d4a51dfa5b438cb3f3fd 100644
+--- a/crates/gpui_windows/src/events.rs
++++ b/crates/gpui_windows/src/events.rs
+@@ -204,7 +204,7 @@ impl WindowsWindowInner {
+     }
+ 
+     fn handle_get_min_max_info_msg(&self, lparam: LPARAM) -> Option<isize> {
+-        let min_size = self.state.min_size?;
++        let min_size = self.state.min_size.get()?;
+         let scale_factor = self.state.scale_factor.get();
+         let boarder_offset = &self.state.border_offset;
+ 
+diff --git a/crates/gpui_windows/src/window.rs b/crates/gpui_windows/src/window.rs
+index 5d8415af72d0a36a35606c6a5c65f1cc0f16751a..4247866dacc492dee8cb00eee6926c443a015978 100644
+--- a/crates/gpui_windows/src/window.rs
++++ b/crates/gpui_windows/src/window.rs
+@@ -45,7 +45,7 @@ impl std::ops::Deref for WindowsWindow {
+ pub struct WindowsWindowState {
+     pub origin: Cell<Point<Pixels>>,
+     pub logical_size: Cell<Size<Pixels>>,
+-    pub min_size: Option<Size<Pixels>>,
++    pub min_size: Cell<Option<Size<Pixels>>>,
+     pub fullscreen_restore_bounds: Cell<Bounds<Pixels>>,
+     pub border_offset: WindowBorderOffset,
+     pub appearance: Cell<WindowAppearance>,
+@@ -168,7 +168,7 @@ impl WindowsWindowState {
+             background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
+             scale_factor: Cell::new(scale_factor),
+             restore_from_minimized: Cell::new(restore_from_minimized),
+-            min_size,
++            min_size: Cell::new(min_size),
+             callbacks,
+             frame_signal: Arc::new(PlatformFrameSignal::new()),
+             input_handler: Cell::new(input_handler),
+@@ -901,6 +901,10 @@ impl PlatformWindow for WindowsWindow {
+         self.state.hovered.get()
+     }
+ 
++    fn set_min_size(&self, size: Size<Pixels>) {
++        self.state.min_size.set(Some(size));
++    }
++
+     fn background_appearance(&self) -> WindowBackgroundAppearance {
+         self.state.background_appearance.get()
+     }

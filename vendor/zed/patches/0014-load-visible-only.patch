@@ -1,0 +1,149 @@
+quiet.md #20: decode images only once they are visible
+
+ImageCache gets a `peek` that reads a cached result without starting a load
+or counting as a use, and Img::load_visible_only defers decoding an image with
+explicit width and height until it is painted inside the visible area (layout
+reads the cache through `peek` only). Images outside a card's clip are no
+longer decoded up front; pixels, sizes and animation are unchanged.
+
+diff --git a/crates/gpui/src/elements/image_cache.rs b/crates/gpui/src/elements/image_cache.rs
+index 3d9d4ce6113ad88d4658f8eef770c2bc20937699..566a6d64c56a8c70a1d656e4d0acda6534683f13 100644
+--- a/crates/gpui/src/elements/image_cache.rs
++++ b/crates/gpui/src/elements/image_cache.rs
+@@ -23,6 +23,7 @@ pub fn image_cache(image_cache_provider: impl ImageCacheProvider) -> ImageCacheE
+ #[derive(Clone)]
+ pub struct AnyImageCache {
+     image_cache: AnyEntity,
++    peek_fn: fn(&AnyEntity, &Resource, &App) -> Option<Result<Arc<RenderImage>, ImageCacheError>>,
+     load_fn: fn(
+         image_cache: &AnyEntity,
+         resource: &Resource,
+@@ -36,11 +37,21 @@ impl<I: ImageCache> From<Entity<I>> for AnyImageCache {
+         Self {
+             image_cache: image_cache.into_any(),
+             load_fn: any_image_cache::load::<I>,
++            peek_fn: any_image_cache::peek::<I>,
+         }
+     }
+ }
+ 
+ impl AnyImageCache {
++    /// quiet.md: read a cached result without loading or marking it used.
++    pub fn peek(
++        &self,
++        resource: &Resource,
++        cx: &App,
++    ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
++        (self.peek_fn)(&self.image_cache, resource, cx)
++    }
++
+     /// Load an image given a resource
+     /// returns the result of loading the image if it has finished loading, or None if it is still loading
+     pub fn load(
+@@ -56,6 +67,14 @@ impl AnyImageCache {
+ mod any_image_cache {
+     use super::*;
+ 
++    pub(crate) fn peek<I: ImageCache>(
++        cache: &AnyEntity,
++        resource: &Resource,
++        cx: &App,
++    ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
++        cache.clone().downcast::<I>().unwrap().read(cx).peek(resource)
++    }
++
+     pub(crate) fn load<I: 'static + ImageCache>(
+         image_cache: &AnyEntity,
+         resource: &Resource,
+@@ -187,6 +206,11 @@ impl ImageCacheItem {
+ /// An object that can handle the caching and unloading of images.
+ /// Implementations of this trait should ensure that images are removed from all windows when they are no longer needed.
+ pub trait ImageCache: 'static {
++    /// quiet.md: inspect a cached result without starting a load or updating
++    /// its last use.
++    fn peek(&self, _resource: &Resource) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
++        None
++    }
+     /// Load an image given a resource
+     /// returns the result of loading the image if it has finished loading, or None if it is still loading
+     fn load(
+diff --git a/crates/gpui/src/elements/img.rs b/crates/gpui/src/elements/img.rs
+index 6cc5db89ab0e80be3440b9b1c3883fae563a245a..612d8e73294821872a1412b13ccb832bc9ba18e4 100644
+--- a/crates/gpui/src/elements/img.rs
++++ b/crates/gpui/src/elements/img.rs
+@@ -190,6 +190,7 @@ pub struct Img {
+     source: ImageSource,
+     style: ImageStyle,
+     image_cache: Option<AnyImageCache>,
++    load_visible_only: bool,
+ }
+ 
+ /// Create a new image element.
+@@ -200,10 +201,18 @@ pub fn img(source: impl Into<ImageSource>) -> Img {
+         source: source.into(),
+         style: ImageStyle::default(),
+         image_cache: None,
++        load_visible_only: false,
+     }
+ }
+ 
+ impl Img {
++    /// quiet.md: with explicit width and height, defer decoding until the
++    /// image is painted inside the visible area (cards clip most of theirs).
++    pub fn load_visible_only(mut self) -> Self {
++        self.load_visible_only = true;
++        self
++    }
++
+     /// A list of all format extensions currently supported by this img element
+     pub fn extensions() -> &'static [&'static str] {
+         // This is the list in [image::ImageFormat::from_extension] + `svg`
+@@ -301,13 +310,19 @@ impl Element for Img {
+                 |mut style, window, cx| {
+                     let mut replacement_id = None;
+ 
+-                    match self.source.use_data(
+-                        self.image_cache
+-                            .clone()
+-                            .or_else(|| window.image_cache_stack.last().cloned()),
+-                        window,
+-                        cx,
+-                    ) {
++                    let cache = self
++                        .image_cache
++                        .clone()
++                        .or_else(|| window.image_cache_stack.last().cloned());
++                    let deferred = self.load_visible_only
++                        && !matches!(style.size.width, Length::Auto)
++                        && !matches!(style.size.height, Length::Auto);
++                    let data = if deferred {
++                        self.source.get_data(cache, window, cx)
++                    } else {
++                        self.source.use_data(cache, window, cx)
++                    };
++                    match data {
+                         Some(Ok(data)) => {
+                             let frame_count = data.frame_count();
+                             let max_frame_index = frame_count.saturating_sub(1);
+@@ -473,6 +488,12 @@ impl Element for Img {
+             window,
+             cx,
+             |style, window, cx| {
++                if self.load_visible_only {
++                    let visible = bounds.intersect(&window.content_mask().bounds);
++                    if visible.size.width <= px(0.) || visible.size.height <= px(0.) {
++                        return;
++                    }
++                }
+                 if let Some(Ok(data)) = source.use_data(
+                     self.image_cache
+                         .clone()
+@@ -550,7 +571,7 @@ impl ImageSource {
+         match self {
+             ImageSource::Resource(resource) => {
+                 if let Some(cache) = cache {
+-                    cache.load(resource, window, cx)
++                    cache.peek(resource, cx)
+                 } else {
+                     window.get_asset::<ImgResourceLoader>(resource, cx)
+                 }

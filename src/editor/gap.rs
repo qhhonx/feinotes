@@ -28,6 +28,7 @@ fn one_line(b: &Block) -> bool {
             | BlockKind::SubPageList
             | BlockKind::Countdown(_)
             | BlockKind::Board(_)
+            | BlockKind::DataTable(_)
             | BlockKind::File(_)
             | BlockKind::Raw { .. }
     )

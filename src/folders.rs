@@ -3,8 +3,6 @@ use crate::settings::{display_title, tr};
 use crate::theme::Theme;
 use crate::ui::{TipExt, TitleBarExt, icon, popover, ui_text};
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 
 #[derive(Clone, PartialEq)]
 pub(crate) enum CreateTarget {
@@ -65,7 +63,12 @@ impl Workspace {
             return;
         }
         let file_before = self.store.track_file_changes();
-        let made = if markdown {
+        let mounted = parent.as_deref().is_some_and(|p| self.store.is_mounted(p));
+        let made = if mounted {
+            // In a folder under 本机文件: written there at once.
+            let doc = crate::model::Document::default();
+            if markdown { self.store.create_markdown_in(&doc, "", parent.as_deref()) } else { self.store.create_from_in(&doc, parent.as_deref()) }
+        } else if markdown {
             self.store.create_markdown(&crate::model::Document::default(), "").and_then(|id| {
                 if let Some(p) = &parent { self.store.set_parent(&id, Some(p))?; }
                 Ok(id)
@@ -115,6 +118,30 @@ impl Workspace {
             Err(e) => self.status = crate::app::SaveStatus::Failed(crate::localized_format!("新建失败：{}", "Could not create document: {}", crate::settings::diagnostic(&e.to_string()))),
         }
         self.remember_files(file_before, tr("新建画板", "New board"));
+        cx.notify();
+    }
+
+    /// 新建 › 数据表: a standalone `.sqlite` file in `parent`, opened at once.
+    pub(crate) fn create_table(&mut self, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        if !crate::DATATABLE || self.is_shared() { return; }
+        self.create_menu = None;
+        let p = parent.clone();
+        if !self.save_before(cx, move |w, window, cx| w.create_table(p.clone(), window, cx)) { return; }
+        let file_before = self.store.track_file_changes();
+        match self.store.create_table_in(crate::settings::text("未命名数据表"), &crate::table::blank_base(), parent.as_deref()) {
+            Ok(id) => {
+                self.search_open = false;
+                self.doc_info = None;
+                self.home.sort_menu = false;
+                self.entries = self.store.list();
+                self.sort();
+                match &parent { Some(p) => { self.expanded.insert(p.clone()); } None => self.folded[1] = false }
+                self.search.update(cx, |s, cx| s.set_text("", cx));
+                self.open(&id, window, cx);
+            }
+            Err(e) => self.status = crate::app::SaveStatus::Failed(crate::localized_format!("新建失败：{}", "Could not create document: {}", crate::settings::diagnostic(&e.to_string()))),
+        }
+        self.remember_files(file_before, tr("新建数据表", "New data table"));
         cx.notify();
     }
 
@@ -169,6 +196,7 @@ impl Workspace {
         self.current = None;
         if self.folder_current.as_deref() != Some(id) { self.reset_folder_scroll(); }
         if let Some(meta) = self.store.touch(id) && let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) { entry.meta = meta; }
+        self.schedule_view_state(cx);
         if self.manual_home_sort() { self.prepare_manual_order(cx); }
         self.folder_current = Some(id.to_string());
         self.sidebar_entry = None;
@@ -269,7 +297,7 @@ impl Workspace {
         let folder_target = target.clone();
         let personal = matches!(target, CreateTarget::PersonalSidebar(_));
         let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::ui::menu_row(id, SharedString::from(id)).child(icon(glyph, 16., Theme::icon())).child(label);
-        let menu = popover().id("create-items").occlude().w(px(180.)).py(px(crate::ui::MENU_PAD_Y))
+        let menu = popover().id("create-items").occlude().min_w(px(180.)).py(px(crate::ui::MENU_PAD_Y))
             .on_mouse_down_out(cx.listener(move |w, event: &MouseDownEvent, _, cx| {
                 let row_slot = match &w.create_menu {
                     Some((CreateTarget::PersonalSidebar(Some(id)), _)) => Some(format!("add-doc-false-{id}")),
@@ -317,6 +345,7 @@ impl Workspace {
                         w.new_folder(folder_target.clone(), None, window, cx))))
             }
             CreateTarget::Library(parent) | CreateTarget::PersonalSidebar(parent) => {
+                let table_parent = parent.clone();
                 let (doc_parent, md_parent, board_parent) = (parent.clone(), parent.clone(), parent);
                 let document = move |w: &mut Workspace, markdown, parent, window: &mut Window, cx: &mut Context<Self>| {
                     w.create_menu = None;
@@ -332,10 +361,17 @@ impl Workspace {
                     if personal { w.personal_action(window, cx, move |w, window, cx| w.create_board(parent, window, cx)); }
                     else { w.create_board(parent, window, cx); }
                 }))))
+                .when(crate::DATATABLE && !self.is_shared(), |d| {
+                    let table_parent = table_parent.clone();
+                    d.child(row("create-table", "table", crate::settings::text("数据表")).on_click(cx.listener(move |w, _, window, cx| {
+                        w.create_menu = None;
+                        w.create_table(table_parent.clone(), window, cx);
+                    })))
+                })
                 .when(can_create_folder, |d| d.child(row("create-folder", "folder", tr("文件夹", "Folder")).on_click(cx.listener(move |w, _, window, cx| w.new_folder(folder_target.clone(), None, window, cx)))))
             }
         };
-        Some(deferred(anchored().anchor(Corner::TopLeft).position(pos).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3).into_any_element())
+        Some(deferred(anchored().anchor(Anchor::TopLeft).position(pos).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3).into_any_element())
     }
 
     /// A folder's page: one header row (the path on the left, the actions on
@@ -359,8 +395,11 @@ impl Workspace {
                 }))
         };
         let path = self.ancestors(&id);
-        let mut crumbs = div().min_w_0().flex().items_center().text_size(px(17.)).line_height(px(24.))
-            .child(link("home".into(), self.breadcrumb_library_title().into(), None));
+        // A folder under 本机文件 starts from there, which has no page of its own.
+        let first = if self.entries.iter().any(|e| e.id == id && e.meta.mounted()) {
+            div().flex_none().px(px(4.)).whitespace_nowrap().text_color(Theme::text_caption()).child(tr("本机文件", "Files on this computer")).into_any_element()
+        } else { link("home".into(), self.breadcrumb_library_title().into(), None).into_any_element() };
+        let mut crumbs = div().min_w_0().flex().items_center().text_size(px(17.)).line_height(px(24.)).child(first);
         for (i, e) in path.iter().enumerate() {
             if path.len() > 2 && i > 0 && i < path.len() - 1 {
                 if i == 1 {
@@ -421,7 +460,7 @@ impl Workspace {
         let folder = if personal { CreateTarget::PersonalSidebar(Some(folder)) } else { CreateTarget::Library(Some(folder)) };
         let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::ui::menu_row(id, SharedString::from(id)).child(icon(glyph, 16., Theme::icon())).child(label);
         let pos = if m.pos.x < px(0.) { point(-m.pos.x, m.pos.y + px(22.)) } else { m.pos };
-        vec![deferred(anchored().position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("folder-row-menu").occlude().w(px(190.)).py(px(crate::ui::MENU_PAD_Y))
+        vec![deferred(anchored().position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("folder-row-menu").occlude().min_w(px(190.)).py(px(crate::ui::MENU_PAD_Y))
             .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }))
             .child(row("fr-new-doc", "doc", tr("新建文档", "New document")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None;
                 let doc = doc.clone();

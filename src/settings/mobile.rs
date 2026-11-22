@@ -161,7 +161,7 @@ impl Workspace {
                     if release_url(key).is_some() { rows.push(Row::new(id,title).kind("link")); }
                 }
                 rows.push(Row::new("notices",tr("开源许可与第三方声明","Open Source Licenses and Notices")).kind("page"));
-                sections.push(json!({"title":"","rows":rows,"footer":tr("基于 Quiet.md 开发","Based on Quiet.md")}));
+                sections.push(json!({"title":"","rows":rows,"footer":super::upstream_attribution()}));
             }
         } }
         if self.mobile_contextual_sharing() {

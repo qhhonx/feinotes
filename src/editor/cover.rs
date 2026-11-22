@@ -12,8 +12,6 @@ use crate::editor_theme::{self as theme, Theme, craft};
 use crate::editor_ui::{ROW_RADIUS, TipExt, icon, menu, menu_glyph, menu_row, panel};
 use super::image::picture;
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -440,7 +438,7 @@ impl Editor {
 
     fn cover_popover_at(&self, el: impl IntoElement) -> Option<AnyElement> {
         let a = self.cover_ui.edit_bounds.get()?;
-        let (x, corner) = if self.core.doc.cover.is_none() { (a.left(), Corner::TopLeft) } else { (a.right(), Corner::TopRight) };
+        let (x, corner) = if self.core.doc.cover.is_none() { (a.left(), Anchor::TopLeft) } else { (a.right(), Anchor::TopRight) };
         Some(at(self.rel(point(x, a.bottom() + px(4.))), corner, el))
     }
 
@@ -632,7 +630,7 @@ impl Editor {
             .flex_col()
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_scroll(|_, _, cx| cx.stop_propagation())
             .child(header)
             .child(body);
         self.cover_popover_at(el)

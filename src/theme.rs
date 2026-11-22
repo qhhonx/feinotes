@@ -24,8 +24,8 @@ pub fn glass() -> bool {
         static GLASS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *GLASS.get_or_init(|| windows_build().is_some_and(|b| b >= 22621))
     }
-    #[cfg(target_os = "linux")] { false }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))] { true }
+    #[cfg(any(target_os = "linux", target_family = "wasm"))] { false }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_family = "wasm")))] { true }
 }
 
 #[cfg(target_os = "windows")]
@@ -271,7 +271,7 @@ pub mod craft {
 /// Shadows stay black; on the dark page they need more weight to show.
 fn shadow(a: f32, y: f32, blur: f32, spread: f32) -> BoxShadow {
     let a = if dark() { (a * 3.).min(0.6) } else { a };
-    BoxShadow { #[cfg(target_os = "ios")] inset: false, color: rgbaf(0, 0, 0, a), offset: point(px(0.), px(y)), blur_radius: px(blur), spread_radius: px(spread) }
+    BoxShadow { inset: false, color: rgbaf(0, 0, 0, a), offset: point(px(0.), px(y)), blur_radius: px(blur), spread_radius: px(spread) }
 }
 
 /// Menus and dropdowns: macOS 26 menu panel, soft and wide.
@@ -305,23 +305,38 @@ pub fn shadow_sheet() -> Vec<BoxShadow> {
     vec![shadow(0.035, 8., 22., -2.)]
 }
 
+/// The note plane's left edge over the sidebar: a faint shade cast leftward, so the
+/// two read as layers. The plane meets the window's other edges, where nothing shows.
+pub fn shadow_note() -> Vec<BoxShadow> {
+    let mut v = vec![shadow(0.035, 0., 1., 0.), shadow(0.045, 0., 10., 0.)];
+    v[1].offset.x = px(-2.);
+    v
+}
+
 /// Header buttons and other white pills on a white panel (back / share).
 pub fn shadow_button() -> Vec<BoxShadow> {
     vec![shadow(0.05, 1., 1.5, 0.)]
 }
 
+/// The platform's sans: the interface's family unless 外观 › 界面字体 says
+/// otherwise, and the document's when its theme names no family.
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows"))]
-pub const UI_FONT: &str = ".SystemUIFont";
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
-pub const UI_FONT: &str = "Noto Sans";
-pub const NUMERAL_FONT: &str = if cfg!(any(target_os = "macos", target_os = "windows")) { "Helvetica Neue" } else { UI_FONT };
+pub const SYSTEM_FONT: &str = ".SystemUIFont";
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", target_family = "wasm")))]
+pub const SYSTEM_FONT: &str = "Noto Sans";
+/// The web build brings its own fonts (src/web.rs).
+#[cfg(target_family = "wasm")]
+pub const SYSTEM_FONT: &str = "Inter";
+pub const NUMERAL_FONT: &str = if cfg!(any(target_os = "macos", target_os = "windows")) { "Helvetica Neue" } else { SYSTEM_FONT };
 /// Platform monospace font.
 #[cfg(target_os = "macos")]
 pub const MONO_FONT: &str = ".AppleSystemUIFontMonospaced";
 #[cfg(target_os = "windows")]
 pub const MONO_FONT: &str = "Consolas";
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_family = "wasm")))]
 pub const MONO_FONT: &str = "Noto Sans Mono";
+#[cfg(target_family = "wasm")]
+pub const MONO_FONT: &str = "JetBrains Mono";
 
 pub struct Theme;
 
@@ -332,7 +347,8 @@ impl Theme {
     pub fn text_placeholder() -> Hsla { c(craft::N500) }
     /// Empty-block hints: placeholders are text at ~25%.
     pub fn block_placeholder() -> Hsla { ca(craft::N900, 0.25) }
-    pub fn text_disabled() -> Hsla { ca(craft::N900, 0.3) }
+    /// Dark mode: 40%, as 30% of the light ink on a raised surface fades out (GitHub #319).
+    pub fn text_disabled() -> Hsla { ca(craft::N900, if dark() { 0.4 } else { 0.3 }) }
     /// Toolbar glyphs.
     pub fn text_code() -> Hsla { c(craft::N800) }
     /// The link colour: the content accent (#0087FF) blended half-way to the
@@ -457,6 +473,20 @@ pub fn ui_font() -> f32 {
 /// The same scale for secondary rows (descriptions, counts).
 pub fn ui_font_small() -> f32 { ui_font() - 1. }
 
+/// 外观 › 界面字体: the family the sidebar, menus and settings are drawn in.
+/// `None` is the platform's own sans. (The note has its own setting; a theme
+/// that names a family keeps it there.)
+static UI_FAMILY: std::sync::RwLock<Option<&'static str>> = std::sync::RwLock::new(None);
+
+pub fn set_ui_family(family: &str) { crate::fonts::store(&UI_FAMILY, family) }
+
+pub fn ui_family() -> &'static str { UI_FAMILY.read().unwrap().unwrap_or(SYSTEM_FONT) }
+
+/// Labels drawn as part of a document rather than around it — list numbers,
+/// mentions, captions, a table's cells, a board: the platform's sans, which
+/// neither 界面字体 nor 文档字体 changes (the latter is for prose).
+pub const DOC_UI_FONT: &str = SYSTEM_FONT;
+
 #[allow(unused_imports)]
 pub use crate::palette::{HUES, FONT_COLORS, BG_COLORS, CALLOUT_BG_COLORS, CELL_BG_COLORS, bg_canon};
 
@@ -553,7 +583,8 @@ pub const SIDEBAR_MAX: f32 = 800.0;
 pub const SIDEBAR_MIN_CONTENT: f32 = 540.0;
 /// Left inset of the header controls that sit beside the macOS traffic lights.
 // On PC, 12pt padding + 4pt margin + half the 28pt button aligns with the sidebar icon at 30pt.
-pub const TRAFFIC_LIGHTS_W: f32 = if cfg!(target_os = "macos") { 92.0 } else { 12.0 };
+// The web demo is framed as a macOS window, its traffic lights drawn by the page.
+pub const TRAFFIC_LIGHTS_W: f32 = if cfg!(any(target_os = "macos", target_family = "wasm")) { 92.0 } else { 12.0 };
 
 /// (font size, line height, margin top, margin bottom) per block.
 pub struct BlockMetrics {

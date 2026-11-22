@@ -1,0 +1,78 @@
+quiet.md #7: ListState::estimated_scroll_metrics / scroll_to_estimated_offset
+
+Only rows that have been on screen are measured. For a scrollbar, count every
+other row at the average measured height: estimated_scroll_metrics returns
+(offset, content height, viewport height), and scroll_to_estimated_offset
+scrolls to such an offset when the thumb is dragged. Long documents get a
+usable scrollbar.
+
+diff --git a/crates/gpui/src/elements/list.rs b/crates/gpui/src/elements/list.rs
+index 070d4b081eadd13fde1726792b01d557f1964653..ec99a49cca9fb11e1245cd7805aab9f26bb749f3 100644
+--- a/crates/gpui/src/elements/list.rs
++++ b/crates/gpui/src/elements/list.rs
+@@ -803,6 +803,49 @@ impl ListState {
+         self.0.borrow().last_layout_bounds.unwrap_or_default()
+     }
+ 
++    /// quiet.md: (scroll offset, content height, viewport height) for a
++    /// scrollbar. Only items that have been on screen are measured, so every
++    /// other one counts at the average measured height.
++    pub fn estimated_scroll_metrics(&self) -> (Pixels, Pixels, Pixels) {
++        let state = self.0.borrow();
++        let bounds = state.last_layout_bounds.unwrap_or_default();
++        let padding = state.last_padding.unwrap_or_default();
++        let total = state.items.summary();
++        let avg = state.average_item_height();
++        let top = state.logical_scroll_top();
++        let mut cursor = state.items.cursor::<ListItemSummary>(());
++        let before: ListItemSummary = cursor.summary(&Count(top.item_ix), Bias::Right);
++        let offset = before.height + avg * before.unrendered_count as f32 + top.offset_in_item;
++        let content =
++            total.height + avg * total.unrendered_count as f32 + padding.top + padding.bottom;
++        (offset, content, bounds.size.height)
++    }
++
++    /// quiet.md: scroll so the estimated `offset` (see
++    /// `estimated_scroll_metrics`) is at the top of the viewport.
++    pub fn scroll_to_estimated_offset(&self, offset: Pixels) {
++        let top = {
++            let state = self.0.borrow();
++            let avg = state.average_item_height();
++            let count = state.items.summary().count;
++            let mut y = px(0.);
++            let mut top = ListOffset::default();
++            for (ix, item) in state.items.iter().enumerate() {
++                let h = item.size().map_or(avg, |s| s.height);
++                if y + h > offset || ix + 1 == count {
++                    top = ListOffset {
++                        item_ix: ix,
++                        offset_in_item: (offset - y).max(px(0.)).min(h),
++                    };
++                    break;
++                }
++                y += h;
++            }
++            top
++        };
++        self.scroll_to(top);
++    }
++
+     /// Returns whether the item is entirely above the viewport, or `None` if
+     /// the list has not measured enough layout to know.
+     ///
+@@ -845,6 +888,15 @@ impl ListState {
+ }
+ 
+ impl StateInner {
++    fn average_item_height(&self) -> Pixels {
++        let total = self.items.summary();
++        if total.rendered_count == 0 {
++            px(24.)
++        } else {
++            total.height / total.rendered_count as f32
++        }
++    }
++
+     fn max_scroll_offset(&self) -> Pixels {
+         let bounds = self.last_layout_bounds.unwrap_or_default();
+         let height = self

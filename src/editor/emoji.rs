@@ -212,7 +212,7 @@ fn state_path() -> std::path::PathBuf {
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
-    let s = if cfg!(test) { None } else { std::fs::read(state_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()) };
+    let s = if cfg!(test) { None } else { fdl_core::vfs::read(state_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()) };
     Mutex::new(s.unwrap_or_default())
 });
 
@@ -221,7 +221,7 @@ fn save(s: &State) {
         return;
     }
     if let Ok(b) = serde_json::to_vec_pretty(s) {
-        let _ = std::fs::write(state_path(), b);
+        let _ = fdl_core::vfs::write(state_path(), b);
     }
 }
 
@@ -314,5 +314,37 @@ mod tests {
         for _ in 0..200 {
             assert!(!RANDOM_BLOCKLIST.contains(&random_pick().id));
         }
+    }
+}
+
+/// Linux: register the bundled Noto Color Emoji (CBDT, OFL; assets/fonts/emoji).
+/// It replaces a system face of the same name: Fedora's is COLRv1, which the
+/// Linux text system draws blank (#265). Before any text is shaped.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+pub fn load_font(cx: &gpui::App) {
+    if let Some(b) = crate::assets::get(FONT) {
+        let _ = cx.text_system().add_fonts(vec![std::borrow::Cow::Borrowed(b)]);
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+const FONT: &str = "fonts/emoji/NotoColorEmoji.ttf";
+
+#[cfg(all(test, target_os = "linux"))]
+mod font_tests {
+    /// ✅ falls back to the bundled color font and is drawn as an emoji.
+    #[test]
+    fn bundled_emoji_font_draws_emoji() {
+        let b = crate::assets::get(super::FONT).expect("bundled on Linux");
+        let ts = std::rc::Rc::new(gpui::WindowTextSystem::new(std::sync::Arc::new(gpui::TextSystem::new(std::sync::Arc::new(gpui_wgpu::CosmicTextSystem::new("Noto Sans"))))));
+        // Twice: the second copy replaces the first (vendor/PATCHES.md #43).
+        ts.add_fonts(vec![std::borrow::Cow::Borrowed(b)]).unwrap();
+        ts.add_fonts(vec![std::borrow::Cow::Borrowed(b)]).unwrap();
+        let t = "a✅";
+        let run = gpui::TextRun { len: t.len(), font: gpui::font("Noto Sans"), color: gpui::black(), background_color: None, underline: None, strikethrough: None };
+        let lay = ts.layout_line(t, gpui::px(16.), &[run], None);
+        let g = lay.runs.iter().flat_map(|r| &r.glyphs).find(|g| g.index == 1).expect("✅ shaped");
+        // The bundled file's glyph for ✅ (Noto's COLRv1 file has it at 3695).
+        assert_eq!((format!("{:?}", g.id), g.is_emoji), ("GlyphId(143)".into(), true));
     }
 }

@@ -1,0 +1,24 @@
+quiet.md: App::hide_cursor_until_mouse_moves
+
+Upstream dropped CursorStyle::None and hides the pointer itself on typing
+(CursorHideMode). The app hides it where it decides to (typing in the editor
+and fields, an idle image viewer) and turns CursorHideMode off, so expose the
+platform call it used through CursorStyle::None.
+
+diff --git a/crates/gpui/src/app.rs b/crates/gpui/src/app.rs
+index 64a79c7942132b69d9f1d76bb5ecbbcbece9a51a..12e4690e6023321db495f7d2878a07494c13350a 100644
+--- a/crates/gpui/src/app.rs
++++ b/crates/gpui/src/app.rs
+@@ -1398,6 +1398,12 @@ impl App {
+         self.cursor_hide_mode = mode;
+     }
+ 
++    /// quiet.md: hide the mouse cursor until the mouse next moves (what
++    /// [`CursorHideMode`] does on typing), for apps that decide when.
++    pub fn hide_cursor_until_mouse_moves(&self) {
++        self.platform.hide_cursor_until_mouse_moves();
++    }
++
+     /// Returns whether the cursor is currently visible according to the
+     /// platform. This will report `false` after a keyboard input has hidden
+     /// the cursor and the user has not yet moved the mouse to restore it.

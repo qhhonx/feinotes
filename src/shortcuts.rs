@@ -14,35 +14,55 @@ pub const LAST_ID: &str = "global-last";
 pub const LAST_DEFAULT: &str = "cmd-alt-space";
 pub fn last_key() -> String { saved(LAST_ID).unwrap_or_else(|| LAST_DEFAULT.into()) }
 fn saved(id: &str) -> Option<String> {
-    std::fs::read(path()).ok().and_then(|b| serde_json::from_slice::<BTreeMap<String,String>>(&b).ok()).and_then(|m| m.get(id).cloned())
+    fdl_core::vfs::read(path()).ok().and_then(|b| serde_json::from_slice::<BTreeMap<String,String>>(&b).ok()).and_then(|m| m.get(id).cloned())
 }
 /// The system-wide hotkeys: one stroke, kept apart from the app's.
 fn is_global(id: &str) -> bool { id == "global" || id == LAST_ID }
+/// The host OS, the way GPUI spells keystrokes for it ("cmd-", "win-", "super-").
+pub const HOST_OS: OperatingSystem = if cfg!(target_os = "macos") { OperatingSystem::Mac } else if cfg!(target_os = "ios") { OperatingSystem::Ios } else if cfg!(target_os = "windows") { OperatingSystem::Windows } else { OperatingSystem::Linux };
+pub fn parse_key(stroke: &str) -> Result<Keystroke, InvalidKeystrokeError> { Keystroke::parse_with_os(stroke, HOST_OS) }
+fn unparse(k: &impl AsKeystroke) -> String { k.as_keystroke().unparse(HOST_OS) }
+/// Mac key conventions (⌘ bindings and hints): macOS, or the web build in a
+/// Mac browser.
+pub fn mac() -> bool {
+    #[cfg(target_family = "wasm")] {
+        static MAC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *MAC.get_or_init(|| web_sys::window().map(|w| w.navigator()).is_some_and(|n| n.platform().is_ok_and(|p| p.starts_with("Mac")) || n.user_agent().is_ok_and(|a| a.contains("Mac OS X") && !a.contains("Mobile"))))
+    }
+    #[cfg(not(target_family = "wasm"))] { cfg!(target_os = "macos") }
+}
+
 pub fn init(cx: &mut App) {
-    let base = cx.key_bindings().borrow().bindings().cloned().collect::<Vec<_>>();
+    // First launch runs this twice (its pages, then `main::start`): by then the
+    // bound keys are PC-mapped and customized, and mapping ctrl-a again would
+    // drop 全选 as Cocoa's line start. Keep the built-in keys read the first time.
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-    let base = base.into_iter().filter_map(pc_binding).collect();
-    let custom = std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let again = cx.has_global::<Shortcuts>();
+    let base = match cx.try_global::<Shortcuts>() { Some(s) => s.base.clone(), None => cx.key_bindings().borrow().bindings().cloned().collect::<Vec<_>>() };
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    let base = if mac() || again { base } else { base.into_iter().filter_map(pc_binding).collect() };
+    let custom = fdl_core::vfs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     cx.set_global(Shortcuts { base, custom });
     rebuild(cx);
 }
 
 #[cfg(target_os = "ios")]
 pub(crate) fn reload(cx: &mut App) {
-    let custom = std::fs::read(path()).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    let custom = fdl_core::vfs::read(path()).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
     cx.global_mut::<Shortcuts>().custom = custom;
     rebuild(cx);
 }
 
 #[cfg(all(not(target_os = "ios"), any(test, not(target_os = "macos"))))]
 fn pc_binding(binding: KeyBinding) -> Option<KeyBinding> {
-    let keys = binding.keystrokes().iter().map(|k| binding_key(k).replace("win-", "cmd-").replace("super-", "cmd-")).collect::<Vec<_>>().join(" ");
+    let keys = binding.keystrokes().iter().map(|k| unparse(k).replace("win-", "cmd-").replace("super-", "cmd-")).collect::<Vec<_>>().join(" ");
     // Cocoa's control-key navigation conflicts with PC editing shortcuts.
     if matches!(keys.as_str(), "ctrl-a" | "ctrl-b" | "ctrl-d" | "ctrl-e" | "ctrl-f" | "ctrl-h" | "ctrl-n" | "ctrl-p" | "ctrl-backspace") { return None; }
     // Ctrl+Backspace deletes a word on PC platforms; do not override it with macOS line deletion.
     if keys == "cmd-backspace" { return None; }
-    // Ctrl+Shift+C is 行内代码 there, so 复制为 Markdown takes Alt as well.
-    let keys = if binding.action().name().ends_with("::InlineCode") { "ctrl-shift-c".to_string() } else if binding.action().name().ends_with("::CopyMarkdown") { "ctrl-alt-shift-c".to_string() } else { keys.split(' ').map(|key| match key {
+    // Ctrl+Shift+C is 行内代码 there, so 复制为 Markdown takes M. Not Ctrl+Alt:
+    // Windows reads Ctrl+Alt as AltGr, which types a letter on many layouts (#290).
+    let keys = if binding.action().name().ends_with("::InlineCode") { "ctrl-shift-c".to_string() } else if binding.action().name().ends_with("::CopyMarkdown") { "ctrl-shift-m".to_string() } else { keys.split(' ').map(|key| match key {
         "cmd-left" => "home".into(), "cmd-right" => "end".into(),
         "cmd-shift-left" => "shift-home".into(), "cmd-shift-right" => "shift-end".into(),
         "cmd-up" => "ctrl-home".into(), "cmd-down" => "ctrl-end".into(),
@@ -50,12 +70,19 @@ fn pc_binding(binding: KeyBinding) -> Option<KeyBinding> {
         "alt-left" | "alt-right" | "alt-shift-left" | "alt-shift-right" | "alt-backspace" | "alt-delete" => key.replacen("alt-", "ctrl-", 1),
         _ => key.replace("cmd-", "ctrl-"),
     }).collect::<Vec<String>>().join(" ") };
-    KeyBinding::load(&keys, binding.action().boxed_clone(), binding.predicate(), false, binding.action_input(), &DummyKeyboardMapper).ok()
+    load(&keys, &binding)
+}
+
+/// `keys` for `like`'s action and context, parsed as written: no keyboard
+/// layout mapping.
+#[cfg(not(target_os = "ios"))]
+fn load(keys: &str, like: &KeyBinding) -> Option<KeyBinding> {
+    KeyBinding::load_unmapped(keys, like.action().boxed_clone(), like.predicate(), like.action_input(), HOST_OS).ok()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{pc_binding, binding_key};
+    use super::{pc_binding, unparse};
     use gpui::KeyBinding;
     #[test]
     fn pc_word_deletion_has_no_line_deletion_collision() {
@@ -65,7 +92,7 @@ mod tests {
             (KeyBinding::new("alt-delete", DeleteWordForward, Some("Editor")), "ctrl-delete"),
         ] {
             let mapped = pc_binding(binding).unwrap();
-            assert_eq!(mapped.keystrokes()[0].unparse(), expected);
+            assert_eq!(unparse(&mapped.keystrokes()[0]), expected);
         }
         assert!(pc_binding(KeyBinding::new("cmd-backspace", DeleteToLineStart, Some("Editor"))).is_none());
         assert!(pc_binding(KeyBinding::new("ctrl-backspace", Backspace, Some("Editor"))).is_none());
@@ -75,9 +102,11 @@ mod tests {
         use crate::editor::keymap::{Copy, InlineCode};
         let copy = pc_binding(KeyBinding::new("cmd-c", Copy, Some("Editor"))).unwrap();
         let code = pc_binding(KeyBinding::new("cmd-ctrl-c", InlineCode, Some("Editor"))).unwrap();
-        assert_eq!(copy.keystrokes().iter().map(binding_key).collect::<Vec<_>>(), ["ctrl-c"]);
-        assert_eq!(code.keystrokes().iter().map(binding_key).collect::<Vec<_>>(), ["ctrl-shift-c"]);
+        assert_eq!(copy.keystrokes().iter().map(unparse).collect::<Vec<_>>(), ["ctrl-c"]);
+        assert_eq!(code.keystrokes().iter().map(unparse).collect::<Vec<_>>(), ["ctrl-shift-c"]);
         assert_ne!(copy.keystrokes(), code.keystrokes());
+        let md = pc_binding(KeyBinding::new("cmd-shift-c", crate::editor::keymap::CopyMarkdown, Some("Editor"))).unwrap();
+        assert_eq!(md.keystrokes().iter().map(unparse).collect::<Vec<_>>(), ["ctrl-shift-m"]);
     }
 }
 /// Mac key notation (⌘ ⌥ ⇧ ⌃, "⌘ + Shift + 7") as Windows writes it, the way
@@ -140,7 +169,7 @@ fn first_group_hint() -> &'static str {
 /// A UI label's keys for this platform: `windows_keys` on non-macOS platforms (cached,
 /// labels are `'static`), the text itself elsewhere.
 pub fn keys(s: &'static str) -> &'static str {
-    if !cfg!(not(target_os = "macos")) { return s }
+    if mac() { return s }
     static CACHE: std::sync::Mutex<BTreeMap<&'static str, &'static str>> = std::sync::Mutex::new(BTreeMap::new());
     let mut cache = CACHE.lock().unwrap();
     cache.entry(s).or_insert_with(|| Box::leak(windows_keys(s).into_boxed_str()))
@@ -159,7 +188,7 @@ pub fn hint(action: &str, default: &'static str) -> &'static str {
     let text = key.split(' ').map(|stroke| {
         let Ok(k) = parse_key(stroke) else { return stroke.to_string() };
         let m = k.modifiers;
-        let names = if cfg!(not(target_os = "macos")) { [(m.control, "Ctrl"), (m.alt, "Alt"), (m.shift, "Shift"), (m.platform, if cfg!(target_os = "windows") { "Win" } else { "Super" })] } else { [(m.platform, "⌘"), (m.alt, "⌥"), (m.shift, "Shift"), (m.control, "Control")] };
+        let names = if !mac() { [(m.control, "Ctrl"), (m.alt, "Alt"), (m.shift, "Shift"), (m.platform, if cfg!(target_os = "windows") { "Win" } else { "Super" })] } else { [(m.platform, "⌘"), (m.alt, "⌥"), (m.shift, "Shift"), (m.control, "Control")] };
         let mut parts: Vec<String> = names.into_iter().filter(|(on, _)| *on).map(|(_, s)| s.to_string()).collect();
         parts.push(match k.key.as_str() { "space" => "Space".into(), "enter" => "Enter".into(), k if k.chars().count() == 1 => k.to_uppercase(), k => { let mut c = k.chars(); c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default() } });
         parts.join(" + ")
@@ -175,10 +204,9 @@ pub fn rebuild(cx: &mut App) {
     let bindings: Vec<_> = s.base.iter().filter(|b| !s.custom.get(b.action().name()).is_some_and(|key| key.is_empty())).map(|b| {
         s.custom.get(b.action().name()).and_then(|key| {
             #[cfg(target_os = "ios")]
-            let mapper = &*cx;
+            { KeyBinding::load(key, b.action().boxed_clone(), b.predicate(), false, b.action_input(), cx).ok() }
             #[cfg(not(target_os = "ios"))]
-            let mapper = &DummyKeyboardMapper;
-            KeyBinding::load(key, b.action().boxed_clone(), b.predicate(), false, b.action_input(), mapper).ok()
+            { load(key, b) }
         }).unwrap_or_else(|| b.clone())
     }).collect();
     cx.clear_key_bindings(); cx.bind_keys(bindings);
@@ -204,6 +232,7 @@ fn info(name: &str) -> Option<(usize, &'static str, &'static str)> {
         "FocusSearch" => (0, "搜索文档", "Search documents"),
         "ToggleShortcuts" => (0, "查看快捷键", "Show shortcuts"),
         "OpenFile" => (1, "打开 Markdown 文件", "Open Markdown file"),
+        "OpenFolder" => (1, "打开文件夹", "Open folder"),
         "ImportDoc" => (1, "导入文档", "Import documents"),
         "Save" => (1, "保存文档", "Save document"),
         "EditMode" => (1, "编辑模式", "Edit mode"),
@@ -257,7 +286,7 @@ fn default_key(s: &Shortcuts, id: &str) -> String {
     if id == "global" { return GLOBAL_DEFAULT.into(); }
     if id == LAST_ID { return LAST_DEFAULT.into(); }
     if id.ends_with("::NewDoc") { return if cfg!(any(target_os = "macos",target_os = "ios")) { "cmd-n" } else { "ctrl-n" }.into(); }
-    s.base.iter().find(|b| b.action().name() == id).map(|b| b.keystrokes().iter().map(binding_key).collect::<Vec<_>>().join(" ")).unwrap_or_default()
+    s.base.iter().find(|b| b.action().name() == id).map(|b| b.keystrokes().iter().map(unparse).collect::<Vec<_>>().join(" ")).unwrap_or_default()
 }
 /// The key an action runs on now.
 pub fn key_of(cx: &App, id: &str) -> String {
@@ -284,7 +313,7 @@ pub fn pretty(key: &str) -> String {
     key.split(' ').map(|stroke| {
         let Ok(ks) = parse_key(stroke) else { return stroke.to_string() };
         let m = ks.modifiers;
-        let win = cfg!(not(target_os = "macos"));
+        let win = !mac();
         let names = if win { [(m.control, "Ctrl"), (m.alt, "Alt"), (m.shift, "Shift"), (m.platform, if cfg!(target_os = "windows") { "Win" } else { "Super" })] } else { [(m.control, "⌃"), (m.alt, "⌥"), (m.shift, "⇧"), (m.platform, "⌘")] };
         let mut out: Vec<String> = names.into_iter().filter(|(on, _)| *on).map(|(_, s)| s.to_string()).collect();
         out.push(match ks.key.as_str() {
@@ -299,7 +328,7 @@ pub fn pretty(key: &str) -> String {
     }).collect::<Vec<_>>().join("  →  ")
 }
 fn sequence(key: &str) -> anyhow::Result<Vec<Keystroke>> {
-    key.split_whitespace().map(parse_key).collect()
+    key.split_whitespace().map(|k| parse_key(k).map_err(Into::into)).collect()
 }
 fn overlaps(a: &[Keystroke], b: &[Keystroke]) -> bool {
     !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
@@ -312,7 +341,7 @@ fn conflicts(s: &Shortcuts, id: &str, key: &str) -> Vec<String> {
     for b in &s.base {
         let name = b.action().name();
         if name == id || found.iter().any(|n| n == name) { continue; }
-        let other = s.custom.get(name).cloned().unwrap_or_else(|| b.keystrokes().iter().map(binding_key).collect::<Vec<_>>().join(" "));
+        let other = s.custom.get(name).cloned().unwrap_or_else(|| b.keystrokes().iter().map(unparse).collect::<Vec<_>>().join(" "));
         let same_context = contexts.contains(&b.predicate().map(|p| p.to_string()));
         if (label(name).is_some() || same_context || is_global(id)) && sequence(&other).is_ok_and(|other| overlaps(&parsed, &other)) {
             found.push(name.to_string());
@@ -354,10 +383,10 @@ pub(crate) fn set_global(key: &str, cx: &mut App) -> anyhow::Result<()> { change
 fn write(custom: &BTreeMap<String, String>) -> anyhow::Result<()> {
     use std::io::Write;
     let tmp = path().with_extension("json.tmp");
-    let mut f = std::fs::File::create(&tmp)?;
+    let mut f = fdl_core::vfs::File::create(&tmp)?;
     f.write_all(&serde_json::to_vec_pretty(custom)?)?;
     f.sync_all()?;
-    std::fs::rename(tmp, path())?;
+    fdl_core::vfs::rename(tmp, path())?;
     Ok(())
 }
 impl Workspace {
@@ -435,7 +464,7 @@ impl Workspace {
             self.shortcut_error = Some((id, first_group_hint().into()));
         } else if self.shortcut_strokes.len() >= if is_global(&id) { 1 } else { 4 } {
             self.shortcut_error = Some((id, tr("已达到组合键上限，请保存或按退格修改", "Save or press Backspace to edit the sequence").into()));
-        } else { self.shortcut_strokes.push(key_string(&ev.keystroke)); }
+        } else { self.shortcut_strokes.push(unparse(&ev.keystroke)); }
         cx.notify(); true
     }
 
@@ -554,28 +583,10 @@ mod key_text_tests {
         assert_eq!(w("⌘C / ⌘X / ⌘V"), "Ctrl+C / Ctrl+X / Ctrl+V");
         assert_eq!(w("⌘⇧← / ⌘⇧↓"), "Shift+Home / Ctrl+Shift+End");
         assert_eq!(w("按 ⌘ N 新建，⌘ ,"), "按 Ctrl+N 新建，Ctrl+,");
+        assert_eq!(w("Quick new (⌘N)"), "Quick new (Ctrl+N)");
         assert_eq!(w("On macOS, <code>⌘ ⌃ ⇧ 4</code>"), "On macOS, <code>⌘ ⌃ ⇧ 4</code>");
         assert_eq!(w("Shift + Tab and Control"), "Shift + Tab and Control");
     }
 }
 
-fn parse_key(value: &str) -> anyhow::Result<Keystroke> {
-    #[cfg(target_os = "ios")]
-    return Keystroke::parse_with_os(value, OperatingSystem::Ios).map_err(Into::into);
-    #[cfg(not(target_os = "ios"))]
-    Keystroke::parse(value).map_err(Into::into)
-}
-
-fn binding_key(value: &KeybindingKeystroke) -> String {
-    #[cfg(target_os = "ios")]
-    return value.unparse(OperatingSystem::Ios);
-    #[cfg(not(target_os = "ios"))]
-    value.unparse()
-}
-
-pub(crate) fn key_string(value: &Keystroke) -> String {
-    #[cfg(target_os = "ios")]
-    return value.unparse(OperatingSystem::Ios);
-    #[cfg(not(target_os = "ios"))]
-    value.unparse()
-}
+pub(crate) fn key_string(value: &Keystroke) -> String { value.unparse(HOST_OS) }

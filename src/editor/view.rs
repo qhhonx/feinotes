@@ -30,6 +30,7 @@ pub enum EditorEvent {
     Catalogue(bool),
     /// A 子页面列表 item or an @文档 link was clicked.
     OpenDoc(String),
+    OpenRelative(String),
     /// A 反向引用 line: that document, scrolled to its nth block.
     OpenDocAt(String, usize),
     /// The reference list's close button.
@@ -170,7 +171,7 @@ pub struct Editor {
     /// Text drag: the pointer's last position and when the page last scrolled
     /// under it (`text_autoscroll`).
     drag_at: Option<Point<Pixels>>,
-    drag_scrolled: Option<std::time::Instant>,
+    drag_scrolled: Option<web_time::Instant>,
     /// The window was active when the page first scrolled under the drag.
     drag_active: Option<bool>,
     /// A press in the gap between blocks, for `gap_release`.
@@ -245,12 +246,12 @@ pub struct Editor {
     /// Blocks moved by their handle.
     pub(super) block_drag: Option<super::drag::BlockDrag>,
     /// Blocks just dropped, flashing since.
-    pub(super) drop_flash: Option<(Vec<BlockId>, std::time::Instant)>,
+    pub(super) drop_flash: Option<(Vec<BlockId>, web_time::Instant)>,
     /// The fold arrow turning after a click: block → start.
-    pub(super) fold_anim: Option<(BlockId, std::time::Instant)>,
+    pub(super) fold_anim: Option<(BlockId, web_time::Instant)>,
     /// Column widths easing to the document's after a column was added:
     /// grid → (widths before, start).
-    pub(super) col_anim: HashMap<BlockId, (Vec<f32>, std::time::Instant)>,
+    pub(super) col_anim: HashMap<BlockId, (Vec<f32>, web_time::Instant)>,
     /// Table chrome: insert-point hover, bar / resize drags, bar geometry.
     pub(super) tables: super::table::TableUi,
     /// Name / description fields of code blocks and images (`caption.rs`).
@@ -258,11 +259,12 @@ pub struct Editor {
     pub(super) img: super::image::ImageUi,
     pub(super) cd: super::countdown::CdUi,
     pub(super) boards: super::board::BoardUi,
+    pub(super) datatables: super::datatable::DataTablesUi,
+    /// A standalone 数据表 (`.sqlite`): its table fills the pane.
+    pub table_file: bool,
     pub(super) btn: super::button::BtnUi,
     pub(super) rm: super::reminder::RmUi,
     pub(super) file: super::file::FileUi,
-    /// Folded code blocks (view state only).
-    pub(super) code_folded: std::collections::HashSet<BlockId>,
     /// Numbers of auto-numbered headings, refreshed each frame.
     pub(super) heading_orders: rustc_hash::FxHashMap<BlockId, String>,
     /// (rows, cols) under the pointer in the "+" panel's table / column size picker.
@@ -511,7 +513,6 @@ impl Editor {
             captions: HashMap::new(),
             img: super::image::ImageUi::new(cx),
             file: super::file::FileUi::new(),
-            code_folded: Default::default(),
             heading_orders: Default::default(),
             size_pick: (0, 0),
             modified,
@@ -527,6 +528,8 @@ impl Editor {
             restore_top: None,
             cd,
             boards: Default::default(),
+            datatables: Default::default(),
+            table_file: false,
             btn,
             rm,
             _subs: subs,
@@ -568,6 +571,29 @@ impl Editor {
         }));
     }
 
+    /// Markdown parsing allocates fresh block ids. Prefer the same paragraph
+    /// near its old position, then fall back to that position in the new file.
+    pub fn receive_markdown(&mut self, next: &Core, cx: &mut Context<Self>) {
+        let old_units = self.core.units();
+        let new_units = next.units();
+        let remap = |pos: Pos| {
+            if pos.block == TITLE { return pos }
+            let ix = old_units.iter().position(|u| u.id == pos.block).unwrap_or(0);
+            let text = self.core.text_of(pos.block);
+            let block = text.and_then(|t| new_units.iter().enumerate()
+                .filter(|(_, u)| u.id != TITLE && next.text_of(u.id).is_some_and(|v| v.text == t.text))
+                .min_by_key(|(j, _)| j.abs_diff(ix)).map(|(_, u)| u))
+                .or_else(|| new_units.get(ix)).or_else(|| new_units.last());
+            Pos::new(block.map_or(TITLE, |u| u.id), pos.offset)
+        };
+        let head = remap(self.core.sel.head);
+        let anchor = if self.core.sel.is_collapsed() { head } else { remap(self.core.sel.anchor) };
+        let scope = |p: Pos| new_units.iter().find(|u| u.id == p.block).and_then(|u| u.scope);
+        self.core.sel = if scope(anchor) == scope(head) { Selection { anchor, head } } else { Selection::caret(head) };
+        self.restore_top = self.scroll_top();
+        self.receive_document(next, cx);
+    }
+
     /// Call after every command: emits Changed, keeps menus consistent,
     /// scrolls the caret into view and restarts the caret blink.
     pub fn receive_document(&mut self, core: &Core, cx: &mut Context<Self>) {
@@ -586,6 +612,9 @@ impl Editor {
         self.core.pending_marks = None;
         self.core.generation = generation.wrapping_add(1);
         self.core.fix_selection();
+        // A caret kept inside code folded meanwhile would open it again.
+        let at = self.core.sel.head.block;
+        if self.core.block(at).is_some_and(|b| b.folded && matches!(b.kind, crate::model::BlockKind::Code { .. })) { self.core.select_block(at); }
         self.core.break_coalescing();
         self.take_marked_text();
         self.caret_row_end = None;
@@ -629,6 +658,10 @@ impl Editor {
     fn changed_with_scroll(&mut self, intent: ScrollIntent, window: &mut Window, cx: &mut Context<Self>) {
         let reveal = intent == ScrollIntent::RevealCaret;
         if reveal { self.core.reveal_caret(); }
+        // A folded code block opens once the caret is inside it.
+        if reveal && !self.core.in_block_mode() && self.core.set_code_folded(self.core.sel.head.block, false) {
+            self.keep_read_only_fold();
+        }
         if self.core.dirty {
             // The rows move under the caret: an old row end no longer applies.
             self.caret_row_end = None;
@@ -637,10 +670,6 @@ impl Editor {
             self.hide_link_card(cx);
             cx.emit(EditorEvent::Changed);
             self.refresh_find(false, cx);
-        }
-        // A folded code block opens once the caret is inside it.
-        if reveal && !self.core.in_block_mode() {
-            self.code_folded.remove(&self.core.sel.head.block);
         }
         self.sync_slash();
         self.sync_mention();
@@ -761,7 +790,8 @@ impl Editor {
         let (grid, with_text) = (self.slash_grid(), self.slash_grid_text());
         let ranked: Vec<usize> =
             ranked.into_iter().filter(|i| menus::SLASH_ITEMS[*i].group != 0 || menus::basic_visible(menus::SLASH_ITEMS[*i].kind, grid, with_text))
-                .filter(|i| !self.markdown || menus::markdown_ok(menus::SLASH_ITEMS[*i].kind)).collect();
+                .filter(|i| !self.markdown || menus::markdown_ok(menus::SLASH_ITEMS[*i].kind))
+                .filter(|i| crate::DATATABLE || menus::SLASH_ITEMS[*i].kind != SlashKind::DataTable).collect();
         let mut groups: Vec<usize> = vec![];
         for i in &ranked {
             let g = menus::SLASH_ITEMS[*i].group;
@@ -1056,6 +1086,15 @@ impl Editor {
                 self.changed(window, cx);
                 return self.open_board(nid, window, cx);
             }
+            // an empty 数据表 in a file of its own, shown in the page
+            SlashKind::DataTable => {
+                if !crate::DATATABLE || self.read_only || self.preview { return; }
+                let Some(src) = new_table_file() else { return };
+                let nid = self.core.insert_block(Block::new(BlockKind::DataTable(crate::table::TableRef::new(src)), RichText::default()));
+                let p = self.core.ensure_paragraph_after(nid);
+                self.core.sel = Selection::caret(Pos::new(p, 0));
+                return self.changed(window, cx);
+            }
             SlashKind::Table => {
                 let (rows, cols) = size.unwrap_or((3, 3));
                 self.insert_table(rows, cols)
@@ -1128,7 +1167,7 @@ impl Editor {
                 #[cfg(not(target_os = "ios"))]
                 let _ = this.update_in(cx, |e, window, cx| {
                     let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("png").to_string();
-                    if let Ok(bytes) = std::fs::read(&p) {
+                    if let Ok(bytes) = fdl_core::vfs::read(&p) {
                         e.insert_image_bytes(&bytes, &ext, window, cx);
                     }
                 });
@@ -1442,6 +1481,14 @@ impl Editor {
 
     fn move_h(&mut self, right: bool, word: bool, extend: bool) {
         let s = self.core.sel;
+        // In a line that reads right to left the arrows follow the reading
+        // direction: → goes back towards the line's start, on its right.
+        let rtl = self.core.text_of(s.head.block).is_some_and(|t| {
+            let o = s.head.offset.min(t.text.len());
+            let start = t.text[..o].rfind('\n').map_or(0, |i| i + 1);
+            super::bidi::rtl_line(t.text[start..].split('\n').next().unwrap_or(""))
+        });
+        let right = right != rtl;
         if !extend && !s.is_collapsed() {
             let (a, b) = self.core.ordered();
             self.set_caret(if right { b } else { a }, false);
@@ -1526,7 +1573,12 @@ impl Editor {
             }
             return;
         }
-        let next = if down { us.get(i + 1) } else { i.checked_sub(1).map(|k| &us[k]) };
+        // In a 表格, ↑/↓ out of a cell keep its column instead of the reading order.
+        let next = match self.core.cell_vertical(&us, i, down) {
+            Some(k) => k.map(|k| &us[k]),
+            None if down => us.get(i + 1),
+            None => i.checked_sub(1).map(|k| &us[k]),
+        };
         let p = match next {
             Some(u) if u.text => {
                 let o = cache
@@ -1815,6 +1867,7 @@ impl Editor {
         } else if self.core.in_block_mode() {
             self.core.delete_selected_blocks();
         } else {
+            self.core.backspace_to_title = crate::settings::prefs().backspace_to_title;
             self.core.backspace();
         }
         self.toolbar_hidden = true;
@@ -1849,6 +1902,7 @@ impl Editor {
         if self.core.in_block_mode() {
             self.core.delete_selected_blocks();
         } else {
+            self.core.backspace_to_title = crate::settings::prefs().backspace_to_title;
             self.core.delete_word_back();
         }
         self.changed(window, cx);
@@ -1889,6 +1943,7 @@ impl Editor {
         if self.core.in_block_mode() {
             self.core.delete_selected_blocks();
         } else {
+            self.core.backspace_to_title = crate::settings::prefs().backspace_to_title;
             self.core.delete_to_start();
         }
         self.changed(window, cx);
@@ -2106,6 +2161,12 @@ impl Editor {
             }
             (None, None) => return,
         };
+        // A macOS file copy (including WeChat) can contain only native file
+        // references. GPUI returns these before looking for bitmap data.
+        let file_refs = item.as_ref().and_then(|item| item.entries().iter().find_map(|entry| match entry {
+            ClipboardEntry::ExternalPaths(files) => Some(files.paths()),
+            _ => None,
+        }));
         if self.core.in_block_mode() {
             // Paste after the selected blocks.
             if let Some(last) = self.core.block_sel_ids().last().copied() {
@@ -2166,8 +2227,32 @@ impl Editor {
                 blocks.push(Block::text(""));
                 self.core.paste_blocks(blocks);
             }
-        } else if let Some(s) = text.filter(|s| !s.is_empty()) {
-            self.core.paste_markdown(&s);
+        } else {
+            let files = if !rich_target {
+                None
+            } else if let Some(paths) = file_refs.filter(|paths| !paths.is_empty()) {
+                paths.iter().all(|p| super::image::is_local_image_file(p)).then(|| paths.to_vec())
+            } else {
+                text.as_deref().and_then(|s| {
+                    s.lines().map(str::trim).filter(|line| !line.is_empty())
+                        .map(super::image::local_image_path).collect::<Option<Vec<_>>>()
+                }).filter(|paths| !paths.is_empty())
+            };
+            if let Some(files) = files {
+                let mut blocks = Vec::new();
+                for file in files {
+                    match super::image::image_block_from_file(&self.library_root,&file) {
+                        Ok(b) => blocks.push(b),
+                        Err(msg) => self.toast(msg, cx),
+                    }
+                }
+                if !blocks.is_empty() {
+                    blocks.push(Block::text(""));
+                    self.core.paste_blocks(blocks);
+                }
+            } else if let Some(s) = text.filter(|s| !s.is_empty()) {
+                self.core.paste_markdown(&s);
+            }
         }
         if let Some(msg) = self.core.notice.take() {
             self.toast(msg, cx);
@@ -2608,7 +2693,7 @@ impl Editor {
         }
         // Last frame's layout already shows the rows scrolled in: extend to them.
         self.drag_to(at, cx);
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         let dt = self.drag_scrolled.map_or(0., |t| (now - t).as_secs_f32().min(0.05));
         self.drag_scrolled = Some(now);
         self.list.scroll_by(px(dir * 600. * dt));
@@ -3039,7 +3124,7 @@ fn guard<A: Action, F: Fn(&mut Editor, &A, &mut Window, &mut Context<Editor>) + 
     f: F,
 ) -> impl Fn(&A, &mut Window, &mut App) + 'static {
     cx.listener(move |e, a: &A, w, cx| {
-        if e.cd.dialog.is_none() {
+        if e.cd.dialog.is_none() && !e.tables_focused(w, cx) {
             f(e, a, w, cx)
         } else {
             cx.propagate()
@@ -3048,3 +3133,14 @@ fn guard<A: Action, F: Fn(&mut Editor, &A, &mut Window, &mut Context<Editor>) + 
 }
 
 impl Editor { pub(crate) fn refresh_theme(&mut self) { self.items_key = None; self.menu = None; } }
+
+/// A blank `.sqlite` in the library's assets for a new 数据表 block; its path relative to the library.
+#[cfg(not(target_family = "wasm"))]
+fn new_table_file() -> Option<String> {
+    let name = format!("{}.sqlite", uuid::Uuid::new_v4());
+    let path = crate::store::Store::assets_dir().join(&name);
+    crate::table::sqlite::create(&path, &crate::table::blank_base()).ok()?;
+    path.strip_prefix(crate::store::Store::root_dir()).ok().map(|r| r.to_string_lossy().replace('\\', "/"))
+}
+#[cfg(target_family = "wasm")]
+fn new_table_file() -> Option<String> { None }

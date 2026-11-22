@@ -54,6 +54,11 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>LSHandlerRank</key><string>Alternate</string>
     <key>LSItemContentTypes</key><array><string>net.daringfireball.markdown</string></array>
     <key>CFBundleTypeExtensions</key><array><string>md</string><string>markdown</string><string>mdown</string></array>
+  </dict><dict>
+    <key>CFBundleTypeName</key><string>Folder</string>
+    <key>CFBundleTypeRole</key><string>Editor</string>
+    <key>LSHandlerRank</key><string>Alternate</string>
+    <key>LSItemContentTypes</key><array><string>public.folder</string></array>
   </dict></array>
 </dict></plist>
 PLIST

@@ -1,5 +1,30 @@
 # Fei Notes iOS builds
 
+## Isolated upstream experience packages
+
+Use `UpstreamPreview` for the independent upstream candidate, never `Product`,
+`LocalPreview` or `TestFlight`. Its Bundle ID is
+`app.quietmd.cloudlab`, its display name is 飞记·上游云体验, and it uses a separate
+sandbox plus Development CloudKit permissions for `iCloud.app.quietmd.cloudlab`.
+Both devices use the fixed `FeiUpstreamPreviewCloudChannel` in the preview plist.
+Startup follows the product's silent asynchronous path, with a usable local
+fallback when iCloud is unavailable. There are no production invitation handlers,
+shared groups or Production cloud permissions. The older local-only preview
+`local.feinotes.upstream-preview.ios` and its test notes are kept intact.
+
+After preparing GPUI and notices, commit the candidate and run:
+
+```sh
+python3 packaging/ios/build-upstream-preview.py --profile /private/path/iphone-cloudlab.mobileprovision --ipad-profile /private/path/ipad-cloudlab.mobileprovision --identity APPLE_DEVELOPMENT_SHA1
+```
+
+Use existing CloudLab Apple Development profiles covering the paired acceptance
+iPhone and iPad. Do not use TestFlight/Store release credentials. The builder
+checks the native configuration, signed app, raw extracted IPA and exact source
+revision. It writes separately signed iPhone and iPad IPAs from the same universal
+application code under ignored `.private-builds/`. Install only this preview identity;
+record bundle/version readback and launch separately from interaction acceptance.
+
 ## Current local candidate, build 49
 
 Build 49 addresses the latest build-48 feedback using the existing shared editor

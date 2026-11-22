@@ -1,6 +1,7 @@
 //! Bundled first-launch library; existing libraries are never reseeded.
+use fdl_core::vfs::PathExt as _;
 use std::path::Path;
-use std::fs;
+use fdl_core::vfs as fs;
 
 include!(concat!(env!("OUT_DIR"), "/guides.rs"));
 
@@ -8,9 +9,9 @@ include!(concat!(env!("OUT_DIR"), "/guides.rs"));
 /// documents were deleted (`.quiet/` keeps its index); a pending directory is
 /// a first launch to finish. Other hidden files (`.DS_Store`) are not a library.
 pub(crate) fn seeded(root: &Path) -> std::io::Result<bool> {
-    if root.join(".guides-pending").exists() { return Ok(false); }
+    if root.join(".guides-pending").fs_exists() { return Ok(false); }
     let quiet = root.join(crate::store::INTERNAL);
-    let internal = quiet.is_dir() && fs::read_dir(&quiet)?.any(|e| e.map_or(true, |e| e.file_name() != ".lock"));
+    let internal = quiet.fs_is_dir() && fs::read_dir(&quiet)?.any(|e| e.map_or(true, |e| e.file_name() != ".lock"));
     Ok(internal || fs::read_dir(root)?.any(|e| e.map_or(true, |e| { let n = e.file_name().to_string_lossy().into_owned(); !n.starts_with('.') || n == crate::store::ASSETS })))
 }
 
@@ -24,6 +25,10 @@ const WINDOWS_TEXT: &[(&str, &str)] = &[
     ("Back up the whole folder with Time Machine or copy it to another Mac.", "Back up the whole folder with your backup tool or copy it to another computer."),
     ("On macOS, <code>⌘ ⌃ ⇧ 4</code> captures a selection to the clipboard.", "<code>Win+Shift+S</code> captures a selection to the clipboard."),
     ("Drag an image from Finder into the document.", "Drag an image from File Explorer into the document."),
+    ("In the Finder, use Open With › Quiet.md.", "In File Explorer, use Open with › Quiet.md."),
+    ("show the file in the Finder,", "show the file in File Explorer,"),
+    ("what you see in the Finder is what the sidebar shows.", "what you see in File Explorer is what the sidebar shows."),
+    ("you put into the folder in the Finder show up", "you put into the folder in File Explorer show up"),
     ("a project banner from your Mac.", "a project banner from your computer."),
     ("<h2>Move to another Mac</h2><ol><li>Quit Quiet.md on the old Mac with", "<h2>Move to another computer</h2><ol><li>Quit Quiet.md on the old computer with"),
     ("Copy the complete Quiet.md folder into Documents on the new Mac.", "Copy the complete Quiet.md folder into Documents on the new computer."),
@@ -73,12 +78,12 @@ pub fn initialize(root: &Path) -> anyhow::Result<()> {
             for e in fs::read_dir(pending.join(&name))? {
                 let e = e?;
                 let dest = quiet.join(e.file_name());
-                if !dest.exists() { fs::rename(e.path(), dest)?; }
+                if !dest.fs_exists() { fs::rename(e.path(), dest)?; }
             }
             continue;
         }
         let dest = root.join(&name);
-        if !dest.exists() { fs::rename(pending.join(&name), dest)?; }
+        if !dest.fs_exists() { fs::rename(pending.join(&name), dest)?; }
     }
     fs::remove_dir_all(pending)?;
     Ok(())
@@ -86,38 +91,39 @@ pub fn initialize(root: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use fdl_core::vfs::PathExt as _;
     /// Guides go only into an empty folder: an existing library, even one whose
     /// documents were all deleted, is never refilled or overwritten.
     /// The guide documents under `root`, folders included.
     fn docs(root: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut out = vec![];
-        for e in std::fs::read_dir(root).unwrap() {
+        for e in fdl_core::vfs::read_dir(root).unwrap() {
             let p = e.unwrap().path();
             let name = p.file_name().unwrap().to_string_lossy().into_owned();
             if name.starts_with('.') { continue; }
-            if p.is_dir() { out.extend(docs(&p)); } else if super::is_doc(&name) { out.push(p); }
+            if p.fs_is_dir() { out.extend(docs(&p)); } else if super::is_doc(&name) { out.push(p); }
         }
         out
     }
 
     #[test]
     fn existing_library_is_never_reseeded() {
-        let root = std::env::temp_dir().join(format!("qmd-guides-{}", uuid::Uuid::new_v4()));
+        let root = fdl_core::vfs::temp_dir().join(format!("qmd-guides-{}", uuid::Uuid::new_v4()));
         super::initialize(&root).unwrap();
         let all = docs(&root);
         let first = all[0].clone();
-        std::fs::write(&first, "<title>mine</title>").unwrap();
+        fdl_core::vfs::write(&first, "<title>mine</title>").unwrap();
         super::initialize(&root).unwrap();
-        assert_eq!(std::fs::read_to_string(&first).unwrap(), "<title>mine</title>");
+        assert_eq!(fdl_core::vfs::read_to_string(&first).unwrap(), "<title>mine</title>");
         // Every note and folder deleted: `.quiet/` still says it is a library.
-        for e in std::fs::read_dir(&root).unwrap() {
+        for e in fdl_core::vfs::read_dir(&root).unwrap() {
             let p = e.unwrap().path();
             if p.file_name().unwrap().to_string_lossy().starts_with('.') { continue; }
-            if p.is_dir() { std::fs::remove_dir_all(p).unwrap(); } else { std::fs::remove_file(p).unwrap(); }
+            if p.fs_is_dir() { fdl_core::vfs::remove_dir_all(p).unwrap(); } else { fdl_core::vfs::remove_file(p).unwrap(); }
         }
         super::initialize(&root).unwrap();
         assert_eq!(docs(&root).len(), 0);
-        std::fs::remove_dir_all(&root).unwrap();
+        fdl_core::vfs::remove_dir_all(&root).unwrap();
     }
 
     /// The seeded library opens as it is (FORMAT 4, no migration): every
@@ -125,7 +131,7 @@ mod tests {
     /// following the store's rules.
     #[test]
     fn seeded_library_opens_with_its_folders_and_links() {
-        let root = std::env::temp_dir().join(format!("qmd-guides-open-{}", uuid::Uuid::new_v4()));
+        let root = fdl_core::vfs::temp_dir().join(format!("qmd-guides-open-{}", uuid::Uuid::new_v4()));
         super::initialize(&root).unwrap();
         let mut store = crate::store::Store::open_at(root.clone()).unwrap();
         let list = store.list();
@@ -142,8 +148,8 @@ mod tests {
             let name = store.file_path(&e.id).unwrap().file_stem().unwrap().to_string_lossy().into_owned();
             assert_eq!(name, crate::store::file_name_for(&e.title), "build.py names {} differently", e.title);
         }
-        assert!(!root.join("docs").exists() && !root.join("index.json").exists());
-        std::fs::remove_dir_all(&root).unwrap();
+        assert!(!root.join("docs").fs_exists() && !root.join("index.json").fs_exists());
+        fdl_core::vfs::remove_dir_all(&root).unwrap();
     }
 
     /// Every Mac-only passage still exists, and the Windows guides keep no Mac key.
@@ -155,22 +161,23 @@ mod tests {
         assert!(all.contains("<code>Ctrl+B</code>") && all.contains("<code>Ctrl+Alt+1</code>") && all.contains("<code>Ctrl+Shift+C</code>"));
         let mac = |l: &&str| l.contains(['⌘', '⌥', '⇧', '⌃']);
         assert!(!all.lines().any(|l| mac(&l)), "{}", all.lines().find(mac).unwrap_or_default());
+        assert!(!all.contains("Finder"), "{}", all.lines().find(|l| l.contains("Finder")).unwrap_or_default());
     }
 
     /// Copies launched together on a new library: one seeds it, none fails.
     #[test]
     fn simultaneous_first_launches() {
-        let root = std::env::temp_dir().join(format!("fdl-guides-{}", uuid::Uuid::new_v4()));
+        let root = fdl_core::vfs::temp_dir().join(format!("fdl-guides-{}", uuid::Uuid::new_v4()));
         let runs: Vec<_> = (0..4).map(|_| { let root = root.clone(); std::thread::spawn(move || super::initialize(&root)) }).collect();
         for r in runs { r.join().unwrap().unwrap(); }
         let count = super::FILES.iter().filter(|(n, _)| super::is_doc(n)).count();
         assert!(count > 0);
         assert_eq!(docs(&root).len(), count);
-        assert!(!root.join(".guides-pending").exists());
+        assert!(!root.join(".guides-pending").fs_exists());
         // A library with content is never reseeded.
-        for p in docs(&root) { std::fs::remove_file(p).unwrap(); }
+        for p in docs(&root) { fdl_core::vfs::remove_file(p).unwrap(); }
         super::initialize(&root).unwrap();
         assert_eq!(docs(&root).len(), 0);
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = fdl_core::vfs::remove_dir_all(&root);
     }
 }

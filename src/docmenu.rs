@@ -7,8 +7,6 @@ use crate::store::PageWidth;
 use crate::theme::{self, Theme, craft};
 use crate::ui::popover;
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DocSub {
@@ -107,7 +105,10 @@ impl Workspace {
         // A 画板 copies as a 画板.
         let board = self.entries.iter().find(|e| e.id == id).filter(|e| e.meta.kind == crate::store::DocKind::Board)
             .map(|_| doc.blocks.iter().find_map(|b| match &b.kind { crate::model::BlockKind::Board(bd) => Some(bd.clone()), _ => None }).unwrap_or_default());
-        let made = if let Some(board) = board { self.store.create_board_in(&doc.title.text, &board, None) }
+        let table = self.entries.iter().any(|e| e.id == id && e.meta.kind == crate::store::DocKind::Table);
+        if table { crate::table::flush_all(cx); }
+        let made = if table { self.store.copy_table(id, &doc.title.text) }
+            else if let Some(board) = board { self.store.create_board_in(&doc.title.text, &board, None) }
             else if self.store.is_markdown(id) { let front = self.store.front_matter_of(id); self.store.create_markdown(&doc, &front) } else { self.store.create_from(&doc) };
         match made {
             Ok(new) => {
@@ -240,16 +241,25 @@ impl Workspace {
             })
         };
         let sub_bounds = self.doc_sub_bounds.clone();
+        // The menu follows its longest translation (#225); its rendered width
+        // (from the previous frame — a submenu only opens after one) places
+        // the submenus that open to its left.
+        let menu_w_record = self.doc_menu_w.clone();
+        let menu_w = move || {
+            let record = menu_w_record.clone();
+            canvas(move |b, _, _| record.set(Some(f32::from(b.size.width))), |_, _, _, _| {}).absolute().inset_0()
+        };
         let (pin_id, star_id, mv_id, del_id, dup_id, print_id) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
         let rename = id.clone();
         let menu = popover()
             .id("doc-menu")
             .occlude()
-            .w(px(MENU_W))
+            .min_w(px(MENU_W))
             .py(px(PAD))
             .flex()
             .flex_col()
             .shadow(theme::shadow_s4_down())
+            .child(menu_w())
             .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
                 if sub_bounds.get().is_none_or(|b| !b.contains(&ev.position)) {
                     w.close_doc_menu(cx);
@@ -394,12 +404,12 @@ impl Workspace {
         let right = btn.map_or(vw - px(120.), |b| b.right());
         let menu_top = btn.map_or(px(60.), |b| b.bottom() + px(MENU_GAP));
         let mut out = vec![
-            deferred(anchored().anchor(Corner::TopRight).position(point(right, menu_top)).child(menu))
+            deferred(anchored().anchor(Anchor::TopRight).position(point(right, menu_top)).child(menu))
                 .with_priority(2)
                 .into_any_element(),
         ];
         // Submenus open to the left, 4px from the menu, level with their item.
-        let sub_at = point(right - px(MENU_W + 4.), px(0.));
+        let sub_at = point(right - px(self.doc_menu_w.get().unwrap_or(MENU_W) + 4.), px(0.));
         let item_top = |k: usize, d: usize| f32::from(menu_top) + item_top(k, d);
         let extra_rows = usize::from(show_share) + usize::from(show_local_copy);
         let hidden_actions = usize::from(shared) + usize::from(shared && !editable);
@@ -422,7 +432,7 @@ impl Workspace {
                     popover()
                         .id("dm-download-menu")
                         .occlude()
-                        .w(px(130.))
+                        .min_w(px(130.))
                         .px(px(5.))
                         .py(px(PAD))
                         .child(recorder())
@@ -436,7 +446,7 @@ impl Workspace {
                 popover()
                     .id("dm-more-menu")
                     .occlude()
-                    .w(px(210.))
+                    .min_w(px(210.))
                     .px(px(5.))
                     .py(px(PAD))
                     .child(recorder())
@@ -480,7 +490,7 @@ impl Workspace {
         };
         if let Some((top, el)) = sub_el {
             out.push(
-                deferred(anchored().anchor(Corner::TopRight).position(point(sub_at.x, px(top))).snap_to_window_with_margin(px(8.)).child(el))
+                deferred(anchored().anchor(Anchor::TopRight).position(point(sub_at.x, px(top))).snap_to_window_with_margin(px(8.)).child(el))
                     .with_priority(2)
                     .into_any_element(),
             );

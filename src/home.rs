@@ -19,8 +19,6 @@ use crate::theme::{self, Theme};
 use crate::trash::{empty_state, list_header_text, list_line, menu_label, page_header, row_hover};
 use crate::ui::{ROW_RADIUS, TipExt, icon, menu_glyph, menu_row, popover, ui_text};
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 use std::cell::RefCell;
 use std::collections::{HashMap};
 use std::rc::Rc;
@@ -60,8 +58,30 @@ const STARRED_COLS: [Col; 4] = [Col::Modified, Col::Created, Col::Visited, Col::
 
 /// Bounded document trees retain formatting without retaining a whole long document.
 type EquationNumbers = HashMap<crate::model::BlockId, u32>;
-struct ThumbContent { blocks: Vec<crate::model::Block>, eqnos: EquationNumbers, has_subpages: bool }
+/// `tables`: the 数据表 files the page shows (their rows drawn in the card), saved apart from the page.
+struct ThumbContent { blocks: Vec<crate::model::Block>, eqnos: EquationNumbers, has_subpages: bool, tables: Vec<String> }
 type Thumb = Rc<ThumbContent>;
+
+/// The files of the 数据表 blocks in `blocks`, at any depth.
+fn table_srcs(blocks: &[crate::model::Block], out: &mut Vec<String>) {
+    for b in blocks {
+        match &b.kind {
+            BlockKind::DataTable(t) => out.push(t.src.clone()),
+            BlockKind::Table(t) => for cell in t.rows.iter().flatten() { table_srcs(&cell.blocks, out) },
+            _ => {}
+        }
+        table_srcs(&b.children, out);
+    }
+}
+
+/// When the files in `srcs` (relative to the library) last changed, as one number.
+fn tables_time(srcs: &[String]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = rustc_hash::FxHasher::default();
+    let root = crate::store::Store::root_dir();
+    for s in srcs { std::fs::metadata(root.join(s)).and_then(|m| m.modified()).ok().hash(&mut h); }
+    h.finish()
+}
 
 fn has_subpage_list(blocks: &[crate::model::Block]) -> bool {
     blocks.iter().any(|b| match &b.kind {
@@ -103,6 +123,16 @@ fn thumb_blocks(blocks: &[crate::model::Block], budget: &mut usize, depth: usize
                 kind
             }
             BlockKind::Raw { tag, .. } => BlockKind::Raw { tag: tag.clone(), xml: String::new() },
+            // a 数据表 (a table file's card, or one in a page): its first rows and columns as a table, header first
+            BlockKind::DataTable(r) => {
+                let grid = if crate::DATATABLE { fdl_core::table::block_grid(&crate::store::Store::root_dir(), r) } else { vec![] };
+                let (nr, nc) = (grid.len().min(9), grid.first().map_or(0, |h| h.len().min(5)));
+                if nr == 0 || nc == 0 { BlockKind::Table(crate::model::Table { col_widths: vec![], header_rows: 0, header_col: false, rows: vec![], axes: Default::default() }) } else {
+                    let cell = |s: &str| crate::model::TableCell { blocks: vec![crate::model::Block::text(s)], ..crate::model::TableCell::empty() };
+                    let rows = grid.iter().take(nr).map(|row| (0..nc).map(|c| cell(row.get(c).map_or("", |s| s.as_str()))).collect()).collect();
+                    BlockKind::Table(crate::model::Table { col_widths: vec![crate::model::Table::DEFAULT_WIDTH * 1.4; nc], header_rows: 1, header_col: false, rows, axes: Default::default() })
+                }
+            }
             kind => kind.clone(),
         };
         let text = b.text.slice(0..end);
@@ -170,7 +200,9 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
             let media = div().relative().flex_none().w_full().max_w_full().overflow_hidden().when_some(*width, |d, w| d.w(px(w * s)))
                 .map(|mut d| { d.style().aspect_ratio = Some(ratio); d });
             node = node.child(if let Some(path) = path {
-                media.child(picture(&path, thumb_long(width.unwrap_or(690.).min(690.), ratio) * s).absolute().inset_0().size_full().min_w_0().min_h_0().rounded(px(bs::RADIUS * s)).object_fit(ObjectFit::Contain)).into_any_element()
+                // The web demo fetches pictures on first use: an empty frame until then.
+                if fdl_core::vfs::pending(&path) { media.into_any_element() } else {
+                media.child(picture(&path, thumb_long(width.unwrap_or(690.).min(690.), ratio) * s).absolute().inset_0().size_full().min_w_0().min_h_0().rounded(px(bs::RADIUS * s)).object_fit(ObjectFit::Contain)).into_any_element() }
             } else {
                 media.rounded(px(bs::RADIUS * s)).bg(bs::code_surface()).flex().items_center().justify_center().child(icon("image-broken", 24. * s, Theme::text_disabled())).into_any_element()
             });
@@ -194,7 +226,7 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
         }
         BlockKind::Code { lang, caption, wrap } => {
             node = node.rounded(px(bs::RADIUS * s)).border(px(s)).border_color(Theme::line_border()).bg(bs::code_surface()).font_family(theme::MONO_FONT)
-                .child(div().h(px(bs::CODE_HEADER * s)).pl(px(28. * s)).pr(px(8. * s)).rounded_t(px((bs::RADIUS - 1.) * s)).bg(bs::code_header()).flex().items_center().font_family(theme::UI_FONT).text_size(px(13. * s)).text_color(Theme::text_caption()).child(caption.clone().unwrap_or_else(|| crate::settings::text("代码块").into())));
+                .child(div().h(px(bs::CODE_HEADER * s)).pl(px(28. * s)).pr(px(8. * s)).rounded_t(px((bs::RADIUS - 1.) * s)).bg(bs::code_header()).flex().items_center().font_family(theme::ui_family()).text_size(px(13. * s)).text_color(Theme::text_caption()).child(caption.clone().unwrap_or_else(|| crate::settings::text("代码块").into())));
             let spans = crate::highlight::spans(lang, &b.text.text);
             let mut body = div().pt(px(14. * s)).pb(px(18. * s)).pr(px(20. * s)).flex().flex_col();
             let mut off = 0;
@@ -266,7 +298,7 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
     }
     if b.kind.has_text() {
         let runs = b.text.runs.iter().map(|r| {
-            let mut f = font(if r.marks.code { theme::MONO_FONT } else { theme::UI_FONT });
+            let mut f = font(if r.marks.code { theme::MONO_FONT } else { theme::ui_family() });
             f.weight = if r.marks.bold { FontWeight::BOLD } else { bs::weight(&b.kind) };
             if r.marks.italic || quote { f.style = FontStyle::Italic; }
             let mut ink = if r.marks.link.is_some() { Theme::link() } else { r.marks.text_color.as_ref().and_then(|c| theme::text_color(&c.0)).map(bs::display_ink).unwrap_or(color) };
@@ -340,7 +372,7 @@ pub struct Home {
     shared_sort: Option<HomeSort>,
     folders_first: bool,
     pub sort_menu: bool,
-    thumbs: RefCell<HashMap<String, (u64, Thumb, std::time::Instant)>>,
+    thumbs: RefCell<HashMap<String, (u64, Thumb, web_time::Instant)>>,
     /// Last-frame bounds of the controls the popovers hang from.
     anchors: Rc<RefCell<HashMap<&'static str, Bounds<Pixels>>>>,
     /// Folder cards and dragging into them (`home_folder.rs`).
@@ -554,7 +586,7 @@ impl Workspace {
 
     /// One level of the tree as 主页 shows it (a folder's page uses it too).
     pub(crate) fn level_entries(&self, parent: Option<&str>) -> Vec<Entry> {
-        self.sorted_entries_by(self.entries.iter().filter(|e| e.meta.parent.as_deref() == parent).cloned().collect(), self.home.sort)
+        self.sorted_entries_by(self.entries.iter().filter(|e| e.meta.parent.as_deref() == parent && !(parent.is_none() && e.meta.mounted())).cloned().collect(), self.home.sort)
     }
 
     pub(crate) fn prepare_manual_order(&mut self, cx: &mut Context<Self>) -> bool {
@@ -614,22 +646,32 @@ impl Workspace {
         let mut stamp = rustc_hash::FxHasher::default();
         e.meta.modified.hash(&mut stamp);
         crate::settings::feishu().hash(&mut stamp);
+        // a 数据表's rows live in its file, saved apart from the index: its time is the card's too
+        let file_time = (e.meta.kind == crate::store::DocKind::Table).then(|| self.store.file_path(&e.id).and_then(|p| std::fs::metadata(p).ok()?.modified().ok())).flatten();
+        file_time.hash(&mut stamp);
+        // and a page's embedded tables: a row changed there redraws the card
+        let cached_tables = self.home.thumbs.borrow().get(&e.id).map(|(_, t, _)| tables_time(&t.tables)).unwrap_or(0);
+        let mut page_stamp = stamp.clone();
+        cached_tables.hash(&mut stamp);
         let base_stamp = stamp.finish();
         // If the preview contains no sibling subpages, modified + settings uniquely
         // identifies it without rebuilding the whole tree on every frame.
         if let Some((m, t, used)) = self.home.thumbs.borrow_mut().get_mut(&e.id)
-            && !t.has_subpages && *m == base_stamp { *used = std::time::Instant::now(); return t.clone(); }
+            && !t.has_subpages && *m == base_stamp { *used = web_time::Instant::now(); return t.clone(); }
         // A child-page list shows the other pages in the document's folder, as in
         // the open document (`sync_sub_pages`).
         let tree = crate::tree::Tree::new(&self.entries);
         let children: Vec<&Entry> = tree.children(e.meta.parent.as_deref()).iter().copied().filter(|p| p.id != e.id).collect();
         let mut full_stamp = rustc_hash::FxHasher::default();
         e.meta.modified.hash(&mut full_stamp);
+        file_time.hash(&mut full_stamp);
         crate::settings::feishu().hash(&mut full_stamp);
         for child in &children { (&child.id, &child.title, &child.icon).hash(&mut full_stamp); }
+        let mut children_stamp = full_stamp.clone();
+        cached_tables.hash(&mut full_stamp);
         let full_stamp = full_stamp.finish();
         if let Some((m, t, used)) = self.home.thumbs.borrow_mut().get_mut(&e.id)
-            && *m == full_stamp { *used = std::time::Instant::now(); return t.clone(); }
+            && *m == full_stamp { *used = web_time::Instant::now(); return t.clone(); }
         // The derived rows exist only in this preview tree and never enter the editor/store.
         fn subpages(blocks: &mut [crate::model::Block], entries: &[&Entry], budget: &mut usize) {
             for b in blocks {
@@ -652,7 +694,9 @@ impl Workspace {
             if let Ok(root) = crate::cloud_sync::shared::room_root(&crate::store::Store::root_dir(), &e.id) { loaded_root = root.clone(); return crate::store::Store::read_cached_note(&root, &e.id); }
             Err(error)
         });
+        let mut tables = vec![];
         let loaded = loaded.map(|mut doc| {
+            if crate::DATATABLE { table_srcs(&doc.blocks, &mut tables); }
             fn scope(blocks: &mut [crate::model::Block], root: &std::path::Path) {
                 for block in blocks {
                     if let BlockKind::Board(board) = &mut block.kind {
@@ -674,8 +718,10 @@ impl Workspace {
         let mut blocks = loaded.unwrap_or_default();
         let has_subpages = has_subpage_list(&blocks);
         if has_subpages { subpages(&mut blocks, &children, &mut budget); }
-        let stamp = if has_subpages { full_stamp } else { base_stamp };
-        let t: Thumb = Rc::new(ThumbContent { blocks, eqnos, has_subpages });
+        // stamped with the tables just found, so the next frame finds it
+        let tt = tables_time(&tables);
+        let stamp = if has_subpages { tt.hash(&mut children_stamp); children_stamp.finish() } else { tt.hash(&mut page_stamp); page_stamp.finish() };
+        let t: Thumb = Rc::new(ThumbContent { blocks, eqnos, has_subpages, tables });
         // A failed read (mid-write by another process, still in iCloud) is not
         // remembered: the card would stay blank until the document changes.
         if !read { return t; }
@@ -685,21 +731,21 @@ impl Workspace {
             let oldest = thumbs.iter().min_by_key(|(_, (_, _, used))| *used).map(|(id, _)| id.clone());
             if let Some(id) = oldest { thumbs.remove(&id); }
         }
-        thumbs.insert(e.id.clone(), (stamp, t.clone(), std::time::Instant::now()));
+        thumbs.insert(e.id.clone(), (stamp, t.clone(), web_time::Instant::now()));
         t
     }
 
     fn open_row_menu(&mut self, id: &str, key: &str, cx: &mut Context<Self>) {
         let b = self.more_bounds.borrow().get(key).copied();
         let Some(b) = b else { return };
-        self.row_menu = Some(RowMenu { id: id.to_string(), pos: point(b.right(), b.bottom() + px(2.)), corner: Corner::TopRight, sub: false, batch: false });
+        self.row_menu = Some(RowMenu { id: id.to_string(), pos: point(b.right(), b.bottom() + px(2.)), corner: Anchor::TopRight, sub: false, batch: false });
         cx.notify();
     }
 
     pub(crate) fn home_more(&self, e: &Entry, key: String, cx: &mut Context<Self>) -> Stateful<Div> {
         let id = e.id.clone();
         let (rec, k2) = (self.more_bounds.clone(), key.clone());
-        let open = self.row_menu.as_ref().is_some_and(|m| m.id == e.id && m.pos.x > px(0.) && m.corner == Corner::TopRight);
+        let open = self.row_menu.as_ref().is_some_and(|m| m.id == e.id && m.pos.x > px(0.) && m.corner == Anchor::TopRight);
         div()
             .id(SharedString::from(key.clone()))
             .relative()
@@ -892,7 +938,9 @@ impl Workspace {
                 .child(text_btn("home-batch-exit", "x", crate::settings::text("退出"), true).ml(px(8.))
                     .tip(crate::settings::text("退出批量操作"), None)
                     .on_click(cx.listener(|w, _, _, cx| { w.batch = None; w.row_menu = None; cx.notify(); })))
-        } else { toolbar
+        } else { // Menu state at render: the popover's outside-press handler clears it on mouse-down, before a click
+            // would fire, so toggle on mouse-down from this snapshot.
+            let sort_open = self.home.sort_menu; toolbar
             .child(tab("home-tab-recent", crate::settings::text("我的文档"), HomeTab::Recent))
             .child(tab("home-tab-star", {
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -915,7 +963,7 @@ impl Workspace {
                     .hover(|s| s.bg(Theme::fill_hover())).when(self.home.sort_menu, |d| d.bg(Theme::fill_hover_strong()))
                     .child(icon("sort-down", 14., Theme::icon())).child(crate::settings::label(self.displayed_order(&entries).label()))
                     .child(self.home.track("home-sort"))
-                    .on_click(cx.listener(|w, _, _, cx| { w.home.sort_menu = !w.home.sort_menu; cx.notify(); })),
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, _, cx| { cx.stop_propagation(); w.home.sort_menu = !sort_open; cx.notify(); })),
             )
             .child(self.view_switch(cx).ml(px(16.))) };
 
@@ -967,6 +1015,7 @@ impl Workspace {
             );
         for c in &cols {
             let sorted = !matches!(order, HomeSort::Title | HomeSort::Manual) && *c == sort;
+            let sort_open = self.home.sort_menu;
             header = header.child(
                 col_cell().pl(px(20.)).child(
                     div()
@@ -987,8 +1036,9 @@ impl Workspace {
                         .when(sorted, |d| {
                             d.child(icon("sort-down", 12., Theme::icon()))
                                 .cursor_pointer()
-                                .on_click(cx.listener(|w, _, _, cx| {
-                                    w.home.sort_menu = !w.home.sort_menu;
+                                .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, _, cx| {
+                                    cx.stop_propagation();
+                                    w.home.sort_menu = !sort_open;
                                     cx.notify();
                                 }))
                         }),
@@ -1018,7 +1068,7 @@ impl Workspace {
                 .when(self.batch.is_none(), |d| d.on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
-                        w.row_menu = Some(RowMenu { id: id2.clone(), pos: ev.position, corner: Corner::TopLeft, sub: false, batch: false });
+                        w.row_menu = Some(RowMenu { id: id2.clone(), pos: ev.position, corner: Anchor::TopLeft, sub: false, batch: false });
                         cx.notify();
                     }),
                 ))
@@ -1084,13 +1134,18 @@ impl Workspace {
                     }))
             }).collect()
         }))
-        // The last row's own 16 plus 16 more: 32 below the cards, like the
-        // list view's 24 and clear of the window's rounded corner.
+        // The last row's own 16 plus 32 more: 48 below the cards at the end,
+        // clear of the window's rounded corner. (32: GPUI 0.2's uniform_list
+        // counted its padding twice, and the cards end where that put them.)
         // The top padding sits inside the list's clip, so a folder's papers can
-        // rise above the first row without being cut off.
-        .flex_1().min_h_0().pt(px(14.)).pb(px(16.));
+        // rise above the first row without being cut off — and that clip line is
+        // where a row scrolling out of sight stops. It used to sit 4pt higher,
+        // the list lifted into the tab row above it, so a scrolling row drew over
+        // 我的文档 / 收藏 and the buttons beside them (#238). 28 under that lift is
+        // 24 without it: the cards stay exactly where they were.
+        .flex_1().min_h_0().pt(px(24.)).pb(px(32.));
         let scroll = grid_scroll.0.borrow().base_handle.clone();
-        div().relative().flex_1().min_h_0().mt(px(-4.)).flex().flex_col()
+        div().relative().flex_1().min_h_0().flex().flex_col()
             .on_mouse_move(cx.listener(|w, ev: &MouseMoveEvent, _, cx| w.track_home_press(ev, cx)))
             .child(crate::gpui_compat::track_scroll(grid, grid_scroll)).child(self.home.grid_scrollbar.render(&scroll)).into_any_element()
     }
@@ -1178,7 +1233,7 @@ impl Workspace {
                     .when(check.is_none(), |d| d.on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
-                            w.row_menu = Some(RowMenu { id: id2.clone(), pos: ev.position, corner: Corner::TopLeft, sub: false, batch: false });
+                            w.row_menu = Some(RowMenu { id: id2.clone(), pos: ev.position, corner: Anchor::TopLeft, sub: false, batch: false });
                             cx.notify();
                         }),
                     ))
@@ -1204,7 +1259,7 @@ impl Workspace {
         if self.view != crate::app::View::Home {
             return out;
         }
-        let place = |pos: Point<Pixels>, corner: Corner, menu: Stateful<Div>| {
+        let place = |pos: Point<Pixels>, corner: Anchor, menu: Stateful<Div>| {
             deferred(anchored().anchor(corner).position(pos).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element()
         };
         if self.home.sort_menu
@@ -1212,7 +1267,7 @@ impl Workspace {
                 let selected_order = self.home.order();
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             let selected_order = if self.home.shared() { self.shared_order(&self.shared_collection_entries(cx)) } else { selected_order };
-            let mut menu = popover().id("sort-menu").occlude().w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
+            let mut menu = popover().id("sort-menu").occlude().min_w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
                     .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.home.sort_menu = false; cx.notify(); }));
                 for (index, order) in [HomeSort::Manual, HomeSort::Visited, HomeSort::Modified, HomeSort::Created, HomeSort::Title].into_iter().enumerate() {
 
@@ -1244,7 +1299,7 @@ impl Workspace {
                     .child(menu_label(crate::settings::tr("文件夹优先", "Folders first"), g.clone(), gpui::white()).flex_1())
                     .when(self.home.folders_first && self.home.order() != HomeSort::Manual, |d| d.child(menu_glyph("check", 14., g)))
                     .on_click(cx.listener(|w, _, _, cx| { if w.home.sort == HomeSort::Manual { return; } w.home.folders_first = !w.home.folders_first; w.save_home(); w.home.sort_menu = false; cx.notify(); }))));
-                out.push(place(point(b.right(), b.bottom() + px(4.)), Corner::TopRight, menu));
+                out.push(place(point(b.right(), b.bottom() + px(4.)), Anchor::TopRight, menu));
             }
         out
     }

@@ -6,6 +6,7 @@ configs:
   Debug: debug
   Release: release
   Product: debug
+  UpstreamPreview: debug
   TestFlight: release
   StoreKitTesting: debug
 fileGroups:
@@ -118,6 +119,16 @@ targets:
           - "-lsqlite3"
           - "-lsqlite3"
       configs:
+        UpstreamPreview:
+          PRODUCT_BUNDLE_IDENTIFIER: app.quietmd.cloudlab
+          INFOPLIST_KEY_CFBundleDisplayName: 飞记·上游云体验
+          CURRENT_PROJECT_VERSION: "52"
+          PROVISIONING_PROFILE: $(FEI_UPSTREAM_DEVICE_PROFILE)
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: FEI_CLOUD_QA FEI_UPSTREAM_PREVIEW
+          CODE_SIGN_ENTITLEMENTS: DevCloud.entitlements
+          INFOPLIST_FILE: UpstreamPreview-Info.plist
+          GENERATE_INFOPLIST_FILE: NO
+          FEI_MOBILE_QA: "0"
         Product:
           MARKETING_VERSION: "1.0.8"
           PRODUCT_BUNDLE_IDENTIFIER: app.feinotes.mac
@@ -148,6 +159,10 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: app.feinotes.ipad.editorprobe.tests
+      configs:
+        UpstreamPreview:
+          PRODUCT_BUNDLE_IDENTIFIER: app.quietmd.cloudlab.live-tests
+          PROVISIONING_PROFILE: $(FEI_UPSTREAM_TEST_PROFILE)
   FeiNotesStoreKitUITests:
     type: bundle.ui-testing
     platform: iOS

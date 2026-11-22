@@ -8,6 +8,26 @@ final class CloudSwitchUITests: XCTestCase {
         add(image)
     }
 
+    private func createNote(_ app:XCUIApplication) {
+        let button = app.buttons.matching(identifier: "fei.new").allElementsBoundByIndex.first { $0.isHittable }
+        XCTAssertNotNil(button,app.debugDescription)
+        button?.tap()
+        XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 8),app.debugDescription)
+    }
+
+    func testSilentCloudStartupKeepsHomeUsable() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = UUID().uuidString
+        app.launchEnvironment["FEI_QA_SLOW_SIGN_OUT"] = "1"
+        XCUIDevice.shared.orientation = UIDevice.current.userInterfaceIdiom == .pad ? .landscapeLeft : .portrait
+        app.launch()
+        XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout: 6))
+        XCTAssertFalse(app.staticTexts["正在打开 iCloud 文档库…"].exists)
+        createNote(app)
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+    }
+
     func testFailedCloudSwitchKeepsSettingsResponsive() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -59,9 +79,7 @@ final class CloudSwitchUITests: XCTestCase {
             else { back(["Settings","设置"]) }
         }
         XCTAssertTrue(app.tables["fei.notes.list"].waitForExistence(timeout: 5))
-        let newNote = app.buttons.matching(identifier: "fei.new").allElementsBoundByIndex.first { $0.isHittable }
-        XCTAssertNotNil(newNote)
-        newNote?.tap()
-        XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 8))
+        createNote(app)
+        XCTAssertFalse(app.alerts.firstMatch.exists)
     }
 }

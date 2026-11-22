@@ -1,0 +1,64 @@
+quiet.md #6: grid_col_widths, explicit pixel widths for grid columns
+
+`grid_col_widths(Vec<f32>)` sets `grid-template-columns: <w1>px <w2>px …` and
+overrides `grid_cols`. Tables keep the column widths the user dragged.
+
+diff --git a/crates/gpui/src/style.rs b/crates/gpui/src/style.rs
+index 323c79e004fef41ffce959ac67eee2600ab50d39..0de2ee7dcedf980c553da34cb21b444388ee048b 100644
+--- a/crates/gpui/src/style.rs
++++ b/crates/gpui/src/style.rs
+@@ -305,6 +305,10 @@ pub struct Style {
+     /// Roughly equivalent to the Tailwind `grid-cols-<number>`
+     pub grid_cols: Option<GridTemplate>,
+ 
++    /// quiet.md: explicit pixel widths for the grid columns (overrides `grid_cols`).
++    /// Equivalent to `grid-template-columns: <w1>px <w2>px …`
++    pub grid_col_widths: Option<Vec<f32>>,
++
+     /// The row span of this element
+     /// Equivalent to the Tailwind `grid-rows-<number>`
+     pub grid_rows: Option<GridTemplate>,
+@@ -811,6 +815,7 @@ impl Default for Style {
+             opacity: None,
+             grid_rows: None,
+             grid_cols: None,
++            grid_col_widths: None,
+             grid_location: None,
+ 
+             #[cfg(debug_assertions)]
+diff --git a/crates/gpui/src/styled.rs b/crates/gpui/src/styled.rs
+index aa77a20a44750221ee06e7cabdb6972779bf9356..dbf77b178d4430cc43552de0dea645a6b7cf8034 100644
+--- a/crates/gpui/src/styled.rs
++++ b/crates/gpui/src/styled.rs
+@@ -757,6 +757,12 @@ pub trait Styled: Sized {
+         self
+     }
+ 
++    /// quiet.md: sets explicit pixel widths for the grid columns of this element.
++    fn grid_col_widths(mut self, widths: Vec<f32>) -> Self {
++        self.style().grid_col_widths = Some(widths);
++        self
++    }
++
+     /// Sets the grid columns with min-content minimum sizing.
+     /// Unlike grid_cols, it won't shrink to width 0 in AvailableSpace::MinContent constraints.
+     fn grid_cols_min_content(mut self, cols: u16) -> Self {
+diff --git a/crates/gpui/src/taffy.rs b/crates/gpui/src/taffy.rs
+index 7c12b5cb8c1dc06e38d03ccc367a67c64bb6bd0d..82b9bbecd59630002833047325de95ec796bba60 100644
+--- a/crates/gpui/src/taffy.rs
++++ b/crates/gpui/src/taffy.rs
+@@ -515,7 +515,13 @@ impl ToTaffy<taffy::style::Style> for Style {
+             flex_grow: self.flex_grow,
+             flex_shrink: self.flex_shrink,
+             grid_template_rows: to_grid_repeat(&self.grid_rows),
+-            grid_template_columns: to_grid_repeat(&self.grid_cols),
++            grid_template_columns: match &self.grid_col_widths {
++                Some(widths) => widths
++                    .iter()
++                    .map(|w| taffy::GridTemplateComponent::Single(length(*w * scale_factor)))
++                    .collect(),
++                None => to_grid_repeat(&self.grid_cols),
++            },
+             grid_row: self
+                 .grid_location
+                 .as_ref()

@@ -3,6 +3,7 @@
 //! (downloaded to a local cache) and the error toasts (image-spec,
 //! crop-spec).
 
+use fdl_core::vfs::PathExt as _;
 use super::core::{DropPlace, EditKind, Pos, Selection, TITLE};
 #[cfg(not(target_os = "ios"))]
 use super::overlays::{Probe, at};
@@ -23,7 +24,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 /// Smallest image width and crop box side (`ZM`).
 pub(super) const MIN: f32 = 32.;
@@ -348,7 +350,7 @@ fn shrunk(path: &Path, cap: u32) -> Result<(image::DynamicImage, u32, u32), Imag
     let (im, w, h) = match if cap > 0 { decode_png(path, cap) } else { None } {
         Some(p) => p,
         None => {
-            let bytes = std::fs::read(path)?;
+            let bytes = fdl_core::vfs::read(path)?;
             let format = image::guess_format(&bytes)?;
             let jpeg = if format == image::ImageFormat::Jpeg && cap > 0 {
                 std::panic::catch_unwind(|| decode_jpeg(&bytes, cap)).ok().flatten()
@@ -383,7 +385,7 @@ fn shrunk(path: &Path, cap: u32) -> Result<(image::DynamicImage, u32, u32), Imag
 /// With the file's own size; None for what is left to `image` (interlaced,
 /// or not larger than `cap`).
 fn decode_png(path: &Path, cap: u32) -> Option<(image::DynamicImage, u32, u32)> {
-    let mut d = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).ok()?));
+    let mut d = png::Decoder::new(std::io::BufReader::new(fdl_core::vfs::File::open(path).ok()?));
     d.set_transformations(png::Transformations::normalize_to_color8());
     let mut r = d.read_info().ok()?;
     let info = r.info();
@@ -583,10 +585,16 @@ impl ImageCache for DocImages {
                         Some(d) => {
                             s.image = Some(d);
                             s.ready = Some(Instant::now());
-                            let _ = cx.update(|cx| { for view in s.waiters.drain(..) { cx.notify(view); } });
+                            cx.update(|cx| { for view in s.waiters.drain(..) { cx.notify(view); } });
                         }
-                        // Skipped off screen: asked for again when drawn.
-                        None => { map.remove(&r); }
+                        // Skipped as off screen: asked for again when drawn. A view
+                        // reused from the last frame may still show it (the frame
+                        // that looked newer just didn't paint it), so its views
+                        // draw again and ask once more if it is there.
+                        None => {
+                            let waiters = map.remove(&r).map(|s| s.waiters).unwrap_or_default();
+                            cx.update(|cx| { for view in waiters { cx.notify(view); } });
+                        }
                     }
                 }
                 drop(map);
@@ -639,7 +647,7 @@ impl ImageUi {
                 return Src::Failed;
             }
             let p = self.remote_path(src);
-            if self.dims.borrow().contains_key(&p) || p.exists() {
+            if self.dims.borrow().contains_key(&p) || p.fs_exists() {
                 return Src::Local(p);
             }
             // 设置 › 网络与隐私: with downloads off, only an image the user
@@ -651,7 +659,8 @@ impl ImageUi {
             return Src::Pending;
         }
         match image_path_in(&self.root, src) {
-            Some(p) if self.dims.borrow().contains_key(&p) || p.exists() => Src::Local(p),
+            Some(p) if self.dims.borrow().contains_key(&p) || p.fs_exists() => Src::Local(p),
+            Some(p) if fdl_core::vfs::pending(&p) => Src::Pending,
             Some(_) => Src::Missing,
             None => Src::Failed,
         }
@@ -789,7 +798,7 @@ fn error_el(w: f32, h: f32, missing: bool, blocked: bool, border: Hsla, retry: O
         .justify_center()
         .overflow_hidden()
         .text_color(Theme::text_caption())
-        .font_family(theme::UI_FONT)
+        .font_family(theme::DOC_UI_FONT)
         .when(w > 120. && h > 162., |d| d.child(icon("image-broken", 56., Theme::icon()).mb(px(8.))))
         .children(body)
         .into_any_element()
@@ -899,7 +908,7 @@ impl R<'_> {
                             .bg(gpui::white())
                             .border_1()
                             .border_color(if active { Theme::primary() } else { theme::ca(craft::N1000, 0.24) })
-                            .shadow(vec![BoxShadow { #[cfg(target_os = "ios")] inset: false, color: Theme::shadow(), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.) }]),
+                            .shadow(vec![BoxShadow { inset: false, color: Theme::shadow(), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.) }]),
                     )
                     .on_mouse_down(
                         MouseButton::Left,
@@ -945,7 +954,7 @@ impl R<'_> {
         // keeps 4px below it (`.with-caption`). The caption: 13pt, light,
         // the caption grey, centred.
         let caption_el = show_caption.then(|| {
-            let wrap = div().id(("image-caption", id.0)).mt(px(6.)).w_full().flex().font_family(theme::UI_FONT);
+            let wrap = div().id(("image-caption", id.0)).mt(px(6.)).w_full().flex().font_family(theme::DOC_UI_FONT);
             match ed.caption_field(id).filter(|_| !self.ghost) {
                 Some(f) => wrap
                     .child(f)
@@ -1149,7 +1158,7 @@ impl Editor {
         let p = if src.starts_with("http://") || src.starts_with("https://") { Some(self.img.remote_path(src)) } else { image_path_in(&self.library_root, src) };
         if let Some(p) = p {
             self.img.dims.borrow_mut().remove(&p);
-            if src.starts_with("http://") || src.starts_with("https://") { let _ = std::fs::remove_file(&p); }
+            if src.starts_with("http://") || src.starts_with("https://") { let _ = fdl_core::vfs::remove_file(&p); }
             DocImages::remove(&p, cx);
         }
         self.img.generation += 1;
@@ -1548,7 +1557,7 @@ impl Editor {
                 window.prevent_default();
             })
             .child(bar);
-        Some(at(self.rel(point(px(x), px(y))), Corner::TopLeft, el))
+        Some(at(self.rel(point(px(x), px(y))), Anchor::TopLeft, el))
     }
 
     /// 添加描述 / 编辑描述: shows the description and puts the caret in it.
@@ -1778,7 +1787,7 @@ impl Editor {
             let Ok(Ok(Some(dest))) = rx.await else { return };
             bg.spawn(async move {
                 if crop == FULL {
-                    let _ = std::fs::copy(&path, &dest);
+                    let _ = fdl_core::vfs::copy(&path, &dest);
                 } else if let Ok((im, _, _)) = shrunk(&path, 0) {
                     let (w, h) = (im.width() as f32, im.height() as f32);
                     let (x, y) = ((crop[0] * w).round() as u32, (crop[1] * h).round() as u32);
@@ -1891,6 +1900,8 @@ impl Editor {
         };
         let k = ease_out((lb.chrome_t.elapsed().as_secs_f32() / FADE).min(1.));
         let chrome = if lb.chrome { k } else { 1. - k };
+        // Idle with the controls faded out: no pointer until the mouse moves.
+        if !lb.chrome && k >= 1. { crate::gpui_compat::hide_cursor(cx); }
         let (sw, sh) = (w * lb.scale, h * lb.scale);
         let (left, top) = (vw / 2. + lb.tx - sw / 2., vh / 2. + lb.ty - sh / 2.);
         let can_drag = sw > vw + 0.5 || sh > vh + 0.5;
@@ -1998,7 +2009,7 @@ impl Editor {
             .shadow(theme::shadow_panel())
             .flex()
             .items_center()
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_family())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(tool("lb-prev", "chevron-left", crate::settings::text("上一张"), lb.ix > 0, |e, _, cx| e.lb_go(-1, cx)))
@@ -2028,7 +2039,6 @@ impl Editor {
             .h(px(vh))
             .bg(theme::rgbaf(0, 0, 0, 0.8))
             .opacity(fade)
-            .when(!lb.chrome && k >= 1., |d| d.cursor(crate::gpui_compat::NO_CURSOR))
             .on_action(cx.listener(|e, _: &LbClose, window, cx| e.close_lightbox(window, cx)))
             .on_action(cx.listener(|e, _: &LbPrev, _, cx| e.lb_go(-1, cx)))
             .on_action(cx.listener(|e, _: &LbNext, _, cx| e.lb_go(1, cx)))
@@ -2084,7 +2094,7 @@ impl Editor {
                     cx.notify();
                 }),
             )
-            .on_scroll_wheel(cx.listener(|e, ev: &ScrollWheelEvent, _, cx| {
+            .on_scroll(cx.listener(|e, ev: &ScrollEvent, _, cx| {
                 let (dx, dy, lines) = match ev.delta {
                     ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y), false),
                     ScrollDelta::Lines(l) => (l.x, l.y, true),
@@ -2310,7 +2320,7 @@ fn remote_srcs(blocks: &[Block], out: &mut Vec<String>) {
 
 /// A downloaded remote image (no extension in the cache) as a new asset.
 fn adopt_file(root: &Path, cached: &Path) -> Option<PathBuf> {
-    let bytes = std::fs::read(cached).ok()?;
+    let bytes = fdl_core::vfs::read(cached).ok()?;
     let ext = match image::guess_format(&bytes).ok()? {
         image::ImageFormat::Png => "png",
         image::ImageFormat::Jpeg => "jpg",
@@ -2324,7 +2334,7 @@ fn adopt_file(root: &Path, cached: &Path) -> Option<PathBuf> {
 
 fn download(url: &str, dest: &Path) -> bool {
     if let Some(d) = dest.parent() {
-        let _ = std::fs::create_dir_all(d);
+        let _ = fdl_core::vfs::create_dir_all(d);
     }
     let tmp = dest.with_extension("part");
     #[cfg(target_os = "ios")]
@@ -2341,9 +2351,9 @@ fn download(url: &str, dest: &Path) -> bool {
         .is_ok_and(|s| s.success());
     let ok = fetched
         && image::ImageReader::open(&tmp).ok().and_then(|r| r.with_guessed_format().ok()).and_then(|r| r.into_dimensions().ok()).is_some()
-        && std::fs::rename(&tmp, dest).is_ok();
+        && fdl_core::vfs::rename(&tmp, dest).is_ok();
     if !ok {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = fdl_core::vfs::remove_file(&tmp);
     }
     ok
 }
@@ -2404,7 +2414,7 @@ pub(crate) fn clipboard_image_data(img: &gpui::Image) -> Result<(std::borrow::Co
         ImageFormat::Gif => "gif",
         ImageFormat::Webp => "webp",
         ImageFormat::Bmp => "bmp",
-        ImageFormat::Svg => return Err(BAD_FORMAT),
+        ImageFormat::Svg | ImageFormat::Ico | ImageFormat::Pnm => return Err(BAD_FORMAT),
         ImageFormat::Tiff => {
             let im = image::ImageReader::with_format(std::io::Cursor::new(&img.bytes), image::ImageFormat::Tiff)
                 .decode().map_err(|_| BAD_DIMS)?;
@@ -2451,22 +2461,41 @@ pub(crate) fn store_image_named(root: &Path, bytes: &[u8], ext: &str, name: Opti
         .map(|n| n.trim().trim_start_matches('.').to_string()).filter(|n| !n.is_empty());
     let file = match name { Some(n) => format!("{}-{n}.{ext}", &id[..8]), None => format!("{id}.{ext}") };
     let dir = Store::assets_in(root);
-    std::fs::create_dir_all(&dir).map_err(|_| BAD_DIMS)?;
+    fdl_core::vfs::create_dir_all(&dir).map_err(|_| BAD_DIMS)?;
     let path = dir.join(file);
-    std::fs::write(&path, bytes).map_err(|_| BAD_DIMS)?;
+    fdl_core::vfs::write(&path, bytes).map_err(|_| BAD_DIMS)?;
     Ok(path)
 }
 
 pub(super) fn image_block_from_file(root: &Path, p: &Path) -> Result<Block, &'static str> {
     let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
-    if !p.is_file() || !FORMATS.contains(&ext.as_str()) {
+    if !p.fs_is_file() || !FORMATS.contains(&ext.as_str()) {
         return Err(BAD_FORMAT);
     }
-    if std::fs::metadata(p).map(|m| m.len()).unwrap_or(0) > MAX_BYTES {
+    if fdl_core::vfs::metadata(p).map(|m| m.len()).unwrap_or(0) > MAX_BYTES {
         return Err(TOO_BIG);
     }
-    let bytes = std::fs::read(p).map_err(|_| BAD_DIMS)?;
+    let bytes = fdl_core::vfs::read(p).map_err(|_| BAD_DIMS)?;
     image_block_named(root, &bytes, &ext, p.file_stem().and_then(|s| s.to_str()))
+}
+
+/// One line of pasted text that is nothing but a local image file path
+/// (`file://` counts): the file to take in, if it is really an image
+/// that exists. WeChat puts such a line in the pasteboard instead of
+/// image data (#252).
+pub(crate) fn local_image_path(line: &str) -> Option<PathBuf> {
+    let s = line.trim();
+    let decoded = s.strip_prefix("file://").map(crate::markdown::percent_decode);
+    let s = decoded.as_deref().unwrap_or(s);
+    #[cfg(windows)]
+    let s = if decoded.is_some() && s.starts_with('/') && s.as_bytes().get(2) == Some(&b':') { &s[1..] } else { s };
+    let p = Path::new(s);
+    is_local_image_file(p).then(|| p.to_path_buf())
+}
+
+pub(super) fn is_local_image_file(p: &Path) -> bool {
+    let ext = p.extension().and_then(|x| x.to_str()).unwrap_or_default().to_ascii_lowercase();
+    p.is_absolute() && FORMATS.contains(&ext.as_str()) && p.fs_is_file()
 }
 
 /// File name of a remote image's download in `assets/remote`.
@@ -2613,7 +2642,7 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap, clipboard_image_data, decode, decode_png, pasted_remote, shrunk, BAD_DIMS};
+    use super::{cap, clipboard_image_data, decode, decode_png, local_image_path, pasted_remote, shrunk, BAD_DIMS};
     use crate::model::{Block, BlockKind, RichText};
     use gpui::ImageFormat;
 
@@ -2635,7 +2664,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("quiet-image-adopt-{}", uuid::Uuid::new_v4()));
         let first = root.join("personal");
         let second = root.join("shared");
-        std::fs::create_dir_all(&root).unwrap();
+        fdl_core::vfs::create_dir_all(&root).unwrap();
         let cached = root.join("cached.png");
         image::RgbaImage::from_pixel(2, 2, image::Rgba([20, 40, 60, 255])).save(&cached).unwrap();
         for library in [&first, &second] {
@@ -2643,9 +2672,9 @@ mod tests {
             assert!(copied.starts_with(library));
             let source = crate::store::asset_source_in(library, &copied);
             assert_eq!(crate::store::image_path_in(library, &source).unwrap(), copied);
-            assert_eq!(std::fs::read(copied).unwrap(), std::fs::read(&cached).unwrap());
+            assert_eq!(fdl_core::vfs::read(copied).unwrap(), fdl_core::vfs::read(&cached).unwrap());
         }
-        std::fs::remove_dir_all(root).unwrap();
+        fdl_core::vfs::remove_dir_all(root).unwrap();
     }
 
     fn photo(dir: &std::path::Path, w: u32, h: u32) -> std::path::PathBuf {
@@ -2694,8 +2723,8 @@ mod tests {
     /// the hollow copy keeps id and size.
     #[test]
     fn pictures_decode_at_their_shown_size() {
-        let dir = std::env::temp_dir().join(format!("qmd-pic-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = fdl_core::vfs::temp_dir().join(format!("qmd-pic-{}", fdl_core::vfs::process_id()));
+        fdl_core::vfs::create_dir_all(&dir).unwrap();
         let p = photo(&dir, 4032, 3024);
         for (c, long) in [(2048, 2016), (512, 504), (384, 384)] {
             let im = decode(&p, c).unwrap();
@@ -2710,7 +2739,7 @@ mod tests {
         let png = dir.join("wide.png");
         image::RgbaImage::new(3000, 1000).save(&png).unwrap();
         assert_eq!(decode(&png, 1024).unwrap().size(0).width.0, 1024);
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = fdl_core::vfs::remove_dir_all(&dir);
     }
 
     /// PNGs shrink row by row to the same size as `thumbnail_exact`, and close
@@ -2718,8 +2747,8 @@ mod tests {
     /// left to `image`.
     #[test]
     fn pngs_shrink_while_streaming() {
-        let dir = std::env::temp_dir().join(format!("qmd-png-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = fdl_core::vfs::temp_dir().join(format!("qmd-png-{}", fdl_core::vfs::process_id()));
+        fdl_core::vfs::create_dir_all(&dir).unwrap();
         let px = |x: u32, y: u32| image::Rgba([(x * 255 / 2999) as u8, (y * 255 / 1199) as u8, ((x + y) % 256) as u8, (255 - y * 255 / 1199) as u8]);
         let rgba = image::RgbaImage::from_fn(3000, 1200, px);
         let opaque = image::DynamicImage::ImageRgba8(rgba.clone()).to_rgb8();
@@ -2742,6 +2771,23 @@ mod tests {
         }
         assert!(decode_png(&dir.join("rgb.png"), 4096).is_none());
         assert!(decode_png(&dir.join("missing.png"), 512).is_none());
+        let _ = fdl_core::vfs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_image_path_takes_only_existing_image_files() {
+        let dir = std::env::temp_dir().join(format!("fdl-imgpath-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("shot.png");
+        std::fs::write(&png, b"not decoded, only named").unwrap();
+        let shown = png.display().to_string();
+        assert_eq!(local_image_path(&shown).as_deref(), Some(png.as_path()));
+        assert_eq!(local_image_path(&format!("  file://{shown}  ")).as_deref(), Some(png.as_path()));
+        // Not there, wrong type, or relative: text, not an image.
+        assert_eq!(local_image_path(&dir.join("gone.png").display().to_string()), None);
+        assert_eq!(local_image_path(&dir.join("notes.txt").display().to_string()), None);
+        assert_eq!(local_image_path("shot.png"), None);
+        assert_eq!(local_image_path("https://example.com/a.png"), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

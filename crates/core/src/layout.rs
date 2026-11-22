@@ -12,7 +12,7 @@ const NAME_BYTES: usize = 120;
 /// A title as a file or folder name (no extension): illegal characters become
 /// their full-width forms, control characters spaces; no leading `.`, no
 /// trailing dot or space (Windows drops them), Windows device names get a
-/// `_`, and at most 120 bytes. Empty: 未命名文档.
+/// `_`, and at most 120 bytes. Empty: `model::untitled()`.
 pub fn file_name_for(title: &str) -> String {
     let mut s: String = title.chars().map(|c| match ILLEGAL.iter().find(|(a, _)| *a == c) {
         Some((_, b)) => *b,
@@ -21,7 +21,7 @@ pub fn file_name_for(title: &str) -> String {
     }).collect();
     s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     let s = s.trim_start_matches(['.', ' ']).trim_end_matches(['.', ' ']);
-    let mut s = if s.is_empty() { crate::model::UNTITLED.to_string() } else { s.to_string() };
+    let mut s = if s.is_empty() { crate::model::untitled().to_string() } else { s.to_string() };
     if s.len() > NAME_BYTES {
         let mut end = NAME_BYTES;
         while !s.is_char_boundary(end) { end -= 1; }
@@ -97,7 +97,7 @@ pub(super) struct Scan {
 /// names starting with `.` (`.quiet`, `.assets`, `.git` …) are not the user's notes.
 pub(super) fn scan(root: &Path) -> Scan {
     fn walk(root: &Path, rel: &str, out: &mut Scan) {
-        let Ok(rd) = std::fs::read_dir(if rel.is_empty() { root.to_path_buf() } else { root.join(rel) }) else { out.partial = true; return };
+        let Ok(rd) = crate::vfs::read_dir(if rel.is_empty() { root.to_path_buf() } else { root.join(rel) }) else { out.partial = true; return };
         for e in rd {
             let Ok(e) = e else { out.partial = true; continue };
             let Some(name) = e.file_name().to_str().map(str::to_string) else { continue };
@@ -108,10 +108,10 @@ pub(super) fn scan(root: &Path) -> Scan {
             if name.starts_with('.') { continue; }
             let Ok(kind) = e.file_type() else { continue };
             // Symbolic links are not followed: a link to a parent would never end.
-            let dir = kind.is_dir();
+            let dir = kind.fs_is_dir();
             let child = join_rel(rel, &name);
             if dir { out.dirs.push(child.clone()); walk(root, &child, out); }
-            else if kind.is_file() && crate::store::DocKind::of_name(&name).is_some() && !stem_of(&name).is_empty() { out.docs.push(child); }
+            else if kind.fs_is_file() && crate::store::DocKind::of_name(&name).is_some() && !stem_of(&name).is_empty() { out.docs.push(child); }
         }
     }
     let mut out = Scan::default();

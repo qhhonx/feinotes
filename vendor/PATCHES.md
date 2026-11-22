@@ -1,108 +1,141 @@
-# vendor 补丁
+# Vendored patches
 
-`vendor/gpui` 是 crates.io 的 gpui 0.2.2，`vendor/taffy` 是 taffy 0.9.0，`vendor/xattr` 是 xattr 0.2.3，都打了本地补丁。项目通过 `Cargo.toml` 的 `[patch.crates-io]` 使用这些目录。补丁处都带 `quiet.md:` 注释；完整列表以下表和 diff 为准。
+Quiet.md takes GPUI from the [Zed repository](https://github.com/zed-industries/zed). The tree in `vendor/zed` combines a pinned upstream snapshot and an ordered local patch series. `vendor/zed/upstream.toml` records the commit and selected crates. Numbered patches in `vendor/zed/patches` produce `vendor/zed/crates`, which the app consumes through Cargo path dependencies. Patched sites carry a `quiet.md:` comment.
 
-和上游对比：
+Vendoring the selected crates avoids fetching the entire Zed repository for a contributor's first build or CI run.
+
+## Layout
+
+| Path | Contents |
+|---|---|
+| `vendor/zed/upstream.toml` | Repository, commit, crates to copy, excluded directories (examples and benches), and crates.io replacements for upstream Git dependencies |
+| `vendor/zed/patches/NNNN-name.patch` | One patch with a description of what changed and why, followed by a diff relative to the Zed root |
+| `vendor/zed/crates/…` | Generated tree preserving Zed paths such as `crates/gpui` and `crates/refineable/derive_refineable` |
+| `vendor/zed/crates/*/Cargo.toml.orig` | Patched upstream manifests. Apply manifest edits here. |
+| `vendor/zed/crates/*/Cargo.toml` | Standalone manifests generated from the originals. Expand inherited workspace fields and dependencies, remove dev dependencies, omitted crates and their features, replace Git dependencies with crates.io packages and substitute Zed's lint rules. |
+| `vendor/zed/LICENSE-APACHE` | Zed license. These crates use Apache-2.0. |
+| `tools/vendor-sync` | Synchronization tool |
+
+The root Cargo.toml excludes the vendored crates from workspace tests and clippy. Save local edits as patches. The sync tool's check reports unrecorded changes.
+
+## Sync workflow
 
 ```sh
-R=~/.cargo/registry/src/index.crates.io-*/
-diff -ru $R/gpui-0.2.2/src vendor/gpui/src
-diff -ru $R/taffy-0.9.0/src vendor/taffy/src
+# Define a shell function so the same commands work in sh and zsh.
+vendor_sync() { cargo run -q --manifest-path tools/vendor-sync/Cargo.toml -- "$@"; }
+vendor_sync check                       # Compare the tree against upstream plus all patches
+vendor_sync save <name> -m "<message>"  # Append a patch containing the current edits
+vendor_sync save <existing-name>        # Regenerate a patch, retain its message, move it last
+vendor_sync sync                        # Rebuild vendor/zed/crates from upstream.toml
+vendor_sync sync --rev <commit-or-main> # Update the pinned revision and report failed patches
+vendor_sync sync --rev main --keep-going # Skip failed patches and write the remaining results
+vendor_sync refresh                     # Refresh diff line numbers and context at the current snapshot
 ```
 
-升级上游时，按下表逐条重新打补丁，并在补丁处保留注释。
+The tool keeps a blob-filtered Zed clone in `~/.cache/quiet-md/zed` (override with `QUIET_MD_ZED_DIR`) and sparsely checks out the selected crates. Intermediate files go in `target/vendor-sync`. Patches apply in order via `git apply --3way`, with one commit per patch.
 
-## GPUI 0.2.2
+For a new patch, edit files under `vendor/zed/crates` (use `Cargo.toml.orig` for manifest edits), run `vendor_sync save <name> -m "<message>"`, then `vendor_sync sync` to regenerate manifests and `vendor_sync check`. Save one related change at a time: each save includes all outstanding edits in the tree.
 
-- `platform/windows/events.rs`: `VK_PROCESSKEY` 始终交给 IME，不在组合结束后重新派发成编辑快捷键，避免小狼毫退格、回车被处理两次。
+To upgrade upstream:
 
-| # | 文件 | 改动 | 用途 |
+1. Run `vendor_sync sync --rev main --keep-going` and record failed patches.
+2. Reimplement each failed patch from its description in the vendored tree and run `vendor_sync save <existing-name>` before starting the next. If upstream now provides the behavior, remove that patch file and document it below.
+3. Run `vendor_sync refresh`, `vendor_sync check` and `cargo build`. Fix application build errors.
+4. Run the validation procedure below, compare screenshots and update this file.
+
+## Patch series
+
+Snapshot: Zed `e2f00a41ac67` (2026-11-15). Legacy numbers refer to the GPUI 0.2.2 patch table.
+
+| Patch | Legacy # | Files | Change and purpose |
 |---|---|---|---|
-| 1 | `platform/mac/text_system.rs` | 光栅化时显式打开字体平滑（`set_allows_font_smoothing(true)`、`set_should_smooth_fonts(true)`） | 与原生 AppKit / Catalyst 文字一致（笔画墨量 5.73 vs 5.74 / 像素宽）；关闭时少约 15% |
-| 2 | `platform/mac/text_system.rs` | 字形边界改用和光栅化相同字号的 CTFont 来量 | 系统字体会随字号切换光学尺寸（SF Text → SF Display），原来大标题字形左侧会被切掉一条 |
-| 3 | `platform/mac/text_system.rs` | 名字以 `KaTeX_` 开头的字体，即使没有 `m` 字形也允许加载 | KaTeX 的符号字体（Size1–4、AMS、Caligraphic、Script）没有小写字母，原来会被拒绝加载 |
-| 4 | `text_system/line_wrapper.rs`、`line_layout.rs` | 中文避头尾：`is_no_break_before`（闭合标点不在行首）、`is_no_break_after`（开标点不在行尾），两处换行算法都使用 | 正文、搜索摘要的中文换行符合中文避头尾规则 |
-| 5 | `text_system/line.rs` | `paint_rows` / `paint_background_rows`：按显式给出的每行顶部位置绘制 | 行内含公式或按钮时各行高度不同 |
-| 6 | `style.rs`、`styled.rs`、`taffy.rs` | `grid_col_widths(Vec<f32>)`：以像素给出网格列宽，覆盖 `grid_cols`；`repeat` 的字面量补上类型 | 表格列宽 |
-| 7 | `elements/list.rs` | `ListState::estimated_scroll_metrics` / `scroll_to_estimated_offset`：未量过的行按平均行高估算 | 长文档的滚动条和拖动滚动条 |
-| 8 | `platform.rs`、`platform/mac/platform.rs` | `PathPromptOptions.extensions`：限制 NSOpenPanel 可选的文件类型 | 导入对话框只列出 Markdown / 文本和 .xml 文件 |
-| 9 | `platform/mac/window.rs` | `mouseDownCanMoveWindow` 返回 NO，新增 `start_window_move`（延后执行 `performWindowDragWithEvent`） | 透明标题栏不再自己拖动窗口，也不再盖住应用按钮；应用自己标出可拖动区域 |
-| 10 | `platform/mac/metal_renderer.rs`、`window.rs`、`platform.rs` | `render_to_bgra` / `Window::render_offscreen`：把场景渲染到离屏纹理再读回；`Window::needs_draw` | 脚本截图和录屏，窗口被遮挡或锁屏时也能用（devtools） |
-| 11 | `window.rs` | `DispatchEventResult` 改为 `pub`（`Window::dispatch_event` 的返回类型） | devtools 回放事件时调用 `dispatch_event` |
-| 12 | `platform/mac/text_system.rs` | 合成斜体：要斜体而字体没有斜体字面时（含 CoreText 回退到的字体），换成一个「倾斜孪生」FontId，光栅化时错切 14°（WebKit 的合成倾斜角），字形边界相应加宽 | 中文斜体像浏览器一样倾斜；原来苹方没有斜体，中文斜体显示为正体 |
-| 13 | `text_system/line.rs` | 文字与背景装饰的场景排序边界包含居中、右对齐后的字形位置及超宽文字 | 图片描述不再穿透浮动工具栏，避免工具栏看起来透明 |
-| 14 | `platform/mac/text_system.rs`、`platform/mac.rs`、`platform.rs` | `font_ids_by_postscript_name` 一个名字对应多个 FontId，CoreText 回退来的字体按字形数挑出同一份字体；新增 `check_fallback_glyphs` 供测试调用（`editor::text::tests`） | 系统回退用的苹方（PingFangUI.ttc）和下载的 PingFang.ttc 都叫 `PingFangSC-Regular`，字形表不同；原来按名字查到另一份，编辑器里的中文画成错字 |
-| 15 | `platform/windows/directx_renderer.rs` | 调试构建编译着色器时，路径按宽字符串传给 `D3DCompileFromFile`（原来 `to_str().unwrap()`） | 仓库放在含中文等非 ASCII 字符的目录下也能跑调试构建 |
-| 16 | `platform/windows/clipboard.rs` | 读剪贴板时文字、图片、复制的文件一起读（原来只取第一个认得的格式）；新增位图（`CF_DIB`，转成 PNG）；复制的图片文件读成图片，其他文件的路径按行分开（原来连成一串） | 截图工具放进剪贴板的位图能粘贴，不再贴出截图文件的路径；从资源管理器复制的图片能粘贴 |
-| 17 | `elements/div.rs` | `paint_scroll_listener`：只在一个方向上可滚动的容器，只接收偏向这个方向的滚动（横向量大于竖向量才横滚，反之才竖滚）。原来竖向滚轮在只能横滚的容器上会被转成横滚，触控板竖滑带的少量横向分量也会照单全收；原有的方向锁只在两个方向都有量时才生效，单向容器另一方向恒为 0，所以从不触发 | 竖着滚动经过宽表格时，表格不再跟着左右滑动；在表格上横向滑动仍然能横滚 |
+| 0001 glyph-bounds-at-size | 2 | `gpui_apple/text_system.rs` | Measure glyph bounds with the CTFont at rasterization size. System optical sizes vary (SF Text → SF Display), previously clipping the left edge of large heading glyphs. |
+| 0002 katex-fonts | 3 | Same as above | Load `KaTeX_*` fonts without an `m` glyph (Size1–4, AMS, Caligraphic, Script). |
+| 0003 fallback-font-identity | 14 | Same as above | Map PostScript names to multiple FontIds and match CoreText fallback by glyph count. System PingFangUI.ttc and downloaded PingFang.ttc both provide PingFangSC-Regular with different glyph maps. Name-only lookup drew wrong characters. See `editor::text::tests::cjk_fallback_glyphs`. |
+| 0004 synthetic-italic | 12 | Same as above | For missing italic faces, including fallback faces, use a slanted twin FontId, shear 14° during rasterization (WebKit's angle) and widen bounds. This supports browser-like Chinese italics. |
+| 0005 grid-col-widths | 6 | `gpui/style.rs`, `styled.rs`, `taffy.rs` | `grid_col_widths(Vec<f32>)` overrides `grid_cols` with pixel widths for table columns. |
+| 0006 paint-rows | 5 | `gpui/text_system/line.rs` | `WrappedLine::paint_rows` / `paint_background_rows` accept explicit row tops for lines of different heights containing formulas or buttons. |
+| 0007 list-scroll-estimates | 7 | `gpui/elements/list.rs` | `ListState::estimated_scroll_metrics` and `scroll_to_estimated_offset` estimate unmeasured rows from average height for long-document scrollbars and dragging. |
+| 0008 path-prompt-extensions | 8 | `gpui/platform.rs`, `gpui_macos/platform.rs` | `PathPromptOptions.extensions` filters NSOpenPanel selection to Markdown, text and XML on import. |
+| 0009 offscreen-capture | 10 | `gpui/window.rs`, `platform.rs`, `gpui_macos/window.rs`, `gpui_apple/metal_renderer.rs` | Compile upstream `Window::render_to_image` outside `test-support`. Add `Window::render_offscreen` (run next-frame callbacks and draw offscreen without presenting) and `Window::needs_draw` for devtools capture while obscured or locked. |
+| 0010 replace-root-type | 26 | `gpui/window.rs` | Update the root type in the handle during `Window::replace_root`. After onboarding replaces the root, `downcast::<Workspace>()` can find the workspace in the same window. |
+| 0011 window-min-size | 27 | `gpui/window.rs`, `platform.rs`, `gpui_macos/window.rs`, `gpui_windows/window.rs`, `events.rs` | `Window::set_window_min_size` updates minimum content size after creation via macOS setContentMinSize or Windows min_size in WM_GETMINMAXINFO. The minimum width follows sidebar visibility and width. |
+| 0012 present-in-transaction | 28 | `gpui/window.rs`, `platform.rs`, `gpui_macos/window.rs` | `Window::present_next_frame_in_transaction` routes the next frame through `PlatformWindow::draw_in_transaction`. On macOS, presentsWithTransaction presents native glass changes and drawing in the same Core Animation transaction. |
+| 0013 hollow-images | 24 | `gpui/assets.rs`, `window.rs` | `RenderImage::hollow`, `is_hollow` and `with_scale_factor` preserve ID and dimensions while releasing uploaded CPU pixels. If the atlas lacks a hollow image, `paint_image` skips it, records it for `Window::take_missing_images` and requests the next frame. See docs/MEMORY.md. |
+| 0014 load-visible-only | 20 | `gpui/elements/img.rs`, `image_cache.rs` | `ImageCache::peek` neither loads nor marks an entry used. `Img::load_visible_only` decodes explicitly sized images on visible paint, avoiding images clipped from cards. |
+| 0015 hide-cursor | New | `gpui/app.rs` | Add `App::hide_cursor_until_mouse_moves`. Upstream replaced `CursorStyle::None` with `CursorHideMode` for typing. The app sets the latter to `Never` and calls the new method while typing in the editor or inputs and while idle in the image viewer. |
+| 0016 font-smoothing | 1 | `gpui_apple/text_system.rs` | Use the strongest stem darkening for all text colors with `glyph_dilation_for_color` fixed at zero. Upstream varies smoothing by color. The app matches native AppKit text (disabling smoothing costs ~15% ink). Honor a disabled AppleFontSmoothing preference. |
+| 0017 fallback-by-name | New | `gpui_apple/open_type.rs` | Build `FontFallbacks` descriptors by name with `CTFontDescriptorCreateWithNameAndSize`, as in 0.2. Family plus weight/slant selected PingFang.ttc (49,533 glyphs) instead of the system UI face (47,098). Different outlines made Chinese about 2% lighter. |
+| 0018 clipboard-text-and-image | 22 | `gpui_macos/pasteboard.rs` | Read text and one image together (prefer PNG over TIFF) and skip empty image data. The editor can paste a screenshot while text fields can read accompanying text. Private pasteboard tests live in `pasteboard::tests`. |
+| 0019 korean-word-wrap | 23 | `gpui/text_system/line_wrapper.rs` | Upstream UAX #14 (icu_segmenter) allows breaks between Hangul syllables. Suppress breaks inside Hangul/alphabetic words, including mixed words such as Quiet.md를. Oversize words still wrap by character. `test_break_indices_quiet_md` also covers Chinese punctuation and whole Arabic/Hebrew words. |
+| 0020 rtl-wrap | 30 | `gpui/text_system/line_layout.rs` | For wrapped RTL paragraphs, `wrap_bidi` uses character widths in reading order to choose breaks, shapes each line separately, concatenates layouts and marks the first glyph of each line. Exclude trailing spaces from shaping. Breaking in visual order reversed multiline Arabic. |
+| 0021 rtl-align | 32 | `gpui/text_system/line.rs` | Default to right alignment for wrapped paragraphs starting with an RTL letter. Preserve single lines, explicit alignment and `paint_rows`. |
+| 0022 single-axis-scroll | 17 | `gpui/elements/div.rs` | Single-axis scroll containers accept only events dominated by their axis. Vertical scrolling across a wide table moves the page and horizontal scrolling moves the table. Upstream `restrict_scroll_to_axis` needs per-element opt-in and locks trackpad gestures only with tracked scroll handles. |
+| 0023 windows-clipboard | 16 | `gpui_windows/clipboard.rs` | Upstream reads text, one image (including CF_DIB) and copied files together. Prefer PNG, otherwise convert bitmaps to PNG to reduce stored size. Correct upstream's extra 12 mask bytes for V4/V5 DIB headers. If all copied files are images, load them as images. Otherwise paste one path per line if there is no text. |
+| 0024 windows-device-lost | 25 | `gpui_windows/directx_renderer.rs`, `events.rs`, `platform.rs`, `window.rs` | Upstream uses optional resources, propagates errors, invalidates failed resizes and tolerates missing atlas textures, but panics on failed recovery. Log platform errors and retry at next vsync. Keep the new device on window renderer failure and retry drawing later, skipping paints meanwhile and rebuilding the swap chain at current size. Reapply acrylic blur after recovery by switching off then on so an identical setting is honored. |
+| 0025 windows-shader-path | 15 | `gpui_windows/directx_renderer.rs` | Pass debug shader paths as wide strings to D3DCompileFromFile, replacing `to_str().unwrap()`. |
+| 0026 linux-appearance-reborrow | 18 | `gpui_linux/wayland/client.rs`, `x11/client.rs` | Copy window handles and release the client borrow before appearance callbacks reenter the platform to update menus, avoiding a borrow panic. |
+| 0027 wgpu-30-crates-io | New | `gpui_wgpu/wgpu_context.rs`, `wgpu_renderer.rs` | Replace Zed's Git wgpu with crates.io 30.0.2 via `[git-to-crates-io]` in upstream.toml. Its DeviceDescriptor lacks default_queue and its has_srgb_suffix is named is_srgb. Linux only. |
+| 0028 keybinding-load-unmapped | New | `gpui/keymap/binding.rs` | `KeyBinding::load_unmapped` parses keys for the specified OS without an App or keyboard layout mapping, like 0.2 load plus DummyKeyboardMapper. Upstream load requires &App and rewrites keys on Windows. Preserve Windows/Linux bindings and custom shortcuts. |
+| 0029 web-system-font | New | `gpui_web/platform.rs` | `WebPlatform::new_with_system_font` selects the .SystemUIFont family (hardcoded upstream to IBM Plex Sans). The web app loads Inter in src/web.rs. |
+| 0030 web-diagonal-cursors | New | `gpui_web/platform.rs` | Correct swapped diagonal resize cursors: ResizeUpLeftDownRight maps to CSS nwse-resize. Image corner cursors previously pointed the wrong way on web. |
+| 0031 board-paths | 34, 35 | `gpui/path_builder.rs`, `window.rs` | Add `Path::transformed` (exact uniform scale and translation for monotonic quadratics), empty, is_empty, from_polygons and PathBuilder::build_polygons (flatten contours to tolerance, retaining each contour). Expose Window::with_element_opacity. Boards reuse per-element paths while panning/zooming. Frame clips and arrow label cutouts use flattened contours in src/board/render_geom.rs since upstream paths retain neither contour order nor triangles. |
+| 0032 cosmic-bundled-fonts | 43, 38 | `gpui_wgpu/cosmic_text_system.rs` | Make add_fonts replace existing faces with the same family and style (bundled CBDT Noto Color Emoji overrides Fedora's COLRv1). Load Xiaolai without an m glyph. Linux and web. |
+| 0033 glyph-outline | 37, 38 | `gpui/platform.rs`, `text_system.rs`, `gpui_apple/text_system.rs`, `gpui_windows/direct_write.rs` (adds `Win32_Graphics_Direct2D_Common`), `gpui_wgpu/cosmic_text_system.rs`, `gpui_web/text_system.rs` | `WindowTextSystem::glyph_outline` and GlyphOutlineCmd return outlines in font units, y upward. Use font-kit on macOS (including italic shear), DirectWrite GetGlyphRunOutline on Windows and swash on Linux/web. Web canvas fallback has no outlines. Board CPU rendering and rotated text use these outlines. Load Xiaolai without an m glyph on macOS. |
+| 0034 image-into-frames | New | `gpui/assets.rs` | `RenderImage::into_frames` retrieves image frames. Vello creates an image on each board change. After drop_image, reuse the previous buffer to draw the next frame directly (src/board/render_vello.rs), avoiding a 12 MB allocation and copy per frame. |
+| 0035 macos-file-image-clipboard | New | `gpui_macos/pasteboard.rs` | When a single file is copied, keep the bitmap the pasteboard carries with it, so the editor can paste pictures from apps such as WeChat. |
+| 0036 web-focus-reentry | New | `gpui_web/events.rs`, `gpui_web/window.rs` | A browser focus or blur can fire synchronously while GPUI is handling another event (focusing the input-method mirror on a press, or the site moving focus into the iframe). Refreshing the window's active state then re-entered the window update and panicked with "attempted to read a window that is already on the stack", after which the app stopped drawing and taking input (the site's live notebook froze on the first click). Refresh the active state on the next turn instead. |
+| 0037 rtl-decorations | New | `gpui/text_system/line.rs` | `paint_line` and `paint_line_background` look a glyph's decoration run up again from the start when its byte index runs backwards. Right-to-left glyphs come in visual order, so the forward-only lookup painted a coloured, underlined or highlighted Arabic span with the previous run's style. Lines without such scripts never go backwards and paint as before. |
+| 0038 windows-rtl | New | `gpui_windows/direct_write.rs` | DirectWrite lists a right-to-left run's glyphs in reading order and advances them leftwards from the run's right edge. Place them left to right and return them in visual order, as CoreText does. Lines whose first letter is right-to-left get a right-to-left reading direction with a finite width and no wrapping, so run origins stay within the line and neutrals and embedded Latin words sit where macOS puts them. Laid out in reading order from the left, Arabic came out reversed and its joining forms fell apart (the same bug users report in Zed). Left-to-right runs in left-to-right lines take the unchanged path. |
 
-| 18 | `platform/linux/wayland/client.rs`、`platform/linux/x11/client.rs` | 外观变化时先复制窗口句柄，释放 client 的 RefCell 借用后再触发窗口回调 | 避免回调重新访问平台、更新菜单时触发重复借用 panic |
-| 19 | `platform/mac/metal_renderer.rs`、`platform/mac/shaders.metal`、`platform/windows/directx_renderer.rs` | 画路径用的两张纹理（中间纹理和 4× MSAA 纹理）改为某一帧有路径时才创建，后续无路径帧距最后使用超过 1 秒时释放；窗口尺寸变化时丢掉，下次用到再建。Apple GPU 上 MSAA 纹理用 `Memoryless`（采样只在片上 tile 内存里，渲染过程里清空、只存 resolve 结果）。mac 上纹理不再按整窗建，而是按每批路径覆盖的范围（`fit_path_textures`，按 128 px 增长、不超过窗口）：路径平移到纹理原点光栅化，`path_sprite_vertex` 多收一个 `texture_rect`（批次在屏幕上的原点和纹理尺寸），`path_sprite_fragment` 按像素直接 `read` 纹素 | 原来每个窗口常驻这两张纹理，2560×1600 时约 80MB；路径只用于连续圆角、文件夹图标、进度波浪和提示箭头，编辑器里平时一条都不画。主页和文件夹页一直有路径，整窗中间纹理会常驻约 16MB，按批次范围后只剩一两张卡片大小。抗锯齿不变；渐变填充按平移后的坐标计算，边缘个别像素可能差 1/255 |
-| 20 | `elements/img.rs`、`elements/image_cache.rs` | 图片缓存增加不触发加载的 `peek`；显式尺寸图片可选择延迟到可见区域绘制时才解码 | 卡片裁剪范围之外的图片不再预先解码；原始像素、尺寸和动图播放保持不变 |
-| 21 | `platform/mac/metal_atlas.rs` | 删除图片时立即移除 tile 索引，再递减所属纹理的引用计数 | 避免共享纹理仍被使用时残留旧索引，导致重复删除或复用失效 tile |
-| 22 | `platform/mac/platform.rs` | 读取剪贴板时同时保留文字和一种图片格式（优先 PNG），跳过空图片数据 | 截图工具同时提供文字和图片时，正文可选择图片，文本输入框仍可读取文字 |
-| 23 | `text_system/line_wrapper.rs` | `is_word_char` 把韩文（谚文字母、兼容字母、音节及半角谚文）算作单词字符；上游测试原本断言它不是 | 韩文用空格分词，界面文字按词（어절）换行，不再在词中间断开；超出一行的长词仍按字符断开 |
-| 24 | `assets.rs`、`window.rs` | `RenderImage::with_scale_factor`；`RenderImage::hollow` 生成同 id、同尺寸、不带像素的空壳；`paint_image` 遇到 atlas 里没有的空壳时跳过、记下并请求下一帧，由 `Window::take_missing_images` 取走 | 文档图片按显示尺寸解码后，布局仍按原图尺寸；已上传到 atlas 的图片不再在内存里留一份像素（docs/MEMORY.md） |
-| 25 | `platform/windows/directx_renderer.rs`、`directx_atlas.rs`、`platform.rs`、`events.rs`、`window.rs` | GPU 设备丢失时：resize 失败后 render target 为 `None`，绘制前先重做（原来 `pre_draw` 直接 unwrap 崩溃，旧 back buffer 还会被二次释放）；渲染器恢复失败可重试，已释放的设备和资源只释放一次，期间不绘制、不 resize，恢复时按窗口当前大小建交换链，下一帧再试；atlas 查不到纹理时跳过这批 sprite；重建 DirectX 设备失败时不再把丢失的设备当新设备发给窗口，下一次 vsync 重试；恢复后重新设置窗口的亚克力模糊（驱动重启后会丢，侧栏后面的窗口不再被模糊） | 显卡驱动重启、睡眠唤醒、驱动更新后应用不崩溃，恢复后正常显示 |
-| 26 | `window.rs` | `Window::replace_root` 同时更新窗口句柄记录的根视图类型（`handle.state_type` 和 `App::window_handles` 里那一份） | 首次启动的引导页走完后，在同一个窗口里换成主界面；原来换了根视图后 `downcast::<新类型>()` 仍然失败，按主界面找窗口的地方找不到它 |
+## Retired patches
 
-| 27 | `platform.rs`、`platform/mac/window.rs`、`platform/windows/window.rs`、`window.rs` | `Window::set_window_min_size`：创建后改窗口最小内容尺寸（macOS `setContentMinSize`，Windows 改 `WM_GETMINMAXINFO` 用的 `min_size`；其他平台不变） | 最小宽度 = 文档区最小宽度 + 侧栏宽度，随侧栏开合和拖宽变化 |
-| 28 | `platform.rs`、`platform/mac/window.rs`、`window.rs` | `Window::present_next_frame_in_transaction`：下一帧走 `PlatformWindow::draw_in_transaction`，macOS 上这一帧 `presentsWithTransaction`，和渲染期间改的原生视图在同一个 Core Animation 事务里上屏；其他平台照常 `draw` | 侧栏玻璃（`NSGlassEffectView`）大小或显隐变化的那一帧和 GPUI 画面同时出现；原来画面异步上屏、晚一个刷新，开关侧栏时玻璃先没（先出来），看着像顿了一下 |
-| 29 | `scene.rs` | `insert_primitive` 判断阴影是否落在裁剪区外时，按着色器实际画到的范围（四周各多 3 倍模糊半径）算，原来只看阴影本身的矩形 | 阴影的模糊部分落进裁剪区、矩形本身在区外时不再被丢掉（主页拖入文件时，按连续圆角逐行裁剪的内侧光晕） |
-| 30 | `text_system/line_layout.rs` | `layout_wrapped_line`：文字含从右到左的字符（希伯来、阿拉伯等）且需要折行时，改走 `wrap_bidi`：按阅读顺序取每个字符的宽度来定折行点，每行单独交给平台排版（行内由平台重排），再把各行首尾相接拼成一个布局，折行点放在每行第一个字形上；每行末尾的空格不参与排版 | 整段一次排版后字形是显示顺序，原来按显示顺序切行，阿拉伯文多行时行序颠倒、从词中间断开；其他文字不走这条路 |
-| 31 | `text_system/line_wrapper.rs` | `is_word_char` 把希伯来、阿拉伯、叙利亚、它拿、N'Ko 字母及阿拉伯/希伯来表现形式算作单词字符，并加了测试 | 这些文字用空格分词，按词换行，不再在词中间断开 |
-| 32 | `text_system/line.rs` | `WrappedLine::paint` / `paint_background`：折成多行、且第一个字母属于从右到左文字的段落，默认的左对齐改成右对齐（`rtl_align`）；单行文字、显式指定的对齐和编辑器用的 `paint_rows` 不变 | 阿拉伯文等的多行说明文字贴右边排，符合这些文字的阅读习惯 |
-| 33 | `platform/mac/metal_renderer.rs` | `CAMetalLayer` 的 `maximumDrawableCount` 从 3 改为 2 | 每张 drawable 是一整窗 BGRA（2560×1600 时 16MB），第三张只在帧堆积时才会建出来并一直留着。我们每帧的 GPU 时间只有一两毫秒，滚动文件夹页时 `nextDrawable` 等待最长 0.17ms，和 3 张时一样 |
-| 34 | `scene.rs`、`window.rs`、`path_builder.rs` | `Path::transformed(scale, offset)`：把已经三角化的路径整体缩放、平移成一条新路径；`Window::with_element_opacity` 改为 `pub`；再导出 lyon 的 `LineCap`、`LineJoin` | 画板按元素缓存三角化结果，平移和小幅缩放时直接搬用，不重新三角化；画板里半透明的图片 |
-| 35 | `scene.rs` | `Path::triangles()`：读出路径三角化后的三角形 | 画板按旋转、圆角的框架裁剪路径，并在箭头标签处挖空（`src/board/render_geom.rs` 逐个三角形裁） |
-| 36 | `assets.rs`、`window.rs`、`platform.rs`、`platform/mac/metal_atlas.rs`、`platform/windows/directx_atlas.rs`、`platform/blade/blade_atlas.rs`、`platform/test/window.rs` | `PixelFrame`、`ImageId::next`、`Window::paint_pixels` / `drop_pixels`：CPU 画好的 BGRA 帧当作图片精灵 1:1 显示（左上角对齐设备像素），每帧一个图集块，`generation` 变了就用新的 `PlatformAtlas::update` 原地重写（Metal `replace_region`、DirectX `UpdateSubresource`、blade 经上传缓冲）；连续 120 次绘制没画的帧自动交还图集块（再画时重新上传），所以不要在 cached view 里画 | 画板的 vello_cpu 后端在三个平台上用同一条路显示画面（`src/board/render_vello.rs`）；原来是只有 macOS 的 BGRA `CVPixelBuffer` surface 管线 |
-| 37 | `platform.rs`、`text_system.rs`、`platform/mac/text_system.rs`、`platform/windows/direct_write.rs`、`platform/linux/text_system.rs`、`Cargo.toml` | `WindowTextSystem::glyph_outline(font_id, glyph_id)` 和 `GlyphOutlineCmd`：字形轮廓（字体单位、y 向上）。macOS：font-kit / CoreText（合成斜体同样错切 14°）；Windows：DirectWrite `GetGlyphRunOutline`（新增 `Win32_Graphics_Direct2D_Common` feature，`OutlineSink` 实现 `ID2D1SimplifiedGeometrySink`，合成斜体/粗体随字体 face）；Linux：swash 不缩放的轮廓（新增可选依赖 `swash`，随 `wayland` / `x11` 启用）。默认 None | vello 后端和画板旋转文字用 GPUI 排好的字形（含 CJK 回退字体）按轮廓画 |
-| 38 | `platform.rs`、`platform/mac.rs`、`platform/mac/text_system.rs`、`platform/linux/text_system.rs` | `load_family` 不再拒绝没有 `m` 字形的 Xiaolai（macOS 同 KaTeX 的例外，Linux 按 PostScript 名 `XiaolaiSC`）；`test_text_system()`（macOS，`#[doc(hidden)]`）：不建窗口、不起应用，直接拿一个 CoreText 的 `WindowTextSystem` | 画板的 CJK 手写字体 Xiaolai 只有 CJK 字符；画板字体的测试在 `cargo test` 里注册内置字体、量字宽（`src/board/fonts.rs`） |
-| 39 | `text_system.rs` | `WindowTextSystem::layout_line`（`shape_line` 也走它）合并相邻 run 时比较字体，同 `shape_text`；原来只要颜色、下划线相同就并进上一个 run 的字体 | 画板一行文字按字体分 run（Excalifont 后接 Xiaolai），后面的 run 原来被排成前一个字体，CJK 落到系统回退字体 |
-| 40 | `platform/mac/metal_renderer.rs` | 路径光栅化的顶点直接写进 instance buffer（先算总数、超出缓冲区照旧返回 false）；原来先在一个从空开始逐个扩容的 `Vec` 里攒好再整块拷过去 | 画板每帧大量路径顶点；原来每帧在这里反复 realloc 和拷贝，约占 Metal 提交一帧的四分之三（3 万元素场景拖动时每帧约 0.8ms，现在约 0.2ms） |
-| 41 | `elements/div.rs` | 有 `active` 样式的元素总是监听松开（capture 阶段，按下过才清掉并刷新）；原来只有「画的时候已是按下状态」的那一帧才注册松开监听 | 按下和松开在同一帧之前到达（触控板轻点、脚本点击）时，按钮的按下样式一直留着，直到下一次松开 |
-| 42 | `platform/mac/window.rs` | 视图类注册 `rightMouseDragged:`、`otherMouseDragged:`（同 `mouseDragged:` 交给 `handle_view_event`，`events.rs` 原本就会转换这两种事件） | 原来只注册了左键拖动，按住滚轮键或右键移动时 AppKit 不把事件交给视图，画板按住滚轮键平移画布不动 |
-
-| 34 | `platform/mac/platform.rs` | Forward `NSUserActivityTypeBrowsingWeb` to the existing open-URL callback. | Fei Notes Universal Links use the same invitation queue as custom-scheme URLs; no change to file-open handling. |
-
-## taffy 0.9.0
-
-| 文件 | 改动 | 用途 |
+| Legacy # | Original change | Upstream behavior or replacement |
 |---|---|---|
-| `compute/grid/track_sizing.rs` | 「超出限制」阶段只对受影响的轨道分配空间，增长上限只看 `fit-content()` 参数。这是从 taffy 0.13 移植的修复 | 跨多个 auto 行的合并单元格在 min-content 约束下原来不会撑高这些行 |
+| 4 | Chinese punctuation wrapping | UAX #14 already keeps closing punctuation off line starts and opening punctuation off line ends. See `test_break_indices_quiet_md`. |
+| 9 | Disable mouseDownCanMoveWindow and defer start_window_move | Main and quick-note windows enable upstream `WindowOptions::app_owns_titlebar_drag` and use `Window::start_window_move`. AppKit leaves dragging and double-click handling to the app. |
+| 11 | Public DispatchEventResult | Public upstream. |
+| 13 | Include aligned glyphs in text layer bounds | Upstream computes layer bounds from actual drawn primitives. |
+| 19 | On-demand, batch-sized path textures | Upstream draws analytic tiles directly into the target without intermediate or MSAA textures. Apple GPU depth textures use Memoryless storage. |
+| 21 | Remove tile index before releasing image | The generic atlas removes from tiles_by_key before release. |
+| 29 | Clip shadows using blur extent | Upstream shadow bounds include three blur radii. |
+| 31 | Treat Hebrew and Arabic letters as word characters | UAX #14 classifies these letters as AL and preserves words. |
+| 33 | Limit CAMetalLayer to two drawables | Upstream CAMetalDisplayLink supplies drawables ahead of time. Two may drop frames. Scripted memory was ~95 MB both before and after. Measure real display frame rates before pursuing the 16 MB saving. |
+| 36 | PixelFrame and Window::paint_pixels wrote CPU frames directly to an atlas tile | Board vello frames now use ordinary RenderImages, replacing each changed frame and calling drop_image on the previous image on the next display (src/board/render_vello.rs). |
+| 39 | Compare fonts when merging runs in layout_line | Upstream compares fonts. |
+| 40 | Write Metal path vertices directly into the instance buffer | Upstream tiled drawing eliminates that step. |
+| 41 | Always listen for release on elements with an active style | Upstream registers unconditionally. |
+| 42 | Register rightMouseDragged: and otherMouseDragged: | Registered upstream. |
+| Windows VK_PROCESSKEY | Pass keys under composition to IME | Upstream cannot parse these as GPUI keys and passes them to TranslateMessage and IME. Check Backspace and Enter with Weasel on Windows for duplicate handling. |
 
-## xattr 0.2.3
+## Changes retained from upstream
 
-| 文件 | 改动 | 用途 |
-|---|---|---|
-| `src/sys/mod.rs` | Linux/Android 下 `ENOATTR` 映射为 `::libc::ENODATA` | 解决现代 libc crate 在 Linux GNU 下没有 `ENOATTR` 常量导致的编译错误 |
+- **Pixel alignment.** Upstream aligns absolute taffy layout bounds, borders and clipping to device pixels. Glyphs use whole-pixel vertical positions and nearest quarter-pixel horizontal positions (previously rounded down). Text and icon edges change slightly. A block with fractional device-pixel height, such as a paragraph with inline math, can shift subsequent content by one device pixel.
+- **Stationary hover.** Upstream recomputes hover when content changes. A search button covered by the search overlay now loses its background and tooltip immediately, previously only on mouse movement.
+- **Uniform list padding.** Version 0.2.2 subtracted padding from the content area and then counted it again in child placement and content height. To preserve positions after the upstream fix, Home grid padding changed from pt(14)/pb(16) to pt(28)/pb(32), and scrollable contents lists from pb(22) to pb(44). A list that fits no longer scrolls an extra 22 pt.
+- **Window origin.** A half-point origin creates a window one point taller upstream. Round main and quick-note window origins to whole points.
 
-## 删掉的上游文件
+## Validation
 
-`gpui/examples/image/black-cat-typing.gif`（4.3 MB）只在 `examples/gif_viewer.rs` 和 `examples/opacity.rs` 里用到，这两个示例不参与本项目的构建；为了减小仓库体积删掉了。
+After each upstream upgrade, use temporary libraries (`QUIET_MD_HOME`), simulated clipboard and file dialogs, and leave keyboard focus with the user.
 
-## GPUI Mobile 7548ebc (iOS)
+```sh
+cargo build --release --features devtools  # Build the reference binary separately as described in tools/harness/README.md
+FDL_BIN=target/release/quiet_md FDL_REF_BIN=<old-binary> python3 tools/harness/gpui_patches.py
+for f in table_paste table_resize clipboard_images checkbox_toggle scroll_intent pointer_properties; do
+  FDL_BIN=target/release/quiet_md python3 tools/harness/$f.py; done
+scripts/check.sh
+```
 
-The staged dependency in `packaging/ios/.gpui-mobile` is reconstructed by
-`packaging/ios/prepare-gpui.sh`. Its tracked patches are kept under
-`packaging/ios/patches`, rather than editing an unrecorded dependency copy.
+- `gpui_patches.py` runs scenarios for patch behavior on each binary. Each document text row's four edges must match within three device pixels and ink coverage (sum of darkness) within 4%. These tolerances allow subpixel changes while detecting wrapping, alignment, line-height and scroll changes. Absolute checks include slanted italics, 85/300/150 column widths, a draggable scrollbar, visible images, working custom shortcuts, saving text typed before ⌘Q and a deferred popup opened inside another (the board's canvas background picker in its main menu, #327: GPUI 0.2 aborted on nested deferred draws). RSS is sampled every 0.1 s.
+- The six other harness scripts exercise functional behavior without a reference build.
+- Pixel comparisons (`compare.py`) and menu/shadow checks for legacy 13 and 29 used a temporary inspection script during the upgrade. It covered documents, menus, slash menus, search, Home, settings, scrolling, narrow windows and dark mode with Chinese. The script was not retained.
+- GPUI unit tests such as `test_break_indices_quiet_md` depend on fonts, example images and util_macros in the Zed repository, so they cannot build in the vendored copy. To run macOS pasteboard tests, copy vendor/zed/crates elsewhere, append an empty [workspace] to gpui_macos/Cargo.toml and run `cargo test --features test-support --lib pasteboard`.
+- Cross-check Windows from macOS with `cargo check --target x86_64-pc-windows-msvc` and a stub rc.exe/llvm-rc that writes empty output. Linux uses `--target x86_64-unknown-linux-gnu`, a C cross-compiler wrapper and `RUST_FONTCONFIG_DLOPEN=on`.
 
-- `gpui-mobile-ios17-font-traits.patch`: preserve the existing iPadOS 17 font
-  trait compatibility adaptation.
-- `gpui-mobile-ios-clipboard.patch`: use length-aware NSString construction,
-  preserve GPUI JSON metadata as a private pasteboard flavor, and transfer
-  supported encoded images. This keeps the shared editor's rich fragment copy
-  path usable on iOS. Reads copy data while UIKit owns it and bound binary data
-  to 64 MiB. No editor/model/format code is forked into the platform backend.
-- `gpui-mobile-ios-url.patch`: construct URLs through the backend's length-aware
-  NSString helper and use a valid empty UIKit options dictionary. Reject an
-  invalid NSURL before requesting the system open action.
+### Results on 2026-11-15 (macOS arm64, reference main a15b5a7)
 
-- `gpui-mobile-ios-return.patch`: forward a committed software-keyboard Return
-  through the existing GPUI Enter key event path before the platform input
-  handler. Keep the legacy global text callback and marked-text commit path
-  unchanged. This preserves shared paragraph/list/code and single-line Submit
-  behavior without adding a second editor command implementation.
+Of 40 checks, 28 passed on macOS (including the macOS portion of 0028), two were partial (0011 macOS and legacy 9), three needed manual observation (0008, 0012, 0015), five awaited sida-windows (0011 Windows, 0023–0025 and VK_PROCESSKEY), and two compiled but awaited CI (0026–0027). No failures were recorded. Old/new below are measurements. Scenario names refer to gpui_patches.py.
 
 - `gpui-mobile-ios-emoji-bounds.patch`: measure color glyphs with the same
   point-sized Core Text font used to draw them, so differently sized bitmap
@@ -116,33 +149,63 @@ The staged dependency in `packaging/ios/.gpui-mobile` is reconstructed by
   resolve the receiver without blocking GPUI. Logical request serials isolate late
   callbacks; stale or uncollected copied results are removed. The legacy synchronous APIs remain
   unchanged; Fei Notes uses only the new receiver for Photo Library selection.
+| Item | Risk | Check | Result |
+|---|---|---|---|
+| 0001 glyph-bounds-at-size | Clipped left edge on large headings | title with overhanging Wj, fjord in title/H1/H2 at widths 1280/1000/760 | Passed at all three widths |
+| 0002 katex-fonts | Incorrect fallback for script, blackboard bold and large brackets | katex with mathcal, mathscr, mathbb, mathfrak, left/right brackets and Bigg braces at three widths | Passed |
+| 0003 fallback-font-identity | Wrong Chinese glyphs | cjk at three widths and editor::text::tests::cjk_fallback_glyphs in check.sh | Passed |
+| 0004 synthetic-italic | Upright Chinese italics | italic compares upper ink shifted right against upright text at three widths | Both slanted and matched layout |
+| 0005 grid-col-widths | Saved widths ignored | table measures rules at 85/300/150 and three widths | Within ±2 pt and matched reference |
+| 0006 paint-rows | Inline math overlaps other lines | rows with fractions and radicals in a long paragraph at three widths | Passed |
+| 0007 list-scroll-estimates | Incorrect or jumping scrollbar | scrollbar: 400 variable paragraphs, scroll then drag from y=68 down 280 pt | Both had (52,32) → (340,32) → (344,32) after scrolling and matching page content |
+| 0008 path-prompt-extensions | Import lists all files | Scripts use pick and cannot open real panels. Code passes extensions and sets allowedContentTypes. | Unverified, inspect Import in preview manually |
+| 0009 offscreen-capture | Capture fails while locked or obscured | All scenarios capture offscreen or obscured via render_offscreen | Hundreds of captures passed |
+| 0010 replace-root-type | Post-onboarding window missing for quit saves and Finder opens | first-launch with empty library, QUIET_MD_ONBOARDING, eight Enters, create/type/immediate ⌘Q. app::quit uses downcast to Workspace. | Both reached workspace and saved |
+| 0011 window-min-size (macOS) | Minimum width ignores sidebar changes | Accessibility returned -25205 for GPUI window size and lldb attachment required authorization. Exercised sidebar toggle path. | Partial: minimum size unmeasured |
+| 0011 window-min-size (Windows) | Same issue in WM_GETMINMAXINFO | — | Awaiting sida-windows |
+| 0012 present-in-transaction | Sidebar glass flickers one frame ahead or behind | Scripted toggles ran successfully. Offscreen capture cannot measure presentation. | Unverified, observe or record toggles and resizing on screen |
+| 0013 hollow-images | Uploaded CPU pixels retained | images scrolls down and back past 30 images at 2400×1600, samples RSS and verifies display | Passed over three runs: new/old peaks 366–378 / 365–377 MB, settled 300–306 / 299 MB |
+| 0014 load-visible-only | Decode images clipped from home cards | home-images scrolls to bottom of 12 documents with four large images each, only two visible per card | Passed, visuals matched. New/old peaks 135–145 / 142–150 MB, settled 129–130 / 134–135 MB |
+| 0015 hide-cursor | Pointer remains visible while typing | Offscreen cursor cannot be observed and CGCursorIsVisible is unavailable/unreliable. Scripted typing succeeded. | Unverified, observe real-window typing |
+| 0016 font-smoothing | Dark text thinner and light text paler | cjk and cjk-dark compare ink in light and dark themes | Passed, body row ink difference ≤0.5% |
+| 0017 fallback-by-name | Chinese about 2% lighter | cjk compares row ink with 4% tolerance | Passed, measured body difference ≤0.5% |
+| 0018 clipboard-text-and-image | Screenshot with text pastes only text | gpui_macos pasteboard::tests uses a private pasteboard (nine tests, three patch-specific). clipboard_images.py covers only the app's simulated side. | Passed 9/9 |
+| 0019 korean-word-wrap | Breaks between Hangul syllables | korean at three widths against reference word wrapping | Passed, upstream test unavailable in vendor copy |
+| 0020 rtl-wrap | Reversed Arabic line order and split words | rtl with long Arabic/Hebrew paragraphs at three widths | Passed |
+| 0021 rtl-align | Left-aligned multiline RTL excerpts | home-rtl with Arabic/Hebrew home card excerpts | Passed |
+| 0022 single-axis-scroll | Vertical scroll with drift moves wide table horizontally | wide-table, ten 220 pt columns, vertical scroll with 4 pt horizontal delta followed by horizontal ±300/120 | Passed, page and table scrolled independently, three screenshots matched |
+| 0023 windows-clipboard | BMP output, V4/V5 misalignment, copied images fail to paste | — | Awaiting sida-windows |
+| 0024 windows-device-lost | Panic after driver restart or wake | — | Awaiting sida-windows |
+| 0025 windows-shader-path | Debug build crashes on Chinese paths | — | Awaiting sida-windows |
+| 0026 linux-appearance-reborrow | Panic on appearance change | Cross-platform clippy from macOS | Compiled, awaiting CI |
+| 0027 wgpu-30-crates-io | Cannot compile against crates.io wgpu | Same cross-check | Compiled, awaiting CI |
+| 0028 keybinding-load-unmapped | Layout remaps user shortcuts or Windows/Linux keys | shortcuts sets bold to cmd-shift-k in .quiet/shortcuts.json, selects all, invokes it and checks saved `<b>` markup | Both macOS builds passed, Windows awaiting sida-windows |
+| Legacy 4, Chinese punctuation | Closing punctuation starts a line | kinsoku compares dense Chinese punctuation at three widths | Passed |
+| Legacy 31, RTL words | Arabic/Hebrew break midword | rtl | Passed |
+| Legacy 9, title-bar drag | Buttons miss clicks or dragging/double-clicking fails | Scripted search, More, sidebar and Home clicks succeeded. Real pointer needed for drag and double-click zoom. | Buttons passed, drag and double-click unverified |
+| Legacy 11, public DispatchEventResult | Build failure | Compile | Passed |
+| Legacy 13, text layer bounds | Missing or clipped glyphs | Layouts matched across text scenarios and upgrade screenshots | Passed |
+| Legacy 19, path textures | Large textures allocated for rounded cards or checkboxes | Home, table and checkbox captures matched (home-images, checkbox_toggle). Memory in 0013/0014. | Passed |
+| Legacy 21, atlas removal | Crash on tile deletion | images scrolls past 30 images and back to discard and reupload hollow images | Passed, no crashes and images displayed |
+| Legacy 29, shadow clipping | Shadows cropped at edges | Checked menus, slash menus and popups along edges during upgrade | Passed, matched reference |
+| Legacy 33, two drawables | Extra drawable costs 16 MB at 2560×1600 | Patch omitted. Both versions alternated between two and three drawables, e.g. 110/126 MB for an image-free document. | Passed, distributions matched |
+| Windows VK_PROCESSKEY | IME handles Backspace/Enter twice | — | Awaiting sida-windows with Weasel |
+| uniform_list padding | Missing 16/22 pt at bottom of home grid/long contents | home-images scrolled to bottom and catalogue with 80 headings scrolled to bottom | Passed after adjustment |
 
+## Upstream crates omitted
 
-The mobile platform also applies `gpui-mobile-ios-picker-dismissal.patch` after
-the patches listed above. File prompts use a native page sheet so single-file
-mode can be dismissed even when UIKit omits a Cancel button. An adaptive
-presentation delegate resolves dismissal as cancellation through the existing
-one-shot receiver. Explicit cancel, selection and late dismissal share the
-same pending-picker identity check; no importer/model code is forked.
+The snapshot omits gpui_ios. Add it to the crates array in upstream.toml if needed. It includes gpui_web for the website's live notebooks. See [Web build](../web/README.md).
 
+## Other upstream capabilities and measurements
 
-## Fei Notes iOS GPUI core image-cache extension
+- AccessKit platform adapters are wired up. Exposing elements to screen readers requires roles such as `.id(...).role(...)` or custom `a11y_role` implementations (gpui/src/_accessibility.rs). The app did not yet annotate elements at the time of the upgrade.
+- Clean macOS arm64 builds on 2026-11-15: release build time 66.8 → 45.3 s and binary size 36.6 → 35.1 MB. Dist with LTO took 210 → 161 s and shrank from 24.97 to 24.27 MB. Scripted memory usage stayed around 95 MB.
 
-The iOS target uses gpui-pre 0.3.10 through a generated `.gpui-core` directory,
-not this desktop GPUI fork. `packaging/ios/prepare-gpui-core.py` verifies the
-crates.io archive and applies `patches/gpui-pre-image-cache.patch`. The extension
-ports natural-size thumbnail scaling, static-image buffer release, missing-atlas
-recovery and visible-only custom-cache loading to the pinned mobile core. Its
-source and patch checksums are in `gpui-pre-image-cache.json`. Existing licenses
-from the archive are retained. This is not an upstream-version upgrade.
+## Removed vendor directories
 
-### Mobile board compatibility
+- `vendor/taffy` patched the beyond-limits stage in 0.9.0 with a fix backported from 0.13. Upstream GPUI uses taffy 0.15, which includes the fix.
+- `vendor/xattr` patched Linux ENOATTR. The new dependency tree no longer includes xattr.
 
-The pinned iOS GPUI core patch also exposes path transforms and triangle iteration,
-line cap/join types, glyph outlines and element opacity used by the current board
-renderer. Mobile CPU frames use the existing image atlas with generation-based
-replacement, a six-frame cache bound and explicit eviction; desktop GPU upload code is unchanged. Image IDs
-share one allocator. Dynamic explicit-modifier key bindings own parsed keystrokes.
-The mobile CoreText platform supplies FontKit outlines in
-`packaging/ios/patches/gpui-mobile-ios-board-outlines.patch`. The complete prepared
-core tree and patch checksums remain verified by `prepare-gpui-core.py`.
+## Fei Notes additions
+
+Patch `0039-feinotes-universal-links` ports the previous product `application:continueUserActivity:restorationHandler:` delegate callback to `gpui_macos`. Browsing activities enter the same URL handler as explicit URL opens, preserving CloudKit invitation handling. The old `vendor/gpui` layout is retired with upstream.

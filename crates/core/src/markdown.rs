@@ -1,6 +1,7 @@
 //! 下载为 → Markdown: DocxXML document model to CommonMark/GFM text; and a
 //! Markdown file read and written as itself (`parse_file` / `write_file`).
 
+use crate::vfs::{PathExt as _, KindExt as _};
 use crate::model::*;
 use std::path::{Path, PathBuf};
 
@@ -173,6 +174,8 @@ impl Writer<'_> {
                 }
                 None => bd.plain_text().lines().map(escape).collect::<Vec<_>>().join("<br>"),
             },
+            // A 数据表: the shown view as a Markdown table.
+            BlockKind::DataTable(t) => crate::table::block_markdown(&self.opts.library_root.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::root_dir), t),
             BlockKind::File(f) => self.file_link(f).map(|url| format!("[{}]({url})", escape(&f.name))).unwrap_or_else(|| escape(&f.name)),
             BlockKind::SubPageList => {
                 self.opts.sub_pages.iter().map(|t| format!("- {}", escape(&crate::model::display_title(t)))).collect::<Vec<_>>().join("\n")
@@ -204,14 +207,14 @@ impl Writer<'_> {
         let raw = Path::new(src.strip_prefix("file://").unwrap_or(src));
         let root = self.opts.library_root.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::root_dir);
         // Relative sources left after `parse_file` are the library's (`.assets/…`).
-        let abs = if raw.is_absolute() { raw.to_path_buf() } else { root.join(raw) };
+        let abs = if raw.fs_is_absolute() { raw.to_path_buf() } else { root.join(raw) };
         let Some(base) = self.opts.base else { return abs.to_string_lossy().into_owned() };
         if let Ok(rel) = abs.strip_prefix(base) {
             return rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
         }
         // The library's own image or attachment: a copy beside the file.
         let assets = crate::store::Store::assets_in(&root);
-        match self.opts.name.filter(|_| abs.starts_with(&assets) && abs.is_file()) {
+        match self.opts.name.filter(|_| abs.starts_with(&assets) && abs.fs_is_file()) {
             Some(name) => self.beside(&abs, base, name, image),
             None => abs.to_string_lossy().into_owned(),
         }
@@ -234,7 +237,7 @@ impl Writer<'_> {
             _ if image => None,
             _ => Some(stem.clone()),
         };
-        let taken = |rel: &str, files: &[(PathBuf, String)]| base.join(rel).exists() || files.iter().any(|(_, r)| r == rel);
+        let taken = |rel: &str, files: &[(PathBuf, String)]| base.join(rel).fs_exists() || files.iter().any(|(_, r)| r == rel);
         let mut n = 1;
         let rel = loop {
             let file = match (&own, n) {
@@ -347,21 +350,28 @@ const PICTURES: [&str; 6] = ["jpeg", "jpg", "png", "gif", "webp", "bmp"];
 /// `root` (the folder being imported). What can't be found or shown
 /// (`![[page#heading]]`, a missing file, an svg) stays the text it was.
 pub fn wiki_images(blocks: &mut [Block], page_dir: &Path, root: Option<&Path>) {
-    let vault = page_dir.ancestors().find(|d| d.join(".obsidian").is_dir()).or(root);
+    let vault = page_dir.ancestors().find(|d| d.join(".obsidian").fs_is_dir()).or(root);
     let attachments = vault.and_then(|v| {
-        let app: serde_json::Value = serde_json::from_slice(&std::fs::read(v.join(".obsidian/app.json")).ok()?).ok()?;
+        let app: serde_json::Value = serde_json::from_slice(&crate::vfs::read(v.join(".obsidian/app.json")).ok()?).ok()?;
         let f = app.get("attachmentFolderPath")?.as_str()?.trim_end_matches('/');
         Some(match f.strip_prefix("./") { Some(r) => page_dir.join(r), None if f == "." => page_dir.to_path_buf(), None => v.join(f.trim_start_matches('/')) })
     });
     let mut by_name: Option<std::sync::Arc<Names>> = None;
     wiki_walk(blocks, &mut |name| {
         let p = Path::new(name);
-        let found = [Some(page_dir), attachments.as_deref(), vault].into_iter().flatten().map(|d| d.join(p)).find(|p| p.is_file());
+        let found = [Some(page_dir), attachments.as_deref(), vault].into_iter().flatten().map(|d| d.join(p)).find(|p| p.fs_is_file());
         found.or_else(|| {
             let v = vault?;
+            let key = p.file_name()?.to_string_lossy().to_lowercase();
             let names = by_name.get_or_insert_with(|| vault_names(v));
-            let names: &Names = names;
-            match names.get(&p.file_name()?.to_string_lossy().to_lowercase())?.as_slice() { [one] => Some(one.clone()), _ => None }
+            // A name the folders a person sees have nothing for is looked for
+            // in the hidden ones (#227); one they do have stays decided by
+            // them, so a copy in `.cache` cannot make it ambiguous.
+            match names.get(&key).map(Vec::as_slice) {
+                Some([one]) => Some(one.clone()),
+                Some(_) => None,
+                None => match hidden_names(v).get(&key)?.as_slice() { [one] => Some(one.clone()), _ => None },
+            }
         })
     });
 }
@@ -388,32 +398,132 @@ fn wiki_walk(blocks: &mut [Block], find: &mut dyn FnMut(&str) -> Option<PathBuf>
     }
 }
 
+/// A `quiet-wiki:` link (`[[page#heading|alias]]` as read) split into the
+/// page and the heading: the last of nested `#a#b`, none for a `#^block`.
+pub fn wiki_parts(raw: &str) -> (&str, &str) {
+    let target = raw.split('|').next().unwrap_or(raw);
+    let (name, anchor) = target.split_once('#').unwrap_or((target, ""));
+    let heading = anchor.rsplit('#').next().unwrap_or("").trim();
+    (name.trim(), if heading.starts_with('^') { "" } else { heading })
+}
+
+/// The vault `[[page]]` links in the file `from` are looked up in: the nearest
+/// folder holding `.obsidian`, else the mounted folder it is in, else (in the
+/// library) the top folder it is in — where an imported vault lands — else
+/// the folder it is in.
+pub fn wiki_vault(from: &Path, library: Option<&Path>, mounts: &[PathBuf]) -> PathBuf {
+    let dir = from.parent().unwrap_or(from);
+    if let Some(v) = dir.ancestors().find(|d| d.join(".obsidian").fs_is_dir()) { return v.to_path_buf(); }
+    if let Some(m) = mounts.iter().filter(|m| from.starts_with(m)).max_by_key(|m| m.components().count()) { return m.clone(); }
+    if let Some(lib) = library && let Ok(rel) = from.strip_prefix(lib) {
+        let mut parts = rel.components();
+        return match (parts.next(), parts.next()) { (Some(top), Some(_)) => lib.join(top), _ => lib.to_path_buf() };
+    }
+    dir.to_path_buf()
+}
+
+/// The file `[[name]]` in `from` means, the way Obsidian resolves it: `name`
+/// or `name.md`, any file in `vault` whose path ends with it, letter case
+/// aside — one in the page's own folder first, then the shortest path; a name
+/// starting `./` or `../` is a path from the page's folder. `#heading` and
+/// `|alias` are already off (`wiki_parts`); an empty name is the page itself.
+/// Only files found in the vault's listing count, so the path has their real
+/// letter case (a case-blind disk would open `top.md` for `Top.md`).
+pub fn resolve_wiki(name: &str, from: &Path, vault: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let name = name.trim().trim_start_matches('/');
+    if name.is_empty() { return Some(from.to_path_buf()); }
+    let dir = from.parent()?;
+    let mut wanted = vec![format!("{name}.md")];
+    if Path::new(name).extension().is_some() { wanted.push(name.to_string()); }
+    let norm = |p: &Path| {
+        let mut out: Vec<String> = vec![];
+        for c in p.components() {
+            match c {
+                Component::CurDir => {}
+                Component::ParentDir => { out.pop(); }
+                c => out.push(c.as_os_str().to_string_lossy().to_lowercase()),
+            }
+        }
+        out
+    };
+    for hidden in [false, true] {
+        let names = walk_names(vault, hidden);
+        for w in &wanted {
+            // A title the library had to rename on import (`:` and the like)
+            // is found by the name it was given.
+            let mut keys = vec![w.clone()];
+            let base = Path::new(w).file_name()?.to_string_lossy().into_owned();
+            let stem = base.strip_suffix(".md").unwrap_or(&base);
+            let safe = format!("{}{}", crate::store::file_name_for(stem), if base.ends_with(".md") { ".md" } else { "" });
+            if safe != base { keys.push(Path::new(w).with_file_name(safe).to_string_lossy().into_owned()); }
+            for key in keys {
+                let relative = key.starts_with("./") || key.starts_with("../");
+                let tail = if relative { norm(&dir.join(&key)) } else { norm(Path::new(&key)) };
+                let Some(last) = tail.last() else { continue };
+                let found = names.get(last).into_iter().flatten().filter(|p| {
+                    let rel = if relative { norm(p) } else { norm(p.strip_prefix(vault).unwrap_or(p)) };
+                    if relative { rel == tail } else { rel.len() >= tail.len() && rel[rel.len() - tail.len()..] == tail[..] }
+                });
+                if let Some(p) = found.min_by_key(|p| (p.parent() != Some(dir), p.components().count(), p.as_os_str().len(), p.as_path())) { return Some(p.clone()); }
+            }
+        }
+    }
+    None
+}
+
 type Names = std::collections::HashMap<String, Vec<PathBuf>>;
 
 /// Every file in `vault` by lower-case name (folders starting with `.` skipped;
 /// at most 50 000 entries). Kept a minute: a folder import asks once per page.
 fn vault_names(vault: &Path) -> std::sync::Arc<Names> {
-    static LAST: std::sync::Mutex<Option<(PathBuf, std::time::Instant, std::sync::Arc<Names>)>> = std::sync::Mutex::new(None);
+    static LAST: std::sync::Mutex<Option<(PathBuf, web_time::Instant, std::sync::Arc<Names>)>> = std::sync::Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((v, t, n)) = &*last && v == vault && t.elapsed().as_secs() < 60 { return n.clone(); }
-    let n = std::sync::Arc::new(walk_names(vault));
-    *last = Some((vault.to_path_buf(), std::time::Instant::now(), n.clone()));
+    let n = std::sync::Arc::new(walk_names(vault, false));
+    *last = Some((vault.to_path_buf(), web_time::Instant::now(), n.clone()));
     n
 }
 
-fn walk_names(vault: &Path) -> Names {
-    let (mut out, mut stack, mut seen) = (Names::new(), vec![vault.to_path_buf()], 0);
-    while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+/// The same index for the folders the walk above does not go into (#227): a
+/// vault may keep every picture in `.attachments` and configure nothing, and
+/// `![[name.png]]` still means that file. Asked only for a name the visible
+/// folders have nothing for — never to decide one they do have — so a copy in
+/// `.cache` or `.stversions` cannot turn a picture that resolved into an
+/// ambiguous one. Its own 50 000-entry cap. Kept a minute, like the walk above.
+fn hidden_names(vault: &Path) -> std::sync::Arc<Names> {
+    static LAST: std::sync::Mutex<Option<(PathBuf, web_time::Instant, std::sync::Arc<Names>)>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((v, t, n)) = &*last && v == vault && t.elapsed().as_secs() < 60 { return n.clone(); }
+    let n = std::sync::Arc::new(walk_names(vault, true));
+    *last = Some((vault.to_path_buf(), web_time::Instant::now(), n.clone()));
+    n
+}
+
+/// Folders that hold an app's own files, never a vault's attachments: the
+/// editor's configuration and local trash, a repository's, this app's library.
+const INTERNAL_FOLDERS: [&str; 5] = [".obsidian", ".trash", ".git", ".quiet", ".assets"];
+
+/// `vault` by name. `hidden`: go into the dot-folders the first pass skips,
+/// an app's own ones aside. A file whose own name starts with `.` is not a
+/// picture anyone wrote, in either pass.
+fn walk_names(vault: &Path, hidden: bool) -> Names {
+    // `inside`: this folder sits below a hidden one, so what it holds is that
+    // folder's content and is walked whatever its own name.
+    let (mut out, mut stack, mut seen) = (Names::new(), vec![(vault.to_path_buf(), false)], 0);
+    while let Some((d, inside)) = stack.pop() {
+        let Ok(rd) = crate::vfs::read_dir(&d) else { continue };
         for e in rd.flatten() {
             seen += 1;
             if seen > 50_000 { return out; }
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') { continue; }
-            match e.file_type() {
-                Ok(t) if t.is_dir() => stack.push(e.path()),
-                Ok(t) if t.is_file() => out.entry(name.to_lowercase()).or_default().push(e.path()),
-                _ => {}
+            let dotted = name.starts_with('.');
+            let Ok(kind) = e.file_type() else { continue };
+            if kind.fs_is_dir() {
+                let enter = inside || if dotted { hidden && !INTERNAL_FOLDERS.contains(&name.to_ascii_lowercase().as_str()) } else { !hidden };
+                if enter { stack.push((e.path(), inside || dotted)); }
+            } else if kind.fs_is_file() && !dotted {
+                out.entry(name.to_lowercase()).or_default().push(e.path());
             }
         }
     }
@@ -692,7 +802,7 @@ fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) ->
             strike: m.strike,
             underline: m.underline,
             code: m.code,
-            link: file_link.or_else(|| m.link.clone().filter(|url| crate::paste::link_ok(url))),
+            link: file_link.or_else(|| m.link.clone().filter(|url| crate::paste::link_ok(url) || crate::paste::relative_link(url) || url.starts_with("quiet-wiki:"))),
             math: m.inline.as_ref().and_then(Inline::equation).is_some(),
         };
         match runs.last_mut() {
@@ -703,6 +813,12 @@ fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) ->
     let mut out = String::new();
     for (m, s) in runs {
         if s.is_empty() {
+            continue;
+        }
+        if let Some(raw) = m.link.as_deref().and_then(|l| l.strip_prefix("quiet-wiki:")) {
+            let (target, label) = raw.split_once('|').unwrap_or((raw, raw));
+            if s == label { out.push_str(&format!("[[{raw}]]")); }
+            else { out.push_str(&format!("[[{target}|{s}]]")); }
             continue;
         }
         // Emphasis markers must hug the text: keep outer spaces outside.
@@ -721,7 +837,16 @@ fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) ->
             let tick = if body.contains('`') { "``" } else { "`" };
             format!("{tick}{body}{tick}")
         } else {
-            escape(body)
+            static EMBED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"!\[\[[^\[\]\r\n]+\]\]|!\[[^\[\]\r\n]*\]\([^()\r\n]+\)").unwrap());
+            let mut escaped = String::new();
+            let mut end = 0;
+            for span in EMBED.find_iter(body) {
+                escaped.push_str(&escape(&body[end..span.start()]));
+                escaped.push_str(span.as_str());
+                end = span.end();
+            }
+            escaped.push_str(&escape(&body[end..]));
+            escaped
         };
         if m.underline {
             x = format!("<u>{x}</u>");
@@ -754,9 +879,9 @@ mod tests {
 
     #[test]
     fn inline_attachments_export_links_and_copies_including_tables() {
-        let root = std::env::temp_dir().join(format!("quiet-export-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("assets")).unwrap();
-        std::fs::write(root.join("assets/report (1).pdf"), b"pdf").unwrap();
+        let root = crate::vfs::temp_dir().join(format!("quiet-export-{}", uuid::Uuid::new_v4()));
+        crate::vfs::create_dir_all(root.join("assets")).unwrap();
+        crate::vfs::write(root.join("assets/report (1).pdf"), b"pdf").unwrap();
         let file = FileBlock { src_kind: "path".into(), src: "assets/report (1).pdf".into(), name: "Report [1]".into(), view: FileView::Card };
         let mut text = RichText::plain("before ");
         text.push("\u{fffc}", Marks { inline: Some(crate::docxml::to_inline(InlineKind::File(file))), ..Default::default() });
@@ -771,7 +896,7 @@ mod tests {
         let plain = export(&doc, &Options { library_root: Some(&root), ..Default::default() });
         assert!(plain.files.is_empty());
         assert!(!plain.text.contains("out.assets"));
-        std::fs::remove_dir_all(root).unwrap();
+        crate::vfs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -784,7 +909,7 @@ mod tests {
 
     #[test]
     fn clipboard_keeps_structure_equations_and_local_paths() {
-        let root = std::env::temp_dir().join("quiet-clip-root");
+        let root = crate::vfs::temp_dir().join("quiet-clip-root");
         let mut eq = RichText::plain("e: ");
         eq.push("\u{fffc}", Marks { inline: Some(crate::docxml::to_inline(InlineKind::Equation("X_t".into()))), ..Default::default() });
         let blocks = vec![
@@ -867,6 +992,20 @@ mod tests {
         let canon = |d: &Document| write_file(d, "", Some(base));
         assert_eq!(canon(&parse_file(&out, "t", Some(base))), canon(&doc), "{out}");
         out
+    }
+
+    /// An `<img>` line is a picture like `![](…)`: relative paths resolve
+    /// beside the file, and saving keeps the tag as written.
+    #[test]
+    fn html_images() {
+        let src = "a\n\n<img src=\"img/a%20b.png\" width=\"240\">\n\n<img src=\"https://file.oss/image.png\" alt=\"\" width=\"auto\" height=\"auto\" >\n";
+        let base = Path::new(if cfg!(windows) { "C:/notes" } else { "/notes" });
+        let imgs: Vec<_> = parse_file(src, "t", Some(base)).blocks.into_iter().filter_map(|b| match b.kind {
+            BlockKind::Image { src, width, .. } => Some((PathBuf::from(src), width)),
+            _ => None,
+        }).collect();
+        assert_eq!(imgs, [(base.join("img").join("a b.png"), Some(240.)), (PathBuf::from("https://file.oss/image.png"), None)]);
+        assert_eq!(preserved(src, |_| {}), src);
     }
 
     /// Only what changed is rewritten: other blocks keep their own syntax
@@ -955,11 +1094,11 @@ mod tests {
     /// in the vault's attachment folder, or by a name only one file has.
     #[test]
     fn wiki_embeds_become_pictures_when_the_file_is_there() {
-        let root = std::env::temp_dir().join(format!("fdl-embed-{}", uuid::Uuid::new_v4()));
+        let root = crate::vfs::temp_dir().join(format!("fdl-embed-{}", uuid::Uuid::new_v4()));
         let notes = root.join("notes");
-        for d in ["notes", ".obsidian", "files", "deep/er"] { std::fs::create_dir_all(root.join(d)).unwrap(); }
-        std::fs::write(root.join(".obsidian/app.json"), r#"{"attachmentFolderPath":"files"}"#).unwrap();
-        for f in ["notes/p 1.png", "files/att.png", "deep/er/far.png", "drawing.svg", "notes/twice.png", "files/twice.png"] { std::fs::write(root.join(f), b"png").unwrap(); }
+        for d in ["notes", ".obsidian", "files", "deep/er"] { crate::vfs::create_dir_all(root.join(d)).unwrap(); }
+        crate::vfs::write(root.join(".obsidian/app.json"), r#"{"attachmentFolderPath":"files"}"#).unwrap();
+        for f in ["notes/p 1.png", "files/att.png", "deep/er/far.png", "drawing.svg", "notes/twice.png", "files/twice.png"] { crate::vfs::write(root.join(f), b"png").unwrap(); }
         let src = "4、\n\n![[p 1.png]]\n\n![[p 1.png|300x200]]\n\n![[att.png]]\n\n![[far.png]]\n\n![[missing.png]]\n\n![[page#heading]]\n\n![[drawing.svg]]\n\n![[deep/er/far.png]]\n";
         let mut doc = parse_file(src, "page", Some(&notes));
         wiki_images(&mut doc.blocks, &notes, None);
@@ -975,6 +1114,136 @@ mod tests {
         let mut blocks = crate::paste::markdown_to_blocks("![[att.png]]\n", crate::paste::Off { file: true, ..Default::default() });
         wiki_images(&mut blocks, &notes, None);
         assert!(matches!(&blocks[0].kind, BlockKind::Image { src, .. } if Path::new(src) == root.join("files/att.png")), "{blocks:?}");
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = crate::vfs::remove_dir_all(&root);
+    }
+
+    /// A vault may keep its pictures in a hidden folder (`.attachments`) and
+    /// configure nothing, so the walk has to go on into it — #227. A name the
+    /// folders a person sees already have keeps resolving to theirs, and the
+    /// library's own folders are still not the vault's.
+    #[test]
+    fn wiki_embeds_reach_pictures_in_a_hidden_attachment_folder() {
+        let root = crate::vfs::temp_dir().join(format!("fdl-hidden-{}", uuid::Uuid::new_v4()));
+        let notes = root.join("notes");
+        for d in ["notes", ".obsidian", ".attachments/sub", "normal", ".cache", ".backups", ".quiet", ".git"] {
+            crate::vfs::create_dir_all(root.join(d)).unwrap();
+        }
+        for f in [".attachments/hidden.png", ".attachments/sub/deep.png", "normal/visible.png", ".cache/visible.png",
+            ".cache/twice.png", ".backups/twice.png", ".quiet/quiet.png", ".git/ignored.png", ".obsidian/app.png"] {
+            crate::vfs::write(root.join(f), b"png").unwrap();
+        }
+        let src = "![[hidden.png]]\n\n![[deep.png]]\n\n![[visible.png]]\n\n![[twice.png]]\n\n![[quiet.png]]\n\n![[ignored.png]]\n\n![[app.png]]\n";
+        let mut doc = parse_file(src, "page", Some(&notes));
+        wiki_images(&mut doc.blocks, &notes, None);
+        let pics: Vec<PathBuf> = doc.blocks.iter().filter_map(|b| match &b.kind {
+            BlockKind::Image { src, .. } => Some(PathBuf::from(src)),
+            _ => None,
+        }).collect();
+        // `visible.png` is the visible one, though `.cache` has another; `twice.png`
+        // is only in hidden folders, in two of them, so it is as unresolved as a
+        // name nobody has.
+        assert_eq!(pics, vec![root.join(".attachments/hidden.png"), root.join(".attachments/sub/deep.png"), root.join("normal/visible.png")]);
+        let texts: Vec<&str> = doc.blocks.iter().map(|b| b.text.text.as_str()).filter(|t| !t.is_empty()).collect();
+        assert_eq!(texts, vec!["![[twice.png]]", "![[quiet.png]]", "![[ignored.png]]", "![[app.png]]"]);
+        let _ = crate::vfs::remove_dir_all(&root);
+    }
+
+    /// Obsidian's `[[page]]`, `[[page|alias]]` and `[[page#heading]]` read as
+    /// links showing the alias (or the page), and are written back as they
+    /// were — in paragraphs, lists, quotes and table cells.
+    #[test]
+    fn wiki_links_read_as_links_and_write_back() {
+        let src = "See [[Page]], [[Other Note|the alias]] and [[Deep/Path/Note#Some Heading]].\n\n- [[a#^block]] and `[[code]]`\n\n> [[Quoted]]\n\n| a | b |\n| --- | --- |\n| [[Page\\|alias]] | [[Plain]] |\n\n![[embed]] text\n";
+        let doc = parse_file(src, "page", None);
+        let links: Vec<(String, String)> = doc.blocks.iter().flat_map(|b| {
+            let mut texts = vec![&b.text];
+            texts.extend(b.children.iter().map(|c| &c.text));
+            if let BlockKind::Table(t) = &b.kind { texts.extend(t.rows.iter().flatten().flat_map(|c| c.blocks.iter().map(|b| &b.text))); }
+            texts.into_iter().flat_map(|t| t.spans().filter_map(|(r, m)| Some((t.text[r].to_string(), m.link.clone()?))).collect::<Vec<_>>()).collect::<Vec<_>>()
+        }).collect();
+        assert_eq!(links, [("Page", "Page"), ("the alias", "Other Note|the alias"), ("Deep/Path/Note#Some Heading", "Deep/Path/Note#Some Heading"), ("a#^block", "a#^block"), ("Quoted", "Quoted"), ("alias", "Page|alias"), ("Plain", "Plain")]
+            .map(|(t, l)| (t.to_string(), format!("quiet-wiki:{l}"))));
+        assert_eq!(write_file(&doc, "", None), src);
+        // Re-labelled in the editor: the target stays, the new text is the alias.
+        let mut doc = parse_file("[[Page]] and [[Note|old]]\n", "page", None);
+        let t = &mut doc.blocks[0].text;
+        let text = t.text.replacen("old", "new label", 1);
+        let marks: Vec<_> = t.spans().map(|(r, m)| (r, m.clone())).collect();
+        let mut fresh = RichText::plain("");
+        for (r, m) in marks { let s = &t.text[r]; fresh.push(if s == "old" { "new label" } else { s }, m); }
+        assert_eq!(fresh.text, text);
+        doc.blocks[0].text = fresh;
+        assert_eq!(write_file(&doc, "", None), "[[Page]] and [[Note|new label]]\n");
+        // A DocxXML page keeps the link too.
+        let xml = crate::docxml::serialize(&parse_file("[[Page#H|alias]]\n", "x", None));
+        let back = crate::docxml::parse(&xml).unwrap();
+        assert_eq!(to_markdown(&back), "# x\n\n[[Page#H|alias]]\n");
+    }
+
+    #[test]
+    fn wiki_parts_split_page_heading_and_alias() {
+        assert_eq!(wiki_parts("Page"), ("Page", ""));
+        assert_eq!(wiki_parts("Page|alias"), ("Page", ""));
+        assert_eq!(wiki_parts("Page#Heading|alias"), ("Page", "Heading"));
+        assert_eq!(wiki_parts("Page#Outer#Inner"), ("Page", "Inner"));
+        assert_eq!(wiki_parts("Page#^block1"), ("Page", ""));
+        assert_eq!(wiki_parts("#Here"), ("", "Here"));
+        assert_eq!(wiki_parts("a/b/Page "), ("a/b/Page", ""));
+    }
+
+    /// Obsidian's lookup: letter case aside, the path may be left out, a
+    /// name in the page's own folder wins, then the shortest path; a partial
+    /// path picks among same names; a missing page is nothing.
+    #[test]
+    fn wiki_links_resolve_like_obsidian() {
+        let v = crate::vfs::temp_dir().join(format!("fdl-wiki-{}", uuid::Uuid::new_v4()));
+        for f in ["Top.md", "notes/Page.md", "notes/deep/Page.md", "other/Same.md", "notes/Same.md", "x/y/Same.md", "a/b/Only Here.md",
+            "Note v1.2.md", "files/report.pdf", "Ratio：Odds.md", ".trash/Gone.md", "notes/Here.md", ".attachments/hidden.pdf"] {
+            let p = v.join(f);
+            crate::vfs::create_dir_all(p.parent().unwrap()).unwrap();
+            crate::vfs::write(&p, b"x").unwrap();
+        }
+        let from = v.join("notes/Here.md");
+        let r = |name: &str| resolve_wiki(name, &from, &v).map(|p| p.strip_prefix(&v).unwrap().to_string_lossy().replace('\\', "/"));
+        assert_eq!(r("Top").as_deref(), Some("Top.md"));
+        assert_eq!(r("top").as_deref(), Some("Top.md"));
+        assert_eq!(r("Page").as_deref(), Some("notes/Page.md"));
+        assert_eq!(r("deep/Page").as_deref(), Some("notes/deep/Page.md"));
+        assert_eq!(r("Same").as_deref(), Some("notes/Same.md"));
+        assert_eq!(r("y/same").as_deref(), Some("x/y/Same.md"));
+        assert_eq!(r("only here").as_deref(), Some("a/b/Only Here.md"));
+        assert_eq!(r("/a/b/Only Here").as_deref(), Some("a/b/Only Here.md"));
+        assert_eq!(r("Note v1.2").as_deref(), Some("Note v1.2.md"));
+        assert_eq!(r("report.pdf").as_deref(), Some("files/report.pdf"));
+        assert_eq!(r("Ratio:Odds").as_deref(), Some("Ratio：Odds.md"));
+        assert_eq!(r("").as_deref(), Some("notes/Here.md"));
+        assert_eq!(r("Missing"), None);
+        assert_eq!(r("Gone"), None);
+        assert_eq!(r("z/Same"), None);
+        assert_eq!(r("../Top").as_deref(), Some("Top.md"));
+        assert_eq!(r("./deep/page").as_deref(), Some("notes/deep/Page.md"));
+        assert_eq!(r("../Page"), None);
+        assert_eq!(r("hidden.pdf").as_deref(), Some(".attachments/hidden.pdf"));
+        // From elsewhere the shortest path wins.
+        let from = v.join("a/b/Only Here.md");
+        assert_eq!(resolve_wiki("Same", &from, &v), Some(v.join("notes/Same.md")));
+        assert_eq!(resolve_wiki("Page", &from, &v), Some(v.join("notes/Page.md")));
+        let _ = crate::vfs::remove_dir_all(&v);
+    }
+
+    /// Where links are looked up: the vault, a mounted folder, an imported
+    /// vault's top folder in the library, else the page's folder.
+    #[test]
+    fn wiki_vault_is_the_nearest_sensible_root() {
+        let t = crate::vfs::temp_dir().join(format!("fdl-vault-{}", uuid::Uuid::new_v4()));
+        for d in ["obs/.obsidian", "obs/sub", "lib/Vault/notes", "mnt/a", "loose"] { crate::vfs::create_dir_all(t.join(d)).unwrap(); }
+        let lib = t.join("lib");
+        let mounts = [t.join("mnt")];
+        assert_eq!(wiki_vault(&t.join("obs/sub/x.md"), Some(&lib), &mounts), t.join("obs"));
+        assert_eq!(wiki_vault(&t.join("mnt/a/x.md"), Some(&lib), &mounts), t.join("mnt"));
+        assert_eq!(wiki_vault(&t.join("lib/Vault/notes/x.md"), Some(&lib), &mounts), t.join("lib/Vault"));
+        assert_eq!(wiki_vault(&t.join("lib/x.md"), Some(&lib), &mounts), lib);
+        assert_eq!(wiki_vault(&t.join("loose/x.md"), Some(&lib), &mounts), t.join("loose"));
+        let _ = crate::vfs::remove_dir_all(&t);
     }
 }

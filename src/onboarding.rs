@@ -4,8 +4,7 @@
 //! along. ⌘⌥⇧O and Settings › About replay it without touching the library. Nothing is written until 开始使用;
 //! closing the window before that quits without a library.
 
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
+use fdl_core::vfs::{PathExt as _, KindExt as _};
 use crate::settings::tr;
 use crate::theme::{self, Theme};
 use crate::ui;
@@ -13,7 +12,8 @@ use gpui::*;
 use gpui::prelude::FluentBuilder;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 static PENDING: AtomicBool = AtomicBool::new(false);
 
@@ -156,7 +156,7 @@ fn paint_backdrop(b: Bounds<Pixels>, t: f32, window: &mut Window) {
         let d = w * d * (1. + 0.10 * (TAU * t / (lx + ly) + ph).sin());
         let c = Hsla::from(rgb(color)).opacity(if dark { 0.16 } else { k });
         crate::gpui_compat::paint_shadows(window,Bounds::new(point(px(cx - d / 2.), px(cy - d / 2.)), size(px(d), px(d))), Corners::all(px(d / 2.)),
-            &[BoxShadow { #[cfg(target_os = "ios")] inset: false, color: c, offset: point(px(0.), px(0.)), blur_radius: px(d * 0.45), spread_radius: px(0.) }]);
+            &[BoxShadow { inset: false, color: c, offset: point(px(0.), px(0.)), blur_radius: px(d * 0.45), spread_radius: px(0.) }]);
     }
     // Grain: one tile of noise repeated, a texel per point.
     let tile = GRAIN_N as f32;
@@ -184,12 +184,6 @@ static GRAIN: std::sync::LazyLock<std::sync::Arc<RenderImage>> = std::sync::Lazy
     std::sync::Arc::new(RenderImage::new(vec![image::Frame::new(buf)]))
 });
 
-/// Things settling in when a page appears: 0 → 1 over `dur` after `delay`, easing out.
-fn arrive(since: f32, delay: f32, dur: f32) -> f32 {
-    let p = ((since - delay) / dur).clamp(0., 1.);
-    1. - (1. - p).powi(3)
-}
-
 // ---- where notes already are
 
 #[derive(Clone)]
@@ -203,7 +197,7 @@ struct Found {
 
 /// Markdown files under `dir`, without hidden folders, up to a budget of entries.
 fn count_md(dir: &Path, depth: usize, budget: &mut usize) -> usize {
-    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    let Ok(rd) = fdl_core::vfs::read_dir(dir) else { return 0 };
     let mut n = 0;
     for e in rd.flatten() {
         if *budget == 0 { break }
@@ -212,14 +206,14 @@ fn count_md(dir: &Path, depth: usize, budget: &mut usize) -> usize {
         let name = name.to_string_lossy();
         if name.starts_with('.') || name == "node_modules" { continue }
         let Ok(ft) = e.file_type() else { continue };
-        if ft.is_dir() && depth > 0 { n += count_md(&e.path(), depth - 1, budget); }
-        else if ft.is_file() && crate::local_files::is_markdown_path(&e.path()) { n += 1; }
+        if ft.fs_is_dir() && depth > 0 { n += count_md(&e.path(), depth - 1, budget); }
+        else if ft.fs_is_file() && crate::local_files::is_markdown_path(&e.path()) { n += 1; }
     }
     n
 }
 
 fn subdirs(dir: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(dir).map(|rd| rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir()) && !e.file_name().to_string_lossy().starts_with('.')).map(|e| e.path()).collect()).unwrap_or_default()
+    fdl_core::vfs::read_dir(dir).map(|rd| rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.fs_is_dir()) && !e.file_name().to_string_lossy().starts_with('.')).map(|e| e.path()).collect()).unwrap_or_default()
 }
 
 /// Notes other apps keep on this computer, read only and off the main
@@ -232,7 +226,7 @@ fn discover(library: PathBuf) -> Vec<Found> {
     let mobile = home.join("Library/Mobile Documents");
     let mut candidates: Vec<(&'static str, PathBuf)> = vec![];
     // Obsidian lists its vaults in obsidian.json (macOS, Windows and Linux alike), and keeps iCloud vaults in its container.
-    if let Some(cfg) = dirs::config_dir().and_then(|d| std::fs::read(d.join("obsidian/obsidian.json")).ok())
+    if let Some(cfg) = dirs::config_dir().and_then(|d| fdl_core::vfs::read(d.join("obsidian/obsidian.json")).ok())
         && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&cfg)
         && let Some(vaults) = v.get("vaults").and_then(|v| v.as_object()) {
         for vault in vaults.values() {
@@ -241,7 +235,7 @@ fn discover(library: PathBuf) -> Vec<Found> {
     }
     for d in subdirs(&mobile.join("iCloud~md~obsidian/Documents")) { candidates.push(("Obsidian", d)); }
     // Logseq names each graph's folder in ~/.logseq/graphs: `logseq_local_++Users++me++notes.transit`.
-    for g in std::fs::read_dir(home.join(".logseq/graphs")).into_iter().flatten().flatten() {
+    for g in fdl_core::vfs::read_dir(home.join(".logseq/graphs")).into_iter().flatten().flatten() {
         let name = g.file_name().to_string_lossy().into_owned();
         if let Some(p) = name.strip_prefix("logseq_local_").and_then(|n| n.strip_suffix(".transit")) { candidates.push(("Logseq", PathBuf::from(p.replace("++", "/")))); }
     }
@@ -250,9 +244,9 @@ fn discover(library: PathBuf) -> Vec<Found> {
     candidates.push(("Typora", mobile.join("iCloud~abnerworks~Typora/Documents")));
     let mut out: Vec<Found> = vec![];
     for (app, path) in candidates {
-        if !path.is_dir() || path.starts_with(&library) || library.starts_with(&path) { continue }
-        let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        if out.iter().any(|f| std::fs::canonicalize(&f.path).unwrap_or_else(|_| f.path.clone()) == key) { continue }
+        if !path.fs_is_dir() || path.starts_with(&library) || library.starts_with(&path) { continue }
+        let key = fdl_core::vfs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if out.iter().any(|f| fdl_core::vfs::canonicalize(&f.path).unwrap_or_else(|_| f.path.clone()) == key) { continue }
         let mut budget = 20_000;
         let count = count_md(&path, 6, &mut budget);
         if count == 0 { continue }
@@ -281,7 +275,7 @@ pub(crate) fn ubiquitous(path: &Path) -> bool {
     #[link(name = "Foundation", kind = "framework")]
     unsafe extern "C" { static NSURLIsUbiquitousItemKey: *mut Object; }
     let mut p = path;
-    while !p.exists() { match p.parent() { Some(q) => p = q, None => return false } }
+    while !p.fs_exists() { match p.parent() { Some(q) => p = q, None => return false } }
     let s = p.to_string_lossy();
     unsafe {
         let ns: *mut Object = msg_send![class!(NSString), alloc];
@@ -330,11 +324,12 @@ fn short_path(p: &Path) -> String {
     parts.join(" › ")
 }
 
-/// A picked folder as a library: an existing one or an empty folder is used
-/// as it is; anything else gets a Quiet.md folder inside.
+/// A picked folder as a library, used as it is: its Markdown and DocxXML
+/// files show up as documents (#282). Only the home folder and a disk's
+/// root get a Quiet.md folder inside; scanning all of either is never meant.
 pub(crate) fn library_in(dir: PathBuf) -> PathBuf {
-    let empty = std::fs::read_dir(&dir).map(|mut r| r.all(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().starts_with('.')))).unwrap_or(true);
-    if crate::store::Store::is_library(&dir) || empty { dir } else { dir.join("Quiet.md") }
+    let broad = dir.parent().is_none() || dirs::home_dir().is_some_and(|h| h == dir);
+    if broad && !crate::store::Store::is_library(&dir) { dir.join("Quiet.md") } else { dir }
 }
 
 // ---- the view
@@ -352,8 +347,6 @@ pub struct Onboarding {
     cut_at: Instant,
     /// Over a running app's window (⌘⌥⇧O, Settings): a look only, nothing is written.
     replay: bool,
-    /// When the current page appeared; its parts settle in from there.
-    page_at: Instant,
     page: Page,
     root: PathBuf,
     /// 界面语言: the system's at first, applied as it is picked.
@@ -414,7 +407,7 @@ impl Onboarding {
         let cut_at = now + Duration::from_secs_f32(HOLD);
         Onboarding {
             focus,
-            film: film::decode(), film_tex: None, opened: now, cut_at, replay, page_at: cut_at, page: Page::Setup, root,
+            film: film::decode(), film_tex: None, opened: now, cut_at, replay, page: Page::Setup, root,
             lang: crate::settings::prefs().lang(), lang_menu: None, lang_anchor: Default::default(),
             hotkey: crate::shortcuts::global_key(), recording: false, hotkey_error: None,
             picked: vec![], found: None, show_all: false, chosen: vec![], error: None, scripted, incoming: Some(incoming), importing: None, _ticker: ticker,
@@ -426,7 +419,6 @@ impl Onboarding {
         let now = Instant::now();
         if now >= self.cut_at { return false }
         self.cut_at = now;
-        self.page_at = now;
         cx.notify();
         true
     }
@@ -434,7 +426,6 @@ impl Onboarding {
     fn go(&mut self, page: Page, cx: &mut Context<Self>) {
         self.stop_recording(cx);
         self.page = page;
-        self.page_at = Instant::now();
         cx.notify();
     }
 
@@ -594,11 +585,11 @@ impl Onboarding {
 
     /// Where notes live and the quick-note shortcut: the title on the left,
     /// the two settings as cards floating in on the right.
-    fn setup_page(&self, since: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn setup_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let anchor = self.lang_anchor.clone();
         let open = self.lang_menu.is_some();
         let current = self.lang;
-        let lang = card(arrive(since, 0.24, 0.8))
+        let lang = card()
             .child(card_icon("globe"))
             .child(card_text(tr("界面语言", "Language").into(), tr("默认跟随系统，之后可以在设置里更改", "Follows the system; you can change it in Settings").into(), false))
             .child(soft_button("onb-lang", current.name()).gap(px(6.)).when(open, |d| d.bg(Theme::fill_hover_strong()))
@@ -606,9 +597,11 @@ impl Onboarding {
                 .child(canvas(move |b, _, _| anchor.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
                 .relative()
                 .on_click(cx.listener(move |w, _, _, cx| { w.lang_menu = if open { None } else { Some(current) }; cx.notify(); })));
-        let lib = card(arrive(since, 0.3, 0.8))
+        let lib = card()
             .child(card_icon("folder"))
-            .child(card_text(short_path(&self.root).into(), tr("文档以文件保存在这里，在访达里也能直接打开", "Documents are saved here as files you can open in Finder").into(), false))
+            .child(card_text(short_path(&self.root).into(), (if cfg!(target_os = "macos") { tr("文档以文件保存在这里，在访达里也能直接打开", "Documents are saved here as files you can open in Finder") }
+                else if cfg!(target_os = "windows") { tr("文档以文件保存在这里，在文件资源管理器里也能直接打开", "Documents are saved here as files you can open in File Explorer") }
+                else { tr("文档以文件保存在这里，在文件管理器里也能直接打开", "Documents are saved here as files you can open in your file manager") }).into(), false))
             .child(soft_button("onb-change", tr("更改…", "Change…")).on_click(cx.listener(|w, _, window, cx| w.pick_folder(true, window, cx))));
         let hotkey = cfg!(target_os = "macos").then(|| {
             let key = if self.recording { String::new() } else { self.hotkey.clone() };
@@ -617,7 +610,7 @@ impl Onboarding {
                 (None, true) => (tr("按下新的组合键 · Esc 取消", "Press a new shortcut · Esc to cancel"), false),
                 (None, false) => (tr("在任何应用里按下，打开一个小窗口记下想法", "Press it in any app to jot a thought in a small window"), false),
             };
-            card(arrive(since, 0.42, 0.8))
+            card()
                 .child(card_icon("keyboard"))
                 .child(card_text(tr("快速新建文档", "Quick document").into(), desc.into(), error))
                 .child(soft_button("onb-hotkey", "").min_w(px(96.)).when(self.recording, |d| d.bg(Theme::fill_hover_strong()).text_color(Theme::text_caption()))
@@ -626,9 +619,8 @@ impl Onboarding {
         });
         // Top to bottom: the app's icon, its name, one line, then the settings.
         let over = self.film.is_some();
-        let a = arrive(since, 0.05, 0.9);
         div().size_full().flex().flex_col().items_center().justify_center().px(px(48.)).pb(px(40.))
-            .child(div().flex().flex_col().items_center().gap(px(12.)).opacity(a).relative().top(px(10. * (1. - a)))
+            .child(div().flex().flex_col().items_center().gap(px(12.))
                 .child(div().size(px(64.)).rounded(px(15.)).overflow_hidden().shadow(theme::shadow_card()).child(img(crate::settings::about_icon()).size_full()))
                 .child(lifted(over, 56., 64., true, false, "Quiet.md"))
                 .child(lifted(over, 15., 23., false, true, tr("一个又快又安静的本地文档应用。", "A fast, quiet, local document app."))))
@@ -663,13 +655,13 @@ impl Onboarding {
                 cx.notify();
             }))
             .child(div().w(px(160.)).py(px(ui::MENU_PAD_Y)).flex().flex_col().children(rows));
-        let menu = anchored().anchor(Corner::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu);
+        let menu = anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu);
         // A replay is itself drawn deferred, over the notes, and deferred
         // drawing cannot nest: there the menu is simply the page's last child.
         Some(if self.replay { menu.into_any_element() } else { deferred(menu).with_priority(2).into_any_element() })
     }
 
-    fn import_page(&self, since: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn import_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut pick_rows = vec![
             row(tr("导入文件夹", "Import a folder"), Some(tr("Obsidian、Typora 或任何放着 Markdown 的文件夹", "Obsidian, Typora or any folder of Markdown").into()),
                 soft_button("onb-pick", tr("选择…", "Choose…")).on_click(cx.listener(|w, _, window, cx| w.pick_folder(false, window, cx)))).into_any_element(),
@@ -707,10 +699,9 @@ impl Onboarding {
                     .on_click(cx.listener(move |w, _, _, cx| { for &i in &can { if let Some(c) = w.chosen.get_mut(i) { *c = !all; } } cx.notify(); }))));
             (head, rows)
         });
-        let a = arrive(since, 0., 0.7);
         // Auto margins centre it while it fits; taller, it starts at the top and scrolls.
         div().id("onb-scroll").size_full().overflow_y_scroll().flex().flex_col().items_center().px(px(48.)).pt(px(56.)).pb(px(88.))
-            .child(div().my_auto().flex_none().w_full().max_w(px(560.)).flex().flex_col().gap(px(24.)).opacity(a).relative().top(px(10. * (1. - a)))
+            .child(div().my_auto().flex_none().w_full().max_w(px(560.)).flex().flex_col().gap(px(24.))
                 .child(heading(over, tr("带上已有的文档", "Import your documents"), tr("导入的是副本，原来的文件不会被改动。也可以跳过，以后从菜单导入。", "Imports are copies; your files stay as they are. You can skip this and import later.")))
                 .child(sheet(None, pick_rows))
                 .children(found.map(|(head, rows)| sheet(Some(head.into_any_element()), rows)))
@@ -816,10 +807,9 @@ fn row(title: impl Into<SharedString>, desc: Option<SharedString>, control: impl
         .child(div().flex_none().flex().items_center().child(control))
 }
 
-/// A plain white card floating over the backdrop, no outline; it rises into
-/// place as `a` goes 0 → 1.
-fn card(a: f32) -> Div {
-    div().w_full().relative().top(px(16. * (1. - a))).opacity(a)
+/// A plain white card floating over the backdrop, no outline.
+fn card() -> Div {
+    div().w_full()
         .px(px(16.)).py(px(14.)).flex().items_center().gap(px(14.))
         .rounded(px(16.)).bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_card())
 }
@@ -868,14 +858,13 @@ fn note_owned(text: String, error: bool) -> Div {
 impl Render for Onboarding {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
-        let since = now.saturating_duration_since(self.page_at).as_secs_f32();
         let t = now.duration_since(self.opened).as_secs_f32();
         // Before the cut the film is alone; after it, the pages sit on it.
         let film_up = now < self.cut_at && self.film.is_some();
-        if film_up || since < 1.3 || self.importing.is_some() { window.request_animation_frame(); }
+        if film_up || self.importing.is_some() { window.request_animation_frame(); }
         // Without the film (it failed to decode) the pages sit on the drifting gradient.
         let backdrop = canvas(|b, _, _| b, move |_, b, window, _| paint_backdrop(b, t, window)).absolute().inset_0();
-        let page = if self.page == Page::Setup { self.setup_page(since, cx) } else { self.import_page(since, cx) };
+        let page = if self.page == Page::Setup { self.setup_page(cx) } else { self.import_page(cx) };
         // A new texture only when the film reaches another frame; the old one leaves the GPU.
         if let Some(f) = &self.film {
             let n = f.frames.len();
@@ -890,7 +879,7 @@ impl Render for Onboarding {
         // Quiet glows in as the film ends.
         let mark = if film_up { ((t - MARK_IN.0) / (MARK_IN.1 - MARK_IN.0)).clamp(0., 1.) } else { 0. };
         div().id("onboarding").size_full().relative().overflow_hidden()
-            .font_family(theme::UI_FONT).text_color(Theme::text())
+            .font_family(theme::ui_family()).text_color(Theme::text())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|w, ev: &KeyDownEvent, window, cx| w.key_down(ev, window, cx)))
             .when(frame.is_none(), |d| d.child(backdrop))
@@ -914,5 +903,17 @@ mod tests {
         assert_eq!(found_name("Typora", &m.join("iCloud~abnerworks~Typora/Documents"), m), "Typora");
         assert_eq!(found_name("Obsidian", &m.join("iCloud~md~obsidian/Documents/Thesis"), m), "Thesis");
         assert_eq!(found_name("Obsidian", Path::new("/Users/me/Documents"), m), "Documents");
+    }
+
+    #[test]
+    fn a_picked_folder_is_the_library_itself() {
+        let dir = fdl_core::vfs::temp_dir().join(format!("qmd-library-in-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.md"), "# Notes").unwrap();
+        assert_eq!(super::library_in(dir.clone()), dir);
+        assert_eq!(super::library_in("/".into()), Path::new("/Quiet.md"));
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(super::library_in(home.clone()), home.join("Quiet.md"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

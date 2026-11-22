@@ -29,7 +29,7 @@
   body {
     font-family: var(--font);
     color: var(--ink);
-    background: #dfe6e2 url(/bg.png) center 30% / cover no-repeat; image-rendering: pixelated;
+    background: #dfe6e2 url(/bg.png) center 30% / cover no-repeat fixed; image-rendering: pixelated;
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
   }
@@ -89,26 +89,75 @@
   .more a { color: rgba(255, 255, 255, .95); text-shadow: 0 1px 6px rgba(10, 40, 90, .45); text-decoration: underline; text-decoration-color: rgba(255, 255, 255, .45); text-underline-offset: 3px; }
   .more a:hover { text-decoration-color: #fff; }
 
-  /* The app window rises from the bottom edge; its lower part is cut off by the screen. */
-  .stage { flex: 1; min-height: 220px; display: flex; justify-content: center; align-items: flex-start; padding: clamp(24px, 4.5vh, 52px) 16px 0; overflow: hidden; }
+  /* A macOS window (Tahoe), measured from a real one: continuous corners
+     23pt long (about a 16pt circle), 14pt
+     traffic lights at 23pt spacing, centred 23.75pt down. The app inside is
+     the real Quiet.md (/demo/), which leaves the lights' 92pt free. */
+  .stage { display: flex; flex-direction: column; align-items: center; padding: clamp(28px, 5vh, 56px) 16px 0; perspective: 1800px; }
   .window {
-    width: min(1080px, 100%, 112svh); aspect-ratio: 1280 / 764; border-radius: 1.45% / 2%; overflow: hidden;
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, .06), 0 30px 80px -20px rgba(10, 40, 20, .45), 0 12px 30px -12px rgba(10, 40, 20, .3);
-    background: #fff;
+    position: relative; width: min(1180px, 100%); max-width: 100%; height: min(760px, calc(100svh - 96px)); min-height: 520px;
+    border-radius: 16px; overflow: hidden; isolation: isolate; background: linear-gradient(90deg, #f3f3f2 0 264px, #fff 264px);
+    box-shadow: 0 0 0 .5px rgba(0, 0, 0, .28), 0 0 0 1px rgba(255, 255, 255, .25) inset, 0 28px 70px -12px rgba(0, 0, 0, .42), 0 10px 24px -8px rgba(0, 0, 0, .2);
+    transform-origin: 50% 0; transform: rotateX(var(--tilt, 0deg)); will-change: transform;
   }
-  .window img { display: block; width: 100%; height: 100%; }
+  @supports (corner-shape: squircle) { .window { border-radius: 23px; corner-shape: squircle; } }
+  /* GitHub stars, read live from the GitHub API (1,936 on 2026-11-17 until it answers). */
+  .stars { display: inline-flex; align-items: center; gap: 4px; margin-left: 2px; padding-left: 9px; border-left: 1px solid rgba(29, 33, 31, .16); font-variant-numeric: tabular-nums; }
+  .stars svg { width: 15px; height: 15px; color: #f5b400; filter: drop-shadow(0 0 4px rgba(255, 196, 0, .55)); }
+  /* Last call: the download buttons again. */
+  .cta { padding: clamp(110px, 18vh, 190px) 16px 0; text-align: center; }
+  .cta h2 { margin: 0; font-size: clamp(30px, 4vw, 50px); line-height: 1.12; font-weight: 650; letter-spacing: -.03em; color: #fff; text-shadow: 0 1px 3px rgba(10, 30, 15, .35), 0 2px 22px rgba(10, 30, 15, .55); text-wrap: balance; }
+  .cta p.sub { max-width: 680px; margin: 12px auto 0; font-size: clamp(15px, 1.2vw, 16.5px); line-height: 1.6; font-weight: 550; color: #fff; text-shadow: 0 1px 3px rgba(10, 30, 15, .55), 0 1px 14px rgba(10, 30, 15, .6); text-wrap: balance; }
+  .cta .more a { text-shadow: 0 1px 3px rgba(10, 30, 15, .6), 0 1px 10px rgba(10, 30, 15, .5); }
+  .cta .actions { margin-top: clamp(20px, 3vh, 28px); }
+  .window iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
+  .window img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; }
+  .lights { position: absolute; z-index: 3; left: 19.75px; top: 16.75px; display: flex; gap: 9px; pointer-events: none; }
+  .lights i { width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 .5px rgba(0, 0, 0, .14); }
+  .lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+  /* Until clicked the page scrolls over the app; the click goes on to it. */
+  .shield { position: absolute; inset: 0; z-index: 2; cursor: default; }
+  .who { margin: 0; display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 14px; border-radius: 999px; font-size: 13.5px; font-weight: 550; color: var(--ink-2);
+    background: var(--glass); border: 1px solid var(--glass-line); backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4); }
+  .who b { color: var(--ink); font-weight: 650; }
 
-  footer { position: absolute; right: 0; bottom: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-wrap: wrap; padding: 10px 16px; font-size: 11.5px; color: rgba(255, 255, 255, .92); text-shadow: 0 1px 2px rgba(0, 0, 0, .45); pointer-events: none; }
+  /* See it live: a heading, one line, and the notebook right under it. */
+  .live { padding: clamp(36px, 8vh, 80px) 16px 0; text-align: center; }
+  .live h2 { margin: 0; font-size: clamp(30px, 4vw, 50px); line-height: 1.12; font-weight: 650; letter-spacing: -.03em; text-wrap: balance; }
+  .live h3 { margin: 14px 0 0; font-size: clamp(24px, 2.8vw, 34px); line-height: 1.2; font-weight: 650; letter-spacing: -.02em; text-wrap: balance; }
+  .live p { max-width: 620px; margin: 12px auto 0; font-size: clamp(15px, 1.2vw, 16.5px); line-height: 1.6; color: #2f3633; font-weight: 500; text-wrap: balance; }
+  .live .intro p { max-width: 560px; }
+  .showcase .stage { padding-top: clamp(16px, 2.6vh, 24px); }
+  /* What people said: posts from X, quoted as posted, in a masonry of glass cards. */
+  .voices { padding-top: clamp(90px, 14vh, 150px); }
+  .wall { columns: 3 300px; column-gap: 16px; max-width: 1080px; margin: clamp(24px, 4vh, 36px) auto 0; text-align: left; }
+  .voice { break-inside: avoid; display: block; text-align: left; margin: 0 0 16px; padding: 16px 18px 18px; border-radius: 18px; color: var(--ink); text-decoration: none;
+    background: rgba(255, 255, 255, .78); border: 1px solid var(--glass-line); backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    box-shadow: 0 1px 2px rgba(20, 40, 25, .06), 0 8px 24px rgba(20, 40, 25, .08); transition: transform .2s ease, box-shadow .2s ease; }
+  .voice:hover { transform: translateY(-2px); box-shadow: 0 2px 4px rgba(20, 40, 25, .08), 0 14px 32px rgba(20, 40, 25, .12); }
+  .voice .top { display: flex; align-items: center; gap: 10px; }
+  .voice img { width: 36px; height: 36px; border-radius: 50%; flex: none; background: #e7ebe8; }
+  .voice .who-name { min-width: 0; flex: 1; line-height: 1.25; }
+  .voice b { display: block; font-size: 14.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .voice small { display: block; font-size: 13px; color: var(--ink-2); }
+  .voice svg { width: 15px; height: 15px; flex: none; color: var(--ink); opacity: .55; }
+  .voice p { margin: 12px 0 0; max-width: none; font-size: 15px; line-height: 1.6; font-weight: 500; color: var(--ink); white-space: pre-line; text-wrap: pretty; }
+  .wash { position: relative; }
+  .fade { opacity: 0; transform: translateY(18px); transition: opacity .7s ease, transform .8s cubic-bezier(.2, .8, .2, 1); }
+  .fade.in { opacity: 1; transform: none; }
+
+  footer { display: flex; justify-content: flex-end; gap: 14px; flex-wrap: wrap; padding: 70px 16px 14px; font-size: 11.5px; color: rgba(255, 255, 255, .92); text-shadow: 0 1px 2px rgba(0, 0, 0, .45); pointer-events: none; }
   footer a { color: inherit; pointer-events: auto; }
 
-  @media (min-height: 700px) and (min-width: 900px) { .page { height: 100svh; } .stage { min-height: 0; } }
+  @media (prefers-reduced-motion: reduce) { .window { transform: none; } .fade { opacity: 1; transform: none; transition: none; } }
   @media (max-width: 640px) {
     nav { height: 58px; }
     .pill-link span { display: none; }
     .actions { flex-direction: column; align-items: stretch; max-width: 320px; margin-left: auto; margin-right: auto; }
     .dl { justify-content: center; }
-    .stage { min-height: 260px; }
-    footer { position: static; flex-direction: row; justify-content: center; gap: 14px; padding-bottom: 14px; }
+    .window { height: auto; min-height: 0; border-radius: 16px; background: #fff; }
+    .lights { display: none; }
+    footer { justify-content: center; }
   }
 
   .nav-end { display: flex; align-items: center; gap: 8px; }
@@ -125,6 +174,10 @@
   h1 span { color: #e4f7c6; }
   .lede { color: rgba(255, 255, 255, .95); text-shadow: 0 1px 8px rgba(10, 40, 90, .45); }
   .brand { text-shadow: 0 1px 6px rgba(10, 40, 90, .35); }
+  /* The live notebooks' headings sit on the photo the same way, with no panel behind. */
+  .live h2, .live h3 { color: #fff; text-shadow: 0 2px 18px rgba(10, 40, 90, .45); }
+  .live p { color: rgba(255, 255, 255, .95); text-shadow: 0 1px 8px rgba(10, 40, 90, .55); }
+  .live .voice p { color: var(--ink); text-shadow: none; }
 </style>
 </head>
 <body>
@@ -141,7 +194,7 @@
     </select>
     <a class="pill-link" href="https://github.com/s1dashu/quiet-md">
       <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-      <span>GitHub</span>
+      <span>GitHub</span><span class="stars"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .9l2.2 4.6 5 .7-3.6 3.5.9 5L8 12.3l-4.5 2.4.9-5L.8 6.2l5-.7z"/></svg><b data-stars>1.9k</b></span>
     </a>
     </div>
   </nav>
@@ -170,15 +223,65 @@
     </p>
   </header>
 
-  <main class="stage">
-    <div class="window"><img id="shot" src="/home-1400.webp" srcset="/home-1400.webp 1400w, /home-2000.webp 2000w" sizes="(max-width: 1112px) calc(100vw - 32px), 1080px" width="2000" height="1194" fetchpriority="high" alt="quiet.md 的主页：左侧是文档树，右侧按网格排列所有笔记。"></div>
+  <main class="live" id="live">
+  <article class="showcase">
+    <div class="wash fade intro"><h2 data-i18n="liveT"></h2><p data-i18n="liveP"></p></div>
+    <div class="stage"><div class="window" data-live="han-meimei"><div class="lights"><i></i><i></i><i></i></div><div class="shield"></div></div></div>
+  </article>
+  <section class="voices">
+    <div class="wash fade intro"><h2 data-i18n="voicesT"></h2><p data-i18n="voicesP"></p></div>
+    <div class="wall" id="wall"></div>
+  </section>
   </main>
+
+  <section class="cta">
+    <h2 data-i18n="ctaT"></h2>
+    <p class="sub" data-i18n="ctaP"></p>
+    <div class="actions">
+      <a class="dl mac" href="https://download.quiet.md/latest/quiet-md-macos-arm64.zip">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>
+        <span><small data-i18n="dlMac">下载 · Apple Silicon</small><strong>macOS</strong></span>
+      </a>
+      <a class="dl win" href="https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M0 0h11.2v11.2H0zM12.8 0H24v11.2H12.8zM0 12.8h11.2V24H0zM12.8 12.8H24V24H12.8z"/></svg>
+        <span><small data-i18n="dlWin">下载 · x64</small><strong>Windows</strong></span>
+      </a>
+      <a class="dl linux" href="https://download.quiet.md/latest/quiet-md-x86_64.AppImage">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.016c-.093 0-.176.03-.262.132a.8.8 0 00-.205.334 1.18 1.18 0 00-.09.4v.019c.002.089.008.179.02.267-.193-.067-.438-.135-.607-.202a1.635 1.635 0 01-.018-.2v-.02a1.772 1.772 0 01.15-.768c.082-.22.232-.406.43-.533a.985.985 0 01.594-.2zm-2.962.059h.036c.142 0 .27.048.399.135.146.129.264.288.344.465.09.199.14.4.153.667v.004c.007.134.006.2-.002.266v.08c-.03.007-.056.018-.083.024-.152.055-.274.135-.393.2.012-.09.013-.18.003-.267v-.015c-.012-.133-.04-.2-.082-.333a.613.613 0 00-.166-.267.248.248 0 00-.183-.064h-.021c-.071.006-.13.04-.186.132a.552.552 0 00-.12.27.944.944 0 00-.023.33v.015c.012.135.037.2.08.334.046.134.098.2.166.268.01.009.02.018.034.024-.07.057-.117.07-.176.136a.304.304 0 01-.131.068 2.62 2.62 0 01-.275-.402 1.772 1.772 0 01-.155-.667 1.759 1.759 0 01.08-.668 1.43 1.43 0 01.283-.535c.128-.133.26-.2.418-.2zm1.37 1.706c.332 0 .733.065 1.216.399.293.2.523.269 1.052.468h.003c.255.136.405.266.478.399v-.131a.571.571 0 01.016.47c-.123.31-.516.643-1.063.842v.002c-.268.135-.501.333-.775.465-.276.135-.588.292-1.012.267a1.139 1.139 0 01-.448-.067 3.566 3.566 0 01-.322-.198c-.195-.135-.363-.332-.612-.465v-.005h-.005c-.4-.246-.616-.512-.686-.71-.07-.268-.005-.47.193-.6.224-.135.38-.271.483-.336.104-.074.143-.102.176-.131h.002v-.003c.169-.202.436-.47.839-.601.139-.036.294-.065.466-.065zm2.8 2.142c.358 1.417 1.196 3.475 1.735 4.473.286.534.855 1.659 1.102 3.024.156-.005.33.018.513.064.646-1.671-.546-3.467-1.089-3.966-.22-.2-.232-.335-.123-.335.59.534 1.365 1.572 1.646 2.757.13.535.16 1.104.021 1.67.067.028.135.06.205.067 1.032.534 1.413.938 1.23 1.537v-.043c-.06-.003-.12 0-.18 0h-.016c.151-.467-.182-.825-1.065-1.224-.915-.4-1.646-.336-1.77.465-.008.043-.013.066-.018.135-.068.023-.139.053-.209.064-.43.268-.662.669-.793 1.187-.13.533-.17 1.156-.205 1.869v.003c-.02.334-.17.838-.319 1.35-1.5 1.072-3.58 1.538-5.348.334a2.645 2.645 0 00-.402-.533 1.45 1.45 0 00-.275-.333c.182 0 .338-.03.465-.067a.615.615 0 00.314-.334c.108-.267 0-.697-.345-1.163-.345-.467-.931-.995-1.788-1.521-.63-.4-.986-.87-1.15-1.396-.165-.534-.143-1.085-.015-1.645.245-1.07.873-2.11 1.274-2.763.107-.065.037.135-.408.974-.396.751-1.14 2.497-.122 3.854a8.123 8.123 0 01.647-2.876c.564-1.278 1.743-3.504 1.836-5.268.048.036.217.135.289.202.218.133.38.333.59.465.21.201.477.335.876.335.039.003.075.006.11.006.412 0 .73-.134.997-.268.29-.134.52-.334.74-.4h.005c.467-.135.835-.402 1.044-.7zm2.185 8.958c.037.6.343 1.245.882 1.377.588.134 1.434-.333 1.791-.765l.211-.01c.315-.007.577.01.847.268l.003.003c.208.199.305.53.391.876.085.4.154.78.409 1.066.486.527.645.906.636 1.14l.003-.007v.018l-.003-.012c-.015.262-.185.396-.498.595-.63.401-1.746.712-2.457 1.57-.618.737-1.37 1.14-2.036 1.191-.664.053-1.237-.2-1.574-.898l-.005-.003c-.21-.4-.12-1.025.056-1.69.176-.668.428-1.344.463-1.897.037-.714.076-1.335.195-1.814.12-.465.308-.797.641-.984l.045-.022zm-10.814.049h.01c.053 0 .105.005.157.014.376.055.706.333 1.023.752l.91 1.664.003.003c.243.533.754 1.064 1.189 1.637.434.598.77 1.131.729 1.57v.006c-.057.744-.48 1.148-1.125 1.294-.645.135-1.52.002-2.395-.464-.968-.536-2.118-.469-2.857-.602-.369-.066-.61-.2-.723-.4-.11-.2-.113-.602.123-1.23v-.004l.002-.003c.117-.334.03-.752-.027-1.118-.055-.401-.083-.71.043-.94.16-.334.396-.4.69-.533.294-.135.64-.202.915-.47h.002v-.002c.256-.268.445-.601.668-.838.19-.201.38-.336.663-.336zm7.159-9.074c-.435.201-.945.535-1.488.535-.542 0-.97-.267-1.28-.466-.154-.134-.28-.268-.373-.335-.164-.134-.144-.333-.074-.333.109.016.129.134.199.2.096.066.215.2.36.333.292.2.68.467 1.167.467.485 0 1.053-.267 1.398-.466.195-.135.445-.334.648-.467.156-.136.149-.267.279-.267.128.016.034.134-.147.332a8.097 8.097 0 01-.69.468zm-1.082-1.583V5.64c-.006-.02.013-.042.029-.05.074-.043.18-.027.26.004.063 0 .16.067.15.135-.006.049-.085.066-.135.066-.055 0-.092-.043-.141-.068-.052-.018-.146-.008-.163-.065zm-.551 0c-.02.058-.113.049-.166.066-.047.025-.086.068-.14.068-.05 0-.13-.02-.136-.068-.01-.066.088-.133.15-.133.08-.031.184-.047.259-.005.019.009.036.03.03.05v.02h.003z"/></svg>
+        <span><small data-i18n="dlLinux">下载 · AppImage</small><strong>Linux</strong></span>
+      </a>
+    </div>
+    <p class="more">
+      <a href="https://download.quiet.md/latest/quiet-md-macos-x86_64.zip" data-i18n="dlIntel">Intel Mac 版</a>
+      <a href="https://github.com/s1dashu/quiet-md/releases/latest" data-i18n="dlAll">所有版本与校验值</a>
+    </p>
+  </section>
 
   <footer>
     <span>© 2026 quiet.md</span>
     <a href="https://unsplash.com/photos/a-grassy-hill-under-a-blue-sky-with-clouds-Js1QZNSz2uk">Photo: Spencer DeMera / Unsplash</a>
   </footer>
 </div>
+<script src="/notebooks/data.js"></script>
+<script src="/voices/voices.js"></script>
+<script>
+// The wall: one card per post, linking to it. Text goes in as text, never as HTML.
+{
+  const X = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>';
+  const wall = document.getElementById("wall");
+  for (const v of window.VOICES || []) {
+    const a = document.createElement("a");
+    a.className = "voice fade"; a.href = v.url; a.target = "_blank"; a.rel = "noopener";
+    a.innerHTML = `<div class="top">${v.avatar ? '<img loading="lazy" alt="">' : ""}<span class="who-name"><b></b><small></small></span>${X}</div><p></p>`;
+    if (v.avatar) a.querySelector("img").src = v.avatar;
+    a.querySelector("b").textContent = v.name;
+    a.querySelector("small").textContent = "@" + v.handle;
+    a.querySelector("p").textContent = v.text;
+    a.lang = v.lang;
+    wall.append(a);
+  }
+}
+</script>
 <script>
 // Static i18n: ?lang= wins, then the saved choice, then the browser language; Simplified Chinese is the markup default.
 const T = {
@@ -198,6 +301,21 @@ const T = {
     badge: "オープンソース · macOS · Windows · Linux", title: "速くて静かな<br><span>ローカルノート</span>", lede: "Rust + GPUI によるネイティブ描画で、100万字の文書もなめらか。ノートはすべてあなたのPCに保存され、Feishu（Lark）ドキュメント形式に対応します。",
     dlMac: "ダウンロード · Apple Silicon", dlWin: "ダウンロード · x64", dlIntel: "Intel Mac 版", dlLinux: "ダウンロード · AppImage", dlAll: "すべてのリリースとチェックサム", alt: "quiet.md のホーム画面：左にドキュメントツリー、右にすべてのノートをグリッド表示。" },
 };
+Object.assign(T["zh-Hans"], {"liveT": "翻翻别人的笔记本", "liveP": "一位科学史博士生的笔记本：五万字、一百多张图。它就在你的浏览器里运行，点进去随便翻、随便改。"});
+Object.assign(T["zh-Hant"], {"liveT": "翻翻別人的筆記本", "liveP": "一位科學史博士生的筆記本：五萬字、一百多張圖。它就在你的瀏覽器裡執行，點進去隨便翻、隨便改。"});
+Object.assign(T["en"], {"liveT": "Leaf through someone else’s notebook", "liveP": "A history-of-science PhD student’s notebook: fifty thousand words, over a hundred pictures. It runs right here in your browser — click in, look around, change anything."});
+Object.assign(T["ja"], {"liveT": "ほかの人のノートをめくってみる", "liveP": "科学史を学ぶ博士課程の学生のノート。5万語、100枚以上の図。ブラウザの中でそのまま動いているので、クリックして自由に見て、書き換えてみてください。"});
+Object.assign(T["fr"], {"liveT": "Feuilletez le carnet de quelqu’un d’autre", "liveP": "Le carnet d’une doctorante en histoire des sciences : cinquante mille mots, plus de cent images. Il tourne ici même, dans votre navigateur — cliquez, explorez, modifiez."});
+Object.assign(T["zh-Hans"], {"voicesT": "用过的人怎么说", "voicesP": "来自 X 上的公开评论，原文照录。"});
+Object.assign(T["zh-Hans"], {"ctaT": "开始写你自己的笔记本", "ctaP": "免费、开源，支持 macOS、Windows 和 Linux。笔记永远是你电脑上的普通文件。"});
+Object.assign(T["zh-Hant"], {"voicesT": "用過的人怎麼說", "voicesP": "來自 X 上的公開評論，原文照錄。"});
+Object.assign(T["zh-Hant"], {"ctaT": "開始寫你自己的筆記本", "ctaP": "免費、開源，支援 macOS、Windows 與 Linux。筆記永遠是你電腦上的一般檔案。"});
+Object.assign(T["en"], {"voicesT": "What people are saying", "voicesP": "Posts from X, quoted as they were written."});
+Object.assign(T["en"], {"ctaT": "Start your own notebook", "ctaP": "Free and open source, for macOS, Windows and Linux. Your notes stay plain files on your own computer."});
+Object.assign(T["ja"], {"voicesT": "使った人の声", "voicesP": "X に投稿されたコメントを、原文のまま掲載しています。"});
+Object.assign(T["ja"], {"ctaT": "あなた自身のノートを始めよう", "ctaP": "無料でオープンソース。macOS、Windows、Linux に対応。ノートはいつまでもあなたのパソコン上の普通のファイルです。"});
+Object.assign(T["fr"], {"voicesT": "Ce qu’en disent les utilisateurs", "voicesP": "Des messages publiés sur X, cités tels quels."});
+Object.assign(T["fr"], {"ctaT": "Commencez votre propre carnet", "ctaP": "Gratuit et open source, pour macOS, Windows et Linux. Vos notes restent de simples fichiers sur votre ordinateur."});
 function detect() {
   const q = new URLSearchParams(location.search).get("lang");
   if (q && T[q]) return q;
@@ -219,14 +337,103 @@ function apply(lang) {
   document.querySelector('meta[name="description"]').content = t.desc;
   document.querySelectorAll("[data-i18n]").forEach(e => e.textContent = t[e.dataset.i18n]);
   document.querySelectorAll("[data-i18n-html]").forEach(e => e.innerHTML = t[e.dataset.i18nHtml]);
-  document.getElementById("shot").alt = t.alt;
-  document.getElementById("lang").value = lang;
+    document.getElementById("lang").value = lang;
+  document.querySelectorAll("[data-role]").forEach(e => e.textContent = NOTEBOOKS[e.dataset.role].role[lang]);
+  document.querySelectorAll("[data-blurb]").forEach(e => e.textContent = NOTEBOOKS[e.dataset.blurb].blurb[lang]);
 }
 apply(detect());
 document.getElementById("lang").addEventListener("change", e => {
   apply(e.target.value);
   try { localStorage.setItem("lang", e.target.value); } catch {}
 });
+// The windows run the real app (/demo/?lib=<id>). A clear shield keeps the
+// wheel on the page until the window is clicked; that click (any button: a
+// held wheel pans a board) goes on to the app, till the pointer
+// leaves the window. Phones get a picture.
+const wide = matchMedia("(min-width: 641px)").matches;
+function handOver(f, e) {
+  let doc; try { doc = f.contentDocument; } catch { return; }
+  const r = f.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  const target = doc && (doc.elementFromPoint(x, y) || doc.querySelector("canvas"));
+  if (!target) return;
+  const W = f.contentWindow, init = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: e.button, buttons: e.buttons || 1, pointerId: 1, pointerType: "mouse", isPrimary: true, view: W };
+  target.dispatchEvent(new W.PointerEvent("pointerdown", init));
+  target.dispatchEvent(new W.MouseEvent("mousedown", init));
+  // The release lands in the app itself once the shield is gone; only one
+  // that lands on the page is handed on (a wait left over would later click
+  // the app wherever this press was).
+  const up = () => { done(); const u = { ...init, buttons: 0 };
+    target.dispatchEvent(new W.PointerEvent("pointerup", u)); target.dispatchEvent(new W.MouseEvent("mouseup", u)); if (e.button === 0) target.dispatchEvent(new W.MouseEvent("click", u)); };
+  const done = () => { removeEventListener("pointerup", up); W.removeEventListener("pointerup", done, true); };
+  addEventListener("pointerup", up);
+  W.addEventListener("pointerup", done, true);
+}
+// One app runs at a time: a window starts its app when it comes within reach
+// of the screen, and a window that has left the screen gives its app up when
+// another starts (it starts again, fresh, if scrolled back to).
+const running = new Set();
+function mount(w) {
+  if (w.querySelector("iframe, img")) return;
+  const id = w.dataset.live, shield = w.querySelector(".shield");
+  if (!wide) { const img = new Image(); img.src = `/notebooks/${id}/home.webp`; img.alt = ""; w.append(img); shield.hidden = true; return; }
+  for (const other of running) if (!other.dataset.visible) unmount(other);
+  const f = document.createElement("iframe");
+  f.src = `/demo/?lib=${id}`; f.title = NOTEBOOKS[id].name; f.allow = "clipboard-read; clipboard-write";
+  w.prepend(f);
+  running.add(w);
+}
+// The demo's wasm is most of its start-up: fetch it while the reader is still
+// at the top, so the window starts fast when it comes into view.
+if (wide) addEventListener("load", () => (window.requestIdleCallback || setTimeout)(() => {
+  const l = document.createElement("link"); l.rel = "prefetch"; l.href = "/demo/quiet_md_bg.wasm"; l.as = "fetch"; l.crossOrigin = "anonymous"; document.head.append(l);
+}, { timeout: 3000 }));
+function unmount(w) { w.querySelector("iframe")?.remove(); running.delete(w); w.querySelector(".shield").hidden = false; }
+document.querySelectorAll(".window[data-live]").forEach(w => {
+  const shield = w.querySelector(".shield");
+  shield.addEventListener("pointerdown", e => { const f = w.querySelector("iframe"); if (!f) return; e.preventDefault(); shield.hidden = true; f.focus(); handOver(f, e); });
+  w.addEventListener("pointerleave", () => { if (w.querySelector("iframe")) shield.hidden = false; });
+});
+const near = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) mount(e.target); }), { rootMargin: "0px 0px -12% 0px" });
+const visible = new IntersectionObserver(es => es.forEach(e => {
+  const w = e.target;
+  if (e.isIntersecting) { w.dataset.visible = "1"; return; }
+  delete w.dataset.visible;
+  if ([...running].some(o => o !== w && o.dataset.visible)) unmount(w);
+}));
+document.querySelectorAll(".window[data-live]").forEach(w => { near.observe(w); visible.observe(w); });
+const seen = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { seen.unobserve(e.target); e.target.classList.add("in"); } }), { rootMargin: "0px 0px -10% 0px" });
+document.querySelectorAll(".fade").forEach(e => seen.observe(e));
+// Each window lies back a little and stands up as it scrolls into view.
+if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  const wins = [...document.querySelectorAll(".window")];
+  let queued = false;
+  const tilt = () => { queued = false; for (const w of wins) {
+    const k = Math.min(1, Math.max(0, (innerHeight - w.getBoundingClientRect().top) / (innerHeight * .75)));
+    w.style.setProperty("--tilt", `${((1 - k) * 14).toFixed(2)}deg`); } };
+  addEventListener("scroll", () => { if (!queued) { queued = true; requestAnimationFrame(tilt); } }, { passive: true });
+  tilt();
+}
 </script>
+<script>
+// GitHub stars, live (cached an hour in this browser).
+(async () => {
+  const el = document.querySelector("[data-stars]");
+  if (!el) return;
+  const show = n => { el.textContent = n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, "")}k` : String(n); };
+  try {
+    const c = JSON.parse(localStorage.getItem("gh-stars") || "null");
+    if (c && Date.now() - c.t < 3600e3) return show(c.n);
+  } catch {}
+  try {
+    const r = await fetch("https://api.github.com/repos/s1dashu/quiet-md", { headers: { Accept: "application/vnd.github+json" } });
+    if (!r.ok) return;
+    const n = (await r.json()).stargazers_count;
+    if (typeof n !== "number") return;
+    show(n);
+    try { localStorage.setItem("gh-stars", JSON.stringify({ n, t: Date.now() })); } catch {}
+  } catch {}
+})();
+</script>
+<script src="/window-resize.js"></script>
 </body>
 </html>

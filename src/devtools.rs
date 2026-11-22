@@ -3,6 +3,7 @@
 //! (default /tmp). One step per line:
 //!   wait <ms> | key <keystroke> | type <text> | move x y | click x y |
 //!   dclick x y | rclick x y | drag x1 y1 x2 y2 | shot <name> | burst <name> n |
+//!   mods shift|cmd|alt|ctrl… (held for the mouse steps after it; `mods none` lets go) |
 //!   mark <text> (IME composition) | commit <text> | nkey <letter> (a real
 //!   key press through AppKit, so the active input method sees it) |
 //!   activate (make the window key; takes focus) | quit |
@@ -11,6 +12,7 @@
 //! For profiling: bench <n> <step> (runs the step n times, drawing a frame
 //!   synchronously after each, and prints step / frame / editor-render times) |
 //!   wheel x y dy [dx] (one scroll-wheel event; dx: sideways component).
+//!   pinch x y delta (one trackpad pinch event; delta 0.1 zooms in 10%).
 //! For demo videos: glide x y ms (eased pointer move from the last position) |
 //!   scroll x y dy ms (eased wheel scroll) | record <file.mp4> | record stop |
 //!   caption <text> (a timed note in the pointer track, for titles).
@@ -18,16 +20,35 @@
 //!   they have no cursor, traffic lights or rounded corners; the pointer track
 //!   goes to `<file>.cursor` for compositing those in afterwards.
 
+mod priority;
+
 use gpui::*;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 fn fps() -> f64 {
     std::env::var("FDL_RECORD_FPS").ok().and_then(|v| v.parse().ok()).filter(|&f: &f64| f > 0.).unwrap_or(30.)
 }
 
 /// A script drives this run: other apps, dialogs and the updater stay out of it.
-pub fn scripted() -> bool { std::env::var_os("FDL_SCRIPT").is_some() }
+fn script_path() -> Option<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("FDL_SCRIPT") { return Some(path.into()); }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    if crate::cloud_sync::preview_channel().is_some() && std::env::args().nth(1).as_deref() == Some("--qa-script") {
+        let name = std::env::args().nth(2)?;
+        if name.starts_with('.') || name.contains('/') { return None; }
+        return Some(crate::cloud_sync::test_root().ok()??.join(name));
+    }
+    None
+}
+pub fn scripted() -> bool { script_path().is_some() }
+fn shots_dir() -> String {
+    if let Ok(path) = std::env::var("FDL_SHOTS") { return path; }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    if crate::cloud_sync::preview_channel().is_some() && let Ok(Some(root)) = crate::cloud_sync::test_root() { return root.to_string_lossy().into_owned(); }
+    "/private/tmp".into()
+}
 
 /// Time spent in the editor's `render` during the last benched frame.
 pub static RENDER_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -41,6 +62,8 @@ static PICK: Mutex<Option<Vec<std::path::PathBuf>>> = Mutex::new(None);
 static BENCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Where the scripted drag is (`down`, `dragto`, `dragby`).
 static DRAG_AT: Mutex<(f32, f32)> = Mutex::new((0., 0.));
+/// Modifier keys held for the mouse steps that follow (`mods shift cmd` / `mods none`), as NSEvent flags.
+static MODS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The scripted answer to the next open / save dialog, if any.
 /// Files a script is dragging over the window (`filedrag`), as the Finder would.
@@ -75,7 +98,8 @@ async fn park(handle: AnyWindowHandle, ns_view: usize, cx: &mut AsyncApp) {
     if std::env::var_os("FDL_NOPARK").is_none() {
         let candidates = handle.update(cx, |_, _, _| native::park_candidates(ns_view)).unwrap_or_default();
         for origin in candidates {
-            if handle.update(cx, |_, _, _| native::place(ns_view, origin)).is_err() { return; }
+            if handle.update(cx, |_, _, _| ()).is_err() { return; }
+            native::place(ns_view, origin);
             cx.background_executor().timer(Duration::from_millis(250)).await;
             if handle.update(cx, |_, _, _| native::is_visible(ns_view)).unwrap_or(true) { return }
         }
@@ -102,9 +126,9 @@ pub(crate) fn select_script_window(window: &mut Window) {
 }
 
 pub fn start(window: &mut Window, cx: &mut App) {
-    let Ok(path) = std::env::var("FDL_SCRIPT") else { return };
+    let Some(path) = script_path() else { return };
     let Ok(script) = std::fs::read_to_string(&path) else {
-        eprintln!("devtools: cannot read {path}");
+        eprintln!("devtools: cannot read {}",path.display());
         return;
     };
     let handle = window.window_handle();
@@ -137,7 +161,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                     cx.background_executor().timer(Duration::from_millis(16).min(end - Instant::now())).await;
                     let _ = handle.update(cx, |_, window, cx| {
                         if window.needs_draw() {
-                            window.draw(cx).clear();
+                            window.draw(cx).clear(cx);
                         }
                     });
                 }
@@ -146,7 +170,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
             // `burst name n`: n captures ~8ms apart, to catch transient frames.
             if cmd == "burst" {
                 let (name, n) = rest.trim().split_once(' ').unwrap_or((rest.trim(), "10"));
-                let dir = std::env::var("FDL_SHOTS").unwrap_or_else(|_| "/tmp".into());
+                let dir = shots_dir();
                 for i in 0..n.trim().parse().unwrap_or(10) {
                     let path = format!("{dir}/{name}-{i:02}.png");
                     let _ = handle.update(cx, |_, window, cx| capture(window, cx, &path));
@@ -170,7 +194,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                     let t1 = Instant::now();
                     let _ = handle.update(cx, |_, window, cx| {
                         RENDER_NS.store(0, std::sync::atomic::Ordering::Relaxed);
-                        window.draw(cx).clear();
+                        window.draw(cx).clear(cx);
                         let render = RENDER_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6;
                         samples.push(((t1 - t0).as_secs_f64() * 1e3, t1.elapsed().as_secs_f64() * 1e3, render));
                     });
@@ -234,7 +258,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                     let mut done = 0.;
                     for i in 1..=steps {
                         let to = n[2] * ease(i as f32 / steps as f32);
-                        let event = ScrollWheelEvent {
+                        let event = ScrollEvent {
                             position: point(px(n[0]), px(n[1])),
                             // Positive dy scrolls the content up (reading on).
                             delta: ScrollDelta::Pixels(point(px(0.), px(done - to))),
@@ -242,7 +266,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                         };
                         done = to;
                         let _ = handle.update(cx, |_, window, cx| {
-                            window.dispatch_event(PlatformInput::ScrollWheel(event), cx);
+                            window.dispatch_event(PlatformInput::Scroll(event), cx);
                         });
                         cx.background_executor().timer(Duration::from_millis(16)).await;
                     }
@@ -281,7 +305,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                             use crate::editor::core::{Selection, Pos, TITLE};
                             ed.core.sel = Selection::caret(Pos::new(TITLE, 2));
                         })).unwrap();
-                    }).unwrap();
+                    });
                     continue;
                 }
                 if cmd == "qa-note-check-peer" {
@@ -296,7 +320,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                             eprintln!("QA_PEER_OK");
                             window.remove_window();
                         }).unwrap();
-                    }).unwrap();
+                    });
                     continue;
                 }
                 let workspace = handle.downcast::<crate::app::Workspace>().expect("workspace");
@@ -331,7 +355,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                 cx.update(|cx| {
                     let handle = cx.windows().into_iter().find_map(|w| w.downcast::<crate::app::Workspace>()).unwrap();
                     handle.update(cx, |ws, window, cx| ws.check_export_safety(window, cx)).unwrap();
-                }).unwrap();
+                });
                 continue;
             }
             // `filedrag x y a|b`, `filedrop x y`, `fileleave`: files dragged in from the Finder.
@@ -362,11 +386,21 @@ pub fn start(window: &mut Window, cx: &mut App) {
                         Some(p) => { if !ws.sidebar_drop_at(at, false, cx) { ws.file_drag_at(at, p, cx); } }
                         None => cx.notify(),
                     }).unwrap();
-                }).unwrap();
+                });
+                continue;
+            }
+            if cmd == "mods" {
+                let flag = |w: &str| match w { "shift" => 1u64 << 17, "ctrl" => 1 << 18, "alt" => 1 << 19, "cmd" => 1 << 20, _ => 0 };
+                MODS.store(rest.split_whitespace().map(flag).fold(0, |a, b| a | b), std::sync::atomic::Ordering::Relaxed);
+                continue;
+            }
+            if cmd == "check-priority" {
+                let ws = handle.downcast::<crate::app::Workspace>().unwrap();
+                ws.update(cx, |ws, window, cx| priority::step(rest, ws, window, cx)).unwrap();
                 continue;
             }
             if cmd == "check-save-safety" {
-                cx.update(|cx| crate::app::check_save_safety(rest.trim(), cx)).unwrap();
+                cx.update(|cx| crate::app::check_save_safety(rest.trim(), cx));
                 continue;
             }
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -376,17 +410,17 @@ pub fn start(window: &mut Window, cx: &mut App) {
             }
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             if cmd == "check-shared-sessions" {
-                cx.update(crate::cloud_sync::shared::session_qa::open).unwrap().unwrap();
+                cx.update(crate::cloud_sync::shared::session_qa::open).unwrap();
                 cx.background_executor().timer(Duration::from_millis(1500)).await;
-                cx.update(crate::cloud_sync::shared::session_qa::verify).unwrap().unwrap();
+                cx.update(crate::cloud_sync::shared::session_qa::verify).unwrap();
                 cx.background_executor().timer(Duration::from_millis(500)).await;
-                cx.update(crate::cloud_sync::shared::session_qa::reopen).unwrap().unwrap();
+                cx.update(crate::cloud_sync::shared::session_qa::reopen).unwrap();
                 cx.background_executor().timer(Duration::from_millis(1200)).await;
-                cx.update(crate::cloud_sync::shared::session_qa::request_account_check).unwrap();
+                cx.update(crate::cloud_sync::shared::session_qa::request_account_check);
                 cx.background_executor().timer(Duration::from_millis(100)).await;
-                cx.update(crate::cloud_sync::shared::session_qa::verify_account_check).unwrap().unwrap();
-                let _ = cx.update(|cx| {
-                    let dir = std::env::var("FDL_SHOTS").unwrap_or_else(|_| "/private/tmp".into());
+                cx.update(crate::cloud_sync::shared::session_qa::verify_account_check).unwrap();
+                cx.update(|cx| {
+                    let dir = shots_dir();
                     for (i, handle) in cx.windows().into_iter().enumerate() {
                         let _ = handle.update(cx, |_, window, cx| capture(window, cx, &format!("{dir}/shared-session-{i}.png")));
                     }
@@ -395,7 +429,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
             }
             #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
             if cmd == "sharing-ui" {
-                cx.update(|cx| crate::sharing::qa::step(rest.trim(), cx)).unwrap().unwrap();
+                cx.update(|cx| crate::sharing::qa::step(rest.trim(), cx)).unwrap();
                 continue;
             }
             #[cfg(target_os = "macos")]
@@ -406,7 +440,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                 let _ = handle.update(cx, |_, window, cx| run(cmd, rest, window, cx));
             }
             if quit {
-                let _ = cx.update(|cx| cx.quit());
+                cx.update(|cx| cx.quit());
                 return;
             }
             // Let the frame settle before the next step.
@@ -623,7 +657,7 @@ mod native {
             let ev: *mut Object = msg_send![class!(NSEvent),
                 mouseEventWithType: kind
                 location: loc
-                modifierFlags: 0u64
+                modifierFlags: super::MODS.load(std::sync::atomic::Ordering::Relaxed)
                 timestamp: 0f64
                 windowNumber: number
                 context: nil
@@ -751,7 +785,7 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
         }
         "key" => {
             for k in rest.split_whitespace() {
-                match Keystroke::parse(k) {
+                match crate::shortcuts::parse_key(k) {
                     Ok(ks) => {
                         let handled = window.dispatch_keystroke(ks, cx);
                         if std::env::var_os("FDL_TRACE").is_some() {
@@ -795,7 +829,7 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
             let mut it = rest.split_whitespace();
             let name = it.next().unwrap_or("desk").to_string();
             let margin: f64 = it.next().and_then(|m| m.parse().ok()).unwrap_or(48.);
-            let dir = std::env::var("FDL_SHOTS").unwrap_or_else(|_| "/tmp".into());
+            let dir = shots_dir();
             let path = format!("{dir}/{name}.png");
             match desk_grab(window, margin).and_then(|(w, h, mut px)| {
                 for p in px.as_chunks_mut::<4>().0 { p.swap(0, 2); p[3] = 255; }
@@ -807,7 +841,7 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
         }
         "shot" => {
             let name = rest.trim().to_string();
-            let dir = std::env::var("FDL_SHOTS").unwrap_or_else(|_| "/tmp".into());
+            let dir = shots_dir();
             let path = format!("{dir}/{name}.png");
             match capture(window, cx, &path) {
                 Ok(()) => eprintln!("devtools: saved {path}"),
@@ -817,14 +851,21 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
         "wheel" => {
             let n = nums(rest);
             if n.len() >= 3 {
-                let event = ScrollWheelEvent {
+                let event = ScrollEvent {
                     position: point(px(n[0]), px(n[1])),
                     // An optional fourth number is a sideways component, as a
                     // trackpad swipe carries; positive reveals content on the right.
                     delta: ScrollDelta::Pixels(point(px(-n.get(3).copied().unwrap_or(0.)), px(-n[2]))),
                     ..Default::default()
                 };
-                window.dispatch_event(PlatformInput::ScrollWheel(event), cx);
+                window.dispatch_event(PlatformInput::Scroll(event), cx);
+            }
+        }
+        "pinch" => {
+            let n = nums(rest);
+            if n.len() >= 3 {
+                let event = PinchEvent { position: point(px(n[0]), px(n[1])), delta: n[2], ..Default::default() };
+                window.dispatch_event(PlatformInput::Pinch(event), cx);
             }
         }
         "resize" => {
@@ -844,9 +885,13 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
 /// to the window server's copy, which also has the system-drawn traffic lights.
 fn frame(window: &mut Window, cx: &mut App) -> anyhow::Result<(usize, usize, Vec<u8>)> {
     if std::env::var_os("FDL_WINDOW_CAPTURE").is_none()
-        && let Some(image) = window.render_offscreen(cx)
+        && let Ok(image) = window.render_offscreen(cx)
     {
-        return Ok(image);
+        let (w, h) = (image.width() as usize, image.height() as usize);
+        let mut px = image.into_raw();
+        // RGBA → BGRA, as the window server's capture has it.
+        for p in px.as_chunks_mut::<4>().0 { p.swap(0, 2); }
+        return Ok((w, h, px));
     }
     grab(window)
 }

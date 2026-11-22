@@ -44,7 +44,7 @@ pub fn with_one_timestamp<R>(f: impl FnOnce() -> R) -> R {
 /// `getUpdatedTimestamp`: epoch milliseconds.
 pub fn get_updated_timestamp() -> i64 {
     FIXED_TIME.with(|c| c.get()).unwrap_or_else(|| {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+        web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
     })
 }
 

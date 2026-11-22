@@ -1,32 +1,32 @@
-# 性能测试
+# Editor performance benchmarks
 
-README 里的数字来自这里的测试流程。任何人都可以用同一套脚本在自己的机器上复现。
+The README reports results from this procedure. Use the same scripts to reproduce it on your own machine.
 
-## 环境
+## Environment
 
-| 项 | 值 |
+| Item | Value |
 |---|---|
-| 日期 | 2026-11-03 |
-| 源码 | `0e92b51`，`cargo build --release --locked` |
-| 机器 | Apple M5 Pro / 48 GiB，macOS 26.5 |
-| 窗口 | 1280 × 800 pt，2× 缩放，Craft 主题 |
-| 文档 | [样例生成器](../tools/perf/gen_library.py) 生成的 1,001,307 字符、549 章，含段落、列表、表格和代码 |
+| Date | 2026-11-03 |
+| Source | `0e92b51`, built with `cargo build --release --locked` |
+| Machine | Apple M5 Pro, 48 GiB, macOS 26.5 |
+| Window | 1280 × 800 pt at 2× scale, Craft theme |
+| Document | 1,001,307 characters in 549 chapters with paragraphs, lists, tables and code, created by the [sample generator](../tools/perf/gen_library.py) |
 
-## 方法
+## Method
 
-[harness](../tools/harness/README.md) 回放 [readme-performance.txt](../tools/harness/examples/readme-performance.txt)：打开百万字文档，在首段末尾依次插入 100 个 `x`，随后退格 100 次，再向下滚动 100 次。
+The [harness](../tools/harness/README.md) replays [readme-performance.txt](../tools/harness/examples/readme-performance.txt). It opens the document, types 100 individual `x` characters at the end of the first paragraph, presses Backspace 100 times, then scrolls down 100 times.
 
-`bench` 每发送一次操作后同步调用 `window.draw`，记录这一帧的处理耗时（日志里的 `frame`）。P50 为中位数，P95 为第 95 百分位。它统计应用内的帧处理时间，不包含屏幕呈现延迟，不等同于键盘到屏幕的端到端延迟。这是单机实测，不代表所有设备，也不是和其他应用的对比。
+After each operation, `bench` synchronously calls `window.draw` and records the frame processing time as `frame`. P50 is the median and P95 the 95th percentile. These figures measure in-app processing on one machine. End-to-end keyboard-to-screen latency also includes presentation time. No other apps were benchmarked.
 
-## 结果
+## Results
 
-| 操作 | 帧处理 P50 | 帧处理 P95 | 最大 |
+| Operation | Frame P50 | Frame P95 | Maximum |
 |---|---:|---:|---:|
-| 连续输入 | 5.06 ms | 5.78 ms | 6.94 ms |
-| 连续退格 | 4.99 ms | 5.55 ms | 5.69 ms |
-| 连续滚动 | 2.08 ms | 4.14 ms | 9.23 ms |
+| Typing | 5.06 ms | 5.78 ms | 6.94 ms |
+| Backspacing | 4.99 ms | 5.55 ms | 5.69 ms |
+| Scrolling | 2.08 ms | 4.14 ms | 9.23 ms |
 
-原始输出（ms）：
+Raw output in milliseconds:
 
 ```text
 bench "type x" x100: step [p50 0.03 p95 0.05 max 5.29] frame [p50 5.06 p95 5.78 max 6.94] editor render [p50 3.77 p95 4.31 max 4.99] ms
@@ -34,9 +34,9 @@ bench "key backspace" x100: step [p50 0.02 p95 0.05 max 3.91] frame [p50 4.99 p9
 bench "wheel 900 500 40" x100: step [p50 0.01 p95 0.02 max 0.02] frame [p50 2.08 p95 4.14 max 9.23] editor render [p50 0.02 p95 0.03 max 1.83] ms
 ```
 
-## 复现
+## Reproduce the benchmark
 
-测试只使用临时文档库，不会碰 `~/Documents/Quiet.md`。
+The test uses a temporary library and leaves `~/Documents/Quiet.md` untouched.
 
 ```sh
 cargo build --release --locked --features devtools

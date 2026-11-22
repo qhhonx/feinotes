@@ -114,6 +114,15 @@ pub fn get_viewport_for_zoom_with_scroll_constraints(viewport_x: f64, viewport_y
     constrain_scroll_state(Viewport { scroll_x: zoomed.scroll_x + over_x / z, scroll_y: zoomed.scroll_y + over_y / z, zoom: z }, c, constraints, sc.overscroll)
 }
 
+/// A trackpad pinch (upstream's Safari `gesturechange`, `initialScale *
+/// event.scale`, here incremental): `magnification` scales the zoom by
+/// `1 + magnification` about the fingers at window point (x, y), within the
+/// buttons' `MIN_ZOOM..MAX_ZOOM`.
+pub fn zoom_by_pinch(x: f64, y: f64, magnification: f64, v: Viewport, c: Canvas) -> Viewport {
+    if !magnification.is_finite() { return v; }
+    get_viewport_for_zoom(x, y, get_normalized_zoom(v.zoom * (1. + magnification).max(0.01)), v, c)
+}
+
 /// The window point a zoom keeps in place by default (`getZoomAnchor`): the
 /// canvas center.
 pub fn zoom_anchor(c: Canvas) -> [f64; 2] { [c.width / 2. + c.offset_left, c.height / 2. + c.offset_top] }

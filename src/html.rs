@@ -231,6 +231,19 @@ impl Writer<'_> {
                 let _ = write!(out, "<div class=\"b\"{align}>{}", esc(&f.name));
                 out.push_str("</div>");
             }
+            // A 数据表 as a plain table of the view it shows.
+            BlockKind::DataTable(t) => {
+                let grid = if crate::DATATABLE { fdl_core::table::block_grid(self.opts.library_root, t) } else { vec![] };
+                if !grid.is_empty() {
+                    out.push_str("<table>");
+                    for (i, row) in grid.iter().enumerate() {
+                        out.push_str("<tr>");
+                        for cell in row { let _ = write!(out, "<{0}>{1}</{0}>", if i == 0 { "th" } else { "td" }, esc(cell)); }
+                        out.push_str("</tr>");
+                    }
+                    out.push_str("</table>");
+                }
+            }
             // A 画板 as an inline SVG of its scene (images inlined).
             BlockKind::Board(bd) => {
                 if !bd.elements.is_empty() {

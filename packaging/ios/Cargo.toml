@@ -27,6 +27,7 @@ uuid = { version = "1.28.0", features = ["v4"] }
 image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
 raw-window-handle = "0.6"
 rustc-hash = "2.1"
+web-time = { version = "1", features = ["serde"] }
 katex-rs = { version = "0.3", default-features = false }
 regex = "1"
 resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
@@ -49,6 +50,7 @@ rusqlite = "=0.40.2"
 sha2 = { version = "0.10.9", optional = true }
 
 [features]
+datatable = []
 devtools = []
 mobile-qa = []
 cloudkit-restore = []

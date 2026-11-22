@@ -13,8 +13,6 @@ use crate::input::{TextField, TextFieldEvent};
 use crate::editor_theme::{Theme, c, craft};
 use crate::editor_ui::{ROW_RADIUS, icon, panel, popover};
 use gpui::{prelude::FluentBuilder, *};
-#[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 pub const DAY: i64 = 86_400_000;
@@ -513,7 +511,7 @@ impl Editor {
                 ),
             );
         let x = rect.center().x - px(CARD_W / 2.);
-        Some(if up { at(self.rel(point(x, rect.top())), Corner::BottomLeft, el) } else { at(self.rel(point(x, rect.bottom())), Corner::TopLeft, el) })
+        Some(if up { at(self.rel(point(x, rect.top())), Anchor::BottomLeft, el) } else { at(self.rel(point(x, rect.bottom())), Anchor::TopLeft, el) })
     }
 
     /// The editor (`intact` popover): calendar, 设置时间, 提醒.
@@ -732,7 +730,7 @@ impl Editor {
         let above = f32::from(rect.top()) - view_top;
         let up = below < h && above > below;
         let x = rect.center().x - px(POPOVER_W / 2.);
-        Some(if up { at(self.rel(point(x, rect.top())), Corner::BottomLeft, el) } else { at(self.rel(point(x, rect.bottom())), Corner::TopLeft, el) })
+        Some(if up { at(self.rel(point(x, rect.top())), Anchor::BottomLeft, el) } else { at(self.rel(point(x, rect.bottom())), Anchor::TopLeft, el) })
     }
 
     /// The open select's list.
@@ -873,6 +871,26 @@ mod tests {
         assert_eq!(time_string_for(t(2026, 10, 27, 9, 0), false, now, Lang::Ar), "الثلاثاء القادم");
         assert_eq!(time_string_for(t(2026, 11, 3, 9, 0), false, now, Lang::Ar), "3/11");
         assert_eq!(time_string_for(t(2027, 1, 3, 9, 0), true, now, Lang::Ar), "3/1/2027 09:00");
+    }
+
+    #[test]
+    fn traditional_chinese_chip_text() {
+        let now = t(2026, 10, 22, 10, 0);
+        assert_eq!(time_string_for(t(2026, 10, 23, 0, 0), false, now, Lang::ZhTw), "明天");
+        assert_eq!(time_string_for(t(2026, 10, 25, 9, 0), false, now, Lang::ZhTw), "本週日");
+        assert_eq!(time_string_for(t(2026, 10, 27, 9, 0), false, now, Lang::ZhTw), "下週二");
+        assert_eq!(time_string_for(t(2026, 11, 3, 9, 0), false, now, Lang::ZhTw), "11月3日");
+        assert_eq!(time_string_for(t(2027, 1, 3, 9, 0), true, now, Lang::ZhTw), "2027年1月3日 09:00");
+    }
+
+    #[test]
+    fn turkish_chip_text() {
+        let now = t(2026, 10, 22, 10, 0);
+        assert_eq!(time_string_for(t(2026, 10, 23, 0, 0), false, now, Lang::Tr), "Yarın");
+        assert_eq!(time_string_for(t(2026, 10, 25, 9, 0), false, now, Lang::Tr), "Bu Pazar");
+        assert_eq!(time_string_for(t(2026, 10, 27, 9, 0), false, now, Lang::Tr), "Gelecek Salı");
+        assert_eq!(time_string_for(t(2026, 11, 3, 9, 0), false, now, Lang::Tr), "3.11");
+        assert_eq!(time_string_for(t(2027, 1, 3, 9, 0), true, now, Lang::Tr), "3.1.2027 09:00");
     }
 
     #[test]

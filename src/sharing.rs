@@ -5,8 +5,6 @@ use crate::{app::{View, Workspace}, cloud_sync::{self, shared::{self, Access, Au
     input::{TextField, TextFieldEvent}, settings::{self, tr, display_title}, theme::Theme, ui::{self, TipExt, TitleBarExt}};
 use gpui::{prelude::FluentBuilder, *};
 #[cfg(target_os = "ios")]
-use gpui::Anchor as Corner;
-#[cfg(target_os = "ios")]
 pub(crate) mod mobile;
 
 #[cfg(feature = "devtools")]
@@ -516,7 +514,7 @@ impl Workspace {
         body = body.child(div().h(px(1.)).bg(Theme::line_divider()))
             .child(action("collab-end", self.shared_end_label(&room,cx), self.sharing_account_ready(cx))
                 .on_click(cx.listener(move |w, _, window, cx| w.open_end_shared(end_room.clone(), window, cx))));
-        Some(deferred(anchored().anchor(Corner::TopRight).position(point(anchor.right(), anchor.bottom() + px(4.)))
+        Some(deferred(anchored().anchor(Anchor::TopRight).position(point(anchor.right(), anchor.bottom() + px(4.)))
             .snap_to_window_with_margin(px(8.)).child(ui::popover().id("doc-sharing-panel").occlude()
                 .w((window.viewport_size().width - px(16.)).min(px(if feishu { 340. } else { 300. })))
                 .max_h((window.viewport_size().height - anchor.bottom() - px(12.)).max(px(100.)))
@@ -565,7 +563,7 @@ impl Workspace {
                     } else { w.open_cloud_settings_from_share(window,cx); }
                 }))));
         }
-        Some(deferred(anchored().anchor(Corner::TopRight).position(point(anchor.right(), anchor.bottom()+px(4.)))
+        Some(deferred(anchored().anchor(Anchor::TopRight).position(point(anchor.right(), anchor.bottom()+px(4.)))
             .snap_to_window_with_margin(px(8.)).child(ui::popover().id("shared-sync-popover").occlude()
                 .w((window.viewport_size().width-px(16.)).min(px(330.)))
                 .max_h((window.viewport_size().height-anchor.bottom()-px(12.)).max(px(100.)))
@@ -940,7 +938,7 @@ impl Workspace {
                 }))
                 .child(div().px(px(24.)).py(px(20.)).text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child(title))
                 .child(body).child(feedback).child(footer);
-            return Some(deferred(anchored().anchor(Corner::TopLeft).position(pos).snap_to_window_with_margin(px(8.)).child(form)).with_priority(5).into_any_element());
+            return Some(deferred(anchored().anchor(Anchor::TopLeft).position(pos).snap_to_window_with_margin(px(8.)).child(form)).with_priority(5).into_any_element());
         }
         if invitation && feishu && self.view == View::Doc
             && let Some(bounds) = self.sharing.share_bounds.get()
@@ -952,7 +950,7 @@ impl Workspace {
                 .child(div().px(px(24.)).py(px(16.)).text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child(title))
                 .child(body).child(feedback).child(footer);
             // Consume the dismissing click so toolbar actions cannot reopen the form.
-            let popup = anchored().anchor(Corner::TopRight).position(point(bounds.right(), bounds.bottom() + px(4.)))
+            let popup = anchored().anchor(Anchor::TopRight).position(point(bounds.right(), bounds.bottom() + px(4.)))
                 .snap_to_window_with_margin(px(8.)).child(form);
             return Some(deferred(div().absolute().inset_0()
                 .child(div().id("share-dismiss").absolute().inset_0().occlude()

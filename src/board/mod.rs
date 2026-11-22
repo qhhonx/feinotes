@@ -430,7 +430,7 @@ impl Render for BoardView {
             .relative()
             .size_full()
             .bg(render::color(color::color_or_black(&self.app.view_background_color), 1.))
-            .font_family(crate::theme::UI_FONT)
+            .font_family(crate::theme::DOC_UI_FONT)
             .cursor(canvas::cursor(self))
             .map(|d| keys::listeners(d, cx))
             .map(|d| canvas::listeners(d, cx))

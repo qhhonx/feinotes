@@ -12,8 +12,8 @@
 //!
 //! Backends, the same on every platform: this GPUI painter, and above
 //! `VELLO_ABOVE` visible elements (for thumbnails above `THUMB_VELLO`) the
-//! vello_cpu painter of `render_vello.rs`, its frame shown with
-//! `Window::paint_pixels`; the frame is reused
+//! vello_cpu painter of `render_vello.rs`, its frame shown as a GPUI
+//! image; the frame is reused
 //! while scene, view and theme stay the same. Both draw from the same
 //! caches (display list, bounds, frame clip) and the same paint order,
 //! kept while the scene is unchanged (tools/perf/board-results.md).
@@ -36,6 +36,10 @@
 //! triangle. Text in a clipped frame is only clipped to the frame's bounding
 //! box.
 
+#[cfg(target_os = "ios")]
+type Path = gpui::Path<gpui::Pixels>;
+
+use fdl_core::vfs::PathExt as _;
 use super::bounds::get_element_bounds;
 use super::color::Rgba as BRgba;
 use super::display::{self as dl, DisplayItem, ElementDisplay, ImageItem, Paint, RenderOpts, element_display, renderable_elements};
@@ -69,7 +73,14 @@ fn backend() -> Backend {
 fn profiling() -> bool { static P: LazyLock<bool> = LazyLock::new(|| std::env::var_os("FDL_BOARD_PROF").is_some()); *P }
 /// Auto: vello from this many visible elements on, back to GPUI below
 /// `VELLO_BELOW` (tools/perf/board-results.md); thumbnails from `THUMB_VELLO`.
+/// Measured on macOS; vello's fixed cost per frame is higher on Windows.
+#[cfg(target_os = "macos")]
+const VELLO_ABOVE: usize = 600;
+#[cfg(target_os = "macos")]
+const VELLO_BELOW: usize = 400;
+#[cfg(not(target_os = "macos"))]
 const VELLO_ABOVE: usize = 800;
+#[cfg(not(target_os = "macos"))]
 const VELLO_BELOW: usize = 500;
 const THUMB_VELLO: usize = 64;
 
@@ -91,6 +102,9 @@ fn run(len: usize, font: Font, color: Hsla) -> TextRun { TextRun { len, font, co
 pub fn runs(text: &str, family: u32, color: Hsla) -> Vec<TextRun> { super::fonts::runs(text, family).into_iter().map(|(len, f)| run(len, f, color)).collect() }
 
 /// `Measure` with the GPUI text system.
+#[cfg(not(target_os = "ios"))]
+pub struct GpuiMeasure(pub Rc<WindowTextSystem>);
+#[cfg(target_os = "ios")]
 pub struct GpuiMeasure(pub Arc<WindowTextSystem>);
 
 thread_local! {
@@ -134,8 +148,8 @@ pub fn placeholder_color(opacity: f64) -> Hsla { hsla(dl::image_placeholder_colo
 /// The canvas color (`viewBackgroundColor`), as drawn.
 pub fn canvas_color(board: &Board) -> Hsla { hsla(dl::canvas_color(&board.app.view_background_color, crate::theme::dark()), 1.) }
 
-/// One tessellated path and what paints it.
-struct Built { path: Path<Pixels>, paint: Paint }
+/// One built path and what paints it.
+struct Built { path: Path, paint: Paint }
 
 struct Cached {
     key: (i64, i64, i64),
@@ -307,7 +321,7 @@ impl Painter {
         let m = measure(window);
         let visible = { let a = view.to_scene(clip.origin); let b = view.to_scene(clip.bottom_right()); [a[0], a[1], b[0], b[1]] };
         let b = bucket(view.zoom);
-        let prof = profiling().then(std::time::Instant::now);
+        let prof = profiling().then(web_time::Instant::now);
         let thumb = self.thumb;
         let opts = RenderOpts { frame_name: !self.screen_frame_names, ..RenderOpts::default() };
         let Painter { cache, data_images, live, sources, trash, use_vello, order, cropping, preview, .. } = self;
@@ -451,7 +465,7 @@ impl Painter {
                 }
                 v.element(c, &d, *fade, canvas, &mut src, window);
             }
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             v.render();
             if profiling() { eprintln!("prof vello render+copy {:.2}", t.elapsed().as_secs_f64() * 1e3); }
         }
@@ -509,7 +523,7 @@ fn paint_element(c: &mut Cached, d: &ElementDisplay, files: &BTreeMap<String, Fi
             // paths come in item order, one or two (fill, stroke) per item
             DisplayItem::Path { fill, stroke, .. } => {
                 for _ in 0..(fill.is_some() as usize + stroke.is_some() as usize) {
-                    if let Some(p) = built.next() { window.paint_path(p.path.transformed(k, view.origin), paint_of(p.paint)); }
+                    if let Some(p) = built.next() && !path_is_empty(&p.path) { window.paint_path(p.path.transformed(k, view.origin), paint_of(p.paint)); }
                 }
             }
             DisplayItem::Text(t) => {
@@ -530,10 +544,19 @@ fn pt(p: [f64; 2], b: f32) -> Point<Pixels> { point(px(p[0] as f32 * b), px(p[1]
 
 /// `d`'s paths in scene units times `b`, in item order (fill before stroke),
 /// cut to the frame clip `clip` and around the label hole.
+#[cfg(not(target_os = "ios"))]
 fn build_paths(d: &ElementDisplay, b: f32, clip: Option<&[geom::Pt]>) -> Vec<Built> {
     let keep = clip.map(|k| geom::to_f32(k, b));
     let hole = d.knockout.map(|k| geom::to_f32(&geom::local_quad(d, k), b));
-    let cut = |p: Path<Pixels>| if keep.is_none() && hole.is_none() { p } else { geom::clip_path(&p, keep.as_deref(), hole.as_deref()).unwrap_or_else(|| Path::new(point(px(0.), px(0.)))) };
+    // Whole curves unless something is cut away: then the contours are
+    // flattened (a tenth of a pixel at this scale) and cut.
+    let finish = |pb: PathBuilder| -> Path {
+        if keep.is_none() && hole.is_none() { return pb.build().unwrap_or_else(|_| Path::empty()); }
+        let Ok((polys, rule)) = pb.build_polygons(0.1) else { return Path::empty() };
+        let polys = polys.into_iter().map(|p| p.into_iter().map(|q| [q.x, q.y]).collect()).collect();
+        let cut: Vec<Vec<Point<f32>>> = geom::clip_polygons(polys, keep.as_deref(), hole.as_deref()).into_iter().map(|p| p.into_iter().map(|q| point(q[0], q[1])).collect()).collect();
+        Path::from_polygons(&cut, rule)
+    };
     let mut out = vec![];
     for it in &d.items {
         let DisplayItem::Path { cmds, fill, stroke } = it else { continue };
@@ -549,20 +572,19 @@ fn build_paths(d: &ElementDisplay, b: f32, clip: Option<&[geom::Pt]>) -> Vec<Bui
             }
         };
         if let Some(f) = fill {
-            let rule = if f.rule == dl::FillRule::EvenOdd { gpui::FillRule::EvenOdd } else { gpui::FillRule::NonZero };
-            let mut pb = PathBuilder::fill().with_style(PathStyle::Fill(FillOptions::default().with_fill_rule(rule).with_tolerance(0.2)));
+            let fill_rule = if f.rule == dl::FillRule::EvenOdd { gpui::FillRule::EvenOdd } else { gpui::FillRule::NonZero };
+            let mut pb = PathBuilder::fill().with_style(PathStyle::Fill(FillOptions { fill_rule }));
             trace(&mut pb);
-            match pb.build() { Ok(path) => out.push(Built { path: cut(path), paint: f.paint }), Err(_) => out.push(Built { path: Path::new(point(px(0.), px(0.))), paint: f.paint }) }
+            out.push(Built { path: finish(pb), paint: f.paint });
         }
         if let Some(s) = stroke {
-            let cap = match s.cap { dl::LineCap::Butt => gpui::LineCap::Butt, dl::LineCap::Round => gpui::LineCap::Round, dl::LineCap::Square => gpui::LineCap::Square };
-            let join = match s.join { dl::LineJoin::Miter => gpui::LineJoin::Miter, dl::LineJoin::Round => gpui::LineJoin::Round, dl::LineJoin::Bevel => gpui::LineJoin::Bevel };
+            let line_cap = match s.cap { dl::LineCap::Butt => gpui::LineCap::Butt, dl::LineCap::Round => gpui::LineCap::Round, dl::LineCap::Square => gpui::LineCap::Square };
+            let line_join = match s.join { dl::LineJoin::Miter => gpui::LineJoin::Miter, dl::LineJoin::Round => gpui::LineJoin::Round, dl::LineJoin::Bevel => gpui::LineJoin::Bevel };
             let w = (s.width as f32 * b).max(0.01);
-            let opts = StrokeOptions::default().with_line_width(w).with_line_cap(cap).with_line_join(join).with_tolerance(0.2);
-            let mut pb = PathBuilder::stroke(px(w)).with_style(PathStyle::Stroke(opts));
+            let mut pb = PathBuilder::stroke(px(w)).with_style(PathStyle::Stroke(StrokeOptions { line_width: w, line_cap, line_join, ..Default::default() }));
             if let Some(dash) = &s.dash { pb = pb.dash_array(&dash.iter().map(|v| px((*v as f32 * b).max(0.01))).collect::<Vec<_>>()); }
             trace(&mut pb);
-            match pb.build() { Ok(path) => out.push(Built { path: cut(path), paint: s.paint }), Err(_) => out.push(Built { path: Path::new(point(px(0.), px(0.))), paint: s.paint }) }
+            out.push(Built { path: finish(pb), paint: s.paint });
         }
     }
     out
@@ -663,8 +685,10 @@ fn paint_rotated_text(path: &SharedString, r: [f64; 4], d: &ElementDisplay, view
 /// An image file's pixels: the document picture cache for library files,
 /// decoded here once for data URLs.
 fn image_of(fd: &FileData, long: f32, data_images: &mut HashMap<String, Option<Arc<RenderImage>>>, window: &mut Window, cx: &mut App) -> Option<Arc<RenderImage>> {
-    if let Some(p) = fd.path.as_deref().and_then(crate::store::image_path) && p.exists() {
-        return crate::editor::image::board_picture(&p, long, window, cx);
+    if let Some(p) = fd.path.as_deref().and_then(crate::store::image_path) {
+        if p.fs_exists() { return crate::editor::image::board_picture(&p, long, window, cx) }
+        // the web demo fetches it now; its arrival redraws the board
+        if fdl_core::vfs::pending(&p) { return None }
     }
     let url = fd.data_url.as_deref()?;
     data_images.entry(fd.id.clone()).or_insert_with(|| decode_data_url(url)).clone()
@@ -715,6 +739,15 @@ impl Sources {
     /// Starts decoding `fd` at `cap` unless that is under way; its result
     /// once there.
     fn poll(&mut self, fd: &FileData, cap: u32) -> Option<Option<geom::Src>> {
+        // The web build has no threads: it decodes here, once the picture has
+        // been fetched (asked again on the redraw its arrival brings; the
+        // count moves either way, so that redraw isn't served from the cache).
+        if cfg!(target_family = "wasm") {
+            self.map.entry(fd.id.clone()).or_default();  // where `get` keeps the result
+            self.jobs.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+            if fd.path.as_deref().and_then(crate::store::image_path).is_some_and(|p| fdl_core::vfs::pending(&p)) { return None }
+            return Some(source_of(fd, cap));
+        }
         let slot = self.map.entry(fd.id.clone()).or_default();
         if slot.job.as_ref().is_none_or(|(c, _)| *c != cap) {
             let out: Job = Arc::default();
@@ -768,14 +801,14 @@ pub fn need_px(img: &ImageItem, zoom: f64) -> f64 {
 
 /// An image file's pixels, the long edge at most `cap` (on a worker thread).
 fn source_of(fd: &FileData, cap: u32) -> Option<geom::Src> {
-    let t = std::time::Instant::now();
+    let t = web_time::Instant::now();
     let r = decode_source(fd, cap);
     if profiling() { eprintln!("prof decode {} at {cap}: {:.2} ms", fd.id, t.elapsed().as_secs_f64() * 1e3); }
     r
 }
 
 fn decode_source(fd: &FileData, cap: u32) -> Option<geom::Src> {
-    let im = match fd.path.as_deref().and_then(crate::store::image_path).filter(|p| p.exists()) {
+    let im = match fd.path.as_deref().and_then(crate::store::image_path).filter(|p| p.fs_exists()) {
         Some(p) => crate::editor::image::decode_rgba(&p, cap)?,
         None => {
             use base64::Engine;
@@ -891,4 +924,50 @@ pub fn paint_card(board: &Board, bounds: Bounds<Pixels>, window: &mut Window, cx
         };
         paint_fit(&mut c[i].1, board, bounds, 4., window, cx);
     });
+}
+
+#[cfg(target_os = "ios")]
+fn build_paths(d: &ElementDisplay, b: f32, clip: Option<&[geom::Pt]>) -> Vec<Built> {
+    let keep = clip.map(|k| geom::to_f32(k, b));
+    let hole = d.knockout.map(|k| geom::to_f32(&geom::local_quad(d, k), b));
+    let cut = |p: Path| if keep.is_none() && hole.is_none() { p } else { geom::clip_path(&p, keep.as_deref(), hole.as_deref()).unwrap_or_else(|| Path::new(point(px(0.), px(0.)))) };
+    let mut out = vec![];
+    for it in &d.items {
+        let DisplayItem::Path { cmds, fill, stroke } = it else { continue };
+        let trace = |pb: &mut PathBuilder| {
+            for c in cmds {
+                match *c {
+                    PathCmd::MoveTo(p) => pb.move_to(pt(d.to_scene(p), b)),
+                    PathCmd::LineTo(p) => pb.line_to(pt(d.to_scene(p), b)),
+                    PathCmd::QuadTo(a, p) => pb.curve_to(pt(d.to_scene(p), b), pt(d.to_scene(a), b)),
+                    PathCmd::CubicTo(a, c2, p) => pb.cubic_bezier_to(pt(d.to_scene(p), b), pt(d.to_scene(a), b), pt(d.to_scene(c2), b)),
+                    PathCmd::Close => pb.close(),
+                }
+            }
+        };
+        if let Some(f) = fill {
+            let rule = if f.rule == dl::FillRule::EvenOdd { gpui::FillRule::EvenOdd } else { gpui::FillRule::NonZero };
+            let mut pb = PathBuilder::fill().with_style(PathStyle::Fill(FillOptions::default().with_fill_rule(rule).with_tolerance(0.2)));
+            trace(&mut pb);
+            match pb.build() { Ok(path) => out.push(Built { path: cut(path), paint: f.paint }), Err(_) => out.push(Built { path: Path::new(point(px(0.), px(0.))), paint: f.paint }) }
+        }
+        if let Some(s) = stroke {
+            let cap = match s.cap { dl::LineCap::Butt => gpui::LineCap::Butt, dl::LineCap::Round => gpui::LineCap::Round, dl::LineCap::Square => gpui::LineCap::Square };
+            let join = match s.join { dl::LineJoin::Miter => gpui::LineJoin::Miter, dl::LineJoin::Round => gpui::LineJoin::Round, dl::LineJoin::Bevel => gpui::LineJoin::Bevel };
+            let w = (s.width as f32 * b).max(0.01);
+            let opts = StrokeOptions::default().with_line_width(w).with_line_cap(cap).with_line_join(join).with_tolerance(0.2);
+            let mut pb = PathBuilder::stroke(px(w)).with_style(PathStyle::Stroke(opts));
+            if let Some(dash) = &s.dash { pb = pb.dash_array(&dash.iter().map(|v| px((*v as f32 * b).max(0.01))).collect::<Vec<_>>()); }
+            trace(&mut pb);
+            match pb.build() { Ok(path) => out.push(Built { path: cut(path), paint: s.paint }), Err(_) => out.push(Built { path: Path::new(point(px(0.), px(0.))), paint: s.paint }) }
+        }
+    }
+    out
+}
+
+fn path_is_empty(path: &Path) -> bool {
+    #[cfg(target_os = "ios")]
+    { path.vertices.is_empty() }
+    #[cfg(not(target_os = "ios"))]
+    { path.is_empty() }
 }

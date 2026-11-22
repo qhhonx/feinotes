@@ -1,0 +1,55 @@
+gpui_web: browser focus / blur events can fire synchronously inside GPUI's handling of another event (a pointerdown that focuses the IME mirror, a host page moving focus into the frame), and refreshing the window's active status there re-entered the window update: 'attempted to read a window that is already on the stack', after which the app stopped drawing and taking input. Refresh the active status on the next task instead.
+
+diff --git a/crates/gpui_web/src/events.rs b/crates/gpui_web/src/events.rs
+index 96fb38361732f081bfb4765adef968740300f2a0..fce1f64e5530a17214b0c996e509bf5b7e00e107 100644
+--- a/crates/gpui_web/src/events.rs
++++ b/crates/gpui_web/src/events.rs
+@@ -1182,7 +1182,10 @@ impl WebWindowInner {
+                 if this.suppress_focus_status_events.get() {
+                     return;
+                 }
+-                this.refresh_active_status();
++                // a focus change can fire synchronously inside GPUI's own handling of an
++                // event (a pointerdown that focuses the IME mirror, a host page moving
++                // focus into this frame): refresh after this task, not re-entrantly
++                this.refresh_active_status_later();
+             },
+         )
+     }
+@@ -1196,7 +1199,10 @@ impl WebWindowInner {
+                 if this.suppress_focus_status_events.get() {
+                     return;
+                 }
+-                this.refresh_active_status();
++                // a focus change can fire synchronously inside GPUI's own handling of an
++                // event (a pointerdown that focuses the IME mirror, a host page moving
++                // focus into this frame): refresh after this task, not re-entrantly
++                this.refresh_active_status_later();
+             },
+         )
+     }
+diff --git a/crates/gpui_web/src/window.rs b/crates/gpui_web/src/window.rs
+index ddd9095040c0a6e80939654798a25eac1fbca387..2469b81f583f765e97a05c918bbb52fb74d3de9f 100644
+--- a/crates/gpui_web/src/window.rs
++++ b/crates/gpui_web/src/window.rs
+@@ -419,6 +419,20 @@ impl WebWindowInner {
+         );
+     }
+ 
++    /// `refresh_active_status` on the next task: browser focus and blur events
++    /// can arrive while a window update is on the stack.
++    pub(crate) fn refresh_active_status_later(self: &Rc<Self>) {
++        let this = Rc::downgrade(self);
++        let callback = wasm_bindgen::closure::Closure::once_into_js(move || {
++            if let Some(this) = this.upgrade() {
++                this.refresh_active_status();
++            }
++        });
++        if self.browser_window.set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0).is_err() {
++            self.refresh_active_status();
++        }
++    }
++
+     pub(crate) fn refresh_active_status(&self) {
+         let active = document_is_active(&self.browser_window);
+         if std::mem::replace(&mut self.state.borrow_mut().is_active, active) != active {

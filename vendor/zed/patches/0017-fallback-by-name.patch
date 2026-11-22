@@ -1,0 +1,86 @@
+quiet.md: look fallback fonts up by name, as GPUI 0.2 did
+
+Upstream builds each FontFallbacks entry as a family-name + weight/slant
+descriptor. For "PingFang SC" that resolves to the family in PingFang.ttc
+(49533 glyphs) instead of the system UI copy CoreText falls back to
+(PingFangUI.ttc, 47098 glyphs) that the editor's CJK text has always been
+drawn with; the outlines differ slightly, so Chinese text drew about 2%
+lighter. Create the descriptor from the name (CTFontDescriptorCreateWithName
+AndSize) as before. Upstream's system cascade list after the user fallbacks
+stays.
+
+diff --git a/crates/gpui_apple/src/open_type.rs b/crates/gpui_apple/src/open_type.rs
+index d23a09b5a39cf9741f3f5ea2309b41223cc069a1..200ce9e5e9b80316b986c882ad4890b1629a337e 100644
+--- a/crates/gpui_apple/src/open_type.rs
++++ b/crates/gpui_apple/src/open_type.rs
+@@ -10,14 +10,11 @@ use core_foundation::{
+     string::CFString,
+ };
+ use core_foundation_sys::locale::CFLocaleCopyPreferredLanguages;
+-use core_text::font_descriptor::{
+-    TraitAccessors, kCTFontFamilyNameAttribute, kCTFontItalicTrait, kCTFontSlantTrait,
+-    kCTFontTraitsAttribute, kCTFontWeightTrait,
+-};
+ use core_text::{
+     font::{CTFont, cascade_list_for_languages},
+     font_descriptor::{
+-        CTFontDescriptor, CTFontDescriptorCreateWithAttributes, kCTFontCascadeListAttribute,
++        CTFontDescriptor, CTFontDescriptorCreateWithAttributes,
++        CTFontDescriptorCreateWithNameAndSize, kCTFontCascadeListAttribute,
+         kCTFontFeatureSettingsAttribute,
+     },
+ };
+@@ -104,47 +101,15 @@ fn generate_feature_array(features: &FontFeatures) -> CFMutableArrayRef {
+ 
+ fn generate_fallback_array(fallbacks: &FontFallbacks, font: &mut FontKitFont) -> CFMutableArrayRef {
+     unsafe {
+-        let symbolic_traits = font.native_font().symbolic_traits();
+-        let all_traits = font.native_font().all_traits();
+-
+         let fallback_array = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+         for user_fallback in fallbacks.fallback_list() {
++            // quiet.md: look the fallback up by name, as GPUI 0.2 did. A
++            // family-name + traits descriptor resolves "PingFang SC" to the
++            // family in PingFang.ttc instead of the system's UI copy, whose
++            // outlines the app's CJK text was tuned with (see also
++            // fallback-font-identity).
+             let name = CFString::from(user_fallback.as_str());
+-
+-            let traits_keys = [kCTFontWeightTrait, kCTFontSlantTrait];
+-            let weight_value = CFNumber::from(all_traits.normalized_weight());
+-            let slant_value = CFNumber::from(if (symbolic_traits & kCTFontItalicTrait) != 0 {
+-                1.0
+-            } else {
+-                0.0
+-            });
+-            let traits_values = [weight_value.as_CFTypeRef(), slant_value.as_CFTypeRef()];
+-            let traits = CFDictionaryCreate(
+-                kCFAllocatorDefault,
+-                &traits_keys as *const _ as _,
+-                &traits_values as *const _ as _,
+-                traits_keys.len() as isize,
+-                &kCFTypeDictionaryKeyCallBacks,
+-                &kCFTypeDictionaryValueCallBacks,
+-            );
+-            drop(weight_value);
+-            drop(slant_value);
+-
+-            let attr_keys = [kCTFontFamilyNameAttribute, kCTFontTraitsAttribute];
+-            let attr_values = [name.as_CFTypeRef(), traits as _];
+-            let attrs = CFDictionaryCreate(
+-                kCFAllocatorDefault,
+-                &attr_keys as *const _ as _,
+-                &attr_values as *const _ as _,
+-                attr_keys.len() as isize,
+-                &kCFTypeDictionaryKeyCallBacks,
+-                &kCFTypeDictionaryValueCallBacks,
+-            );
+-            CFRelease(traits as _);
+-
+-            let fallback_desc = CTFontDescriptorCreateWithAttributes(attrs);
+-            CFRelease(attrs as _);
+-
++            let fallback_desc = CTFontDescriptorCreateWithNameAndSize(name.as_concrete_TypeRef(), 0.0);
+             CFArrayAppendValue(fallback_array, fallback_desc as _);
+             CFRelease(fallback_desc as _);
+         }

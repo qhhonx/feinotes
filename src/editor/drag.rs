@@ -12,7 +12,8 @@ use gpui::{prelude::FluentBuilder, *};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 /// Nesting deeper than this is refused (`pE=16`).
 const MAX_DEPTH: usize = 16;

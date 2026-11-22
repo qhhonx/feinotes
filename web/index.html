@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quiet.md — live demo</title>
+<link rel="modulepreload" href="./quiet_md.js">
+<link rel="preload" as="fetch" crossorigin href="./quiet_md_bg.wasm" type="application/wasm">
+<script>
+  // What src/web.rs fetches before the first frame, started now, alongside the wasm.
+  for (const f of ["Inter-Regular", "Inter-Medium", "Inter-SemiBold", "Inter-Bold", "JetBrainsMono-Regular"]) preload(`fonts/${f}.ttf`);
+  { const lib = new URLSearchParams(location.search).get("lib"); preload(`libraries/${/^[\w-]+$/.test(lib || "") ? lib : "han-meimei"}.qmdb`); }
+  function preload(href) { const l = document.createElement("link"); l.rel = "preload"; l.as = "fetch"; l.crossOrigin = "anonymous"; l.href = href; document.head.append(l); }
+</script>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f5f4; }
+  canvas { display: block; width: 100%; height: 100%; outline: none; }
+  #status { position: fixed; inset: 0; display: grid; place-items: center; font: 500 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; color: #6b716e; pointer-events: none; }
+  #status:empty { display: none; }
+</style>
+</head>
+<body>
+<div id="status">Loading…</div>
+<script>
+  // The first panic of this page load (later ones are its fallout), for debugging.
+  window.quietErrors = [];
+  const err = console.error.bind(console);
+  console.error = (...a) => { window.quietErrors.push(a.map(String).join(" ").slice(0, 600)); err(...a); };
+</script>
+<script type="module">
+  import init from "./quiet_md.js";
+  init().catch(e => { document.getElementById("status").textContent = "This browser could not start the demo (" + e + ")."; console.error(e); });
+</script>
+</body>
+</html>

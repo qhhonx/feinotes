@@ -1,11 +1,13 @@
 /*
- * quiet.md 文档主题：Notion
+ * Quiet.md document theme: Notion
  *
- * 按 Notion 默认浅色页面整理：暖灰正文 #37352F、16 / 24 正文、708 宽的正文栏、
- * 系统字体、灰底红字的行内代码、无行号的米色代码块、深色引用竖线、实线分隔线、
- * 蓝色勾选与 Notion 的九色色板。块间距和标题留白按 Notion 的 3px 内边距 + 1px 外边距换算。
+ * Based on Notion’s default light page: warm gray body text (#37352F), 16/24 typography,
+ * a 708-wide column, system fonts, red inline code on gray, beige code blocks without line
+ * numbers, dark quote rules, solid dividers, blue checkboxes and a nine-color palette. Block
+ * and heading spacing reflects Notion’s 3px padding and 1px margin.
  *
- * 每个属性都写着当前的值。改完保存，应用里立即生效；说明见 docs/THEMES.md。
+ * Each property shows its current value. Save edits to see them immediately.
+ * See docs/THEMES.md for selectors and properties.
  */
 
 :root {
@@ -13,10 +15,10 @@
   --theme-name-en: "Notion";
   --theme-author: "quiet.md";
   --theme-description: "Notion 的默认浅色页面：暖灰正文、紧凑的块、灰底红字的行内代码、深色引用竖线。";
-  /* 块的画法：craft 或 feishu */
+  /* Block rendering style: craft or feishu */
   --theme-base: craft;
 
-  /* Notion 的几个基础色，下面的规则用 var() 引用 */
+  /* Base Notion colors referenced below with var() */
   --notion-text: #37352f;
   --notion-secondary: #787774;
   --notion-faint: rgba(55, 53, 47, 0.35);
@@ -24,7 +26,7 @@
   --notion-divider: rgba(55, 53, 47, 0.16);
   --notion-surface: #f7f6f3;
 
-  /* 文字颜色 */
+  /* Text colors */
   --color-gray: #787774;
   --color-red: #d44c47;
   --color-orange: #d9730d;
@@ -33,7 +35,7 @@
   --color-blue: #337ea9;
   --color-purple: #9065b0;
 
-  /* 文字高亮 */
+  /* Text highlights */
   --highlight-light-gray: #f1f1ef;
   --highlight-light-red: #fdebec;
   --highlight-light-orange: #fbecdd;
@@ -50,7 +52,7 @@
   --highlight-blue: #d3e5ef;
   --highlight-purple: #e8deee;
 
-  /* 块背景 */
+  /* Block backgrounds */
   --background-light-gray: #f1f1ef;
   --background-light-red: #fdebec;
   --background-light-orange: #fbecdd;
@@ -67,7 +69,7 @@
   --background-medium-blue: #d3e5ef;
   --background-medium-purple: #e8deee;
 
-  /* 高亮块底色 */
+  /* Callout fills */
   --callout-light-gray: #f1f1ef;
   --callout-light-red: #fdebec;
   --callout-light-orange: #fbecdd;
@@ -84,7 +86,7 @@
   --callout-medium-blue: #d3e5ef;
   --callout-medium-purple: #e8deee;
 
-  /* 高亮块边框 */
+  /* Callout borders */
   --border-gray: #f1f1ef;
   --border-red: #fdebec;
   --border-orange: #fbecdd;
@@ -93,7 +95,7 @@
   --border-blue: #e7f3f8;
   --border-purple: #f4f0f7;
 
-  /* 其它界面细节（文档内的选中、悬停、表格工具等） */
+  /* Other document UI details (selection, hover, table tools, etc.) */
   --token-text-caption: var(--notion-secondary);
   --token-text-placeholder: var(--notion-faint);
   --token-block-placeholder: var(--notion-faint);

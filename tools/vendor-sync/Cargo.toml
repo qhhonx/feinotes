@@ -1,0 +1,14 @@
+[package]
+name = "vendor-sync"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Snapshot Zed's GPUI crates into vendor/zed and apply the local patch series"
+license = "MIT"
+
+# Kept out of the app's workspace: `cargo run --manifest-path tools/vendor-sync/Cargo.toml`.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+toml_edit = "0.22"

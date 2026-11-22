@@ -1253,6 +1253,25 @@ mod board {
     }
 
     #[test]
+    fn pinch_zooms_about_the_fingers_within_the_button_range() {
+        let c = Canvas { offset_left: 40., offset_top: 30., width: 1000., height: 800. };
+        let v = Viewport { scroll_x: -123.5, scroll_y: 77.25, zoom: 1.3 };
+        let at = [333., 211.];
+        let before = viewport_coords_to_scene_coords(at, v, c);
+        for m in [0.1, -0.1, 0.02, -0.5] {
+            let next = zoom_by_pinch(at[0], at[1], m, v, c);
+            assert!(close(next.zoom, get_normalized_zoom(1.3 * (1. + m))));
+            let after = viewport_coords_to_scene_coords(at, next, c);
+            assert!(close(before[0], after[0]) && close(before[1], after[1]), "{before:?} {after:?}");
+        }
+        // the same limits as the zoom buttons; a bogus delta changes nothing
+        assert_eq!(zoom_by_pinch(at[0], at[1], 5., Viewport { zoom: 29., ..v }, c).zoom, 30.);
+        assert_eq!(zoom_by_pinch(at[0], at[1], -0.9, Viewport { zoom: 0.11, ..v }, c).zoom, 0.1);
+        assert_eq!(zoom_by_pinch(at[0], at[1], -3., v, c).zoom, 0.1);
+        assert_eq!(zoom_by_pinch(at[0], at[1], f64::NAN, v, c), v);
+    }
+
+    #[test]
     fn coordinates_round_trip() {
         let c = Canvas { offset_left: 12., offset_top: 34., width: 800., height: 600. };
         let v = Viewport { scroll_x: 15.5, scroll_y: -40., zoom: 2.5 };

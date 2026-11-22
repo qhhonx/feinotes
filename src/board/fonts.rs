@@ -16,7 +16,8 @@
 //! Windows (as browsers resolve it); Liberation Sans (9, not user-pickable
 //! upstream) isn't bundled (the copy upstream ships is the GPL-licensed 1.x)
 //! and draws with Arial, which it is metric-compatible with. Xiaolai (14 MB
-//! compressed) is unpacked and registered the first time a text needs it.
+//! compressed) is unpacked and registered the first time a text needs it; the
+//! web build has none (build.rs), so its boards draw CJK with the fallbacks.
 
 use fdl_core::board::consts::font_family as ff;
 use fdl_core::board::font_subset::mapped_chars;
@@ -105,7 +106,8 @@ fn xiaolai_added() -> bool {
 
 /// The family name GPUI looks a family up by.
 pub fn family_name(family: u32) -> &'static str {
-    let arial = if cfg!(target_os = "linux") { "Liberation Sans" } else { "Arial" };
+    // The web build reaches no system fonts: Inter, which it carries, stands in.
+    let arial = if cfg!(target_os = "linux") { "Liberation Sans" } else if cfg!(target_family = "wasm") { "Inter" } else { "Arial" };
     match family {
         ff::HELVETICA => if cfg!(target_os = "macos") { "Helvetica" } else { arial },
         ff::LIBERATION_SANS => arial,
@@ -175,7 +177,7 @@ mod tests {
     /// CJK takes Xiaolai's full-width glyphs.
     #[test]
     fn fonts_register_and_measure() {
-        let ts = gpui::test_text_system();
+        let ts = std::rc::Rc::new(gpui::WindowTextSystem::new(Arc::new(gpui::TextSystem::new(Arc::new(gpui_apple::AppleTextSystem::new())))));
         ts.add_fonts(BUNDLED.iter().map(|b| Cow::Borrowed(bytes(b.0).unwrap())).collect()).unwrap();
         XIAOLAI_ADDED.with(|a| a.set(Some(true)));
         let m = super::super::render::GpuiMeasure(ts.clone());

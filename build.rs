@@ -9,24 +9,44 @@ fn main() {
     let root = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios") {
         manifest.join("../..").canonicalize().expect("find Fei Notes project root")
     } else { manifest };
-    embed(&root, "assets", "assets.rs", SKIP);
+    let linux = matches!(std::env::var("CARGO_CFG_TARGET_OS").as_deref(), Ok("linux" | "freebsd"));
+    // The site's live demo leaves out Xiaolai (14 MB): boards there draw CJK with the browser's font.
+    let web = std::env::var("CARGO_CFG_TARGET_FAMILY").is_ok_and(|f| f.split(',').any(|f| f == "wasm"));
+    let skip: Vec<&str> = SKIP.iter().copied().chain((!linux).then_some("fonts/emoji/")).chain(web.then_some("fonts/excalidraw/Xiaolai-Regular.ttf.zlib")).collect();
+    embed(&root, "assets", "assets.rs", &skip);
     embed(&root, "shared-mock/library", "guides.rs", &[]);
     println!("cargo:rustc-env=FEI_TESTFLIGHT_BETA=0");
+    println!("cargo:rustc-env=FEI_UPSTREAM_PREVIEW=0");
     let revision = std::process::Command::new("git").arg("-C").arg(&root).args(["rev-parse", "--short=12", "HEAD"])
         .output().ok().filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned()).unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=FEI_SOURCE_REVISION={revision}");
+    // A candidate may advance without changing Rust files. Do not cache its old revision.
+    let branch = std::process::Command::new("git").arg("-C").arg(&root).args(["symbolic-ref", "--quiet", "HEAD"])
+        .output().ok().filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    for name in [Some("HEAD"), Some("packed-refs"), branch.as_deref()].into_iter().flatten() {
+        if let Ok(output) = std::process::Command::new("git").arg("-C").arg(&root)
+            .args(["rev-parse", "--path-format=absolute", "--git-path", name]).output() && output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout);
+            if Path::new(path.trim()).exists() { println!("cargo:rerun-if-changed={}", path.trim()); }
+        }
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios")
         && std::env::var_os("CARGO_FEATURE_CLOUDKIT_SYNC").is_some() {
         println!("cargo:rerun-if-env-changed=FEI_IOS_PRODUCT_CLOUD");
         println!("cargo:rerun-if-env-changed=FEI_TESTFLIGHT_BETA");
+        println!("cargo:rerun-if-env-changed=FEI_IOS_UPSTREAM_PREVIEW");
         let product = std::env::var("FEI_IOS_PRODUCT_CLOUD").as_deref() == Ok("1");
+        let preview = std::env::var("FEI_IOS_UPSTREAM_PREVIEW").as_deref() == Ok("1");
         let beta = std::env::var("FEI_TESTFLIGHT_BETA").unwrap_or_else(|_| "0".into());
         assert!(matches!(beta.as_str(), "0" | "1"), "Invalid FEI_TESTFLIGHT_BETA");
         assert!(beta != "1" || (product && std::env::var("PROFILE").as_deref() == Ok("release")
             && std::env::var_os("CARGO_FEATURE_DEVTOOLS").is_none()
             && std::env::var_os("CARGO_FEATURE_MOBILE_QA").is_none()), "TestFlight requires a Production release without QA");
         println!("cargo:rustc-env=FEI_TESTFLIGHT_BETA={beta}");
+        assert!(!preview || (!product && beta == "0"), "Upstream previews cannot use the production or TestFlight configuration");
+        println!("cargo:rustc-env=FEI_UPSTREAM_PREVIEW={}", if preview { "1" } else { "0" });
         println!("cargo:rustc-env=FEI_CLOUD_NAMESPACE={}", if product { "Production:iCloud.app.feinotes.mac" } else { "Development:iCloud.app.quietmd.cloudlab" });
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") { windows_resources(); }
@@ -58,6 +78,8 @@ fn cloudkit_restore() {
     println!("cargo:rerun-if-env-changed=FEI_CLOUD_CONTAINER");
     println!("cargo:rerun-if-env-changed=FEI_CLOUD_ENVIRONMENT");
     println!("cargo:rerun-if-env-changed=FEI_BUNDLE_ID");
+    println!("cargo:rerun-if-env-changed=FEI_MAC_UPSTREAM_PREVIEW");
+    println!("cargo:rerun-if-env-changed=FEI_UPSTREAM_PREVIEW_CHANNEL");
     println!("cargo:rerun-if-env-changed=FEI_TESTFLIGHT_BETA");
     let container = std::env::var("FEI_CLOUD_CONTAINER").unwrap_or_else(|_| "iCloud.app.quietmd.cloudlab".into());
     let environment = std::env::var("FEI_CLOUD_ENVIRONMENT").unwrap_or_else(|_| "Development".into());
@@ -79,6 +101,15 @@ fn cloudkit_restore() {
     assert!(!testflight || (!qa && environment == "Production"
         && bundle == "app.feinotes.mac" && container == "iCloud.app.feinotes.mac"),
         "TestFlight requires the Fei Notes production bundle and container without QA");
+    let preview = std::env::var("FEI_MAC_UPSTREAM_PREVIEW").as_deref() == Ok("1");
+    assert!(!preview || (qa && !testflight && environment == "Development" && bundle == "app.quietmd.cloudlab"
+        && container == "iCloud.app.quietmd.cloudlab"), "Use the Development CloudLab identity for upstream cloud previews");
+    if preview {
+        println!("cargo:rustc-env=FEI_UPSTREAM_PREVIEW=1");
+        let channel = std::env::var("FEI_UPSTREAM_PREVIEW_CHANNEL").expect("Set the isolated preview channel");
+        assert!(channel.len() == 36 && channel.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-'), "Invalid preview channel");
+        println!("cargo:rustc-env=FEI_UPSTREAM_PREVIEW_CHANNEL={channel}");
+    }
     println!("cargo:rustc-env=FEI_TESTFLIGHT_BETA={}", if testflight { "1" } else { "0" });
     println!("cargo:rustc-env=FEI_CLOUD_NAMESPACE={environment}:{container}");
     println!("cargo:rustc-env=FEI_BUNDLE_ID={bundle}");

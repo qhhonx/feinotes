@@ -10,6 +10,7 @@
 //! The payload name is a hash of the bytes, so opening the same file twice
 //! reuses the file already written instead of piling up copies.
 
+use crate::vfs::PathExt as _;
 use std::path::Path;
 
 use base64::Engine;
@@ -39,7 +40,7 @@ pub fn absorb(blocks: &mut [Block], root: &Path) -> usize {
         // The library's asset folder for its layout (`.assets`, or `assets` before real folders).
         let dir = crate::store::Store::assets_in(root);
         let path = dir.join(&name);
-        if !path.is_file() && (std::fs::create_dir_all(&dir).is_err() || std::fs::write(&path, &bytes).is_err()) {
+        if !path.fs_is_file() && (crate::vfs::create_dir_all(&dir).is_err() || crate::vfs::write(&path, &bytes).is_err()) {
             continue;
         }
         *src = format!("{}/{name}", dir.file_name().unwrap_or_default().to_string_lossy());
@@ -126,27 +127,27 @@ mod tests {
 
     #[test]
     fn inline_images_become_assets_once() {
-        let root = std::env::temp_dir().join(format!("quiet-b64-{}", uuid::Uuid::new_v4()));
+        let root = crate::vfs::temp_dir().join(format!("quiet-b64-{}", uuid::Uuid::new_v4()));
         let bytes = b"\x89PNG\r\n\x1a\npayload";
         let mut blocks = vec![image_block(&png(bytes))];
 
         assert_eq!(absorb(&mut blocks, &root), 1);
         let src = src_of(&blocks[0]).to_string();
         assert!(src.starts_with(".assets/b64-") && src.ends_with(".png"), "{src}");
-        assert_eq!(std::fs::read(root.join(&src)).unwrap(), bytes);
+        assert_eq!(crate::vfs::read(root.join(&src)).unwrap(), bytes);
 
         // Opening the file again reuses the same asset instead of a new copy.
         let mut again = vec![image_block(&png(bytes))];
         assert_eq!(absorb(&mut again, &root), 1);
         assert_eq!(src_of(&again[0]), src);
-        assert_eq!(std::fs::read_dir(root.join(".assets")).unwrap().count(), 1);
-        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(crate::vfs::read_dir(root.join(".assets")).unwrap().count(), 1);
+        crate::vfs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn what_is_not_a_picture_stays_inline() {
-        let root = std::env::temp_dir().join(format!("quiet-b64-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("assets")).unwrap();
+        let root = crate::vfs::temp_dir().join(format!("quiet-b64-{}", uuid::Uuid::new_v4()));
+        crate::vfs::create_dir_all(root.join("assets")).unwrap();
         let cases = [
             "data:image/svg+xml;base64,PHN2Zz4=".to_string(),
             "data:image/png;base64,<not base64>".to_string(),
@@ -160,18 +161,18 @@ mod tests {
         for (b, c) in blocks.iter().zip(&cases) {
             assert_eq!(src_of(b), c);
         }
-        std::fs::remove_dir_all(&root).unwrap();
+        crate::vfs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn images_inside_a_table_are_absorbed() {
-        let root = std::env::temp_dir().join(format!("quiet-b64-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("assets")).unwrap();
+        let root = crate::vfs::temp_dir().join(format!("quiet-b64-{}", uuid::Uuid::new_v4()));
+        crate::vfs::create_dir_all(root.join("assets")).unwrap();
         let mut cell = crate::model::TableCell::empty();
         cell.blocks = vec![image_block(&png(b"\x89PNG\r\n\x1a\nin a cell"))];
         let table = crate::model::Table { col_widths: vec![100.], header_rows: 0, header_col: false, rows: vec![vec![cell]], ..Default::default() };
         let mut blocks = vec![Block::new(BlockKind::Table(table), Default::default())];
         assert_eq!(absorb(&mut blocks, &root), 1);
-        std::fs::remove_dir_all(&root).unwrap();
+        crate::vfs::remove_dir_all(&root).unwrap();
     }
 }

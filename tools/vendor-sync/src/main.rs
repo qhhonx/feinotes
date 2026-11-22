@@ -1,0 +1,488 @@
+//! Snapshot Zed's GPUI crates into `vendor/zed` and apply the local patch
+//! series in `vendor/zed/patches`. Usage and workflow: vendor/PATCHES.md.
+//!
+//!   sync [--rev <sha>] [--keep-going]   rebuild vendor/zed/crates from upstream + patches
+//!   check                               vendor/zed/crates matches upstream + patches
+//!   save <slug> [-m <text>]             turn edits in vendor/zed/crates into a patch
+//!                                       (an existing slug is regenerated and moves
+//!                                       to the end of the series)
+//!   refresh                             rewrite every patch against the current snapshot
+//!
+//! The upstream crates inherit fields and dependencies from Zed's workspace. A
+//! copied crate is not a member of ours, so each `Cargo.toml` is rewritten to a
+//! self-contained manifest (the upstream form, patched, is kept beside it as
+//! `Cargo.toml.orig`; patches always edit that form). Dependencies on Zed crates
+//! that are not vendored are dropped together with the features naming them,
+//! dev-dependencies are dropped, and git dependencies become crates.io ones.
+
+use anyhow::{Context, Result, bail};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
+
+struct Config { repo: String, rev: String, crates: Vec<String>, drop: Vec<String>, git_versions: BTreeMap<String, String> }
+
+struct Paths { root: PathBuf, vendor: PathBuf, patches: PathBuf, cache: PathBuf, scratch: PathBuf }
+
+fn main() {
+    if let Err(e) = run() { eprintln!("vendor-sync: {e:#}"); std::process::exit(1) }
+}
+
+fn run() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let root = repo_root()?;
+    let vendor = root.join("vendor/zed");
+    let cache = std::env::var_os("QUIET_MD_ZED_DIR").map(PathBuf::from)
+        .unwrap_or_else(|| dirs_home().join(".cache/quiet-md/zed"));
+    let p = Paths { patches: vendor.join("patches"), scratch: root.join("target/vendor-sync"), vendor, cache, root };
+    let mut cfg = read_config(&p.vendor.join("upstream.toml"))?;
+    let flag = |name: &str| args.iter().any(|a| a == name);
+    let opt = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    match args.first().map(String::as_str) {
+        Some("sync") => {
+            if let Some(rev) = opt("--rev") { cfg.rev = resolve_rev(&p, &cfg, &rev)?; set_rev(&p, &cfg.rev)? }
+            let failed = build(&p, &cfg, None)?;
+            if !failed.is_empty() && !flag("--keep-going") {
+                bail!("{} patch(es) did not apply: {}\nvendor/zed/crates was left unchanged; rerun with --keep-going to write the rest, fix each failed patch by hand in vendor/zed/crates and `save` it", failed.len(), failed.join(", "))
+            }
+            install(&p, &cfg)?;
+            println!("vendor/zed/crates = zed {} + {} patch(es)", &cfg.rev[..12], patch_files(&p)?.len() - failed.len());
+            if !failed.is_empty() { println!("not applied: {}", failed.join(", ")) }
+        }
+        Some("check") => {
+            let failed = build(&p, &cfg, None)?;
+            if !failed.is_empty() { bail!("patch(es) did not apply: {}", failed.join(", ")) }
+            let out = p.scratch.join("out");
+            let _ = fs::remove_dir_all(&out);
+            write_crates(&p, &cfg, &out)?;
+            let diff = compare_dirs(&out.join("crates"), &p.vendor.join("crates"))?;
+            if !diff.is_empty() {
+                for f in &diff { eprintln!("  differs: {f}") }
+                bail!("vendor/zed/crates does not match upstream + patches ({} file(s)); `save` your edits as a patch", diff.len())
+            }
+            println!("vendor/zed/crates matches zed {} + {} patch(es)", &cfg.rev[..12], patch_files(&p)?.len());
+        }
+        Some("save") => {
+            let slug = args.get(1).filter(|s| !s.starts_with('-')).context("usage: save <slug> [-m <description>]")?.clone();
+            save(&p, &cfg, &slug, opt("-m"))?
+        }
+        Some("refresh") => refresh(&p, &cfg)?,
+        _ => bail!("usage: vendor-sync sync [--rev <sha>] [--keep-going] | check | save <slug> [-m <text>] | refresh"),
+    }
+    Ok(())
+}
+
+fn dirs_home() -> PathBuf { PathBuf::from(std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).unwrap_or_default()) }
+
+fn repo_root() -> Result<PathBuf> {
+    let out = git_out(Path::new("."), &["rev-parse", "--show-toplevel"])?;
+    Ok(PathBuf::from(out.trim()))
+}
+
+fn read_config(path: &Path) -> Result<Config> {
+    let doc: DocumentMut = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?.parse()?;
+    let s = |k: &str| doc.get(k).and_then(|v| v.as_str()).map(String::from).with_context(|| format!("upstream.toml: missing `{k}`"));
+    let list = |k: &str| doc.get(k).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+    let mut git_versions = BTreeMap::new();
+    if let Some(t) = doc.get("git-to-crates-io").and_then(|t| t.as_table_like()) {
+        for (k, v) in t.iter() { git_versions.insert(k.to_string(), v.as_str().unwrap_or_default().to_string()); }
+    }
+    Ok(Config { repo: s("repo")?, rev: s("rev")?, crates: list("crates"), drop: list("drop"), git_versions })
+}
+
+fn set_rev(p: &Paths, rev: &str) -> Result<()> {
+    let path = p.vendor.join("upstream.toml");
+    let mut doc: DocumentMut = fs::read_to_string(&path)?.parse()?;
+    doc["rev"] = toml_edit::value(rev);
+    fs::write(&path, doc.to_string())?;
+    Ok(())
+}
+
+// ---- git -------------------------------------------------------------------
+
+fn git(dir: &Path, args: &[&str]) -> Result<()> {
+    let st = Command::new("git").arg("-C").arg(dir).args(GIT_ID).args(args).status().context("running git")?;
+    if !st.success() { bail!("git {} failed in {}", args.join(" "), dir.display()) }
+    Ok(())
+}
+
+fn git_out(dir: &Path, args: &[&str]) -> Result<String> {
+    let out = Command::new("git").arg("-C").arg(dir).args(GIT_ID).args(args).stderr(Stdio::inherit()).output().context("running git")?;
+    if !out.status.success() { bail!("git {} failed in {}", args.join(" "), dir.display()) }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Runs git and returns (success, stderr) without failing.
+fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String)> {
+    let out = Command::new("git").arg("-C").arg(dir).args(GIT_ID).args(args).output().context("running git")?;
+    Ok((out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned()))
+}
+
+const GIT_ID: &[&str] = &["-c", "user.name=vendor-sync", "-c", "user.email=vendor-sync@localhost", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"];
+
+/// A blobless clone of the Zed repository, checked out sparsely at `rev`
+/// (the sparse checkout downloads the needed blobs in one batch).
+fn ensure_cache(p: &Paths, cfg: &Config, rev: &str) -> Result<()> {
+    if !p.cache.join(".git").exists() {
+        fs::create_dir_all(p.cache.parent().unwrap())?;
+        println!("cloning {} (blobless) into {}", cfg.repo, p.cache.display());
+        let st = Command::new("git").args(["clone", "--filter=blob:none", "--no-checkout", "--quiet", &cfg.repo]).arg(&p.cache).status()?;
+        if !st.success() { bail!("git clone failed") }
+    }
+    if !git_try(&p.cache, &["cat-file", "-e", &format!("{rev}^{{commit}}")])?.0 {
+        git(&p.cache, &["fetch", "--quiet", "--filter=blob:none", "origin", rev])?;
+    }
+    let mut sparse = vec!["sparse-checkout", "set", "--no-cone", "/Cargo.toml", "/LICENSE-APACHE"];
+    let pats: Vec<String> = cfg.crates.iter().map(|c| format!("/{c}/")).collect();
+    sparse.extend(pats.iter().map(String::as_str));
+    git(&p.cache, &sparse)?;
+    git(&p.cache, &["checkout", "--quiet", "--detach", rev])?;
+    Ok(())
+}
+
+fn resolve_rev(p: &Paths, cfg: &Config, rev: &str) -> Result<String> {
+    ensure_cache(p, cfg, &cfg.rev)?;
+    git(&p.cache, &["fetch", "--quiet", "--filter=blob:none", "origin", rev]).ok();
+    let target = if rev == "main" || rev == "origin/main" { "FETCH_HEAD" } else { rev };
+    Ok(git_out(&p.cache, &["rev-parse", &format!("{target}^{{commit}}")])?.trim().to_string())
+}
+
+// ---- building upstream + patches --------------------------------------------
+
+fn patch_files(p: &Paths) -> Result<Vec<PathBuf>> {
+    let mut v: Vec<PathBuf> = fs::read_dir(&p.patches).map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect()).unwrap_or_default();
+    v.retain(|f| f.extension().is_some_and(|e| e == "patch"));
+    v.sort();
+    Ok(v)
+}
+
+fn slug_of(f: &Path) -> String {
+    let stem = f.file_stem().unwrap().to_string_lossy();
+    stem.split_once('-').map(|(_, s)| s.to_string()).unwrap_or_else(|| stem.to_string())
+}
+
+/// Recreates `target/vendor-sync/tree` as a git repository holding the upstream
+/// crates (commit "upstream") and applies the patches in order, one commit each.
+/// `skip` leaves one patch out. Returns the file names of patches that failed.
+fn build(p: &Paths, cfg: &Config, skip: Option<&Path>) -> Result<Vec<String>> {
+    ensure_cache(p, cfg, &cfg.rev)?;
+    let tree = p.scratch.join("tree");
+    let _ = fs::remove_dir_all(&tree);
+    fs::create_dir_all(&tree)?;
+    for c in &cfg.crates {
+        // Nested crates (refineable/derive_refineable) are copied with their parent.
+        if cfg.crates.iter().any(|o| o != c && Path::new(c).starts_with(o)) { continue }
+        copy_dir(&p.cache.join(c), &tree.join(c), &cfg.drop, true)?;
+    }
+    git(&tree, &["init", "--quiet"])?;
+    git(&tree, &["add", "-A"])?;
+    git(&tree, &["commit", "--quiet", "-m", &format!("upstream {}", cfg.rev)])?;
+    let mut failed = Vec::new();
+    for f in patch_files(p)? {
+        if skip == Some(f.as_path()) { continue }
+        let name = f.file_name().unwrap().to_string_lossy().to_string();
+        let fs_ = f.to_string_lossy();
+        let (ok, err) = git_try(&tree, &["apply", "--index", "--3way", "--whitespace=nowarn", &fs_])?;
+        let conflicts = ok && !git_out(&tree, &["diff", "--name-only", "--diff-filter=U"])?.trim().is_empty();
+        if !ok || conflicts {
+            eprintln!("✗ {name} does not apply:\n{}", indent(&err));
+            failed.push(name);
+            git(&tree, &["reset", "--quiet", "--hard"])?;
+            git(&tree, &["clean", "--quiet", "-fd"])?;
+            continue;
+        }
+        git(&tree, &["commit", "--quiet", "--allow-empty", "-m", &name])?;
+    }
+    Ok(failed)
+}
+
+fn indent(s: &str) -> String { s.lines().map(|l| format!("    {l}\n")).collect() }
+
+/// Copies a directory, skipping `.git`, dropped subdirectories (only at the top
+/// of a crate) and symlinks (the per-crate LICENSE-APACHE links; one copy of the
+/// license lives in vendor/zed).
+fn copy_dir(from: &Path, to: &Path, drop: &[String], crate_root: bool) -> Result<()> {
+    fs::create_dir_all(to)?;
+    for e in fs::read_dir(from).with_context(|| format!("reading {}", from.display()))? {
+        let e = e?;
+        let name = e.file_name();
+        let ft = e.file_type()?;
+        if name == ".git" || ft.is_symlink() { continue }
+        if ft.is_dir() {
+            if crate_root && drop.iter().any(|d| name == d.as_str()) { continue }
+            // A nested crate directory is a crate root of its own.
+            let nested = e.path().join("Cargo.toml").exists();
+            copy_dir(&e.path(), &to.join(&name), drop, nested)?;
+        } else {
+            fs::copy(e.path(), to.join(&name))?;
+        }
+    }
+    Ok(())
+}
+
+/// Writes the patched tree as vendor-ready crates into `out`: every Cargo.toml
+/// is normalized and the upstream form kept as Cargo.toml.orig.
+fn write_crates(p: &Paths, cfg: &Config, out: &Path) -> Result<()> {
+    let tree = p.scratch.join("tree");
+    let ws: DocumentMut = fs::read_to_string(p.cache.join("Cargo.toml"))?.parse()?;
+    let vendored: BTreeMap<String, String> = cfg.crates.iter().map(|c| Ok((crate_name(&tree.join(c))?, c.clone()))).collect::<Result<_>>()?;
+    copy_dir(&tree.join("crates"), &out.join("crates"), &[], false)?;
+    for c in &cfg.crates {
+        let orig = fs::read_to_string(tree.join(c).join("Cargo.toml"))?;
+        let norm = normalize(&orig, &ws, c, &vendored, cfg).with_context(|| format!("normalizing {c}/Cargo.toml"))?;
+        let dst = out.join(c);
+        fs::write(dst.join("Cargo.toml.orig"), &orig)?;
+        fs::write(dst.join("Cargo.toml"), norm)?;
+    }
+    // vendor/zed/crates holds crates only; the license sits one level up.
+    Ok(())
+}
+
+fn install(p: &Paths, cfg: &Config) -> Result<()> {
+    let out = p.scratch.join("out");
+    let _ = fs::remove_dir_all(&out);
+    write_crates(p, cfg, &out)?;
+    let dst = p.vendor.join("crates");
+    let _ = fs::remove_dir_all(&dst);
+    copy_dir(&out.join("crates"), &dst, &[], false)?;
+    fs::copy(p.cache.join("LICENSE-APACHE"), p.vendor.join("LICENSE-APACHE"))?;
+    Ok(())
+}
+
+fn crate_name(dir: &Path) -> Result<String> {
+    let doc: DocumentMut = fs::read_to_string(dir.join("Cargo.toml"))?.parse()?;
+    Ok(doc["package"]["name"].as_str().context("package.name")?.to_string())
+}
+
+fn compare_dirs(a: &Path, b: &Path) -> Result<Vec<String>> {
+    let (fa, fb) = (list_files(a)?, list_files(b)?);
+    let mut diff = Vec::new();
+    for f in fa.union(&fb) {
+        let (x, y) = (fs::read(a.join(f)).ok(), fs::read(b.join(f)).ok());
+        if x != y { diff.push(f.clone()) }
+    }
+    Ok(diff)
+}
+
+fn list_files(dir: &Path) -> Result<BTreeSet<String>> {
+    fn walk(base: &Path, dir: &Path, out: &mut BTreeSet<String>) -> Result<()> {
+        if !dir.exists() { return Ok(()) }
+        for e in fs::read_dir(dir)? {
+            let e = e?;
+            if e.file_type()?.is_dir() { walk(base, &e.path(), out)? } else if e.file_name() != ".DS_Store" {
+                out.insert(e.path().strip_prefix(base)?.to_string_lossy().replace('\\', "/"));
+            }
+        }
+        Ok(())
+    }
+    let mut out = BTreeSet::new();
+    walk(dir, dir, &mut out)?;
+    Ok(out)
+}
+
+// ---- save / refresh ---------------------------------------------------------
+
+fn save(p: &Paths, cfg: &Config, slug: &str, msg: Option<String>) -> Result<()> {
+    let existing = patch_files(p)?.into_iter().find(|f| slug_of(f) == slug);
+    let failed = build(p, cfg, existing.as_deref())?;
+    if !failed.is_empty() { eprintln!("note: left out of the base because they do not apply: {}", failed.join(", ")) }
+    let tree = p.scratch.join("tree");
+    // Overlay vendor/zed/crates (upstream manifest form) onto the patched tree.
+    let _ = fs::remove_dir_all(tree.join("crates"));
+    copy_dir(&p.vendor.join("crates"), &tree.join("crates"), &[], false)?;
+    for c in &cfg.crates {
+        let d = tree.join(c);
+        fs::rename(d.join("Cargo.toml.orig"), d.join("Cargo.toml")).with_context(|| format!("{c}/Cargo.toml.orig missing"))?;
+    }
+    git(&tree, &["add", "-A"])?;
+    let diff = git_out(&tree, &["diff", "--cached", "--binary", "--full-index"])?;
+    if diff.trim().is_empty() { bail!("no changes in vendor/zed/crates relative to upstream + the other patches") }
+    // The diff is taken against every other patch, so it applies after all of
+    // them: a regenerated patch moves to the end of the series.
+    let header = match &existing {
+        Some(f) => msg.map(|m| header_text(&m)).unwrap_or_else(|| read_header(f)),
+        None => header_text(&msg.unwrap_or_else(|| format!("{slug}\n\nTODO: describe what this changes and why."))),
+    };
+    if let Some(f) = &existing { fs::remove_file(f)? }
+    let n = patch_files(p)?.len() + 1;
+    let path = p.patches.join(format!("{n:04}-{slug}.patch"));
+    fs::create_dir_all(&p.patches)?;
+    fs::write(&path, format!("{header}\n{diff}"))?;
+    renumber(p)?;
+    let path = patch_files(p)?.into_iter().find(|f| slug_of(f) == slug).unwrap_or(path);
+    println!("wrote {}", path.strip_prefix(&p.root).unwrap_or(&path).display());
+    Ok(())
+}
+
+/// Numbers the patches 0001, 0002, … in their current order.
+fn renumber(p: &Paths) -> Result<()> {
+    for (i, f) in patch_files(p)?.iter().enumerate() {
+        let want = p.patches.join(format!("{:04}-{}.patch", i + 1, slug_of(f)));
+        if *f != want { fs::rename(f, &want)? }
+    }
+    Ok(())
+}
+
+/// Patch files start with free text (git apply skips everything before the
+/// first `diff --git`).
+fn header_text(msg: &str) -> String { let mut s = msg.trim_end().to_string(); s.push('\n'); s }
+
+fn read_header(f: &Path) -> String {
+    let text = fs::read_to_string(f).unwrap_or_default();
+    let end = text.find("\ndiff --git ").map(|i| i + 1).unwrap_or(0);
+    let h = text[..end].trim_end();
+    header_text(h)
+}
+
+fn refresh(p: &Paths, cfg: &Config) -> Result<()> {
+    let failed = build(p, cfg, None)?;
+    if !failed.is_empty() { bail!("fix these first: {}", failed.join(", ")) }
+    let tree = p.scratch.join("tree");
+    let log = git_out(&tree, &["log", "--reverse", "--format=%H %s"])?;
+    let commits: Vec<(&str, &str)> = log.lines().filter_map(|l| l.split_once(' ')).collect();
+    for w in commits.windows(2) {
+        let (prev, (sha, name)) = (w[0].0, w[1]);
+        let f = p.patches.join(name);
+        let diff = git_out(&tree, &["diff", "--binary", "--full-index", prev, sha])?;
+        let new = format!("{}\n{diff}", read_header(&f));
+        if fs::read_to_string(&f).ok().as_deref() != Some(new.as_str()) { fs::write(&f, new)?; println!("refreshed {name}") }
+    }
+    Ok(())
+}
+
+// ---- manifest normalization -------------------------------------------------
+
+const DEP_TABLES: &[&str] = &["dependencies", "build-dependencies", "dev-dependencies"];
+
+fn normalize(orig: &str, ws: &DocumentMut, crate_dir: &str, vendored: &BTreeMap<String, String>, cfg: &Config) -> Result<String> {
+    let mut doc: DocumentMut = orig.parse()?;
+    let wpkg = ws["workspace"]["package"].as_table_like().context("workspace.package")?;
+    let wdeps = ws["workspace"]["dependencies"].as_table_like().context("workspace.dependencies")?;
+    // [package]: inherited fields; no auto-discovered example or bench targets.
+    let pkg = doc["package"].as_table_mut().context("[package]")?;
+    let inherited: Vec<String> = pkg.iter().filter(|(_, v)| is_workspace(v)).map(|(k, _)| k.to_string()).collect();
+    for k in inherited {
+        let v = wpkg.get(&k).and_then(|v| v.as_value()).with_context(|| format!("workspace.package.{k}"))?.clone();
+        pkg.insert(&k, Item::Value(v));
+    }
+    pkg.insert("autoexamples", toml_edit::value(false));
+    pkg.insert("autobenches", toml_edit::value(false));
+    doc.remove("example");
+    doc.remove("bench");
+    // Dependencies.
+    let mut dropped = BTreeSet::new();
+    doc.remove("dev-dependencies");
+    for t in ["dependencies", "build-dependencies"] {
+        if let Some(tbl) = doc.get_mut(t).and_then(|t| t.as_table_mut()) { fix_deps(tbl, wdeps, crate_dir, vendored, cfg, &mut dropped)? }
+    }
+    if let Some(targets) = doc.get_mut("target").and_then(|t| t.as_table_mut()) {
+        for (_, tt) in targets.iter_mut() {
+            let Some(tt) = tt.as_table_mut() else { continue };
+            tt.remove("dev-dependencies");
+            for t in DEP_TABLES {
+                if let Some(tbl) = tt.get_mut(t).and_then(|t| t.as_table_mut()) { fix_deps(tbl, wdeps, crate_dir, vendored, cfg, &mut dropped)? }
+            }
+            let empty: Vec<String> = tt.iter().filter(|(_, v)| v.as_table().is_some_and(|t| t.is_empty())).map(|(k, _)| k.to_string()).collect();
+            for k in empty { tt.remove(&k); }
+        }
+        let empty: Vec<String> = targets.iter().filter(|(_, v)| v.as_table().is_some_and(|t| t.is_empty())).map(|(k, _)| k.to_string()).collect();
+        for k in empty { targets.remove(&k); }
+    }
+    // Features that name a dropped dependency.
+    if let Some(feats) = doc.get_mut("features").and_then(|t| t.as_table_mut()) {
+        for (_, v) in feats.iter_mut() {
+            let Some(arr) = v.as_array_mut() else { continue };
+            arr.retain(|e| {
+                let s = e.as_str().unwrap_or_default();
+                let dep = s.strip_prefix("dep:").unwrap_or(s);
+                let dep = dep.split('/').next().unwrap_or(dep).trim_end_matches('?');
+                !dropped.contains(dep)
+            });
+        }
+    }
+    // [lints] workspace = true → Zed's workspace lints.
+    // Appended as text: the tables keep their positions from Zed's manifest,
+    // which would interleave them with ours.
+    let mut lints_text = String::new();
+    if doc.get("lints").is_some_and(is_workspace) {
+        doc.remove("lints");
+        let mut lints = ws["workspace"]["lints"].as_table().context("workspace.lints")?.clone();
+        lints.set_implicit(true);
+        let mut d = DocumentMut::new();
+        d.insert("lints", Item::Table(lints));
+        lints_text = format!("\n{}", d.to_string().trim_start());
+    }
+    let header = format!("# Generated by tools/vendor-sync from Cargo.toml.orig (zed {}). Do not edit;\n# edit Cargo.toml.orig and save a patch (vendor/PATCHES.md).\n\n", &cfg.rev[..12]);
+    Ok(header + doc.to_string().trim_end() + "\n" + &lints_text)
+}
+
+fn is_workspace(item: &Item) -> bool {
+    item.as_table_like().and_then(|t| t.get("workspace")).and_then(|v| v.as_bool()) == Some(true)
+}
+
+fn fix_deps(tbl: &mut Table, wdeps: &dyn toml_edit::TableLike, crate_dir: &str, vendored: &BTreeMap<String, String>, cfg: &Config, dropped: &mut BTreeSet<String>) -> Result<()> {
+    let names: Vec<String> = tbl.iter().map(|(k, _)| k.to_string()).collect();
+    for name in names {
+        let item = tbl.get(&name).unwrap();
+        let mut dep = to_inline(item);
+        if is_workspace(item) {
+            let base = wdeps.get(&name).with_context(|| format!("workspace dependency `{name}`"))?;
+            let mut merged = to_inline(base);
+            merged.remove("workspace");
+            for (k, v) in dep.iter() {
+                match k {
+                    "workspace" => {}
+                    "features" => {
+                        let mut all: Vec<String> = merged.get("features").and_then(|f| f.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+                        for f in v.as_array().into_iter().flatten().filter_map(|v| v.as_str()) { if !all.iter().any(|x| x == f) { all.push(f.to_string()) } }
+                        merged.insert("features", Value::Array(all.iter().collect()));
+                    }
+                    _ => { merged.insert(k, v.clone()); }
+                }
+            }
+            dep = merged;
+        }
+        if let Some(path) = dep.get("path").and_then(|v| v.as_str()).map(String::from) {
+            // A Zed crate: workspace paths are relative to the Zed root.
+            let pkg = dep.get("package").and_then(|v| v.as_str()).unwrap_or(&name).to_string();
+            let Some(target) = vendored.get(&pkg) else { dropped.insert(name.clone()); tbl.remove(&name); continue };
+            let _ = path;
+            dep.insert("path", Value::from(relative(crate_dir, target)));
+        } else if dep.contains_key("git") {
+            for k in ["git", "rev", "branch", "tag"] { dep.remove(k); }
+            if !dep.contains_key("version") {
+                let pkg = dep.get("package").and_then(|v| v.as_str()).unwrap_or(&name).to_string();
+                let v = cfg.git_versions.get(&pkg).with_context(|| format!("git dependency `{pkg}` has no version; add it to [git-to-crates-io] in upstream.toml"))?;
+                dep.insert("version", Value::from(v.as_str()));
+            }
+        }
+        let item = if dep.len() == 1 && dep.contains_key("version") { Item::Value(dep.get("version").unwrap().clone()) } else { dep.fmt(); Item::Value(Value::InlineTable(dep)) };
+        tbl.insert(&name, item);
+    }
+    Ok(())
+}
+
+fn to_inline(item: &Item) -> InlineTable {
+    match item {
+        Item::Value(Value::String(s)) => { let mut t = InlineTable::new(); t.insert("version", Value::from(s.value().as_str())); t }
+        _ => {
+            let mut t = InlineTable::new();
+            if let Some(tl) = item.as_table_like() {
+                for (k, v) in tl.iter() { if let Some(v) = v.as_value() { let mut v = v.clone(); v.decor_mut().clear(); t.insert(k, v); } }
+            }
+            t
+        }
+    }
+}
+
+/// `to` relative to `from`, both relative to the Zed root ("crates/x").
+fn relative(from: &str, to: &str) -> String {
+    let f: Vec<&str> = from.split('/').collect();
+    let t: Vec<&str> = to.split('/').collect();
+    let common = f.iter().zip(&t).take_while(|(a, b)| a == b).count();
+    let mut parts: Vec<&str> = vec![".."; f.len() - common];
+    parts.extend(&t[common..]);
+    parts.join("/")
+}

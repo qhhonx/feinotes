@@ -222,7 +222,7 @@ mod shell {
             let pref_menu = self.render_pref_menu(cx);
             let move_dialog = self.render_move_dialog(cx);
             div().id("mobile-workspace").key_context("Workspace").track_focus(&self.focus)
-                .size_full().flex().flex_col().bg(Theme::bg_body()).text_color(Theme::text()).font_family(theme::UI_FONT)
+                .size_full().flex().flex_col().bg(Theme::bg_body()).text_color(Theme::text()).font_family(theme::SYSTEM_FONT)
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                 .map(|d| self.workspace_actions(d,cx))
                 .child(body).children(export).children(search).children(theme_menu).children(lang_menu).children(pref_menu).children(move_dialog).children(toast).children(busy)

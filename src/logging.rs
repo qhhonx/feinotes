@@ -13,11 +13,13 @@ static OPENED: OnceLock<PathBuf> = OnceLock::new();
 /// Windows; independent of where the program itself lives.
 pub fn dir() -> PathBuf {
     if let Some(d) = std::env::var_os("QUIET_MD_LOG_DIR") { return PathBuf::from(d) }
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    if crate::cloud_sync::preview_channel().is_some() && let Ok(Some(root)) = crate::cloud_sync::test_root() { return root.join("logs"); }
     #[cfg(target_os = "macos")]
     let base = dirs::home_dir().map(|h| h.join("Library").join("Logs").join("quiet.md"));
     #[cfg(not(target_os = "macos"))]
     let base = dirs::data_local_dir().map(|d| d.join("quiet.md").join("logs"));
-    base.unwrap_or_else(|| std::env::temp_dir().join("quiet.md-logs"))
+    base.unwrap_or_else(|| fdl_core::vfs::temp_dir().join("quiet.md-logs"))
 }
 
 /// The file actually written (the temp fallback included).
@@ -46,7 +48,7 @@ pub fn init() {
         let _ = OPENED.set(p);
         Ok(f)
     };
-    if let Ok(f) = open(dir()).or_else(|_| open(std::env::temp_dir().join("quiet.md-logs"))) { let _ = FILE.set(Mutex::new(f)); }
+    if let Ok(f) = open(dir()).or_else(|_| open(fdl_core::vfs::temp_dir().join("quiet.md-logs"))) { let _ = FILE.set(Mutex::new(f)); }
     let _ = log::set_logger(&Logger).map(|()| log::set_max_level(log::LevelFilter::Info));
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -63,6 +65,7 @@ pub fn init() {
 /// `atos -o quiet_md.dSYM -l <base> <addresses>` on macOS.
 fn frames() -> String {
     use std::ffi::c_void;
+    #[cfg_attr(target_family = "wasm", allow(unused_mut))]
     let mut ips = [std::ptr::null_mut::<c_void>(); 64];
     #[cfg(unix)]
     let (n, base) = {
@@ -78,6 +81,8 @@ fn frames() -> String {
         unsafe extern "system" { fn RtlCaptureStackBackTrace(skip: u32, n: u32, buf: *mut *mut c_void, hash: *mut u32) -> u16; fn GetModuleHandleW(name: *const u16) -> *mut c_void; }
         (unsafe { RtlCaptureStackBackTrace(0, 64, ips.as_mut_ptr(), std::ptr::null_mut()) } as usize, unsafe { GetModuleHandleW(std::ptr::null()) })
     };
+    #[cfg(target_family = "wasm")]
+    let (n, base) = (0usize, std::ptr::null_mut::<c_void>());
     let ips: Vec<String> = ips[..n].iter().map(|p| format!("{p:?}")).collect();
     format!("base {base:?} {} frames: {}", std::env::consts::ARCH, ips.join(" "))
 }
@@ -87,7 +92,7 @@ pub fn write(line: &str) {
     eprintln!("{line}");
     let Some(f) = FILE.get() else { return };
     let Ok(mut f) = f.lock() else { return };
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let _ = writeln!(f, "[{secs}] {line}");
     let _ = f.flush();
 }

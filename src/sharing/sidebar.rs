@@ -60,7 +60,7 @@ impl Workspace {
                 }))
             .child(self.more_button(entry, "shared-pinned", cx))
             .on_mouse_down(MouseButton::Right, cx.listener({ let id = id.clone(); move |w, event: &MouseDownEvent, _, cx| {
-                w.row_menu = Some(crate::app::RowMenu { id: format!("shared:{id}"), pos: event.position, corner: Corner::TopLeft, sub: false, batch: false }); cx.notify();
+                w.row_menu = Some(crate::app::RowMenu { id: format!("shared:{id}"), pos: event.position, corner: Anchor::TopLeft, sub: false, batch: false }); cx.notify();
             }}))
             .on_click(cx.listener(move |w, _, window, cx| { if let Some(room) = w.shared_list_room(&id, cx).or_else(|| w.shared_child_room(&id, cx)) {
                 w.navigate_shared_sidebar(room, SidebarEntry::new(SidebarSection::Pinned, &id), window, cx);
@@ -243,7 +243,7 @@ impl Workspace {
                     .child(self.sidebar_title(entry, SidebarSection::Shared, selected, false, cx)))
                 .when(!batch && (!member || cfg!(target_os = "macos")), |d| d
                     .on_mouse_down(MouseButton::Right, cx.listener(move |w, event: &MouseDownEvent, _, cx| {
-                        w.row_menu = Some(crate::app::RowMenu { id: menu_id.clone(), pos: event.position, corner: Corner::TopLeft, sub: false, batch: false });
+                        w.row_menu = Some(crate::app::RowMenu { id: menu_id.clone(), pos: event.position, corner: Anchor::TopLeft, sub: false, batch: false });
                         w.create_menu = None;
                         cx.stop_propagation(); cx.notify();
                     })))
@@ -275,7 +275,7 @@ impl Workspace {
             .children(end)
             .when(!member, |d| d.on_mouse_down(MouseButton::Right, cx.listener({ let id = id.clone(); move |w, event: &MouseDownEvent, _, cx| {
                 if w.batch.is_some() && !w.batch.as_ref().is_some_and(|ids| ids.contains(&id)) { w.toggle_check(&id); }
-                w.row_menu = Some(crate::app::RowMenu { id: format!("shared:{id}"), pos: event.position, corner: Corner::TopLeft, sub: false, batch: w.batch.is_some() });
+                w.row_menu = Some(crate::app::RowMenu { id: format!("shared:{id}"), pos: event.position, corner: Anchor::TopLeft, sub: false, batch: w.batch.is_some() });
                 cx.stop_propagation(); cx.notify();
             }})))
             .on_mouse_down(MouseButton::Left, cx.listener(move |w, event: &MouseDownEvent, _, cx| {

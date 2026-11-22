@@ -43,7 +43,7 @@ fn equation(ix: usize, source: &str, width: f32, color: Hsla, eqno: u32, window:
             left: if display { ((width - w) / 2.).max(pad) } else { pad }, body: Body::Math(m) })
     } else {
         let label: SharedString = if source.trim().is_empty() { crate::settings::text("公式") } else { crate::settings::text("无效公式") }.into();
-        let run = TextRun { len: label.len(), font: font(theme::UI_FONT), color: Theme::text_caption(), background_color: None, underline: None, strikethrough: None };
+        let run = TextRun { len: label.len(), font: font(theme::ui_family()), color: Theme::text_caption(), background_color: None, underline: None, strikethrough: None };
         let line = window.text_system().shape_line(label, px(13. * scale), &[run], None);
         Rc::new(Equation { ix, display: false, advance: f32::from(line.width) + pad * 2., ascent: line.ascent.into(), depth: line.descent.into(), left: pad, body: Body::Invalid(line) })
     }
@@ -71,7 +71,6 @@ fn widen(line: &mut WrappedLine, equations: &[Rc<Equation>], start: usize, width
     *target = Arc::new(WrappedLineLayout { unwrapped_layout: Arc::new(layout), wrap_boundaries: boundaries.into(), wrap_width: Some(width) });
 }
 
-impl IntoElement for PreviewText { type Element = Self; fn into_element(self) -> Self { self } }
 impl Element for PreviewText {
     type RequestLayoutState = Rc<RefCell<Option<Prepared>>>;
     type PrepaintState = ();
@@ -160,4 +159,10 @@ impl Element for PreviewText {
             }
         });
     }
+}
+
+#[cfg(target_os = "ios")]
+impl IntoElement for PreviewText {
+    type Element = Self;
+    fn into_element(self) -> Self { self }
 }

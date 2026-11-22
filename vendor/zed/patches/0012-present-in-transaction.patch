@@ -1,0 +1,93 @@
+quiet.md #28: Window::present_next_frame_in_transaction
+
+Draw the next frame through PlatformWindow::draw_in_transaction: on macOS the
+layer presents that frame with the Core Animation transaction (upstream's
+presentsWithTransaction switch), together with native views changed while it
+rendered; other platforms draw as usual. The sidebar glass
+(NSGlassEffectView) changes size or visibility in the same frame as GPUI's
+picture instead of a refresh ahead of it.
+
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index 10b8de97648e70f3630352f1793be0413a2cef3c..81ac2468ba3ed2e42dfdbc2947238428ba7d5b00 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -1369,6 +1369,12 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
+     fn on_button_layout_changed(&self, _callback: Box<dyn FnMut()>) {}
+     fn draw(&self, scene: &Scene);
++    /// quiet.md: draws `scene` and shows it in the same Core Animation
++    /// transaction as native view changes made during this frame (macOS);
++    /// elsewhere `draw`.
++    fn draw_in_transaction(&self, scene: &Scene) {
++        self.draw(scene)
++    }
+     fn schedule_frame(&self) {}
+     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
+     fn is_subpixel_rendering_supported(&self) -> bool;
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index 4ca7dab50f1ed99848919b00cdebbf598dc71fd6..27a6ef7381113e724cc3704ca8c1bb533b3fe339 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -1287,6 +1287,8 @@ pub struct Window {
+         SingleSubscriberSet<Box<dyn FnMut(WindowVisibility, &mut Window, &mut App) -> bool>>,
+     hovered: Rc<Cell<bool>>,
+     pub(crate) needs_present: Rc<Cell<bool>>,
++    /// quiet.md: see [`Window::present_next_frame_in_transaction`].
++    present_in_transaction: Cell<bool>,
+     /// The rendered scene's [`Scene::animation_frame_interval`]. While it is
+     /// `Some`, the scene must keep being presented even when nothing is redrawn.
+     scene_animation_interval: Rc<Cell<Option<Duration>>>,
+@@ -2441,6 +2443,7 @@ impl Window {
+             visibility_observers: SingleSubscriberSet::new(),
+             hovered,
+             needs_present,
++            present_in_transaction: Cell::new(false),
+             scene_animation_interval,
+             input_rate_tracker,
+             #[cfg(feature = "profiler")]
+@@ -3414,6 +3417,13 @@ impl Window {
+         self.platform_window.window_controls()
+     }
+ 
++    /// quiet.md: show the next frame in the same Core Animation transaction
++    /// as native views changed while rendering it (macOS), so they appear
++    /// together instead of the native change landing a refresh ahead.
++    pub fn present_next_frame_in_transaction(&self) {
++        self.present_in_transaction.set(true);
++    }
++
+     /// quiet.md: change the smallest content size the user can resize the
+     /// window to (macOS and Windows; elsewhere the size given at creation stays).
+     pub fn set_window_min_size(&self, size: Size<Pixels>) {
+@@ -3995,7 +4005,11 @@ impl Window {
+         let _foreground_turn = profiler::journal::foreground_turn();
+         #[cfg(feature = "profiler")]
+         let present_start = Instant::now();
+-        self.platform_window.draw(&self.rendered_frame.scene);
++        if self.present_in_transaction.take() {
++            self.platform_window.draw_in_transaction(&self.rendered_frame.scene);
++        } else {
++            self.platform_window.draw(&self.rendered_frame.scene);
++        }
+         #[cfg(feature = "profiler")]
+         self.window_profiler.record_present(
+             present_start,
+diff --git a/crates/gpui_macos/src/window.rs b/crates/gpui_macos/src/window.rs
+index 6bc4ad8aae91954a073d5b318d60599d6e9dfb87..2cff8a6b46ca45764f48e8d62e001a82fc1b205c 100644
+--- a/crates/gpui_macos/src/window.rs
++++ b/crates/gpui_macos/src/window.rs
+@@ -2213,6 +2213,14 @@ impl PlatformWindow for MacWindow {
+         this.renderer.draw(scene);
+     }
+ 
++    fn draw_in_transaction(&self, scene: &gpui::Scene) {
++        let mut this = self.0.lock();
++        let was = this.renderer.presents_with_transaction();
++        this.renderer.set_presents_with_transaction(true);
++        this.renderer.draw(scene);
++        this.renderer.set_presents_with_transaction(was);
++    }
++
+     // GPUI calls this without waking the frame waker when a window only needs
+     // a present, so a paused Metal link must resume here too.
+     fn schedule_frame(&self) {

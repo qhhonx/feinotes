@@ -33,7 +33,7 @@ pub fn pick_images(me: &mut BoardView, window: &mut Window, cx: &mut Context<Boa
 /// file; inside a document we add to it instead); images go in as images.
 pub fn drop_files(me: &mut BoardView, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<BoardView>) {
     let at = me.scene_point(me.pointer);
-    let read: Vec<(String, Vec<u8>)> = paths.iter().filter_map(|p| Some((p.file_name()?.to_string_lossy().into_owned(), std::fs::read(p).ok()?))).collect();
+    let read: Vec<(String, Vec<u8>)> = paths.iter().filter_map(|p| Some((p.file_name()?.to_string_lossy().into_owned(), fdl_core::vfs::read(p).ok()?))).collect();
     let files: Vec<DroppedFile> = read.iter().map(|(n, b)| DroppedFile { name: n, mime_type: "", bytes: b }).collect();
     match route_drop(&files, Some(&me.scene)) {
         DropContent::Scene(s) | DropContent::SceneFile(s) => {
@@ -52,7 +52,7 @@ pub fn drop_files(me: &mut BoardView, paths: Vec<PathBuf>, window: &mut Window, 
 pub fn insert_files(me: &mut BoardView, paths: Vec<PathBuf>, at: [f64; 2], window: &mut Window, cx: &mut Context<BoardView>) {
     let images: Vec<(Vec<u8>, String, Option<String>)> = paths.iter().filter_map(|p| {
         let ext = p.extension()?.to_str()?.to_ascii_lowercase();
-        let bytes = std::fs::read(p).ok()?;
+        let bytes = fdl_core::vfs::read(p).ok()?;
         Some((bytes, ext, p.file_stem().and_then(|s| s.to_str()).map(str::to_owned)))
     }).collect();
     insert_images(me, images, at, window, cx);

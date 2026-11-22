@@ -188,9 +188,20 @@ fn exchange_page(request: Exchange) -> Result<(Changes, bool)> {
     Ok((page, cursor_advanced))
 }
 
+pub(crate) fn preview_channel() -> Option<&'static str> {
+    (cfg!(target_os = "macos") && env!("FEI_UPSTREAM_PREVIEW") == "1" && crate::APP_ID == "app.quietmd.cloudlab")
+        .then_some(option_env!("FEI_UPSTREAM_PREVIEW_CHANNEL")).flatten()
+}
+
 pub fn test_root() -> Result<Option<PathBuf>> {
     if !cfg!(feature = "devtools") { return Ok(None); }
-    let root = std::env::var_os("QUIET_SYNC_QA_ROOT").map(PathBuf::from);
+    let root = std::env::var_os("QUIET_SYNC_QA_ROOT").map(PathBuf::from).or_else(|| {
+        let channel = preview_channel()?;
+        let home = dirs::home_dir()?;
+        let data = Path::new("Library/Containers/app.quietmd.cloudlab/Data");
+        let home = if home.ends_with(data) { home } else { home.join(data) };
+        Some(home.join("tmp").join(format!("quiet-sync-qa-upstream-cloud-{channel}")))
+    });
     if let Some(root) = &root {
         let app_temp = Path::new("Library/Containers").join(crate::APP_ID).join("Data/tmp");
         let temporary = root.parent().is_some_and(|parent| parent == Path::new("/private/tmp")
@@ -538,7 +549,9 @@ pub(crate) fn history_available(root: &Path, cx: &App) -> bool { session(root, c
 fn start_library(store: SharedStore, cx: &mut App) -> Result<()> {
     let root = store.root().to_path_buf();
     if session(&root, cx).is_some() { return Ok(()); }
-    let channel = if cfg!(feature = "devtools") && !store.is_shared() { std::env::var("QUIET_SYNC_QA_CHANNEL").ok() } else { None };
+    let channel = if cfg!(feature = "devtools") && !store.is_shared() {
+        std::env::var("QUIET_SYNC_QA_CHANNEL").ok().or_else(|| preview_channel().map(str::to_owned))
+    } else { None };
     if let Some(channel) = &channel {
         uuid::Uuid::parse_str(channel)?;
         ensure!(test_root()?.is_some(), "A QA CloudKit channel requires a separate local QA root");
@@ -833,7 +846,7 @@ pub fn save(store: &mut SharedStore, id: &str, core: &Core, cx: &mut App) -> Res
     let root = store.root().to_path_buf();
     if session(&root, cx).is_none() {
         ensure!(!store.is_shared() && crate::cloud_restore::local_only(), "This library has no active sync session");
-        return store.save(id, &core.doc).map(|meta| (meta, false));
+        return store.with(|s| s.save_editor(id, &core.doc)).map(|meta| (meta, false));
     }
     let result = journal_mut(&root, cx).save(store, id, core)?;
     if let Some(scope) = scope(&root, cx)

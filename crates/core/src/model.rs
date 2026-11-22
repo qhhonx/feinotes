@@ -25,13 +25,19 @@ impl BlockId {
     }
 }
 
-/// What a document with an empty title is called.
+/// What a document with an empty title is called; the key its translations go by.
 pub const UNTITLED: &str = "未命名文档";
+static UNTITLED_NAME: std::sync::RwLock<&'static str> = std::sync::RwLock::new(UNTITLED);
+
+/// `UNTITLED` in the interface's language, for file names and exports too (#271).
+pub fn untitled() -> &'static str { *UNTITLED_NAME.read().unwrap_or_else(|e| e.into_inner()) }
+/// Set by the app when its language is chosen.
+pub fn set_untitled(name: &'static str) { *UNTITLED_NAME.write().unwrap_or_else(|e| e.into_inner()) = name; }
 
 /// A document title as shown in lists and links.
 pub fn display_title(t: &str) -> String {
     let t = t.trim();
-    if t.is_empty() { UNTITLED.to_string() } else { t.to_string() }
+    if t.is_empty() { untitled().to_string() } else { t.to_string() }
 }
 
 /// Named palette color as used by DocxXML (`red`, `light-blue`, `medium-gray`, ...).
@@ -822,6 +828,9 @@ pub enum BlockKind {
     /// 画板 (`<whiteboard type="excalidraw">`): an Excalidraw scene, shared
     /// between undo snapshots until it changes.
     Board(std::sync::Arc<crate::whiteboard::Board>),
+    /// 数据表 (`<datatable src=…/>`): a view onto a `.sqlite` file; the data
+    /// lives in the file, the page only says which one.
+    DataTable(crate::table::TableRef),
     /// Any element we don't model; kept verbatim for round-tripping.
     Raw { tag: String, xml: String },
 }

@@ -12,6 +12,11 @@ case "$configuration" in
     *) FEI_TESTFLIGHT_BETA=0 ;;
 esac
 export FEI_IOS_PRODUCT_CLOUD FEI_TESTFLIGHT_BETA
+case "$configuration" in
+    UpstreamPreview) FEI_IOS_UPSTREAM_PREVIEW=1 ;;
+    *) FEI_IOS_UPSTREAM_PREVIEW=0 ;;
+esac
+export FEI_IOS_UPSTREAM_PREVIEW
 export CARGO_PROFILE_DEV_DEBUG=0
 
 rust_features=cloudkit-sync

@@ -44,7 +44,7 @@ pub fn natural_size(me: &BoardView, e: &Element) -> Option<(f64, f64)> {
     let i = e.image()?;
     if let Some(c) = i.crop { return Some((c.natural_width, c.natural_height)); }
     let f = me.files.get(i.file_id.as_deref()?)?;
-    let bytes = if let Some(p) = f.path.as_deref().and_then(crate::store::image_path) { std::fs::read(p).ok()? } else {
+    let bytes = if let Some(p) = f.path.as_deref().and_then(crate::store::image_path) { fdl_core::vfs::read(p).ok()? } else {
         use base64::Engine;
         let (_, b64) = f.data_url.as_deref()?.split_once(";base64,")?;
         base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok()?
