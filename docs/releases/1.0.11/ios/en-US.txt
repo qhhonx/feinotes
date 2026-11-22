@@ -1,0 +1,3 @@
+Fei Notes 1.0.11 beta
+
+This iPhone and iPad build shares the version number of the Mac launch-crash fix.
