@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Quiet.md — live demo</title>
+<link rel="modulepreload" href="./quiet_md.js">
+<link rel="preload" as="fetch" crossorigin href="./quiet_md_bg.wasm" type="application/wasm">
+<script>
+  // What src/web.rs fetches before the first frame, started now, alongside the wasm.
+  for (const f of ["Inter-Regular", "Inter-Medium", "Inter-SemiBold", "Inter-Bold", "JetBrainsMono-Regular"]) preload(`fonts/${f}.ttf`);
+  { const lib = new URLSearchParams(location.search).get("lib"); preload(`libraries/${/^[\w-]+$/.test(lib || "") ? lib : "han-meimei"}.qmdb`); }
+  function preload(href) { const l = document.createElement("link"); l.rel = "preload"; l.as = "fetch"; l.crossOrigin = "anonymous"; l.href = href; document.head.append(l); }
+</script>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f5f4; }
   canvas { display: block; width: 100%; height: 100%; outline: none; }

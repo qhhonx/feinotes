@@ -184,12 +184,6 @@ static GRAIN: std::sync::LazyLock<std::sync::Arc<RenderImage>> = std::sync::Lazy
     std::sync::Arc::new(RenderImage::new(vec![image::Frame::new(buf)]))
 });
 
-/// Things settling in when a page appears: 0 → 1 over `dur` after `delay`, easing out.
-fn arrive(since: f32, delay: f32, dur: f32) -> f32 {
-    let p = ((since - delay) / dur).clamp(0., 1.);
-    1. - (1. - p).powi(3)
-}
-
 // ---- where notes already are
 
 #[derive(Clone)]
@@ -353,8 +347,6 @@ pub struct Onboarding {
     cut_at: Instant,
     /// Over a running app's window (⌘⌥⇧O, Settings): a look only, nothing is written.
     replay: bool,
-    /// When the current page appeared; its parts settle in from there.
-    page_at: Instant,
     page: Page,
     root: PathBuf,
     /// 界面语言: the system's at first, applied as it is picked.
@@ -415,7 +407,7 @@ impl Onboarding {
         let cut_at = now + Duration::from_secs_f32(HOLD);
         Onboarding {
             focus,
-            film: film::decode(), film_tex: None, opened: now, cut_at, replay, page_at: cut_at, page: Page::Setup, root,
+            film: film::decode(), film_tex: None, opened: now, cut_at, replay, page: Page::Setup, root,
             lang: crate::settings::prefs().lang(), lang_menu: None, lang_anchor: Default::default(),
             hotkey: crate::shortcuts::global_key(), recording: false, hotkey_error: None,
             picked: vec![], found: None, show_all: false, chosen: vec![], error: None, scripted, incoming: Some(incoming), importing: None, _ticker: ticker,
@@ -427,7 +419,6 @@ impl Onboarding {
         let now = Instant::now();
         if now >= self.cut_at { return false }
         self.cut_at = now;
-        self.page_at = now;
         cx.notify();
         true
     }
@@ -435,7 +426,6 @@ impl Onboarding {
     fn go(&mut self, page: Page, cx: &mut Context<Self>) {
         self.stop_recording(cx);
         self.page = page;
-        self.page_at = Instant::now();
         cx.notify();
     }
 
@@ -595,11 +585,11 @@ impl Onboarding {
 
     /// Where notes live and the quick-note shortcut: the title on the left,
     /// the two settings as cards floating in on the right.
-    fn setup_page(&self, since: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn setup_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let anchor = self.lang_anchor.clone();
         let open = self.lang_menu.is_some();
         let current = self.lang;
-        let lang = card(arrive(since, 0.24, 0.8))
+        let lang = card()
             .child(card_icon("globe"))
             .child(card_text(tr("界面语言", "Language").into(), tr("默认跟随系统，之后可以在设置里更改", "Follows the system; you can change it in Settings").into(), false))
             .child(soft_button("onb-lang", current.name()).gap(px(6.)).when(open, |d| d.bg(Theme::fill_hover_strong()))
@@ -607,7 +597,7 @@ impl Onboarding {
                 .child(canvas(move |b, _, _| anchor.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
                 .relative()
                 .on_click(cx.listener(move |w, _, _, cx| { w.lang_menu = if open { None } else { Some(current) }; cx.notify(); })));
-        let lib = card(arrive(since, 0.3, 0.8))
+        let lib = card()
             .child(card_icon("folder"))
             .child(card_text(short_path(&self.root).into(), tr("笔记以文件保存在这里，在访达里也能直接打开", "Notes are saved here as files you can open in Finder").into(), false))
             .child(soft_button("onb-change", tr("更改…", "Change…")).on_click(cx.listener(|w, _, window, cx| w.pick_folder(true, window, cx))));
@@ -618,7 +608,7 @@ impl Onboarding {
                 (None, true) => (tr("按下新的组合键 · Esc 取消", "Press a new shortcut · Esc to cancel"), false),
                 (None, false) => (tr("在任何应用里按下，打开一个小窗口记下想法", "Press it in any app to jot a thought in a small window"), false),
             };
-            card(arrive(since, 0.42, 0.8))
+            card()
                 .child(card_icon("keyboard"))
                 .child(card_text(tr("随手记", "Quick note").into(), desc.into(), error))
                 .child(soft_button("onb-hotkey", "").min_w(px(96.)).when(self.recording, |d| d.bg(Theme::fill_hover_strong()).text_color(Theme::text_caption()))
@@ -627,9 +617,8 @@ impl Onboarding {
         });
         // Top to bottom: the app's icon, its name, one line, then the settings.
         let over = self.film.is_some();
-        let a = arrive(since, 0.05, 0.9);
         div().size_full().flex().flex_col().items_center().justify_center().px(px(48.)).pb(px(40.))
-            .child(div().flex().flex_col().items_center().gap(px(12.)).opacity(a).relative().top(px(10. * (1. - a)))
+            .child(div().flex().flex_col().items_center().gap(px(12.))
                 .child(div().size(px(64.)).rounded(px(15.)).overflow_hidden().shadow(theme::shadow_card()).child(img(crate::settings::about_icon()).size_full()))
                 .child(lifted(over, 56., 64., true, false, "Quiet.md"))
                 .child(lifted(over, 15., 23., false, true, tr("一个又快又安静的本地笔记应用。", "A fast, quiet, local notes app."))))
@@ -670,7 +659,7 @@ impl Onboarding {
         Some(if self.replay { menu.into_any_element() } else { deferred(menu).with_priority(2).into_any_element() })
     }
 
-    fn import_page(&self, since: f32, cx: &mut Context<Self>) -> AnyElement {
+    fn import_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut pick_rows = vec![
             row(tr("导入文件夹", "Import a folder"), Some(tr("Obsidian、Typora 或任何放着 Markdown 的文件夹", "Obsidian, Typora or any folder of Markdown").into()),
                 soft_button("onb-pick", tr("选择…", "Choose…")).on_click(cx.listener(|w, _, window, cx| w.pick_folder(false, window, cx)))).into_any_element(),
@@ -708,10 +697,9 @@ impl Onboarding {
                     .on_click(cx.listener(move |w, _, _, cx| { for &i in &can { if let Some(c) = w.chosen.get_mut(i) { *c = !all; } } cx.notify(); }))));
             (head, rows)
         });
-        let a = arrive(since, 0., 0.7);
         // Auto margins centre it while it fits; taller, it starts at the top and scrolls.
         div().id("onb-scroll").size_full().overflow_y_scroll().flex().flex_col().items_center().px(px(48.)).pt(px(56.)).pb(px(88.))
-            .child(div().my_auto().flex_none().w_full().max_w(px(560.)).flex().flex_col().gap(px(24.)).opacity(a).relative().top(px(10. * (1. - a)))
+            .child(div().my_auto().flex_none().w_full().max_w(px(560.)).flex().flex_col().gap(px(24.))
                 .child(heading(over, tr("带上已有的笔记", "Bring your notes"), tr("导入的是副本，原来的文件不会被改动。也可以跳过，以后从菜单导入。", "Imports are copies; your files stay as they are. You can skip this and import later.")))
                 .child(sheet(None, pick_rows))
                 .children(found.map(|(head, rows)| sheet(Some(head.into_any_element()), rows)))
@@ -817,10 +805,9 @@ fn row(title: impl Into<SharedString>, desc: Option<SharedString>, control: impl
         .child(div().flex_none().flex().items_center().child(control))
 }
 
-/// A plain white card floating over the backdrop, no outline; it rises into
-/// place as `a` goes 0 → 1.
-fn card(a: f32) -> Div {
-    div().w_full().relative().top(px(16. * (1. - a))).opacity(a)
+/// A plain white card floating over the backdrop, no outline.
+fn card() -> Div {
+    div().w_full()
         .px(px(16.)).py(px(14.)).flex().items_center().gap(px(14.))
         .rounded(px(16.)).bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_card())
 }
@@ -869,14 +856,13 @@ fn note_owned(text: String, error: bool) -> Div {
 impl Render for Onboarding {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
-        let since = now.saturating_duration_since(self.page_at).as_secs_f32();
         let t = now.duration_since(self.opened).as_secs_f32();
         // Before the cut the film is alone; after it, the pages sit on it.
         let film_up = now < self.cut_at && self.film.is_some();
-        if film_up || since < 1.3 || self.importing.is_some() { window.request_animation_frame(); }
+        if film_up || self.importing.is_some() { window.request_animation_frame(); }
         // Without the film (it failed to decode) the pages sit on the drifting gradient.
         let backdrop = canvas(|b, _, _| b, move |_, b, window, _| paint_backdrop(b, t, window)).absolute().inset_0();
-        let page = if self.page == Page::Setup { self.setup_page(since, cx) } else { self.import_page(since, cx) };
+        let page = if self.page == Page::Setup { self.setup_page(cx) } else { self.import_page(cx) };
         // A new texture only when the film reaches another frame; the old one leaves the GPU.
         if let Some(f) = &self.film {
             let n = f.frames.len();

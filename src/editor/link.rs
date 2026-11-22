@@ -566,7 +566,9 @@ impl Editor {
         if let Some(url) = self.link_ui.click.take()
             && self.core.sel.is_collapsed()
         {
-            open(cx, &normalize(&url));
+            if url.starts_with("quiet-wiki:") || crate::paste::relative_link(&url) && !url.starts_with("www.") {
+                cx.emit(super::view::EditorEvent::OpenRelative(url));
+            } else { open(cx, &normalize(&url)); }
         }
     }
 

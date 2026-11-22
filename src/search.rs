@@ -112,6 +112,7 @@ pub(crate) fn summary_text(text: String, mut hits: Vec<Range<usize>>, width: f32
 pub(crate) fn file_glyph(m: &crate::store::Meta) -> &'static str {
     match m.kind {
         crate::store::DocKind::Board => "whiteboard",
+        crate::store::DocKind::Table => "storage",
         _ if m.markdown => "doc-md",
         _ => "doc",
     }

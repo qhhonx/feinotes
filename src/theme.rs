@@ -305,6 +305,14 @@ pub fn shadow_sheet() -> Vec<BoxShadow> {
     vec![shadow(0.035, 8., 22., -2.)]
 }
 
+/// The note plane's left edge over the sidebar: a faint shade cast leftward, so the
+/// two read as layers. The plane meets the window's other edges, where nothing shows.
+pub fn shadow_note() -> Vec<BoxShadow> {
+    let mut v = vec![shadow(0.035, 0., 1., 0.), shadow(0.045, 0., 10., 0.)];
+    v[1].offset.x = px(-2.);
+    v
+}
+
 /// Header buttons and other white pills on a white panel (back / share).
 pub fn shadow_button() -> Vec<BoxShadow> {
     vec![shadow(0.05, 1., 1.5, 0.)]

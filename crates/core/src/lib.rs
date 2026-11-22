@@ -15,6 +15,7 @@ pub mod model;
 pub mod palette;
 pub mod paste;
 pub mod store;
+pub mod table;
 pub mod time;
 pub mod versions;
 pub mod vfs;

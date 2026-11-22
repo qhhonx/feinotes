@@ -105,7 +105,10 @@ impl Workspace {
         // A 画板 copies as a 画板.
         let board = self.entries.iter().find(|e| e.id == id).filter(|e| e.meta.kind == crate::store::DocKind::Board)
             .map(|_| doc.blocks.iter().find_map(|b| match &b.kind { crate::model::BlockKind::Board(bd) => Some(bd.clone()), _ => None }).unwrap_or_default());
-        let made = if let Some(board) = board { self.store.create_board_in(&doc.title.text, &board, None) }
+        let table = self.entries.iter().any(|e| e.id == id && e.meta.kind == crate::store::DocKind::Table);
+        if table { crate::table::flush_all(cx); }
+        let made = if table { self.store.copy_table(id, &doc.title.text) }
+            else if let Some(board) = board { self.store.create_board_in(&doc.title.text, &board, None) }
             else if self.store.is_markdown(id) { let front = self.store.front_matter_of(id); self.store.create_markdown(&doc, &front) } else { self.store.create_from(&doc) };
         match made {
             Ok(new) => {

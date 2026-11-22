@@ -236,15 +236,24 @@ impl Workspace {
         if !self.folded[1] {
             list = list.child(self.render_folder_rows(window, cx));
         }
-        // 本机文件: Markdown files edited where they are, outside the library.
-        let local = self.local_entries();
+        // 本机文件: Markdown files and folders edited where they are, outside the
+        // library. Files or folders from the Finder let go here open the same way.
+        let local = self.local_rows();
         if !local.is_empty() {
-            list = list.child(div().h(px(GROUP_GAP - SECTION_TOP))).child(self.section(2, crate::settings::tr("本机文件", "Files on this computer"), cx));
+            let mut section = div().id("local-section").flex().flex_col().rounded(px(ROW_R))
+                .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(Theme::sidebar_hover()))
+                .on_drop(cx.listener(|w, paths: &ExternalPaths, window, cx| {
+                    cx.stop_propagation();
+                    w.sidebar_drop = None;
+                    w.open_paths(paths.paths(), window, cx);
+                }))
+                .child(self.section(2, crate::settings::tr("本机文件", "Files on this computer"), cx));
             if !self.folded[2] {
-                for e in local {
-                    list = list.child(self.doc_row(e, "local", 0, false, cx));
+                for (e, depth) in local {
+                    section = section.child(self.doc_row(e, "local", depth, false, cx));
                 }
             }
+            list = list.child(div().h(px(GROUP_GAP - SECTION_TOP))).child(section);
         }
 
         // The footer holds one row: 设置 (存储管理 and 回收站 live in 设置).
@@ -596,9 +605,19 @@ impl Workspace {
             .when(key == "pinned", |d| { let id = e.id.clone(); d.on_click(cx.listener(move |w, _, window, cx| { let id = id.clone(); w.personal_action(window, cx, move |w, window, cx| w.open(&id, window, cx)); })) })
             // A 本机文件 row opens on click, and can be carried up into the tree to import it.
             .when(key == "local", |d| {
-                let (open, drag) = (e.id.clone(), crate::sidebar_drop::LocalRowDrag { id: e.id.clone(), title: crate::settings::display_title(&e.title) });
+                let (open, drag) = (e.id.clone(), crate::sidebar_drop::LocalRowDrag { id: e.id.clone(), title: crate::settings::display_title(&e.title), folder: e.meta.folder.is_some() });
                 d.on_click(cx.listener(move |w, _, window, cx| { let id = open.clone(); w.personal_action(window, cx, move |w, window, cx| w.open(&id, window, cx)); }))
                     .on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()))
+            })
+            // A folder under 本机文件 takes what is let go on it: moved there on disk.
+            .when(key == "local" && e.meta.mounted() && e.meta.folder.is_some(), |d| {
+                let target = e.id.clone();
+                d.drag_over::<crate::sidebar_drop::LocalRowDrag>(|s, _, _, _| s.bg(Theme::sidebar_selected()))
+                    .on_drop(cx.listener(move |w, dragged: &crate::sidebar_drop::LocalRowDrag, _, cx| {
+                        cx.stop_propagation();
+                        w.sidebar_drop = None;
+                        w.move_mounted(&dragged.id, &target, cx);
+                    }))
             })
             .on_mouse_down(
                 MouseButton::Right,
@@ -788,13 +807,23 @@ impl Workspace {
                 let toggle = folder && key == "doc" && !drop_target && self.folder_drag.has_children(&e.id);
                 let chevron = if toggle { self.folder_drag.reveal(&e.id) } else { 0. };
                 let open = self.expanded.contains(&e.id);
+                // Under 本机文件 a folder folds from its icon too: a click on it, shown by a chevron on hover.
+                let local_toggle = folder && key == "local" && self.mounted_has_children(&e.id);
+                let fold = e.id.clone();
                 div().size(px(20.)).flex_none().flex().items_center().justify_center().relative()
+                    .when(local_toggle, |d| d.rounded(px(5.)).hover(|s| s.bg(Theme::sidebar_hover()))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, _, cx| { cx.stop_propagation(); w.toggle_mounted(&fold, cx); })))
                     .when(toggle, |d| d.rounded(px(5.)).hover(|s| s.bg(hover()))
                         .on_mouse_down(MouseButton::Left, cx.listener(|w, ev: &MouseDownEvent, _, _| {
                             w.folder_drag.icon_press = true;
                             w.folder_drag.icon_alt = ev.modifiers.alt;
                         })))
                     .map(|d| match &e.icon {
+                    _ if local_toggle => d
+                        .child(div().absolute().inset_0().flex().items_center().justify_center().group_hover("doc-row", |s| s.opacity(0.))
+                            .child(icon(if open { "folder-open" } else { "folder" }, ROW_ICON, Theme::icon())))
+                        .child(div().absolute().inset_0().flex().items_center().justify_center().opacity(0.).group_hover("doc-row", |s| s.opacity(1.))
+                            .child(icon("disclosure", ROW_ICON, Theme::icon()).with_transformation(Transformation::rotate(radians(if open { std::f32::consts::FRAC_PI_2 } else { 0. }))))),
                     _ if folder => {
                         let s = if key == "doc" { self.folder_drag.pop(&e.id) } else { 1. };
                         d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(1. - chevron)
@@ -827,6 +856,7 @@ impl Workspace {
             if let Some(id) = m.id.strip_prefix("shared:") { let mut shared = m.clone(); shared.id = id.to_string(); return self.shared_row_menu(shared, window, cx); }
             if self.shared_list_room(&m.id, cx).is_some() { return self.shared_row_menu(m, window, cx); }
         }
+        if !m.batch && self.entries.iter().any(|e| e.id == m.id && e.meta.mounted()) { return self.mounted_row_menu(m, cx); }
         // The context menu: rows on the quiet hover fill.
         let item_c = |id: &'static str, ic: &'static str, label: &'static str, color: Hsla, icon_color: Hsla| {
             let g = SharedString::from(id);

@@ -33,7 +33,8 @@ pixels.save(work / "screenshot.png")
 (work / "rich.html").write_text("<p><b>Rich text</b></p>")
 # #252: a path in the pasteboard instead of image data (WeChat).
 (work / "path.txt").write_text(f"{work / 'screenshot.png'}")
-(work / "path-url.txt").write_text(f"file://{work / 'screenshot.png'}")
+pixels.save(work / "截图 space.png")
+(work / "path-url.txt").write_text((work / "截图 space.png").as_uri())
 (work / "mixed.txt").write_text(f"{work / 'screenshot.png'}\nnot a path")
 
 

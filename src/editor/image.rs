@@ -567,8 +567,14 @@ impl ImageCache for DocImages {
                             s.ready = Some(Instant::now());
                             cx.update(|cx| { for view in s.waiters.drain(..) { cx.notify(view); } });
                         }
-                        // Skipped off screen: asked for again when drawn.
-                        None => { map.remove(&r); }
+                        // Skipped as off screen: asked for again when drawn. A view
+                        // reused from the last frame may still show it (the frame
+                        // that looked newer just didn't paint it), so its views
+                        // draw again and ask once more if it is there.
+                        None => {
+                            let waiters = map.remove(&r).map(|s| s.waiters).unwrap_or_default();
+                            cx.update(|cx| { for view in waiters { cx.notify(view); } });
+                        }
                     }
                 }
                 drop(map);
@@ -2454,7 +2460,10 @@ pub(super) fn image_block_from_file(root: &Path, p: &Path) -> Result<Block, &'st
 /// image data (#252).
 pub(crate) fn local_image_path(line: &str) -> Option<PathBuf> {
     let s = line.trim();
-    let s = s.strip_prefix("file://").unwrap_or(s);
+    let decoded = s.strip_prefix("file://").map(crate::markdown::percent_decode);
+    let s = decoded.as_deref().unwrap_or(s);
+    #[cfg(windows)]
+    let s = if decoded.is_some() && s.starts_with('/') && s.as_bytes().get(2) == Some(&b':') { &s[1..] } else { s };
     let p = Path::new(s);
     is_local_image_file(p).then(|| p.to_path_buf())
 }

@@ -419,6 +419,20 @@ impl WebWindowInner {
         );
     }
 
+    /// `refresh_active_status` on the next task: browser focus and blur events
+    /// can arrive while a window update is on the stack.
+    pub(crate) fn refresh_active_status_later(self: &Rc<Self>) {
+        let this = Rc::downgrade(self);
+        let callback = wasm_bindgen::closure::Closure::once_into_js(move || {
+            if let Some(this) = this.upgrade() {
+                this.refresh_active_status();
+            }
+        });
+        if self.browser_window.set_timeout_with_callback_and_timeout_and_arguments_0(callback.unchecked_ref(), 0).is_err() {
+            self.refresh_active_status();
+        }
+    }
+
     pub(crate) fn refresh_active_status(&self) {
         let active = document_is_active(&self.browser_window);
         if std::mem::replace(&mut self.state.borrow_mut().is_active, active) != active {

@@ -122,6 +122,8 @@ pub fn startup(existed: bool) {
 /// The card, while it has not been closed: this version's notes, and the
 /// move to real folders when it happened this launch.
 pub fn card(on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Option<AnyElement> {
+    // the site's live demo is not an update anyone installed
+    if cfg!(target_family = "wasm") { return None }
     let notes = notes().filter(|_| PENDING.load(Ordering::Relaxed));
     let moved = *MIGRATED.lock().unwrap();
     if notes.is_none() && moved.is_none() { return None }

@@ -276,18 +276,26 @@ document.getElementById("lang").addEventListener("change", e => {
 });
 // The windows run the real app (/demo/?lib=<id>): the first at once, the
 // next as it comes near. A clear shield keeps the wheel on the page until the
-// window is clicked; that click goes on to the app. Phones get a picture.
+// window is clicked; that click (any button: a held wheel pans a board) goes
+// on to the app, till the pointer leaves the window.
+// Phones get a picture.
 const wide = matchMedia("(min-width: 641px)").matches;
 function handOver(f, e) {
   let doc; try { doc = f.contentDocument; } catch { return; }
   const r = f.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
   const target = doc && (doc.elementFromPoint(x, y) || doc.querySelector("canvas"));
   if (!target) return;
-  const W = f.contentWindow, init = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true, view: W };
+  const W = f.contentWindow, init = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: e.button, buttons: e.buttons || 1, pointerId: 1, pointerType: "mouse", isPrimary: true, view: W };
   target.dispatchEvent(new W.PointerEvent("pointerdown", init));
   target.dispatchEvent(new W.MouseEvent("mousedown", init));
-  addEventListener("pointerup", () => { const u = { ...init, buttons: 0 };
-    target.dispatchEvent(new W.PointerEvent("pointerup", u)); target.dispatchEvent(new W.MouseEvent("mouseup", u)); target.dispatchEvent(new W.MouseEvent("click", u)); }, { once: true });
+  // The release lands in the app itself once the shield is gone; only one
+  // that lands on the page is handed on (a wait left over would later click
+  // the app wherever this press was).
+  const up = () => { done(); const u = { ...init, buttons: 0 };
+    target.dispatchEvent(new W.PointerEvent("pointerup", u)); target.dispatchEvent(new W.MouseEvent("mouseup", u)); if (e.button === 0) target.dispatchEvent(new W.MouseEvent("click", u)); };
+  const done = () => { removeEventListener("pointerup", up); W.removeEventListener("pointerup", done, true); };
+  addEventListener("pointerup", up);
+  W.addEventListener("pointerup", done, true);
 }
 function mount(w) {
   const id = w.dataset.live, shield = w.querySelector(".shield");

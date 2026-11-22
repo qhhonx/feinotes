@@ -50,6 +50,7 @@ rusqlite = "=0.40.2"
 sha2 = { version = "0.10.9", optional = true }
 
 [features]
+datatable = []
 devtools = []
 mobile-qa = []
 cloudkit-restore = []

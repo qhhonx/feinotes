@@ -11,13 +11,13 @@ use std::path::PathBuf;
 
 /// A 本机文件 row being carried: GPUI's drag payload, drawn as the row lifted.
 #[derive(Clone)]
-pub(crate) struct LocalRowDrag { pub id: String, pub title: String }
+pub(crate) struct LocalRowDrag { pub id: String, pub title: String, pub folder: bool }
 
 impl Render for LocalRowDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().h(px(crate::sidebar::ROW_H)).w(px(220.)).pl(px(6.)).pr(px(10.)).flex().items_center().rounded(px(crate::sidebar::ROW_R))
             .bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_menu()).opacity(0.96)
-            .child(div().size(px(20.)).flex_none().flex().items_center().justify_center().child(icon("doc-md", crate::sidebar::ROW_ICON, Theme::icon())))
+            .child(div().size(px(20.)).flex_none().flex().items_center().justify_center().child(icon(if self.folder { "folder" } else { "doc-md" }, crate::sidebar::ROW_ICON, Theme::icon())))
             .child(div().pl(px(9.)).flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).text_color(Theme::text())
                 .child(ui_text(self.title.clone())))
     }
@@ -88,7 +88,7 @@ impl Workspace {
         if self.is_shared() { return; }
         match what {
             crate::app::DropImport::Files(paths) => self.import_dropped_files(paths, target, window, cx),
-            crate::app::DropImport::Local(id) => self.import_dropped_local(&id, target, cx),
+            crate::app::DropImport::Local(id) => self.import_dropped_local(&id, target, window, cx),
         }
     }
 
@@ -120,7 +120,15 @@ impl Workspace {
         self.ask_import(crate::app::DropImport::Local(id.to_string()), target, cx);
     }
 
-    fn import_dropped_local(&mut self, id: &str, target: SidebarDropAt, cx: &mut Context<Self>) {
+    fn import_dropped_local(&mut self, id: &str, target: SidebarDropAt, window: &mut Window, cx: &mut Context<Self>) {
+        // A folder under 本机文件: copied in like any folder.
+        if self.entries.iter().any(|e| e.id == id && e.meta.folder.is_some()) {
+            let Some(dir) = self.store.local_path(id) else { return };
+            self.landed_in(target.parent.as_deref());
+            let parent = target.parent.clone();
+            self.import_folder_then(&dir, parent, false, Some(Box::new(move |w, id| w.place_dropped(&[id.to_string()], &target))), window, cx);
+            return;
+        }
         let Some(doc) = self.doc_of(id, cx) else { return };
         let front = self.store.front_matter_of(id);
         match self.store.with(|s| s.create_markdown_in(&doc, &front, target.parent.as_deref())) {

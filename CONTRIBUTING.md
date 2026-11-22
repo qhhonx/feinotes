@@ -39,8 +39,6 @@ To run the checks on every commit: `git config core.hooksPath scripts/hooks`.
 | [docs/THEMES.md](docs/THEMES.md) | Writing document themes in CSS: selectors, properties, named colors |
 | [AGENTS.md](AGENTS.md) | Code style, pre-commit checks, testing conventions |
 
-Most of these, AGENTS.md included, are written in Chinese for now.
-
 ## Building release packages
 
 Before a release, `scripts/check.sh` must pass and CI must be green on that commit. After packaging, verify the signatures, notarization (macOS) and the SHA-256 of the downloads. The Windows CI build does not replace installing, uninstalling and editing on a real machine.

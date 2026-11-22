@@ -4,7 +4,7 @@
 move 300 600
 wait 2500
 shot m0-doc
-# 「…」文档菜单, then its 页宽设置 submenu
+# Document More menu, then its page width submenu
 click 1157 31
 wait 400
 shot m1-docmenu
@@ -14,13 +14,13 @@ shot m2-docmenu-width
 key escape
 click 1157 31
 wait 300
-# 编辑 / 阅读 mode menu
+# Edit / read mode menu
 click 1086 31
 wait 400
 shot m3-mode
 key escape
 wait 200
-# slash menu on a fresh line after 三级标题
+# slash menu on a fresh line after the level-three heading
 click 690 411
 key enter
 type /
@@ -28,7 +28,7 @@ wait 400
 shot m4-slash
 key escape
 wait 200
-# block handle menu of 一级标题
+# block handle menu of the level-one heading
 move 660 306
 wait 400
 shot m5-hover

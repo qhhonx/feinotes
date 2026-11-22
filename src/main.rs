@@ -78,6 +78,8 @@ mod printing;
 mod search;
 mod sidebar;
 mod local_files;
+mod local_folders;
+mod system_trash;
 mod sidebar_drag;
 mod sidebar_drop;
 mod home_folder;
@@ -86,6 +88,7 @@ mod file_history;
 mod settings;
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 mod sharing;
+mod table;
 mod l10n;
 mod themes;
 mod shortcuts;
@@ -107,6 +110,8 @@ mod web;
 use fdl_core::{docxml, lang, markdown, model, palette, paste, store, time, whiteboard};
 
 use gpui::*;
+
+pub(crate) const DATATABLE: bool = cfg!(feature = "datatable") && !FEI_NOTES;
 
 pub(crate) const FEI_NOTES: bool = cfg!(any(target_os = "ios", all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")));
 

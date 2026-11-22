@@ -479,7 +479,7 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     let mut local: Local = reread(&local_path).unwrap_or_default();
     local.opened = index.iter().filter(|(_, m)| m.opened > 0).map(|(k, m)| (k.clone(), m.opened)).collect();
     local.files = index.iter().filter(|(_, m)| m.local()).map(|(k, m)| (k.clone(), m.clone())).collect();
-    if let Some(s) = reread::<Settings>(&root.join("settings.json")) { local.window_size = s.window_size; local.quick_note_size = s.quick_note_size; }
+    if let Some(s) = reread::<Settings>(&root.join("settings.json")) { local.window_origin = s.window_origin; local.window_display = s.window_display; local.window_size = s.window_size; local.quick_note_size = s.quick_note_size; }
     crate::vfs::create_dir_all(local_path.parent().unwrap())?;
     write_atomic(&local_path, &serde_json::to_vec_pretty(&local)?)?;
     if plan.assets { crate::vfs::rename(&assets, root.join(ASSETS))?; }

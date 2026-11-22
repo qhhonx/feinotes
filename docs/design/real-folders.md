@@ -1,119 +1,113 @@
-# 设计草案：文档库改用真实目录
+# Design draft: real directories for library folders
 
-状态：第一阶段（格式与迁移）已实现，见 docs/FORMAT.md；第二到第四阶段未做。来源：#151，相关 #112、#125。
+Status at the time of this draft: phase 1 (format and migration) was implemented. See [Storage format](../FORMAT.md). Phases 2–4 were pending. Origin: #151. Related: #112 and #125.
 
-## 问题
+## Problem
 
-现在的文件夹是虚拟的（见 FORMAT.md）：
+The pre-migration layout used virtual folders:
 
-- 所有正文平铺在 `docs/<id>.xml` / `docs/<id>.md`，文件名是 id，不是标题。
-- 文件夹只是 `index.json` 里的一条 Meta（`folder` 是名字，`parent` 指向上级），磁盘上没有对应目录。
-- 文档链接写成 `<cite type="doc" doc-id="…">`，靠「文件名 = id」找到目标；Markdown 文档和 Markdown 导出里，文档链接只剩标题文字。
+- Document bodies lived in a flat `docs/<id>.xml` or `docs/<id>.md` directory with IDs as filenames.
+- Each folder was a Meta record in `index.json`. Its `folder` field held the name and `parent` identified its parent. There was no corresponding directory.
+- Document links used `<cite type="doc" doc-id="…">` and located the target by matching its ID to its filename. Markdown documents and exports retained only the link title.
 
-结果是：访达、AI 工具、同步盘、Git 都看不到文件夹结构；AI 往文档库里写文件，不知道该写到哪；导出到别处后链接全部失效。
+Finder, AI tools, sync drives and Git could not see the hierarchy. An AI writing into the library had no obvious destination, and exporting documents elsewhere broke their links.
 
-## 原则
+## Principles
 
-1. **磁盘是唯一真相。** 侧栏的文件夹树就是磁盘上的目录树，文件名就是标题：`工作/周报.md`、`工作/方案.xml`。在应用里移动、改名，就是移动、改名真实文件；在外面改，应用也认。
-2. **`.xml` 和 `.md` 地位相同。** 都按标题命名，放在用户自己的目录里。DocxXML 是带标签的纯文本，用户不一定读，AI 能读写就行。
-3. **链接写成文件里的相对路径。** 不依赖索引，文件夹整个拷走后链接仍然有效。
-4. **`index.json` 只是可重建的缓存。** 删掉它不丢正文、结构和链接，只丢置顶、收藏、手动排序这类附加信息。
-5. **用户目录里只有用户的文件。** 应用的内部数据收进隐藏目录。
+1. **The filesystem is authoritative.** Sidebar folders mirror directories, and filenames are titles, e.g. `Work/Weekly report.md` and `Work/Proposal.xml`. Moving and renaming in the app operates on real files. The app also recognizes external changes.
+2. **Treat XML and Markdown equally.** Both use title-based names in user directories. DocxXML is tagged plain text that AI tools can read and write even if users never edit it directly.
+3. **Store relative links in the document.** The links survive copying the entire folder and resolve independently of the index.
+4. **Keep the index rebuildable.** Removing `index.json` preserves content, structure and links. Only extra information such as pins, stars and manual order is lost.
+5. **Keep application data in a hidden directory.** User directories expose the user's own files.
 
-## 目录布局（FORMAT 4）
+## Proposed layout (FORMAT 4)
 
-```
+```text
 Quiet.md/
-├── 工作/
-│   ├── 周报.md
-│   ├── 方案.xml
-│   └── 子文件夹/…
-├── 随手记.md
+├── Work/
+│   ├── Weekly report.md
+│   ├── Proposal.xml
+│   └── Subfolder/…
+├── Notes.md
 └── .quiet/
     ├── format.json      {"format": 4}
-    ├── index.json       相对路径 → 附加信息（见下）
+    ├── index.json       Relative path → attached metadata
     ├── settings.json
     ├── .lock
-    ├── trash/           回收站（待定，见「未决问题」）
-    └── thumbs/          文件预览缩略图
+    ├── trash/           Trash location under discussion (see Open questions)
+    └── thumbs/          File preview thumbnails
 ```
 
-扫描规则：递归遍历文档库，认 `.md` 和 `.xml`；跳过以 `.` 开头的目录和文件（`.quiet/`、`.git/`、`.obsidian/` 等）以及图片目录（见「未决问题」）。
+Scan recursively for `.md` and `.xml`, skipping dot-prefixed files and directories (including `.quiet/`, `.git/` and `.obsidian/`) and image directories (see Open questions).
 
-## 索引
+## Index
 
-`index.json` 按相对路径记附加信息：`pinned`、`starred`、`opened`、`order`、`width`、`reading`、`catalogue_closed`、`info`、`refs_hidden`，以及文件夹的手动排序。不再记 `folder`、`parent`、`name`、`markdown`，这些都由路径决定。
+Key `index.json` by relative path. Store `pinned`, `starred`, `opened`, `order`, `width`, `reading`, `catalogue_closed`, `info`, `refs_hidden` and manual folder ordering. Derive `folder`, `parent`, `name` and `markdown` from the path.
 
-外部改名或移动后，路径对不上：
+After an external rename or move, match disappeared paths to newly discovered ones by file identity (Unix inode or Windows file ID, falling back to a content hash). Transfer metadata to the matched path. Discard unmatched old entries and treat unmatched new files as new documents. At worst this loses metadata such as pins. File contents survive.
 
-- 下次扫描时，用文件身份（Unix inode / Windows file id，再退一步用内容哈希）把「消失的旧路径」和「新出现的路径」配对，把附加信息挂到新路径上。
-- 配不上的旧条目丢弃，新文件当作新文档。正文不会丢，最多丢置顶这类信息。
+The proposal allows each document a runtime ID in memory for editing, windows and undo. It proposes keeping that ID out of files and resolving links independently of it.
 
-内存里仍可给每篇文档分一个运行期 id，供编辑器、窗口、撤销等使用，但它不写进任何文件，也不是链接的依据。
+## Links
 
-## 链接
+- **Markdown.** Write standard links such as `[Weekly report](../Work/Weekly%20report.md)`, relative to the current file and navigable in GitHub, Obsidian and VS Code. Accept Obsidian-style `[[Weekly report]]` on read by looking up the filename in the library. Write standard links on save.
+- **DocxXML.** Use relative paths, e.g. `<cite type="doc" href="../Work/Weekly report.md">Weekly report</cite>`. Continue reading legacy `doc-id` links.
+- **In-app moves and renames.** Use existing backlink data (`Document::doc_links`) to find referring documents, rewrite the paths and save, like Obsidian's automatic internal link updates.
+- **External renames.** Match by file identity on scan and update referring documents. If that fails, try a unique filename match within the library. If unresolved, mark the broken link in the body and keep its text.
+- **Export.** For a single-document export, rewrite links relative to the destination. If the target falls outside the export, fall back to the title and count it in export warnings.
 
-- **Markdown：** 标准写法 `[周报](../工作/周报.md)`，路径相对于当前文件。GitHub、Obsidian、VS Code 都能跳转。读取时兼容 Obsidian 的 `[[周报]]`（按文件名在库里查找），写出统一用标准写法。
-- **DocxXML：** `<cite type="doc" href="../工作/周报.md">周报</cite>`，同样是相对路径；读旧文件时仍认 `doc-id`。
-- **应用内移动、改名：** 借现有的反向引用数据（`Document::doc_links`）找到所有引用方，改写其中的路径后保存。和 Obsidian 的「自动更新内部链接」一样。
-- **外部改名：** 链接可能断。扫描时先按文件身份配对（同上）并改写引用方；配不上时按文件名在库里找唯一匹配；还找不到就在正文里标成失效链接，不静默删除。
-- **导出：** 单篇导出把链接改写成相对于导出位置的路径，或在目标不在导出范围时退回标题文字，并计入导出警告。
+## Watching external changes
 
-## 监听外部变更
+- Use filesystem notifications, e.g. the `notify` crate with macOS FSEvents, Windows and Linux inotify. Coalesce bursts and rescan the affected directories.
+- Keep the existing foreground rescan as a fallback.
+- When the open document changes externally, preserve the on-disk content and offer the existing reload or save-copy conflict handling.
 
-- 用文件系统监听（如 `notify` crate，覆盖 macOS FSEvents、Windows、Linux inotify），合并短时间内的连续事件后重新扫描受影响的目录。
-- 窗口回到前台时重扫（现有行为）保留，作为兜底。
-- 正在编辑的文档被外部改写时，沿用现有的冲突处理：不覆盖磁盘内容，提示重新载入或另存副本。
+## Migration (FORMAT 3 → 4)
 
-## 迁移（FORMAT 3 → 4）
+1. Acquire the write lock and back up all of `index.json` and `docs/`, e.g. in `.quiet/before-folders-4/`.
+2. Build directories from `folder` and `parent`. Move each `docs/<id>.*` to `<folder-path>/<title>.<extension>` using the escaping rules below.
+3. Rewrite all `doc-id` links to relative paths.
+4. Generate the new `index.json` and write format version 4 to `format.json`.
+5. Roll back to the backup on failure at any stage.
 
-1. 获取写锁，完整备份 `index.json` 和 `docs/`（例如 `.quiet/before-folders-4/`）。
-2. 按现有 `folder` / `parent` 建出目录树，把 `docs/<id>.*` 移到 `<文件夹路径>/<标题>.<扩展名>`，名字按下面的转义规则处理。
-3. 把所有 `doc-id` 链接改写成相对路径。
-4. 生成新的 `index.json`，写 `format.json` 为 4。
-5. 任何一步失败都回滚到备份，不留半迁移的库。
+The existing version guard makes older versions refuse FORMAT 4. A round-trip test like `library_round_trips` should verify document bodies, parent folders and link targets before and after migration.
 
-旧版本遇到 FORMAT 4 会拒绝打开（现有的版本检查），不会误读。迁移需要 `library_round_trips` 那样的往返测试：迁移前后每篇文档的正文、文件夹归属、链接目标都一致。
+## Open questions
 
-## 未决问题
+1. **Filenames.** How should we escape `/ \ : * ? " < > |`, leading dots, Windows reserved names such as `CON`, and long titles? Use a suffix such as ` 2` for sibling duplicates. Should title edits immediately rename the file? The preference was to rename it and rewrite referring links immediately. Markdown titles currently live in `Meta.name` and would become filenames after migration.
+2. **Images.** Share a single `assets/` directory across the library or use a per-note `<title>.assets/` directory as for local files? The latter is easier to copy with a single document but must follow renames.
+3. **Trash.** Use `.quiet/trash/` for in-app recovery or the more familiar system trash?
+4. **Sync conflicts.** iCloud, Dropbox and Nutstore can create files like `Weekly report (conflicted copy).md`. Git merges can leave conflict markers. How should scanning detect and report these?
+5. **Local files (`Meta.path`).** Keep opening Markdown files outside the library as before. The Open Local Folder request (#112) could reuse scanning and watching with an external directory as a second library root.
+6. **Performance.** Measure the cost of recursive scanning and watching for libraries with thousands of documents. Preserve the `list()` cache that skips unchanged files based on modification time and size.
 
-1. **标题 → 文件名。** `/ \ : * ? " < > |`、开头的 `.`、Windows 保留名（`CON` 等）、超长标题怎么转义；同一目录重名时加 ` 2` 之类的后缀；改标题是否立即改文件名（倾向：立即改，同时改写引用方链接）。Markdown 文档现在用 `Meta.name` 存标题，迁移后标题就是文件名。
-2. **图片放哪。** 全库共用一个 `assets/`，还是像本机文件那样每篇一个 `<标题>.assets/`。后者拷走单篇更方便，但改名时要连目录一起改。
-3. **回收站放哪。** `.quiet/trash/`，还是交给系统废纸篓。前者能在应用里恢复，后者用户更熟悉。
-4. **同步冲突副本。** iCloud、Dropbox、坚果云会生成 `周报 (冲突副本).md` 之类的文件；Git 合并可能留下冲突标记。扫描时如何识别、提示。
-5. **本机文件（`Meta.path`）。** 文档库外的 `.md` 仍按现有方式打开；#112 的「打开本地文件夹」可以复用同一套扫描和监听，把外部目录当作第二个库根。
-6. **性能。** 大库（数千篇）递归扫描和监听的开销，`list()` 现有的按修改时间、大小跳过未变文件的缓存要保留。
+## Additional requirements (2026-11-12)
 
-## 补充要求（2026-11-12）
+- **Finder mirrors the sidebar.** The directory in Settings › Library should open directly onto the sidebar folders and title-named files. Keep pins and ordering in `.quiet/`, with a separate entry point in Settings. Move the existing root-level `preferences.json`, `shortcuts.json`, `themes/` and `format.json` into `.quiet/`.
+- **Self-contained notes.** A single file reveals its title (filename), body and outgoing links (relative paths). Removing `.quiet/` leaves the library usable, losing only metadata such as pins, stars and manual order.
+- **Sync support.** First launch allows a library in iCloud Drive. Keep device-specific state (`opened` time and window dimensions) in local application data keyed by library path. Merge `.quiet/index.json` entry by entry using relative paths so edits to different documents on two devices coexist. Recognize iCloud placeholders (`.<name>.icloud`) during scanning and trigger downloads as needed.
 
-- **在访达里看到的就是侧栏。** 设置 › 文档库指向的目录，打开后就是和侧栏一模一样的文件夹和以标题命名的文件，用户能直接点开笔记；置顶、排序这类元信息只在 `.quiet/` 里，设置页另给入口查看。现在根目录下的 `preferences.json`、`shortcuts.json`、`themes/`、`format.json` 一起移进 `.quiet/`。
-- **笔记自包含。** 一篇笔记的标题（文件名）、正文、它引用了谁（相对路径），都能只看这个文件得出；删掉 `.quiet/` 后整个库仍然完整可用，丢的只是置顶、收藏、手动排序。
-- **适合同步。** 首次启动可以把文档库放进 iCloud 云盘，所以：
-  - 只属于这台设备的状态（`opened` 最近打开时间、窗口尺寸）不进文档库，放本机应用数据目录，按文档库路径区分；
-  - `.quiet/index.json` 按相对路径逐条合并，两台设备改了不同文档时不冲突；
-  - 扫描时识别 iCloud 的占位文件（`.<名字>.icloud`），需要时触发下载，不当成损坏。
+## Suggested resolutions
 
-## 对未决问题的建议
+1. **Filenames.** Replace illegal characters with full-width equivalents or hyphens, strip leading dots, append an underscore to Windows reserved names and truncate at 120 bytes. Resolve collisions with ` 2`, ` 3`, etc. Rename and update referring links on title changes, coalescing edits on the 500 ms save schedule.
+2. **Images.** Use a hidden `.assets/` per folder to keep images with copied content, avoid renaming asset directories when titles change and keep Finder tidy.
+3. **Trash.** Use `.quiet/trash/` to keep in-app restore and the existing trash UI. Permanently delete files when the trash is emptied.
 
-1. **文件名：** 非法字符换成全角或 `-`，去掉开头的 `.`，Windows 保留名后加 `_`，超过 120 字节截断；重名加 ` 2`、` 3`；改标题时立即改文件名并改写引用方（编辑中按 500ms 存盘节奏合并，避免频繁改名）。
-2. **图片：** 每个文件夹一个隐藏的 `.assets/`。单篇或整个文件夹拷走都带着图片，改名标题不用动图片目录，访达里也不多出一堆目录。
-3. **回收站：** `.quiet/trash/`，保留应用里恢复和现有的回收站界面；清空回收站时才真正删除。
+## Phases
 
-## 分阶段
+1. Library format and migration: layout, scan, path-keyed index, migration, rollback and round-trip tests.
+2. Map sidebar moves, renames and deletes to real files. Use relative links and rewrite them automatically.
+3. Watch external changes and surface conflict copies and broken links.
+4. Open local folders (#112) and move imported files into the library (#125).
 
-1. 文档库格式和迁移：新布局、扫描、索引按路径、迁移与回滚、往返测试。
-2. 侧栏和移动、改名、删除映射到真实文件；链接改成相对路径并自动改写。
-3. 监听外部变更；冲突副本和失效链接的提示。
-4. 「打开本地文件夹」（#112）、导入时移入文档库（#125）。
+## Future work: an app-owned iCloud container
 
-## 以后：应用自己的 iCloud 容器（暂不做）
+Defer iCloud messaging during first launch. A future managed-sync option could use iCloud Documents. An official build signed with the iCloud entitlement could place the library in `~/Library/Mobile Documents/iCloud~<container>/Documents` as ordinary Markdown and XML files. CloudKit's cloud records would conflict with the filesystem model.
 
-首次启动先不提 iCloud。以后要做「保证同步」，走 iCloud Documents：带 iCloud 权限签名的官方构建拿到 `~/Library/Mobile Documents/iCloud~<容器>/Documents`，文档库直接放在里面，文件仍是普通的 `.md` / `.xml`。不用 CloudKit：它把数据存成云端记录，违背「磁盘是唯一真相」。
+The design leaves room for this without a breaking change:
 
-现在留的余量，保证以后不需要破坏性改动：
+- The only location input is `path` in `library.json`. Older versions see the container library as a regular directory. A future container flag could be a new `#[serde(default)]` field on `Location` that older versions ignore.
+- Layout and format are independent of location. Device-specific state such as `opened` and window dimensions stays outside the library.
+- Placeholder detection and on-demand downloading also apply inside the container.
 
-- 文档库位置只认一个路径（`library.json` 的 `path`），容器里的文档库对旧版本来说也只是一个普通目录。以后要记「这是 iCloud 容器」之类的信息，就在 `Location` 里加 `#[serde(default)]` 的新字段，旧版本会忽略它。
-- 布局和格式与存放位置无关；只属于本机的状态（`opened`、窗口尺寸）已经不进文档库。
-- 占位文件（`.<名字>.icloud`）在扫描时识别并触发下载，容器里同样适用。
-
-到时还要补：签名时带上容器权限和描述文件；启动时检查 `ubiquityIdentityToken`，没登录或关了本应用的 iCloud 就提示；读写走 `NSFileCoordinator`；用 `NSMetadataQuery` 发现远端变更；用 `NSFileVersion` 处理冲突（和第 3 阶段的冲突副本提示一起做）。自己编译的构建、Windows 和 Linux 没有这个权限，继续用普通文件夹。
+Future implementation would require signing with the container entitlement and provisioning profile, checking `ubiquityIdentityToken` at startup and prompting if the user is signed out or iCloud is disabled for the app. Coordinate reads and writes with `NSFileCoordinator`, discover remote changes with `NSMetadataQuery` and handle conflicts with `NSFileVersion` alongside phase 3 conflict reporting. Self-built, Windows and Linux builds would continue using ordinary folders without the entitlement.

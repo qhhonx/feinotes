@@ -121,15 +121,27 @@
     background: var(--glass); border: 1px solid var(--glass-line); backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4); }
   .who b { color: var(--ink); font-weight: 650; }
 
-  /* See it live: a short intro, then one notebook per person. */
-  .live { padding: clamp(40px, 11vh, 110px) 16px 0; text-align: center; }
+  /* See it live: a heading, one line, and the notebook right under it. */
+  .live { padding: clamp(36px, 8vh, 80px) 16px 0; text-align: center; }
   .live h2 { margin: 0; font-size: clamp(30px, 4vw, 50px); line-height: 1.12; font-weight: 650; letter-spacing: -.03em; text-wrap: balance; }
   .live h3 { margin: 14px 0 0; font-size: clamp(24px, 2.8vw, 34px); line-height: 1.2; font-weight: 650; letter-spacing: -.02em; text-wrap: balance; }
   .live p { max-width: 620px; margin: 12px auto 0; font-size: clamp(15px, 1.2vw, 16.5px); line-height: 1.6; color: #2f3633; font-weight: 500; text-wrap: balance; }
   .live .intro p { max-width: 560px; }
-  .showcase { padding-top: clamp(70px, 12vh, 130px); }
-  .intro + .showcase { padding-top: clamp(28px, 5vh, 52px); }
-  .showcase .stage { padding-top: clamp(22px, 4vh, 36px); }
+  .showcase .stage { padding-top: clamp(16px, 2.6vh, 24px); }
+  /* What people said: posts from X, quoted as posted, in a masonry of glass cards. */
+  .voices { padding-top: clamp(90px, 14vh, 150px); }
+  .wall { columns: 3 300px; column-gap: 16px; max-width: 1080px; margin: clamp(24px, 4vh, 36px) auto 0; text-align: left; }
+  .voice { break-inside: avoid; display: block; text-align: left; margin: 0 0 16px; padding: 16px 18px 18px; border-radius: 18px; color: var(--ink); text-decoration: none;
+    background: rgba(255, 255, 255, .78); border: 1px solid var(--glass-line); backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    box-shadow: 0 1px 2px rgba(20, 40, 25, .06), 0 8px 24px rgba(20, 40, 25, .08); transition: transform .2s ease, box-shadow .2s ease; }
+  .voice:hover { transform: translateY(-2px); box-shadow: 0 2px 4px rgba(20, 40, 25, .08), 0 14px 32px rgba(20, 40, 25, .12); }
+  .voice .top { display: flex; align-items: center; gap: 10px; }
+  .voice img { width: 36px; height: 36px; border-radius: 50%; flex: none; background: #e7ebe8; }
+  .voice .who-name { min-width: 0; flex: 1; line-height: 1.25; }
+  .voice b { display: block; font-size: 14.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .voice small { display: block; font-size: 13px; color: var(--ink-2); }
+  .voice svg { width: 15px; height: 15px; flex: none; color: var(--ink); opacity: .55; }
+  .voice p { margin: 12px 0 0; max-width: none; font-size: 15px; line-height: 1.6; font-weight: 500; color: var(--ink); white-space: pre-line; text-wrap: pretty; }
   .wash { position: relative; }
   .fade { opacity: 0; transform: translateY(18px); transition: opacity .7s ease, transform .8s cubic-bezier(.2, .8, .2, 1); }
   .fade.in { opacity: 1; transform: none; }
@@ -165,6 +177,7 @@
   /* The live notebooks' headings sit on the photo the same way, with no panel behind. */
   .live h2, .live h3 { color: #fff; text-shadow: 0 2px 18px rgba(10, 40, 90, .45); }
   .live p { color: rgba(255, 255, 255, .95); text-shadow: 0 1px 8px rgba(10, 40, 90, .55); }
+  .live .voice p { color: var(--ink); text-shadow: none; }
 </style>
 </head>
 <body>
@@ -211,15 +224,14 @@
   </header>
 
   <main class="live" id="live">
-  <div class="wash fade intro"><h2 data-i18n="liveT"></h2><p data-i18n="liveP"></p></div>
   <article class="showcase">
-    <div class="wash fade"><div class="who"><b>Han Meimei</b><span data-role="han-meimei"></span></div><h3 data-i18n="hmT"></h3><p data-i18n="hmP"></p></div>
+    <div class="wash fade intro"><h2 data-i18n="liveT"></h2><p data-i18n="liveP"></p></div>
     <div class="stage"><div class="window" data-live="han-meimei"><div class="lights"><i></i><i></i><i></i></div><div class="shield"></div></div></div>
   </article>
-  <article class="showcase">
-    <div class="wash fade"><div class="who"><b>Maya Lindqvist</b><span data-role="maya-lindqvist"></span></div><h3 data-i18n="mlT"></h3><p data-i18n="mlP"></p></div>
-    <div class="stage"><div class="window" data-live="maya-lindqvist"><div class="lights"><i></i><i></i><i></i></div><div class="shield"></div></div></div>
-  </article>
+  <section class="voices">
+    <div class="wash fade intro"><h2 data-i18n="voicesT"></h2><p data-i18n="voicesP"></p></div>
+    <div class="wall" id="wall"></div>
+  </section>
   </main>
 
   <section class="cta">
@@ -251,6 +263,25 @@
   </footer>
 </div>
 <script src="/notebooks/data.js"></script>
+<script src="/voices/voices.js"></script>
+<script>
+// The wall: one card per post, linking to it. Text goes in as text, never as HTML.
+{
+  const X = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>';
+  const wall = document.getElementById("wall");
+  for (const v of window.VOICES || []) {
+    const a = document.createElement("a");
+    a.className = "voice fade"; a.href = v.url; a.target = "_blank"; a.rel = "noopener";
+    a.innerHTML = `<div class="top">${v.avatar ? '<img loading="lazy" alt="">' : ""}<span class="who-name"><b></b><small></small></span>${X}</div><p></p>`;
+    if (v.avatar) a.querySelector("img").src = v.avatar;
+    a.querySelector("b").textContent = v.name;
+    a.querySelector("small").textContent = "@" + v.handle;
+    a.querySelector("p").textContent = v.text;
+    a.lang = v.lang;
+    wall.append(a);
+  }
+}
+</script>
 <script>
 // Static i18n: ?lang= wins, then the saved choice, then the browser language; Simplified Chinese is the markup default.
 const T = {
@@ -270,15 +301,20 @@ const T = {
     badge: "オープンソース · macOS · Windows · Linux", title: "速くて静かな<br><span>ローカルノート</span>", lede: "Rust + GPUI によるネイティブ描画で、100万字の文書もなめらか。ノートはすべてあなたのPCに保存され、Feishu（Lark）ドキュメント形式に対応します。",
     dlMac: "ダウンロード · Apple Silicon", dlWin: "ダウンロード · x64", dlIntel: "Intel Mac 版", dlLinux: "ダウンロード · AppImage", dlAll: "すべてのリリースとチェックサム", alt: "quiet.md のホーム画面：左にドキュメントツリー、右にすべてのノートをグリッド表示。" },
 };
-Object.assign(T["zh-Hans"], {"liveT": "翻翻别人的笔记本", "liveP": "两个人，两本用了好几年的笔记。它们就在你的浏览器里运行，点进去随便翻、随便改。", "hmT": "一篇论文，五万字，一百多张图。", "hmP": "韩梅梅是科学史博士生。读书笔记、档案馆走访、速写和日记都在这里，表格、公式和图版排得像一页好书，搜一个词一秒就找到。", "mlT": "每个决定，都写在它的理由旁边。", "mlP": "Maya 是 B2B SaaS 公司的产品经理。PRD、用户访谈、实验复盘、事故复盘和 1:1 记录，工作里最重要的上下文，都是她自己电脑上的普通文件。"});
-Object.assign(T["zh-Hant"], {"liveT": "翻翻別人的筆記本", "liveP": "兩個人，兩本用了好幾年的筆記。它們就在你的瀏覽器裡執行，點進去隨便翻、隨便改。", "hmT": "一篇論文，五萬字，一百多張圖。", "hmP": "韓梅梅是科學史博士生。讀書筆記、檔案館走訪、速寫和日記都在這裡，表格、公式和圖版排得像一頁好書，搜一個詞一秒就找到。", "mlT": "每個決定，都寫在它的理由旁邊。", "mlP": "Maya 是 B2B SaaS 公司的產品經理。PRD、使用者訪談、實驗複盤、事故檢討和 1:1 紀錄，工作裡最重要的脈絡，都是她自己電腦上的一般檔案。"});
-Object.assign(T["en"], {"liveT": "Leaf through someone else’s notebook", "liveP": "Two people, two notebooks kept for years. They run right here in your browser — click in, look around, change anything.", "hmT": "One thesis. Fifty thousand words. A hundred plates.", "hmP": "Han Meimei is a PhD student in the history of science. Reading notes, archive visits, sketches and a journal live here — tables, formulas and plates set like a good page, any word a second away.", "mlT": "Every decision, next to its reason.", "mlP": "Maya is a product manager at a B2B SaaS company. PRDs, interviews, experiment readouts, a post-mortem and her 1:1s — the context her work runs on, kept as plain files on her own computer."});
-Object.assign(T["ja"], {"liveT": "ほかの人のノートをめくってみる", "liveP": "ふたりの人が何年も使ってきたノートです。ブラウザの中でそのまま動いているので、クリックして自由に見て、書き換えてみてください。", "hmT": "論文ひとつ、5万語、図版100枚以上。", "hmP": "韓梅梅は科学史の博士課程学生。読書ノート、アーカイブ訪問、スケッチ、日記がここにあります。表や数式、図版は美しく組まれ、どの言葉も一瞬で見つかります。", "mlT": "すべての決定を、その理由の隣に。", "mlP": "Maya は B2B SaaS 企業のプロダクトマネージャー。PRD、インタビュー、実験の振り返り、ポストモーテム、1:1 の記録。仕事を支える文脈は、すべて自分のパソコン上の普通のファイルです。"});
-Object.assign(T["fr"], {"liveT": "Feuilletez le carnet de quelqu’un d’autre", "liveP": "Deux personnes, deux carnets tenus pendant des années. Ils tournent ici même, dans votre navigateur — cliquez, explorez, modifiez.", "hmT": "Une thèse. Cinquante mille mots. Cent planches.", "hmP": "Han Meimei est doctorante en histoire des sciences. Notes de lecture, archives, croquis et journal vivent ici — tableaux, formules et planches bien composés, chaque mot à une seconde.", "mlT": "Chaque décision, à côté de sa raison.", "mlP": "Maya est product manager dans un éditeur SaaS B2B. PRD, entretiens, bilans d’expériences, un post-mortem et ses 1:1 — le contexte de son travail, en simples fichiers sur son ordinateur."});
+Object.assign(T["zh-Hans"], {"liveT": "翻翻别人的笔记本", "liveP": "一位科学史博士生的笔记本：五万字、一百多张图。它就在你的浏览器里运行，点进去随便翻、随便改。"});
+Object.assign(T["zh-Hant"], {"liveT": "翻翻別人的筆記本", "liveP": "一位科學史博士生的筆記本：五萬字、一百多張圖。它就在你的瀏覽器裡執行，點進去隨便翻、隨便改。"});
+Object.assign(T["en"], {"liveT": "Leaf through someone else’s notebook", "liveP": "A history-of-science PhD student’s notebook: fifty thousand words, over a hundred pictures. It runs right here in your browser — click in, look around, change anything."});
+Object.assign(T["ja"], {"liveT": "ほかの人のノートをめくってみる", "liveP": "科学史を学ぶ博士課程の学生のノート。5万語、100枚以上の図。ブラウザの中でそのまま動いているので、クリックして自由に見て、書き換えてみてください。"});
+Object.assign(T["fr"], {"liveT": "Feuilletez le carnet de quelqu’un d’autre", "liveP": "Le carnet d’une doctorante en histoire des sciences : cinquante mille mots, plus de cent images. Il tourne ici même, dans votre navigateur — cliquez, explorez, modifiez."});
+Object.assign(T["zh-Hans"], {"voicesT": "用过的人怎么说", "voicesP": "来自 X 上的公开评论，原文照录。"});
 Object.assign(T["zh-Hans"], {"ctaT": "开始写你自己的笔记本", "ctaP": "免费、开源，支持 macOS、Windows 和 Linux。笔记永远是你电脑上的普通文件。"});
+Object.assign(T["zh-Hant"], {"voicesT": "用過的人怎麼說", "voicesP": "來自 X 上的公開評論，原文照錄。"});
 Object.assign(T["zh-Hant"], {"ctaT": "開始寫你自己的筆記本", "ctaP": "免費、開源，支援 macOS、Windows 與 Linux。筆記永遠是你電腦上的一般檔案。"});
+Object.assign(T["en"], {"voicesT": "What people are saying", "voicesP": "Posts from X, quoted as they were written."});
 Object.assign(T["en"], {"ctaT": "Start your own notebook", "ctaP": "Free and open source, for macOS, Windows and Linux. Your notes stay plain files on your own computer."});
+Object.assign(T["ja"], {"voicesT": "使った人の声", "voicesP": "X に投稿されたコメントを、原文のまま掲載しています。"});
 Object.assign(T["ja"], {"ctaT": "あなた自身のノートを始めよう", "ctaP": "無料でオープンソース。macOS、Windows、Linux に対応。ノートはいつまでもあなたのパソコン上の普通のファイルです。"});
+Object.assign(T["fr"], {"voicesT": "Ce qu’en disent les utilisateurs", "voicesP": "Des messages publiés sur X, cités tels quels."});
 Object.assign(T["fr"], {"ctaT": "Commencez votre propre carnet", "ctaP": "Gratuit et open source, pour macOS, Windows et Linux. Vos notes restent de simples fichiers sur votre ordinateur."});
 function detect() {
   const q = new URLSearchParams(location.search).get("lang");
@@ -311,19 +347,26 @@ document.getElementById("lang").addEventListener("change", e => {
   try { localStorage.setItem("lang", e.target.value); } catch {}
 });
 // The windows run the real app (/demo/?lib=<id>). A clear shield keeps the
-// wheel on the page until the window is clicked; that click goes on to the
-// app. Phones get a picture.
+// wheel on the page until the window is clicked; that click (any button: a
+// held wheel pans a board) goes on to the app, till the pointer
+// leaves the window. Phones get a picture.
 const wide = matchMedia("(min-width: 641px)").matches;
 function handOver(f, e) {
   let doc; try { doc = f.contentDocument; } catch { return; }
   const r = f.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
   const target = doc && (doc.elementFromPoint(x, y) || doc.querySelector("canvas"));
   if (!target) return;
-  const W = f.contentWindow, init = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true, view: W };
+  const W = f.contentWindow, init = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: e.button, buttons: e.buttons || 1, pointerId: 1, pointerType: "mouse", isPrimary: true, view: W };
   target.dispatchEvent(new W.PointerEvent("pointerdown", init));
   target.dispatchEvent(new W.MouseEvent("mousedown", init));
-  addEventListener("pointerup", () => { const u = { ...init, buttons: 0 };
-    target.dispatchEvent(new W.PointerEvent("pointerup", u)); target.dispatchEvent(new W.MouseEvent("mouseup", u)); target.dispatchEvent(new W.MouseEvent("click", u)); }, { once: true });
+  // The release lands in the app itself once the shield is gone; only one
+  // that lands on the page is handed on (a wait left over would later click
+  // the app wherever this press was).
+  const up = () => { done(); const u = { ...init, buttons: 0 };
+    target.dispatchEvent(new W.PointerEvent("pointerup", u)); target.dispatchEvent(new W.MouseEvent("mouseup", u)); if (e.button === 0) target.dispatchEvent(new W.MouseEvent("click", u)); };
+  const done = () => { removeEventListener("pointerup", up); W.removeEventListener("pointerup", done, true); };
+  addEventListener("pointerup", up);
+  W.addEventListener("pointerup", done, true);
 }
 // One app runs at a time: a window starts its app when it comes within reach
 // of the screen, and a window that has left the screen gives its app up when
@@ -339,6 +382,11 @@ function mount(w) {
   w.prepend(f);
   running.add(w);
 }
+// The demo's wasm is most of its start-up: fetch it while the reader is still
+// at the top, so the window starts fast when it comes into view.
+if (wide) addEventListener("load", () => (window.requestIdleCallback || setTimeout)(() => {
+  const l = document.createElement("link"); l.rel = "prefetch"; l.href = "/demo/quiet_md_bg.wasm"; l.as = "fetch"; l.crossOrigin = "anonymous"; document.head.append(l);
+}, { timeout: 3000 }));
 function unmount(w) { w.querySelector("iframe")?.remove(); running.delete(w); w.querySelector(".shield").hidden = false; }
 document.querySelectorAll(".window[data-live]").forEach(w => {
   const shield = w.querySelector(".shield");

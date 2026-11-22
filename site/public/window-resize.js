@@ -1,6 +1,6 @@
 // Drag a demo window's edges to resize it, like a macOS window: the sides
 // change the width (both at once, the window stays centred), the bottom the
-// height, the bottom corners both. Double-click a handle to restore the size.
+// height. Double-click a handle to restore the size.
 // The app inside lays itself out again as the window changes.
 //
 // So that people find out they can: handles sit just outside the edges, the
@@ -30,9 +30,6 @@ style.textContent = `
 .handle-left::before, .handle-right::before { width: 6px; height: 56px; }
 .handle-bottom { left: 50%; bottom: -22px; width: 96px; height: 24px; margin-left: -48px; cursor: ns-resize; }
 .handle-bottom::before { width: 56px; height: 6px; }
-.handle-bottom-right, .handle-bottom-left { bottom: -18px; width: 30px; height: 30px; }
-.handle-bottom-right { right: -18px; cursor: nwse-resize; } .handle-bottom-left { left: -18px; cursor: nesw-resize; }
-.handle-bottom-right::before, .handle-bottom-left::before { width: 12px; height: 12px; }
 .resize-hint { display: inline-flex; align-items: center; gap: 8px; margin-top: 34px; padding: 7px 14px; border-radius: 999px; font-size: 13px; font-weight: 550; color: #1d211f;
   background: rgba(255, 255, 255, .72); border: 1px solid rgba(255, 255, 255, .8); backdrop-filter: blur(14px) saturate(1.4); -webkit-backdrop-filter: blur(14px) saturate(1.4); transition: opacity .4s; }
 .resize-hint svg { width: 16px; height: 16px; flex: none; }
@@ -69,7 +66,7 @@ for (const w of document.querySelectorAll(".window[data-live]")) {
     new MutationObserver(() => { hint.querySelector("span").textContent = HINT[document.documentElement.lang] || HINT.en; })
       .observe(document.documentElement, { attributes: true, attributeFilter: ["lang"] });
   }
-  for (const edge of ["left", "right", "bottom", "bottom-left", "bottom-right"]) {
+  for (const edge of ["left", "right", "bottom"]) {
     const h = document.createElement("div");
     h.className = `handle handle-${edge}`;
     box.append(h);

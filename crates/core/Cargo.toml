@@ -27,10 +27,17 @@ html5ever = "0.27"
 markup5ever_rcdom = "0.3"
 miniz_oxide = "0.9"
 sha1_smol = "1.0"
-rusqlite = { version = ">=0.40.2, <=0.41.1", optional = true }
 
 [features]
-sqlite-store = ["dep:rusqlite"]
+sqlite-store = []
+
+# Use the same SQLite binding for the product library and standalone table files.
+# The Apple builds retain their system SQLite and existing version constraints.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+rusqlite = { version = ">=0.40.2, <=0.41.1" }
+
+[target.'cfg(not(any(target_family = "wasm", target_os = "macos", target_os = "ios")))'.dependencies]
+rusqlite = { version = ">=0.40.2, <=0.41.1", features = ["bundled"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 uuid = { version = "1.28.0", features = ["v4", "js"] }

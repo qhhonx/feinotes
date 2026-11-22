@@ -129,7 +129,7 @@ fn is_block_tag(name: &str) -> bool {
         "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "h7" | "h8" | "h9" | "ul" | "ol" | "li"
             | "checkbox" | "blockquote" | "hr" | "pre" | "img" | "table" | "grid" | "column"
             | "callout" | "whiteboard" | "source" | "figure" | "sheet" | "task" | "chat_card"
-            | "bookmark" | "html5-block" | "okr" | "sub-page-list" | "countdown"
+            | "bookmark" | "html5-block" | "okr" | "sub-page-list" | "countdown" | "datatable"
     )
 }
 
@@ -198,6 +198,13 @@ fn parse_block(e: &Element, out: &mut Vec<Block>) {
             out.push(Block::new(BlockKind::Board(std::sync::Arc::new(bd)), RichText::default()));
             return;
         }
+    }
+    // Ours: a 数据表, by the file it shows. Without one it stays as it came.
+    if name == "datatable" && let Some(src) = e.attr("src").filter(|s| !s.is_empty()) {
+        let height = e.attr("height").and_then(|v| v.parse::<f32>().ok()).filter(|h| h.is_finite() && *h > 0.).unwrap_or(crate::table::DEFAULT_HEIGHT);
+        let named = |k: &str| e.attr(k).filter(|v| !v.is_empty()).map(str::to_string);
+        out.push(Block::new(BlockKind::DataTable(crate::table::TableRef { src: src.to_string(), table: named("table"), view: named("view"), height }), RichText::default()));
+        return;
     }
     let mut block = match name {
         // Blocks nested in a paragraph or heading are its (indented) children.
@@ -990,6 +997,12 @@ fn write_block(b: &Block, s: &mut String, depth: usize) {
             s.push_str(&format!("<whiteboard type=\"excalidraw\" height=\"{}\">", fmt_num(bd.height)));
             s.push_str(&esc(&bd.scene_json()));
             s.push_str("</whiteboard>\n");
+        }
+        BlockKind::DataTable(t) => {
+            s.push_str(&format!("<datatable src=\"{}\"", esc_attr(&t.src)));
+            if let Some(n) = &t.table { s.push_str(&format!(" table=\"{}\"", esc_attr(n))); }
+            if let Some(n) = &t.view { s.push_str(&format!(" view=\"{}\"", esc_attr(n))); }
+            s.push_str(&format!(" height=\"{}\"/>\n", fmt_num(t.height)));
         }
         BlockKind::Raw { xml, .. } => {
             if IN_CELL.get() {

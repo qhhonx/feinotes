@@ -779,6 +779,31 @@ mod tests {
     use super::{BlockKind, markdown_document, percent_decode};
 
     #[test]
+    fn importing_many_small_notes_preserves_the_tree() {
+        let tmp = fdl_core::vfs::temp_dir().join(format!("quiet-many-notes-{}", uuid::Uuid::new_v4()));
+        let source = tmp.join("input");
+        for n in 0..600 {
+            let dir = source.join(format!("dir-{}", n % 253));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("note-{n}.md")), format!("body {n}")).unwrap();
+        }
+        let mut store = crate::store::Store::open_at(tmp.join("library")).unwrap();
+        let tree = super::scan_folder(&source, 0).unwrap();
+        let mut failed = 0;
+        store.batch(|s| super::import_tree(s, &tree, None, &mut failed)).unwrap().unwrap();
+        assert_eq!(failed, 0);
+        let entries = store.list();
+        for n in 0..600 {
+            let title = format!("note-{n}");
+            let entry = entries.iter().find(|e| e.title == title).unwrap();
+            let path = store.file_path(&entry.id).unwrap();
+            assert!(path.ends_with(std::path::Path::new(&format!("dir-{}", n % 253)).join(format!("{title}.md"))));
+            assert_eq!(std::fs::read_to_string(path).unwrap().trim(), format!("body {n}"));
+        }
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
     fn imports_markdown_file() {
         let dir = fdl_core::vfs::temp_dir().join(format!("fdl-import-{}", fdl_core::vfs::process_id()));
         fdl_core::vfs::create_dir_all(&dir).unwrap();

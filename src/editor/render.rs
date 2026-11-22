@@ -112,6 +112,7 @@ fn hash_block(b: &Block, orders: &rustc_hash::FxHashMap<BlockId, String>, h: &mu
         BlockKind::Column { ratio } => ratio.to_bits().hash(h),
         BlockKind::File(f) => (&f.src, &f.name, f.view).hash(h),
         BlockKind::Board(bd) => bd.height.to_bits().hash(h),
+        BlockKind::DataTable(t) => (&t.src, t.height.to_bits()).hash(h),
         BlockKind::Table(t) => {
             t.col_widths.iter().for_each(|w| w.to_bits().hash(h));
             (t.header_rows, t.header_col).hash(h);
@@ -520,6 +521,7 @@ impl R<'_> {
             BlockKind::SubPageList => self.sub_page_list(b, cx),
             BlockKind::Countdown(c) => self.countdown(b, c, cx),
             BlockKind::Board(bd) => self.board_block(b, bd, cx),
+            BlockKind::DataTable(t) => self.datatable_block(b, t, cx),
             BlockKind::File(f) => self.file(b, f, env, cx),
             BlockKind::Table(t) if self.ghost => self.ghost_table(b, t, cx),
             BlockKind::Table(t) => self.table(b, t, env.root, cx),
@@ -1465,6 +1467,7 @@ impl Editor {
         let overlays = self.render_overlays(window, cx);
         let lightbox = self.lightbox_el(window, cx);
         let board = self.board_el();
+        self.sync_tables(window, cx);
         let toast = self.toast_el(window);
         let probes = std::mem::take(&mut *self.probes.borrow_mut());
         let origin0 = self.content_origin.get();
@@ -1775,6 +1778,7 @@ impl Render for Editor {
         // renders (the note would otherwise be laid out again on every frame
         // the board draws, and its keys and pointer handlers sit under it).
         if self.board_open() { return div().size_full().children(self.board_el()).into_any_element(); }
+        if self.table_open() { return div().size_full().children(self.table_el()).into_any_element(); }
         let el = self.render_editor(window, cx).into_any_element();
         crate::devtools::RENDER_NS.fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
         el
@@ -1938,6 +1942,7 @@ pub(super) fn block_feishu(&self, b: &Block, siblings: &[Block], idx: usize, env
             BlockKind::SubPageList => self.sub_page_list(b, cx),
             BlockKind::Countdown(c) => self.countdown(b, c, cx),
             BlockKind::Board(bd) => self.board_block(b, bd, cx),
+            BlockKind::DataTable(t) => self.datatable_block(b, t, cx),
             BlockKind::File(f) => self.file(b, f, env, cx),
             BlockKind::Table(t) if self.ghost => self.ghost_table(b, t, cx),
             BlockKind::Table(t) => self.table(b, t, env.root, cx),

@@ -1231,6 +1231,15 @@ impl Core {
         true
     }
 
+    /// 数据表: which table and view block `id` shows, and its height. False when nothing changed.
+    pub fn set_table_ref(&mut self, id: BlockId, t: crate::table::TableRef) -> bool {
+        if !matches!(self.kind_of(id), Some(BlockKind::DataTable(old)) if *old != t) { return false; }
+        self.checkpoint(EditKind::Other);
+        self.break_coalescing();
+        if let Some(b) = self.block_mut(id) { b.kind = BlockKind::DataTable(t); }
+        true
+    }
+
     /// 文本视图: the block becomes a paragraph holding the attachment
     /// inline (same alignment); the caret lands after it.
     pub fn file_to_inline(&mut self, id: BlockId) {

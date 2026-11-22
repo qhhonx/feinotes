@@ -174,6 +174,8 @@ impl Writer<'_> {
                 }
                 None => bd.plain_text().lines().map(escape).collect::<Vec<_>>().join("<br>"),
             },
+            // A 数据表: the shown view as a Markdown table.
+            BlockKind::DataTable(t) => crate::table::block_markdown(&self.opts.library_root.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::root_dir), t),
             BlockKind::File(f) => self.file_link(f).map(|url| format!("[{}]({url})", escape(&f.name))).unwrap_or_else(|| escape(&f.name)),
             BlockKind::SubPageList => {
                 self.opts.sub_pages.iter().map(|t| format!("- {}", escape(&crate::model::display_title(t)))).collect::<Vec<_>>().join("\n")
@@ -726,7 +728,7 @@ fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) ->
             strike: m.strike,
             underline: m.underline,
             code: m.code,
-            link: file_link.or_else(|| m.link.clone().filter(|url| crate::paste::link_ok(url))),
+            link: file_link.or_else(|| m.link.clone().filter(|url| crate::paste::link_ok(url) || crate::paste::relative_link(url) || url.starts_with("quiet-wiki:"))),
             math: m.inline.as_ref().and_then(Inline::equation).is_some(),
         };
         match runs.last_mut() {
@@ -737,6 +739,12 @@ fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) ->
     let mut out = String::new();
     for (m, s) in runs {
         if s.is_empty() {
+            continue;
+        }
+        if let Some(raw) = m.link.as_deref().and_then(|l| l.strip_prefix("quiet-wiki:")) {
+            let (target, label) = raw.split_once('|').unwrap_or((raw, raw));
+            if s == label { out.push_str(&format!("[[{raw}]]")); }
+            else { out.push_str(&format!("[[{target}|{s}]]")); }
             continue;
         }
         // Emphasis markers must hug the text: keep outer spaces outside.
@@ -755,7 +763,16 @@ fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) ->
             let tick = if body.contains('`') { "``" } else { "`" };
             format!("{tick}{body}{tick}")
         } else {
-            escape(body)
+            static EMBED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"!\[\[[^\[\]\r\n]+\]\]|!\[[^\[\]\r\n]*\]\([^()\r\n]+\)").unwrap());
+            let mut escaped = String::new();
+            let mut end = 0;
+            for span in EMBED.find_iter(body) {
+                escaped.push_str(&escape(&body[end..span.start()]));
+                escaped.push_str(span.as_str());
+                end = span.end();
+            }
+            escaped.push_str(&escape(&body[end..]));
+            escaped
         };
         if m.underline {
             x = format!("<u>{x}</u>");
@@ -901,6 +918,20 @@ mod tests {
         let canon = |d: &Document| write_file(d, "", Some(base));
         assert_eq!(canon(&parse_file(&out, "t", Some(base))), canon(&doc), "{out}");
         out
+    }
+
+    /// An `<img>` line is a picture like `![](…)`: relative paths resolve
+    /// beside the file, and saving keeps the tag as written.
+    #[test]
+    fn html_images() {
+        let src = "a\n\n<img src=\"img/a%20b.png\" width=\"240\">\n\n<img src=\"https://file.oss/image.png\" alt=\"\" width=\"auto\" height=\"auto\" >\n";
+        let base = Path::new(if cfg!(windows) { "C:/notes" } else { "/notes" });
+        let imgs: Vec<_> = parse_file(src, "t", Some(base)).blocks.into_iter().filter_map(|b| match b.kind {
+            BlockKind::Image { src, width, .. } => Some((PathBuf::from(src), width)),
+            _ => None,
+        }).collect();
+        assert_eq!(imgs, [(base.join("img").join("a b.png"), Some(240.)), (PathBuf::from("https://file.oss/image.png"), None)]);
+        assert_eq!(preserved(src, |_| {}), src);
     }
 
     /// Only what changed is rewritten: other blocks keep their own syntax

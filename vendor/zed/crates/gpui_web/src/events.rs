@@ -1182,7 +1182,10 @@ impl WebWindowInner {
                 if this.suppress_focus_status_events.get() {
                     return;
                 }
-                this.refresh_active_status();
+                // a focus change can fire synchronously inside GPUI's own handling of an
+                // event (a pointerdown that focuses the IME mirror, a host page moving
+                // focus into this frame): refresh after this task, not re-entrantly
+                this.refresh_active_status_later();
             },
         )
     }
@@ -1196,7 +1199,10 @@ impl WebWindowInner {
                 if this.suppress_focus_status_events.get() {
                     return;
                 }
-                this.refresh_active_status();
+                // a focus change can fire synchronously inside GPUI's own handling of an
+                // event (a pointerdown that focuses the IME mirror, a host page moving
+                // focus into this frame): refresh after this task, not re-entrantly
+                this.refresh_active_status_later();
             },
         )
     }

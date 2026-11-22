@@ -41,7 +41,12 @@ impl Workspace {
             return;
         }
         let file_before = self.store.track_file_changes();
-        let made = if markdown {
+        let mounted = parent.as_deref().is_some_and(|p| self.store.is_mounted(p));
+        let made = if mounted {
+            // In a folder under 本机文件: written there at once.
+            let doc = crate::model::Document::default();
+            if markdown { self.store.create_markdown_in(&doc, "", parent.as_deref()) } else { self.store.create_from_in(&doc, parent.as_deref()) }
+        } else if markdown {
             self.store.create_markdown(&crate::model::Document::default(), "").and_then(|id| {
                 if let Some(p) = &parent { self.store.set_parent(&id, Some(p))?; }
                 Ok(id)
@@ -89,6 +94,30 @@ impl Workspace {
             Err(e) => self.status = crate::app::SaveStatus::Failed(crate::localized_format!("新建失败：{}", "Could not create document: {}", crate::settings::diagnostic(&e.to_string()))),
         }
         self.remember_files(file_before, tr("新建画板", "New board"));
+        cx.notify();
+    }
+
+    /// 新建 › 数据表: a standalone `.sqlite` file in `parent`, opened at once.
+    pub(crate) fn create_table(&mut self, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        if !crate::DATATABLE || self.is_shared() { return; }
+        self.create_menu = None;
+        let p = parent.clone();
+        if !self.save_before(cx, move |w, window, cx| w.create_table(p.clone(), window, cx)) { return; }
+        let file_before = self.store.track_file_changes();
+        match self.store.create_table_in(crate::settings::text("未命名数据表"), parent.as_deref()) {
+            Ok(id) => {
+                self.search_open = false;
+                self.doc_info = None;
+                self.home.sort_menu = false;
+                self.entries = self.store.list();
+                self.sort();
+                match &parent { Some(p) => { self.expanded.insert(p.clone()); } None => self.folded[1] = false }
+                self.search.update(cx, |s, cx| s.set_text("", cx));
+                self.open(&id, window, cx);
+            }
+            Err(e) => self.status = crate::app::SaveStatus::Failed(crate::localized_format!("新建失败：{}", "Could not create document: {}", crate::settings::diagnostic(&e.to_string()))),
+        }
+        self.remember_files(file_before, tr("新建数据表", "New data table"));
         cx.notify();
     }
 
@@ -204,6 +233,10 @@ impl Workspace {
                 .child(row("create-document", "doc", tr("文档", "Document")).on_click(cx.listener(move |w, _, window, cx| w.create_doc(false, doc_parent.clone(), window, cx))))
                 .when(!crate::FEI_NOTES, |d| d.child(row("create-markdown", "doc-md", "Markdown").on_click(cx.listener(move |w, _, window, cx| w.create_doc(true, md_parent.clone(), window, cx)))))
                 .when(!self.is_shared(), |d| d.child(row("create-board", "whiteboard", crate::settings::text("画板")).on_click(cx.listener(move |w, _, window, cx| w.create_board(board_parent.clone(), window, cx)))))
+                .when(crate::DATATABLE && !self.is_shared(), |d| {
+                    let table_parent = folder_parent.clone();
+                    d.child(row("create-table", "table", crate::settings::text("数据表")).on_click(cx.listener(move |w, _, window, cx| w.create_table(table_parent.clone(), window, cx))))
+                })
                 .child(row("create-folder", "folder", tr("文件夹", "Folder")).on_click(cx.listener(move |w, _, window, cx| w.new_folder(folder_parent.clone(), window, cx))))
             }
         };
@@ -225,8 +258,11 @@ impl Workspace {
                 .on_click(cx.listener(move |w, _, window, cx| match &target { Some(t) => w.open(t, window, cx), #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))] None if w.is_shared() => w.return_to_shared_list(window, cx), None => w.show_view(View::Home, cx) }))
         };
         let path = self.ancestors(&id);
-        let mut crumbs = div().min_w_0().flex().items_center().text_size(px(17.)).line_height(px(24.))
-            .child(link("home".into(), if self.is_shared() { tr("共享文档", "Shared documents") } else { tr("我的文档", "My documents") }.into(), None));
+        // A folder under 本机文件 starts from there, which has no page of its own.
+        let first = if self.entries.iter().any(|e| e.id == id && e.meta.mounted()) {
+            div().flex_none().px(px(4.)).whitespace_nowrap().text_color(Theme::text_caption()).child(tr("本机文件", "Files on this computer")).into_any_element()
+        } else { link("home".into(), if self.is_shared() { tr("共享文档", "Shared documents") } else { tr("我的文档", "My documents") }.into(), None).into_any_element() };
+        let mut crumbs = div().min_w_0().flex().items_center().text_size(px(17.)).line_height(px(24.)).child(first);
         for (i, e) in path.iter().enumerate() {
             if path.len() > 2 && i > 0 && i < path.len() - 1 {
                 if i == 1 {

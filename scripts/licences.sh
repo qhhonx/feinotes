@@ -13,9 +13,9 @@ for p in deps:
     lic = p.get("license") or "—"
     lines.append("| " + p["name"] + " | " + p["version"] + " | " + lic + " |")
 src = open("THIRD_PARTY.md").read()
-src = re.sub(r"共 [0-9]+ 个包", "共 " + str(len(deps)) + " 个包", src)
-start = src.index("| 包 | 版本 | 许可 |")
-head = src[:start] + "| 包 | 版本 | 许可 |\n|---|---|---|\n"
+src = re.sub(r"lists [0-9]+ packages", "lists " + str(len(deps)) + " packages", src)
+start = src.index("| Package | Version | License |")
+head = src[:start] + "| Package | Version | License |\n|---|---|---|\n"
 tail = src[src.index("\n## ", start) + 1 :]
 open("THIRD_PARTY.md", "w").write(head + "\n".join(lines) + "\n\n" + tail)
 print("THIRD_PARTY.md:", len(deps), "packages")

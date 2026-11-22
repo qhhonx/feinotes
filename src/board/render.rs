@@ -685,8 +685,10 @@ fn paint_rotated_text(path: &SharedString, r: [f64; 4], d: &ElementDisplay, view
 /// An image file's pixels: the document picture cache for library files,
 /// decoded here once for data URLs.
 fn image_of(fd: &FileData, long: f32, data_images: &mut HashMap<String, Option<Arc<RenderImage>>>, window: &mut Window, cx: &mut App) -> Option<Arc<RenderImage>> {
-    if let Some(p) = fd.path.as_deref().and_then(crate::store::image_path) && p.fs_exists() {
-        return crate::editor::image::board_picture(&p, long, window, cx);
+    if let Some(p) = fd.path.as_deref().and_then(crate::store::image_path) {
+        if p.fs_exists() { return crate::editor::image::board_picture(&p, long, window, cx) }
+        // the web demo fetches it now; its arrival redraws the board
+        if fdl_core::vfs::pending(&p) { return None }
     }
     let url = fd.data_url.as_deref()?;
     data_images.entry(fd.id.clone()).or_insert_with(|| decode_data_url(url)).clone()
@@ -737,6 +739,15 @@ impl Sources {
     /// Starts decoding `fd` at `cap` unless that is under way; its result
     /// once there.
     fn poll(&mut self, fd: &FileData, cap: u32) -> Option<Option<geom::Src>> {
+        // The web build has no threads: it decodes here, once the picture has
+        // been fetched (asked again on the redraw its arrival brings; the
+        // count moves either way, so that redraw isn't served from the cache).
+        if cfg!(target_family = "wasm") {
+            self.map.entry(fd.id.clone()).or_default();  // where `get` keeps the result
+            self.jobs.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+            if fd.path.as_deref().and_then(crate::store::image_path).is_some_and(|p| fdl_core::vfs::pending(&p)) { return None }
+            return Some(source_of(fd, cap));
+        }
         let slot = self.map.entry(fd.id.clone()).or_default();
         if slot.job.as_ref().is_none_or(|(c, _)| *c != cap) {
             let out: Job = Arc::default();

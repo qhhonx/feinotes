@@ -33,9 +33,14 @@ pub fn mac() -> bool {
 }
 
 pub fn init(cx: &mut App) {
-    let base = cx.key_bindings().borrow().bindings().cloned().collect::<Vec<_>>();
+    // First launch runs this twice (its pages, then `main::start`): by then the
+    // bound keys are PC-mapped and customized, and mapping ctrl-a again would
+    // drop 全选 as Cocoa's line start. Keep the built-in keys read the first time.
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-    let base = if mac() { base } else { base.into_iter().filter_map(pc_binding).collect() };
+    let again = cx.has_global::<Shortcuts>();
+    let base = match cx.try_global::<Shortcuts>() { Some(s) => s.base.clone(), None => cx.key_bindings().borrow().bindings().cloned().collect::<Vec<_>>() };
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    let base = if mac() || again { base } else { base.into_iter().filter_map(pc_binding).collect() };
     let custom = fdl_core::vfs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     cx.set_global(Shortcuts { base, custom });
     rebuild(cx);
@@ -223,6 +228,7 @@ fn info(name: &str) -> Option<(usize, &'static str, &'static str)> {
         "FocusSearch" => (0, "搜索文档", "Search documents"),
         "ToggleShortcuts" => (0, "查看快捷键", "Show shortcuts"),
         "OpenFile" => (1, "打开 Markdown 文件", "Open Markdown file"),
+        "OpenFolder" => (1, "打开文件夹", "Open folder"),
         "ImportDoc" => (1, "导入文档", "Import documents"),
         "Save" => (1, "保存文档", "Save document"),
         "EditMode" => (1, "编辑模式", "Edit mode"),

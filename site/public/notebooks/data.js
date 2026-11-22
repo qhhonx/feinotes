@@ -21,20 +21,4 @@ const NOTEBOOKS = window.NOTEBOOKS = {
     uses: {"zh-Hans": ["年表和标本清单用表格，血流的计算用 KaTeX 公式。", "图版和档案照片就放在它们支撑的论点旁边。", "每条论文线索一个文件夹，5 万多词全文搜索，一秒找到。"], "zh-Hant": ["年表和標本清單用表格，血流的計算用 KaTeX 公式。", "圖版和檔案照片就放在它們支撐的論點旁邊。", "每條論文線索一個資料夾，5 萬多詞全文搜尋，一秒找到。"], "en": ["Tables for chronologies and specimen lists; KaTeX for the arithmetic of blood.", "Plates and archive photos sit right beside the argument they support.", "A folder per thread of the thesis; full-text search across 52k words."], "ja": ["年表や標本リストは表で、血流の計算は KaTeX の数式で。", "図版やアーカイブ写真は、それが支える議論のすぐ隣に。", "論文の糸ごとにフォルダを分け、5万語以上を全文検索。"], "fr": ["Des tableaux pour les chronologies et les spécimens ; KaTeX pour l’arithmétique du sang.", "Planches et photos d’archives à côté de l’argument qu’elles soutiennent.", "Un dossier par fil de la thèse ; recherche plein texte sur 52 000 mots."]},
     folders: ["Thesis — Seeing Inside", "Heart", "Maps & Cities", "Field Notes", "Journal"],
   },
-  "maya-lindqvist": {
-    name: "Maya Lindqvist",
-    stats: { notes: 43, pictures: 26, words: "36k" },
-    role: {
-      "zh-Hans": "B2B SaaS 高级产品经理", "zh-Hant": "B2B SaaS 資深產品經理", en: "Senior product manager, B2B SaaS",
-      ja: "B2B SaaS のシニアプロダクトマネージャー", fr: "Product manager senior, SaaS B2B" },
-    blurb: {
-      "zh-Hans": "在一家外勤服务软件公司负责排班产品。PRD、OKR、用户访谈、实验复盘、竞品拆解、一次故障的事后复盘，还有和老板的 1:1 记录。",
-      "zh-Hant": "在一家外勤服務軟體公司負責排班產品。PRD、OKR、使用者訪談、實驗複盤、競品拆解、一次故障的事後檢討，還有和主管的 1:1 紀錄。",
-      en: "Owns scheduling at a field-service software company. PRDs, OKRs, customer interviews, experiment readouts, competitor teardowns, an incident post-mortem and the running doc of her 1:1s.",
-      ja: "フィールドサービス向けソフトウェア企業でスケジューリング領域を担当。PRD、OKR、顧客インタビュー、実験の振り返り、競合分析、障害のポストモーテム、上司との 1:1 メモ。",
-      fr: "Responsable de la planification dans un éditeur de logiciels pour techniciens itinérants. PRD, OKR, entretiens clients, bilans d’expériences, analyses de concurrents, un post-mortem d’incident et le document de ses 1:1." },
-    quote: {"zh-Hans": "“没写下理由的决定，就等于没做决定。”", "zh-Hant": "「沒寫下理由的決定，就等於沒做決定。」", "en": "“If it isn’t written down with the reason, it wasn’t decided.”", "ja": "「理由と一緒に書いていない決定は、決定ではない。」", "fr": "« Une décision sans sa raison écrite n’est pas une décision. »"},
-    uses: {"zh-Hans": ["PRD 里有范围表、风险和上线清单，待办是真的会被勾掉的。", "用户访谈和研究综合，就挨着实验复盘的数据。", "1:1 记录、决策日志和每周笔记，全部可以搜索。"], "zh-Hant": ["PRD 裡有範圍表、風險和上線清單，待辦是真的會被勾掉的。", "使用者訪談和研究綜整，就挨著實驗複盤的數據。", "1:1 紀錄、決策日誌和每週筆記，全部可以搜尋。"], "en": ["PRDs with scope tables, risks and launch checklists that actually get ticked.", "Interview notes and research synthesis right next to the experiment readouts.", "A running 1:1 doc, a decision journal and weekly notes — all searchable."], "ja": ["PRD にはスコープ表、リスク、ローンチのチェックリスト。チェックは本当に入る。", "インタビューと調査のまとめは、実験結果のすぐ隣に。", "1:1 の記録、意思決定ジャーナル、週次ノート。すべて検索できる。"], "fr": ["Des PRD avec tableaux de périmètre, risques et checklists de lancement vraiment cochées.", "Entretiens et synthèse de recherche à côté des bilans d’expériences.", "Un document de 1:1, un journal de décisions et des notes hebdo — tout se cherche."]},
-    folders: ["Specs", "Research", "Data & Experiments", "Meetings", "Journal"],
-  },
 };

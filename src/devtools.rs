@@ -3,6 +3,7 @@
 //! (default /tmp). One step per line:
 //!   wait <ms> | key <keystroke> | type <text> | move x y | click x y |
 //!   dclick x y | rclick x y | drag x1 y1 x2 y2 | shot <name> | burst <name> n |
+//!   mods shift|cmd|alt|ctrl… (held for the mouse steps after it; `mods none` lets go) |
 //!   mark <text> (IME composition) | commit <text> | nkey <letter> (a real
 //!   key press through AppKit, so the active input method sees it) |
 //!   activate (make the window key; takes focus) | quit |
@@ -17,6 +18,8 @@
 //!   A recording is 30 fps through ffmpeg (`FDL_RECORD_FPS` overrides). Frames are rendered offscreen, so
 //!   they have no cursor, traffic lights or rounded corners; the pointer track
 //!   goes to `<file>.cursor` for compositing those in afterwards.
+
+mod priority;
 
 use gpui::*;
 use std::sync::Mutex;
@@ -58,6 +61,8 @@ static PICK: Mutex<Option<Vec<std::path::PathBuf>>> = Mutex::new(None);
 static BENCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Where the scripted drag is (`down`, `dragto`, `dragby`).
 static DRAG_AT: Mutex<(f32, f32)> = Mutex::new((0., 0.));
+/// Modifier keys held for the mouse steps that follow (`mods shift cmd` / `mods none`), as NSEvent flags.
+static MODS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The scripted answer to the next open / save dialog, if any.
 /// Files a script is dragging over the window (`filedrag`), as the Finder would.
@@ -383,6 +388,16 @@ pub fn start(window: &mut Window, cx: &mut App) {
                 });
                 continue;
             }
+            if cmd == "mods" {
+                let flag = |w: &str| match w { "shift" => 1u64 << 17, "ctrl" => 1 << 18, "alt" => 1 << 19, "cmd" => 1 << 20, _ => 0 };
+                MODS.store(rest.split_whitespace().map(flag).fold(0, |a, b| a | b), std::sync::atomic::Ordering::Relaxed);
+                continue;
+            }
+            if cmd == "check-priority" {
+                let ws = handle.downcast::<crate::app::Workspace>().unwrap();
+                ws.update(cx, |ws, window, cx| priority::step(rest, ws, window, cx)).unwrap();
+                continue;
+            }
             if cmd == "check-save-safety" {
                 cx.update(|cx| crate::app::check_save_safety(rest.trim(), cx));
                 continue;
@@ -641,7 +656,7 @@ mod native {
             let ev: *mut Object = msg_send![class!(NSEvent),
                 mouseEventWithType: kind
                 location: loc
-                modifierFlags: 0u64
+                modifierFlags: super::MODS.load(std::sync::atomic::Ordering::Relaxed)
                 timestamp: 0f64
                 windowNumber: number
                 context: nil

@@ -828,6 +828,9 @@ pub enum BlockKind {
     /// 画板 (`<whiteboard type="excalidraw">`): an Excalidraw scene, shared
     /// between undo snapshots until it changes.
     Board(std::sync::Arc<crate::whiteboard::Board>),
+    /// 数据表 (`<datatable src=…/>`): a view onto a `.sqlite` file; the data
+    /// lives in the file, the page only says which one.
+    DataTable(crate::table::TableRef),
     /// Any element we don't model; kept verbatim for round-tripping.
     Raw { tag: String, xml: String },
 }

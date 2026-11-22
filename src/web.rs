@@ -9,12 +9,11 @@ use std::borrow::Cow;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
-/// Fonts next to the page, in `fonts/`.
-const FONTS: &[&str] = &[
-    "Inter-Regular.ttf", "Inter-Italic.ttf", "Inter-Medium.ttf", "Inter-MediumItalic.ttf",
-    "Inter-SemiBold.ttf", "Inter-SemiBoldItalic.ttf", "Inter-Bold.ttf", "Inter-BoldItalic.ttf",
-    "JetBrainsMono-Regular.ttf", "JetBrainsMono-Italic.ttf", "JetBrainsMono-Bold.ttf",
-];
+/// Fonts next to the page, in `fonts/`: what the first screen draws with
+/// (web/index.html preloads these, alongside the wasm)…
+const FONTS: &[&str] = &["Inter-Regular.ttf", "Inter-Medium.ttf", "Inter-SemiBold.ttf", "Inter-Bold.ttf", "JetBrainsMono-Regular.ttf"];
+/// …and the rest, fetched once the window is up (text in them is laid out again as they arrive).
+const LATER_FONTS: &[&str] = &["Inter-Italic.ttf", "Inter-MediumItalic.ttf", "Inter-SemiBoldItalic.ttf", "Inter-BoldItalic.ttf", "JetBrainsMono-Italic.ttf", "JetBrainsMono-Bold.ttf"];
 
 async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     let window = web_sys::window().ok_or("no window")?;
@@ -38,8 +37,14 @@ fn library_url() -> String {
 }
 
 /// A bundle is a run of `[u32 LE path length][path][u32 LE data length][data]`,
-/// paths relative to the library folder (see web/bundle.py).
+/// paths relative to the library folder (see web/bundle.py); `QMZ1` and a zlib
+/// stream of that run when it is packed (static hosts don't compress it).
 fn unpack(bytes: &[u8], root: &std::path::Path) -> Result<usize, String> {
+    let inflated;
+    let bytes = match bytes.strip_prefix(b"QMZ1") {
+        Some(z) => { inflated = miniz_oxide::inflate::decompress_to_vec_zlib(z).map_err(|e| format!("bundle: {e:?}"))?; &inflated[..] }
+        None => bytes,
+    };
     let (mut at, mut n) = (0usize, 0usize);
     let take = |len: usize, at: &mut usize| -> Result<std::ops::Range<usize>, String> {
         let r = *at..*at + len;
@@ -119,6 +124,11 @@ fn run(fonts: Vec<Cow<'static, [u8]>>) {
         cx.spawn(async |cx| loop {
             cx.background_executor().timer(std::time::Duration::from_millis(150)).await;
             if ARRIVED.swap(false, std::sync::atomic::Ordering::Relaxed) { cx.update(|cx| cx.refresh_windows()) }
+        }).detach();
+        // italics and the rest of the monospace family: after the first frame
+        cx.spawn(async |cx| {
+            let fonts: Vec<Cow<'static, [u8]>> = futures::future::join_all(LATER_FONTS.iter().map(|f| fetch_font(f))).await.into_iter().flatten().map(Cow::Owned).collect();
+            cx.update(|cx| { if let Err(e) = cx.text_system().add_fonts(fonts) { log::warn!("fonts: {e}") } cx.refresh_windows(); });
         }).detach();
     });
 }

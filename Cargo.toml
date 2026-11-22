@@ -15,6 +15,7 @@ categories = ["text-editors"]
 # --features devtools`). Off in release builds: shipped apps cannot be scripted.
 [features]
 devtools = []
+datatable = []
 cloudkit-restore = []
 cloudkit-sync = ["cloudkit-restore", "dep:async-channel", "dep:flate2", "dep:loro", "dep:rusqlite", "dep:sha2", "fdl_core/sqlite-store"]
 
@@ -63,6 +64,8 @@ vello_cpu = { version = "=0.3.0", default-features = false, features = ["std", "
 # The web build (wasm32, a live demo for the site) runs single-threaded on stable.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 gpui_platform = { path = "vendor/zed/crates/gpui_platform", features = ["font-kit", "wayland", "x11"] }
+# 本机文件夹: deleting moves to the system's trash (src/system_trash.rs).
+trash = "5.2"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 gpui_platform = { path = "vendor/zed/crates/gpui_platform", default-features = false }
