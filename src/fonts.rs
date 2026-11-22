@@ -26,6 +26,18 @@ fn tidy(mut list: Vec<String>) -> Vec<String> {
     list
 }
 
+/// A downloaded family was registered (`font_downloads`): it counts as
+/// installed from now on, and what punctuation it draws is probed again (a
+/// probe before it arrived saw a fallback face).
+pub fn added(family: &str) {
+    if let Some(list) = FAMILIES.write().unwrap().as_mut() && !list.iter().any(|f| f.eq_ignore_ascii_case(family)) {
+        let mut l = (**list).clone();
+        l.push(family.to_string());
+        *list = Arc::new(tidy(l));
+    }
+    OWN_GLYPHS.write().unwrap().retain(|(f, _)| !f.eq_ignore_ascii_case(family));
+}
+
 /// Whether `family` is installed, ignoring case (the platform's spelling of a
 /// family need not match the one saved).
 pub fn installed(family: &str, cx: &App) -> bool {
@@ -67,6 +79,8 @@ pub struct Glyphs { pub cjk_punct: bool, pub quotes: bool }
 pub fn probe(family: &str, cx: &App) {
     let family = family.trim();
     if family.is_empty() || OWN_GLYPHS.read().unwrap().iter().any(|(f, _)| f == family) { return }
+    // a downloaded font still loading: probed once it is registered (`added`)
+    if crate::font_downloads::by_family(family).is_some_and(|e| !crate::font_downloads::registered(&e.id) && !installed(family, cx)) { return }
     let ts = cx.text_system();
     let id = ts.resolve_font(&gpui::font(family.to_string()));
     let width = |ch| ts.advance(id, gpui::px(16.), ch).ok().map(|s| s.width);

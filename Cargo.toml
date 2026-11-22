@@ -17,7 +17,11 @@ categories = ["text-editors"]
 # still being polished. Off: no way to make one; existing ones show a read-only
 # placeholder and are left as they are (`crate::DATATABLE`).
 [features]
-devtools = []
+devtools = ["embed-xiaolai"]
+# `embed-xiaolai`: the board's CJK font (14 MB) compiled in instead of fetched
+# when first needed (src/font_downloads.rs). On with `devtools`, so harness
+# screenshots never depend on the network; off in shipped builds.
+embed-xiaolai = []
 datatable = []
 cloudkit-restore = []
 cloudkit-sync = ["cloudkit-restore", "dep:async-channel", "dep:flate2", "dep:loro", "dep:rusqlite", "fdl_core/sqlite-store"]
@@ -53,6 +57,8 @@ base64 = "0.22"
 resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
 # the board's Xiaolai font is stored deflated (src/board/fonts.rs)
 miniz_oxide = "0.9"
+# 设置's font lists read what each installed family is (src/font_classes.rs)
+ttf-parser = "0.25"
 minisign-verify = "0.3.0"
 sha2 = "0.10.9"
 log = "0.4"
@@ -91,7 +97,6 @@ flate2 = { version = "1.1", optional = true }
 loro = { version = "1.18.0", default-features = false, optional = true }
 # The system SQLite on supported macOS versions can lack symbols rusqlite uses.
 rusqlite = { version = "0.41.1", features = ["bundled"], optional = true }
-sha2 = { version = "0.10.9", optional = true }
 
 # editor::text::tests drives the macOS text system directly.
 [target.'cfg(target_os = "macos")'.dev-dependencies]

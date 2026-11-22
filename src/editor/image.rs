@@ -2338,7 +2338,7 @@ fn download(url: &str, dest: &Path) -> bool {
     }
     let tmp = dest.with_extension("part");
     #[cfg(target_os = "ios")]
-    let fetched = download_ios(url,&tmp);
+    let fetched = download_ios(url,&tmp,false);
     #[cfg(not(target_os = "ios"))]
     let fetched = std::process::Command::new("curl")
         .args(["-fsSL", "--max-time", "60", "-o"])
@@ -2359,9 +2359,9 @@ fn download(url: &str, dest: &Path) -> bool {
 }
 
 #[cfg(target_os = "ios")]
-fn download_ios(url: &str, destination: &Path) -> bool {
+pub(crate) fn download_ios(url: &str, destination: &Path, https_only: bool) -> bool {
     use std::ffi::{CString,c_char,c_void};
-    unsafe extern "C" { fn fei_ios_download_image(url: *const c_char,path: *const c_char,complete: extern "C" fn(bool,*mut c_void),context: *mut c_void); }
+    unsafe extern "C" { fn fei_ios_download_file(url: *const c_char,path: *const c_char,https_only: bool,complete: extern "C" fn(bool,*mut c_void),context: *mut c_void); }
     extern "C" fn complete(ok: bool, context: *mut c_void) {
         let sender = unsafe { Box::from_raw(context.cast::<std::sync::mpsc::Sender<bool>>()) };
         let _ = sender.send(ok);
@@ -2369,7 +2369,7 @@ fn download_ios(url: &str, destination: &Path) -> bool {
     let (Ok(url),Ok(path)) = (CString::new(url),CString::new(destination.to_string_lossy().as_bytes())) else { return false };
     let (sender,receiver) = std::sync::mpsc::channel();
     let context = Box::into_raw(Box::new(sender)).cast();
-    unsafe { fei_ios_download_image(url.as_ptr(),path.as_ptr(),complete,context); }
+    unsafe { fei_ios_download_file(url.as_ptr(),path.as_ptr(),https_only,complete,context); }
     receiver.recv().unwrap_or(false)
 }
 

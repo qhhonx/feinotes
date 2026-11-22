@@ -1,10 +1,14 @@
 # Updates and forced updates
 
-`src/update.rs` keeps an installed copy current. Everything it trusts is signed with the release minisign key (`packaging/update-key.pub`; the secret key stays with the maintainer).
+`src/update.rs` keeps an installed copy current; fonts fetched on demand are in [Downloadable fonts](FONTS.md). Everything it trusts is signed with the release minisign key (`packaging/update-key.pub`; the secret key stays with the maintainer).
 
 ## Ordinary updates
 
 `scripts/publish-downloads.sh <packages…>` uploads each package to `v<version>/`, signs it (trusted comment: the package's file name) and writes `latest/update-<platform>.json` last. The app reads that manifest 10 seconds after launch and every 12 hours while Settings › About › Automatic updates is on. It downloads only when the user asks. The manifest is unsigned, so it can name only a package on download.quiet.md over HTTPS whose signature carries that package's own name, version included. Only newer versions are offered.
+
+## Fonts
+
+Xiaolai, the board's CJK handwriting font, and the downloadable document fonts are fetched from `fonts/` on download.quiet.md when first needed. See [Downloadable fonts](FONTS.md). Publishing packages uploads them first.
 
 ## Forced updates
 

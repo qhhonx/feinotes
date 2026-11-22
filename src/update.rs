@@ -528,14 +528,22 @@ fn curl(args: &[&str]) -> Result<Vec<u8>, String> { curl_to(args, Stdio::piped()
 
 /// `stdout`: piped (returned) or a file to download into.
 fn curl_to(args: &[&str], stdout: Stdio) -> Result<Vec<u8>, String> {
-    // HTTPS only, redirects too; a test server (QUIET_MD_UPDATE_URL) may be plain http.
-    let proto = if override_url().is_some() { "=https,http" } else { "=https" };
-    let out = command("curl").args(["-fsSL", "--proto", proto, "--proto-redir", proto, "--connect-timeout", "15"]).args(args)
+    let out = curl_command(override_url().is_some()).args(args)
         .stdin(Stdio::null()).stdout(stdout).stderr(Stdio::piped()).output()
         .map_err(|e| format!("curl: {e}"))?;
     if out.status.success() { return Ok(out.stdout) }
     let msg = String::from_utf8_lossy(&out.stderr).trim().trim_start_matches("curl: ").to_string();
     Err(format!("{}: {msg}", crate::settings::tr("无法连接更新服务器", "Could not reach the update server")))
+}
+
+/// `curl` as every download here runs it (fonts too: font_downloads):
+/// HTTPS only, redirects too, unless `testing` (a test server may be plain
+/// http); the system's proxy settings, as curl reads them.
+pub(crate) fn curl_command(testing: bool) -> Command {
+    let proto = if testing { "=https,http" } else { "=https" };
+    let mut c = command("curl");
+    c.args(["-fsSL", "--proto", proto, "--proto-redir", proto, "--connect-timeout", "15"]);
+    c
 }
 
 /// A command that opens no console window on Windows.

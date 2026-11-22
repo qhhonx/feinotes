@@ -600,6 +600,9 @@ impl Workspace {
             if ws.view == View::Settings || ws.is_shared() { cx.notify(); }
         }).detach();
         crate::settings::check_fonts(cx);
+        // 文档字体's download list shows progress and what arrived.
+        cx.observe_global::<crate::font_downloads::Tick>(|ws, cx| if ws.font_menu.is_some() { cx.notify() }).detach();
+        cx.observe_global::<crate::font_downloads::Changed>(|_, cx| cx.notify()).detach();
         if !cx.has_global::<SharedStore>() { cx.set_global(SharedStore::open().expect("open document library")); }
         let mut store = store.unwrap_or_else(|| cx.global::<SharedStore>().clone());
         let entries = store.list();
@@ -1444,7 +1447,7 @@ impl Workspace {
         self.theme_menu = None;
         self.lang_menu = None;
         self.pref_menu = None;
-        self.font_menu = None;
+        self.close_font_menu(cx);
         self.home.sort_menu = false;
         cx.notify();
     }

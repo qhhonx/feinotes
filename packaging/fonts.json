@@ -1,0 +1,414 @@
+{
+ "_doc": "Fonts fetched on demand (src/font_downloads.rs, docs/FONTS.md). tools/fonts/stage.py --fill writes name/sha256/size from `from`; the app reads id … files.",
+ "fonts": [
+  {
+   "id": "xiaolai",
+   "family": "Xiaolai",
+   "zh": "小赖手写体",
+   "en": "Xiaolai",
+   "group": "cjk",
+   "class": "kai",
+   "version": "Excalidraw 3a317b5",
+   "license": "OFL-1.1",
+   "home": "https://github.com/excalidraw/excalidraw",
+   "license_from": "repo:assets/fonts/excalidraw/OFL.txt",
+   "files": [
+    {
+     "stem": "xiaolai",
+     "name": "xiaolai-630ab9f0e12f.ttf.zlib",
+     "sha256": "630ab9f0e12f6115c65af0b1681b09321769178e0847254457ca91a159049dc1",
+     "size": 14232970,
+     "from": "repo:assets/fonts/excalidraw/Xiaolai-Regular.ttf.zlib",
+     "zlib": true
+    }
+   ]
+  },
+  {
+   "id": "lxgw-wenkai",
+   "family": "LXGW WenKai",
+   "zh": "霞鹜文楷",
+   "en": "LXGW WenKai",
+   "group": "cjk",
+   "class": "kai",
+   "version": "1.530",
+   "license": "OFL-1.1",
+   "home": "https://github.com/lxgw/LxgwWenKai",
+   "license_from": "https://raw.githubusercontent.com/lxgw/LxgwWenKai/v1.530/OFL.txt",
+   "files": [
+    {
+     "stem": "lxgw-wenkai-regular",
+     "name": "lxgw-wenkai-regular-2d73eea94ad8.ttf",
+     "sha256": "2d73eea94ad808999d90c0000c239a84a33b09d4bc6ab6c5b8bbf1eda8a7fc8b",
+     "size": 25928940,
+     "from": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.530/LXGWWenKai-Regular.ttf"
+    },
+    {
+     "stem": "lxgw-wenkai-medium",
+     "name": "lxgw-wenkai-medium-f4b8a34d1f83.ttf",
+     "sha256": "f4b8a34d1f838fe411540cb7c97b1c384ac9738a876c4104500bc42508b2312a",
+     "size": 25800076,
+     "from": "https://github.com/lxgw/LxgwWenKai/releases/download/v1.530/LXGWWenKai-Medium.ttf"
+    }
+   ]
+  },
+  {
+   "id": "zhuque-fangsong",
+   "family": "Zhuque Fangsong (technical preview)",
+   "zh": "朱雀仿宋",
+   "en": "Zhuque Fangsong",
+   "group": "cjk",
+   "class": "song",
+   "version": "0.212",
+   "license": "OFL-1.1",
+   "home": "https://github.com/TrionesType/zhuque",
+   "license_from": "https://raw.githubusercontent.com/TrionesType/zhuque/v0.212/LICENSE.txt",
+   "files": [
+    {
+     "stem": "zhuque-fangsong-regular",
+     "name": "zhuque-fangsong-regular-558c62730844.ttf",
+     "sha256": "558c62730844fe54ba220146ed62f859d4e2880188d92d985f8921c6e3743bc4",
+     "size": 8824084,
+     "from": "https://github.com/TrionesType/zhuque/releases/download/v0.212/ZhuqueFangsong-v0.212.zip#ZhuqueFangsong-Regular.ttf"
+    }
+   ]
+  },
+  {
+   "id": "lxgw-wenkai-screen",
+   "family": "LXGW WenKai Screen",
+   "zh": "霞鹜文楷 屏幕阅读版",
+   "en": "LXGW WenKai Screen",
+   "group": "cjk",
+   "class": "kai",
+   "trial": true,
+   "version": "1.530",
+   "license": "OFL-1.1",
+   "home": "https://github.com/lxgw/LxgwWenKai-Screen",
+   "license_from": "https://raw.githubusercontent.com/lxgw/LxgwWenKai-Screen/v1.530/OFL.txt",
+   "files": [
+    {
+     "stem": "lxgw-wenkai-screen",
+     "name": "lxgw-wenkai-screen-abd13364163e.ttf",
+     "sha256": "abd13364163e3cd84372b333f2fdcee9efb848634668f1c0ce5788dcd059ee61",
+     "size": 26095590,
+     "from": "https://github.com/lxgw/LxgwWenKai-Screen/releases/download/v1.530/LXGWWenKaiScreen.ttf"
+    }
+   ]
+  },
+  {
+   "id": "noto-serif-sc",
+   "family": "Noto Serif SC",
+   "zh": "思源宋体",
+   "en": "Source Han Serif SC",
+   "group": "cjk",
+   "class": "song",
+   "trial": true,
+   "version": "2.003",
+   "license": "OFL-1.1",
+   "home": "https://github.com/notofonts/noto-cjk",
+   "license_from": "https://raw.githubusercontent.com/notofonts/noto-cjk/Serif2.003/Serif/LICENSE",
+   "files": [
+    {
+     "stem": "noto-serif-sc-regular",
+     "name": "noto-serif-sc-regular-e8f396decc1f.otf",
+     "sha256": "e8f396decc1f0963a016a989c3d8852e863d1350996f573860a80767c83a1cd3",
+     "size": 11625800,
+     "from": "https://github.com/notofonts/noto-cjk/releases/download/Serif2.003/14_NotoSerifSC.zip#SubsetOTF/SC/NotoSerifSC-Regular.otf"
+    },
+    {
+     "stem": "noto-serif-sc-bold",
+     "name": "noto-serif-sc-bold-24693d48bdb9.otf",
+     "sha256": "24693d48bdb9152f0a06b02af625638a1097abd6de4010ebba027f6e82710527",
+     "size": 12094336,
+     "from": "https://github.com/notofonts/noto-cjk/releases/download/Serif2.003/14_NotoSerifSC.zip#SubsetOTF/SC/NotoSerifSC-Bold.otf"
+    }
+   ]
+  },
+  {
+   "id": "literata",
+   "family": "Literata",
+   "zh": "Literata",
+   "en": "Literata",
+   "group": "latin",
+   "class": "latin-serif",
+   "trial": true,
+   "version": "3.103",
+   "license": "OFL-1.1",
+   "home": "https://github.com/googlefonts/literata",
+   "license_from": "https://github.com/googlefonts/literata/releases/download/3.103/3.103.zip#OFL.txt",
+   "files": [
+    {
+     "stem": "literata-regular",
+     "name": "literata-regular-0390890de9bb.ttf",
+     "sha256": "0390890de9bb9d5862a6ba4125b82c61792ccc3d66b63e73eee75c1a16fcd208",
+     "size": 319964,
+     "from": "https://github.com/googlefonts/literata/releases/download/3.103/3.103.zip#fonts/ttf/Literata-Regular.ttf"
+    },
+    {
+     "stem": "literata-bold",
+     "name": "literata-bold-b6af95b3b443.ttf",
+     "sha256": "b6af95b3b443cdbce964aa06741596987f2f5c3ede46a2bc846e5addd99d061f",
+     "size": 331304,
+     "from": "https://github.com/googlefonts/literata/releases/download/3.103/3.103.zip#fonts/ttf/Literata-Bold.ttf"
+    },
+    {
+     "stem": "literata-italic",
+     "name": "literata-italic-198f70cc9a17.ttf",
+     "sha256": "198f70cc9a17bab578553fa274b81984d58c440efe26bc06f1d841c194b6691a",
+     "size": 304104,
+     "from": "https://github.com/googlefonts/literata/releases/download/3.103/3.103.zip#fonts/ttf/Literata-Italic.ttf"
+    },
+    {
+     "stem": "literata-bolditalic",
+     "name": "literata-bolditalic-1dade59381ad.ttf",
+     "sha256": "1dade59381ad02f4679d7e993a7a406472e587ac332af7a6168d3ad9214a99dc",
+     "size": 318888,
+     "from": "https://github.com/googlefonts/literata/releases/download/3.103/3.103.zip#fonts/ttf/Literata-BoldItalic.ttf"
+    }
+   ]
+  },
+  {
+   "id": "source-serif-4",
+   "family": "Source Serif 4",
+   "zh": "Source Serif 4",
+   "en": "Source Serif 4",
+   "group": "latin",
+   "class": "latin-serif",
+   "trial": true,
+   "version": "4.005",
+   "license": "OFL-1.1",
+   "home": "https://github.com/adobe-fonts/source-serif",
+   "license_from": "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip#source-serif-4.005_Desktop/LICENSE.md",
+   "files": [
+    {
+     "stem": "source-serif-4-regular",
+     "name": "source-serif-4-regular-e5a4ee6a3d87.ttf",
+     "sha256": "e5a4ee6a3d87bb9024796be390c6771e2a0eb1883dae25effaf57ca01668e24b",
+     "size": 261868,
+     "from": "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip#source-serif-4.005_Desktop/TTF/SourceSerif4-Regular.ttf"
+    },
+    {
+     "stem": "source-serif-4-bold",
+     "name": "source-serif-4-bold-7cf4f4e1ad74.ttf",
+     "sha256": "7cf4f4e1ad74f45058d5bc61716b82560442fbdcd9d3654d2dea96bf6c683d86",
+     "size": 271568,
+     "from": "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip#source-serif-4.005_Desktop/TTF/SourceSerif4-Bold.ttf"
+    },
+    {
+     "stem": "source-serif-4-it",
+     "name": "source-serif-4-it-9d2950a8f1da.ttf",
+     "sha256": "9d2950a8f1da66e21502c35d646a1d2148e79f9ea43fd2158cf02f5232e7f430",
+     "size": 187808,
+     "from": "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip#source-serif-4.005_Desktop/TTF/SourceSerif4-It.ttf"
+    },
+    {
+     "stem": "source-serif-4-boldit",
+     "name": "source-serif-4-boldit-7b215b37f887.ttf",
+     "sha256": "7b215b37f8873f5579f3f8d2ded3ca7c588e2f435cd996605ebfc5befe2cd5eb",
+     "size": 191832,
+     "from": "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_Desktop.zip#source-serif-4.005_Desktop/TTF/SourceSerif4-BoldIt.ttf"
+    }
+   ]
+  },
+  {
+   "id": "ia-writer-quattro",
+   "family": "iA Writer Quattro S",
+   "zh": "iA Writer Quattro",
+   "en": "iA Writer Quattro",
+   "group": "latin",
+   "class": "latin-sans",
+   "trial": true,
+   "version": "git c658867",
+   "license": "OFL-1.1",
+   "home": "https://github.com/iaolo/iA-Fonts",
+   "license_from": "https://raw.githubusercontent.com/iaolo/iA-Fonts/c6588670c71e9ac628acc27b72cde4bf12726b7f/iA%20Writer%20Quattro/LICENSE.md",
+   "files": [
+    {
+     "stem": "ia-writer-quattro-regular",
+     "name": "ia-writer-quattro-regular-6e367e0e00e0.ttf",
+     "sha256": "6e367e0e00e057d383680ffae7b64f520d06e1f96abd28bddd67d424fee8e8df",
+     "size": 119772,
+     "from": "https://raw.githubusercontent.com/iaolo/iA-Fonts/c6588670c71e9ac628acc27b72cde4bf12726b7f/iA%20Writer%20Quattro/Static/iAWriterQuattroS-Regular.ttf"
+    },
+    {
+     "stem": "ia-writer-quattro-bold",
+     "name": "ia-writer-quattro-bold-40dbb1ffed47.ttf",
+     "sha256": "40dbb1ffed472cdc96a0133073bc777a40782883678b80dfd31677d5963b72b9",
+     "size": 120404,
+     "from": "https://raw.githubusercontent.com/iaolo/iA-Fonts/c6588670c71e9ac628acc27b72cde4bf12726b7f/iA%20Writer%20Quattro/Static/iAWriterQuattroS-Bold.ttf"
+    },
+    {
+     "stem": "ia-writer-quattro-italic",
+     "name": "ia-writer-quattro-italic-84c19517be57.ttf",
+     "sha256": "84c19517be57e8c0521f43a1d5c29766b1f0cb9353300e819b193da1b02f47ac",
+     "size": 105028,
+     "from": "https://raw.githubusercontent.com/iaolo/iA-Fonts/c6588670c71e9ac628acc27b72cde4bf12726b7f/iA%20Writer%20Quattro/Static/iAWriterQuattroS-Italic.ttf"
+    },
+    {
+     "stem": "ia-writer-quattro-bolditalic",
+     "name": "ia-writer-quattro-bolditalic-f61aa3c97d61.ttf",
+     "sha256": "f61aa3c97d611dec01c7414e07b9212a164501b6d1a800af0dcda11acf4eabb0",
+     "size": 104520,
+     "from": "https://raw.githubusercontent.com/iaolo/iA-Fonts/c6588670c71e9ac628acc27b72cde4bf12726b7f/iA%20Writer%20Quattro/Static/iAWriterQuattroS-BoldItalic.ttf"
+    }
+   ]
+  },
+  {
+   "id": "atkinson-hyperlegible",
+   "family": "Atkinson Hyperlegible",
+   "zh": "Atkinson Hyperlegible",
+   "en": "Atkinson Hyperlegible",
+   "group": "latin",
+   "class": "latin-sans",
+   "trial": true,
+   "version": "google/fonts 5e5a3e0",
+   "license": "OFL-1.1",
+   "home": "https://github.com/googlefonts/atkinson-hyperlegible",
+   "license_from": "https://raw.githubusercontent.com/google/fonts/5e5a3e04a1af8effa6e5708e4e963a49faff93ab/ofl/atkinsonhyperlegible/OFL.txt",
+   "files": [
+    {
+     "stem": "atkinson-hyperlegible-regular",
+     "name": "atkinson-hyperlegible-regular-7fb917c89019.ttf",
+     "sha256": "7fb917c89019896d0b52ee84b7cbb3304c18cb90b19a62f5e32712bd23e97669",
+     "size": 54348,
+     "from": "https://raw.githubusercontent.com/google/fonts/5e5a3e04a1af8effa6e5708e4e963a49faff93ab/ofl/atkinsonhyperlegible/AtkinsonHyperlegible-Regular.ttf"
+    },
+    {
+     "stem": "atkinson-hyperlegible-bold",
+     "name": "atkinson-hyperlegible-bold-5a3b0c8cc8ca.ttf",
+     "sha256": "5a3b0c8cc8ca545155150b4512a1fa248298df121c50d6557e651e61fbdab92f",
+     "size": 55256,
+     "from": "https://raw.githubusercontent.com/google/fonts/5e5a3e04a1af8effa6e5708e4e963a49faff93ab/ofl/atkinsonhyperlegible/AtkinsonHyperlegible-Bold.ttf"
+    },
+    {
+     "stem": "atkinson-hyperlegible-italic",
+     "name": "atkinson-hyperlegible-italic-021beda4d3c6.ttf",
+     "sha256": "021beda4d3c6edfc78872e436d74009f9a1bcb294331908fe5747c61d3dcc514",
+     "size": 54892,
+     "from": "https://raw.githubusercontent.com/google/fonts/5e5a3e04a1af8effa6e5708e4e963a49faff93ab/ofl/atkinsonhyperlegible/AtkinsonHyperlegible-Italic.ttf"
+    },
+    {
+     "stem": "atkinson-hyperlegible-bolditalic",
+     "name": "atkinson-hyperlegible-bolditalic-7a46f1b0ef2f.ttf",
+     "sha256": "7a46f1b0ef2f64b61065c1a6b5a11fcb9b019b44062d88ba121a083cc39e86bf",
+     "size": 55288,
+     "from": "https://raw.githubusercontent.com/google/fonts/5e5a3e04a1af8effa6e5708e4e963a49faff93ab/ofl/atkinsonhyperlegible/AtkinsonHyperlegible-BoldItalic.ttf"
+    }
+   ]
+  },
+  {
+   "id": "maple-mono-cn",
+   "family": "Maple Mono CN",
+   "zh": "Maple Mono 中文版",
+   "en": "Maple Mono CN",
+   "group": "mono",
+   "class": "mono",
+   "trial": true,
+   "version": "7.9",
+   "license": "OFL-1.1",
+   "home": "https://github.com/subframe7536/maple-font",
+   "license_from": "https://github.com/subframe7536/maple-font/releases/download/v7.9/MapleMono-CN.zip#LICENSE.txt",
+   "files": [
+    {
+     "stem": "maple-mono-cn-regular",
+     "name": "maple-mono-cn-regular-e6338c3dca9a.ttf",
+     "sha256": "e6338c3dca9a3bed3fb81f43c8bb8feca3b6ad54829f5a3229527d030a321dbd",
+     "size": 18594640,
+     "from": "https://github.com/subframe7536/maple-font/releases/download/v7.9/MapleMono-CN.zip#MapleMono-CN-Regular.ttf"
+    },
+    {
+     "stem": "maple-mono-cn-bold",
+     "name": "maple-mono-cn-bold-99254c34b3fe.ttf",
+     "sha256": "99254c34b3fe3214fd4b5d39ceb7bdf9f2be5d4f99efc75bf3a9705f8f8b318e",
+     "size": 18549392,
+     "from": "https://github.com/subframe7536/maple-font/releases/download/v7.9/MapleMono-CN.zip#MapleMono-CN-Bold.ttf"
+    }
+   ]
+  },
+  {
+   "id": "rec-mono-casual",
+   "family": "Rec Mono Casual",
+   "zh": "Recursive Mono Casual",
+   "en": "Recursive Mono Casual",
+   "group": "mono",
+   "class": "mono",
+   "trial": true,
+   "version": "1.085",
+   "license": "OFL-1.1",
+   "home": "https://github.com/arrowtype/recursive",
+   "license_from": "https://github.com/arrowtype/recursive/releases/download/v1.085/ArrowType-Recursive-1.085.zip#ArrowType-Recursive-1.085/LICENSE.txt",
+   "files": [
+    {
+     "stem": "rec-mono-casual-regular",
+     "name": "rec-mono-casual-regular-0f534445f3b5.ttf",
+     "sha256": "0f534445f3b591608b69d68de74e9cc81e5030f6a3c855db461d8a1f481cc233",
+     "size": 483004,
+     "from": "https://github.com/arrowtype/recursive/releases/download/v1.085/ArrowType-Recursive-1.085.zip#ArrowType-Recursive-1.085/Recursive_Code/RecMonoCasual/RecMonoCasual-Regular-1.085.ttf"
+    },
+    {
+     "stem": "rec-mono-casual-bold",
+     "name": "rec-mono-casual-bold-539892e40f53.ttf",
+     "sha256": "539892e40f53251caf14db86e44a9d2458b6b773adc4421b8d2892341898ba4b",
+     "size": 479612,
+     "from": "https://github.com/arrowtype/recursive/releases/download/v1.085/ArrowType-Recursive-1.085.zip#ArrowType-Recursive-1.085/Recursive_Code/RecMonoCasual/RecMonoCasual-Bold-1.085.ttf"
+    },
+    {
+     "stem": "rec-mono-casual-italic",
+     "name": "rec-mono-casual-italic-4afcdb84e4ef.ttf",
+     "sha256": "4afcdb84e4ef44af2c4640f5b8f04f70c097eaaf7cc22766a8dc46ed6ee0c957",
+     "size": 465036,
+     "from": "https://github.com/arrowtype/recursive/releases/download/v1.085/ArrowType-Recursive-1.085.zip#ArrowType-Recursive-1.085/Recursive_Code/RecMonoCasual/RecMonoCasual-Italic-1.085.ttf"
+    },
+    {
+     "stem": "rec-mono-casual-bolditalic",
+     "name": "rec-mono-casual-bolditalic-93ffeb304f3d.ttf",
+     "sha256": "93ffeb304f3d431e5182fd9a5eaab7e4991efd090d2938e7a6b74bd6335db1b2",
+     "size": 484184,
+     "from": "https://github.com/arrowtype/recursive/releases/download/v1.085/ArrowType-Recursive-1.085.zip#ArrowType-Recursive-1.085/Recursive_Code/RecMonoCasual/RecMonoCasual-BoldItalic-1.085.ttf"
+    }
+   ]
+  },
+  {
+   "id": "ia-writer-duo",
+   "family": "iA Writer Duo S",
+   "zh": "iA Writer Duo",
+   "en": "iA Writer Duo",
+   "group": "mono",
+   "class": "mono",
+   "trial": true,
+   "version": "git c658867",
+   "license": "OFL-1.1",
+   "home": "https://github.com/iaolo/iA-Fonts",
+   "license_from": "https://raw.githubusercontent.com/iaolo/iA-Fonts/c6588670c71e9ac628acc27b72cde4bf12726b7f/iA%20Writer%20Duo/LICENSE.md",
+   "files": [
+    {
+     "stem": "ia-writer-duo-regular",
+     "name": "ia-writer-duo-regular-454a20d2b456.ttf",
+     "sha256": "454a20d2b4569ba66810f0f710bb022065cbaac11c82fdcef677545ab27329f2",
+     "size": 120696,
+     "from": "https://raw.githubusercontent.com/iaolo/iA-Fonts/c6588670c71e9ac628acc27b72cde4bf12726b7f/iA%20Writer%20Duo/Static/iAWriterDuoS-Regular.ttf"
+    },
+    {
+     "stem": "ia-writer-duo-bold",
+     "name": "ia-writer-duo-bold-779963585007.ttf",
+     "sha256": "779963585007973753ba1c4aa85d67b21c29854c1f9730411d80dc0c879b0908",
+     "size": 121460,
+     "from": "https://raw.githubusercontent.com/iaolo/iA-Fonts/c6588670c71e9ac628acc27b72cde4bf12726b7f/iA%20Writer%20Duo/Static/iAWriterDuoS-Bold.ttf"
+    },
+    {
+     "stem": "ia-writer-duo-italic",
+     "name": "ia-writer-duo-italic-8e15abab4760.ttf",
+     "sha256": "8e15abab476026abd362d079fd519e9c1220e0ab32b3ce3e4c13695af53e7153",
+     "size": 105824,
+     "from": "https://raw.githubusercontent.com/iaolo/iA-Fonts/c6588670c71e9ac628acc27b72cde4bf12726b7f/iA%20Writer%20Duo/Static/iAWriterDuoS-Italic.ttf"
+    },
+    {
+     "stem": "ia-writer-duo-bolditalic",
+     "name": "ia-writer-duo-bolditalic-830443f3ec75.ttf",
+     "sha256": "830443f3ec75a277ec00917a7ed0523a93869ea9a7ea5f8d9f1d643b25b6cd47",
+     "size": 105252,
+     "from": "https://raw.githubusercontent.com/iaolo/iA-Fonts/c6588670c71e9ac628acc27b72cde4bf12726b7f/iA%20Writer%20Duo/Static/iAWriterDuoS-BoldItalic.ttf"
+    }
+   ]
+  }
+ ]
+}

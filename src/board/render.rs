@@ -210,6 +210,8 @@ pub struct Painter {
     vello: Option<Box<vello::Vello>>,
     /// What the last vello frame showed (unchanged: shown again as is).
     vello_key: Option<u64>,
+    /// Whether Xiaolai was here at the last paint (`clear` when it comes).
+    xiaolai: bool,
 }
 
 /// The paint order of the last scene state, and what it was built from:
@@ -238,6 +240,15 @@ fn order_sig(e: &Element) -> u64 {
 fn bucket(zoom: f32) -> f32 { 2f32.powf((zoom.max(1e-3).log2() * 4.).floor() / 4.) }
 
 impl Painter {
+    /// Forgets what it drew (a font arrived: text shapes and sprites change).
+    pub fn clear(&mut self) {
+        let trash = &mut self.trash;
+        self.cache.drain().for_each(|(_, mut c)| trash.extend(c.image.take().and_then(|i| i.1).map(|i| i.0)));
+        self.order = None;
+        self.live = None;
+        self.vello_key = None;
+    }
+
     /// The common bounds of the scene as last synced (None when empty).
     pub fn content_bounds(&mut self) -> Option<[f64; 4]> {
         let s = &self.scene;
@@ -318,6 +329,7 @@ impl Painter {
             }).collect();
             &scoped
         } else { files };
+        if self.xiaolai != crate::font_downloads::font(crate::font_downloads::XIAOLAI).is_some() { self.xiaolai = !self.xiaolai; self.clear(); }
         let m = measure(window);
         let visible = { let a = view.to_scene(clip.origin); let b = view.to_scene(clip.bottom_right()); [a[0], a[1], b[0], b[1]] };
         let b = bucket(view.zoom);

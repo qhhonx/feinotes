@@ -268,6 +268,10 @@ fn copy(me: &mut BoardView, cx: &mut Context<BoardView>) {
 /// clipboard copies the scene goes along (the SVG `<metadata>` payload, the
 /// PNG `tEXt` chunk, as its file exports embed it), so pasting the picture
 /// back gives the elements.
+///
+/// CJK text embeds Xiaolai (`export_svg`, `fonts::load_into`): while it is
+/// still being fetched (`crate::font_downloads`) the copy waits for it a few
+/// seconds, then goes ahead with the fallback fonts and says so.
 fn copy_picture(me: &mut BoardView, png: bool, cx: &mut Context<BoardView>) {
     let all = me.scene.elements_including_deleted();
     let els: Vec<super::types::Element> = if me.app.selected_element_ids.is_empty() { me.scene.non_deleted_elements().cloned().collect() }
@@ -276,6 +280,29 @@ fn copy_picture(me: &mut BoardView, png: bool, cx: &mut Context<BoardView>) {
     let used: rustc_hash::FxHashSet<&str> = els.iter().filter_map(|e| e.image().and_then(|i| i.file_id.as_deref())).collect();
     let files: std::collections::BTreeMap<_, _> = me.files.iter().filter(|(k, _)| used.contains(k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
     let bd = crate::whiteboard::Board { elements: els, files, app: me.app.for_export(), height: me.height };
+    let cjk = crate::font_downloads::font(XL).is_none() && bd.elements.iter().any(|e| e.text().is_some_and(|t| super::fonts::needs_xiaolai(&t.text, t.font_family)));
+    if !cjk { return write_picture(me, &bd, png, cx); }
+    crate::font_downloads::want(XL, crate::font_downloads::Mode::Now);
+    cx.spawn(async move |this, cx| {
+        let t0 = web_time::Instant::now();
+        while crate::font_downloads::font(XL).is_none() && crate::font_downloads::pending(XL) && t0.elapsed() < std::time::Duration::from_secs(EXPORT_FONT_WAIT) {
+            cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+        }
+        let _ = this.update(cx, |me, cx| {
+            write_picture(me, &bd, png, cx);
+            if crate::font_downloads::font(XL).is_none() {
+                cx.emit(super::BoardEvent::Toast(crate::settings::tr("中文手写字体还没下载好，已用系统字体代替", "The CJK handwriting font isn't downloaded yet, so the system font was used.").into()));
+            }
+        });
+    }).detach();
+}
+
+use crate::font_downloads::XIAOLAI as XL;
+
+/// How long a copy as picture waits for Xiaolai (seconds).
+const EXPORT_FONT_WAIT: u64 = 8;
+
+fn write_picture(me: &mut BoardView, bd: &crate::whiteboard::Board, png: bool, cx: &mut Context<BoardView>) {
     let root = me.library_root.clone();
     let href = |f: &super::types::FileData| -> Option<String> {
         use base64::Engine;

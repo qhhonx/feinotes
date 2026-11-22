@@ -1,5 +1,6 @@
 //! The header "…" menu: page width, find & replace, move, pin, star,
-//! duplicate, 下载为 PDF / Markdown, 打印, document info and delete.
+//! duplicate, 下载为 PDF / Markdown, 复制为 Markdown, 打印, document info,
+//! 阅读模式 and 显示引用列表 switches, delete.
 
 use crate::app::Workspace;
 use crate::settings::display_title;
@@ -12,8 +13,6 @@ use gpui::{prelude::FluentBuilder, *};
 pub enum DocSub {
     Width,
     Download,
-    /// 更多: 显示引用列表.
-    More,
 }
 
 const MENU_W: f32 = 200.;
@@ -42,6 +41,20 @@ fn menu_item(id: &'static str, ic: &'static str, label: impl Into<SharedString>,
 /// 下载为's text-only items.
 pub(crate) fn sub_item(id: &'static str, label: &'static str) -> Stateful<Div> {
     crate::ui::menu_row(id, SharedString::from(id)).mx(px(0.)).child(crate::ui::menu_label(label, SharedString::from(id), gpui::white()))
+}
+
+/// A row's on/off switch.
+fn switch(on: bool) -> Div {
+    div()
+        .flex_none()
+        .w(px(28.))
+        .h(px(16.))
+        .rounded_full()
+        .p(px(2.))
+        .flex()
+        .when(on, |d| d.justify_end())
+        .bg(if on { Theme::primary_500() } else { Theme::block_placeholder() })
+        .child(div().size(px(12.)).rounded_full().bg(crate::theme::raised(Theme::bg_body())))
 }
 
 /// Native-menu separator: 1px, 5px either side, inset 13px.
@@ -231,6 +244,7 @@ impl Workspace {
         // editor shortcuts; a standalone board file has no Markdown or
         // references either
         let (board, board_file) = self.editor.as_ref().map_or((false, false), |e| { let e = e.read(cx); (e.board_open(), e.board_file) });
+        let reading = self.reading();
         let sub = self.doc_sub;
         let hover_sub = |s: Option<DocSub>| {
             cx.listener(move |w: &mut Workspace, hovered: &bool, _, cx| {
@@ -361,6 +375,17 @@ impl Workspace {
                 menu_item("dm-download", "export", crate::settings::text("下载为"), true, sub == Some(DocSub::Download))
                     .on_hover(hover_sub(Some(DocSub::Download))),
             )
+            .when(!board_file, |d| d.child(
+                menu_item("dm-copy-md", "doc-md", crate::settings::text("复制为 Markdown"), false, false)
+                    .on_hover(hover_sub(None))
+                    .on_click(cx.listener(|w, _, _, cx| {
+                        w.close_doc_menu(cx);
+                        if let Some(ed) = w.editor.clone() {
+                            ed.update(cx, |e, cx| e.copy_markdown(cx));
+                            w.show_toast(crate::settings::text("已复制为 Markdown"), cx);
+                        }
+                    })),
+            ))
             .child(divider())
             .when(crate::printing::SUPPORTED, |d| d.child(
                 menu_item("dm-print", "printer", crate::settings::text("打印"), false, false)
@@ -380,9 +405,38 @@ impl Workspace {
                         if let Some(id) = w.current.clone() { w.open_history(&id, window, cx) }
                     })),
             ))
+            .children({
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                {
+                    let note = id.clone();
+                    (!board_file && editable && !crate::cloud_restore::local_only()).then(|| {
+                        menu_item("dm-sync-history", "restore", crate::settings::tr("iCloud 历史版本", "iCloud Version History"), false, false)
+                            .on_hover(hover_sub(None))
+                            .on_click(cx.listener(move |w, _, _, cx| w.recover_cloud_version(note.clone(), cx)))
+                    })
+                }
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+                { None::<Stateful<Div>> }
+            })
             .child(divider())
-            // 更多 and 删除 share the last group.
-            .when(!board_file, |d| d.child(menu_item("dm-more", "ellipsis", crate::settings::text("更多"), true, sub == Some(DocSub::More)).on_hover(hover_sub(Some(DocSub::More)))))
+            // (a board file has no reading mode or references)
+            .when(!board_file && editable, |d| d.child(
+                menu_item("dm-read", "eye-open", crate::settings::text("阅读模式"), false, false)
+                    .child(switch(reading))
+                    .on_hover(hover_sub(None))
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        w.close_doc_menu(cx);
+                        w.set_mode(!reading, window, cx);
+                    })),
+            ).child(
+                menu_item("dm-refs", "list", crate::settings::text("显示引用列表"), false, false)
+                    .child(switch(refs_shown))
+                    .on_hover(hover_sub(None))
+                    .on_click(cx.listener(move |w, _, _, cx| {
+                        w.close_doc_menu(cx);
+                        w.ask_refs(!refs_shown, cx);
+                    })),
+            ).child(divider()))
             .when(!shared, |d| d.child(
                 menu_item("dm-delete", "bin", crate::settings::text("删除"), false, false)
                     .on_hover(hover_sub(None))
@@ -413,7 +467,6 @@ impl Workspace {
         let item_top = |k: usize, d: usize| f32::from(menu_top) + item_top(k, d);
         let extra_rows = usize::from(show_share) + usize::from(show_local_copy);
         let hidden_actions = usize::from(shared) + usize::from(shared && !editable);
-        let hidden_history = usize::from(!editable);
         let record = self.doc_sub_bounds.clone();
         record.set(None);
         let recorder = move || {
@@ -440,51 +493,6 @@ impl Workspace {
                         .child(sub_item("dm-md", "Markdown").on_click(cx.listener(move |w, _, _, cx| w.open_export_md(&id, cx))))
                         .into_any_element()
                 },
-            )),
-            Some(DocSub::More) => Some((
-                if crate::printing::SUPPORTED { item_top(10 + extra_rows - hidden.0 - hidden_actions - hidden_history, 6 - hidden.1) } else { item_top(9 + extra_rows - hidden.0 - hidden_actions - hidden_history, 5 - hidden.1) } - 1. - PAD,
-                popover()
-                    .id("dm-more-menu")
-                    .occlude()
-                    .min_w(px(210.))
-                    .px(px(5.))
-                    .py(px(PAD))
-                    .child(recorder())
-                    .child(sub_item("dm-copy-md", crate::settings::text("复制为 Markdown")).on_click(cx.listener(|w, _, _, cx| {
-                        w.close_doc_menu(cx);
-                        if let Some(ed) = w.editor.clone() {
-                            ed.update(cx, |e, cx| e.copy_markdown(cx));
-                            w.show_toast(crate::settings::text("已复制为 Markdown"), cx);
-                        }
-                    })))
-                    .when(editable, |d| d.child(
-                        sub_item("dm-refs", crate::settings::text("显示引用列表"))
-                            .justify_between()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .w(px(28.))
-                                    .h(px(16.))
-                                    .rounded_full()
-                                    .p(px(2.))
-                                    .flex()
-                                    .when(refs_shown, |d| d.justify_end())
-                                    .bg(if refs_shown { Theme::primary_500() } else { Theme::block_placeholder() })
-                                    .child(div().size(px(12.)).rounded_full().bg(crate::theme::raised(Theme::bg_body()))),
-                            )
-                            .on_click(cx.listener(move |w, _, _, cx| {
-                                w.close_doc_menu(cx);
-                                w.ask_refs(!refs_shown, cx);
-                            })),
-                    ))
-                    .children({
-                        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                        { (editable && !crate::cloud_restore::local_only()).then(|| sub_item("dm-sync-history", crate::settings::tr("iCloud 历史版本", "iCloud Version History"))
-                            .on_click(cx.listener(move |w, _, _, cx| w.recover_cloud_version(id.clone(), cx)))) }
-                        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-                        { None::<Stateful<Div>> }
-                    })
-                    .into_any_element(),
             )),
             None => None,
         };

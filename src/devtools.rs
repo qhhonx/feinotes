@@ -811,6 +811,8 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
             let cur = fake.get_or_insert_with(Default::default);
             match kind {
                 "clear" => *cur = Default::default(),
+                // what a copy put there (its text), for the script to check
+                "save" => { let _ = std::fs::write(path.trim(), &cur.text); }
                 "image" => {
                     let bytes = std::fs::read(path.trim()).expect("clip image file");
                     let format = image::guess_format(&bytes).ok().and_then(|f| ImageFormat::from_mime_type(f.to_mime_type())).expect("clip image format");

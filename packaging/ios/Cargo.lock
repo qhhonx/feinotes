@@ -1232,6 +1232,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sys-locale",
+ "ttf-parser",
  "unicode-segmentation",
  "uuid",
  "vello_cpu",

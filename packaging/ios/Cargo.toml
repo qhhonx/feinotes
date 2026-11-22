@@ -32,6 +32,7 @@ katex-rs = { version = "0.3", default-features = false }
 regex = "1"
 resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
 miniz_oxide = "0.9"
+ttf-parser = "0.25"
 icu_plurals = "2.4.0"
 icu_locale_core = "2.4.0"
 vello_cpu = { version = "=0.3.0", default-features = false, features = ["std", "u8_pipeline", "multithreading"] }
@@ -47,14 +48,15 @@ async-channel = { version = "2", optional = true }
 flate2 = { version = "1.1", optional = true }
 loro = { version = "1.18.0", default-features = false, optional = true }
 rusqlite = "=0.40.2"
-sha2 = { version = "0.10.9", optional = true }
+sha2 = "0.10.9"
 
 [features]
 datatable = []
-devtools = []
+devtools = ["embed-xiaolai"]
+embed-xiaolai = []
 mobile-qa = []
 cloudkit-restore = []
-cloudkit-sync = ["cloudkit-restore", "dep:async-channel", "dep:flate2", "dep:loro", "dep:sha2"]
+cloudkit-sync = ["cloudkit-restore", "dep:async-channel", "dep:flate2", "dep:loro"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }

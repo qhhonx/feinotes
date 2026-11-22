@@ -52,7 +52,7 @@ Write one command per line. Lines beginning with `#` are comments. See the top o
 | `pinch x y delta` | Send one trackpad pinch event at (x, y). A delta of 0.1 zooms in by 10%; negative values zoom out. |
 | `shot <name>` / `burst <name> n` | Take one screenshot or n shots about 8 ms apart. |
 | `mark <text>` / `commit <text>` | Set or commit IME composition text. |
-| `clip html\|text\|image <file>` / `clip clear` | Set the simulated clipboard for a subsequent `key cmd-v`. Append multiple images or combine text and HTML. Use clear to empty it. |
+| `clip html\|text\|image <file>` / `clip clear` / `clip save <file>` | Set the simulated clipboard for a subsequent `key cmd-v`. Append multiple images or combine text and HTML. Use clear to empty it. `save` writes the text a copy put there to a file. |
 | `pick <path>[\|<path>…]` | Supply the next open/save dialog response without opening a system panel. |
 | `resize w h` | Resize the window. |
 | `place x y` | Move the top-left corner to (x, y) on the main display above other windows. Use with `FDL_NOPARK` for desktop captures. |
@@ -72,6 +72,7 @@ Write one command per line. Lines beginning with `#` are comments. See the top o
 - `FDL_WINDOW_CAPTURE` uses the window server to capture system-drawn window controls.
 - `FDL_NOBLINK` disables caret blinking (set by `compare.py`).
 - `FDL_RECORD_FPS` sets the recording frame rate (default 30).
+- `QUIET_MD_FONT_URL`, `QUIET_MD_FONT_DIR` and `QUIET_MD_TRIAL_FONTS` are passed through: downloadable fonts (the board's Xiaolai, document fonts) are fetched from that folder into that cache, a compiled-in Xiaolai is ignored, and the trial fonts are listed (docs/FONTS.md). `python3 tools/harness/board_font.py` checks the board's font and its download note, `python3 tools/harness/doc_fonts.py` the document font list (`--compare` shoots an article in every font).
 - `QUIET_MD_UPDATE_URL` is passed through: the updater reads that folder instead of download.quiet.md. To test forced updates see docs/UPDATES.md. Downloads land in `~/Library/Caches/com.s1dashu.quietmd` of the `HOME` the app sees.
 
 ## Rules for running scripts

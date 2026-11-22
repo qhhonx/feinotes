@@ -4830,6 +4830,7 @@ dependencies = [
  "sha2",
  "sys-locale",
  "trash",
+ "ttf-parser",
  "unicode-segmentation",
  "uuid",
  "vello_cpu",
