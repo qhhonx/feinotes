@@ -46,4 +46,6 @@ For a visual-preserving refactor, compare the before and after UI with the exist
 
 Create commits and push when the user requests them. Keep logical changes reviewable. Preserve the Quiet.md attribution and all applicable licenses. Follow MAINTENANCE.md for upstream integrations and APPLE-RELEASE.md for distribution.
 
+Before any Fei Notes commit, verify both `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT` in the checkout that will create it. Use the repository's established name and GitHub noreply address. Copy those repository-local settings into temporary clones and set `user.useConfigOnly=true` before committing. Check both identities on the resulting commit before pushing.
+
 Run pull-request checks without release credentials. TestFlight distribution may run on the protected product branch. Store submission and publication have separate release gates. Verify the exact uploaded source revision, version and build number before distributing. Distribution packages include arm64 and x86_64 slices for both the executable and Swift bridge. Intel has no hardware validation; report compilation and package checks separately from runtime testing.
