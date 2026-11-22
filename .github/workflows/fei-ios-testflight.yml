@@ -41,6 +41,8 @@ jobs:
         env:
           RELEASE_SOURCE: ${{ inputs.source }}
           VERSION: ${{ inputs.version }}
+          TESTFLIGHT_VERSION: ${{ vars.FEI_TESTFLIGHT_VERSION }}
+          TESTFLIGHT_IOS_BUILD: ${{ vars.FEI_TESTFLIGHT_IOS_BUILD }}
           BUILD: ${{ inputs.build }}
           NOTES: ${{ inputs.notes }}
           GH_TOKEN: ${{ github.token }}
@@ -49,6 +51,9 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_SOURCE" =~ ^[0-9a-f]{40}$ ]]
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$BUILD" =~ ^[1-9][0-9]{0,3}$ ]]
+          [[ "$VERSION" == "$TESTFLIGHT_VERSION" ]] || { echo 'Use the shared TestFlight version.' >&2; exit 2; }
+          (( BUILD % 2 == 0 )) || { echo 'iOS TestFlight requires an even build number.' >&2; exit 2; }
+          [[ "$BUILD" == "$TESTFLIGHT_IOS_BUILD" ]] || { echo 'Use the shared TestFlight iOS build number.' >&2; exit 2; }
           [[ "$NOTES" =~ ^(docs/releases|packaging/ios/release-notes)/[A-Za-z0-9._/-]+$ && "$NOTES" != *..* ]]
           relation=$(gh api "repos/$GITHUB_REPOSITORY/compare/$RELEASE_SOURCE...$GITHUB_SHA" --jq .status)
           [[ "$relation" == ahead || "$relation" == identical ]]
@@ -96,11 +101,11 @@ jobs:
           FEI_IOS_APP_CERT_B64: ${{ secrets.FEI_IOS_APP_CERT_B64 }}
           FEI_IOS_CERT_PASSWORD: ${{ secrets.FEI_IOS_CERT_PASSWORD }}
           FEI_IOS_STORE_PROFILE_B64: ${{ secrets.FEI_IOS_STORE_PROFILE_B64 }}
-          FEI_IOS_APP_CERT_SHA1: ${{ vars.FEI_IOS_APP_CERT_SHA1 }}
-          FEI_IOS_PROFILE_UUID: ${{ vars.FEI_IOS_PROFILE_UUID }}
+          FEI_IOS_APP_CERT_SHA1: ${{ secrets.FEI_IOS_APP_CERT_SHA1 }}
+          FEI_IOS_PROFILE_UUID: ${{ secrets.FEI_IOS_PROFILE_UUID }}
           FEI_IOS_EXPORT_EXEMPT: ${{ vars.FEI_IOS_EXPORT_EXEMPT }}
-          FEI_BETA_GROUP_ID: ${{ vars.FEI_BETA_GROUP_ID }}
-          FEI_PUBLIC_BETA_GROUP_ID: ${{ vars.FEI_PUBLIC_BETA_GROUP_ID }}
+          FEI_BETA_GROUP_ID: ${{ secrets.FEI_BETA_GROUP_ID }}
+          FEI_PUBLIC_BETA_GROUP_ID: ${{ secrets.FEI_PUBLIC_BETA_GROUP_ID }}
           FEI_EXPIRE_SUPERSEDED_BETAS: ${{ vars.FEI_EXPIRE_SUPERSEDED_BETAS }}
           FEI_SUPPORT_URL: ${{ vars.FEI_SUPPORT_URL }}
         shell: bash

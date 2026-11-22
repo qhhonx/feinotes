@@ -32,7 +32,7 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY_B64: ${{ secrets.ASC_PRIVATE_KEY_B64 }}
-          FEI_PUBLIC_BETA_GROUP_ID: ${{ vars.FEI_PUBLIC_BETA_GROUP_ID }}
+          FEI_PUBLIC_BETA_GROUP_ID: ${{ secrets.FEI_PUBLIC_BETA_GROUP_ID }}
           FEI_EXPIRE_SUPERSEDED_BETAS: ${{ vars.FEI_EXPIRE_SUPERSEDED_BETAS }}
         shell: bash
         run: |
