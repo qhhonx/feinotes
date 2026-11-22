@@ -388,7 +388,7 @@ impl Store {
         let index = read_map(&db, "library_entries")?;
         let trash = read_map(&db, "library_trash")?;
         let mut store = Self { sqlite: Some(sqlite), flat: true, migrated: None, batch: Default::default(), file_changes: vec![], root, index, foreign: Default::default(), trash, warnings: vec![],
-            loaded: Default::default(), copied: Default::default(), parsed: HashMap::new() };
+            loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), view: Default::default() };
         store.restore_recoveries();
         Ok(store)
     }

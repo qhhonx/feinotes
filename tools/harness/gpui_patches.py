@@ -410,8 +410,26 @@ def first_launch():
     compare("first-launch", "0010", ["o1"], steps, lib, env={"QUIET_MD_ONBOARDING": "1"}, extra_check=check)
 
 
+def nested_deferred():
+    """A deferred inside a deferred (#327): the board's canvas background picker opens from the main menu.
+    GPUI 0.2 asserted "cannot call defer_draw during deferred drawing" and the app aborted."""
+    xml = "<title>Board host</title>\n<p>text</p>\n"
+    # sidebar + › Board (opens the new board in the note pane), the main menu, the picker's trigger
+    steps = ("click 251 106\nwait 300\nclick 295 208\nwait 1200\nclick 314 74\nwait 400\nshot n0\n"
+             "move 497 239\nwait 1200\nclick 497 239\nwait 500\nshot n1\nwait 300")
+    def check(folder):
+        log = (folder / "log").read_text(errors="replace")
+        if "PANIC" in log: return "panicked: " + log[log.index("PANIC"):][:200]
+        if not (folder / "n1.png").exists(): return "the app quit before the picker showed"
+        # the picker's island (the hex field) right of the menu
+        box = (520, 200, 700, 280)
+        return None if abs(ink(folder / "n1.png", box) - ink(folder / "n0.png", box)) > 2000 else "the picker did not open"
+    compare("nested-deferred", "upstream GPUI", [], steps, library("board", xml), extra_check=check)
+
+
 CASES = {"text": text_cases, "dark": dark_cjk, "home": home_rtl, "scrollbar": scrollbar, "table": wide_table,
-         "images": images, "home_images": home_images, "lists": lists, "shortcuts": shortcuts, "first_launch": first_launch}
+         "images": images, "home_images": home_images, "lists": lists, "shortcuts": shortcuts, "first_launch": first_launch,
+         "nested_deferred": nested_deferred}
 
 if __name__ == "__main__":
     for name in sys.argv[1:] or CASES:

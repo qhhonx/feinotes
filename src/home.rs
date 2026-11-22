@@ -58,8 +58,30 @@ const STARRED_COLS: [Col; 4] = [Col::Modified, Col::Created, Col::Visited, Col::
 
 /// Bounded document trees retain formatting without retaining a whole long document.
 type EquationNumbers = HashMap<crate::model::BlockId, u32>;
-struct ThumbContent { blocks: Vec<crate::model::Block>, eqnos: EquationNumbers, has_subpages: bool }
+/// `tables`: the 数据表 files the page shows (their rows drawn in the card), saved apart from the page.
+struct ThumbContent { blocks: Vec<crate::model::Block>, eqnos: EquationNumbers, has_subpages: bool, tables: Vec<String> }
 type Thumb = Rc<ThumbContent>;
+
+/// The files of the 数据表 blocks in `blocks`, at any depth.
+fn table_srcs(blocks: &[crate::model::Block], out: &mut Vec<String>) {
+    for b in blocks {
+        match &b.kind {
+            BlockKind::DataTable(t) => out.push(t.src.clone()),
+            BlockKind::Table(t) => for cell in t.rows.iter().flatten() { table_srcs(&cell.blocks, out) },
+            _ => {}
+        }
+        table_srcs(&b.children, out);
+    }
+}
+
+/// When the files in `srcs` (relative to the library) last changed, as one number.
+fn tables_time(srcs: &[String]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = rustc_hash::FxHasher::default();
+    let root = crate::store::Store::root_dir();
+    for s in srcs { std::fs::metadata(root.join(s)).and_then(|m| m.modified()).ok().hash(&mut h); }
+    h.finish()
+}
 
 fn has_subpage_list(blocks: &[crate::model::Block]) -> bool {
     blocks.iter().any(|b| match &b.kind {
@@ -103,7 +125,7 @@ fn thumb_blocks(blocks: &[crate::model::Block], budget: &mut usize, depth: usize
             BlockKind::Raw { tag, .. } => BlockKind::Raw { tag: tag.clone(), xml: String::new() },
             // a 数据表 (a table file's card, or one in a page): its first rows and columns as a table, header first
             BlockKind::DataTable(r) => {
-                let grid = fdl_core::table::block_grid(&crate::store::Store::root_dir(), r);
+                let grid = if crate::DATATABLE { fdl_core::table::block_grid(&crate::store::Store::root_dir(), r) } else { vec![] };
                 let (nr, nc) = (grid.len().min(9), grid.first().map_or(0, |h| h.len().min(5)));
                 if nr == 0 || nc == 0 { BlockKind::Table(crate::model::Table { col_widths: vec![], header_rows: 0, header_col: false, rows: vec![], axes: Default::default() }) } else {
                     let cell = |s: &str| crate::model::TableCell { blocks: vec![crate::model::Block::text(s)], ..crate::model::TableCell::empty() };
@@ -204,7 +226,7 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
         }
         BlockKind::Code { lang, caption, wrap } => {
             node = node.rounded(px(bs::RADIUS * s)).border(px(s)).border_color(Theme::line_border()).bg(bs::code_surface()).font_family(theme::MONO_FONT)
-                .child(div().h(px(bs::CODE_HEADER * s)).pl(px(28. * s)).pr(px(8. * s)).rounded_t(px((bs::RADIUS - 1.) * s)).bg(bs::code_header()).flex().items_center().font_family(theme::UI_FONT).text_size(px(13. * s)).text_color(Theme::text_caption()).child(caption.clone().unwrap_or_else(|| crate::settings::text("代码块").into())));
+                .child(div().h(px(bs::CODE_HEADER * s)).pl(px(28. * s)).pr(px(8. * s)).rounded_t(px((bs::RADIUS - 1.) * s)).bg(bs::code_header()).flex().items_center().font_family(theme::ui_family()).text_size(px(13. * s)).text_color(Theme::text_caption()).child(caption.clone().unwrap_or_else(|| crate::settings::text("代码块").into())));
             let spans = crate::highlight::spans(lang, &b.text.text);
             let mut body = div().pt(px(14. * s)).pb(px(18. * s)).pr(px(20. * s)).flex().flex_col();
             let mut off = 0;
@@ -276,7 +298,7 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
     }
     if b.kind.has_text() {
         let runs = b.text.runs.iter().map(|r| {
-            let mut f = font(if r.marks.code { theme::MONO_FONT } else { theme::UI_FONT });
+            let mut f = font(if r.marks.code { theme::MONO_FONT } else { theme::ui_family() });
             f.weight = if r.marks.bold { FontWeight::BOLD } else { bs::weight(&b.kind) };
             if r.marks.italic || quote { f.style = FontStyle::Italic; }
             let mut ink = if r.marks.link.is_some() { Theme::link() } else { r.marks.text_color.as_ref().and_then(|c| theme::text_color(&c.0)).map(bs::display_ink).unwrap_or(color) };
@@ -555,6 +577,10 @@ impl Workspace {
         // a 数据表's rows live in its file, saved apart from the index: its time is the card's too
         let file_time = (e.meta.kind == crate::store::DocKind::Table).then(|| self.store.file_path(&e.id).and_then(|p| std::fs::metadata(p).ok()?.modified().ok())).flatten();
         file_time.hash(&mut stamp);
+        // and a page's embedded tables: a row changed there redraws the card
+        let cached_tables = self.home.thumbs.borrow().get(&e.id).map(|(_, t, _)| tables_time(&t.tables)).unwrap_or(0);
+        let mut page_stamp = stamp.clone();
+        cached_tables.hash(&mut stamp);
         let base_stamp = stamp.finish();
         // If the preview contains no sibling subpages, modified + settings uniquely
         // identifies it without rebuilding the whole tree on every frame.
@@ -569,6 +595,8 @@ impl Workspace {
         file_time.hash(&mut full_stamp);
         crate::settings::feishu().hash(&mut full_stamp);
         for child in &children { (&child.id, &child.title, &child.icon).hash(&mut full_stamp); }
+        let mut children_stamp = full_stamp.clone();
+        cached_tables.hash(&mut full_stamp);
         let full_stamp = full_stamp.finish();
         if let Some((m, t, used)) = self.home.thumbs.borrow_mut().get_mut(&e.id)
             && *m == full_stamp { *used = web_time::Instant::now(); return t.clone(); }
@@ -594,7 +622,9 @@ impl Workspace {
             if let Ok(root) = crate::cloud_sync::shared::room_root(&crate::store::Store::root_dir(), &e.id) { loaded_root = root.clone(); return crate::store::Store::read_cached_note(&root, &e.id); }
             Err(error)
         });
+        let mut tables = vec![];
         let loaded = loaded.map(|mut doc| {
+            if crate::DATATABLE { table_srcs(&doc.blocks, &mut tables); }
             fn scope(blocks: &mut [crate::model::Block], root: &std::path::Path) {
                 for block in blocks {
                     if let BlockKind::Board(board) = &mut block.kind {
@@ -616,8 +646,10 @@ impl Workspace {
         let mut blocks = loaded.unwrap_or_default();
         let has_subpages = has_subpage_list(&blocks);
         if has_subpages { subpages(&mut blocks, &children, &mut budget); }
-        let stamp = if has_subpages { full_stamp } else { base_stamp };
-        let t: Thumb = Rc::new(ThumbContent { blocks, eqnos, has_subpages });
+        // stamped with the tables just found, so the next frame finds it
+        let tt = tables_time(&tables);
+        let stamp = if has_subpages { tt.hash(&mut children_stamp); children_stamp.finish() } else { tt.hash(&mut page_stamp); page_stamp.finish() };
+        let t: Thumb = Rc::new(ThumbContent { blocks, eqnos, has_subpages, tables });
         // A failed read (mid-write by another process, still in iCloud) is not
         // remembered: the card would stay blank until the document changes.
         if !read { return t; }

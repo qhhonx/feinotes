@@ -60,8 +60,9 @@ fn pc_binding(binding: KeyBinding) -> Option<KeyBinding> {
     if matches!(keys.as_str(), "ctrl-a" | "ctrl-b" | "ctrl-d" | "ctrl-e" | "ctrl-f" | "ctrl-h" | "ctrl-n" | "ctrl-p" | "ctrl-backspace") { return None; }
     // Ctrl+Backspace deletes a word on PC platforms; do not override it with macOS line deletion.
     if keys == "cmd-backspace" { return None; }
-    // Ctrl+Shift+C is 行内代码 there, so 复制为 Markdown takes Alt as well.
-    let keys = if binding.action().name().ends_with("::InlineCode") { "ctrl-shift-c".to_string() } else if binding.action().name().ends_with("::CopyMarkdown") { "ctrl-alt-shift-c".to_string() } else { keys.split(' ').map(|key| match key {
+    // Ctrl+Shift+C is 行内代码 there, so 复制为 Markdown takes M. Not Ctrl+Alt:
+    // Windows reads Ctrl+Alt as AltGr, which types a letter on many layouts (#290).
+    let keys = if binding.action().name().ends_with("::InlineCode") { "ctrl-shift-c".to_string() } else if binding.action().name().ends_with("::CopyMarkdown") { "ctrl-shift-m".to_string() } else { keys.split(' ').map(|key| match key {
         "cmd-left" => "home".into(), "cmd-right" => "end".into(),
         "cmd-shift-left" => "shift-home".into(), "cmd-shift-right" => "shift-end".into(),
         "cmd-up" => "ctrl-home".into(), "cmd-down" => "ctrl-end".into(),
@@ -104,6 +105,8 @@ mod tests {
         assert_eq!(copy.keystrokes().iter().map(unparse).collect::<Vec<_>>(), ["ctrl-c"]);
         assert_eq!(code.keystrokes().iter().map(unparse).collect::<Vec<_>>(), ["ctrl-shift-c"]);
         assert_ne!(copy.keystrokes(), code.keystrokes());
+        let md = pc_binding(KeyBinding::new("cmd-shift-c", crate::editor::keymap::CopyMarkdown, Some("Editor"))).unwrap();
+        assert_eq!(md.keystrokes().iter().map(unparse).collect::<Vec<_>>(), ["ctrl-shift-m"]);
     }
 }
 /// Mac key notation (⌘ ⌥ ⇧ ⌃, "⌘ + Shift + 7") as Windows writes it, the way
@@ -579,6 +582,7 @@ mod key_text_tests {
         assert_eq!(w("⌘C / ⌘X / ⌘V"), "Ctrl+C / Ctrl+X / Ctrl+V");
         assert_eq!(w("⌘⇧← / ⌘⇧↓"), "Shift+Home / Ctrl+Shift+End");
         assert_eq!(w("按 ⌘ N 新建，⌘ ,"), "按 Ctrl+N 新建，Ctrl+,");
+        assert_eq!(w("Quick new (⌘N)"), "Quick new (Ctrl+N)");
         assert_eq!(w("On macOS, <code>⌘ ⌃ ⇧ 4</code>"), "On macOS, <code>⌘ ⌃ ⇧ 4</code>");
         assert_eq!(w("Shift + Tab and Control"), "Shift + Tab and Control");
     }

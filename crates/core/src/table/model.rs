@@ -531,11 +531,14 @@ impl Base {
     }
 
     /// A blank table: five 文本 columns (文本 1 … 文本 5, the first is the title), five empty rows, one 表格 view.
-    pub fn blank_table(&mut self, name: &str, now: i64) -> Table {
+    pub fn blank_table(&mut self, name: &str, now: i64) -> Table { self.blank_table_in(name, "文本", now) }
+
+    /// `blank_table` with its columns called `column` 1 … 5 (the interface language's word for 文本).
+    pub fn blank_table_in(&mut self, name: &str, column: &str, now: i64) -> Table {
         let name = self.free_table_name(name, None);
         let mut t = Table { id: self.new_id(), name, next_rec: 1, next_auto: 1, ..Default::default() };
         for i in 1..=5 {
-            t.fields.push(Field { id: self.new_id(), name: format!("文本 {i}"), ty: FieldType::Text, opts: FieldOpts::default(), desc: String::new() });
+            t.fields.push(Field { id: self.new_id(), name: format!("{column} {i}"), ty: FieldType::Text, opts: FieldOpts::default(), desc: String::new() });
         }
         for _ in 0..5 {
             t.records.push(Record { id: t.next_rec, created: now, modified: now, auto: t.next_auto, ..Default::default() });
@@ -547,9 +550,12 @@ impl Base {
     }
 
     /// A new file's content: one blank table.
-    pub fn blank(now: i64) -> Base {
+    pub fn blank(now: i64) -> Base { Base::blank_named(now, "未命名数据表", "文本") }
+
+    /// `blank` with the table and its columns named in the interface language.
+    pub fn blank_named(now: i64, name: &str, column: &str) -> Base {
         let mut b = Base::default();
-        let t = b.blank_table("未命名数据表", now);
+        let t = b.blank_table_in(name, column, now);
         b.tables.push(t);
         b
     }

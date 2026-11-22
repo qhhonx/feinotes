@@ -599,7 +599,9 @@ impl Onboarding {
                 .on_click(cx.listener(move |w, _, _, cx| { w.lang_menu = if open { None } else { Some(current) }; cx.notify(); })));
         let lib = card()
             .child(card_icon("folder"))
-            .child(card_text(short_path(&self.root).into(), tr("笔记以文件保存在这里，在访达里也能直接打开", "Notes are saved here as files you can open in Finder").into(), false))
+            .child(card_text(short_path(&self.root).into(), (if cfg!(target_os = "macos") { tr("笔记以文件保存在这里，在访达里也能直接打开", "Notes are saved here as files you can open in Finder") }
+                else if cfg!(target_os = "windows") { tr("笔记以文件保存在这里，在文件资源管理器里也能直接打开", "Notes are saved here as files you can open in File Explorer") }
+                else { tr("笔记以文件保存在这里，在文件管理器里也能直接打开", "Notes are saved here as files you can open in your file manager") }).into(), false))
             .child(soft_button("onb-change", tr("更改…", "Change…")).on_click(cx.listener(|w, _, window, cx| w.pick_folder(true, window, cx))));
         let hotkey = cfg!(target_os = "macos").then(|| {
             let key = if self.recording { String::new() } else { self.hotkey.clone() };
@@ -877,7 +879,7 @@ impl Render for Onboarding {
         // Quiet glows in as the film ends.
         let mark = if film_up { ((t - MARK_IN.0) / (MARK_IN.1 - MARK_IN.0)).clamp(0., 1.) } else { 0. };
         div().id("onboarding").size_full().relative().overflow_hidden()
-            .font_family(theme::UI_FONT).text_color(Theme::text())
+            .font_family(theme::ui_family()).text_color(Theme::text())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|w, ev: &KeyDownEvent, window, cx| w.key_down(ev, window, cx)))
             .when(frame.is_none(), |d| d.child(backdrop))

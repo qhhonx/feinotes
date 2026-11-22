@@ -83,6 +83,8 @@ Override `--token-<name>` in `:root` for block hover and selection colors, table
 
 Themes style the document. The sidebar, menus and settings have their own appearance. Choose System, Light or Dark in Settings › Appearance to set the application appearance. CSS also leaves block structure, such as code toolbars and table row and column tools, under the editor's control.
 
+Choosing an installed font in Settings › Appearance › Document font draws the body text, the title and the headings in it, so this file's `font-family` for `.page`, `.title` and `h1`–`h9` has no effect while one is chosen; Theme default goes back. `pre` keeps its own font.
+
 ## Fei Notes extensions
 
 The Quiet.md theme reference above is retained from upstream. Fei Notes adds shell styling, the Notes theme and other CSS properties documented separately in [FEINOTES-THEMES.md](FEINOTES-THEMES.md).

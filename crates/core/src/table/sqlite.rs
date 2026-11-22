@@ -322,6 +322,25 @@ fn write(conn: &Connection, base: &Base, dirty: Option<&Dirty>) -> Result<()> {
 #[serde(default)]
 struct RowMeta { c: Option<i64>, m: Option<i64>, auto: Option<u64>, created: Option<String>, modified: Option<String> }
 
+/// Every value of every table in the file, ours and SQLite's too, as text, a
+/// line each: what the unused-asset sweep (#237) looks for a file's name in.
+/// Read-only, and strict where `load` is lenient: a table that cannot be read
+/// fails the whole read rather than hide the names it holds.
+pub fn all_text(path: &Path) -> Result<String> {
+    let conn = open(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let _ = conn.execute_batch("BEGIN");
+    let mut out = String::new();
+    for t in tables(&conn).with_context(|| format!("{} is not a SQLite database", path.display()))? {
+        let mut stmt = conn.prepare(&format!("SELECT * FROM {}", q(&t)))?;
+        let n = stmt.column_count();
+        let mut rows = stmt.query([])?;
+        while let Some(r) = rows.next()? {
+            for i in 0..n { out.push_str(&text(&r.get::<_, Sql>(i)?)); out.push('\n'); }
+        }
+    }
+    Ok(out)
+}
+
 /// Read the whole file. Lenient: the file may have been edited by another
 /// program, or never been ours — then every table that isn't SQLite's or
 /// `_`-prefixed is a data table, with field types guessed from its columns.
@@ -404,7 +423,7 @@ fn read_table(conn: &Connection, sql: &str, mut t: Table, described: bool, next:
     let n = q(sql);
     // WITHOUT ROWID tables have no rowid: their records are numbered as they come
     let mut stmt = conn.prepare(&format!("SELECT rowid, * FROM {n}")).or_else(|_| conn.prepare(&format!("SELECT NULL, * FROM {n}"))).ok()?;
-    let cols: Vec<String> = stmt.column_names().skip(1).map(str::to_string).collect();
+    let cols: Vec<String> = (1..stmt.column_count()).filter_map(|i| stmt.column_name(i).ok()).map(str::to_string).collect();
     let info = grid(conn, &format!("PRAGMA table_xinfo({n})"));
     let keys = info.iter().filter(|r| int(&r[5]).is_some_and(|k| k > 0)).count();
     // `id INTEGER PRIMARY KEY` is the rowid; an `id` that is anything else is a column like any other

@@ -108,7 +108,7 @@ pub fn shadow_s4_down() -> Vec<BoxShadow> {
     vec![shadow(0.04, 8., 24., 8.), shadow(0.04, 6., 12., 0.), shadow(0.06, 4., 8., -8.)]
 }
 
-pub const UI_FONT: &str = crate::theme::UI_FONT;
+pub use crate::theme::{ui_family, DOC_UI_FONT};
 #[cfg(not(any(target_os = "linux", target_family = "wasm")))]
 pub const MONO_FONT: &str = "Menlo";
 #[cfg(any(target_os = "linux", target_family = "wasm"))]
@@ -121,7 +121,8 @@ impl Theme {
     pub fn text_caption() -> Hsla { c(ud::N600) }
     pub fn text_placeholder() -> Hsla { c(ud::N500) }
     pub fn block_placeholder() -> Hsla { c(ud::N400) }
-    pub fn text_disabled() -> Hsla { c(ud::N400) }
+    /// Dark mode: N400 mirrors to L 0.41 and vanishes on raised surfaces (GitHub #319); take the base theme's.
+    pub fn text_disabled() -> Hsla { if crate::theme::dark() { crate::theme::Theme::text_disabled() } else { c(ud::N400) } }
     pub fn text_code() -> Hsla { c(ud::N800) }
     pub fn link() -> Hsla { c(ud::B500) }
     pub fn primary() -> Hsla { c(ud::B600) }

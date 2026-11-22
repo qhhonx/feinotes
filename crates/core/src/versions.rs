@@ -1,5 +1,5 @@
 //! Per-document version history. A snapshot is the previous on-disk text of
-//! a document, kept verbatim under `.quiet/history/<id>/`. The directory is its own
+//! a document (or a 数据表's whole `.sqlite` file), kept verbatim under `.quiet/history/<id>/`. The directory is its own
 //! index: no global manifest to merge, back up or corrupt. Older builds do
 //! not read this directory, so the layout needs no FORMAT bump.
 
@@ -67,13 +67,23 @@ pub fn set_label(root: &Path, id: &str, name: &str, label: Option<&str>, trashed
     }
 }
 
-/// `<13-digit ms>-<8 hex>.xml|md`; the fixed-width stamp sorts by time.
+/// `<13-digit ms>-<8 hex>.xml|md|sqlite`; the fixed-width stamp sorts by time.
 pub fn stamp(name: &str) -> Option<u64> { name.split_once('-')?.0.parse().ok() }
 
 fn safe_name(name: &str) -> bool {
     !name.contains('/') && !name.contains('\\') && !name.contains("..")
         && stamp(name).is_some()
-        && (name.ends_with(".xml") || name.ends_with(".md"))
+        && (name.ends_with(".xml") || name.ends_with(".md") || name.ends_with(".sqlite"))
+}
+
+/// Where a snapshot is (a 数据表's is opened in place, read-only, to preview it).
+pub fn path(root: &Path, id: &str, name: &str, trashed: bool) -> Result<PathBuf> {
+    anyhow::ensure!(safe_name(name), "无效的历史版本文件名");
+    Ok(base(root, trashed).join(id).join(name))
+}
+
+pub fn read_bytes(root: &Path, id: &str, name: &str, trashed: bool) -> Result<Vec<u8>> {
+    crate::vfs::read(path(root, id, name, trashed)?).with_context(|| format!("读取历史版本 {name} 失败"))
 }
 
 /// A label file moves and dies with its snapshot.
@@ -117,12 +127,18 @@ pub fn remove(root: &Path, id: &str, name: &str, trashed: bool) -> Result<()> {
 /// Save `previous` as one version. The caller treats every error as a
 /// warning: a history failure must never fail the document's own save.
 pub fn snapshot(root: &Path, id: &str, ext: &str, previous: &str, ms: u64, limit: u32, force: bool) -> Result<()> {
-    if previous.is_empty() || (ext != "xml" && ext != "md") { return Ok(()) }
+    if ext != "xml" && ext != "md" { return Ok(()) }
+    snapshot_bytes(root, id, ext, previous.as_bytes(), ms, limit, force)
+}
+
+/// `snapshot` for any kept kind (`xml`, `md`, a 数据表's `sqlite`), as bytes.
+pub fn snapshot_bytes(root: &Path, id: &str, ext: &str, previous: &[u8], ms: u64, limit: u32, force: bool) -> Result<()> {
+    if previous.is_empty() || !matches!(ext, "xml" | "md" | "sqlite") { return Ok(()) }
     let mut versions = list(root, id, false);
     if let Some(last) = versions.first() {
         // The same text never adds a snapshot, forced or not: 保存当前版本
         // twice in a row leaves one row.
-        if read(root, id, &last.name, false).is_ok_and(|s| s == previous) { return Ok(()) }
+        if read_bytes(root, id, &last.name, false).is_ok_and(|s| s == previous) { return Ok(()) }
         // Autosave fires on a 500ms debounce; the interval keeps a long
         // editing session from filling the list.
         if !force && ms.saturating_sub(last.ms) < MIN_INTERVAL * 1000 { return Ok(()) }
@@ -130,7 +146,7 @@ pub fn snapshot(root: &Path, id: &str, ext: &str, previous: &str, ms: u64, limit
     let dir = history_root(root).join(id);
     crate::vfs::create_dir_all(&dir)?;
     let name = format!("{ms:013}-{}.{ext}", &uuid::Uuid::new_v4().to_string()[..8]);
-    crate::store::write_atomic(&dir.join(&name), previous.as_bytes())?;
+    crate::store::write_atomic(&dir.join(&name), previous)?;
     versions.insert(0, Version { name, ms, size: previous.len() as u64, label: None });
     trim(root, id, &mut versions, limit);
     trim_library(root);
@@ -235,6 +251,22 @@ mod tests {
         snapshot(&root, "a", "xml", "body 24", base + 25 * MIN_INTERVAL * 1000, 20, false).unwrap();
         snapshot(&root, "a", "xml", "body 24", base + 26 * MIN_INTERVAL * 1000, 20, true).unwrap();
         assert_eq!(list(&root, "a", false).len(), 20);
+        crate::vfs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn table_files_keep_byte_snapshots() {
+        let root = lib();
+        let ms = 1_700_000_000_000;
+        let a = [0u8, 1, 2, 255];
+        snapshot_bytes(&root, "t", "sqlite", &a, ms, 20, true).unwrap();
+        snapshot_bytes(&root, "t", "sqlite", &a, ms + 1, 20, true).unwrap();
+        snapshot_bytes(&root, "t", "sqlite", &[9u8, 9], ms + 2, 20, true).unwrap();
+        let v = list(&root, "t", false);
+        assert_eq!(v.len(), 2);
+        assert!(v[0].name.ends_with(".sqlite"));
+        assert_eq!(read_bytes(&root, "t", &v[1].name, false).unwrap(), a);
+        assert!(path(&root, "t", "../x.sqlite", false).is_err());
         crate::vfs::remove_dir_all(&root).unwrap();
     }
 

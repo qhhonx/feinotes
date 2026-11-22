@@ -114,7 +114,7 @@ async fn fetch_font(name: &str) -> Option<Vec<u8>> {
 fn run(fonts: Vec<Cow<'static, [u8]>>) {
     // Single-threaded: no cross-origin isolation needed on the site. CJK
     // text borrows the browser's fonts through canvas.
-    let platform = gpui_web::WebPlatform::new_with_system_font(false, gpui_web::WebBackendPreference::Auto, gpui_web::CanvasFontFallback::EmojiAndCjk, theme::UI_FONT);
+    let platform = gpui_web::WebPlatform::new_with_system_font(false, gpui_web::WebBackendPreference::Auto, gpui_web::CanvasFontFallback::EmojiAndCjk, theme::SYSTEM_FONT);
     let app = Application::with_platform(std::rc::Rc::new(platform)).with_assets(assets::Assets);
     app.run(move |cx: &mut App| {
         if let Err(e) = cx.text_system().add_fonts(fonts) { log::warn!("fonts: {e}") }

@@ -80,17 +80,20 @@ impl Workspace {
         if self.is_shared() { return; }
         let Some(source) = self.current.as_deref().and_then(|id| self.store.file_path(id)) else { return };
         let wiki = url.strip_prefix("quiet-wiki:");
-        let raw = wiki.map(|s| s.split('|').next().unwrap_or(s)).unwrap_or(url);
-        let (name, anchor) = raw.split_once('#').unwrap_or((raw, ""));
-        let name = crate::markdown::percent_decode(name);
-        let Some(dir) = source.parent() else { return };
-        let mut path = if name.is_empty() { source.clone() } else { dir.join(&name) };
-        if wiki.is_some() && path.extension().is_none() { path.set_extension("md"); }
-        if wiki.is_some() && !path.fs_is_file() && let Some(root) = self.store.folder_dir(None) {
-            let mut from_root = root.join(&name);
-            if from_root.extension().is_none() { from_root.set_extension("md"); }
-            if from_root.fs_is_file() { path = from_root; }
-        }
+        let (path, anchor) = match wiki {
+            // `[[page]]`, looked up across the vault the way Obsidian does.
+            Some(raw) => {
+                let (name, anchor) = crate::markdown::wiki_parts(raw);
+                let vault = crate::markdown::wiki_vault(&source, self.store.folder_dir(None).as_deref(), &self.store.mount_dirs());
+                (crate::markdown::resolve_wiki(name, &source, &vault).unwrap_or_default(), anchor.to_string())
+            }
+            None => {
+                let (name, anchor) = url.split_once('#').unwrap_or((url, ""));
+                let name = crate::markdown::percent_decode(name);
+                let Some(dir) = source.parent() else { return };
+                (if name.is_empty() { source.clone() } else { dir.join(&name) }, crate::markdown::percent_decode(anchor))
+            }
+        };
         let Some(path) = path.fs_canonicalize().ok().filter(|p| p.fs_is_file()) else {
             self.show_toast_kind(ToastKind::Error, tr("文件不存在", "File not found"), cx);
             return;
@@ -107,7 +110,7 @@ impl Workspace {
         self.entries = self.store.list();
         self.sort();
         if self.try_open(&id, window, cx) && !anchor.is_empty() && let Some(ed) = &self.editor {
-            let key = crate::markdown::percent_decode(anchor).to_lowercase();
+            let key = anchor.to_lowercase();
             ed.update(cx, |e, cx| {
                 let mut found = None;
                 e.core.doc.for_each_block(|b| {

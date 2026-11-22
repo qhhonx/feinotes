@@ -1,3 +1,4 @@
+mod bidi;
 mod board;
 mod datatable;
 mod button;

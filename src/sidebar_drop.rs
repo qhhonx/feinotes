@@ -35,7 +35,7 @@ impl SidebarDropAt {
 }
 
 fn importable(p: &std::path::Path) -> bool {
-    p.fs_is_dir() || crate::local_files::is_markdown_path(p) || p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml"))
+    p.fs_is_dir() || crate::local_files::is_markdown_path(p) || p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml")) || crate::transfer::is_csv_path(p)
 }
 
 impl Workspace {

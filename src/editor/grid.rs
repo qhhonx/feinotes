@@ -206,7 +206,7 @@ impl R<'_> {
                             .px(px(5.))
                             .rounded(px(6.))
                             .bg(theme::ca(craft::N950, 0.75))
-                            .font_family(theme::UI_FONT)
+                            .font_family(theme::ui_family())
                             .text_size(px(11.))
                             .line_height(px(18.))
                             .text_color(Theme::bg_body())

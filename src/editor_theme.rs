@@ -1,4 +1,5 @@
-pub use crate::theme::{craft, c, ca, rgbaf, ta, TITLE, UI_FONT, MONO_FONT, BlockMetrics};
+pub use crate::theme::{craft, c, ca, rgbaf, ta, TITLE, MONO_FONT, BlockMetrics};
+pub use crate::theme::{ui_family, DOC_UI_FONT};
 /// The active theme's resolved style (themes.rs).
 pub fn style() -> &'static crate::themes::Style { crate::themes::active() }
 #[cfg(target_os = "ios")]
@@ -22,12 +23,15 @@ pub fn heading_metrics(level: u8) -> BlockMetrics {
     BlockMetrics { size: mobile_metric("",s.num(&format!("h{l}.size")),if l == 1 { 22. } else if l == 2 { 20. } else { 17. }), line_height: mobile_metric("",s.num(&format!("h{l}.line")),if l <= 2 { 28. } else { 24. }), mt: s.num(&format!("h{l}.mt")), mb: s.num(&format!("h{l}.mb")) }
 }
 pub fn heading_weight(level: u8) -> gpui::FontWeight { gpui::FontWeight(style().num(&format!("h{}.weight", h(level)))) }
-pub fn heading_font(level: u8) -> &'static str { style().font(&format!("h{}.font", h(level))) }
+pub fn heading_font(level: u8) -> &'static str { crate::themes::doc_font(&format!("h{}.font", h(level))) }
 pub fn heading_color(level: u8) -> Option<gpui::Hsla> { style().color(&format!("h{}.color", h(level))) }
 /// The page title.
 pub fn title() -> BlockMetrics { BlockMetrics { size: mobile_metric("mobile.title.size",style().num("title.size"),26.), line_height: mobile_metric("mobile.title.line",style().num("title.line"),32.), mt: 0., mb: 0. } }
-/// Document text's family (UI fonts stay the system's).
-pub fn body_font() -> &'static str { style().font("page.font") }
+/// Document text's family: 外观 › 文档字体 when the reader picked one, else the
+/// theme's. UI fonts stay the system's.
+pub fn body_font() -> &'static str { crate::themes::doc_font("page.font") }
+/// The page title's family.
+pub fn title_font() -> &'static str { crate::themes::doc_font("title.font") }
 /// Document colour tokens: a theme file may override any of them by name
 /// (docs/THEMES.md); otherwise they come from the base style.
 macro_rules! tokens {

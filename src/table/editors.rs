@@ -311,7 +311,7 @@ pub(crate) fn files_popup(_v: &TableView, t: &Table, rec: RecId, fid: FieldId, c
 /// Pick files and copy them into the library's assets, then append them to the cell.
 fn add_files(_v: &mut TableView, rec: RecId, fid: FieldId, window: &mut Window, cx: &mut Context<TableView>) {
     let picked = crate::devtools::take_pick();
-    let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(crate::settings::text("添加").into()), extensions: None }));
+    let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(crate::settings::text("添加").into()), #[cfg(not(target_os = "ios"))] extensions: None }));
     cx.spawn_in(window, async move |this, cx| {
         let paths = match prompt { Some(p) => p.await.ok().and_then(Result::ok).flatten(), None => picked };
         let Some(paths) = paths else { return };

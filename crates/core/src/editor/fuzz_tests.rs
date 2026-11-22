@@ -132,8 +132,9 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
             "enter".into()
         }
         4 | 5 => {
+            c.backspace_to_title = rng.below(2) == 0;
             c.backspace();
-            "backspace".into()
+            format!("backspace(to_title: {})", c.backspace_to_title)
         }
         6 => {
             c.delete_forward();
@@ -203,6 +204,11 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
         }
         18 => {
             let id = any(rng);
+            if let Some(b) = c.block(id).filter(|b| matches!(b.kind, BlockKind::Code { .. })) {
+                let f = !b.folded;
+                c.set_code_folded(id, f);
+                return format!("set_code_folded({id:?}, {f})");
+            }
             if c.can_fold(id) {
                 c.toggle_fold(id);
             }
@@ -568,6 +574,9 @@ fn unfolded(doc: &Document) -> String {
         for b in blocks {
             b.folded = false;
             walk(&mut b.children);
+            if let BlockKind::Table(t) = &mut b.kind {
+                t.rows.iter_mut().flatten().for_each(|cell| walk(&mut cell.blocks));
+            }
         }
     }
     let mut doc = doc.clone();

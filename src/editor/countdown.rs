@@ -859,7 +859,7 @@ impl Editor {
             .items_center()
             .justify_center()
             .bg(theme::rgbaf(0, 0, 0, 0.55))
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_family())
             .on_key_down(cx.listener(|e, ev: &KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" {
                     cx.stop_propagation();

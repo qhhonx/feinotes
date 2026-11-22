@@ -21,3 +21,5 @@ print("Bundled guide assets match their sources")
 cargo("clippy", "--release", "--workspace", "--locked", "--all-targets", "--", "-D", "warnings")
 # The harness build (script driver compiled in) must stay clean too.
 cargo("clippy", "--release", "--workspace", "--locked", "--all-targets", "--features", "devtools", "--", "-D", "warnings")
+# 数据表 is off by default (Cargo feature `datatable`); the build with it on must stay clean too.
+cargo("clippy", "--release", "--workspace", "--locked", "--all-targets", "--features", "devtools,datatable", "--", "-D", "warnings")

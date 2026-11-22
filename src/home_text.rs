@@ -43,7 +43,7 @@ fn equation(ix: usize, source: &str, width: f32, color: Hsla, eqno: u32, window:
             left: if display { ((width - w) / 2.).max(pad) } else { pad }, body: Body::Math(m) })
     } else {
         let label: SharedString = if source.trim().is_empty() { crate::settings::text("公式") } else { crate::settings::text("无效公式") }.into();
-        let run = TextRun { len: label.len(), font: font(theme::UI_FONT), color: Theme::text_caption(), background_color: None, underline: None, strikethrough: None };
+        let run = TextRun { len: label.len(), font: font(theme::ui_family()), color: Theme::text_caption(), background_color: None, underline: None, strikethrough: None };
         let line = window.text_system().shape_line(label, px(13. * scale), &[run], None);
         Rc::new(Equation { ix, display: false, advance: f32::from(line.width) + pad * 2., ascent: line.ascent.into(), depth: line.descent.into(), left: pad, body: Body::Invalid(line) })
     }

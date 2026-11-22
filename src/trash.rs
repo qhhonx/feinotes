@@ -6,7 +6,7 @@ use crate::app::{Confirm, Workspace};
 use crate::settings::display_title;
 use crate::search::doc_icon;
 use crate::store::{TRASH_DAYS, TrashEntry};
-pub(crate) use crate::ui::{close_button, dialog, list_header_text, list_line, menu_label, primary_button, row_hover, scrim, secondary_button};
+pub(crate) use crate::ui::{ToastKind, close_button, dialog, list_header_text, list_line, menu_label, primary_button, row_hover, scrim, secondary_button};
 use crate::theme::{self, Theme};
 use crate::ui::{ROW_RADIUS, TipExt, TitleBarExt, icon, popover, ui_para, ui_text};
 use gpui::{prelude::FluentBuilder, *};
@@ -331,20 +331,17 @@ impl Workspace {
         if self.store.file_task_busy() || self.file_history.busy || self.tree_writes_pending() || ids.is_empty() { return; }
         let Some(task_guard) = self.store.begin_file_task() else { return };
         let mut writer = self.store.tree_writer();
+        let gone = ids.clone();
         let task = cx.background_executor().spawn(async move {
-            let batch = writer.begin_batch().is_ok();
-            let mut errors = vec![];
-            let mut result: anyhow::Result<()> = Ok(());
-            for id in ids {
-                result = writer.purge(&id);
-                if result.is_err() { break }
-            }
-            if let Err(e) = result { errors.push(e.to_string()); }
-            if batch && let Err(e) = writer.end_batch() { errors.push(e.to_string()); }
+            // The 回收站's index is written once, not once a page.
+            let errors = writer.purge_many(&gone).err().map(|e| e.to_string()).into_iter().collect();
             let warnings = writer.take_warnings();
             let trash = writer.list_trash();
             (PurgedTrash { errors }, ListedTrash { trash, warnings })
         });
+        // The rows go now; the 回收站 read back afterwards replaces this.
+        let ids: std::collections::HashSet<String> = ids.into_iter().collect();
+        self.trash.retain(|t| !ids.contains(&t.id));
         self.trash_menu = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -361,6 +358,50 @@ impl Workspace {
                     w.status = crate::app::SaveStatus::Failed(msg);
                 }
                 cx.notify();
+            });
+        }).detach();
+    }
+
+    /// What the unused-asset sweep (#237) reads besides the library: the
+    /// sources every open editor holds — this window's and the others',
+    /// quick notes included — that the disk does not (unsaved text, the
+    /// snapshots Undo can still bring back), and the 本机文件 and 本机文件夹,
+    /// whose pasted pictures are copied into the library's assets too.
+    pub(crate) fn sweep_inputs(&self, window: &Window, cx: &Context<Self>) -> (Vec<String>, Vec<std::path::PathBuf>) {
+        let mut live: Vec<String> = self.editor.as_ref().map(|e| e.read(cx).core.asset_refs()).unwrap_or_default();
+        // This window is being updated: reading it again would panic.
+        let me = window.window_handle().window_id();
+        for w in cx.windows().into_iter().filter(|w| w.window_id() != me).filter_map(|w| w.downcast::<Workspace>()) {
+            let Ok(ws) = w.entity(cx) else { continue };
+            if let Some(e) = &ws.read(cx).editor { live.extend(e.read(cx).core.asset_refs()); }
+        }
+        let outside = self.entries.iter().filter_map(|e| e.meta.path.as_ref().map(std::path::PathBuf::from)).collect();
+        (live, outside)
+    }
+
+    pub(crate) fn sweep_failed(&mut self, e: &anyhow::Error, cx: &mut Context<Self>) {
+        log::warn!("unused assets: {e:#}");
+        self.show_toast_kind(ToastKind::Error, &crate::localized_format!("无法读取文档库，未清理：{}", "Could not read the library; nothing was removed: {}", e), cx);
+    }
+
+    /// 设置 › 文档库 › 未使用资源 (#237): take away the listed files that are
+    /// still unused. The sweep runs again first, off the UI thread: a page
+    /// restored or a picture brought back by Undo since the list was made
+    /// keeps its file.
+    pub(crate) fn remove_unused_assets(&mut self, names: Vec<(String, u64)>, window: &Window, cx: &mut Context<Self>) {
+        if crate::FEI_NOTES || self.is_shared() { return; }
+        let root = crate::store::Store::root_dir();
+        let (live, outside) = self.sweep_inputs(window, cx);
+        cx.spawn(async move |this, cx| {
+            let gone = cx.background_executor().spawn(async move {
+                let still = crate::store::Store::unused_assets_at(root.clone(), live, outside)?;
+                let names: Vec<String> = names.into_iter().map(|(n, _)| n).filter(|n| still.iter().any(|(s, _)| s == n)).collect();
+                anyhow::Ok(crate::store::Store::remove_unused_assets(&root, &names))
+            }).await;
+            let _ = this.update(cx, |w, cx| match gone {
+                Ok(0) => w.show_toast(crate::settings::text("没有可清理的资源"), cx),
+                Ok(n) => w.show_toast_kind(ToastKind::Success, &crate::localized_format!("已移出 {} 个未使用资源", "Moved {} unused assets out of the asset folder", n), cx),
+                Err(e) => w.sweep_failed(&e, cx),
             });
         }).detach();
     }
@@ -389,6 +430,7 @@ impl Workspace {
             Confirm::Restore(id) => self.restore_doc(&id, cx),
             Confirm::Purge(id) => self.purge_doc(&id, cx),
             Confirm::EmptyTrash => self.empty_trash(cx),
+            Confirm::RemoveUnused(files) => self.remove_unused_assets(files, window, cx),
             Confirm::Migrate(_) => self.migrate_library(window,cx),
             Confirm::SwitchLibrary(root) => cx.defer(move |cx|crate::app::switch_library(root,cx)),
             Confirm::Import { what,target } => self.import_dropped(what,target,window,cx),
@@ -452,6 +494,13 @@ impl Workspace {
                 crate::settings::tr("此副本将从这台 Mac 移除。", "This copy will be removed from this Mac.").into(),
                 crate::settings::text("删除"), true,
             ),
+            Confirm::RemoveUnused(files) => (
+                crate::settings::text("清理未使用资源").to_string(),
+                crate::localized_format!("{} 个文件（{}）将移到文档库的 .quiet/removed-assets 文件夹，{} 天后自动删除；在此之前可以从那里拖回 .assets。", "{} files ({}) will be moved to .quiet/removed-assets in the library and deleted after {} days; until then they can be dragged back to .assets.",
+                    files.len(), crate::docinfo::format_size(files.iter().map(|(_, n)| n).sum()), crate::store::TRASH_DAYS),
+                crate::settings::text("移出"),
+                true,
+            ),
             Confirm::Refs { show: false, .. } => (
                 crate::settings::text("是否隐藏引用列表？").to_string(),
                 crate::settings::text("选择隐藏后，协作者将无法查看本文的引用列表。如需重新显示，可点击文档右上角的更多按钮“...”，打开“显示引用列表”开关。").to_string(),
@@ -470,9 +519,15 @@ impl Workspace {
                 };
                 (
                     crate::settings::tr("把文档库改为真实文件夹？", "Move the library to real folders?").to_string(),
-                    why + crate::settings::tr(
+                    why + if cfg!(target_os = "macos") { crate::settings::tr(
                         "改完后，在访达里看到的文件夹和文件就是侧栏里的样子，文件以标题命名。别的电脑上的旧版 Quiet.md 打不开改过的文档库，请先把它们更新到最新版本。原来的文件会在文档库的 .quiet 文件夹里保留 30 天。",
-                        "Afterwards, Finder shows the same folders and files as the sidebar, each file named by its title. Older versions of Quiet.md on other computers can't open the moved library, so update them first. The old files are kept in the library's .quiet folder for 30 days."),
+                        "Afterwards, Finder shows the same folders and files as the sidebar, each file named by its title. Older versions of Quiet.md on other computers can't open the moved library, so update them first. The old files are kept in the library's .quiet folder for 30 days.") }
+                    else if cfg!(target_os = "windows") { crate::settings::tr(
+                        "改完后，在文件资源管理器里看到的文件夹和文件就是侧栏里的样子，文件以标题命名。别的电脑上的旧版 Quiet.md 打不开改过的文档库，请先把它们更新到最新版本。原来的文件会在文档库的 .quiet 文件夹里保留 30 天。",
+                        "Afterwards, File Explorer shows the same folders and files as the sidebar, each file named by its title. Older versions of Quiet.md on other computers can't open the moved library, so update them first. The old files are kept in the library's .quiet folder for 30 days.") }
+                    else { crate::settings::tr(
+                        "改完后，在文件管理器里看到的文件夹和文件就是侧栏里的样子，文件以标题命名。别的电脑上的旧版 Quiet.md 打不开改过的文档库，请先把它们更新到最新版本。原来的文件会在文档库的 .quiet 文件夹里保留 30 天。",
+                        "Afterwards, your file manager shows the same folders and files as the sidebar, each file named by its title. Older versions of Quiet.md on other computers can't open the moved library, so update them first. The old files are kept in the library's .quiet folder for 30 days.") },
                     crate::settings::tr("改用文件夹", "Move"),
                     false,
                 )

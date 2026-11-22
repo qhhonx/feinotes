@@ -436,8 +436,11 @@ impl TextField {
         #[cfg(target_os = "ios")]
         gpui_mobile::show_keyboard();
         let i = self.index_for(ev.position);
-        if ev.click_count >= 2 {
-            self.select_all_text(cx);
+        // double click: the word under the pointer (as in any text field); triple: everything
+        if ev.click_count >= 3 { self.select_all_text(cx); return; }
+        if ev.click_count == 2 {
+            let w = self.text.split_word_bound_indices().map(|(s, w)| s..s + w.len()).find(|r| r.contains(&i) || r.end == i && i == self.text.len());
+            match w { Some(r) => self.select_range(r, cx), None => self.select_all_text(cx) }
             return;
         }
         self.selecting = true;

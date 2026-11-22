@@ -54,6 +54,8 @@ impl SharedStore {
     pub fn set_catalogue(&mut self, id: &str, pinned: bool) -> Result<()> { self.0.borrow_mut().set_catalogue(id, pinned) }
     pub fn settings(&self) -> Settings { self.0.borrow_mut().settings() }
     pub fn save_settings(&self, s: &Settings) -> Result<()> { self.0.borrow_mut().save_settings(s) }
+    pub fn scroll_top(&self, id: &str) -> Option<(usize, f32)> { self.0.borrow().scroll_top(id) }
+    pub fn flush_view_state(&self) -> Result<()> { self.0.borrow_mut().flush_view_state() }
     pub fn versions(&self, id: &str) -> Vec<fdl_core::versions::Version> { self.0.borrow().versions(id) }
     pub fn version_diff(&self, id: &str, name: &str, baseline: Option<&str>) -> Result<Vec<fdl_core::diff::Line>> { self.0.borrow().version_diff(id, name, baseline) }
     pub fn version_document(&self, id: &str, name: &str) -> Result<Document> { self.0.borrow().version_document(id, name) }
@@ -81,13 +83,21 @@ impl SharedStore {
     pub fn forget_mounted(&mut self, id: &str) { self.0.borrow_mut().forget_mounted(id) }
     pub fn create_board_in(&mut self, title: &str, board: &crate::whiteboard::Board, parent: Option<&str>) -> Result<String> { self.0.borrow_mut().create_board_in(title, board, parent) }
     #[cfg(not(target_family = "wasm"))]
-    pub fn create_table_in(&mut self, title: &str, parent: Option<&str>) -> Result<String> { self.0.borrow_mut().create_table_in(title, parent) }
+    pub fn create_table_in(&mut self, title: &str, base: &crate::table::Base, parent: Option<&str>) -> Result<String> { self.0.borrow_mut().create_table_in(title, base, parent) }
     #[cfg(not(target_family = "wasm"))]
     pub fn copy_table(&mut self, src: &str, title: &str) -> Result<String> { self.0.borrow_mut().copy_table(src, title) }
     #[cfg(target_family = "wasm")]
-    pub fn create_table_in(&mut self, _title: &str, _parent: Option<&str>) -> Result<String> { anyhow::bail!("unsupported") }
+    pub fn create_table_in(&mut self, _title: &str, _base: &crate::table::Base, _parent: Option<&str>) -> Result<String> { anyhow::bail!("unsupported") }
     #[cfg(target_family = "wasm")]
     pub fn copy_table(&mut self, _src: &str, _title: &str) -> Result<String> { anyhow::bail!("unsupported") }
+    #[cfg(not(target_family = "wasm"))]
+    pub fn copy_table_version(&mut self, src: &str, name: &str, title: &str) -> Result<String> { self.0.borrow_mut().copy_table_version(src, name, title) }
+    #[cfg(target_family = "wasm")]
+    pub fn copy_table_version(&mut self, _src: &str, _name: &str, _title: &str) -> Result<String> { anyhow::bail!("unsupported") }
+    #[cfg(not(target_family = "wasm"))]
+    pub fn snapshot_table(&self, id: &str, force: bool) -> Result<bool> { self.0.borrow().snapshot_table(id, force) }
+    #[cfg(target_family = "wasm")]
+    pub fn snapshot_table(&self, _id: &str, _force: bool) -> Result<bool> { Ok(false) }
     pub fn front_matter_of(&self, id: &str) -> String { self.0.borrow().front_matter_of(id) }
     pub fn open_local(&mut self, path: &std::path::Path) -> Result<String> { self.0.borrow_mut().open_local(path) }
     pub fn local_path(&self, id: &str) -> Option<std::path::PathBuf> { self.0.borrow().local_path(id) }

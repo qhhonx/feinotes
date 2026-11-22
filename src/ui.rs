@@ -113,7 +113,7 @@ pub fn toast_el(kind: ToastKind, msg: &SharedString, t0: web_time::Instant, wind
         .border_1()
         .border_color(Theme::line_border())
         .shadow(theme::shadow_panel())
-        .font_family(theme::UI_FONT)
+        .font_family(theme::ui_family())
         .text_size(px(13.))
         .line_height(px(20.))
         .text_color(Theme::text())
@@ -152,7 +152,7 @@ pub fn popover() -> Div {
         .border_color(Theme::line_border())
         .rounded(px(MENU_RADIUS))
         .shadow(theme::shadow_menu())
-        .font_family(theme::UI_FONT)
+        .font_family(theme::ui_family())
         .text_color(Theme::text())
 }
 
@@ -193,7 +193,7 @@ pub fn scrim() -> Hsla {
 
 /// The modal dialog: white, radius 16, deep soft drop.
 pub fn dialog(id: &'static str) -> Stateful<Div> {
-    div().id(id).occlude().rounded(px(16.)).bg(crate::theme::raised(Theme::bg_body())).shadow(theme::shadow_dialog()).font_family(theme::UI_FONT).text_color(Theme::text())
+    div().id(id).occlude().rounded(px(16.)).bg(crate::theme::raised(Theme::bg_body())).shadow(theme::shadow_dialog()).font_family(theme::ui_family()).text_color(Theme::text())
 }
 
 /// A busy mark for a button: three short bars rising and falling in turn,
@@ -353,7 +353,7 @@ impl Render for Tooltip {
             .text_color(gpui::white())
             .text_size(px(12.))
             .line_height(px(TIP_LINE))
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_family())
             .whitespace_nowrap()
             .flex()
             .flex_col()
@@ -364,7 +364,7 @@ impl Render for Tooltip {
         // 10px from the trigger with an arrow pointing at it, on the preferred
         // side unless it doesn't fit, and kept inside the window.
         let mut style = window.text_style();
-        style.font_family = theme::UI_FONT.into();
+        style.font_family = theme::ui_family().into();
         let text_w = lines
             .iter()
             .map(|l| {
@@ -681,7 +681,7 @@ pub fn ui_runs(text: &str, style: &TextStyle, hits: &[std::ops::Range<usize>], h
     cuts.windows(2)
         .map(|w| {
             let mut run = style.to_run(w[1] - w[0]);
-            if text[w[0]..w[1]].chars().all(is_cjk_punct) {
+            if text[w[0]..w[1]].chars().all(is_cjk_punct) && !crate::fonts::own_glyphs(&run.font.family).cjk_punct {
                 run.font.family = CJK_PUNCT_FONT.into();
             }
             if hits.iter().any(|r| r.start <= w[0] && w[1] <= r.end) {
@@ -698,7 +698,7 @@ fn truncated(line: &ShapedLine, runs: &[TextRun], suffix: &str, font_size: Pixel
     let mut suffix_runs: Vec<TextRun> = runs.last().cloned().into_iter().collect();
     if let Some(r) = suffix_runs.first_mut() {
         r.len = suffix.len();
-        r.font.family = theme::UI_FONT.into();
+        r.font.family = theme::ui_family().into();
     }
     let suffix_w = window.text_system().shape_line(suffix.to_string().into(), font_size, &suffix_runs, None).width;
     let mut cut = 0;

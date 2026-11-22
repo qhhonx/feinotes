@@ -12,6 +12,7 @@
 //! For profiling: bench <n> <step> (runs the step n times, drawing a frame
 //!   synchronously after each, and prints step / frame / editor-render times) |
 //!   wheel x y dy [dx] (one scroll-wheel event; dx: sideways component).
+//!   pinch x y delta (one trackpad pinch event; delta 0.1 zooms in 10%).
 //! For demo videos: glide x y ms (eased pointer move from the last position) |
 //!   scroll x y dy ms (eased wheel scroll) | record <file.mp4> | record stop |
 //!   caption <text> (a timed note in the pointer track, for titles).
@@ -858,6 +859,13 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
                     ..Default::default()
                 };
                 window.dispatch_event(PlatformInput::Scroll(event), cx);
+            }
+        }
+        "pinch" => {
+            let n = nums(rest);
+            if n.len() >= 3 {
+                let event = PinchEvent { position: point(px(n[0]), px(n[1])), delta: n[2], ..Default::default() };
+                window.dispatch_event(PlatformInput::Pinch(event), cx);
             }
         }
         "resize" => {

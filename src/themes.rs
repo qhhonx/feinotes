@@ -66,8 +66,9 @@ pub struct Prop {
     pub feishu: Def,
 }
 
-/// The system families generic CSS names resolve to.
-pub const SYSTEM: &str = crate::theme::UI_FONT;
+/// The system families generic CSS names resolve to (the platform's own, not
+/// the reader's 界面字体: the note's default must not follow the chrome's).
+pub const SYSTEM: &str = crate::theme::SYSTEM_FONT;
 #[cfg(not(any(target_os = "linux", target_family = "wasm")))]
 pub const SYSTEM_MONO: &str = ".AppleSystemUIFontMonospaced";
 #[cfg(any(target_os = "linux", target_family = "wasm"))]
@@ -397,6 +398,29 @@ pub fn active() -> &'static Style {
     if p.is_null() { &PLAIN } else { unsafe { &*p } }
 }
 pub fn color(i: usize) -> Option<Hsla> { active().tokens.get(i).copied().flatten().map(ThemeColor::resolved) }
+
+/// 设置 › 文档字体: a family every piece of body text and every heading is
+/// drawn in, overriding the theme's `font-family` for them. `None` follows
+/// the theme. (Code keeps `pre.font`: a family that reads well as prose is
+/// rarely the one to read code in.)
+static DOC_FONT: RwLock<Option<&'static str>> = RwLock::new(None);
+
+pub fn set_doc_font(family: &str) { crate::fonts::store(&DOC_FONT, family) }
+
+/// The family `key` (`page.font`, `title.font`, `h1.font` …) is drawn in: the
+/// reader's choice for the document's text, else the theme's.
+pub fn doc_font(key: &str) -> &'static str { doc_font_in(active(), key) }
+
+/// `doc_font` for a theme that need not be the active one (外观's sample).
+pub fn doc_font_in(st: &Style, key: &str) -> &'static str { pick_font(*DOC_FONT.read().unwrap(), st, key) }
+
+fn pick_font(chosen: Option<&'static str>, st: &Style, key: &str) -> &'static str {
+    match chosen {
+        // The note's own text; code keeps `pre.font`, which is the theme's.
+        Some(family) if key.ends_with(".font") && key != "pre.font" => family,
+        _ => st.font(key),
+    }
+}
 /// Bumped whenever what is drawn may change (the editor re-measures its rows).
 pub fn generation() -> u64 { GENERATION.load(Ordering::Relaxed) }
 /// Something every theme draws changed (light / dark).
@@ -969,6 +993,17 @@ const FEISHU_DESCRIPTION: &str = "飞书文档的正文样式：16 / 26，标题
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn document_font_covers_prose_not_code() {
+        let st = Style::plain(true);
+        for key in ["page.font", "title.font", "h1.font", "h6.font", "h9.font"] {
+            assert_eq!(pick_font(Some("Georgia"), &st, key), "Georgia", "{key}");
+            assert_eq!(pick_font(None, &st, key), st.font(key), "{key}");
+        }
+        assert_eq!(pick_font(Some("Georgia"), &st, "pre.font"), st.font("pre.font"));
+        assert_ne!(st.font("pre.font"), "Georgia");
+    }
+
     use super::*;
 
     #[test]

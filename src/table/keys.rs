@@ -2,6 +2,7 @@
 //! tab-separated text (so cells go to and from Excel), and CSV in and out.
 
 use super::*;
+use std::ops::Range;
 
 pub(crate) fn key_down(v: &mut TableView, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<TableView>) {
     // text fields (a cell being edited, a popup's search box) take their own keys
@@ -35,13 +36,37 @@ pub(crate) fn key_down(v: &mut TableView, ev: &KeyDownEvent, window: &mut Window
             let check = { let st = v.state.read(cx); st.doc.base.table(v.table).and_then(|t| t.field(s.head.1)).is_some_and(|f| f.ty == FieldType::Checkbox) };
             if check { v.toggle_check(s.head, cx); } else { record::open(v, s.head.0, window, cx); }
         },
-        _ => match (&ev.keystroke.key_char, v.sel) {
-            // typing on a cell starts editing it, the key going in after what is there
-            (Some(ch), Some(s)) if !cmd && !m.control && !m.alt && !ch.chars().any(char::is_control) => v.begin_edit(s.head, Some(ch.as_str()), window, cx),
-            _ => used = false,
-        },
+        // typed text comes through the grid's input handler (below), so an input
+        // method composes from the first key and Windows' VK_PACKET text arrives too
+        _ => used = false,
     }
     if used { cx.stop_propagation(); }
+}
+
+/// While a cell is selected (not edited) the grid takes text input itself:
+/// typing starts editing the cell with what was typed in place of what is
+/// there, and an input method's first composition moves into the cell editor.
+impl EntityInputHandler for TableView {
+    fn text_for_range(&mut self, _: Range<usize>, _: &mut Option<Range<usize>>, _: &mut Window, _: &mut Context<Self>) -> Option<String> { Some(String::new()) }
+    fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> { Some(UTF16Selection { range: 0..0, reversed: false }) }
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> { None }
+    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {}
+    fn replace_text_in_range(&mut self, _: Option<Range<usize>>, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(s) = self.sel else { return };
+        if self.editing.is_some() || text.is_empty() || text.chars().any(char::is_control) { return; }
+        self.begin_edit(s.head, Some(text), window, cx);
+    }
+    fn replace_and_mark_text_in_range(&mut self, _: Option<Range<usize>>, text: &str, new_sel: Option<Range<usize>>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(s) = self.sel else { return };
+        if self.editing.is_some() || text.is_empty() { return; }
+        self.begin_edit(s.head, Some(""), window, cx);
+        if self.editing.is_some() { self.input.update(cx, |t, cx| t.replace_and_mark_text_in_range(None, text, new_sel, window, cx)); }
+    }
+    fn bounds_for_range(&mut self, _: Range<usize>, _: Bounds<Pixels>, _: &mut Window, cx: &mut Context<Self>) -> Option<Bounds<Pixels>> {
+        let (p, w, h) = self.cell_origin(self.sel?.head, cx)?;
+        Some(Bounds::new(p, size(px(w), px(h))))
+    }
+    fn character_index_for_point(&mut self, _: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> { None }
 }
 
 fn select_all(v: &mut TableView, cx: &mut Context<TableView>) {

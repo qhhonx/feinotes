@@ -9,11 +9,18 @@ use crate::feishu_theme::{self as theme, craft};
 use crate::editor_theme::Theme;
 use crate::editor_ui::{ROW_RADIUS, TipExt, TipSide, icon, popover};
 use gpui::{prelude::FluentBuilder, *};
+use regex::Regex;
 use std::ops::Range;
 
 pub struct Find {
     /// 替换 tab selected.
     pub replace: bool,
+    /// `.*` on: the query is a regular expression (remembered in the preferences).
+    pub regex: bool,
+    /// The regular expression does not compile.
+    pub invalid: bool,
+    /// Collecting stopped at `MAX_HITS`.
+    pub capped: bool,
     /// Hits in document order.
     pub matches: Vec<(BlockId, Range<usize>)>,
     pub current: Option<usize>,
@@ -23,6 +30,60 @@ pub struct Find {
     pub native_published: Vec<u8>,
     #[cfg(target_os = "ios")]
     pub native_viewport: Option<Size<Pixels>>,
+}
+
+/// Hits beyond this are not collected, so a one-letter pattern over a book stays responsive.
+pub const MAX_HITS: usize = 10_000;
+
+/// The query as a case-insensitive regular expression where `^` and `$`
+/// also match at line breaks; None for an empty query.
+pub fn compile(q: &str) -> Result<Option<Regex>, regex::Error> {
+    if q.is_empty() {
+        return Ok(None);
+    }
+    regex::RegexBuilder::new(q).case_insensitive(true).multi_line(true).size_limit(1 << 22).build().map(Some)
+}
+
+/// Non-empty, non-overlapping hits of `re` within one line's text that keep
+/// clear of inline objects, at most `limit`. Empty matches (`^`, `a*`) are skipped.
+pub fn find_re(text: &RichText, re: &Regex, limit: usize) -> Vec<Range<usize>> {
+    let raw: Vec<Range<usize>> = text.spans().filter(|(_, m)| m.inline.is_some()).map(|(r, _)| r).collect();
+    re.find_iter(&text.text)
+        .map(|m| m.range())
+        .filter(|r| !r.is_empty() && !raw.iter().any(|o| o.start < r.end && r.start < o.end))
+        .take(limit)
+        .collect()
+}
+
+/// The replacement for each hit in `hits` (sorted, as `find_re` gave them):
+/// `with` with `$1` / `${name}` filled from the hit's groups.
+pub fn expand_all(text: &str, re: &Regex, hits: &[Range<usize>], with: &str) -> Vec<String> {
+    let mut caps = re.captures_iter(text).peekable();
+    hits.iter()
+        .map(|r| {
+            while caps.peek().is_some_and(|c| c.get(0).is_some_and(|m| m.start() < r.start)) {
+                caps.next();
+            }
+            let mut out = String::new();
+            match caps.peek() {
+                Some(c) if c.get(0).map(|m| m.range()) == Some(r.clone()) => c.expand(with, &mut out),
+                _ => out.push_str(with),
+            }
+            out
+        })
+        .collect()
+}
+
+/// Replace `r` with plain `with` in the style of the replaced text's first run.
+pub fn replace_in(t: &mut RichText, r: Range<usize>, with: &str, plain: bool) {
+    let mut marks = t.slice(r.clone()).runs.first().map(|run| run.marks.clone()).unwrap_or_default();
+    marks.inline = None;
+    if plain {
+        marks = Marks::default();
+    }
+    let mut ins = RichText::default();
+    ins.push(with, marks);
+    t.replace(r, &ins);
 }
 
 /// Case-insensitive, non-overlapping hits of `q` in `text`, skipping inline objects.
@@ -66,7 +127,8 @@ impl Editor {
         }
         #[cfg(target_os = "ios")]
         if let Some(find) = &self.find { super::find_mobile::dismiss(find.native_serial); }
-        self.find = Some(Find { replace, matches: vec![], current: None,
+        let regex = !cfg!(target_os = "ios") && crate::settings::prefs().find_regex;
+        self.find = Some(Find { replace, regex, invalid: false, capped: false, matches: vec![], current: None,
             #[cfg(target_os = "ios")] native_serial: super::find_mobile::next_serial(),
             #[cfg(target_os = "ios")] native_published: vec![],
             #[cfg(target_os = "ios")] native_viewport: None,
@@ -111,12 +173,25 @@ impl Editor {
         let Some(old) = self.find.take() else { return };
         let q = self.find_field.read(cx).text.clone();
         let units = self.core.units();
+        let re = if old.regex { compile(&q) } else { Ok(None) };
+        let invalid = re.is_err();
+        let re = re.ok().flatten();
         let mut matches = vec![];
         for u in units.iter().filter(|u| u.text) {
+            if matches.len() > MAX_HITS {
+                break;
+            }
             if let Some(t) = self.core.text_of(u.id) {
-                matches.extend(find_in(t, &q).into_iter().map(|r| (u.id, r)));
+                let hits = match &re {
+                    Some(re) => find_re(t, re, MAX_HITS + 1 - matches.len()),
+                    None if old.regex => vec![],
+                    None => find_in(t, &q),
+                };
+                matches.extend(hits.into_iter().map(|r| (u.id, r)));
             }
         }
+        let capped = matches.len() > MAX_HITS;
+        matches.truncate(MAX_HITS);
         let order = |id: BlockId| units.iter().position(|u| u.id == id).unwrap_or(usize::MAX);
         let anchor = if from_caret {
             let h = self.core.ordered().0;
@@ -129,7 +204,7 @@ impl Editor {
                 .and_then(|a| matches.iter().position(|(id, r)| (order(*id), r.start) >= a))
                 .unwrap_or(0)
         });
-        self.find = Some(Find { replace: old.replace, matches, current,
+        self.find = Some(Find { replace: old.replace, regex: old.regex, invalid, capped, matches, current,
             #[cfg(target_os = "ios")] native_serial: old.native_serial,
             #[cfg(target_os = "ios")] native_published: old.native_published,
             #[cfg(target_os = "ios")] native_viewport: old.native_viewport,
@@ -171,14 +246,34 @@ impl Editor {
 
     fn replace_range(&mut self, id: BlockId, r: Range<usize>, with: &str) {
         let Some(t) = self.core.text_mut(id) else { return };
-        let mut marks = t.slice(r.clone()).runs.first().map(|run| run.marks.clone()).unwrap_or_default();
-        marks.inline = None;
-        if id == TITLE {
-            marks = Marks::default();
+        replace_in(t, r, with, id == TITLE);
+    }
+
+    /// The compiled query while `.*` is on.
+    fn find_regex(&self, cx: &App) -> Option<Regex> {
+        self.find.as_ref().filter(|f| f.regex)?;
+        compile(&self.find_field.read(cx).text).ok().flatten()
+    }
+
+    /// What replaces each hit of block `id`: the field's text, with groups filled in regex mode.
+    fn replacements(&self, id: BlockId, hits: &[Range<usize>], with: &str, cx: &App) -> Vec<String> {
+        match (self.find_regex(cx), self.core.text_of(id)) {
+            (Some(re), Some(t)) => expand_all(&t.text, &re, hits, with),
+            _ => hits.iter().map(|_| with.to_string()).collect(),
         }
-        let mut ins = RichText::default();
-        ins.push(with, marks);
-        t.replace(r, &ins);
+    }
+
+    fn toggle_regex(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(f) = &mut self.find else { return };
+        f.regex = !f.regex;
+        let mut p = crate::settings::prefs();
+        p.find_regex = f.regex;
+        let _ = crate::settings::save(&p);
+        self.refresh_find(true, cx);
+        self.scroll_to_current(window);
+        let field = self.find_field.clone();
+        window.focus(&field.focus_handle(cx), cx);
+        cx.notify();
     }
 
     fn after_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -195,6 +290,7 @@ impl Editor {
     pub(super) fn replace_one(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, r)) = self.find.as_ref().and_then(|f| f.matches.get(f.current?).cloned()) else { return };
         let with = self.replace_field.read(cx).text.clone();
+        let with = self.replacements(id, std::slice::from_ref(&r), &with, cx).pop().unwrap_or(with);
         self.core.checkpoint(EditKind::Other);
         self.replace_range(id, r.clone(), &with);
         // Keep "current" on the hit that followed the replaced one.
@@ -218,9 +314,16 @@ impl Editor {
         }
         let matches = f.matches.clone();
         let with = self.replace_field.read(cx).text.clone();
+        // Fill in every hit's groups before the text changes.
+        let mut edits = vec![];
+        for chunk in matches.chunk_by(|a, b| a.0 == b.0) {
+            let hits: Vec<Range<usize>> = chunk.iter().map(|(_, r)| r.clone()).collect();
+            let texts = self.replacements(chunk[0].0, &hits, &with, cx);
+            edits.extend(hits.into_iter().zip(texts).map(|(r, s)| (chunk[0].0, r, s)));
+        }
         self.core.checkpoint(EditKind::Other);
-        for (id, r) in matches.into_iter().rev() {
-            self.replace_range(id, r, &with);
+        for (id, r, s) in edits.into_iter().rev() {
+            self.replace_range(id, r, &s);
         }
         self.after_replace(window, cx);
     }
@@ -244,10 +347,13 @@ impl Editor {
         if cfg!(target_os = "ios") { return None; }
         let f = self.find.as_ref()?;
         let n = f.matches.len();
+        let more = if f.capped { "+" } else { "" };
         let counter = match f.current {
-            Some(i) if n > 0 => format!("{} / {n}", i + 1),
+            _ if f.invalid => crate::settings::text("正则有误").to_string(),
+            Some(i) if n > 0 => format!("{} / {n}{more}", i + 1),
             _ => "0 / 0".to_string(),
         };
+        let (invalid, regex) = (f.invalid, f.regex);
         let replace = f.replace;
         // Tabs: the chosen one semibold in the accent over a 2pt accent bar.
         let tab = |id: &'static str, label: &'static str, active: bool, to_replace: bool| {
@@ -276,7 +382,7 @@ impl Editor {
                 }))
         };
         // The input: 30 tall, radius 9, white, hairline; accent while focused.
-        let input = |field: &Entity<TextField>, suffix: Option<String>| {
+        let input = |field: &Entity<TextField>, suffix: Option<String>, toggle: Option<AnyElement>| {
             let focused = field.read(cx).is_focused(window);
             div()
                 .h(px(30.))
@@ -290,9 +396,31 @@ impl Editor {
                 .border_color(if focused { Theme::primary() } else { Theme::line_border() })
                 .child(field.clone())
                 .children(suffix.map(|s| {
-                    div().flex_none().text_size(px(12.)).line_height(px(20.)).text_color(Theme::text_caption()).child(s)
+                    let color = if invalid { Theme::danger() } else { Theme::text_caption() };
+                    div().flex_none().text_size(px(12.)).line_height(px(20.)).text_color(color).child(s)
                 }))
+                .children(toggle)
         };
+        // `.*`: regular expressions, accent-filled while on.
+        let regex_toggle = div()
+            .id("find-regex")
+            .flex_none()
+            .mr(px(-6.))
+            .size(px(22.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(ROW_RADIUS))
+            .cursor_pointer()
+            .text_size(px(13.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(if regex { Theme::primary() } else { Theme::text_caption() })
+            .when(regex, |d| d.bg(Theme::fill_turninto_active()))
+            .when(!regex, |d| d.hover(|s| s.bg(Theme::fill_hover_strong())))
+            .child(".*")
+            .tip_label(crate::settings::text("正则表达式").into(), TipSide::Above)
+            .on_click(cx.listener(|e, _, window, cx| e.toggle_regex(window, cx)))
+            .into_any_element();
         let label = |s: &'static str| div().text_size(px(13.)).line_height(px(20.)).text_color(Theme::text()).child(s);
         let enabled = n > 0;
         // Primary: the accent, white semibold; secondary: a white
@@ -301,8 +429,8 @@ impl Editor {
             let (bg, border, color) = match (primary, enabled) {
                 (true, true) => (Theme::primary(), Theme::primary(), Theme::on_primary()),
                 (true, false) => (Theme::fill_hover(), gpui::transparent_black(), Theme::text_disabled()),
-                (false, true) => (Theme::bg_body(), Theme::button_border(), Theme::text()),
-                (false, false) => (Theme::bg_body(), Theme::button_border(), Theme::text_disabled()),
+                (false, true) => (crate::theme::raised(Theme::bg_body()), Theme::button_border(), Theme::text()),
+                (false, false) => (crate::theme::raised(Theme::bg_body()), Theme::button_border(), Theme::text_disabled()),
             };
             div()
                 .id(id)
@@ -345,7 +473,7 @@ impl Editor {
                     .flex()
                     .flex_col()
                     .when(replace, |d| d.child(label(crate::settings::text("查找"))))
-                    .child(div().when(replace, |d| d.mt(px(6.))).child(input(&self.find_field, Some(counter)))),
+                    .child(div().when(replace, |d| d.mt(px(6.))).child(input(&self.find_field, Some(counter), Some(regex_toggle)))),
             )
             .when(replace, |d| {
                 d.child(
@@ -354,7 +482,7 @@ impl Editor {
                         .flex()
                         .flex_col()
                         .child(label(crate::settings::text("替换为")))
-                        .child(div().mt(px(6.)).child(input(&self.replace_field, None))),
+                        .child(div().mt(px(6.)).child(input(&self.replace_field, None, None))),
                 )
             })
             .child(
@@ -424,8 +552,63 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::find_in;
+    use super::{compile, expand_all, find_in, find_re, replace_in, MAX_HITS};
     use crate::model::*;
+
+    fn re(q: &str) -> regex::Regex { compile(q).unwrap().unwrap() }
+
+    #[test]
+    fn regex_groups_fill_the_replacement() {
+        let t = RichText::plain("2026-11-21 and 1999-01-02");
+        let r = re(r"(\d{4})-(?P<m>\d\d)-(\d\d)");
+        let hits = find_re(&t, &r, MAX_HITS);
+        assert_eq!(hits, vec![0..10, 15..25]);
+        assert_eq!(expand_all(&t.text, &r, &hits, "$3/${m}/$1 $$"), vec!["21/11/2026 $", "02/01/1999 $"]);
+        // Only some of the hits (replace one): the others are skipped over.
+        assert_eq!(expand_all(&t.text, &r, &hits[1..], "${m}"), vec!["01"]);
+        // Case-insensitive like the plain search, `(?-i)` opts out.
+        assert_eq!(find_re(&RichText::plain("Ab ab"), &re("ab"), 9), vec![0..2, 3..5]);
+        assert_eq!(find_re(&RichText::plain("Ab ab"), &re("(?-i)ab"), 9), vec![3..5]);
+    }
+
+    #[test]
+    fn bad_and_empty_patterns() {
+        assert!(compile("(").is_err());
+        assert!(compile("[a-").is_err());
+        assert!(compile("").unwrap().is_none());
+        // Empty matches are skipped and never loop.
+        let t = RichText::plain("baaa\nb");
+        assert!(find_re(&t, &re("^"), MAX_HITS).is_empty());
+        assert!(find_re(&t, &re("$"), MAX_HITS).is_empty());
+        assert_eq!(find_re(&t, &re("a*"), MAX_HITS), vec![1..4]);
+        // `^` and `$` see the line breaks of a code block, never another block.
+        assert_eq!(find_re(&t, &re("^b"), MAX_HITS), vec![0..1, 5..6]);
+        // The cap.
+        assert_eq!(find_re(&RichText::plain("x".repeat(50)), &re("x"), 7).len(), 7);
+    }
+
+    #[test]
+    fn regex_skips_inline_objects_and_keeps_styles() {
+        let mut t = RichText::default();
+        let bold = Marks { bold: true, ..Default::default() };
+        t.push("foo", bold.clone());
+        t.push("bar ", Marks::default());
+        t.push("\u{fffc}", Marks { inline: Some(Inline { kind: InlineKind::Other { tag: "x".into() }, xml: "<x/>".into() }), ..Default::default() });
+        t.push("baz", Marks::default());
+        let r = re(r"(fo+)(bar)|.\w+");
+        let hits = find_re(&t, &r, MAX_HITS);
+        assert_eq!(hits, vec![0..6], "a hit over the inline object is dropped");
+        let with = expand_all(&t.text, &r, &hits, "$2$1");
+        // Across bold and plain: the replacement takes the first run's style.
+        replace_in(&mut t, hits[0].clone(), &with[0], false);
+        assert!(t.text.starts_with("barfoo "));
+        assert_eq!(t.slice(0..6).runs.len(), 1);
+        assert!(t.slice(0..6).runs[0].marks.bold);
+        assert!(!t.slice(6..7).runs[0].marks.bold);
+        // The title stays plain.
+        replace_in(&mut t, 0..3, "x", true);
+        assert!(!t.slice(0..1).runs[0].marks.bold);
+    }
 
     #[test]
     fn find_ignores_case_and_inline_objects() {

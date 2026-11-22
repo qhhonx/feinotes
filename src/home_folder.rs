@@ -541,6 +541,8 @@ pub(crate) struct FileDrop {
     paths: Vec<std::path::PathBuf>,
     md: usize,
     xml: usize,
+    /// CSV / TSV: each becomes a 数据表.
+    csv: usize,
     dirs: usize,
     other: usize,
     at: Point<Pixels>,
@@ -573,15 +575,16 @@ const ART_H: f32 = 168.;
 
 impl FileDrop {
     fn new(paths: Vec<std::path::PathBuf>) -> Self {
-        let (mut md, mut xml, mut dirs, mut other) = (0, 0, 0, 0);
+        let (mut md, mut xml, mut csv, mut dirs, mut other) = (0, 0, 0, 0, 0);
         for p in &paths {
             if p.fs_is_dir() { dirs += 1; }
             else if crate::local_files::is_markdown_path(p) { md += 1; }
             else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml")) { xml += 1; }
+            else if crate::transfer::is_csv_path(p) { csv += 1; }
             else { other += 1; }
         }
         Self {
-            paths, md, xml, dirs, other, at: point(px(0.), px(0.)), over: None, zone: Default::default(), inside: false, drop_at: point(px(0.), px(0.)),
+            paths, md, xml, csv, dirs, other, at: point(px(0.), px(0.)), over: None, zone: Default::default(), inside: false, drop_at: point(px(0.), px(0.)),
             show: Fade::new(0., 240., 21.), veil: Fade::new(0., 160., 25.), arm: Fade::new(0., 300., 23.),
             dip: Fade::new(0., 520., 15.), land: Fade::new(0., 150., 21.), shake: Fade::new(0., 700., 9.),
             // Each paper surfaces a little after the one in front.
@@ -590,7 +593,7 @@ impl FileDrop {
         }
     }
 
-    fn importable(&self) -> usize { self.md + self.xml + self.dirs }
+    fn importable(&self) -> usize { self.md + self.xml + self.csv + self.dirs }
 
     /// The pointer went somewhere else that takes the drop (the sidebar).
     pub(crate) fn leave(&mut self) { if self.landed.is_none() { self.leaving = true; } }
@@ -600,6 +603,7 @@ impl FileDrop {
         let mut parts = vec![];
         if self.md > 0 { parts.push(crate::localized_count!(self.md, "{} 个 Markdown 文件", "{} Markdown file", "{} Markdown files", self.md)); }
         if self.xml > 0 { parts.push(crate::localized_count!(self.xml, "{} 个 DocxXML 文件", "{} DocxXML file", "{} DocxXML files", self.xml)); }
+        if self.csv > 0 { parts.push(crate::localized_count!(self.csv, "{} 个 CSV 文件", "{} CSV file", "{} CSV files", self.csv)); }
         if self.dirs > 0 { parts.push(crate::localized_count!(self.dirs, "{} 个文件夹", "{} folder", "{} folders", self.dirs)); }
         if self.other > 0 && !parts.is_empty() { parts.push(crate::localized_format!("{} 个不支持的文件会被跳过", "{} unsupported skipped", self.other)); }
         parts.join(" · ")
@@ -607,7 +611,7 @@ impl FileDrop {
 
     /// The front paper's tag: what kind of file leads.
     fn tag(&self) -> Option<&'static str> {
-        if self.md > 0 { Some("MD") } else if self.xml > 0 { Some("XML") } else { None }
+        if self.md > 0 { Some("MD") } else if self.xml > 0 { Some("XML") } else if self.csv > 0 { Some("CSV") } else { None }
     }
 }
 
@@ -745,7 +749,7 @@ impl Workspace {
         let pose = Pose { w, h, lift, open: o, yl: 0.49 * h + lean, yr: 0.54 * h + lean, inset: -(3. * o + 7. * m), papers };
         let tag = d.tag();
         // The front paper's name: the first file of the kind it shows.
-        let first = d.paths.iter().find(|p| match tag { Some("MD") => crate::local_files::is_markdown_path(p), Some(_) => p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml")), None => p.fs_is_dir() })
+        let first = d.paths.iter().find(|p| match tag { Some("MD") => crate::local_files::is_markdown_path(p), Some("CSV") => crate::transfer::is_csv_path(p), Some(_) => p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml")), None => p.fs_is_dir() })
             .or(d.paths.first()).and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let summary = d.summary();
         let record = d.zone.clone();

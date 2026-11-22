@@ -722,7 +722,7 @@ impl Editor {
             .border_color(Theme::line_border())
             .rounded(px(6.))
             .shadow(theme::shadow_panel())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_family())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()

@@ -17,6 +17,18 @@ const REAL_FOLDERS: &str = "文档库改为真实文件夹，以标题命名，�
 /// Each version's notes: (version, [(中文, English)]). Only the running
 /// version's are shown; a version without notes shows nothing.
 const NOTES: &[(&str, &[(&str, &str)])] = &[
+    ("0.1.14", &[
+        ("查找替换支持正则表达式", "Find and replace supports regular expressions"),
+        ("Obsidian 的 [[双链]] 可以点击打开对应的笔记", "Obsidian [[wikilinks]] open the note they point to"),
+        ("新增土耳其语界面，阿拉伯语从右往左排版", "Turkish interface; Arabic lays out right to left"),
+        ("设置里可以选择界面字体和文档字体", "Choose the interface and document fonts in Settings"),
+        ("设置 › 文档库可以清理没有笔记用到的图片和文件", "Settings › Documents clears out images and files no note uses"),
+        ("新增「退格键回到标题」开关（设置 › 通用）", "New setting: Backspace returns to title (Settings › General)"),
+        ("文档很多时搜索不再卡顿，批量删除和清空回收站更快", "Search keeps up with large libraries; deleting many notes and emptying the Trash are faster"),
+        ("Windows 和 Linux：复制为 Markdown 改为 Ctrl+Shift+M", "Windows and Linux: Copy as Markdown is now Ctrl+Shift+M"),
+        ("画板支持触控板双指缩放；窗口变窄时收起的侧栏，放宽后自动展开", "Pinch to zoom boards on a trackpad; a sidebar hidden by a narrow window comes back when it widens"),
+        ("修复切换文档卡顿、代码块折叠不保存、画板选背景色时崩溃和深色模式下按钮看不清", "Fix lag when switching documents, code block folds not saving, a crash in the board's background picker, and hard-to-read buttons in dark mode"),
+    ]),
     ("0.1.13", &[
         ("画板：在文档里插入，或直接打开 .excalidraw 文件", "Boards: add one to a note, or open .excalidraw files"),
         ("版本历史：「…」›「版本历史」查看以前保存的版本", "Version history: … › Version history shows earlier saves"),
@@ -133,9 +145,21 @@ pub fn card(on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> 
     let mut list = div().mt(px(6.)).w_full().min_w_0().flex().flex_col().gap(px(4.));
     if let Some((docs, folders)) = moved {
         let s = |n: usize| if n == 1 { "" } else { "s" };
-        list = list.child(line(crate::settings::localized(crate::settings::lang(), "文档库改为真实文件夹：访达里看到的就是侧栏，文件以标题命名（{docs} 篇文档、{folders} 个文件夹）",
-            || format!("文档库改为真实文件夹：访达里看到的就是侧栏，文件以标题命名（{docs} 篇文档、{folders} 个文件夹）"),
-            || format!("The library now uses real folders: Finder shows what the sidebar shows, files named by title ({docs} document{}, {folders} folder{})", s(docs), s(folders)))));
+        let lang = crate::settings::lang();
+        let text = if cfg!(target_os = "macos") {
+            crate::settings::localized(lang, "文档库改为真实文件夹：访达里看到的就是侧栏，文件以标题命名（{docs} 篇文档、{folders} 个文件夹）",
+                || format!("文档库改为真实文件夹：访达里看到的就是侧栏，文件以标题命名（{docs} 篇文档、{folders} 个文件夹）"),
+                || format!("The library now uses real folders: Finder shows what the sidebar shows, files named by title ({docs} document{}, {folders} folder{})", s(docs), s(folders)))
+        } else if cfg!(target_os = "windows") {
+            crate::settings::localized(lang, "文档库改为真实文件夹：文件资源管理器里看到的就是侧栏，文件以标题命名（{docs} 篇文档、{folders} 个文件夹）",
+                || format!("文档库改为真实文件夹：文件资源管理器里看到的就是侧栏，文件以标题命名（{docs} 篇文档、{folders} 个文件夹）"),
+                || format!("The library now uses real folders: File Explorer shows what the sidebar shows, files named by title ({docs} document{}, {folders} folder{})", s(docs), s(folders)))
+        } else {
+            crate::settings::localized(lang, "文档库改为真实文件夹：文件管理器里看到的就是侧栏，文件以标题命名（{docs} 篇文档、{folders} 个文件夹）",
+                || format!("文档库改为真实文件夹：文件管理器里看到的就是侧栏，文件以标题命名（{docs} 篇文档、{folders} 个文件夹）"),
+                || format!("The library now uses real folders: your file manager shows what the sidebar shows, files named by title ({docs} document{}, {folders} folder{})", s(docs), s(folders)))
+        };
+        list = list.child(line(text));
     }
     for &(zh, en) in notes.unwrap_or_default() {
         if moved.is_some() && zh == REAL_FOLDERS { continue }

@@ -233,7 +233,7 @@ impl Writer<'_> {
             }
             // A 数据表 as a plain table of the view it shows.
             BlockKind::DataTable(t) => {
-                let grid = fdl_core::table::block_grid(&crate::store::Store::root_dir(), t);
+                let grid = if crate::DATATABLE { fdl_core::table::block_grid(self.opts.library_root, t) } else { vec![] };
                 if !grid.is_empty() {
                     out.push_str("<table>");
                     for (i, row) in grid.iter().enumerate() {

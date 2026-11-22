@@ -162,8 +162,9 @@ impl TableView {
 
     // ---- editing ----
 
-    /// Start editing a cell: text-like fields in place (`typed` replaces
-    /// nothing and is appended, as 飞书 does), the others in their popup.
+    /// Start editing a cell: text-like fields in place (`typed` replaces what
+    /// is there, as in Excel and 飞书; F2, Enter or a click keep it with the
+    /// caret at the end), the others in their popup.
     pub(crate) fn begin_edit(&mut self, cell: CellId, typed: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         let (ty, text) = {
             let st = self.state.read(cx);
@@ -182,7 +183,7 @@ impl TableView {
             FieldType::Attachment => if let Some(p) = under { self.open_popup(p, Popup::Files { rec: cell.0, field: cell.1 }, cx); },
             FieldType::Rating => if let Some(n) = typed.and_then(|s| s.parse::<f64>().ok()) { let tid = self.table; self.edit(cx, |d| d.set_cells(tid, vec![(cell.0, cell.1, Value::Number(n))])); },
             _ => {
-                let text = format!("{text}{}", typed.unwrap_or(""));
+                let text = typed.map_or(text, str::to_string);
                 self.input.update(cx, |t, cx| { t.align = if ty.numeric() { crate::model::Align::Right } else { crate::model::Align::Left }; t.set_text(&text, cx); });
                 window.focus(&self.input.focus_handle(cx), cx);
                 self.editing = Some(cell);
@@ -554,6 +555,9 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, window:
                             // a second click on the active cell opens its editor, as a double click does
                             if ev.click_count >= 2 || (was && !ev.modifiers.shift) { v.begin_edit(id, None, window, cx); }
                             else { v.drag = Some(Drag::Select); }
+                            // focus is set here (the grid, or the cell editor): the view's own track_focus must not take
+                            // it back as the press bubbles up (on Windows the editor lost its keys that way)
+                            window.prevent_default();
                             cx.notify();
                         }))
                         .on_mouse_down(MouseButton::Right, cx.listener(move |v, ev: &MouseDownEvent, window, cx| {

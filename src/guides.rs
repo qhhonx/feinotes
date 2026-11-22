@@ -25,6 +25,10 @@ const WINDOWS_TEXT: &[(&str, &str)] = &[
     ("Back up the whole folder with Time Machine or copy it to another Mac.", "Back up the whole folder with your backup tool or copy it to another computer."),
     ("On macOS, <code>⌘ ⌃ ⇧ 4</code> captures a selection to the clipboard.", "<code>Win+Shift+S</code> captures a selection to the clipboard."),
     ("Drag an image from Finder into the document.", "Drag an image from File Explorer into the document."),
+    ("In the Finder, use Open With › Quiet.md.", "In File Explorer, use Open with › Quiet.md."),
+    ("show the file in the Finder,", "show the file in File Explorer,"),
+    ("what you see in the Finder is what the sidebar shows.", "what you see in File Explorer is what the sidebar shows."),
+    ("you put into the folder in the Finder show up", "you put into the folder in File Explorer show up"),
     ("a project banner from your Mac.", "a project banner from your computer."),
     ("<h2>Move to another Mac</h2><ol><li>Quit Quiet.md on the old Mac with", "<h2>Move to another computer</h2><ol><li>Quit Quiet.md on the old computer with"),
     ("Copy the complete Quiet.md folder into Documents on the new Mac.", "Copy the complete Quiet.md folder into Documents on the new computer."),
@@ -157,6 +161,7 @@ mod tests {
         assert!(all.contains("<code>Ctrl+B</code>") && all.contains("<code>Ctrl+Alt+1</code>") && all.contains("<code>Ctrl+Shift+C</code>"));
         let mac = |l: &&str| l.contains(['⌘', '⌥', '⇧', '⌃']);
         assert!(!all.lines().any(|l| mac(&l)), "{}", all.lines().find(mac).unwrap_or_default());
+        assert!(!all.contains("Finder"), "{}", all.lines().find(|l| l.contains("Finder")).unwrap_or_default());
     }
 
     /// Copies launched together on a new library: one seeds it, none fails.

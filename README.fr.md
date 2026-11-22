@@ -3,12 +3,12 @@
 <h1 align="center">Quiet.md</h1>
 
 <p align="center">
-  <b>Une app de notes locale, rapide et discrète.</b><br>
-  Conçue nativement en Rust + GPUI. Vos notes restent sur votre ordinateur, au format DocxXML de Feishu (Lark).
+  <b>Des notes rapides et discrètes, qui vivent sur votre ordinateur.</b><br>
+  Une app de notes native écrite en Rust + GPUI : de vrais dossiers, du Markdown qui se met en forme tout seul et un tableau blanc dans vos notes. Gratuite et open source.
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <a href="README.es.md">Español</a> · Français
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <a href="README.es.md">Español</a> · Français
 </p>
 
 <p align="center">
@@ -31,13 +31,13 @@
 <p align="center">
   <a href="https://quiet.md/?lang=fr"><b>Site web</b></a> ·
   <a href="#téléchargement"><b>Téléchargement</b></a> ·
-  <a href="#performances">Performances</a> ·
   <a href="#fonctionnalités">Fonctionnalités</a> ·
+  <a href="#performances">Performances</a> ·
   <a href="CONTRIBUTING.md">Contribuer</a>
 </p>
 
 <p align="center">
-  <img src="docs/images/home.png" width="100%" alt="L'accueil de Quiet.md : l'arborescence des documents à gauche, toutes les notes en grille à droite.">
+  <img src="docs/images/readme-home.webp" width="100%" alt="Quiet.md sur une prairie en pixel art : la barre latérale liste les dossiers, et l'accueil montre chaque dossier comme une pile de cartes de notes illustrées.">
 </p>
 
 > [!NOTE]
@@ -45,11 +45,51 @@
 
 ## Pourquoi Quiet.md
 
-**⚡ Rapide, nativement rapide.** Toute l'interface est dessinée sur le GPU par Rust et [GPUI](https://www.gpui.rs/). Pas de WebView, pas d'Electron. Dans un document d'un million de caractères, la frappe, la suppression et le défilement restent sous 6 ms par image à P95.
+**📁 Vos notes sont de simples fichiers.** Pas de compte, pas de cloud, et rien ne part sur le réseau par défaut (hors vérification facultative des mises à jour). Chaque dossier de la barre latérale est un vrai dossier sur votre disque, et chaque note est un fichier nommé d'après son titre : `.md` pour le Markdown, `.xml` pour les documents enrichis. Synchronisez-les avec iCloud, Git ou l'outil de votre choix. Si vous arrêtez un jour d'utiliser Quiet.md, vos fichiers restent exactement où ils sont.
 
-**🔒 Local d'abord. Vos fichiers vous appartiennent.** Aucun compte, aucun cloud, et rien ne passe par le réseau par défaut (hormis la vérification facultative des mises à jour). Votre bibliothèque est un dossier ordinaire sur votre ordinateur : les dossiers de la barre latérale sont de vrais dossiers, et chaque note est un fichier nommé d'après son titre (`.xml`, ou `.md` pour le Markdown). Gérez-la avec Git, iCloud ou l'outil de synchronisation de votre choix. Si vous cessez un jour d'utiliser Quiet.md, vos fichiers seront toujours là.
+**⚡ Native, et rapide.** Toute l'interface est dessinée sur le GPU par Rust et [GPUI](https://www.gpui.rs/). Ni Electron, ni WebView. Dans une note d'un million de caractères, la frappe prend environ 5 ms par image, quand un écran à 120 Hz en accorde 8,3.
 
-**📝 Un éditeur de texte enrichi complet qui parle le DocxXML de Feishu (Lark).** Les notes sont enregistrées au format DocxXML utilisé par les documents Feishu (Lark), pour que copier-coller, import et export conservent leur structure. Titres, tâches, tableaux, colonnes, encadrés, code, math, images et pièces jointes : tous les blocs utiles à l'écriture de documents sont là.
+**✍️ Écrire et dessiner au même endroit.** Tapez `#`, `-`, `[]` ou `>` et le Markdown se met en forme tout seul. Quand les mots ne suffisent plus, placez un tableau blanc directement dans la note. Les notes enrichies sont enregistrées au format DocxXML de Feishu (Lark) : un collage depuis Feishu ou une page web garde sa structure.
+
+## Fonctionnalités
+
+### Écrire
+
+<p align="center">
+  <img src="docs/images/readme-write.webp" width="100%" alt="Une longue note ouverte dans Quiet.md, avec des titres, des formules en ligne et un tableau de concentrations ioniques.">
+</p>
+
+Titres, listes, tâches, citations, encadrés, colonnes, tableaux avec cellules fusionnées, code avec coloration syntaxique, formules LaTeX, images, fichiers et couvertures. Les raccourcis Markdown fonctionnent pendant la frappe, et le menu `/` propose tout le reste. Mentionnez une autre note pour y faire un lien ; elle affichera ses rétroliens.
+
+### Dessiner
+
+<p align="center">
+  <img src="docs/images/readme-board.webp" width="100%" alt="Un tableau dans Quiet.md : images et cartes disposées avec des étiquettes manuscrites, des boîtes et des flèches qui les relient.">
+</p>
+
+Les tableaux sont un tableau blanc porté d'Excalidraw : formes, flèches qui restent attachées, dessin à main levée, texte, notes adhésives, cadres et images. Placez-en un dans une note, ou gardez-le comme fichier `.excalidraw` qu'excalidraw.com sait ouvrir. Zoomez en pinçant le trackpad ; un tableau de 10 000 formes reste fluide.
+
+### Ranger dans de vrais dossiers
+
+L'accueil montre chaque dossier comme une pile de ses pages. Maintenez une note au-dessus d'un dossier et il s'ouvre tout seul ; les dossiers s'imbriquent, et les déplacements s'annulent. Épinglez des notes, ajoutez-les aux favoris, cherchez dans tous les titres et toutes les lignes avec `⌘ J`, et faites des rechercher-remplacer dans une note, expressions régulières comprises. Les notes supprimées attendent dans la corbeille. Les fichiers et dossiers Markdown situés ailleurs sur votre ordinateur s'ouvrent sous **Fichiers de cet ordinateur** et se modifient sur place.
+
+### Apporter vos notes
+
+<p align="center">
+  <img src="docs/images/readme-import.webp" width="100%" alt="L'écran du premier lancement de Quiet.md, qui propose d'importer un coffre Obsidian trouvé sur l'ordinateur.">
+</p>
+
+Au premier lancement, Quiet.md cherche vos bibliothèques Obsidian, Logseq, iA Writer et Typora et les copie, sans toucher aux originaux. Les `[[liens wiki]]` d'Obsidian continuent de fonctionner : cliquez sur l'un d'eux pour ouvrir la note visée. Ensuite, glissez des fichiers et dossiers Markdown sur l'accueil ou directement dans un dossier de la barre latérale. Les notes repartent en Markdown ou en PDF, ou directement vers l'imprimante.
+
+### Et aussi
+
+- **Historique des versions** : chaque note garde des instantanés à l'enregistrement (20 par défaut, jusqu'à 30). Ouvrez-en un pour voir sur place ce qui a changé, restaurez-le en un clic ou donnez-lui un nom.
+- **Notes rapides** : sur macOS, un raccourci global (`⌥ Espace` par défaut) ouvre une petite fenêtre de note par-dessus n'importe quelle app.
+- **Votre style** : quatre styles intégrés — Craft, Feishu, Notion et Obsidian —, chacun avec une variante sombre, ou votre propre CSS ([docs/THEMES.md](docs/THEMES.md)). Choisissez la police de l'interface et celle des documents.
+- **Vos touches** : appuyez sur `⌘ /` pour voir tous les raccourcis et réaffecter n'importe lequel. Sous Windows et Linux, Ctrl remplace ⌘ et Alt remplace ⌥.
+- **Votre langue** : anglais, chinois simplifié, chinois traditionnel, japonais, coréen, espagnol, français, arabe et turc. L'arabe lie ses lettres et s'écrit de droite à gauche.
+- **Ménage** : Réglages › Bibliothèque repère les images et fichiers qu'aucune note n'utilise plus et les retire une fois que vous avez confirmé.
+- **Mises à jour** : les nouvelles versions s'installent depuis l'app après vérification de leur signature. Les vérifications automatiques peuvent être désactivées.
 
 ## Téléchargement
 
@@ -76,8 +116,6 @@ Vous pouvez aussi télécharger depuis [Quiet.md](https://quiet.md/?lang=fr). Ch
 
 Au premier lancement, Quiet.md demande la langue de l'interface, l'emplacement de votre bibliothèque et le raccourci de note rapide, et propose de copier vos notes depuis Obsidian, Logseq, iA Writer ou Typora. Une bibliothèque vide reçoit le guide **Getting started** : une visite de dix minutes des principales fonctionnalités. Les notes existantes ne sont jamais écrasées.
 
-L'interface est disponible en anglais, chinois simplifié, japonais, coréen, espagnol, français et arabe.
-
 ## Performances
 
 Temps de traitement par image sur 100 opérations consécutives dans un document mixte d'**un million de caractères** et 549 chapitres :
@@ -98,15 +136,6 @@ Un écran 120 Hz laisse 8,3 ms par image. Même à P95 sur un document d'un mill
 
 <sub>Apple M5 Pro / 48 Go, macOS 26.5, build release. Méthodologie et scripts de reproduction : [docs/PERFORMANCE.md](docs/PERFORMANCE.md).</sub>
 
-## Fonctionnalités
-
-- **Édition** : titres, listes numérotées et à puces, tâches, citations, blocs de code avec coloration syntaxique, math LaTeX, tableaux (avec cellules fusionnées), encadrés, colonnes, images, pièces jointes et couvertures. Raccourcis Markdown comme `#`, `-`, `[]` et `>`, plus un menu barre oblique `/`.
-- **Tableaux blancs** : un tableau porté depuis Excalidraw (formes, flèches qui restent liées, dessin à main levée, texte, notes adhésives, cadres et images), en bloc dans une note ou en fichier `.excalidraw` autonome qu’excalidraw.com sait ouvrir.
-- **Organisation** : arborescence de documents, épinglage, favoris, recherche plein texte et corbeille.
-- **Import et export** : importez des dossiers Markdown (images intégrées et encadrés Obsidian inclus) et du DocxXML Feishu (Lark). Exportez en Markdown et PDF, ou imprimez directement. Glissez des fichiers depuis le Finder vers l'accueil ou directement dans un dossier de la barre latérale. Un collage depuis Feishu ou une page web conserve la structure.
-- **Raccourcis** : appuyez sur `⌘ /` (`Ctrl+/` sous Windows) pour tous les voir. Chacun est reconfigurable. Sous Windows, Ctrl remplace ⌘ et Alt remplace ⌥. L'app et les guides de prise en main affichent les touches de votre système.
-- **Thèmes** : quatre styles intégrés, Craft, Feishu, Notion et Obsidian, chacun avec une variante sombre, ou écrivez le vôtre en CSS (voir [docs/THEMES.md](docs/THEMES.md)).
-
 ## Contributeurs
 
 Merci à toutes les personnes qui ont contribué à construire Quiet.md. Issues et pull requests sont bienvenues : compilation, tests et conventions de code sont dans [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -115,6 +144,7 @@ Merci à toutes les personnes qui ont contribué à construire Quiet.md. Issues 
 
 ## Dernières mises à jour
 
+- **0.1.14** (21 nov) : rechercher-remplacer avec des expressions régulières. Les `[[liens wiki]]` d'Obsidian ouvrent la note visée. Interface en turc, et l'arabe s'affiche de droite à gauche. Choisissez la police de l'interface et celle des documents, et retirez les images et fichiers qu'aucune note n'utilise. La recherche suit dans les grandes bibliothèques, et supprimer beaucoup de notes est plus rapide. Un réglage pour que Retour arrière revienne au titre ; sous Windows et Linux, Copier en Markdown devient Ctrl+Maj+M.
 - **0.1.13** (17 nov) : tableaux blancs portés depuis Excalidraw, comme bloc dans une note ou fichier `.excalidraw`, fluides même avec 10 000 formes. Historique des versions pour chaque note (… › Historique des versions). Interfaces en français et en arabe. Copier en Markdown, copier le chemin d'un fichier et changer de dossier de bibliothèque dans les Réglages. Les images collées depuis le web sont enregistrées dans la bibliothèque. Moins de mémoire sur les pages riches en images et un défilement plus fluide de la barre latérale.
 - **0.1.12** (14 nov) : glissez des fichiers depuis le Finder, ou un fichier de « Fichiers de cet ordinateur », directement dans un dossier de la barre latérale ou entre deux lignes. Toute la page s'illumine comme zone de dépôt. Cartes de l'accueil redessinées avec des coins arrondis continus, un menu Ouvrir dans le Finder, un fil d'Ariane qui commence à « Mes documents », une largeur minimale de fenêtre qui garde de la place pour la note, et une barre latérale opaque en plein écran. Corrige un blocage lors de la création d'un document dans un dossier.
 - **0.1.11** (13 nov) : la bibliothèque est désormais de vrais dossiers, avec des fichiers nommés d'après leur titre. Les anciennes bibliothèques migrent automatiquement, avec une sauvegarde. Un premier lancement nouveau qui règle la langue, l'emplacement de la bibliothèque et le raccourci de note rapide, et importe les notes depuis Obsidian et les autres apps Markdown. Interface en japonais, espagnol et coréen, équations en bloc dans le Markdown, documents qui se rouvrent là où vous les avez laissés, lancement plus rapide et mémoire réduite.

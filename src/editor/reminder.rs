@@ -874,6 +874,26 @@ mod tests {
     }
 
     #[test]
+    fn traditional_chinese_chip_text() {
+        let now = t(2026, 10, 22, 10, 0);
+        assert_eq!(time_string_for(t(2026, 10, 23, 0, 0), false, now, Lang::ZhTw), "明天");
+        assert_eq!(time_string_for(t(2026, 10, 25, 9, 0), false, now, Lang::ZhTw), "本週日");
+        assert_eq!(time_string_for(t(2026, 10, 27, 9, 0), false, now, Lang::ZhTw), "下週二");
+        assert_eq!(time_string_for(t(2026, 11, 3, 9, 0), false, now, Lang::ZhTw), "11月3日");
+        assert_eq!(time_string_for(t(2027, 1, 3, 9, 0), true, now, Lang::ZhTw), "2027年1月3日 09:00");
+    }
+
+    #[test]
+    fn turkish_chip_text() {
+        let now = t(2026, 10, 22, 10, 0);
+        assert_eq!(time_string_for(t(2026, 10, 23, 0, 0), false, now, Lang::Tr), "Yarın");
+        assert_eq!(time_string_for(t(2026, 10, 25, 9, 0), false, now, Lang::Tr), "Bu Pazar");
+        assert_eq!(time_string_for(t(2026, 10, 27, 9, 0), false, now, Lang::Tr), "Gelecek Salı");
+        assert_eq!(time_string_for(t(2026, 11, 3, 9, 0), false, now, Lang::Tr), "3.11");
+        assert_eq!(time_string_for(t(2027, 1, 3, 9, 0), true, now, Lang::Tr), "3.1.2027 09:00");
+    }
+
+    #[test]
     fn statuses() {
         let now = t(2026, 10, 22, 10, 0);
         assert_eq!(status(now - 1, now), Status::Expired);

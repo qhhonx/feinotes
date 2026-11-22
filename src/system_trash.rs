@@ -13,8 +13,8 @@ pub fn trash(path: &Path) -> anyhow::Result<()> {
     Ok(ctx.delete(path)?)
 }
 
-#[cfg(all(not(target_os = "macos"), not(target_family = "wasm")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_family = "wasm")))]
 pub fn trash(path: &Path) -> anyhow::Result<()> { Ok(trash::delete(path)?) }
 
-#[cfg(target_family = "wasm")]
+#[cfg(any(target_os = "ios", target_family = "wasm"))]
 pub fn trash(_: &Path) -> anyhow::Result<()> { anyhow::bail!("unsupported") }

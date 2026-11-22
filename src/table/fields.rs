@@ -174,6 +174,8 @@ fn confirm(v: &mut TableView, window: &mut Window, cx: &mut Context<TableView>) 
         let (name, opts) = f.draft(t, cx);
         (f.orig.clone(), f.at, f.beside, f.ty, name, opts)
     };
+    // left blank, a new field is called by its type in the interface language
+    let name = if name.trim().is_empty() && orig.is_none() { crate::settings::text(ty.label()).to_string() } else { name };
     match orig {
         Some(old) => {
             v.edit(cx, |d| {
@@ -426,35 +428,27 @@ fn settings(f: &FieldForm, base: &Base, t: &Table, problem: &Option<String>, cx:
         CreatedTime | ModifiedTime => vec![date_format(o, cx), switch_row("tb-ff-time", "显示时间", o.time, true, cx, |f, on| f.opts.time = on)],
         AutoNumber => vec![block("编号前缀", text_input(&f.prefix))],
         Formula => formula_blocks(f, t, problem, cx),
+        // a file is one table now: 关联 and 查找引用 from an older file keep working, their settings shown, not changed
         Link => {
-            let (cur, new) = (o.link_table.unwrap_or(t.id), f.orig.is_none());
-            let ids: Vec<TableId> = base.tables.iter().map(|x| x.id).collect();
-            // a mirror needs another table, and is made only with the field
-            let mirrored = if new { o.back.is_some() && cur != t.id } else { f.orig.as_ref().is_some_and(|x| x.ty == Link && x.opts.back.is_some() && x.opts.link_table == Some(cur)) };
-            vec![
-                block("关联的数据表", select("tb-ff-link-table", base.table(cur).map(|x| x.name.clone()).unwrap_or_default(), base.tables.iter().map(|x| (x.name.clone(), Some("table"))).collect(), ids.iter().position(|id| *id == cur), cx,
-                    move |f, i| f.opts.link_table = Some(ids[i]))),
-                switch_row("tb-ff-link-back", "双向关联", mirrored, new && cur != t.id, cx, |f, on| f.opts.back = on.then_some(0)),
-                switch_row("tb-ff-link-multi", "允许关联多条记录", !o.single, true, cx, |f, on| f.opts.single = !on),
-            ]
+            let name = o.link_table.and_then(|id| base.table(id)).map(|x| x.name.clone()).unwrap_or_else(|| label("已删除的数据表"));
+            vec![block("关联的数据表", fixed(name)), block("允许关联多条记录", fixed(label(if o.single { "否" } else { "是" }))), legacy_note()]
         }
         Lookup => {
-            let links: Vec<&Field> = t.fields.iter().filter(|x| x.ty == Link).collect();
-            if links.is_empty() { return vec![div().flex_none().text_size(px(12.)).text_color(Theme::text_placeholder()).child(label("请先添加关联字段"))]; }
-            let (via_ids, other) = (links.iter().map(|x| x.id).collect::<Vec<_>>(), f.via_table(base, t));
-            let via = o.via.and_then(|id| links.iter().position(|x| x.id == id));
-            let targets: Vec<&Field> = other.map(|x| x.fields.iter().collect()).unwrap_or_default();
-            let target_ids: Vec<FieldId> = targets.iter().map(|x| x.id).collect();
-            let target = o.target.and_then(|id| targets.iter().position(|x| x.id == id));
-            let pick = |i: Option<usize>, of: &[&Field], hint: &str| i.map_or(label(hint), |i| of[i].name.clone());
-            let list = |of: &[&Field]| of.iter().map(|x| (x.name.clone(), Some(field_glyph(x.ty)))).collect::<Vec<_>>();
-            vec![
-                block("关联字段", select("tb-ff-via", pick(via, &links, "请选择关联字段"), list(&links), via, cx, move |f, i| { if f.opts.via != Some(via_ids[i]) { f.opts.target = None; } f.opts.via = Some(via_ids[i]); })),
-                block("要引用的字段", select("tb-ff-target", pick(target, &targets, "请选择要引用的字段"), list(&targets), target, cx, move |f, i| f.opts.target = target_ids.get(i).copied())),
-                block("计算方式", select("tb-ff-rollup", label(o.rollup.label()), Rollup::ALL.iter().map(|r| (label(r.label()), None)).collect(), Rollup::ALL.iter().position(|r| *r == o.rollup), cx, |f, i| f.opts.rollup = Rollup::ALL[i])),
-            ]
+            let via = o.via.and_then(|id| t.field(id));
+            let target = via.and_then(|v| v.opts.link_table).and_then(|id| base.table(id)).zip(o.target).and_then(|(x, id)| x.field(id));
+            let name = |f: Option<&Field>| f.map_or_else(|| label("已删除的字段"), |f| f.name.clone());
+            vec![block("关联字段", fixed(name(via))), block("要引用的字段", fixed(name(target))), block("计算方式", fixed(label(o.rollup.label()))), legacy_note()]
         }
     }
+}
+
+/// A setting that can no longer be changed, as text in a quiet box.
+fn fixed(value: String) -> Div {
+    div().flex_none().h(px(32.)).px(px(10.)).flex().items_center().rounded(px(6.)).bg(c(ud::N50)).text_color(Theme::text_caption()).overflow_hidden().whitespace_nowrap().text_ellipsis().child(value)
+}
+
+fn legacy_note() -> Div {
+    div().flex_none().text_size(px(12.)).line_height(px(18.)).text_color(Theme::text_placeholder()).child(label("这个字段来自有多张数据表的旧文件：它照常显示，设置不能再修改。"))
 }
 
 pub(crate) fn render(_v: &TableView, base: &Base, t: &Table, form: &FieldForm, cx: &Context<TableView>) -> AnyElement {

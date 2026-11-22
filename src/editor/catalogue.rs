@@ -391,7 +391,7 @@ impl Editor {
         let collapsed = self.cat_collapsed.clone();
         let text_w = width - 11.;
         let mut style = window.text_style();
-        style.font_family = theme::UI_FONT.into();
+        style.font_family = theme::ui_family().into();
         let entity = cx.entity();
         let n = rows.len();
         let rows = Rc::new(rows);

@@ -104,7 +104,7 @@ impl Workspace {
         let p = parent.clone();
         if !self.save_before(cx, move |w, window, cx| w.create_table(p.clone(), window, cx)) { return; }
         let file_before = self.store.track_file_changes();
-        match self.store.create_table_in(crate::settings::text("未命名数据表"), parent.as_deref()) {
+        match self.store.create_table_in(crate::settings::text("未命名数据表"), &crate::table::blank_base(), parent.as_deref()) {
             Ok(id) => {
                 self.search_open = false;
                 self.doc_info = None;
@@ -166,6 +166,7 @@ impl Workspace {
         self.current = None;
         if self.folder_current.as_deref() != Some(id) { self.reset_folder_scroll(); }
         if let Some(meta) = self.store.touch(id) && let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) { entry.meta = meta; }
+        self.schedule_view_state(cx);
         if self.manual_home_sort() { self.prepare_manual_order(cx); }
         self.folder_current = Some(id.to_string());
         self.view = View::Folder;

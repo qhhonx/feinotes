@@ -24,6 +24,9 @@ mod panels;
 mod record;
 
 pub use fdl_core::table::*;
+
+/// A new file's one blank table, it and its columns named in the interface language.
+pub fn blank_base() -> Base { Base::blank_named(field::now(), crate::settings::text("未命名数据表"), crate::settings::text("文本")) }
 pub use fdl_core::table::View;
 
 use crate::feishu_theme::Theme;
@@ -50,6 +53,8 @@ pub struct BaseState {
     /// The file as we last read or wrote it (`sqlite::stamp`).
     stamp: Option<u64>,
     save: Option<Task<()>>,
+    /// A 版本历史 snapshot: shown, never written (an edit changes a copy and is gone).
+    pub read_only: bool,
 }
 
 impl BaseState {
@@ -58,7 +63,9 @@ impl BaseState {
         if let Some(s) = cx.default_global::<Hub>().0.get(path).and_then(|w| w.upgrade()) { return s; }
         let path = path.to_path_buf();
         let s = cx.new(|cx| {
-            let mut s = BaseState { doc: Doc::default(), path: path.clone(), error: None, stamp: None, save: None };
+            // a version kept under .quiet/history is history: look, don't touch
+            let read_only = path.components().any(|c| c.as_os_str() == ".quiet") && path.components().any(|c| c.as_os_str() == "history");
+            let mut s = BaseState { doc: Doc::default(), path: path.clone(), error: None, stamp: None, save: None, read_only };
             s.read();
             cx.on_release(|s: &mut BaseState, _| s.write()).detach();
             s
@@ -83,7 +90,7 @@ impl BaseState {
     #[cfg(not(target_family = "wasm"))]
     pub fn write(&mut self) {
         self.save = None;
-        if self.doc.dirty.is_clean() || self.path.as_os_str().is_empty() { self.doc.dirty = Dirty::default(); return; }
+        if self.read_only || self.doc.dirty.is_clean() || self.path.as_os_str().is_empty() { self.doc.dirty = Dirty::default(); return; }
         // never write a new file where one was: it moved or was deleted under us
         if !self.path.exists() { log::error!("数据表文件不在原处，未写入 {}", self.path.display()); return; }
         match sqlite::save(&self.path, &self.doc.base, &self.doc.dirty) {
@@ -96,6 +103,7 @@ impl BaseState {
 
     /// Change the base; views redraw and the file is written shortly after.
     pub fn edit<R>(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Doc) -> R) -> R {
+        if self.read_only { let mut scratch = self.doc.clone(); return f(&mut scratch); }
         let r = f(&mut self.doc);
         if !self.doc.dirty.is_clean() && self.save.is_none() {
             self.save = Some(cx.spawn(async move |this, cx| {
@@ -120,11 +128,17 @@ impl BaseState {
 
     /// The file moved (its page was renamed): later writes follow it.
     pub fn moved(&mut self, to: &Path, cx: &mut App) {
-        if self.path == to { return; }
+        // a version being looked at is not the file, wherever the file goes
+        if self.path == to || self.read_only { return; }
         let hub = cx.default_global::<Hub>();
         if let Some(w) = hub.0.remove(&self.path) { hub.0.insert(to.to_path_buf(), w); }
         self.path = to.to_path_buf();
     }
+}
+
+/// The file at `path` was replaced (a version restored): an open view reads it again.
+pub fn reload(path: &Path, cx: &mut App) {
+    if let Some(s) = cx.default_global::<Hub>().0.get(path).and_then(|w| w.upgrade()) { s.update(cx, |s, cx| s.refresh(cx)); }
 }
 
 /// Write every open file's pending changes (the app is closing or saving all).
@@ -404,6 +418,21 @@ impl TableView {
     pub(crate) fn undo(&mut self, cx: &mut Context<Self>) { self.edit(cx, |d| d.undo()); }
     pub(crate) fn redo(&mut self, cx: &mut Context<Self>) { self.edit(cx, |d| d.redo()); }
 
+    /// Keep a cell being edited and a name being typed, without a window at hand: the page is about
+    /// to be left or saved, and the view may be dropped with no focus change to commit them.
+    pub fn commit_pending(&mut self, cx: &mut Context<Self>) {
+        if let Some(cell) = self.editing.take() {
+            let text = self.input.read(cx).text.clone();
+            let tid = self.table;
+            self.edit(cx, |d| {
+                let Some(f) = d.base.table(tid).and_then(|t| t.field(cell.1)) else { return };
+                let v = field::parse(f, &text);
+                d.set_cells(tid, vec![(cell.0, cell.1, v)]);
+            });
+        }
+        self.finish_rename(true, cx);
+    }
+
     /// Finish what is in progress and write the file (the page is closing).
     pub fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_edit(true, window, cx);
@@ -500,8 +529,13 @@ impl Render for TableView {
         let state = self.state.clone();
         let st = state.read(cx);
         let root = div().id("table-view").key_context("Table").track_focus(&self.focus).relative().w_full().when(self.full, |d| d.h_full()).flex().flex_col()
-            .bg(Theme::bg_body()).font_family(crate::theme::UI_FONT).text_size(px(TEXT)).text_color(Theme::text())
+            .bg(Theme::bg_body()).font_family(crate::theme::DOC_UI_FONT).text_size(px(TEXT)).text_color(Theme::text())
             .on_key_down(cx.listener(keys::key_down))
+            // a selected cell takes typed text (keys.rs, EntityInputHandler)
+            .when(self.sel.is_some() && self.editing.is_none() && self.focus.is_focused(window), |d| {
+                let (focus, entity) = (self.focus.clone(), cx.entity());
+                d.child(canvas(|_, _, _| {}, move |bounds, _, window, cx| window.handle_input(&focus, ElementInputHandler::new(bounds, entity), cx)).absolute().size_0())
+            })
             // a gesture in progress follows the pointer wherever it goes in the window
             .when(self.drag.is_some(), |d| {
                 let (a, b) = (cx.weak_entity(), cx.weak_entity());
@@ -517,6 +551,13 @@ impl Render for TableView {
         let (Some(t), Some(v)) = (base.table(self.table), base.table(self.table).and_then(|t| t.view(self.view))) else {
             return root.into_any_element();
         };
+        // In a page the block is as tall as its rows (up to a cap): no scroll beyond what overflows the cap.
+        // A row added (and revealed) while the block was still the old height left the rows scrolled up,
+        // a blank under them, once the block grew.
+        if !self.full {
+            let rows = self.tops.last().copied().unwrap_or(0.) + ADD_ROW_H;
+            self.scroll.y = self.scroll.y.min((rows - rows.min(INLINE_MAX_ROWS_H)).max(0.));
+        }
         // one view, a 表格 (a file's old 看板 or other kinds show as one too)
         let main = grid::render(self, base, t, v, window, cx);
         let side = self.expanded.and_then(|r| t.record(r)).map(|r| record::render(self, base, t, v, r, window, cx));

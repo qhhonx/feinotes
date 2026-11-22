@@ -91,6 +91,7 @@ mod sharing;
 mod table;
 mod l10n;
 mod themes;
+mod fonts;
 mod shortcuts;
 #[allow(dead_code, unused_imports)]
 mod feishu_theme;
@@ -228,7 +229,7 @@ pub(crate) fn start(existed: bool, scripted: bool, into: Option<&mut Window>, in
     cloud_subscription::watch(cx);
     if !scripted && !in_shared_note() && !cfg!(target_family = "wasm") { quick_note::install(cx); }
     app::set_menus(cx);
-    if !cfg!(all(target_os = "macos", feature = "cloudkit-restore")) { update::init(cx); }
+    if !FEI_NOTES && !cfg!(all(target_os = "macos", feature = "cloudkit-restore")) { update::init(cx); }
     let took = into.map(|window| window.replace_root(cx, app::Workspace::new));
     if took.is_none() { open_main_window(scripted, None, cx); }
     // A synced library (or one used elsewhere) moves to real folders only once the user agrees.
@@ -261,6 +262,7 @@ pub(crate) fn init_app(cx: &mut App) {
     settings::apply_appearance(&settings::prefs().appearance);
     settings::sync_dark(cx);
     themes::load(&settings::prefs().theme_id(), false, || cx.text_system().all_font_names());
+    settings::check_fonts(cx);
 }
 
 

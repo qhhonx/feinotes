@@ -58,6 +58,7 @@
 
 }</code></pre>
 <pre lang="plaintext"><code></code></pre>
+<pre lang="bash" folded="true"><code>被折叠的代码</code></pre>
 <hr/>
 <callout emoji="💡" background-color="light-orange" border-color="orange">
   <p>提示</p>
@@ -93,6 +94,7 @@
 ],"files":{}}</whiteboard>
 <whiteboard type="blank"/>
 <datatable src=".assets/3f2a.sqlite" table="任务" view="表格" height="420"/>
+<datatable src=".assets/3f2a.sqlite" height="320" width="960"/>
 <sheet token="shtabc"/>
 <bookmark href="https://example.com" title="书签"/>
 <p>结尾</p>

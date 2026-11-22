@@ -49,6 +49,7 @@ Write one command per line. Lines beginning with `#` are comments. See the top o
 | `mods shift cmd` / `mods none` | Hold these modifier keys (shift, cmd, alt, ctrl) for the mouse steps that follow; `none` lets go. |
 | `mdown x y` / `mdragto x y` / `mup x y` | Press, drag or release the middle (wheel) button. |
 | `wheel x y dy [dx]` | Send one wheel event. Optional horizontal delta simulates a trackpad. Positive values reveal content to the right. |
+| `pinch x y delta` | Send one trackpad pinch event at (x, y). A delta of 0.1 zooms in by 10%; negative values zoom out. |
 | `shot <name>` / `burst <name> n` | Take one screenshot or n shots about 8 ms apart. |
 | `mark <text>` / `commit <text>` | Set or commit IME composition text. |
 | `clip html\|text\|image <file>` / `clip clear` | Set the simulated clipboard for a subsequent `key cmd-v`. Append multiple images or combine text and HTML. Use clear to empty it. |
@@ -71,6 +72,7 @@ Write one command per line. Lines beginning with `#` are comments. See the top o
 - `FDL_WINDOW_CAPTURE` uses the window server to capture system-drawn window controls.
 - `FDL_NOBLINK` disables caret blinking (set by `compare.py`).
 - `FDL_RECORD_FPS` sets the recording frame rate (default 30).
+- `QUIET_MD_UPDATE_URL` is passed through: the updater reads that folder instead of download.quiet.md. To test forced updates see docs/UPDATES.md. Downloads land in `~/Library/Caches/com.s1dashu.quietmd` of the `HOME` the app sees.
 
 ## Rules for running scripts
 
