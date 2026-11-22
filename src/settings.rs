@@ -2537,7 +2537,7 @@ impl Workspace {
                 let _ = this.update(cx, |w, cx| { w.library_switching = false; cx.notify(); });
                 return;
             }
-            let _ = cx.update(crate::cloud_sync::release_unused);
+            cx.update(crate::cloud_sync::release_unused);
             let result = cx.background_executor().spawn(async move { prepared.schedule(&root) }).await;
             match result {
                 Ok(()) => { cx.update(crate::app::restart); }
