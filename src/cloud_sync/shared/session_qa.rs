@@ -124,6 +124,41 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
         let room = original::prepare_local(&personal, &document, title.into(), false)?;
         fs::write(room_root(&personal, &room.scope.note)?.join("seed-published"), b"synthetic shared owner")?;
     }
+    if std::env::var_os("QUIET_SYNC_QA_SHARED_DROP").is_some() {
+        for (title, access) in [("Owner", Access::Owner), ("Editor", Access::ReadWrite), ("Reader", Access::ReadOnly)] {
+            let sender = if access == Access::Owner { personal.clone() } else {
+                let sender = root.join(format!("drop-sender-{title}"));
+                Store::initialize_shared_sqlite(&sender, &"c".repeat(64))?;
+                sender
+            };
+            let mut store = Store::open_sqlite_at(sender.clone())?;
+            let folder = store.create_folder(title, None)?;
+            let source = store.create_folder(&format!("{title} source"), Some(&folder))?;
+            store.create_folder(&format!("{title} target"), Some(&folder))?;
+            store.create_folder(&format!("{title} inner target"), Some(&source))?;
+            let moving = store.create_folder(&format!("{title} folder"), Some(&source))?;
+            store.create_folder(&format!("{title} descendant"), Some(&moving))?;
+            for (kind, parent) in [("document", &source), ("child", &moving)] {
+                store.create_from_in(&Document { title: crate::model::RichText::plain(format!("{title} {kind}")),
+                    blocks: vec![crate::model::Block::text("Synthetic drag fixture")], ..Default::default() }, Some(parent))?;
+            }
+            drop(store);
+            let mut room = original::prepare_local(&sender, &folder, title.into(), false)?;
+            let cache = room_root(&sender, &folder)?;
+            if access == Access::Owner {
+                fs::write(cache.join("seed-published"), b"synthetic shared owner")?;
+            } else {
+                let edits = Journal::open(&cache, None)?.request()?.edits;
+                room.scope.owner = Some("synthetic-folder-owner".into());
+                let guest = stage(&personal, &room, None)?;
+                let mut journal = Journal::open(&guest, None)?;
+                journal.receive(crate::cloud_sync::Changes { retention: None, uploaded: vec![], edits,
+                    token: Some(crate::cloud_sync::Bytes(vec![1])), more: false, legacy: false,
+                    room_access: Some(access), cursor_replayed: false, upload_quota_exceeded: false })?;
+                journal.merge(&Default::default())?;
+            }
+        }
+    }
     fs::write(root.join("pause-cloud"), b"isolated local session regression")?;
     fs::write(root.join("qa-session-rooms.json"), serde_json::to_vec(&rooms)?)?;
     Ok(personal)

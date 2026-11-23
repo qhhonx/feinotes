@@ -56,12 +56,14 @@ impl Workspace {
         let body = ui::popover().id("shared-child-row-menu").occlude().w(px(crate::sidebar::ROW_MENU_W))
             .py(px(ui::MENU_PAD_Y)).on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }))
             .child(row("shared-child-open", "doc", tr("打开", "Open"))
+                .when(cfg!(feature = "devtools"), |row| row.relative().child(self.home.track("qa-shared-child-open")))
                 .on_click(cx.listener(move |w, _, window, cx| {
                     w.row_menu = None;
                     w.open_shared_item_interactive(open_room.clone(), open.clone(), None, window, cx);
                 })))
             .child(divider())
-            .child(row("shared-child-pin", "pin", pin).on_click(cx.listener(move |w, _, _, cx| w.toggle_pin(&pin_id,cx))))
+            .child(row("shared-child-pin", "pin", pin).when(cfg!(feature = "devtools"), |row| row.relative().child(self.home.track("qa-shared-child-pin")))
+                .on_click(cx.listener(move |w, _, _, cx| w.toggle_pin(&pin_id,cx))))
             .child(row("shared-child-star", "star", star).on_click(cx.listener(move |w, _, _, cx| w.toggle_star(&star_id,cx))))
             .child(divider())
             .when(self.object_link_available(cx), |d| d.child(row("shared-child-copy-object-link", "copy", tr("复制链接", "Copy Link"))

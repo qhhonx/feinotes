@@ -204,6 +204,74 @@ impl Workspace {
             .is_some_and(|row| row.access.map_or(room.scope.owner.is_none(), Access::can_write))
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn shared_drag_room(&self, root: &str, cx: &App) -> Option<Room> {
+        self.current_room(cx).filter(|room| room.scope.note == root)
+            .or_else(|| self.shared_list_room(root, cx))
+            .filter(|room| self.shared_sidebar_folder_writable(room, cx))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn shared_drop_allowed(entries: &[Entry], room: &Room, id: &str, target: &str) -> bool {
+        if id == room.scope.note || !entries.iter().any(|e| e.id == id && e.meta.parent.as_deref() != Some(target))
+            || !entries.iter().any(|e| e.id == target && e.meta.folder.is_some()) { return false; }
+        let tree = crate::tree::Tree::new(entries);
+        let members = tree.subtree(&room.scope.note);
+        members.iter().any(|member| member == id) && members.iter().any(|member| member == target)
+            && !tree.subtree(id).iter().any(|member| member == target)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn move_shared_drop(&mut self, room: Room, id: String, target: String, cx: &mut Context<Self>) {
+        if !self.shared_sidebar_folder_writable(&room, cx) { return; }
+        if shared::scope(&self.store, cx) == Some(&room.scope) {
+            self.commit_shared_drop(room, self.store.clone(), &id, &target, cx);
+            return;
+        }
+        // A sidebar drop can update a room without switching away from the current page.
+        let workspace = cx.weak_entity();
+        let requested = room.clone();
+        if let Err(error) = shared::load_sidebar_store(room, cx, Box::new(move |result, cx| {
+            let _ = workspace.update(cx, |w, cx| match result {
+                Ok(store) => w.commit_shared_drop(requested, store, &id, &target, cx),
+                Err(error) => w.report_shared_drop_error(&error, cx),
+            });
+        })) {
+            self.report_shared_drop_error(&error.to_string(), cx);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn commit_shared_drop(&mut self, room: Room, store: crate::shared_store::SharedStore, id: &str, target: &str, cx: &mut Context<Self>) {
+        let mut store = match shared::check_opened_store(store, &room, cx) {
+            Ok(store) => store,
+            Err(error) => { self.report_shared_drop_error(&error.to_string(), cx); return; }
+        };
+        // Permissions and parent links may have changed while loading the room.
+        if !self.shared_sidebar_folder_writable(&room, cx)
+            || !Self::shared_drop_allowed(&store.list(), &room, id, target) { return; }
+        self.sharing.expanded.insert(target.to_owned());
+        if self.store.root() == store.root() {
+            self.move_docs(&[id.to_owned()], Some(target.to_owned()), cx);
+        } else {
+            match store.set_parent(id, Some(target)) {
+                Ok(_) => {
+                    cloud_sync::activity::update_folder_items(&room.scope, &store.list(), cx);
+                    cloud_sync::recheck_account(store.root(), cx);
+                    self.show_toast(settings::text("移动成功"), cx);
+                    notify(cx);
+                }
+                Err(error) => self.report_shared_drop_error(&error.to_string(), cx),
+            }
+        }
+        cx.notify();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn report_shared_drop_error(&mut self, error: &str, cx: &mut Context<Self>) {
+        self.show_toast_kind(ui::ToastKind::Error, &crate::localized_format!("移动失败：{}", "Could not move document: {}", settings::diagnostic(error)), cx);
+    }
+
     pub(crate) fn shared_sidebar_row(&self, entry: &Entry, cx: &mut Context<Self>) -> Stateful<Div> {
         let id = entry.id.clone();
         let member = entry.meta.share_root.is_some();
@@ -240,7 +308,7 @@ impl Workspace {
                             w.sharing.sidebar.icon_press = true; w.sharing.sidebar.icon_alt = ev.modifiers.alt;
                         }))))
                 .child(div().flex_1().min_w_0().flex().mr(px(title_reserve))
-                    .child(self.sidebar_title(entry, SidebarSection::Shared, selected, false, cx)))
+                    .child(self.sidebar_title(entry, SidebarSection::Shared, selected, self.folder_drop_target(&id), cx)))
                 .when(!batch && (!member || cfg!(target_os = "macos")), |d| d
                     .on_mouse_down(MouseButton::Right, cx.listener(move |w, event: &MouseDownEvent, _, cx| {
                         w.row_menu = Some(crate::app::RowMenu { id: menu_id.clone(), pos: event.position, corner: Anchor::TopLeft, sub: false, batch: false });
@@ -261,7 +329,7 @@ impl Workspace {
         let blocked = self.batch.as_ref().is_some_and(|ids| !checked && ids.len() >= crate::sidebar::BATCH_LIMIT);
         let unread = cx.try_global::<ActivityView>().is_some_and(|view| view.0.iter().any(|row| row.room.scope.note == id && row.unread));
         let dot = unread.then(crate::sidebar::shared_unread_dot);
-        let more = !member && !batch && !self.rename.as_ref().is_some_and(|rename| rename.id == entry.id);
+        let more = (!member || cfg!(target_os = "macos")) && !batch && self.sidebar_rename(&id, SidebarSection::Shared).is_none();
         let end = if more { Some(self.more_button_with_status(entry, "shared", dot, cx).into_any_element()) }
             else { dot.map(|dot| crate::sidebar::row_action_slot().child(dot).into_any_element()) };
         div().id(SharedString::from(format!("shared-sidebar-{id}"))).h(px(crate::sidebar::ROW_H)).w_full().pl(px(6.)).pr(px(8.))

@@ -2793,8 +2793,10 @@ impl Render for Workspace {
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 w.with_sidebar(true, |w| w.track_sidebar_press(ev, window, cx));
                 w.track_sidebar_press(ev, window, cx);
+                w.track_home_press(ev, cx);
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|w, _, window, cx| {
+            .on_mouse_up(MouseButton::Left, cx.listener(|w, ev: &MouseUpEvent, window, cx| {
+                if w.release_home_drag(ev.position, window, cx) { return; }
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 if w.sharing.sidebar.active.is_some() { w.finish_shared_sidebar_click(window, cx); return; }
                 w.finish_sidebar_click(window, cx);
@@ -3011,6 +3013,11 @@ impl Workspace {
                 if ev.keystroke.key == "escape" && w.history.is_some() { w.close_history(cx); cx.stop_propagation(); return; }
                 if ev.keystroke.key == "escape" && w.has_home_drag() {
                     w.cancel_home_drag(cx); cx.stop_propagation(); return;
+                }
+                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                if ev.keystroke.key == "escape" && w.sharing.sidebar.active.is_some() {
+                    w.with_sidebar(true, |w| w.end_folder_drag(true, window, cx));
+                    cx.stop_propagation(); return;
                 }
                 if ev.keystroke.key == "escape" && w.folder_drag.active.is_some() {
                     w.end_folder_drag(true, window, cx); cx.stop_propagation(); return;

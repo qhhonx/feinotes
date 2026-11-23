@@ -12,6 +12,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
     let primary = handles[0];
     primary.update(cx, |_, window, _| crate::devtools::select_script_window(window))?;
     if name.starts_with("folder-sidebar-") { return folder_sidebar_step(name, &root, primary, cx); }
+    if let Some(action) = name.strip_prefix("shared-drop ") { return shared_drop(action, primary, cx); }
     if let Some(action) = name.strip_prefix("move-matrix-") { return move_matrix(action, primary, cx); }
     match name {
         "document-status-list" | "document-status-grid" | "document-status-search" | "document-status-menu-open" =>
@@ -908,6 +909,117 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
         }
         _ => anyhow::bail!("Unknown sharing UI QA step"),
     }
+    Ok(())
+}
+
+fn shared_drop(args: &str, primary: WindowHandle<Workspace>, cx: &mut App) -> Result<()> {
+    ensure!(std::env::var_os("QUIET_SYNC_QA_SHARED_DROP").is_some(), "Use isolated shared-drop fixtures");
+    let mut args = args.split_whitespace();
+    let action = args.next().context("Shared-drop action missing")?;
+    let role = args.next().context("Shared-drop role missing")?;
+    let (kind, target) = (args.next().unwrap_or("document"), args.next().unwrap_or("inner"));
+    let ws = primary.read(cx)?;
+    let rows = ws.shared_sidebar_entries(cx);
+    let id = |kind: &str| -> Result<String> {
+        let title = if kind == "root" { role.into() } else { format!("{role} {kind}") };
+        rows.iter().find(|row| row.title == title).map(|row| row.id.clone()).with_context(|| format!("Fixture missing: {title}"))
+    };
+    let room = ws.shared_list_room(&id("root")?, cx).context("Shared-drop room missing")?;
+    let surface = |kind: &str| -> Result<_> {
+        let id = id(kind)?;
+        ws.qa_home_card_point(&id).with_context(|| format!("Home item did not render: {kind}"))
+    };
+    let sidebar = |kind: &str| -> Result<_> {
+        ws.qa_sidebar_point(true, &id(kind)?, false).with_context(|| format!("Sidebar item did not render: {kind}"))
+    };
+    if matches!(action, "list" | "grid" | "sidebar" | "personal") {
+        let (root, source, folder) = (id("root")?, id("source")?, id("folder")?);
+        return primary.update(cx, |ws, window, cx| {
+            ws.sidebar_open = true;
+            ws.folded[1] = true;
+            ws.sharing.folded = false;
+            ws.sharing.expanded.extend([root, source.clone(), folder]);
+            match action {
+                "list" | "grid" => {
+                    ws.home.grid = action == "grid";
+                    ws.navigate_shared_sidebar(room, crate::sidebar::SidebarEntry::new(crate::sidebar::SidebarSection::Shared, &source), window, cx);
+                }
+                "personal" => ws.navigate_personal_home_tab(crate::home::HomeTab::Recent, window, cx),
+                _ => cx.notify(),
+            }
+        });
+    }
+    let parent = |target: &str| if target == "inner" { id("inner target") }
+        else { id(target) };
+    if matches!(action, "verify" | "observe") {
+        let item = id(kind)?;
+        let expected = parent(target)?;
+        let moving = id("folder")?;
+        let child = id("child")?;
+        let descendant = id("descendant")?;
+        let entries = shared::store_for(&room, cx)?.list();
+        let actual = entries.iter().find(|entry| entry.id == item).and_then(|entry| entry.meta.parent.as_deref());
+        if action == "verify" { ensure!(actual == Some(expected.as_str()), "{role} {kind} did not land in {target}"); }
+        ensure!([child, descendant].iter().all(|id| entries.iter().any(|entry| entry.id == *id
+            && entry.meta.parent.as_ref() == Some(&moving))), "Moved folder lost descendants");
+        let title = entries.iter().find(|entry| Some(entry.id.as_str()) == actual).map(|entry| entry.title.as_str());
+        eprintln!("SHARED_DROP {action} {role} {kind} parent={title:?}");
+        return Ok(());
+    }
+    if action == "verify-open" {
+        let expected = match role { "Owner" => Access::Owner, "Editor" => Access::ReadWrite, _ => Access::ReadOnly };
+        ensure!(ws.view == View::Doc && ws.current.as_deref() == Some(&id(kind)?)
+            && ws.sharing_access(cx) == Some(expected)
+            && ws.editor.as_ref().is_some_and(|e| e.read(cx).read_only != expected.can_write()),
+            "More menu changed document access or opened the wrong document");
+        eprintln!("SHARED_DROP verified {role} {kind} open-access={expected:?}");
+        return Ok(());
+    }
+    if action == "verify-pin" {
+        ensure!(preferences::active(cx).get("pin", &id(kind)?) != 0, "Pin menu action did not persist");
+        eprintln!("SHARED_DROP verified {role} {kind} pin");
+        return Ok(());
+    }
+    if action == "verify-drag" {
+        ensure!(ws.home_dragging(&id(kind)?) == (target == "yes"), "Unexpected drag start state");
+        eprintln!("SHARED_DROP verified {role} {kind} home-drag={target}");
+        return Ok(());
+    }
+    if action == "observe-menu" {
+        eprintln!("SHARED_DROP {role} menu-shortcut={}", ws.more_bounds.borrow().contains_key(&format!("shared-{}", id(kind)?)));
+        return Ok(());
+    }
+    let at = match action {
+        "home-down" => surface(kind)?,
+        "home-move" | "home-up" => surface(if target == "inner" { "inner target" } else { target })?,
+        "sidebar-down" | "hover" => sidebar(kind)?,
+        "sidebar-move" | "sidebar-up" => sidebar(if target == "inner" { "inner target" } else { target })?,
+        "blank-move" | "blank-up" => point(px(450.), px(905.)),
+        "cross-move" | "cross-up" => {
+            let other = if role == "Owner" { "Editor" } else { "Owner" };
+            let target = rows.iter().find(|row| row.title == other).context("Other share missing")?;
+            ws.qa_sidebar_point(true, &target.id, false).context("Other share did not render")?
+        }
+        "menu" => ws.more_bounds.borrow().get(&format!("shared-{}", id(kind)?)).context("More control missing")?.center(),
+        "pin" => ws.home.anchor("qa-shared-child-pin").context("Pin control missing")?.center(),
+        "open" => ws.home.anchor("qa-shared-child-open").context("Open control missing")?.center(),
+        _ => anyhow::bail!("Unknown shared-drop action: {action}"),
+    };
+    cx.update_window(primary.into(), |_, window, cx| {
+        let modifiers = Modifiers::default();
+        let move_to = |held| PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: held, modifiers });
+        let down = PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1, first_mouse: false });
+        let up = PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: at, modifiers, click_count: 1 });
+        if action.ends_with("-down") || matches!(action, "menu" | "pin" | "open" | "hover") {
+            window.dispatch_event(move_to(None), cx);
+            if action != "hover" { window.dispatch_event(down, cx); }
+            if matches!(action, "menu" | "pin" | "open") { window.dispatch_event(up, cx); }
+        } else if action.ends_with("-move") {
+            window.dispatch_event(move_to(Some(MouseButton::Left)), cx);
+        } else {
+            window.dispatch_event(up, cx);
+        }
+    })?;
     Ok(())
 }
 
