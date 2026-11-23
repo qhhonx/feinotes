@@ -1,0 +1,7 @@
+Fei Notes 1.1.0 beta
+
+Invite people to a shared document with a link. Invitees can view by default, or you can allow editing. An iCloud account is required to join.
+
+When an unsynced shared document or folder opens, Fei Notes keeps the current page visible and shows loading progress. If shared item creation fails, the name and access settings you entered are kept so you can retry.
+
+Interface Style and Document Theme are now next to each other in Settings. The Notes-style document menu has one Reading Mode control.
