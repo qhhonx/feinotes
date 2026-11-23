@@ -815,6 +815,11 @@ impl R<'_> {
             ui.containers.borrow_mut().insert(id, container);
         }
         let source = ui.resolve(src);
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let source = match source {
+            Src::Missing if crate::cloud_sync::shared_attachment_pending(&ed.library_root, src, cx) => Src::Pending,
+            source => source,
+        };
         let natural = match &source {
             Src::Local(p) => ui.dims(p),
             _ => None,

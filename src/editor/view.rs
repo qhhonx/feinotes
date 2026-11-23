@@ -361,6 +361,7 @@ impl Editor {
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub(crate) fn cloud_attachments_ready(&mut self, cx: &mut Context<Self>) {
         self.file.invalidate_missing_sizes();
+        self.img.generation += 1;
         cx.notify();
     }
 
