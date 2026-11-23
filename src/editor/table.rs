@@ -772,11 +772,17 @@ impl R<'_> {
         let cells_at = Rc::new(Cell::new(None::<Bounds<Pixels>>));
         let c = cells_at.clone();
         grid = grid.child(canvas(move |b, _, _| c.set(Some(b)), |_, _, _, _| {}).absolute().left(px(BAR)).top(px(BAR)).right_0().bottom_0());
+        let (scroll, bar) = ed.tables.hscroll.borrow_mut().entry(id).or_insert_with(|| (ScrollHandle::new(), Default::default())).clone();
+        #[cfg(target_os = "ios")]
+        let touch_scroll = scroll.clone();
         let edges = canvas(|_, _, _| (), move |b, _, window, _| {
             let Some(t) = cells_at.get() else { return };
             let (top, bottom) = (t.top().max(b.top()), t.bottom().min(b.bottom()));
             if bottom <= top { return }
             let h = bottom - top;
+            #[cfg(target_os = "ios")]
+            super::touch::record_horizontal_viewport(super::touch::HorizontalScroll::Table,
+                Bounds::new(point(b.left(), top), size(b.size.width, h)), &touch_scroll, window);
             let shade = |deg| linear_gradient(deg, linear_color_stop(theme::rgbaf(0, 0, 0, 0.05), 0.), linear_color_stop(theme::rgbaf(0, 0, 0, 0.), 1.));
             if t.left() < b.left() - px(0.5) {
                 window.paint_quad(fill(Bounds::new(point(b.left() + px(1.), top), size(px(10.), h)), shade(90.)));
@@ -787,7 +793,6 @@ impl R<'_> {
                 window.paint_quad(fill(Bounds::new(point(b.right() - px(1.), top), size(px(1.), h)), Theme::table_line()));
             }
         });
-        let (scroll, bar) = ed.tables.hscroll.borrow_mut().entry(id).or_insert_with(|| (ScrollHandle::new(), Default::default())).clone();
         div()
             .flex()
             .child(

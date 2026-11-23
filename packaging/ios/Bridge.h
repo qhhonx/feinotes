@@ -27,3 +27,7 @@ void fei_ios_print_begin(const char *json, FeiPrintCompletion completion, const 
 
 typedef void (*FeiLibraryCompletion)(int32_t status, const char *message, const void *context);
 void fei_ios_pick_library(const char *title, FeiLibraryCompletion completion, const void *context);
+
+// Coordinates are in the GPUI editor view's logical points.
+bool fei_ios_horizontal_scroll_at(float x, float y);
+bool fei_ios_qa_horizontal_scroll(uint8_t kind, float out[5]);

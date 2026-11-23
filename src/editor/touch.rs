@@ -2,6 +2,57 @@
 use super::{core::{Pos, Selection}, view::Editor};
 use crate::editor_theme::Theme;
 use gpui::*;
+use std::cell::RefCell;
+
+/// A rendered horizontal scroller in GPUI editor coordinates.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(super) enum HorizontalScroll { Table = 0, Code = 1 }
+
+struct HorizontalViewport {
+    bounds: Bounds<Pixels>,
+    #[cfg(feature = "mobile-qa")]
+    kind: HorizontalScroll,
+    #[cfg(feature = "mobile-qa")]
+    offset: Pixels,
+}
+
+thread_local! {
+    static HORIZONTAL_VIEWPORTS: RefCell<Vec<HorizontalViewport>> = const { RefCell::new(Vec::new()) };
+}
+
+pub(crate) fn clear_horizontal_viewports() { HORIZONTAL_VIEWPORTS.with_borrow_mut(Vec::clear); }
+
+pub(super) fn record_horizontal_viewport(_kind: HorizontalScroll, bounds: Bounds<Pixels>, scroll: &ScrollHandle, window: &Window) {
+    if scroll.max_offset().x <= px(0.5) { return; }
+    let bounds = bounds.intersect(&scroll.bounds()).intersect(&window.content_mask().bounds);
+    if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
+        HORIZONTAL_VIEWPORTS.with_borrow_mut(|viewports| viewports.push(HorizontalViewport {
+            bounds,
+            #[cfg(feature = "mobile-qa")]
+            kind: _kind,
+            #[cfg(feature = "mobile-qa")]
+            offset: scroll.offset().x,
+        }));
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fei_ios_horizontal_scroll_at(x: f32, y: f32) -> bool {
+    HORIZONTAL_VIEWPORTS.with_borrow(|viewports| viewports.iter().any(|v| v.bounds.contains(&point(px(x), px(y)))))
+}
+
+#[cfg(feature = "mobile-qa")]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fei_ios_qa_horizontal_scroll(kind: u8, out: *mut [f32; 5]) -> bool {
+    let Some(out) = (unsafe { out.as_mut() }) else { return false; };
+    HORIZONTAL_VIEWPORTS.with_borrow(|viewports| {
+        let Some(v) = viewports.iter().find(|v| v.kind as u8 == kind) else { return false; };
+        let b = v.bounds;
+        *out = [b.left().into(), b.top().into(), b.size.width.into(), b.size.height.into(), v.offset.into()];
+        true
+    })
+}
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Default)]

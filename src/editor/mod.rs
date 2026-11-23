@@ -35,7 +35,7 @@ mod render;
 pub(crate) use render::equation_numbers;
 mod subpages;
 #[cfg(target_os = "ios")]
-mod touch;
+pub(crate) mod touch;
 pub mod table;
 mod table_actions;
 #[cfg(target_os = "ios")]

@@ -1,4 +1,5 @@
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 import CloudKit
 import GameController
 
@@ -199,6 +200,7 @@ final class EditorHost: FeiRouteController {
         guard let frameView = editorView else { return }
         parent.loadViewIfNeeded()
         parent.thawContent()
+        frameView.bindHorizontalScrollGuard(to: parent.navigationController)
         prepareEditorTransition(to: parent)
         frameView.isHidden = parent.hasNativeContent || !(parent.routeKey.hasPrefix("note:") || parent.routeKey.hasPrefix("history-preview"))
         if frameView.superview === parent.view { return }
@@ -320,9 +322,10 @@ final class EditorHost: FeiRouteController {
                 liveQAProbe.accessibilityValue=(try? JSONSerialization.data(withJSONObject:probe,options:[.sortedKeys])).flatMap { String(data:$0,encoding:.utf8) }
                 if liveQAProbe.superview !== editorView { liveQAProbe.removeFromSuperview();editorView?.addSubview(liveQAProbe) }
             } else {
-                editorView?.isAccessibilityElement=true; editorView?.accessibilityValue=state.board_open ? qa.board : qa.scroll
-                if ProcessInfo.processInfo.environment["FEI_QA_SHARED_BROWSER_REFRESH"] == "1" {
-                    editorView?.accessibilityValue = qa.body
+                editorView?.isAccessibilityElement=true
+                if editorView?.horizontalScrollProbe == nil {
+                    editorView?.accessibilityValue = ProcessInfo.processInfo.environment["FEI_QA_SHARED_BROWSER_REFRESH"] == "1"
+                        ? qa.body : state.board_open ? qa.board : qa.scroll
                 }
             }
             editorToolbar.accessibilityValue = "draft=\(qa.draft) gen=\(qa.generation) title=\(qa.title) body=\(qa.body) selection=\(qa.selection.anchor.block):\(qa.selection.anchor.offset)-\(qa.selection.head.block):\(qa.selection.head.offset) scroll=\(qa.scroll)"
@@ -466,6 +469,24 @@ func feiIOSEditorBottomInset() -> Float { Float(EditorHost.active?.editorChromeI
 private final class EditorFrameView: UIView {
     let gpuiWindow: UnsafeMutableRawPointer
     let controller: UIViewController
+    private weak var guardedNavigation: UINavigationController?
+    private var horizontalScrollGuard: FeiHorizontalScrollGuard?
+
+    func bindHorizontalScrollGuard(to navigation: UINavigationController?) {
+        guard guardedNavigation !== navigation else { return }
+        if let previous = horizontalScrollGuard { previous.view?.removeGestureRecognizer(previous) }
+        horizontalScrollGuard = nil
+        guardedNavigation = navigation
+        guard let navigation else { return }
+
+        let guardGesture = FeiHorizontalScrollGuard(editor: self)
+        horizontalScrollGuard = guardGesture
+        navigation.view.addGestureRecognizer(guardGesture)
+        navigation.interactivePopGestureRecognizer?.require(toFail: guardGesture)
+        if #available(iOS 26.0, *) {
+            navigation.interactiveContentPopGestureRecognizer?.require(toFail: guardGesture)
+        }
+    }
 
     init(window: UnsafeMutableRawPointer, controller: UIViewController) {
         self.gpuiWindow = window
@@ -488,7 +509,64 @@ private final class EditorFrameView: UIView {
         CATransaction.commit()
     }
 
-    func drawFrame() { _ = gpui_ios_request_frame(gpuiWindow) }
+    #if FEI_MOBILE_QA
+    let horizontalScrollProbe: UInt8? = {
+        switch ProcessInfo.processInfo.environment["FEI_QA_HORIZONTAL_SCROLL"] {
+        case "table": return 0
+        case "code": return 1
+        default: return nil
+        }
+    }()
+    #endif
+
+    func drawFrame() {
+        _ = gpui_ios_request_frame(gpuiWindow)
+        #if FEI_MOBILE_QA
+        if let horizontalScrollProbe, !isHidden {
+            var values = [Float](repeating: 0,count: 5)
+            let value = values.withUnsafeMutableBufferPointer { buffer in
+                fei_ios_qa_horizontal_scroll(horizontalScrollProbe, buffer.baseAddress)
+                    ? "horizontal:" + buffer.map { String($0) }.joined(separator: ",") : ""
+            }
+            if accessibilityValue != value { accessibilityValue = value }
+        }
+        #endif
+    }
+}
+
+// Give the editor the original touch stream whenever a drag starts in a horizontally
+// scrollable editor block. UIKit keeps its usual pop behavior elsewhere.
+private final class FeiHorizontalScrollGuard: UIGestureRecognizer, UIGestureRecognizerDelegate {
+    private weak var editor: EditorFrameView?
+
+    init(editor: EditorFrameView) {
+        self.editor = editor
+        super.init(target: nil, action: nil)
+        delegate = self
+        cancelsTouchesInView = false
+        delaysTouchesBegan = false
+        delaysTouchesEnded = false
+        allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard let editor, !editor.isHidden,
+              let touched = touch.view, touched === editor.controller.view || touched.isDescendant(of: editor.controller.view)
+        else { return false }
+        let p = touch.location(in: editor.controller.view)
+        return fei_ios_horizontal_scroll_at(Float(p.x), Float(p.y))
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) { state = .recognized }
+
+    override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+    override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        // The split-view sidebar may also own an edge swipe when hidden.
+        guard let split = editor?.controller.splitViewController else { return false }
+        return other is UIScreenEdgePanGestureRecognizer && other.view === split.viewIfLoaded
+    }
 }
 
 

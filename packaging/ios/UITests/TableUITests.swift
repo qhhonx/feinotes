@@ -8,6 +8,124 @@ final class TableUITests: XCTestCase {
         add(attachment)
     }
 
+    func testWideTableSwipesKeepNativeBackAvailable() throws {
+        try checkHorizontalSwipes(kind: "table")
+    }
+
+    func testUnwrappedCodeSwipesKeepNativeBackAvailable() throws {
+        try checkHorizontalSwipes(kind: "code")
+    }
+
+    private func checkHorizontalSwipes(kind: String) throws {
+        continueAfterFailure = false
+        let fixtures = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: fixtures, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtures) }
+        let title = "QA Wide " + kind + " " + UUID().uuidString.prefix(6)
+        let content: String
+        if kind == "table" {
+            let cols = String(repeating: "<col width=\"160\" />", count: 12)
+            let rows = (1...9).map { row in
+                "<tr>" + (1...12).map { "<td><p>Row \(row), column \($0)</p></td>" }.joined() + "</tr>"
+            }.joined()
+            content = "<table><colgroup>\(cols)</colgroup><tbody>\(rows)</tbody></table>"
+        } else {
+            let code = (1...16).map { row in
+                "LEFT_BOUNDARY_\(row)  " + (1...14).map { "SEGMENT_\($0)" }.joined(separator: "  ")
+            }.joined(separator: "\n")
+            content = "<pre lang=\"plaintext\"><code>\(code)</code></pre>"
+        }
+        try "<title>\(title)</title><p>Text above the scrollable block</p>\(content)<p>Text below the scrollable block</p>"
+            .write(to: fixtures.appendingPathComponent("wide-block.xml"), atomically: true, encoding: .utf8)
+
+        let app = XCUIApplication()
+        app.launchEnvironment["FEI_NOTES_MODE"] = "local"
+        app.launchEnvironment["FEI_MOBILE_QA_FIXTURES"] = fixtures.path
+        app.launchEnvironment["FEI_QA_HORIZONTAL_SCROLL"] = kind
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
+        XCUIDevice.shared.orientation = pad ? .landscapeLeft : .portrait
+        defer { XCUIDevice.shared.orientation = .portrait }
+        app.launch()
+        let list = app.tables["fei.notes.list"].firstMatch
+        let surface = app.descendants(matching: .any)["fei.editor.surface"].firstMatch
+        let note = list.cells.containing(.staticText, identifier: String(title)).firstMatch
+
+        func eventually(_ message: String, _ check: @escaping () -> Bool) {
+            let condition = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in check() }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [condition], timeout: 10), .completed, message)
+        }
+
+        func back() { app.navigationBars.buttons.element(boundBy: 0).tap() }
+        func chooseTheme(_ theme: String) {
+            let settings = app.buttons.matching(identifier: "fei.settings").firstMatch
+            XCTAssertTrue(settings.waitForExistence(timeout: 10))
+            settings.tap()
+            app.cells["fei.setting.page:Appearance"].tap()
+            app.cells["fei.setting.interface-style"].tap()
+            app.cells["fei.setting.option.interface-style."+theme].tap()
+            app.cells["fei.setting.theme"].tap()
+            app.cells["fei.setting.option.theme."+theme].tap()
+            back()
+            if !list.isHittable {
+                let close = app.buttons.matching(identifier: "fei.close-settings").firstMatch
+                if close.isHittable { close.tap() } else { back() }
+            }
+            eventually("Browser visible after changing theme") { list.isHittable }
+        }
+
+        func numbers() -> [CGFloat] {
+            guard let value = surface.value as? String, value.hasPrefix("horizontal:") else { return [] }
+            let numbers = value.dropFirst("horizontal:".count).split(separator: ",").compactMap { Double($0).map { CGFloat($0) } }
+            return numbers.count == 5 ? numbers : []
+        }
+
+        func drag(from start: CGPoint, to end: CGPoint) {
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            origin.withOffset(CGVector(dx: start.x - app.frame.minX, dy: start.y - app.frame.minY))
+                .press(forDuration: 0.06, thenDragTo: origin.withOffset(CGVector(dx: end.x - app.frame.minX, dy: end.y - app.frame.minY)),
+                       withVelocity: .fast, thenHoldForDuration: 0)
+        }
+
+        for theme in ["notes", "feishu"] {
+            if theme != "notes" { app.terminate(); app.launch() }
+            chooseTheme(theme)
+            XCTAssertTrue(note.waitForExistence(timeout: 12))
+            note.tap()
+            eventually("Horizontal viewport in \(theme)") { surface.isHittable && numbers().count == 5 }
+            var measured = numbers()
+            let frame = surface.frame
+            let left = frame.minX + measured[0]
+            let y = frame.minY + measured[1] + min(55, measured[3] * 0.5)
+            let right = left + measured[2]
+            let startX = left + min(8, measured[2] * 0.1)
+            let middleX = left + measured[2] * 0.7
+            let original = measured[4]
+            print("HORIZONTAL_SCROLL kind=\(kind) theme=\(theme) pad=\(pad) frame=\(frame) viewport=\(measured) y=\(y)")
+            shot("\(kind)-\(theme)-01-table-before")
+            drag(from: CGPoint(x: right - 20, y: y), to: CGPoint(x: left + measured[2] * 0.4, y: y))
+            eventually("Left drag reveals later content in \(theme)") { numbers().last.map { $0 < original - 30 } == true }
+            measured = numbers()
+            let shifted = try XCTUnwrap(measured.last)
+            print("HORIZONTAL_SCROLL_SHIFTED kind=\(kind) theme=\(theme) values=\(measured)")
+            shot("\(kind)-\(theme)-02-right-columns")
+            drag(from: CGPoint(x: startX, y: y), to: CGPoint(x: middleX, y: y))
+            let returned = numbers()
+            print("HORIZONTAL_SCROLL_RETURNED kind=\(kind) theme=\(theme) values=\(returned)")
+            shot("\(kind)-\(theme)-03-left-columns")
+            eventually("Right drag reveals earlier content without leaving the document in \(theme)") {
+                numbers().last.map { $0 > shifted + 30 } == true
+            }
+            XCTAssertTrue(app.buttons["fei.more"].firstMatch.isHittable)
+            if !pad {
+                let aboveBlock = frame.minY + measured[1] - 38
+                drag(from: CGPoint(x: app.frame.minX + 8, y: aboveBlock), to: CGPoint(x: app.frame.maxX - 35, y: aboveBlock))
+                eventually("A leading-edge swipe above the block still returns") { list.isHittable && !surface.isHittable }
+                shot("\(kind)-\(theme)-04-edge-back")
+            }
+        }
+
+    }
+
     func testNativeTableOperationsPreserveSharedDocument() {
         continueAfterFailure = false
         let stamp = Int(Date().timeIntervalSince1970)

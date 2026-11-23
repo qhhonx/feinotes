@@ -332,11 +332,19 @@ impl R<'_> {
             return div().flex_1().min_w_0().overflow_hidden().child(el).into_any_element();
         }
         let (scroll, bar) = self.ed.code_hscroll.borrow_mut().entry(id).or_insert_with(|| (ScrollHandle::new(), Default::default())).clone();
+        #[cfg(target_os = "ios")]
+        let touch_viewport = (!self.ghost).then(|| {
+            let scroll = scroll.clone();
+            canvas(|_, _, _| (), move |bounds, _, window, _| {
+                super::touch::record_horizontal_viewport(super::touch::HorizontalScroll::Code, bounds, &scroll, window);
+            }).absolute().inset_0()
+        });
         div()
             .relative()
             .flex_1()
             .min_w_0()
             .child(div().id(("code-scroll", id.0)).w_full().flex().overflow_x_scroll().map(|d| { #[cfg(target_os="ios")] let d=d.restrict_scroll_to_axis(); d }).track_scroll(&scroll).child(RichTextElement { fit_content: true, ..el }))
+            .map(|d| { #[cfg(target_os = "ios")] let d = d.children(touch_viewport); d })
             .child(super::scrollbar::table_scrollbar(scroll, bar).absolute().left_0().right_0().bottom(px(-below)).h(px(12.)))
             .into_any_element()
     }
