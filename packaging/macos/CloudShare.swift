@@ -593,6 +593,9 @@ public func quietCloudShare(_ json: UnsafePointer<CChar>) -> UnsafeMutablePointe
                 default: break
                 }
             }
+            if let cloud = error as? CKError, [.networkUnavailable, .networkFailure].contains(cloud.code) {
+                completion.reply.errorKind = "offline"
+            }
             if case CloudAccessError.required = error { completion.reply.errorKind = "subscriptionRequired" }
             if case CloudAccessError.testflightVerification = error { completion.reply.errorKind = "testflightVerification" }
             trace?.event("command", "error", error: error, errorKind: completion.reply.errorKind)

@@ -173,6 +173,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             ws.open(&id, window, cx);
             Ok(())
         })??,
+        "sidebar-switch-setup" => primary.update(cx, |ws, window, cx| ws.navigate_home(window, cx))?,
         "sidebar-switch-lock" | "sidebar-switch-existing-db-lock" | "sidebar-switch-missing" | "sidebar-switch-deliver" => {
             let rooms: Vec<Room> = serde_json::from_slice(&std::fs::read(root.join("qa-session-rooms.json"))?)?;
             let id = &rooms[0].scope.note;
@@ -204,13 +205,24 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
                     INSERT INTO library_documents SELECT * FROM qa_delayed_documents;
                     INSERT INTO library_blocks SELECT * FROM qa_delayed_blocks;
                     INSERT INTO library_search_blocks SELECT * FROM qa_delayed_search_blocks;
+                    DROP TABLE qa_delayed_entries;
+                    DROP TABLE qa_delayed_documents;
+                    DROP TABLE qa_delayed_blocks;
+                    DROP TABLE qa_delayed_search_blocks;
                     COMMIT")?;
                 crate::app::cloud_notes_changed(&room, &[], true, cx);
             }
         }
-        "sidebar-switch-writer" | "sidebar-switch-responsive" | "sidebar-switch-a" | "sidebar-switch-b" | "sidebar-switch-waiting" => primary.update(cx, |ws, _, cx| -> Result<()> {
+        "sidebar-switch-offline" | "sidebar-switch-reconnect" => {
             let rooms: Vec<Room> = serde_json::from_slice(&std::fs::read(root.join("qa-session-rooms.json"))?)?;
-            let a = name == "sidebar-switch-responsive" || name == "sidebar-switch-a";
+            let room = shared::room_root(&personal, &rooms[0].scope.note)?;
+            let phase = if name.ends_with("offline") { cloud_sync::SyncPhase::Offline } else { cloud_sync::SyncPhase::Connecting };
+            cloud_sync::fixture_status(&room, phase, cx);
+        }
+        "sidebar-switch-writer" | "sidebar-switch-responsive" | "sidebar-switch-a" | "sidebar-switch-b"
+        | "sidebar-switch-waiting" | "sidebar-switch-offline-feedback" => primary.update(cx, |ws, _, cx| -> Result<()> {
+            let rooms: Vec<Room> = serde_json::from_slice(&std::fs::read(root.join("qa-session-rooms.json"))?)?;
+            let a = matches!(name, "sidebar-switch-responsive" | "sidebar-switch-a" | "sidebar-switch-waiting" | "sidebar-switch-offline-feedback");
             let scope = &rooms[usize::from(a)].scope;
             if matches!(name, "sidebar-switch-responsive" | "sidebar-switch-writer") {
                 let released = root.join("qa-sidebar-db-lock-released").is_file();
@@ -219,10 +231,13 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
                 if name == "sidebar-switch-writer" { return Ok(()); }
             }
             ensure!(shared::scope(&ws.store, cx) == Some(scope), "Wrong shared workspace after {name}");
+            ensure!(ws.view == View::Doc && ws.current.as_ref() == Some(&scope.note), "Wrong editor after {name}");
             if name == "sidebar-switch-waiting" {
-                ensure!(ws.view == View::Home && ws.current.is_none(), "Expected the waiting view while the body is missing");
-            } else {
-                ensure!(ws.view == View::Doc && ws.current.as_ref() == Some(&scope.note), "Wrong editor after {name}");
+                ensure!(ws.sharing.open_notice.is_some() && !ws.sharing.busy, "Expected delayed, non-blocking feedback on the existing editor");
+            } else if name == "sidebar-switch-offline-feedback" {
+                ensure!(ws.sharing.open_notice.is_none() && ws.toast.as_ref().is_some_and(|(kind, text, _)| {
+                    *kind == ui::ToastKind::Error && text.contains("iCloud")
+                }), "Expected actionable offline feedback on the existing editor");
             }
             ensure!(ws.qa_sidebar_pick(true) == Some(scope.note.as_str()) && ws.qa_sidebar_pick(false).is_none(), "Wrong sidebar selection after {name}");
             eprintln!("SIDEBAR_SWITCH {name}: selected={:?}", ws.qa_sidebar_pick(true));
@@ -1382,8 +1397,9 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
                 ws.sharing.folder_name.update(cx, |field, cx| field.set_text(title, cx));
                 ws.sharing.email.update(cx, |field, cx| field.set_text("participant@example.test", cx));
                 std::fs::write(root.join("fail-invite-once"), b"fixture")?;
+                std::fs::write(root.join("delay-invite-once"), b"fixture")?;
                 ws.submit_sharing(window, cx);
-                ensure!(matches!(ws.sharing.sheet, Some(Sheet::CreateNew(_, Some(_)))) && ws.sharing.busy
+                ensure!(matches!(ws.sharing.sheet, Some(Sheet::CreateNew(_, Some(_)))) && ws.sharing.busy && ws.sharing.busy_feedback.is_none()
                     && ws.store.list().len() == count && !ws.can_create_folder(&CreateTarget::Library(None), cx),
                     "Submitting the invitation exposed a personal item");
             }
@@ -1397,6 +1413,16 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
                     "Opening the shared creation form navigated away");
                 ws.close_sharing(window, cx);
                 eprintln!("SIDEBAR_NEW_FORM_KEEPS_EDITOR");
+            }
+            #[cfg(target_os = "macos")]
+            "folder-sidebar-origin-invite-pending" => {
+                let Some(Sheet::CreateNew(folder, Some(_))) = &ws.sharing.sheet else { anyhow::bail!("Creating a share left the original form"); };
+                let expected = if *folder { tr("正在新建共享文件夹…", "Creating shared folder…") }
+                    else { tr("正在新建共享文档…", "Creating shared document…") };
+                ensure!(ws.sharing.busy && ws.sharing.busy_feedback == Some(expected), "Expected feedback for this creation action");
+                ensure!(ws.store.list().len().to_string() == std::fs::read_to_string(root.join("qa-new-original-count"))?,
+                    "The new share appeared before the invitation succeeded");
+                eprintln!("SIDEBAR_INVITE_PROGRESS_IN_PLACE");
             }
             #[cfg(target_os = "macos")]
             "folder-sidebar-origin-invite-failed" => {

@@ -70,6 +70,9 @@ pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
             }
             "invite" => {
                 ensure!(result.audience.can_invite(), "Individual invitations require private access");
+                if fs::remove_file(root.join("delay-invite-once")).is_ok() {
+                    std::thread::sleep(std::time::Duration::from_millis(1100));
+                }
                 if root.join("fail-invite-once").is_file() { fs::remove_file(root.join("fail-invite-once"))?; anyhow::bail!("Synthetic invitation failed. Retry this shared note."); }
                 result.audience = Audience::Invited;
                 result.members.push(Member { id: "synthetic-participant".into(), name: "".into(), permission: command.permission.context("Missing permission")?, accepted: false });

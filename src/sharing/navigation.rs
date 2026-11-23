@@ -1,5 +1,5 @@
 //! Replace only a window's workspace when navigating between isolated libraries.
-use super::*;
+use super::{*, actions::SharedAction};
 use crate::sidebar::SidebarEntry;
 
 #[derive(Clone)]
@@ -9,10 +9,25 @@ struct SidebarNavigation {
     verified_access: Option<shared::VerifiedRoomAccess>,
     new_invitation: Option<Reply>,
     published_link: Option<String>,
+    action: Option<SharedAction>,
     #[cfg(target_os = "macos")]
     created: Option<SidebarCreatedItem>,
     #[cfg(target_os = "macos")]
     folder_edit: Option<SharedFolderEdit>,
+}
+
+#[derive(Clone)]
+struct OpenSource {
+    started: std::time::Instant,
+    entry: Option<SidebarEntry>,
+    verified_access: Option<shared::VerifiedRoomAccess>,
+    action: Option<SharedAction>,
+}
+
+impl OpenSource {
+    fn new(entry: Option<SidebarEntry>, action: Option<SharedAction>) -> Self {
+        Self { started: std::time::Instant::now(), entry, verified_access: None, action }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -34,6 +49,16 @@ pub(super) struct PersonalRoute {
     query: String,
     folder: Option<String>,
     collection: Option<String>,
+}
+
+pub(super) fn shared_account_changed() -> &'static str {
+    tr("iCloud 账户状态已变化。请重试。", "Your iCloud account status changed. Try again.")
+}
+
+fn shared_item_ready(store: &crate::shared_store::SharedStore, target: &str, cx: &App) -> bool {
+    matches!(shared::access(store, cx), Some(Access::Owner | Access::ReadWrite | Access::ReadOnly))
+        && !shared::editing_paused(store, cx)
+        && shared::has_materialized_item(store, target, cx)
 }
 
 impl Workspace {
@@ -86,7 +111,7 @@ impl Workspace {
         if invitation.is_none() {
             self.open_shared_item_interactive(room, target, None, window, cx);
         } else {
-            self.sharing.account_open = None;
+            self.cancel_shared_open();
             self.navigate_shared_item_using(room, target, invitation, None, window, cx);
         }
     }
@@ -97,8 +122,7 @@ impl Workspace {
             entry: Some(SidebarEntry::new(crate::sidebar::SidebarSection::Shared, &target)),
             prepared: None,
             verified_access: None,
-            new_invitation: Some(reply),
-            published_link: None,
+            new_invitation: Some(reply), published_link: None, action: None,
             #[cfg(target_os = "macos")]
             created: None,
             #[cfg(target_os = "macos")]
@@ -110,7 +134,7 @@ impl Workspace {
     pub(super) fn navigate_published_link(&mut self, room: Room, link: String, window: &mut Window, cx: &mut Context<Self>) {
         let target = room.scope.note.clone();
         let sidebar = SidebarNavigation {
-            entry: None, prepared: None, verified_access: None, new_invitation: None, published_link: Some(link),
+            entry: None, prepared: None, verified_access: None, new_invitation: None, published_link: Some(link), action: None,
             #[cfg(target_os = "macos")]
             created: None,
             #[cfg(target_os = "macos")]
@@ -148,70 +172,192 @@ impl Workspace {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    pub(crate) fn cancel_sidebar_open(&mut self) { self.sharing.sidebar_load = None; }
+    pub(crate) fn cancel_sidebar_open(&mut self) {
+        if self.sharing.sidebar_load.take().is_some() { self.sharing.open_notice = None; }
+    }
+
+    pub(crate) fn cancel_shared_open(&mut self) {
+        self.cancel_sidebar_open();
+        self.sharing.account_open = None;
+        self.sharing.open_notice = None;
+    }
 
     pub(crate) fn navigate_shared_sidebar(&mut self, room: Room, entry: SidebarEntry, window: &mut Window, cx: &mut Context<Self>) {
         self.open_shared_item_interactive(room, entry.id.clone(), Some(entry), window, cx);
     }
 
     pub(crate) fn open_shared_item_interactive(&mut self, room: Room, target: String, entry: Option<SidebarEntry>, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_shared_item(room, target, entry, None, window, cx);
+        self.open_shared_item(room, target, OpenSource::new(entry, None), window, cx);
     }
 
-    fn open_shared_item(&mut self, room: Room, target: String, entry: Option<SidebarEntry>, verified_access: Option<shared::VerifiedRoomAccess>, window: &mut Window, cx: &mut Context<Self>) {
-        self.sharing.account_open = None;
-        #[cfg(target_os = "macos")]
-        self.cancel_sidebar_open();
+    pub(super) fn open_shared_room_for_action(&mut self, room: Room, action: SharedAction, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sharing.busy { return; }
+        let retry_room = room.clone();
+        let retry_action = action.clone();
+        if !self.save_before(cx, move |ws, window, cx| ws.open_shared_room_for_action(retry_room, retry_action, window, cx)) { return; }
+        let target = room.scope.note.clone();
+        self.open_shared_item(room, target, OpenSource::new(None, Some(action)), window, cx);
+    }
+
+    fn open_shared_item(&mut self, room: Room, target: String, source: OpenSource, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_shared_open();
         self.sharing.pending_open = None;
         if self.sharing.busy { return; }
         if !self.is_shared() && shared::original::awaiting_publication(self.store.root(), &room) {
             self.create_shared_note(&room.scope.note, window, cx);
             return;
         }
-        if self.defer_shared_open(&room, &target, entry.as_ref(), window, cx) { return; }
-        #[cfg(target_os = "macos")]
-        {
-            if verified_access.is_none() && self.viewing_shared_item(&room, &target, cx) {
-                if let Some(entry) = &entry { self.reveal_shared_sidebar_entry(entry, cx); }
-                self.sidebar_entry = entry;
-                self.finish_mac_shared_waiting(window, cx);
-                cx.notify();
-                return;
-            }
-            let request = uuid::Uuid::new_v4();
-            let workspace = cx.entity_id();
-            let handle = WindowHandle::<Self>::new(window.window_handle().window_id());
-            let requested = room.clone();
-            if let Err(error) = shared::load_sidebar_store(room, cx, Box::new(move |result, cx| {
-                let _ = handle.update(cx, |ws, window, cx| {
-                    if cx.entity_id() != workspace || ws.sharing.sidebar_load != Some(request) { return; }
-                    ws.cancel_sidebar_open();
-                    match result {
-                        Ok(store) => ws.navigate_shared_item_using(requested, target, None,
-                            Some(SidebarNavigation { entry, prepared: Some(store), verified_access, new_invitation: None, published_link: None, created: None, folder_edit: None }), window, cx),
-                        Err(error) => {
-                            if !ws.defer_shared_open(&requested, &target, entry.as_ref(), window, cx) {
-                                ws.report_shared_open_error(&error, cx);
-                                ws.finish_mac_shared_waiting(window, cx);
-                            }
-                        }
-                    }
-                });
-            })) {
-                self.report_shared_open_error(&error.to_string(), cx);
-                return;
-            }
-            self.sharing.sidebar_load = Some(request);
+        if self.defer_shared_open(&room, &target, &source, window, cx) { return; }
+        if source.verified_access.is_none() && self.viewing_shared_item(&room, &target, cx) {
+            #[cfg(target_os = "macos")]
+            if let Some(entry) = &source.entry { self.reveal_shared_sidebar_entry(entry, cx); }
+            self.sidebar_entry = source.entry;
+            #[cfg(target_os = "macos")]
+            self.finish_mac_shared_waiting(window, cx);
+            self.run_shared_open_action(source.action, &target, window, cx);
+            cx.notify();
+            return;
         }
-        #[cfg(target_os = "ios")]
-        self.navigate_shared_item_using(room, target, None, Some(SidebarNavigation { entry, prepared: None, verified_access, new_invitation: None, published_link: None }), window, cx);
+        let request = uuid::Uuid::new_v4();
+        let origin = self.shared_open_origin(cx);
+        let workspace = cx.entity_id();
+        let handle = WindowHandle::<Self>::new(window.window_handle().window_id());
+        let requested = room.clone();
+        let started = source.started;
+        let revision = cloud_sync::account_revision();
+        let progress = if room.scope.folder && target == room.scope.note {
+            tr("正在打开共享文件夹…", "Opening shared folder…")
+        } else if !room.scope.folder {
+            tr("正在打开共享文档…", "Opening shared document…")
+        } else { tr("正在打开共享项目…", "Opening shared item…") };
+        let load = shared::load_sidebar_store(room, cx, Box::new(move |result, cx| {
+            let _ = handle.update(cx, |ws, window, cx| {
+                if cx.entity_id() != workspace || ws.sharing.sidebar_load != Some(request) { return; }
+                let had_notice = ws.sharing.open_notice.is_some();
+                ws.cancel_sidebar_open();
+                if ws.shared_open_origin(cx) != origin || ws.sharing.sheet.is_some() || ws.confirm.is_some() {
+                    cx.notify(); return;
+                }
+                if cloud_sync::account_revision() != revision {
+                    ws.show_toast_kind(ui::ToastKind::Error, shared_account_changed(), cx);
+                    return;
+                }
+                match result {
+                    Ok(store) => {
+                        let sidebar = SidebarNavigation {
+                            entry: source.entry, prepared: Some(store), verified_access: source.verified_access,
+                            new_invitation: None, published_link: None, action: source.action,
+                            #[cfg(target_os = "macos")]
+                            created: None,
+                            #[cfg(target_os = "macos")]
+                            folder_edit: None,
+                        };
+                        if had_notice { ws.sharing.open_notice = Some(progress); }
+                        ws.open_materialized_item(requested, target, sidebar, (progress, started), window, cx);
+                    }
+                    Err(error) => if !ws.defer_shared_open(&requested, &target, &source, window, cx) {
+                        ws.report_shared_open_error(&error, cx);
+                    }
+                }
+            });
+        }));
+        match load {
+            Ok(()) => self.begin_sidebar_loading(request, progress, started, cx),
+            Err(error) => self.report_shared_open_error(&error.to_string(), cx),
+        }
+    }
+
+    fn begin_sidebar_loading(&mut self, request: uuid::Uuid, progress: &'static str, started: std::time::Instant, cx: &mut Context<Self>) {
+        self.sharing.sidebar_load = Some(request);
+        self.delay_shared_open_notice(request, progress, started, cx);
+    }
+
+    fn delay_shared_open_notice(&self, request: uuid::Uuid, progress: &'static str, started: std::time::Instant, cx: &mut Context<Self>) {
+        let remaining = LOADING_NOTICE_DELAY.saturating_sub(started.elapsed());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(remaining).await;
+            let _ = this.update(cx, |ws, cx| {
+                if (ws.sharing.sidebar_load == Some(request) || ws.sharing.account_open == Some(request))
+                    && ws.sharing.open_notice.is_none() {
+                    ws.sharing.open_notice = Some(progress); cx.notify();
+                }
+            });
+        }).detach();
+    }
+
+    fn open_materialized_item(&mut self, room: Room, target: String, sidebar: SidebarNavigation,
+        (progress, started): (&'static str, std::time::Instant), window: &mut Window, cx: &mut Context<Self>) {
+        let store = sidebar.prepared.as_ref().expect("Loaded shared library").clone();
+        if shared_item_ready(&store, &target, cx) {
+            self.cancel_shared_open();
+            self.navigate_shared_item_using(room, target, None, Some(sidebar), window, cx);
+            cx.notify();
+            return;
+        }
+        let request = uuid::Uuid::new_v4();
+        let revision = cloud_sync::account_revision();
+        let personal = crate::store::Store::root_dir();
+        let origin = self.shared_open_origin(cx);
+        self.sharing.account_open = Some(request);
+        self.delay_shared_open_notice(request, progress, started, cx);
+        cloud_sync::recheck_account(store.root(), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let start = std::time::Instant::now();
+            loop {
+                let elapsed = start.elapsed();
+                let done = this.update_in(cx, |ws, window, cx| {
+                    if ws.sharing.account_open != Some(request) { return true; }
+                    if ws.shared_open_origin(cx) != origin || ws.library_switching || ws.sharing.busy || ws.confirm.is_some()
+                        || ws.sharing.sheet.is_some() || crate::store::Store::root_dir() != personal
+                        || !window.root::<Workspace>().flatten().is_some_and(|root| root.entity_id() == cx.entity_id()) {
+                        ws.cancel_shared_open(); cx.notify(); return true;
+                    }
+                    use cloud_sync::SyncPhase::*;
+                    let status = cloud_sync::status(store.root(), cx);
+                    let phase = status.map(|s| s.phase);
+                    let error = if cloud_sync::account_revision() != revision {
+                        Some(shared_account_changed())
+                    } else if phase == Some(Revoked) || shared::access(&store, cx) == Some(Access::Revoked) {
+                        Some(tr("你已无法访问此共享项目。", "You no longer have access to this shared item."))
+                    } else if shared_item_ready(&store, &target, cx) {
+                        ws.cancel_shared_open(); cx.notify();
+                        ws.navigate_shared_item_using(room.clone(), target.clone(), None, Some(sidebar.clone()), window, cx);
+                        return true;
+                    } else {
+                        match phase {
+                            Some(SignedOut | AccountChanged) => Some(tr("请在文档库设置中重新连接 iCloud。", "Reconnect to iCloud in Library settings.")),
+                            Some(SubscriptionRequired) => Some(shared::sharing_unavailable()),
+                            Some(TestFlightVerification) => Some(tr("请确认 TestFlight 安装状态后重试。", "Check the TestFlight installation and try again.")),
+                            Some(Offline) if elapsed.as_secs() >= 1 =>
+                                Some(tr("无法连接 iCloud。联网后再次打开。", "Could not connect to iCloud. Open it again when online.")),
+                            Some(Quota) => Some(tr("iCloud 空间不足。释放空间后再次打开。", "iCloud storage is full. Free some space and open the item again.")),
+                            Some(Failed) | None => Some(tr("暂时无法打开共享项目。请重试。", "Could not open the shared item. Try again.")),
+                            _ if elapsed.as_secs() >= 45 || elapsed.as_secs() >= 3 && status.is_some_and(|s| s.stalled.is_some()) =>
+                                Some(tr("iCloud 未能完成加载。请再次打开。", "iCloud could not finish loading. Open the item again.")),
+                            _ => None,
+                        }
+                    };
+                    if let Some(message) = error {
+                        ws.cancel_shared_open();
+                        ws.show_toast_kind(ui::ToastKind::Error, message, cx);
+                        return true;
+                    }
+                    false
+                }).unwrap_or(true);
+                if done { break; }
+                cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
+            }
+        }).detach();
+    }
+
+    fn shared_open_origin(&self, cx: &App) -> (View, Option<String>, Option<String>, crate::home::HomeTab, Option<String>, String) {
+        (self.view, self.current.clone(), self.folder_current.clone(), self.home.tab, self.sharing.collection.clone(), self.query(cx))
     }
 
     #[cfg(target_os = "macos")]
     pub(crate) fn edit_shared_folder(&mut self, room: Room, entry: SidebarEntry, edit: SharedFolderEdit, window: &mut Window, cx: &mut Context<Self>) {
         self.row_menu = None;
-        self.cancel_sidebar_open();
+        self.cancel_shared_open();
         if self.sharing.busy || !self.shared_sidebar_folder_writable(&room, cx) { return; }
         if shared::scope(&self.store, cx) == Some(&room.scope) {
             self.finish_shared_folder_edit(entry, edit, window, cx);
@@ -228,7 +374,7 @@ impl Workspace {
                 match result {
                     Ok(store) if shared::access(&store, cx).is_some_and(Access::can_write)
                         && !shared::editing_paused(&store, cx) => ws.navigate_shared_item_using(requested, entry.id.clone(), None,
-                            Some(SidebarNavigation { entry: Some(entry), prepared: Some(store), verified_access: None, new_invitation: None, published_link: None,
+                            Some(SidebarNavigation { entry: Some(entry), prepared: Some(store), verified_access: None, new_invitation: None, published_link: None, action: None,
                                 created: None, folder_edit: Some(edit) }), window, cx),
                     Ok(_) => ws.show_toast_kind(ui::ToastKind::Error, tr("此共享文件夹当前不可写入。", "You cannot write to this shared folder right now."), cx),
                     Err(error) => ws.report_shared_open_error(&error, cx),
@@ -257,8 +403,7 @@ impl Workspace {
         kind: crate::folders::SharedFolderCreation, section: crate::sidebar::SidebarSection, window: &mut Window, cx: &mut Context<Self>) {
         self.create_menu = None;
         self.row_menu = None;
-        self.sharing.account_open = None;
-        self.cancel_sidebar_open();
+        self.cancel_shared_open();
         if self.sharing.busy { return; }
 
         let origin = SidebarEntry::new(section, &parent);
@@ -270,6 +415,10 @@ impl Workspace {
         let workspace = cx.entity_id();
         let handle = WindowHandle::<Self>::new(window.window_handle().window_id());
         let requested = room.clone();
+        let progress = match kind {
+            crate::folders::SharedFolderCreation::Document => tr("正在新建共享文档…", "Creating shared document…"),
+            crate::folders::SharedFolderCreation::Folder(_) => tr("正在新建共享文件夹…", "Creating shared folder…"),
+        };
         let load = shared::load_sidebar_store(room, cx, Box::new(move |result, cx| {
             let _ = handle.update(cx, |ws, window, cx| {
                 if cx.entity_id() != workspace || ws.sharing.sidebar_load != Some(request) { return; }
@@ -281,7 +430,7 @@ impl Workspace {
             });
         }));
         match load {
-            Ok(()) => self.sharing.sidebar_load = Some(request),
+            Ok(()) => self.begin_sidebar_loading(request, progress, std::time::Instant::now(), cx),
             Err(error) => self.report_shared_open_error(&error.to_string(), cx),
         }
         cx.notify();
@@ -330,7 +479,7 @@ impl Workspace {
             }
         } else {
             self.navigate_shared_item_using(room, id, None, Some(SidebarNavigation {
-                entry: Some(entry), prepared: Some(store), verified_access: None, new_invitation: None, published_link: None, created: Some(created), folder_edit: None,
+                entry: Some(entry), prepared: Some(store), verified_access: None, new_invitation: None, published_link: None, action: None, created: Some(created), folder_edit: None,
             }), window, cx);
         }
     }
@@ -360,7 +509,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn defer_shared_open(&mut self, room: &Room, target: &str, entry: Option<&SidebarEntry>,
+    fn defer_shared_open(&mut self, room: &Room, target: &str, source: &OpenSource,
         window: &mut Window, cx: &mut Context<Self>) -> bool {
         use shared::RoomAccount::*;
         let personal = crate::store::Store::root_dir();
@@ -372,12 +521,12 @@ impl Workspace {
 
         let request = uuid::Uuid::new_v4();
         let revision = cloud_sync::account_revision();
-        let route = (self.view, self.current.clone(), self.folder_current.clone(), self.home.tab, self.query(cx));
+        let route = self.shared_open_origin(cx);
         let room = room.clone();
         let target = target.to_owned();
-        let entry = entry.cloned();
+        let mut open_source = source.clone();
         self.sharing.account_open = Some(request);
-        self.shared_account_message(Verifying, cx);
+        self.delay_shared_open_notice(request, tr("正在确认 iCloud 账户…", "Checking your iCloud account…"), source.started, cx);
         cloud_sync::recheck_account(&personal, cx);
         cx.spawn_in(window, async move |this, cx| {
             let checkpoint = |ws: &Workspace, window: &Window, cx: &Context<Workspace>| {
@@ -385,19 +534,24 @@ impl Workspace {
                     && window.root::<Workspace>().flatten().is_some_and(|root| root.entity_id() == cx.entity_id())
                     && crate::store::Store::root_dir() == personal
                     && !ws.library_switching && !ws.sharing.busy && ws.confirm.is_none()
-                    && route == (ws.view, ws.current.clone(), ws.folder_current.clone(), ws.home.tab, ws.query(cx))
+                    && ws.sharing.sheet.is_none() && route == ws.shared_open_origin(cx)
             };
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let start = std::time::Instant::now();
             loop {
                 let state = this.update_in(cx, |ws, window, cx| {
-                    checkpoint(ws, window, cx).then(|| shared::room_account(&personal, cx))
+                    if !checkpoint(ws, window, cx) {
+                        if ws.sharing.account_open == Some(request) { ws.cancel_shared_open(); cx.notify(); }
+                        return None;
+                    }
+                    Some(shared::room_account(&personal, cx))
                 }).ok().flatten();
                 match state {
                     Some(Ready) if cloud_sync::account_revision() == revision => break,
-                    Some(Verifying) if cloud_sync::account_revision() == revision && std::time::Instant::now() < deadline => {}
+                    Some(Verifying) if cloud_sync::account_revision() == revision && start.elapsed().as_secs() < 30 => {}
                     Some(issue) => {
                         let _ = this.update_in(cx, |ws, _, cx| {
-                            ws.sharing.account_open = None;
+                            if ws.sharing.account_open != Some(request) { return; }
+                            ws.cancel_shared_open();
                             ws.shared_account_message(if matches!(issue, Ready | Verifying) { Unavailable } else { issue }, cx);
                         });
                         return;
@@ -412,11 +566,17 @@ impl Workspace {
             let requested = room.clone();
             let allowed = cx.background_executor().spawn(async move { shared::verify_room_access(&source, &requested) }).await;
             let _ = this.update_in(cx, |ws, window, cx| {
-                if !checkpoint(ws, window, cx) { return; }
-                ws.sharing.account_open = None;
-                if cloud_sync::account_revision() != revision || shared::room_account(&personal, cx) != Ready { return; }
+                let current = checkpoint(ws, window, cx);
+                if ws.sharing.account_open == Some(request) { ws.cancel_shared_open(); cx.notify(); }
+                if !current { return; }
+                if cloud_sync::account_revision() != revision || shared::room_account(&personal, cx) != Ready {
+                    ws.shared_account_message(Unavailable, cx); return;
+                }
                 match allowed {
-                    Ok(access) => ws.open_shared_item(room, target, entry, Some(access), window, cx),
+                    Ok(access) => {
+                        open_source.verified_access = Some(access);
+                        ws.open_shared_item(room, target, open_source, window, cx);
+                    }
                     Err(error) => {
                         crate::logging::write(&format!("Verify shared document access after reconnect: {error:#}"));
                         ws.show_toast_kind(ui::ToastKind::Info, tr("暂时无法确认此共享的访问权限。请稍后重试。",
@@ -431,7 +591,6 @@ impl Workspace {
     fn shared_account_message(&mut self, issue: shared::RoomAccount, cx: &mut Context<Self>) {
         use shared::RoomAccount::*;
         let message = match issue {
-            Verifying => tr("正在确认 iCloud 账户，验证后会继续打开。", "Checking your iCloud account. Opening will continue after verification."),
             SignedOut => tr("请在系统设置中登录原 iCloud 账户，再打开共享文档。", "Sign in to your previous iCloud account in System Settings, then open the shared document."),
             Changed => tr("iCloud 账户已切换。请在「文档库 › iCloud」查看。", "The iCloud account changed. See Library › iCloud."),
             AccessRequired => shared::sharing_unavailable(),
@@ -450,11 +609,10 @@ impl Workspace {
 
     fn report_shared_open_error(&mut self, error: &str, cx: &mut Context<Self>) {
         crate::logging::write(&format!("Open shared document: {error}"));
-        self.show_toast_kind(ui::ToastKind::Error, tr("暂时无法打开共享文档。请重试。", "Could not open the shared document. Try again."), cx);
+        self.show_toast_kind(ui::ToastKind::Error, tr("暂时无法打开共享项目。请重试。", "Could not open the shared item. Try again."), cx);
     }
 
     fn navigate_shared_item_using(&mut self, room: Room, target: String, invitation: Option<(String, Access)>, sidebar: Option<SidebarNavigation>, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(target_os = "macos")]
         self.cancel_sidebar_open();
         if self.sharing.busy { return; }
         #[cfg(target_os = "ios")]
@@ -466,7 +624,10 @@ impl Workspace {
         }
         if invitation.is_none() && sidebar.as_ref().is_none_or(|s| s.verified_access.is_none() && s.published_link.is_none())
             && self.viewing_shared_item(&room, &target, cx) {
-            self.sidebar_entry = sidebar.and_then(|sidebar| sidebar.entry);
+            if let Some(sidebar) = sidebar {
+                self.sidebar_entry = sidebar.entry;
+                self.run_shared_open_action(sidebar.action, &target, window, cx);
+            } else { self.sidebar_entry = None; }
             cx.notify();
             return;
         }
@@ -478,8 +639,8 @@ impl Workspace {
         let created = sidebar.as_ref().and_then(|sidebar| sidebar.created.clone());
         #[cfg(target_os = "macos")]
         let folder_edit = sidebar.as_ref().and_then(|sidebar| sidebar.folder_edit);
-        let (entry, prepared, verified_access, new_invitation, published_link) = sidebar.map(|sidebar|
-            (sidebar.entry, sidebar.prepared, sidebar.verified_access, sidebar.new_invitation, sidebar.published_link)).unwrap_or_default();
+        let (entry, prepared, verified_access, new_invitation, published_link, action) = sidebar.map(|sidebar|
+            (sidebar.entry, sidebar.prepared, sidebar.verified_access, sidebar.new_invitation, sidebar.published_link, sidebar.action)).unwrap_or_default();
         let opened = match prepared {
             Some(store) => shared::check_opened_store(store, &room, cx),
             None => shared::store_for(&room, cx),
@@ -520,6 +681,7 @@ impl Workspace {
         window.replace_root(cx, |window, cx| {
             #[cfg(target_os = "macos")]
             let waiting = note.clone();
+            let target = note.clone();
             let mut ws = Workspace::build_window(false, Some(note), Some(store), window, cx);
             #[cfg(target_os = "macos")]
             { ws.native_sidebar = native_sidebar; }
@@ -562,11 +724,21 @@ impl Workspace {
                 ws.sharing.permission = permission;
                 ws.sharing.original = original;
                 ws.manage_shared_note("invite", email, Some(permission), window, cx);
+            } else if action.is_some() {
+                // Run after the new root is installed so callbacks can use normal window commands.
+                cx.defer_in(window, move |ws, window, cx| ws.run_shared_open_action(action, &target, window, cx));
             }
             if let Some(link) = published_link { ws.copy_link_to_clipboard(link, true, cx); }
             ws
         });
         cx.defer(cloud_sync::release_unused);
+    }
+
+    fn run_shared_open_action(&mut self, action: Option<SharedAction>, target: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_shared() || !(self.view == View::Doc && self.current.as_deref() == Some(target)
+            || self.view == View::Folder && self.folder_current.as_deref() == Some(target)) { return; }
+        let action = action.and_then(|slot| slot.borrow_mut().take());
+        if let Some(action) = action { action(self, target, window, cx); }
     }
 
     pub(crate) fn navigate_personal(&mut self, view: View, document: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
@@ -583,9 +755,7 @@ impl Workspace {
     }
 
     fn navigate_personal_route(&mut self, view: View, document: Option<String>, entry: Option<SidebarEntry>, tab: Option<crate::home::HomeTab>, window: &mut Window, cx: &mut Context<Self>) {
-        self.sharing.account_open = None;
-        #[cfg(target_os = "macos")]
-        self.cancel_sidebar_open();
+        self.cancel_shared_open();
         if !self.is_shared() {
             if let Some(id) = document {
                 if self.try_open(&id, window, cx) { self.sidebar_entry = entry; cx.notify(); }

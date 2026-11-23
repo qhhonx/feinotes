@@ -1064,6 +1064,15 @@ impl Journal {
         Ok(get_state(&self.db, CATALOGUE_PAUSED)?.is_some())
     }
 
+    pub(super) fn has_materialized_item(&self, id: &str) -> Result<bool> {
+        let row = self.db.query_row("SELECT meta,
+            EXISTS(SELECT 1 FROM library_documents WHERE id = ?1 AND trashed = 0)
+            FROM library_entries WHERE id = ?1", [id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))).optional()?;
+        let Some((meta, has_body)) = row else { return Ok(false); };
+        Ok(has_body || serde_json::from_str::<crate::store::Meta>(&meta)?.folder.is_some())
+    }
+
     pub(super) fn has_queued_catalogue(&self) -> Result<bool> {
         Ok(self.db.query_row("SELECT EXISTS(SELECT 1 FROM outbox WHERE note=?1)", [catalogue::SCOPE], |row| row.get(0))?)
     }

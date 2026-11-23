@@ -80,6 +80,8 @@ mod shell {
         }
 
         pub(crate) fn mobile_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+            self.cancel_shared_open();
+            cx.notify();
             if self.view == View::Doc && self.preview.is_some() { self.exit_preview(cx); return; }
             if self.view == View::Doc && self.history.is_some() { self.close_history(cx); return; }
             if self.view == View::Settings {
@@ -186,6 +188,13 @@ mod shell {
         pub(crate) fn mobile_contextual_sharing(&self) -> bool {
             self.view == View::Settings && self.settings_page == Page::Shared && !self.mobile_settings_root
                 && matches!(self.mobile_settings_return,View::Doc | View::Home | View::Folder | View::Shared)
+        }
+
+        pub(crate) fn mobile_list_notice(&self) -> Option<(&'static str, &str)> {
+            use crate::ui::ToastKind;
+            self.toast.as_ref().filter(|(_, _, time)| time.elapsed().as_secs_f32() < 3.)
+                .map(|(kind, text, _)| (match kind { ToastKind::Success => "success", ToastKind::Error => "error", ToastKind::Info => "info" }, text.as_ref()))
+                .or_else(|| self.sharing_status_notice().map(|text| ("info", text)))
         }
 
         pub(crate) fn render_mobile(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

@@ -39,6 +39,7 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
     if std::env::var_os("QUIET_SYNC_QA_UNREAD_UI").is_some() {
         let room = original::prepare_local(&personal, &original, "Personal fixture".into(), false)?;
         let root = room_root(&personal, &room.scope.note)?;
+        fs::write(root.join("seed-published"), b"synthetic shared owner")?;
         let db = rusqlite::Connection::open(root.join(crate::store::SQLITE_FILE))?;
         super::super::activity::schema(&db)?;
         db.execute("INSERT INTO shared_activity (id, projected) VALUES ('qa-unread', 1)", [])?;

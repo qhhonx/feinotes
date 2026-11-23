@@ -250,6 +250,9 @@ impl<'a> Command<'a> {
                 Some("subscriptionRequired") => sharing_unavailable(),
                 Some("unavailableLink") => tr("此链接无效或已关闭。", "This share link is invalid or has been closed."),
                 Some("deniedLink") => tr("此账户无法使用该链接。链接可能已关闭，或邀请发给了其他 Apple 账户。", "This account cannot use this link. It may have been closed or sent to a different Apple Account."),
+                Some("offline") => tr("无法连接 iCloud。请检查网络后重试。", "Could not connect to iCloud. Check your network and try again."),
+                Some("shareTimeout") => tr("iCloud 响应超时。请重试。", "iCloud is taking too long to respond. Try again."),
+                Some("testflightVerification") => tr("请确认 TestFlight 安装状态后重试。", "Check the TestFlight installation and try again."),
                 Some("signedOut") => tr("请在系统设置中登录 iCloud，再重新连接飞记。", "Sign in to iCloud in System Settings, then reconnect Fei Notes."),
                 Some("accountMismatch") => tr("当前 iCloud 账户与文档库不一致。请在文档库设置中重新连接。", "The iCloud account does not match this library. Reconnect in Library settings."),
                 Some("shareConflict") => tr("其他设备修改了共享权限。请刷新后重试。", "Sharing permissions changed on another device. Refresh and try again."),
@@ -781,17 +784,13 @@ fn open_library(root: PathBuf) -> Result<(Store, Journal)> {
     Ok((store, journal))
 }
 
-#[cfg(target_os = "macos")]
 type SidebarWaiter = Box<dyn FnOnce(Result<crate::shared_store::SharedStore, String>, &mut gpui::App)>;
 
-#[cfg(target_os = "macos")]
 #[derive(Default)]
 struct SidebarLoads(std::collections::HashMap<PathBuf, Vec<SidebarWaiter>>);
 
-#[cfg(target_os = "macos")]
 impl gpui::Global for SidebarLoads {}
 
-#[cfg(target_os = "macos")]
 pub(crate) fn load_sidebar_store(room: Room, cx: &mut gpui::App, ready: SidebarWaiter) -> Result<()> {
     let personal = Store::root_dir();
     check_room_account(&personal, cx)?;
@@ -839,6 +838,10 @@ pub(crate) fn load_sidebar_store(room: Room, cx: &mut gpui::App, ready: SidebarW
 }
 
 pub(crate) fn scope<'a>(store: &crate::shared_store::SharedStore, cx: &'a gpui::App) -> Option<&'a Scope> { super::scope(store.root(), cx) }
+
+pub(crate) fn has_materialized_item(store: &crate::shared_store::SharedStore, id: &str, cx: &gpui::App) -> bool {
+    super::session(store.root(), cx).is_some_and(|session| session.journal.has_materialized_item(id).unwrap_or(false))
+}
 
 pub(crate) fn access(store: &crate::shared_store::SharedStore, cx: &gpui::App) -> Option<Access> {
     super::session(store.root(), cx).and_then(|session| session.journal.access())

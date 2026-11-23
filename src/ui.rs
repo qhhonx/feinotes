@@ -98,6 +98,10 @@ pub fn toast_el(kind: ToastKind, msg: &SharedString, t0: web_time::Instant, wind
     } else {
         1.
     };
+    Some(status_card(kind, msg, window, op))
+}
+
+pub(crate) fn status_card(kind: ToastKind, msg: &SharedString, window: &Window, opacity: f32) -> AnyElement {
     let (fill, mark, mark_size) = match kind {
         ToastKind::Success => (theme::c(craft::old::G500), "check", 10.),
         ToastKind::Error => (Theme::danger(), "x", 10.),
@@ -131,16 +135,12 @@ pub fn toast_el(kind: ToastKind, msg: &SharedString, t0: web_time::Instant, wind
                 .child(icon(mark, mark_size, gpui::white())),
         )
         .child(ui_text(crate::settings::label(msg)));
-    Some(
-        deferred(
-            anchored()
-                .position_mode(AnchoredPositionMode::Window)
-                .position(point(px(0.), px(32.)))
-                .child(div().w(vw).flex().justify_center().opacity(op).child(card)),
-        )
-        .with_priority(20)
-        .into_any_element(),
-    )
+    deferred(
+        anchored()
+            .position_mode(AnchoredPositionMode::Window)
+            .position(point(px(0.), px(32.)))
+            .child(div().w(vw).flex().justify_center().opacity(opacity).child(card)),
+    ).with_priority(20).into_any_element()
 }
 
 /// Popover shell shared by the slash menu, block menu and toolbar dropdowns:

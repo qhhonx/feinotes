@@ -340,7 +340,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         let status=UIStackView(arrangedSubviews: [noticeIcon,noticeText]); status.axis = .horizontal; status.spacing=8; status.alignment = .center
         status.translatesAutoresizingMaskIntoConstraints=false; notice.contentView.addSubview(status)
         notice.layer.cornerRadius=22; notice.clipsToBounds=true; notice.translatesAutoresizingMaskIntoConstraints=false; notice.isHidden=true
-        notice.accessibilityIdentifier="fei.notes.notice"; notice.isAccessibilityElement=true
+        notice.accessibilityIdentifier="fei.notes.notice"; notice.isAccessibilityElement=true; notice.isUserInteractionEnabled=false
         view.addSubview(notice)
         if #available(iOS 26.0, *) { installCompactSearchRow() }
         NSLayoutConstraint.activate([notice.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor,constant: 8),notice.centerXAnchor.constraint(equalTo: view.centerXAnchor),notice.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor,constant: -40),notice.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),status.topAnchor.constraint(equalTo: notice.contentView.topAnchor,constant: 10),status.bottomAnchor.constraint(equalTo: notice.contentView.bottomAnchor,constant: -10),status.leadingAnchor.constraint(equalTo: notice.contentView.leadingAnchor,constant: 16),status.trailingAnchor.constraint(equalTo: notice.contentView.trailingAnchor,constant: -16),noticeIcon.widthAnchor.constraint(equalToConstant: 18),noticeIcon.heightAnchor.constraint(equalToConstant: 18)])

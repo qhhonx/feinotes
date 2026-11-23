@@ -63,6 +63,8 @@ sharing-ui sidebar-entry-shared
 quit
 '''
 sidebar_switch = '''wait 1500
+sharing-ui sidebar-switch-setup
+wait 450
 resize 1050 760
 move 20 700
 sharing-ui unread-expanded
@@ -99,18 +101,28 @@ wait 350
 sharing-ui sidebar-entry-home
 quit
 '''
-sidebar_waiting = '''wait 1500
+sidebar_waiting = """wait 1500
+sharing-ui sidebar-switch-setup
+wait 450
 resize 1050 760
 move 20 700
 sharing-ui unread-expanded
 wait 300
+click 120 166
+wait 350
+sharing-ui sidebar-switch-a
 sharing-ui sidebar-switch-missing
 click 120 135
-wait 350
-shot sidebar-waiting
+wait 650
 sharing-ui sidebar-switch-waiting
+shot sidebar-waiting
+sharing-ui sidebar-switch-offline
+wait 1350
+sharing-ui sidebar-switch-offline-feedback
+shot sidebar-offline
+sharing-ui sidebar-switch-reconnect
 click 120 135
-wait 200
+wait 650
 sharing-ui sidebar-switch-waiting
 click 120 166
 wait 350
@@ -121,11 +133,23 @@ sharing-ui sidebar-switch-a
 click 120 135
 wait 350
 sharing-ui sidebar-switch-b
+shot sidebar-reopened
+click 120 166
+wait 350
+sharing-ui sidebar-switch-a
+sharing-ui sidebar-switch-missing
+click 120 135
+wait 650
+sharing-ui sidebar-switch-waiting
+sharing-ui sidebar-switch-deliver
+wait 550
+sharing-ui sidebar-switch-b
+shot sidebar-opened-after-delivery
 click 80 66
 wait 350
 sharing-ui sidebar-entry-home
 quit
-'''
+"""
 sidebar_original = '''wait 1500
 resize 1050 760
 move 20 700
@@ -649,7 +673,10 @@ sharing-ui folder-sidebar-origin-check-creation
 sharing-ui folder-sidebar-overview
 wait 550
 sharing-ui folder-sidebar-origin-new-document
-wait 550
+wait 660
+sharing-ui folder-sidebar-origin-invite-pending
+shot creating-shared-document
+wait 650
 sharing-ui folder-sidebar-origin-invite-failed
 shot failed-invitation-no-library-entry
 sharing-ui folder-sidebar-origin-invite-retry
@@ -667,11 +694,17 @@ shot home-my-documents-document-selected
 sharing-ui folder-sidebar-overview
 wait 550
 sharing-ui folder-sidebar-origin-new-folder
-wait 550
+wait 660
+sharing-ui folder-sidebar-origin-invite-pending
+shot creating-shared-folder
+wait 650
 sharing-ui folder-sidebar-origin-invite-failed
 sharing-ui folder-sidebar-origin-invite-cancel
 sharing-ui folder-sidebar-origin-new-folder
-wait 550
+wait 660
+sharing-ui folder-sidebar-origin-invite-pending
+shot creating-shared-folder
+wait 650
 sharing-ui folder-sidebar-origin-invite-failed
 sharing-ui folder-sidebar-origin-invite-retry
 wait 550
@@ -711,7 +744,7 @@ if args.sidebar_origin:
     assert text.count('SIDEBAR_CREATE_ORIGIN_OK') == 4 and text.count('SIDEBAR_INVITE_FAILURE_HIDDEN') == 3, text[-4000:]
     assert text.count('SIDEBAR_INVITE_RETRY_ONE_ITEM') == 2 and 'SIDEBAR_INVITE_CANCEL_NO_ITEM' in text, text[-4000:]
     assert text.count('FOLDER_BREADCRUMB_RETURN_OK') == 2, text[-4000:]
-    assert len(list(root.glob('*.png'))) == 9 and 'PANIC' not in text, text[-4000:]
+    assert text.count('SIDEBAR_INVITE_PROGRESS_IN_PLACE') == 3 and len(list(root.glob('*.png'))) == 11 and 'PANIC' not in text, text[-4000:]
     print('SIDEBAR_ORIGIN_OK')
     raise SystemExit
 if args.sidebar_consistency:

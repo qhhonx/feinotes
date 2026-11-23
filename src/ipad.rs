@@ -538,8 +538,8 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         kind:if body_view==View::Trash { "trash" } else if !workspace.is_shared() && workspace.home.tab==crate::home::HomeTab::Shared { "shared" } else { "notes" },can_select:workspace.mobile_can_select(cx),can_sort:workspace.mobile_can_sort(cx),can_reorder:workspace.mobile_can_reorder(cx),
         shared_create:body_view == View::Home && !workspace.is_shared() && workspace.home.shared() && workspace.sharing.collection.is_none() && query.is_empty() && !crate::cloud_restore::local_only(),
         sort_rule:workspace.mobile_sort_key(),folders_first:workspace.mobile_folders_first(cx),shared_count:workspace.shared_entries(cx).len(),selection:workspace.mobile_batch_state(cx),
-        notice_kind:workspace.toast.as_ref().map(|(kind,_,_)|match kind { crate::ui::ToastKind::Success=>"success",crate::ui::ToastKind::Error=>"error",crate::ui::ToastKind::Info=>"info" }),
-        notice:workspace.toast.as_ref().filter(|(_,_,time)|time.elapsed().as_secs_f32() < 3.).map(|(_,text,_)|text.to_string()),
+        notice_kind:workspace.mobile_list_notice().map(|(kind, _)| kind),
+        notice:workspace.mobile_list_notice().map(|(_, text)| text.to_owned()),
         interface_size:settings::prefs().ui_font,scope:listing_scope(workspace),query:if body_view==View::Trash { String::new() } else { workspace.search.read(cx).text.clone() },tab:match workspace.home.tab { crate::home::HomeTab::Starred=>1,crate::home::HomeTab::Shared=>2,_=>0 },
         tabs:body_view == View::Home && query.is_empty(),
         header_detail:(body_view == View::Trash).then(crate::trash::retention_note),
@@ -898,8 +898,8 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                             if !workspace.library_switching && matches!(workspace.view,crate::app::View::Home | crate::app::View::Folder) && command.scope.as_deref() == Some(listing_scope(workspace).as_str()) {
                                 match command.action.as_str() {
                                     "list-open" => { if let Some(id) = &id { if workspace.mobile_visible_entries(cx).iter().any(|entry|&entry.id == id) { workspace.mobile_open_entry(id,window,cx); } } }
-                                    "list-search" => { if let Some(query) = &command.value { workspace.search.update(cx,|field,cx|field.set_text(query,cx)); cx.notify(); } }
-                                    "list-tab" if workspace.view == crate::app::View::Home => { workspace.mobile_navigation.links.clear(); workspace.home.tab = match command.value.as_deref() { Some("1")=>crate::home::HomeTab::Starred,Some("2")=>crate::home::HomeTab::Shared,_=>crate::home::HomeTab::Recent }; cx.notify(); }
+                                    "list-search" => { if let Some(query) = &command.value { workspace.cancel_shared_open(); workspace.search.update(cx,|field,cx|field.set_text(query,cx)); cx.notify(); } }
+                                    "list-tab" if workspace.view == crate::app::View::Home => { workspace.cancel_shared_open(); workspace.mobile_navigation.links.clear(); workspace.home.tab = match command.value.as_deref() { Some("1")=>crate::home::HomeTab::Starred,Some("2")=>crate::home::HomeTab::Shared,_=>crate::home::HomeTab::Recent }; cx.notify(); }
                                     _ => {}
                                 }
                             }

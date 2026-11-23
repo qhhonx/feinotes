@@ -177,9 +177,7 @@ impl Workspace {
 
     pub(crate) fn open_folder(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        { self.sharing.account_open = None; }
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        self.cancel_sidebar_open();
+        self.cancel_shared_open();
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if !self.is_shared() && crate::cloud_sync::shared::original::owner_room(&self.entries, id).is_some() {
             return self.try_open(id, window, cx);

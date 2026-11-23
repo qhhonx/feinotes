@@ -329,7 +329,7 @@ impl Workspace {
                     Row::new("share-account-requirements",crate::sharing::invitation_account_requirements()).kind("info")];
                 if local { rows.push(Row::new("share-unavailable",cloud_required).kind("info")); }
                 if let Some((_,message)) = &s.message { rows.push(Row::new("share-message",message).kind("info")); }
-                if s.busy { rows.push(Row::new("share-busy",tr("正在连接 iCloud","Contacting iCloud")).kind("info")); }
+                if let Some(message) = s.busy_feedback { rows.push(Row::new("share-busy",message).kind("info")); }
                 sections.push(section("",rows));
                 return;
             }
@@ -393,7 +393,7 @@ impl Workspace {
         }
         if matches!(s.sheet,Some(Sheet::Create(_) | Sheet::CreateNew(..) | Sheet::Invite(_) | Sheet::End(_) | Sheet::EndMany(..) | Sheet::RenameCollection(_) | Sheet::MoveInto(..))) {
             if let Some((_,message)) = &s.message { sections.push(section("",vec![Row::new("share-message",message).kind("info")])); }
-            if s.busy { sections.push(section("",vec![Row::new("share-busy",tr("正在连接 iCloud","Contacting iCloud")).kind("info")])); }
+            if let Some(message) = s.busy_feedback { sections.push(section("",vec![Row::new("share-busy",message).kind("info")])); }
             return;
         }
         if let Some(room) = self.sheet_room().filter(|room|room.scope.owner.is_none()) {
@@ -454,7 +454,7 @@ impl Workspace {
             sections.push(section("",rows));
         }
         if let Some((_,message)) = &s.message { sections.push(section("",vec![Row::new("share-message",message).kind("info")])); }
-        if s.busy { sections.push(section("",vec![Row::new("share-busy",tr("正在连接 iCloud","Contacting iCloud")).kind("info")])); }
+        if let Some(message) = s.busy_feedback { sections.push(section("",vec![Row::new("share-busy",message).kind("info")])); }
     }
 
     pub(crate) fn native_settings_command(&mut self,id:&str,value:&str,scope:&str,window:&mut Window,cx:&mut Context<Self>) {

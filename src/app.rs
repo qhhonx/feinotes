@@ -973,10 +973,8 @@ impl Workspace {
     /// Show `id`; false when it could not be opened (or the open document
     /// could not be saved first, see [`Self::save_before`]).
     pub fn try_open(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        self.cancel_sidebar_open();
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        { self.sharing.pending_open = None; self.sharing.account_open = None; self.conflict_review = None; }
+        { self.sharing.pending_open = None; self.cancel_shared_open(); self.conflict_review = None; }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if !self.is_shared() && let Some(room) = crate::cloud_sync::shared::original::owner_room(&self.entries, id) {
             let target = id.to_owned();
@@ -1211,8 +1209,8 @@ impl Workspace {
     }
 
     pub(crate) fn start_draft(&mut self, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        self.cancel_sidebar_open();
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        self.cancel_shared_open();
         self.close_history(cx);
         self.remember_scroll(cx);
         if let Some(id) = self.current.take() && self.document_peers(&id, window, cx).is_empty() { self.store.forget_loaded(&id); }
@@ -1505,10 +1503,8 @@ impl Workspace {
 
     /// Switch the main pane to 主页 or 回收站 (or back to the document).
     pub fn show_view(&mut self, view: View, cx: &mut Context<Self>) {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        self.cancel_sidebar_open();
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        { self.sharing.pending_open = None; self.sharing.account_open = None; self.conflict_review = None; }
+        { self.sharing.pending_open = None; self.cancel_shared_open(); self.conflict_review = None; }
         self.cancel_shortcut_recording(cx);
         self.close_history(cx);
         // 阅读位置: leaving the document with ⌘H or 回收站 also counts.
@@ -1556,13 +1552,21 @@ impl Workspace {
         self.toast_task = Some(cx.spawn(async |this, cx| {
             cx.background_executor().timer(Duration::from_millis(2700)).await;
             let _ = this.update(cx, |_, cx| cx.notify());
+            cx.background_executor().timer(Duration::from_millis(300)).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
         }));
         cx.notify();
     }
 
     pub(crate) fn render_toast(&self, window: &mut Window) -> Option<AnyElement> {
-        let (kind, msg, t0) = self.toast.as_ref()?;
-        crate::ui::toast_el(*kind, msg, *t0, window)
+        if let Some(toast) = self.toast.as_ref().and_then(|(kind, msg, start)| crate::ui::toast_el(*kind, msg, *start, window)) {
+            return Some(toast);
+        }
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if let Some(message) = self.sharing_status_notice() {
+            return Some(crate::ui::status_card(ToastKind::Info, &message.into(), window, 1.));
+        }
+        None
     }
 
     /// 重命名: the row's title turns into an input; Enter or clicking away saves, Esc cancels.

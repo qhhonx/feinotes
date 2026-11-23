@@ -1,27 +1,13 @@
 //! Organization and explicit cross-library actions for shared navigation.
 use super::*;
 
-type SharedAction = Box<dyn FnOnce(&mut Workspace, &str, &mut Window, &mut Context<Workspace>)>;
+type Action = Box<dyn FnOnce(&mut Workspace, &str, &mut Window, &mut Context<Workspace>)>;
+pub(super) type SharedAction = std::rc::Rc<std::cell::RefCell<Option<Action>>>;
 
 impl Workspace {
     pub(crate) fn with_shared_document(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>, action: impl FnOnce(&mut Self, &str, &mut Window, &mut Context<Self>) + 'static) {
-        self.shared_action_boxed(room, window, cx, Box::new(action));
-    }
-
-    fn shared_action_boxed(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>, action: SharedAction) {
-        if self.sharing.busy { return; }
-        let id = room.scope.note.clone(); let window_id = window.window_handle().window_id();
-        let held = std::rc::Rc::new(std::cell::RefCell::new(Some(action))); let retry = held.clone(); let retry_room = room.clone();
-        if !self.save_before(cx, move |w, window, cx| {
-            if let Some(action) = retry.borrow_mut().take() { w.shared_action_boxed(retry_room, window, cx, action); }
-        }) { return; }
-        let action = held.borrow_mut().take().unwrap();
-        self.navigate_shared(room, None, window, cx);
-        cx.defer(move |cx| {
-            if let Some(handle) = cx.windows().into_iter().find(|handle| handle.window_id() == window_id).and_then(|handle| handle.downcast::<Workspace>()) {
-                let _ = handle.update(cx, |w, window, cx| { if w.is_shared() && (w.current.as_ref() == Some(&id) || w.folder_current.as_ref() == Some(&id)) { action(w, &id, window, cx); } });
-            }
-        });
+        let action = std::rc::Rc::new(std::cell::RefCell::new(Some(Box::new(action) as Action)));
+        self.open_shared_room_for_action(room, action, window, cx);
     }
 
     pub(crate) fn open_shared_window(&mut self, room: Room, window: &Window, cx: &mut Context<Self>) {

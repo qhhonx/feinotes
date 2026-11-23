@@ -39,6 +39,8 @@ pub(crate) fn shared_access_title(folder: bool) -> &'static str {
     else { tr("文档共享权限", "Document sharing access") }
 }
 
+const LOADING_NOTICE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
 pub(crate) struct Sharing {
     #[cfg(target_os = "ios")]
     pub(crate) opening: Option<OpeningShared>,
@@ -54,7 +56,8 @@ pub(crate) struct Sharing {
     original: Option<String>,
     pub(crate) pending_open: Option<String>,
     pub(crate) account_open: Option<uuid::Uuid>,
-    #[cfg(target_os = "macos")]
+    pub(crate) open_notice: Option<&'static str>,
+    pub(crate) busy_feedback: Option<&'static str>,
     pub(crate) sidebar_load: Option<uuid::Uuid>,
     #[cfg(target_os = "macos")]
     pub(crate) sidebar_waiting: Option<String>,
@@ -89,7 +92,6 @@ impl Sharing {
         Self {
             #[cfg(target_os = "ios")]
             opening: None,
-            #[cfg(target_os = "macos")]
             sidebar_load: None,
             #[cfg(target_os = "macos")]
             sidebar_waiting: None,
@@ -97,7 +99,7 @@ impl Sharing {
             collection: None, folder_name: cx.new(|cx| TextField::new(tr("名称", "Name"), cx)),
             email: cx.new(|cx| TextField::new(tr("对方的 Apple 账户邮箱", "Their Apple Account email"), cx)),
             sheet: None, reply: None, prepared: None, public_link: false, close_link_confirm: false, permission: Access::ReadOnly, member: None, revoke_confirm: false,
-            busy: false, message: None, epoch: 0, original: None, pending_open: None, account_open: None, copied_text: None, focus_before: None, subscriptions: vec![],
+            busy: false, message: None, epoch: 0, original: None, pending_open: None, account_open: None, open_notice: None, busy_feedback: None, copied_text: None, focus_before: None, subscriptions: vec![],
             scroll: ScrollHandle::new(), panel_open: false, sync_panel_open: false, permissions_only: false, folded: true, expanded: Default::default(), sidebar: Default::default(), batch: false, personal_route: None, accept_at: None, share_bounds: Default::default(), toolbar_bounds: Default::default() }
     }
 }
@@ -312,6 +314,7 @@ impl Workspace {
 
     pub(crate) fn sharing_sheet(&mut self, sheet: Sheet, window: &mut Window, cx: &mut Context<Self>) {
         if self.sharing.busy { return; }
+        self.cancel_shared_open();
         #[cfg(target_os = "ios")]
         self.mobile_present_sharing(cx);
         if self.sharing.sheet.is_none() { self.sharing.focus_before = window.focused(cx); }
@@ -383,6 +386,10 @@ impl Workspace {
     }
 
     pub(crate) fn sharing_request_busy(&self) -> bool { self.sharing.busy }
+
+    pub(crate) fn sharing_status_notice(&self) -> Option<&'static str> {
+        self.sharing.open_notice.or(self.sharing.busy_feedback.filter(|_| self.sharing.sheet.is_none()))
+    }
 
     pub(crate) fn receive_invitation(&mut self, link: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.sharing.busy {
@@ -668,6 +675,7 @@ impl Workspace {
         self.sharing.sheet = Some(Sheet::CreateNew(folder, Some(id.clone())));
         let personal = crate::store::Store::root_dir();
         let revision = cloud_sync::account_revision();
+        let origin = (self.view, self.settings_page);
         let epoch = self.begin_sharing_request(cx);
         enum Invitation { Named(Reply), Public(shared::LinkPublication) }
         cx.spawn_in(window, async move |this, cx| {
@@ -691,21 +699,21 @@ impl Workspace {
             let _ = this.update_in(cx, |w, window, cx| match result {
                 Ok((room, row, invitation)) => {
                     if cloud_sync::account_revision() != revision {
-                        w.finish_sharing_request(epoch, Some(anyhow::anyhow!("{}", tr("iCloud 账户已更改。", "The iCloud account changed."))), cx);
+                        w.finish_sharing_request(epoch, Some(anyhow::anyhow!(navigation::shared_account_changed())), cx);
                         return;
                     }
+                    cloud_sync::activity::publish_row(row, cx);
+                    let stayed = (w.view, w.settings_page) == origin;
                     match invitation {
-                        Invitation::Public(outcome) => {
-                            if w.sharing.epoch != epoch { return; }
-                            cloud_sync::activity::publish_row(row, cx);
-                            w.finish_public_link(epoch, room, outcome, true, window, cx);
+                        Invitation::Public(outcome) if stayed => w.finish_public_link(epoch, room, outcome, true, window, cx),
+                        Invitation::Public(_) => {
+                            if w.finish_sharing_request(epoch, None, cx) { w.close_sharing(window, cx); }
                         }
                         Invitation::Named(reply) => {
                             if !w.finish_sharing_request(epoch, None, cx) { return; }
                             w.close_sharing(window, cx);
                             if !w.is_shared() { w.entries = w.store.list(); w.sort(); }
-                            cloud_sync::activity::publish_row(row, cx);
-                            w.navigate_new_shared_item(room, reply, window, cx);
+                            if stayed { w.navigate_new_shared_item(room, reply, window, cx); }
                         }
                     }
                 }
@@ -1002,7 +1010,7 @@ impl Workspace {
             body = body.child(caption(shared::sharing_unavailable()));
         }
         let feedback = div().px(px(24.)).flex_none()
-            .when(busy, |d| d.child(caption(tr("正在连接 iCloud，请稍候…", "Contacting iCloud. Please wait…"))).pb(px(10.)))
+            .when_some(self.sharing.busy_feedback, |d, message| d.child(caption(message)).pb(px(10.)))
             .when_some(self.sharing.message.as_ref(), |d, (error, message)| d.pb(px(10.)).child(
                 div().id("sharing-message").text_size(px(13.)).line_height(px(20.))
                     .text_color(if *error { Theme::danger() } else { Theme::text_caption() }).child(ui::ui_para(message.clone()))));
@@ -1177,12 +1185,40 @@ impl Workspace {
     }
 
     fn begin_sharing_request(&mut self, cx: &mut Context<Self>) -> u64 {
-        self.sharing.busy = true; self.sharing.message = None; self.sharing.epoch += 1; cx.notify(); self.sharing.epoch
+        let message = match self.sharing.sheet.as_ref() {
+            Some(Sheet::CreateNew(true, _)) => tr("正在新建共享文件夹…", "Creating shared folder…"),
+            Some(Sheet::CreateNew(false, _)) => tr("正在新建共享文档…", "Creating shared document…"),
+            Some(Sheet::Create(id)) => {
+                if self.personal_navigation_entries(cx).iter().any(|e| &e.id == id && e.meta.folder.is_some()) {
+                    tr("正在共享文件夹…", "Sharing folder…")
+                } else { tr("正在共享文档…", "Sharing document…") }
+            }
+            Some(Sheet::Accept) => tr("正在接受邀请…", "Accepting invitation…"),
+            Some(Sheet::MoveInto(..)) => tr("正在移入共享文件夹…", "Moving into shared folder…"),
+            Some(Sheet::End(_) | Sheet::EndMany(..)) => tr("正在更新共享访问权限…", "Updating shared access…"),
+            _ => tr("正在连接 iCloud…", "Connecting to iCloud…"),
+        };
+        self.sharing.busy = true;
+        self.sharing.message = None;
+        self.sharing.busy_feedback = None;
+        self.sharing.epoch += 1;
+        let epoch = self.sharing.epoch;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(LOADING_NOTICE_DELAY).await;
+            let _ = this.update(cx, |ws, cx| {
+                if ws.sharing.busy && ws.sharing.epoch == epoch {
+                    ws.sharing.busy_feedback = Some(message); cx.notify();
+                }
+            });
+        }).detach();
+        cx.notify();
+        epoch
     }
 
     fn finish_sharing_request(&mut self, epoch: u64, error: Option<anyhow::Error>, cx: &mut Context<Self>) -> bool {
         if self.sharing.epoch != epoch { return false; }
         self.sharing.busy = false;
+        self.sharing.busy_feedback = None;
         if let Some(error) = error { self.sharing.message = Some((true, settings::diagnostic(&error.to_string()))); }
         cx.notify(); true
     }
