@@ -1029,6 +1029,10 @@ impl Journal {
         Ok(self.db.query_row("SELECT count(*) FROM inbox", [], |row| row.get(0))?)
     }
 
+    pub(super) fn awaiting_attachment(&self, source: &str, inventory_confirmed: bool) -> Result<bool> {
+        retention::awaiting_attachment(&self.db, source, inventory_confirmed)
+    }
+
     pub(super) fn attachment_downloads(&self, open_notes: &[String]) -> Result<Vec<String>> {
         retention::downloads(&self.db, &self.root, self.room.as_ref().is_some_and(|room| room.folder).then_some(open_notes))
     }

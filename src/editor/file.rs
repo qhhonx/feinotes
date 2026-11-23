@@ -324,11 +324,11 @@ fn file_block_from_path(root: &Path, p: &Path) -> Option<Block> {
 }
 
 /// Opens the attachment right away (the card's 预览, the video's play).
-fn open_listener(p: Option<PathBuf>, cx: &mut Context<Editor>) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static {
+fn open_listener(f: FileBlock, cx: &mut Context<Editor>) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static {
     cx.listener(move |e: &mut Editor, _: &MouseDownEvent, window, cx| {
         cx.stop_propagation();
         window.prevent_default();
-        e.open_file(p.as_deref(), cx);
+        e.open_file(&f, cx);
     })
 }
 
@@ -385,12 +385,12 @@ impl R<'_> {
         });
         // A click on the selected attachment (any click when reading) opens it.
         let open_on_click = {
-            let p = path.clone();
+            let f = f.clone();
             cx.listener(move |e: &mut Editor, ev: &MouseDownEvent, window, cx| {
                 if ev.click_count == 1 && !ev.modifiers.shift && (e.read_only || e.active_file(e.focus.is_focused(window)) == Some(id)) {
                     cx.stop_propagation();
                     window.prevent_default();
-                    e.open_file(p.as_deref(), cx);
+                    e.open_file(&f, cx);
                 }
             })
         };
@@ -510,7 +510,7 @@ impl R<'_> {
                             .bg(if video { gpui::black() } else { Theme::bg_body() })
                             .child(pic)
                             .when(video, |d| {
-                                let l = open_listener(path.clone(), cx);
+                                let l = open_listener(f.clone(), cx);
                                 d.child(
                                     div().absolute().inset_0().flex().items_center().justify_center().child(
                                         div()
@@ -572,13 +572,15 @@ impl R<'_> {
                     .into_any_element()
             }
             _ => {
-                let missing = size.is_none();
+                let pending = size.is_none() && ed.shared_file_pending(f, cx);
+                let missing = size.is_none() && !pending;
                 let desc = match size {
                     Some(n) => format_size(n),
+                    None if pending => crate::settings::tr("正在下载…", "Downloading…").into(),
                     None => crate::settings::text("文件不存在").into(),
                 };
                 let av = matches!(kind, Kind::Video | Kind::Audio);
-                let l = open_listener(path.clone(), cx);
+                let l = open_listener(f.clone(), cx);
                 let btn = div()
                     .id(("file-open", id.0))
                     .size(px(34.))
@@ -587,10 +589,9 @@ impl R<'_> {
                     .items_center()
                     .justify_center()
                     .rounded(px(radius))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(Theme::fill_hover()))
-                    .tip_above(if av { crate::settings::text("播放") } else { crate::settings::text("预览") }, None)
-                    .child(icon(if av { "circle-play" } else { "eye-open" }, 20., if missing { Theme::text_disabled() } else { Theme::icon() }))
+                    .when(!pending, |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+                        .tip_above(if av { crate::settings::text("播放") } else { crate::settings::text("预览") }, None))
+                    .child(icon(if av { "circle-play" } else { "eye-open" }, 20., if size.is_none() { Theme::text_disabled() } else { Theme::icon() }))
                     .on_mouse_down(MouseButton::Left, l);
                 // The file card: white, hairline, crisp radius 5, the button drop.
                 div()
@@ -661,16 +662,27 @@ impl Editor {
         .then_some(h)
     }
 
-    pub(super) fn open_file(&mut self, p: Option<&Path>, cx: &mut Context<Self>) {
-        match p.filter(|p| p.fs_is_file()) {
-            Some(p) => quick_look(p),
+    fn shared_file_pending(&self, f: &FileBlock, cx: &App) -> bool {
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        { f.src_kind != "token" && crate::cloud_sync::shared_attachment_pending(&self.library_root, &f.src, cx) }
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+        { let _ = (f, cx); false }
+    }
+
+    pub(super) fn open_file(&mut self, f: &FileBlock, cx: &mut Context<Self>) {
+        match local_path(&self.library_root, f).filter(|p| p.fs_is_file()) {
+            Some(p) => quick_look(&p),
+            None if self.shared_file_pending(f, cx) => {},
             None => self.toast(crate::settings::text("文件不存在"), cx),
         }
     }
 
     /// 下载: a copy where the save panel says (Downloads first).
     pub(super) fn download_file(&mut self, f: &FileBlock, cx: &mut Context<Self>) {
-        let Some(src) = local_path(&self.library_root, f).filter(|p| p.is_file()) else { return self.toast(crate::settings::text("文件不存在"), cx) };
+        let Some(src) = local_path(&self.library_root, f).filter(|p| p.fs_is_file()) else {
+            if !self.shared_file_pending(f, cx) { self.toast(crate::settings::text("文件不存在"), cx); }
+            return;
+        };
         #[cfg(target_os = "ios")]
         {
             let name = Path::new(&f.name).file_name().map(|v|v.to_owned()).unwrap_or_else(||"Attachment".into());
@@ -812,7 +824,6 @@ impl Editor {
         let Some(BlockKind::File(f)) = self.core.kind_of(id) else { return None };
         let preview = preview_of(&f.name);
         let view = f.view;
-        let path = local_path(&self.library_root, f);
         let act = |f: fn(&mut Editor, BlockId, &mut Window, &mut Context<Editor>)| {
             cx.listener(move |e: &mut Editor, _: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
@@ -825,14 +836,14 @@ impl Editor {
         let mut w = 16. + 2.;
         let mut n = 0;
         if preview.is_some_and(|k| k != Kind::Audio) {
-            let p = path.clone();
+            let f = f.clone();
             bar = bar.child(
                 shell_btn("ftb-full").tip_above(crate::settings::text("全屏"), None).child(icon("maximize", 18., Theme::icon())).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |e, _, window, cx| {
                         cx.stop_propagation();
                         window.prevent_default();
-                        e.open_file(p.as_deref(), cx);
+                        e.open_file(&f, cx);
                     }),
                 ),
             );

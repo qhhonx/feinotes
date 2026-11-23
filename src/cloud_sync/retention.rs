@@ -201,6 +201,13 @@ pub(super) fn stale_assets(db: &Connection, retained: &HashSet<String>) -> Resul
 #[derive(Deserialize)]
 pub(super) struct RemoteChunk { pub id: String, pub path: String, pub digest: String, pub part: i64, pub parts: i64 }
 
+// Local absence is conclusive only after this session has checked the
+// cloud inventory. Indexed bytes may still be queued for another exchange.
+pub(super) fn awaiting_attachment(db: &Connection, source: &str, inventory_confirmed: bool) -> Result<bool> {
+    if !inventory_confirmed { return Ok(true); }
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM cloud_inventory WHERE path = ?1)", [source], |r| r.get(0))?)
+}
+
 pub(super) fn downloads(db: &Connection, root: &std::path::Path, open_notes: Option<&[String]>) -> Result<Vec<String>> {
     if !ready(db)? { return Ok(vec![]); }
     let mut ids = vec![];
@@ -250,4 +257,24 @@ pub(super) fn disk_roots(root: &std::path::Path, paths: &mut HashSet<String>) ->
         }
     }
     documents(&crate::store::Store::recovery_directory(root), paths)
+}
+
+#[test]
+fn shared_attachment_stays_pending_until_cloud_absence_is_confirmed() -> Result<()> {
+    let db = Connection::open_in_memory()?;
+    schema(&db)?;
+    let source = "assets/files/shared.txt";
+    let id = uuid::Uuid::new_v4().to_string();
+    assert!(awaiting_attachment(&db, source, false)?);
+
+    received(&db, &Receipt { ready: true, chunks: vec![RemoteChunk {
+        id: id.clone(), path: source.into(), digest: "a".repeat(64), part: 0, parts: 1,
+    }], ..Default::default() }, &[])?;
+    assert!(awaiting_attachment(&db, source, true)?);
+    assert!(!awaiting_attachment(&db, "assets/files/unknown.txt", true)?);
+
+    received(&db, &Receipt { ready: true, deleted: vec![id], ..Default::default() }, &[])?;
+    assert!(!awaiting_attachment(&db, source, true)?);
+    assert!(awaiting_attachment(&db, source, false)?);
+    Ok(())
 }

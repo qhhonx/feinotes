@@ -461,11 +461,15 @@ private func exchange(_ request: Exchange, revision: UInt64, completion: SyncCom
             let wanted = Set(requested.map { CKRecord.ID(recordName: $0, zoneID: syncZone) })
             let records = Set(fetch).union(wanted)
             let full = records.isEmpty ? [:] : try await db.records(for: Array(records), desiredKeys: nil)
+            var missingAttachments: Set<String> = []
             for id in records {
                 guard let result = full[id] else { throw SyncError.invalid }
                 let record: CKRecord
                 do { record = try result.get() }
-                catch let error as CKError where error.code == .unknownItem { continue }
+                catch let error as CKError where error.code == .unknownItem {
+                    if request.room != nil && wanted.contains(id) { missingAttachments.insert(id.recordName) }
+                    continue
+                }
                 let collaborator = authors[id] ?? false
                 if wanted.contains(id) && record["note"] as? String != sharedAssetScope { throw SyncError.invalid }
                 guard record.recordType == editType, let note = record["note"] as? String,
@@ -484,8 +488,9 @@ private func exchange(_ request: Exchange, revision: UInt64, completion: SyncCom
             let preferDeletionPage: Bool? = !ready && page.deletions.count >= syncPageLimit / 2 ? true : nil
             let cursor = tracksInventory ? try JSONEncoder().encode(InventoryCursor(token: next, generation: generation, ready: ready,
                 preferDeletionPage: preferDeletionPage)) : next
-            let receipt = tracksInventory ? InventoryReceipt(chunks: chunks, reset: token == nil, ready: ready,
-                deleted: page.deletions.map { $0.recordID.recordName }) : nil
+            let receipt = tracksInventory ? InventoryReceipt(
+                chunks: chunks.filter { !missingAttachments.contains($0.id) }, reset: token == nil, ready: ready,
+                deleted: page.deletions.map { $0.recordID.recordName } + Array(missingAttachments)) : nil
             return Changes(retention: receipt, uploaded: uploaded, edits: edits, token: cursor, more: page.moreComing,
                            cursorAdvanced: page.changeToken != previousToken, legacy: request.legacy, roomAccess: access, cursorReplayed: replayed,
                            uploadQuotaExceeded: uploadQuotaExceeded)

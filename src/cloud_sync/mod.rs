@@ -225,6 +225,7 @@ struct Session {
     sender: async_channel::Sender<()>,
     presence_wake: async_channel::Sender<()>,
     retry_attachments: bool,
+    shared_asset_inventory_confirmed: bool,
     progress: progress::Monitor,
     account_revision: u64,
 }
@@ -240,6 +241,12 @@ pub(crate) struct SyncStatuses(HashMap<PathBuf, SyncStatus>);
 impl Global for SyncStatuses {}
 pub(crate) fn status<'a>(root: &Path, cx: &'a App) -> Option<&'a SyncStatus> { cx.try_global::<SyncStatuses>()?.0.get(root) }
 pub(crate) fn scope<'a>(root: &Path, cx: &'a App) -> Option<&'a shared::Scope> { session(root, cx)?.journal.room() }
+
+pub(crate) fn shared_attachment_pending(root: &Path, source: &str, cx: &App) -> bool {
+    let Some(sync) = session(root, cx).filter(|s| s.journal.room().is_some()) else { return false; };
+    let inventory_confirmed = sync.shared_asset_inventory_confirmed && status(root, cx).is_some_and(|s| s.access_verified);
+    assets::path(root, source).is_ok() && sync.journal.awaiting_attachment(source, inventory_confirmed).unwrap_or(true)
+}
 
 fn release(root: &Path, cx: &mut App) {
     cx.global_mut::<Sync>().0.remove(root);
@@ -584,7 +591,7 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
         None
     });
     cx.global_mut::<Sync>().0.insert(root.clone(), Session { journal: opened, store, generation, sender: retry_tx.clone(), presence_wake,
-        retry_attachments: false, progress: progress::Monitor::new(last_success), account_revision: account_revision() });
+        retry_attachments: false, shared_asset_inventory_confirmed: false, progress: progress::Monitor::new(last_success), account_revision: account_revision() });
     cx.update_global::<SyncStatuses, _>(|statuses, _| { statuses.0.insert(root.clone(), SyncStatus::default()); });
     let watch = ACCOUNT_WATCH.get_or_init(Default::default);
     let first = { let mut watch = watch.lock().unwrap(); let first = watch.is_empty(); watch.insert(root.clone(), (marker, retry_tx, account_tx)); first };
@@ -697,7 +704,11 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                 if !page.uploaded.is_empty() || !page.edits.is_empty() {
                     crate::logging::write(&format!("CloudKit sync uploaded={} downloaded={}", page.uploaded.len(), page.edits.len()));
                 }
+                let inventory_confirmed = page.retention.as_ref().is_some_and(|receipt| receipt.ready);
+                let shared_inventory_changed = room && (inventory_confirmed != scope_session.shared_asset_inventory_confirmed
+                    || page.retention.as_ref().is_some_and(|r| r.reset || !r.chunks.is_empty() || !r.deleted.is_empty()));
                 let (access_changed, uploaded) = scope_session.journal.receive_page(page)?;
+                if room { scope_session.shared_asset_inventory_confirmed = inventory_confirmed; }
                 round.uploaded = uploaded;
                 round.download_advanced = more && cursor_advanced;
                 if access_changed { app::cloud_notes_changed(&root, &[], true, cx); }
@@ -714,10 +725,11 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                 round.downloading = more || !next_downloads.is_empty();
                 round.applying = !revoked && active_downloads > 0;
                 round.uploading = !revoked && !read_only && !more && active_uploads > 0;
-                Ok((more, quota_exceeded, uploads == 0 && held == 0 && attachments == 0 && conflicts == 0 && !journal.catalogue_paused()?, revoked, read_only && uploads > 0))
+                Ok((more, quota_exceeded, uploads == 0 && held == 0 && attachments == 0 && conflicts == 0 && !journal.catalogue_paused()?,
+                    revoked, read_only && uploads > 0, shared_inventory_changed))
             }) else { break };
             match result {
-                Ok((more, quota_exceeded, uploads_clean, revoked, read_only_pending)) => {
+                Ok((more, quota_exceeded, uploads_clean, revoked, read_only_pending, shared_inventory_changed)) => {
                     account_notice = None;
                     if legacy && !more { legacy_checked = Some(std::time::Instant::now()); }
                     if quota_exceeded { upload_retry_at = Some(std::time::Instant::now() + Duration::from_secs(30)); }
@@ -737,6 +749,7 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                             record_success(scope_session);
                         }
                         update_status_after_exchange(&root, cx, phase, true);
+                        if shared_inventory_changed { app::cloud_attachments_ready(&root, cx); }
                         let collaborating = match app::cloud_active_selection(&root, cx) {
                             presence::SelectionSource::Editing(id, _) => presence::view(&root, cx).expect("presence view").notes.contains_key(&id),
                             _ => false,
