@@ -1,5 +1,7 @@
 Fei Notes 1.0.11 beta
 
-In Settings → Appearance, choose Interface Style and Document Theme independently. The interface offers Lark and Notes. Documents can also use Craft, Notion, or Obsidian.
+Invite people to a shared document with a link. Invitees can view by default, or you can allow editing. An iCloud account is required to join.
 
-Fixed a launch crash caused by a missing system SQLite symbol on macOS 15.6.1.
+When an unsynced shared document or folder opens, Fei Notes keeps the current page visible and shows loading progress. If shared item creation fails, your name and access settings are kept so you can retry.
+
+Interface Style and Document Theme are now next to each other in Settings. The Notes-style document menu has one Reading Mode control.
