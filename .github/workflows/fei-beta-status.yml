@@ -27,6 +27,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           ref: product/quiet-sync
+      - name: Restore the last generated availability snapshot
+        run: python3 -B packaging/macos/website-status.py stage website
       - name: Reconcile pending builds and read Apple's public beta state
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
@@ -44,18 +46,14 @@ jobs:
           unset ASC_PRIVATE_KEY_B64
           export ASC_KEY_PATH="$key"
           python3 -B packaging/macos/test-apple-release.py
+          python3 -B packaging/macos/test-website-status.py
           python3 -B packaging/macos/apple-release.py supersede-pending --apply
           python3 -B packaging/macos/apple-release.py beta-status website/testflight-status.json
       - name: Publish a changed availability state
+        id: publication
+        run: python3 -B packaging/macos/website-status.py publish website/testflight-status.json
+      - name: Deploy the changed public beta state
+        if: steps.publication.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git add website/testflight-status.json
-          if git diff --cached --quiet; then exit 0; fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'Update public TestFlight availability'
-          git push origin HEAD:product/quiet-sync
-          gh workflow run fei-website.yml --ref product/quiet-sync
+        run: gh workflow run fei-website.yml --ref product/quiet-sync

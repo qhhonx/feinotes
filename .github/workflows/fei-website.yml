@@ -52,6 +52,11 @@ jobs:
           test -f "$site_path/index.html"
           test "$(cat "$site_path/CNAME")" = feinotes.app
           echo "path=$site_path" >> "$GITHUB_OUTPUT"
+      - name: Include current generated TestFlight availability
+        if: github.ref_name == 'product/quiet-sync'
+        env:
+          SITE_PATH: ${{ steps.site.outputs.path }}
+        run: python3 -B packaging/macos/website-status.py stage "$SITE_PATH"
       - name: Archive public website including app association
         env:
           SITE_PATH: ${{ steps.site.outputs.path }}
