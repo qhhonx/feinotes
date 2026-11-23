@@ -147,7 +147,7 @@ fn action(id: impl Into<ElementId>, label: &'static str, enabled: bool) -> State
     settings::button(id, label).when(!enabled, |d| d.opacity(0.45).cursor_default())
 }
 
-/// Sharing control used by the Feishu theme.
+/// Sharing control used by the Lark interface.
 fn feishu_share_button(id: &'static str, enabled: bool) -> Stateful<Div> {
     use crate::feishu_theme::ud;
     let ink = white();
@@ -161,8 +161,8 @@ fn feishu_share_button(id: &'static str, enabled: bool) -> Stateful<Div> {
 }
 
 fn invitation_accent() -> Hsla {
-    if settings::feishu() { rgb(crate::feishu_theme::ud::B600).into() }
-    else { crate::editor_theme::Theme::primary_500() }
+    if settings::interface_feishu() { rgb(crate::feishu_theme::ud::B600).into() }
+    else { crate::themes::interface().token("primary_500") }
 }
 
 fn anchor_control(button: Stateful<Div>, bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>) -> Div {
@@ -363,7 +363,7 @@ impl Workspace {
         if !self.is_shared() {
             let id = self.current.clone()?;
             if self.store.local_path(&id).is_some() { return None; }
-            let button = if settings::feishu() {
+            let button = if settings::interface_feishu() {
                 feishu_share_button("doc-create-share", true)
             } else {
                 ui::grouped_toolbar_control(div().id("doc-create-share").no_drag().size(px(crate::app::HEADER_ACTIONS_H))
@@ -376,7 +376,7 @@ impl Workspace {
         let people = self.online_collaborators(cx);
         let cap = if window.viewport_size().width < px(500.) { 0 } else { 2 };
         let bounds = self.sharing.toolbar_bounds.clone();
-        let feishu = settings::feishu();
+        let feishu = settings::interface_feishu();
         let presence = ui::grouped_toolbar_control(div().id("doc-share").no_drag().flex_none().min_w(px(crate::app::HEADER_ACTIONS_H)).h(px(crate::app::HEADER_ACTIONS_H))
             .px(px(5.)).flex().items_center().justify_center().gap(px(8.)).cursor_pointer(), 8., Theme::fill_hover, Some(Theme::fill_pressed))
             .when(self.sharing.panel_open && !self.sharing.permissions_only, |d| d.bg(Theme::fill_hover()))
@@ -408,7 +408,7 @@ impl Workspace {
 
     pub(crate) fn shared_access_button(&self, window: &Window, cx: &mut Context<Self>) -> Option<Div> {
         let owner = self.current_room(cx)?.scope.owner.is_none();
-        let feishu = settings::feishu();
+        let feishu = settings::interface_feishu();
         let attention = settings::sync_status::needs_attention(self,cx);
         let share = ui::grouped_toolbar_control(div().id("doc-share-invite").no_drag().flex_none()
             .h(px(crate::app::HEADER_ACTIONS_H)).min_w(px(crate::app::HEADER_ACTIONS_H)).px(px(if feishu { 9. } else { 0. })),
@@ -456,7 +456,7 @@ impl Workspace {
             else if status.is_some_and(|s| s.phase == cloud_sync::SyncPhase::Ready && s.downloads == 0 && s.uploads == 0 && s.held == 0 && s.attachments == 0) {
                 tr("内容已同步", "Content is synced")
             } else { tr("正在获取或同步更新", "Checking or syncing updates") };
-        let feishu = settings::feishu();
+        let feishu = settings::interface_feishu();
         let owner = room.scope.owner.is_none();
         let heading = if !permissions_only { tr("在线协作者", "Online collaborators") }
             else if owner { tr("成员与权限", "Members and access") }
@@ -735,7 +735,7 @@ impl Workspace {
         let sheet = self.sharing.sheet.as_ref()?;
         let busy = self.sharing.busy;
         let invitation = matches!(sheet, Sheet::Create(_) | Sheet::CreateNew(..) | Sheet::Invite(_));
-        let feishu = settings::feishu();
+        let feishu = settings::interface_feishu();
         let accent = invitation_accent();
         let title = match sheet { Sheet::MoveInto(..) => tr("移入共享文件夹", "Move into shared folder"), Sheet::RenameCollection(_) => tr("重命名个人文件夹", "Rename personal folder"), Sheet::Create(id) if self.entries.iter().any(|e| &e.id == id && e.meta.folder.is_some()) => tr("共享文件夹", "Share folder"), Sheet::Create(_) => tr("共享文档", "Share document"), Sheet::Accept => tr("接受邀请", "Accept invitation"),
             Sheet::CreateNew(folder, _) => new_shared_title(*folder),

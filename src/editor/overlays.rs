@@ -248,7 +248,7 @@ pub enum Probe {
 }
 
 #[cfg(target_os = "ios")]
-pub(super) fn mobile_block_handles() -> bool { crate::settings::feishu() && !unsafe { crate::ipad::fei_ios_is_phone() } }
+pub(super) fn mobile_block_handles() -> bool { crate::settings::interface_feishu() && !unsafe { crate::ipad::fei_ios_is_phone() } }
 
 #[cfg(target_os = "ios")]
 const TOUCH_HANDLE_SIZE: f32 = 44.;

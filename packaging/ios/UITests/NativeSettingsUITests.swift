@@ -69,6 +69,27 @@ final class NativeSettingsUITests: XCTestCase {
         back(app)
         choose("appearance","",app)
     }
+    func testInterfaceStyleAndDocumentThemeCanBeMixed() {
+        let app = launch(); tapRow("page:Appearance",app)
+        choose("interface-style","notes",app)
+        for (id,name) in [("craft","Craft"),("obsidian","Obsidian"),("notion","Notion")] {
+            choose("theme",id,app)
+            XCTAssertTrue(row("theme",app).staticTexts[name].exists)
+            XCTAssertTrue(row("interface-style",app).staticTexts["备忘录"].exists)
+            XCTAssertTrue(row("theme-preview",app).staticTexts["海边小书展"].exists)
+        }
+        shot("appearance-notes-interface-notion-document")
+        choose("interface-style","feishu",app)
+        XCTAssertTrue(row("interface-style",app).staticTexts["飞书"].exists)
+        XCTAssertTrue(row("theme",app).staticTexts["Notion"].exists)
+        shot("appearance-lark-interface-notion-document")
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout:20))
+        app.buttons["fei.settings"].tap(); tapRow("page:Appearance",app)
+        XCTAssertTrue(row("interface-style",app).staticTexts["飞书"].exists)
+        XCTAssertTrue(row("theme",app).staticTexts["Notion"].exists)
+        choose("interface-style","notes",app); choose("theme","notes",app)
+    }
     func testNativePreferencesAndPersistence() {
         let app = launch(); shot("settings38-01-root")
         for page in ["General","Appearance","Library","Shortcuts","About"] { XCTAssertTrue(row("page:"+page,app).exists) }

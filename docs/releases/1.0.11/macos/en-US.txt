@@ -1,3 +1,5 @@
 Fei Notes 1.0.11 beta
 
+In Settings → Appearance, choose Interface Style and Document Theme independently. The interface offers Lark and Notes. Documents can also use Craft, Notion, or Obsidian.
+
 Fixed a launch crash caused by a missing system SQLite symbol on macOS 15.6.1.

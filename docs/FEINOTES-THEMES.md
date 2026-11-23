@@ -6,7 +6,7 @@ Read the preserved upstream [theme reference](THEMES.md) first. This document de
 
 The product combines Feishu-style block writing and editing with Apple Notes-inspired visual hierarchy, layout and iCloud integration. Notes is a visual reference, not a requirement to duplicate Apple Notes commands or its entire format model. Preserve Fei Notes menus, shortcuts and block interactions when correcting theme defects.
 
-Fei Notes offers two themes: Notes and Feishu. Older selections of Craft, Notion, Obsidian or custom themes fall back to Notes; their CSS files remain on disk. Existing Notes and Feishu selections and their CSS overrides remain supported. Theme CSS can style the document and selected shell controls; menu layout, settings layout and interaction behavior remain controlled by the existing UI.
+Appearance has two independent settings. Interface style offers Lark and Notes and supplies sidebar, toolbar, sharing controls and native list colours. Document theme offers Lark, Notes, Craft, Notion and Obsidian in that order and supplies paper and editor presentation. Mac starts with Lark for both settings. iPhone and iPad start with Notes for both. Existing preferences without an interface setting retain the interface that their old theme displayed. Stored Craft, Notion and Obsidian choices and their CSS overrides can be used again. Custom theme files remain on disk.
 
 Color properties and `--token-*` accept `light-dark(light-value, dark-value)`. Single colors retain the automatic dark-appearance conversion. `inherit` preserves the original appearance where supported.
 
@@ -48,9 +48,10 @@ The Notes insets follow native Notes 4.13 screenshots captured on 2026-11-16: 28
 
 ## Mobile native shell roles
 
-On iOS, the selected theme projects its resolved accent, document paper and folder
-color into UIKit. Native tables, navigation, search and editor toolbars keep system
-materials and geometry. Optional overrides apply to the mobile shell only:
+On iOS, the interface style supplies the accent, folder colour and list colours
+to UIKit. The document theme supplies the paper and editor metrics. Native
+tables, navigation, search and editor toolbars keep their system materials and
+geometry. The following overrides apply on mobile:
 
 | Selector | Supported properties |
 | --- | --- |

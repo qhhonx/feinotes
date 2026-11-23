@@ -55,6 +55,23 @@ static PREFS: RwLock<Option<Preferences>> = RwLock::new(None);
 /// The active document theme draws blocks the 飞书 way (else Craft's).
 pub fn feishu() -> bool { FEISHU.load(Ordering::Relaxed) }
 pub(crate) fn set_base(feishu: bool) { FEISHU.store(feishu, Ordering::Relaxed); }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum InterfaceStyle { Feishu, Notes }
+
+impl InterfaceStyle {
+    const ALL: [Self; 2] = [Self::Feishu, Self::Notes];
+    pub(crate) fn id(self) -> &'static str { match self { Self::Feishu => "feishu", Self::Notes => "notes" } }
+    fn title(self) -> &'static str { match self { Self::Feishu => lark_name(), Self::Notes => tr("备忘录", "Notes") } }
+}
+
+pub(crate) fn lark_name() -> &'static str { if english() { "Lark" } else { "飞书" } }
+
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+pub(crate) fn interface_feishu() -> bool {
+    if crate::FEI_NOTES { prefs().interface_style() == InterfaceStyle::Feishu } else { feishu() }
+}
+
 /// 界面语言, in the order Settings lists them. Chinese strings are the keys:
 /// other languages look them up in `l10n` and fall back to English.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -129,6 +146,8 @@ pub fn quick_new_markdown() -> bool {
 pub struct Preferences {
     /// Document theme id (themes.rs); empty in files from before themes, see `feishu`.
     pub theme: String,
+    /// Empty in older preferences, when the document theme also chose the interface.
+    pub interface_style: String,
     /// The old two-way switch, still written so older builds keep the base style.
     pub feishu: bool,
     /// Still written (true unless Chinese) so older builds show English for a language they lack.
@@ -224,15 +243,28 @@ fn system_lang() -> Lang {
 impl Default for Preferences {
     fn default() -> Self {
         let lang = system_lang();
-        Preferences { theme: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), start_home: false, browser: String::new(), opaque_window: false, ui_font: String::new(), ui_family: String::new(), doc_family: String::new(), migrate_later: 0, find_regex: false, backspace_to_title: true, font_favorites: vec![], recent_doc_fonts: vec![], recent_ui_fonts: vec![] }
+        Preferences { theme: String::new(), interface_style: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), start_home: false, browser: String::new(), opaque_window: false, ui_font: String::new(), ui_family: String::new(), doc_family: String::new(), migrate_later: 0, find_regex: false, backspace_to_title: true, font_favorites: vec![], recent_doc_fonts: vec![], recent_ui_fonts: vec![] }
     }
 }
 
 impl Preferences {
-    pub fn theme_id(&self) -> String {
-        let id = if !self.theme.is_empty() { self.theme.as_str() } else if cfg!(target_os = "ios") { "notes" } else if self.feishu { "feishu" } else { "craft" };
-        crate::themes::supported_id(id).into()
+    fn document_theme_for(&self, mobile: bool) -> &str {
+        if !self.theme.is_empty() { &self.theme } else if mobile { "notes" } else if self.feishu { "feishu" } else { "craft" }
     }
+
+    pub fn theme_id(&self) -> String {
+        themes::supported_id(self.document_theme_for(cfg!(target_os = "ios"))).into()
+    }
+
+    fn interface_style_for(&self, mobile: bool) -> InterfaceStyle {
+        match self.interface_style.as_str() {
+            "feishu" => InterfaceStyle::Feishu,
+            "notes" => InterfaceStyle::Notes,
+            _ if self.document_theme_for(mobile) == "feishu" => InterfaceStyle::Feishu,
+            _ => InterfaceStyle::Notes,
+        }
+    }
+    pub(crate) fn interface_style(&self) -> InterfaceStyle { self.interface_style_for(cfg!(target_os = "ios")) }
     pub fn lang(&self) -> Lang {
         if matches!(self.language.as_str(), "zh-TW" | "zh-Hant") { return Lang::ZhTw; }
         Lang::ALL.into_iter().find(|l| l.code() == self.language).unwrap_or(if self.english { Lang::En } else { Lang::Zh })
@@ -268,13 +300,18 @@ pub fn load() {
     apply(p);
 }
 
-pub(crate) fn apply(p: Preferences) {
+pub(crate) fn apply(mut p: Preferences) {
     FEISHU.store(p.feishu, Ordering::Relaxed);
     LANG.store(p.lang() as u8, Ordering::Relaxed);
     crate::model::set_untitled(translate(crate::model::UNTITLED, p.lang()));
     MOTION_HIGH.store(p.motion == "high", Ordering::Relaxed);
     // Before the themes are read (startup) the base comes from `feishu`.
     themes::select(&p.theme_id());
+    if crate::FEI_NOTES {
+        let interface = p.interface_style();
+        p.interface_style = interface.id().into();
+        themes::select_interface(interface);
+    }
     themes::set_doc_font(&p.doc_family);
     theme::set_ui_family(&p.ui_family);
     *PREFS.write().unwrap() = Some(p);
@@ -1551,7 +1588,7 @@ impl Workspace {
         }
         if p.doc_family != old.doc_family { crate::fonts::probe(&p.doc_family, cx); }
         if p.ui_family != old.ui_family { crate::fonts::probe(&p.ui_family, cx); }
-        if p.theme_id() != old.theme_id() || p.lang() != old.lang() || p.doc_family != old.doc_family || p.ui_family != old.ui_family || sync_dark(cx) {
+        if p.theme_id() != old.theme_id() || p.interface_style() != old.interface_style() || p.lang() != old.lang() || p.doc_family != old.doc_family || p.ui_family != old.ui_family || sync_dark(cx) {
             refresh_all(self, cx);
         }
         cx.notify();
@@ -1932,6 +1969,13 @@ impl Workspace {
                 segmented("ui-font", &[tr("小", "Small"), tr("标准", "Default"), tr("大", "Large")], sel,
                     |w, i, cx| w.set_pref(|p| p.ui_font = ["small", "", "large"][i].into(), cx), cx)
             }).into_any_element(),
+        ]);
+        if crate::FEI_NOTES {
+            rows.push(row(tr("界面风格", "Interface style"), None,
+                segmented("interface-style", &InterfaceStyle::ALL.map(InterfaceStyle::title), usize::from(prefs().interface_style() == InterfaceStyle::Notes),
+                    |w, i, cx| w.set_pref(|p| p.interface_style = InterfaceStyle::ALL[i].id().into(), cx), cx)).into_any_element());
+        }
+        rows.extend([
             self.font_row(FontTarget::Ui, tr("界面字体", "Interface font"),
                 tr("侧栏、菜单和设置页用这个字体；文档用下面的「文档字体」。", "The sidebar, menus and settings use it; the note has its own below."), cx).into_any_element(),
             row(tr("文档主题", "Document theme"), None, picker).into_any_element(),
@@ -3802,14 +3846,14 @@ mod localization_tests {
 
 #[cfg(test)]
 mod preference_tests {
-    use super::Preferences;
+    use super::{InterfaceStyle, Preferences};
 
     #[test]
-    fn theme_preferences_preserve_supported_choices_and_retire_product_themes() {
-        assert_eq!(Preferences::default().theme_id(), "feishu");
+    fn theme_preferences_preserve_bundled_document_choices() {
+        let defaults = Preferences::default();
+        assert_eq!(defaults.document_theme_for(false), "feishu");
+        assert_eq!(defaults.document_theme_for(true), "notes");
         for (json, expected) in [
-            (r#"{}"#, "feishu"),
-            (r#"{"feishu":false}"#, "craft"),
             (r#"{"feishu":true}"#, "feishu"),
             (r#"{"theme":"notion","feishu":false}"#, "notion"),
             (r#"{"theme":"craft","feishu":true}"#, "craft"),
@@ -3817,11 +3861,34 @@ mod preference_tests {
             (r#"{"theme":"notes"}"#, "notes"),
             (r#"{"theme":"obsidian"}"#, "obsidian"),
         ] {
-            let expected = if crate::FEI_NOTES && !matches!(expected, "feishu" | "notes") { "notes" } else { expected };
+            let expected = if crate::FEI_NOTES && expected == "my-theme" { "notes" } else { expected };
             let saved: Preferences = serde_json::from_str(json).unwrap();
-            assert_eq!(saved.theme_id(), expected);
+            if !saved.theme.is_empty() || !cfg!(target_os = "ios") { assert_eq!(saved.theme_id(), expected); }
             let round_trip: Preferences = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
-            assert_eq!(round_trip.theme_id(), expected);
+            assert_eq!(round_trip.theme_id(), saved.theme_id());
+        }
+    }
+
+    #[test]
+    fn interface_migrates_from_the_old_visible_style_and_can_be_saved_independently() {
+        use InterfaceStyle::{Feishu, Notes};
+        for (json, desktop, mobile) in [
+            (r#"{}"#, Feishu, Notes),
+            (r#"{"feishu":false}"#, Notes, Notes),
+            (r#"{"theme":"feishu"}"#, Feishu, Feishu),
+            (r#"{"theme":"notes","feishu":true}"#, Notes, Notes),
+            (r#"{"theme":"notion"}"#, Notes, Notes),
+            (r#"{"theme":"notion","interface_style":"feishu"}"#, Feishu, Feishu),
+        ] {
+            let mut p: Preferences = serde_json::from_str(json).unwrap();
+            assert_eq!(p.interface_style_for(false), desktop);
+            assert_eq!(p.interface_style_for(true), mobile);
+            p.interface_style = desktop.id().into();
+            p.theme = if desktop == Feishu { "notes" } else { "feishu" }.into();
+            let saved: Preferences = serde_json::from_slice(&serde_json::to_vec(&p).unwrap()).unwrap();
+            assert_eq!(saved.interface_style_for(false), desktop);
+            assert_eq!(saved.interface_style_for(true), desktop);
+            assert_eq!(saved.theme_id(), p.theme);
         }
     }
 

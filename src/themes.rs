@@ -368,7 +368,10 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn name(&self) -> &str { if crate::settings::english() { self.name_en.as_deref().unwrap_or(&self.name) } else { &self.name } }
+    pub fn name(&self) -> &str {
+        if crate::FEI_NOTES && self.id == "feishu" { return crate::settings::lark_name() }
+        if crate::settings::english() { self.name_en.as_deref().unwrap_or(&self.name) } else { &self.name }
+    }
     /// A built-in theme the user has edited (their copy replaces it).
     pub fn customized(&self) -> bool { self.edited }
 }
@@ -381,21 +384,42 @@ pub const BUNDLED: [(&str, &str); 5] = [
     ("notes", include_str!("../assets/themes/notes.css")),
 ];
 
-/// Retired product themes fall back to Notes without changing saved CSS files.
+const PRODUCT_ORDER: [&str; 5] = ["feishu", "notes", "craft", "notion", "obsidian"];
+
+/// The product offers the bundled catalogue; other themes remain on disk.
 pub fn supported_id(id: &str) -> &str {
-    if crate::FEI_NOTES && !matches!(id, "notes" | "feishu") { "notes" } else { id }
+    if crate::FEI_NOTES && !PRODUCT_ORDER.contains(&id) { "notes" } else { id }
 }
 
 static THEMES: RwLock<Vec<Theme>> = RwLock::new(Vec::new());
 static ERRORS: RwLock<Vec<String>> = RwLock::new(Vec::new());
 static ACTIVE: AtomicPtr<Style> = AtomicPtr::new(std::ptr::null_mut());
+static INTERFACE: AtomicPtr<Style> = AtomicPtr::new(std::ptr::null_mut());
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static PLAIN: LazyLock<Style> = LazyLock::new(|| Style::plain(false));
+static FEISHU_INTERFACE: LazyLock<Style> = LazyLock::new(|| Style::plain(true));
+static NOTES_INTERFACE: LazyLock<Style> = LazyLock::new(|| parse(include_str!("../assets/themes/notes.css"), &[]).expect("bundled Notes style").0);
 
 /// The theme being drawn.
 pub fn active() -> &'static Style {
     let p = ACTIVE.load(Ordering::Relaxed);
     if p.is_null() { &PLAIN } else { unsafe { &*p } }
+}
+
+/// The app's sidebar, toolbars and native list colours.
+pub(crate) fn interface() -> &'static Style {
+    if !crate::FEI_NOTES { return active() }
+    let p = INTERFACE.load(Ordering::Relaxed);
+    if p.is_null() {
+        if cfg!(target_os = "ios") { &NOTES_INTERFACE } else { &FEISHU_INTERFACE }
+    } else { unsafe { &*p } }
+}
+
+pub(crate) fn select_interface(choice: crate::settings::InterfaceStyle) {
+    use crate::settings::InterfaceStyle;
+    let style = themes().iter().find(|t| t.id == choice.id()).map(|t| t.style)
+        .unwrap_or_else(|| match choice { InterfaceStyle::Feishu => &FEISHU_INTERFACE, InterfaceStyle::Notes => &NOTES_INTERFACE });
+    INTERFACE.store(style as *const Style as *mut Style, Ordering::Relaxed);
 }
 pub fn color(i: usize) -> Option<Hsla> { active().tokens.get(i).copied().flatten().map(ThemeColor::resolved) }
 
@@ -788,7 +812,8 @@ fn theme_of(id: String, css: &str, path: Option<PathBuf>, bundled: Option<&'stat
 static ALL_LOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn all_loaded() -> bool { ALL_LOADED.load(Ordering::Relaxed) }
 
-/// Startup reads only the selected theme. The picker requests the full catalog.
+/// Startup reads the selected document theme and the two interface presets.
+/// The picker requests the full catalog.
 /// Enumerate installed fonts only if a user stylesheet names a concrete family.
 pub fn load(selected: &str, all: bool, font_source: impl FnOnce() -> Vec<String>) {
     let selected = supported_id(selected);
@@ -796,7 +821,8 @@ pub fn load(selected: &str, all: bool, font_source: impl FnOnce() -> Vec<String>
     let mut source = Some(font_source);
     let mut resolve_fonts = || fonts.get_or_init(|| source.take().unwrap()()).as_slice();
     let mut list: Vec<Theme> = vec![];
-    for (id, css) in BUNDLED.iter().copied().filter(|(id, _)| supported_id(id) == *id && (all || *id == selected)) {
+    let wanted = |id: &str| all || id == selected || crate::FEI_NOTES && matches!(id, "feishu" | "notes");
+    for (id, css) in BUNDLED.iter().copied().filter(|(id, _)| wanted(id)) {
         match parse(css, &[]) {
             Ok(p) => list.push(theme_of(id.into(), css, None, Some(css), p)),
             Err(e) => eprintln!("bundled theme {id}: {e}"),
@@ -805,9 +831,14 @@ pub fn load(selected: &str, all: bool, font_source: impl FnOnce() -> Vec<String>
     let mut errors = vec![];
     let mut files: Vec<PathBuf> = if all {
         fdl_core::vfs::read_dir(dir()).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "css")).collect()).unwrap_or_default()
-    } else if !selected.is_empty() && std::path::Path::new(selected).file_name().is_some_and(|n| n == selected) {
-        vec![dir().join(format!("{selected}.css"))]
-    } else { vec![] };
+    } else {
+        let mut ids = vec![selected];
+        if crate::FEI_NOTES { ids.extend(["feishu", "notes"]); }
+        ids.sort_unstable();
+        ids.dedup();
+        ids.into_iter().filter(|id| !id.is_empty() && std::path::Path::new(id).file_name().is_some_and(|n| n == *id))
+            .map(|id| dir().join(format!("{id}.css"))).collect()
+    };
     files.sort();
     for p in files {
         if !all && !p.fs_exists() { continue; }
@@ -824,7 +855,7 @@ pub fn load(selected: &str, all: bool, font_source: impl FnOnce() -> Vec<String>
             Err(e) => errors.push(format!("{file}: {e}")),
         }
     }
-    list.sort_by_key(|t| if crate::FEI_NOTES { t.id != "notes" } else { t.id != "feishu" });
+    list.sort_by_key(|t| if crate::FEI_NOTES { PRODUCT_ORDER.iter().position(|id| *id == t.id).unwrap_or(PRODUCT_ORDER.len()) } else { usize::from(t.id != "feishu") });
     if list.is_empty() {
         let (id, css) = BUNDLED[0];
         if let Ok(p) = parse(css, &[]) { list.push(theme_of(id.into(), css, None, Some(css), p)); }
@@ -841,6 +872,7 @@ pub fn load(selected: &str, all: bool, font_source: impl FnOnce() -> Vec<String>
     *THEMES.write().unwrap() = list;
     *ERRORS.write().unwrap() = errors;
     select(selected);
+    if crate::FEI_NOTES { select_interface(crate::settings::prefs().interface_style()); }
 }
 
 /// Draw with theme `id` (Craft when it is gone); returns the id in use.

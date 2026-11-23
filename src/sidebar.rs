@@ -58,12 +58,12 @@ pub(crate) const SECTION_TOP: f32 = 6.;
 /// 批量操作 caps at 50 pages.
 pub(crate) const BATCH_LIMIT: usize = 50;
 
-pub(crate) fn surface() -> Option<Hsla> { crate::themes::active().color("sidebar.bg") }
-pub(crate) fn text_color() -> Hsla { crate::themes::active().color("sidebar.text").unwrap_or_else(Theme::sidebar_text) }
-pub(crate) fn section_color() -> Hsla { crate::themes::active().color("sidebar.section").unwrap_or_else(Theme::sidebar_section) }
-pub(crate) fn folder_color() -> Hsla { crate::themes::active().color("sidebar.folder").unwrap_or_else(Theme::icon) }
-pub(crate) fn hover() -> Hsla { crate::themes::active().color("sidebar.hover").unwrap_or_else(Theme::sidebar_hover) }
-pub(crate) fn selection_fill() -> Hsla { crate::themes::active().color("sidebar.selected").unwrap_or_else(Theme::sidebar_selected) }
+pub(crate) fn surface() -> Option<Hsla> { crate::themes::interface().color("sidebar.bg") }
+pub(crate) fn text_color() -> Hsla { crate::themes::interface().color("sidebar.text").unwrap_or_else(Theme::sidebar_text) }
+pub(crate) fn section_color() -> Hsla { crate::themes::interface().color("sidebar.section").unwrap_or_else(Theme::sidebar_section) }
+pub(crate) fn folder_color() -> Hsla { crate::themes::interface().color("sidebar.folder").unwrap_or_else(Theme::icon) }
+pub(crate) fn hover() -> Hsla { crate::themes::interface().color("sidebar.hover").unwrap_or_else(Theme::sidebar_hover) }
+pub(crate) fn selection_fill() -> Hsla { crate::themes::interface().color("sidebar.selected").unwrap_or_else(Theme::sidebar_selected) }
 
 pub(crate) fn shared_document_badge() -> Stateful<Div> {
     div().id("shared-document-status").flex_none().flex().items_center()
@@ -159,13 +159,13 @@ impl Workspace {
     pub(crate) fn sidebar_selection(&self, folder: bool) -> Hsla {
         let key = if folder { "sidebar.folder.focused" } else { "sidebar.focused" };
         if self.sidebar_focused && self.sidebar_window_active {
-            crate::themes::active().color(key).unwrap_or_else(selection_fill)
+            crate::themes::interface().color(key).unwrap_or_else(selection_fill)
         } else { selection_fill() }
     }
 
     fn sidebar_selection_text(&self, folder: bool) -> Hsla {
         if folder && self.sidebar_focused && self.sidebar_window_active {
-            crate::themes::active().color("sidebar.folder.focused.text").unwrap_or_else(Theme::text)
+            crate::themes::interface().color("sidebar.folder.focused.text").unwrap_or_else(Theme::text)
         } else { Theme::text() }
     }
 
@@ -829,7 +829,7 @@ impl Workspace {
                 .text_size(px(theme::ui_font()))
                 .line_height(px(DOC_ROW_H))
                 .text_color(if selected { self.sidebar_selection_text(e.meta.folder.is_some()) } else if drop_target { Theme::text() } else { text_color() })
-                .when(selected, |d| d.when_some(crate::themes::active().num_override("sidebar.selected.weight"), |d, w| d.font_weight(FontWeight(w))))
+                .when(selected, |d| d.when_some(crate::themes::interface().num_override("sidebar.selected.weight"), |d, w| d.font_weight(FontWeight(w))))
                 .child(crate::ui::document_title(&title).child(ui_text(title)))
                 .when(matches!(section, SidebarSection::Personal | SidebarSection::Pinned) && self.document_has_shared_status(e, cx), |d| {
                     d.child(shared_document_badge().ml(px(6.)))
@@ -906,7 +906,7 @@ impl Workspace {
                     _ if folder => {
                         let s = if key == "doc" { self.folder_drag.pop(&e.id) } else { 1. };
                         d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(1. - chevron)
-                            .child(icon(if drop_target { "folder-input" } else { folder_glyph(e, open, true, cx).unwrap_or("folder") }, ROW_ICON, if selected && self.sidebar_focused && self.sidebar_window_active { crate::themes::active().color("sidebar.folder.focused.text").unwrap_or_else(folder_color) } else { folder_color() })
+                            .child(icon(if drop_target { "folder-input" } else { folder_glyph(e, open, true, cx).unwrap_or("folder") }, ROW_ICON, if selected && self.sidebar_focused && self.sidebar_window_active { crate::themes::interface().color("sidebar.folder.focused.text").unwrap_or_else(folder_color) } else { folder_color() })
                                 .with_transformation(Transformation::scale(size(s, s)))))
                         .when(chevron > 0.005, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(chevron)
                             .child(icon("disclosure", ROW_ICON, if selected { self.sidebar_selection_text(true) } else { Theme::icon() })

@@ -73,7 +73,11 @@ fn theme_preview(st: &themes::Style) -> Value {
 
 impl Workspace {
     fn native_settings_scope(&self) -> String {
-        format!("{:?}|{}|{:?}|{:?}|{}",self.store.root(),self.mobile_settings_root,self.settings_page,self.sheet_room().map(|room|&room.scope),if self.settings_page==Page::Appearance { prefs().theme_id() } else { String::new() })
+        let appearance = if self.settings_page == Page::Appearance {
+            let p = prefs();
+            format!("{}|{}", p.interface_style().id(), p.theme_id())
+        } else { String::new() };
+        format!("{:?}|{}|{:?}|{:?}|{}",self.store.root(),self.mobile_settings_root,self.settings_page,self.sheet_room().map(|room|&room.scope),appearance)
     }
     pub(crate) fn native_settings(&self,cx:&App) -> Option<Value> {
         if self.view != View::Settings { return None; }
@@ -99,6 +103,8 @@ impl Workspace {
                 sections.push(section("",vec![
                     choices("appearance",tr("外观","Appearance"),&p.appearance,&[("",tr("跟随系统","System")),("light",tr("浅色","Light")),("dark",tr("深色","Dark"))]),
                     choices("ui-font",tr("界面字号","Interface size"),&p.ui_font,&[("small",tr("小","Small")),("",tr("标准","Default")),("large",tr("大","Large"))]),
+                    Row::new("interface-style",tr("界面风格","Interface style")).value(p.interface_style().id())
+                        .choices(InterfaceStyle::ALL.into_iter().map(|style| (style.id().into(),style.title().into()))),
                 ]));
                 let list = themes::themes();
                 let current = p.theme_id();
@@ -118,7 +124,7 @@ impl Workspace {
                 }
                 drop(list);
                 for (i,e) in themes::errors().into_iter().enumerate() { rows.push(Row::new(format!("theme-error:{i}"),tr("主题错误","Theme error")).detail(e).kind("info")); }
-                sections.push(section(tr("文档主题","Document theme"),rows));
+                sections.push(section("",rows));
             }
             Page::Library => {
                 if self.personal_settings_store(cx).is_some() {
@@ -442,6 +448,7 @@ impl Workspace {
             "language"=>self.set_pref(|p|{p.language=value.into(); p.english=value!="zh";},cx),
             "remote-images" if matches!(value,"true"|"false")=>self.set_pref(|p|p.remote_images=value=="true",cx),
             "appearance"=>self.set_pref(|p|p.appearance=value.into(),cx),
+            "interface-style"=>self.set_pref(|p|p.interface_style=value.into(),cx),
             "ui-font"=>self.set_pref(|p|p.ui_font=value.into(),cx),
             "theme"=>apply_theme(self,value.into(),cx),
             "theme-edit"=>self.edit_theme(&prefs().theme_id(),cx),
