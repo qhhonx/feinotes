@@ -5,8 +5,8 @@
   "build": "1022",
   "pending": {
     "state": "review",
-    "version": "1.1.0",
-    "build": "1033"
+    "version": "1.1.1",
+    "build": "1035"
   },
   "platforms": {
     "MAC_OS": {
@@ -16,8 +16,8 @@
       "build": "1022",
       "pending": {
         "state": "review",
-        "version": "1.1.0",
-        "build": "1033"
+        "version": "1.1.1",
+        "build": "1035"
       }
     },
     "IOS": {
@@ -32,5 +32,5 @@
       }
     }
   },
-  "updatedAt": "2026-11-23T16:41:04.727545+00:00"
+  "updatedAt": "2026-11-23T17:03:49.186148+00:00"
 }
