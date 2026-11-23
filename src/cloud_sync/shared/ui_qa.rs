@@ -54,9 +54,14 @@ pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
                     result.error_kind = Some("linkRegionRestricted".into());
                     return Ok(result);
                 }
-                ensure!(matches!(result.audience, Audience::LinkDraft | Audience::LinkReadOnly | Audience::LinkClosed)
-                    && !scope.folder && result.members.is_empty(), "Cannot reopen a private invitation as a public link");
-                if result.audience == Audience::LinkDraft { result.audience = Audience::LinkReadOnly; }
+                ensure!(!scope.folder && (result.audience.link_active() || result.audience == Audience::LinkClosed
+                    || result.audience == Audience::LinkDraft && result.members.is_empty()), "Cannot reopen a private invitation as a public link");
+                if result.audience == Audience::LinkDraft {
+                    result.audience = match command.permission.unwrap_or(Access::ReadOnly) {
+                        Access::ReadOnly => Audience::LinkReadOnly, Access::ReadWrite => Audience::LinkReadWrite,
+                        _ => anyhow::bail!("Invalid public link permission"),
+                    };
+                }
             }
             "closeLink" => {
                 ensure!(result.audience.link_active() || result.audience == Audience::LinkClosed, "No public link");

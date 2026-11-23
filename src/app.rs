@@ -2379,17 +2379,14 @@ impl Workspace {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if crate::cloud_sync::shared::editing_paused(&self.store, cx) && !revoked {
             return div().size_full().flex().items_center().justify_center().text_color(Theme::text_caption())
-                .child(crate::cloud_trial::access_required()).into_any_element();
+                .child(crate::cloud_sync::shared::sharing_unavailable()).into_any_element();
         }
         let message = if revoked { crate::settings::tr("共享访问已结束", "Access to this shared document has ended") }
             else { crate::settings::tr("正在接收共享文档", "Waiting for the shared document") };
         let body = div().flex_1().flex().flex_col().items_center().justify_center().gap(px(12.))
             .text_color(Theme::text_caption()).child(message);
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let body = body
-            .when(crate::cloud_sync::shared::editing_paused(&self.store, cx) && !revoked, |d| d.child(
-                div().text_size(px(13.)).child(crate::settings::tr("协作已暂停。请检查 iCloud 账户和云功能状态。", "Collaboration is paused. Check your iCloud account and cloud access."))))
-            .child(crate::settings::button("shared-return-list", crate::settings::tr("返回共享列表", "Back to shared documents"))
+        let body = body.child(crate::settings::button("shared-return-list", crate::settings::tr("返回共享列表", "Back to shared documents"))
                 .on_click(cx.listener(|w, _, window, cx| w.return_to_shared_list(window, cx))));
         div().size_full().flex().flex_col()
             .child(crate::trash::page_header(self, crate::settings::tr("共享文档", "Shared Document"), 26., cx))

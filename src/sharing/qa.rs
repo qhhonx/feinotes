@@ -662,7 +662,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
         "public-link-explicit-invite" => primary.update(cx, |_, _, _| -> Result<()> {
             let doc = crate::docxml::parse("<title>Private fallback</title><p>Synthetic document</p>")?;
             let id = crate::store::Store::open_sqlite_at(personal.clone())?.create_from(&doc)?;
-            let room = shared::original::prepare(&personal, &id, doc.title.text.clone(), true)?;
+            let room = shared::original::prepare(&personal, &id, doc.title.text.clone(), Some(Access::ReadOnly))?;
             shared::ensure_created(&personal, &room)?;
             std::fs::write(root.join("fail-link-write-once"), b"fault")?;
             let failed = shared::publish_link(&personal, &room);
@@ -675,6 +675,27 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
                 && shared::manage(&personal, &room, "members", "", None)?.members.len() == 1,
                 "A public-link retry changed an existing private invitation");
             eprintln!("PUBLIC_LINK_UI_OK default=invited rejection=private open=original lost-reply=confirmed closure=owner-retained copy=denied invite=explicit");
+            Ok(())
+        })??,
+        "public-link-new-editor" => primary.update(cx, |ws, window, cx| -> Result<()> {
+            ws.close_sharing(window, cx);
+            ws.open_new_shared_item(false, window, cx);
+            ws.sharing.folder_name.update(cx, |field, cx| field.set_text("Public editing fixture", cx));
+            ws.set_public_link(true, window, cx);
+            ensure!(ws.sharing.permission == Access::ReadOnly, "A new public link must default to read-only");
+            ws.set_public_link_permission(Access::ReadWrite, cx);
+            ensure!(ws.sharing.permission == Access::ReadWrite, "Public editing requires an explicit choice");
+            ws.submit_sharing(window, cx);
+            Ok(())
+        })??,
+        "public-link-new-editor-published" => primary.update(cx, |ws, _, cx| -> Result<()> {
+            let room = ws.current_room(cx).context("New public document did not open")?;
+            let reply = shared::manage(&personal, &room, "members", "", None)?;
+            ensure!(reply.audience == Audience::LinkReadWrite && reply.members.is_empty()
+                && !shared::public_link_pending(&personal, &room)
+                && ws.sharing.copied_text.as_deref() == Some("https://feinotes.app/share/?g=synthetic-fei-ui"),
+                "New public editing link did not match confirmed access or hand off its URL");
+            eprintln!("PUBLIC_LINK_EDIT_UI_OK selection=explicit creation=new-document copy=confirmed");
             Ok(())
         })??,
         "create" => primary.update(cx, |ws, window, cx| -> Result<()> {

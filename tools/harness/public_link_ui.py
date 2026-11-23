@@ -26,6 +26,9 @@ sharing-ui public-link-closed
 wait 600
 sharing-ui public-link-copy-denied
 sharing-ui public-link-explicit-invite
+sharing-ui public-link-new-editor
+wait 1200
+sharing-ui public-link-new-editor-published
 quit
 '''
 
@@ -47,4 +50,6 @@ with log.open("w") as output:
     subprocess.run([str(binary)], cwd=root, env=env, stdout=output, stderr=subprocess.STDOUT, timeout=60, check=True)
 lines = log.read_text().splitlines()
 assert any("PUBLIC_LINK_UI_OK" in line for line in lines), "\n".join(lines[-25:])
+assert any("PUBLIC_LINK_EDIT_UI_OK" in line for line in lines), "\n".join(lines[-25:])
 print(next(line for line in lines if "PUBLIC_LINK_UI_OK" in line))
+print(next(line for line in lines if "PUBLIC_LINK_EDIT_UI_OK" in line))

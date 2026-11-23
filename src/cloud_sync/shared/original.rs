@@ -70,9 +70,10 @@ fn copy_entry(source: (&Connection, &Path), dest: (&Connection, &Path), id: &str
 const NEW_PENDING: &str = "new-shared-pending";
 const NEW_INVITED: &str = "new-shared-invited";
 
-pub(crate) fn prepare_new(personal: &Path, id: String, title: String, folder: bool) -> Result<Room> {
+pub(crate) fn prepare_new(personal: &Path, id: String, title: String, folder: bool, public: Option<Access>) -> Result<Room> {
     Command::new(&account(personal)?, "checkAccess", None)?.send()?;
     let room = Room { scope: Scope { note: id, owner: None, folder }, title };
+    ensure!(public.is_none() || !folder, "Public links are only available for documents");
     stage_with(personal, &room, |staged| {
         let mut journal = Journal::open(staged, None)?;
         if folder {
@@ -86,6 +87,7 @@ pub(crate) fn prepare_new(personal: &Path, id: String, title: String, folder: bo
             journal.seed_shared(&doc, "")?;
         }
         fs::write(staged.join(NEW_PENDING), b"1")?;
+        stage_public_access(staged, public)?;
         Ok(())
     })?;
     Ok(room)
@@ -95,11 +97,16 @@ pub(crate) fn invite_new(personal: &Path, room: &Room, email: &str, access: Acce
     ensure_created(personal, room)?;
     super::super::check_account_revision(revision)?;
     let reply = manage(personal, room, "invite", email, Some(access))?;
+    register_new(personal, room, revision)?;
+    Ok(reply)
+}
+
+pub(crate) fn register_new(personal: &Path, room: &Room, revision: u64) -> Result<()> {
+    super::super::check_account_revision(revision)?;
     let root = room_root(personal, &room.scope.note)?;
     fs::write(root.join(NEW_INVITED), b"1")?;
     super::super::check_account_revision(revision)?;
-    finish_new(personal, &root, room)?;
-    Ok(reply)
+    finish_new(personal, &root, room)
 }
 
 pub(crate) fn pending_new(root: &Path) -> bool { root.join(NEW_PENDING).is_file() }
@@ -136,12 +143,25 @@ fn finish_new(personal: &Path, root: &Path, room: &Room) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn prepare(personal: &Path, id: &str, title: String, public_link: bool) -> Result<Room> {
-    Command::new(&account(personal)?, "checkAccess", None)?.send()?;
-    prepare_local(personal, id, title, public_link)
+fn stage_public_access(staged: &Path, public: Option<Access>) -> Result<()> {
+    if let Some(access) = public {
+        let marker: &[u8] = match access { Access::ReadOnly => b"1", Access::ReadWrite => b"readWrite", _ => anyhow::bail!("Invalid public link permission") };
+        fs::write(staged.join(LINK_PENDING), marker)?;
+    }
+    Ok(())
 }
 
+pub(crate) fn prepare(personal: &Path, id: &str, title: String, public_link: Option<Access>) -> Result<Room> {
+    Command::new(&account(personal)?, "checkAccess", None)?.send()?;
+    prepare_with_access(personal, id, title, public_link)
+}
+
+#[cfg(any(test, feature = "devtools"))]
 pub(in crate::cloud_sync) fn prepare_local(personal: &Path, id: &str, title: String, public_link: bool) -> Result<Room> {
+    prepare_with_access(personal, id, title, public_link.then_some(Access::ReadOnly))
+}
+
+fn prepare_with_access(personal: &Path, id: &str, title: String, public_link: Option<Access>) -> Result<Room> {
     let mut db = connect(personal)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let all = entries(&tx)?;
@@ -149,7 +169,7 @@ pub(in crate::cloud_sync) fn prepare_local(personal: &Path, id: &str, title: Str
     let root_meta = &all[id];
     ensure!(!root_meta.local(), "External files cannot be shared in place");
     let room = Room { scope: Scope { note: id.into(), owner: None, folder: root_meta.folder.is_some() }, title };
-    ensure!(!public_link || !room.scope.folder, "Public links are only available for documents");
+    ensure!(public_link.is_none() || !room.scope.folder, "Public links are only available for documents");
     let root = room_root(personal, id)?;
     if root_meta.share_root.as_deref() == Some(id) {
         ensure!(descriptor(&root)?.is_some_and(|r| r.scope == room.scope), "Shared library unavailable");
@@ -180,7 +200,7 @@ pub(in crate::cloud_sync) fn prepare_local(personal: &Path, id: &str, title: Str
         let (uploads, _, held, warnings) = journal.counts()?;
         ensure!(uploads > 0 && held == 0 && warnings == 0, "Some selected content or attachments are unavailable");
         fs::write(staged.join("original-stage"), b"1")?;
-        if public_link { fs::write(staged.join(super::LINK_PENDING), b"1")?; }
+        stage_public_access(staged, public_link)?;
         Ok(())
     })?;
     for key in ids {

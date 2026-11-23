@@ -19,7 +19,7 @@ impl Workspace {
         } else {
             match status.map(|status| status.phase) {
                 Some(AccountChanged | SignedOut) => (tr("请在文档库设置中重新连接 iCloud。", "Reconnect to iCloud in Library settings."), false, false),
-                Some(SubscriptionRequired) => (crate::cloud_trial::access_required(), false, true),
+                Some(SubscriptionRequired) => (shared::sharing_unavailable(), false, true),
                 Some(TestFlightVerification) => (tr("请确认 TestFlight 安装状态后重试。", "Check the TestFlight installation and try again."), false, true),
                 Some(Offline) => (tr("无法连接 iCloud。请检查网络后重试。", "Could not connect to iCloud. Check your network and try again."), false, true),
                 Some(Account) => (tr("暂时无法确认 iCloud 账户。请重试。", "Could not verify your iCloud account. Try again."), false, true),
@@ -58,7 +58,7 @@ impl Workspace {
             self.show_toast_kind(ui::ToastKind::Info,tr("请先将此文件导入文档库。","Import this file into your library to share it."),cx);
         } else if !self.sharing_allowed(cx) {
             self.mobile_present_sharing(cx);
-            self.sharing.message = Some((true,tr("共享暂不可用，请在文档库设置中检查 iCloud。","Sharing is unavailable. Check iCloud in Library settings.").into()));
+            self.sharing.message = Some((true,shared::sharing_unavailable().into()));
         } else {
             self.create_shared_note(&id,window,cx);
         }

@@ -247,7 +247,7 @@ impl<'a> Command<'a> {
                 _ => {},
             }
             let message = match reply.error_kind.as_deref() {
-                Some("subscriptionRequired") => crate::cloud_trial::access_required(),
+                Some("subscriptionRequired") => sharing_unavailable(),
                 Some("unavailableLink") => tr("此链接无效或已关闭。", "This share link is invalid or has been closed."),
                 Some("deniedLink") => tr("此账户无法使用该链接。链接可能已关闭，或邀请发给了其他 Apple 账户。", "This account cannot use this link. It may have been closed or sent to a different Apple Account."),
                 Some("signedOut") => tr("请在系统设置中登录 iCloud，再重新连接飞记。", "Sign in to iCloud in System Settings, then reconnect Fei Notes."),
@@ -278,6 +278,10 @@ pub(crate) enum Audience { #[default] Invited, LinkDraft, LinkReadOnly, LinkRead
 impl Audience {
     pub fn link_active(self) -> bool { matches!(self, Self::LinkReadOnly | Self::LinkReadWrite) }
     pub fn can_invite(self) -> bool { matches!(self, Self::Invited | Self::LinkDraft) }
+
+    pub(crate) fn public_access(self) -> Option<Access> {
+        match self { Self::LinkReadOnly => Some(Access::ReadOnly), Self::LinkReadWrite => Some(Access::ReadWrite), _ => None }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -349,8 +353,18 @@ pub(crate) fn ensure_created(personal: &Path, room: &Room) -> Result<()> {
 }
 
 pub(crate) fn public_link_pending(personal: &Path, room: &Room) -> bool {
-    room.scope.owner.is_none() && !room.scope.folder && room_root(personal, &room.scope.note)
-        .is_ok_and(|root| root.join(LINK_PENDING).is_file() && !root.join("shared-note-ended").exists())
+    pending_public_access(personal, room).is_some()
+}
+
+pub(crate) fn pending_public_access(personal: &Path, room: &Room) -> Option<Access> {
+    if room.scope.owner.is_some() || room.scope.folder { return None; }
+    let root = room_root(personal, &room.scope.note).ok()?;
+    if root.join("shared-note-ended").exists() { return None; }
+    match fs::read(root.join(LINK_PENDING)).ok()?.as_slice() {
+        b"1" => Some(Access::ReadOnly),
+        b"readWrite" => Some(Access::ReadWrite),
+        _ => None,
+    }
 }
 
 #[derive(Debug)]
@@ -374,26 +388,15 @@ pub(crate) struct LinkPublication {
     pub result: Result<Option<String>>,
 }
 
-// Public link creation is paused in product builds while the CloudKit rejection is investigated.
-pub(crate) fn public_link_creation_enabled() -> bool {
-    #[cfg(feature = "devtools")]
-    { ui_qa::enabled() }
-    #[cfg(not(feature = "devtools"))]
-    { false }
-}
-
 // Only the initiating device can retry its staged public link after uploading the document.
 pub(crate) fn publish_link(personal: &Path, room: &Room) -> LinkPublication {
-    if !public_link_creation_enabled() {
-        return LinkPublication { reply: None, result: Err(anyhow::anyhow!("{}", crate::settings::tr(
-            "暂时无法创建公开链接。你仍可邀请指定账户。", "Public link creation is paused. You can still invite specific accounts."))) };
-    }
     let revision = super::account_revision();
     let trace = ShareTrace::for_room(room);
+    let requested = pending_public_access(personal, room);
     let outcome = (|| {
-        ensure!(public_link_pending(personal, room) && room_root(personal, &room.scope.note)?.join("seed-published").is_file(),
+        ensure!(requested.is_some() && room_root(personal, &room.scope.note)?.join("seed-published").is_file(),
             "{}", crate::settings::tr("请先完成文档上传，再启用公开链接。", "Finish uploading the document before enabling its public link."));
-        manage_traced(personal, room, "publishLink", "", None, trace.clone())
+        manage_traced(personal, room, "publishLink", "", requested, trace.clone())
     })();
     let reply = match outcome {
         Ok(reply) => reply,
@@ -404,13 +407,13 @@ pub(crate) fn publish_link(personal: &Path, room: &Room) -> LinkPublication {
                 .and_then(|()| manage_traced(personal, room, "members", "", None, trace)).ok();
             match observed {
                 Some(reply) if matches!(error.downcast_ref::<LinkWriteError>(), Some(LinkWriteError::Unconfirmed))
-                    && matches!(reply.audience, Audience::LinkReadOnly | Audience::LinkClosed) => reply,
+                    && (reply.audience == Audience::LinkClosed || requested.is_some() && reply.audience.public_access() == requested) => reply,
                 reply => return LinkPublication { reply, result: Err(error) },
             }
         }
     };
     let result = match reply.audience {
-        Audience::LinkReadOnly => reply.url.as_deref().context(LinkWriteError::Unconfirmed)
+        audience if requested.is_some() && audience.public_access() == requested => reply.url.as_deref().context(LinkWriteError::Unconfirmed)
             .and_then(crate::sharing::links::branded).map(Some),
         Audience::LinkClosed => Ok(None),
         _ => Err(LinkWriteError::Unconfirmed.into()),
@@ -673,6 +676,11 @@ pub(crate) fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RoomAccount { Ready, Verifying, SignedOut, Changed, AccessRequired, Unavailable }
 
+pub(crate) fn sharing_unavailable() -> &'static str {
+    crate::settings::tr("共享暂不可用。请在「文档库 › iCloud」查看状态。",
+        "Sharing is unavailable. Check the status in Library › iCloud.")
+}
+
 pub(crate) fn room_account(personal: &Path, cx: &gpui::App) -> RoomAccount {
     use super::SyncPhase::*;
     if crate::cloud_restore::local_only() { return RoomAccount::Unavailable; }
@@ -689,8 +697,7 @@ pub(crate) fn room_account(personal: &Path, cx: &gpui::App) -> RoomAccount {
 }
 
 fn check_room_account(personal: &Path, cx: &gpui::App) -> Result<()> {
-    ensure!(room_account(personal, cx) == RoomAccount::Ready, "{}", crate::settings::tr(
-        "请先确认 iCloud 账户和云功能状态。", "Check your iCloud account and cloud access first."));
+    ensure!(room_account(personal, cx) == RoomAccount::Ready, "{}", sharing_unavailable());
     Ok(())
 }
 
@@ -940,7 +947,7 @@ pub(super) fn live_owner_folder_smoke(personal: &Path, store: &mut Store) -> Res
         file.name = "shared-folder-supplies.txt".into();
     }
     store.create_from_in(&document, Some(&root))?;
-    let room = original::prepare(personal, &root, title.into(), false)?;
+    let room = original::prepare(personal, &root, title.into(), None)?;
     ensure_created(personal, &room)?;
     let reply = manage(personal, &room, "members", "", None)?;
     ensure!(reply.members.is_empty(), "Expected an uninvited private sharing folder");

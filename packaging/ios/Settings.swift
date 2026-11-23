@@ -231,8 +231,9 @@ final class FeiShareAcceptController: UIViewController {
         link.accessibilityLabel = field.detail
         submit.configuration?.title = field.title
         submit.configuration?.baseBackgroundColor = theme.accentColor
-        notice.text = rows.first(where: { $0.id == "share-message" || $0.id == "share-busy" || $0.id == "share-unavailable" })?.title
-        notice.textColor = busy || !canAccept ? .secondaryLabel : .systemRed
+        let status = rows.first(where: { $0.id == "share-message" || $0.id == "share-busy" || $0.id == "share-unavailable" })
+        notice.text = status?.title ?? rows.first(where: { $0.id == "share-account-requirements" })?.title
+        notice.textColor = status == nil || busy || !canAccept ? .secondaryLabel : .systemRed
         notice.isHidden = notice.text?.isEmpty != false
         updateSubmit()
     }

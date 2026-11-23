@@ -69,7 +69,7 @@ pub(crate) fn shared(workspace: &Workspace, cx: &App) -> Option<Status> {
         AccountChanged => (tr("iCloud 账户已切换", "iCloud account changed"), tr("原账户的待同步改动会保留。", "Pending changes for the previous account are kept."), Some(Action::Account)),
         Account | AccountChecking => (tr("正在确认 iCloud 账户", "Checking iCloud account"), "", None),
         TestFlightVerification => (tr("正在验证 TestFlight 安装", "Verifying TestFlight installation"), "", None),
-        SubscriptionRequired => (tr("同步已暂停", "Sync paused"), crate::cloud_trial::access_required(), Some(Action::Plans)),
+        SubscriptionRequired => (tr("同步已暂停", "Sync paused"), cloud_sync::shared::sharing_unavailable(), Some(Action::Plans)),
         Revoked => (tr("共享访问已结束", "Sharing access ended"), tr("需要继续访问时，请联系所有者。", "Contact the owner if you still need access."), None),
         ReadOnly => (tr("共享权限已改为只读", "Sharing access is now read-only"), tr("请联系所有者恢复编辑权限。", "Ask the owner to restore editing access."), None),
         _ if status.retry_requested => (tr("正在尝试同步", "Retrying sync"), tr("已请求重试，等待 iCloud 响应。", "A retry was requested. Waiting for iCloud."), None),

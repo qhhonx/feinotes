@@ -8,6 +8,7 @@ struct SidebarNavigation {
     prepared: Option<crate::shared_store::SharedStore>,
     verified_access: Option<shared::VerifiedRoomAccess>,
     new_invitation: Option<Reply>,
+    published_link: Option<String>,
     #[cfg(target_os = "macos")]
     created: Option<SidebarCreatedItem>,
     #[cfg(target_os = "macos")]
@@ -97,6 +98,19 @@ impl Workspace {
             prepared: None,
             verified_access: None,
             new_invitation: Some(reply),
+            published_link: None,
+            #[cfg(target_os = "macos")]
+            created: None,
+            #[cfg(target_os = "macos")]
+            folder_edit: None,
+        };
+        self.navigate_shared_item_using(room, target, None, Some(sidebar), window, cx);
+    }
+
+    pub(super) fn navigate_published_link(&mut self, room: Room, link: String, window: &mut Window, cx: &mut Context<Self>) {
+        let target = room.scope.note.clone();
+        let sidebar = SidebarNavigation {
+            entry: None, prepared: None, verified_access: None, new_invitation: None, published_link: Some(link),
             #[cfg(target_os = "macos")]
             created: None,
             #[cfg(target_os = "macos")]
@@ -175,7 +189,7 @@ impl Workspace {
                     ws.cancel_sidebar_open();
                     match result {
                         Ok(store) => ws.navigate_shared_item_using(requested, target, None,
-                            Some(SidebarNavigation { entry, prepared: Some(store), verified_access, new_invitation: None, created: None, folder_edit: None }), window, cx),
+                            Some(SidebarNavigation { entry, prepared: Some(store), verified_access, new_invitation: None, published_link: None, created: None, folder_edit: None }), window, cx),
                         Err(error) => {
                             if !ws.defer_shared_open(&requested, &target, entry.as_ref(), window, cx) {
                                 ws.report_shared_open_error(&error, cx);
@@ -191,7 +205,7 @@ impl Workspace {
             self.sharing.sidebar_load = Some(request);
         }
         #[cfg(target_os = "ios")]
-        self.navigate_shared_item_using(room, target, None, Some(SidebarNavigation { entry, prepared: None, verified_access, new_invitation: None }), window, cx);
+        self.navigate_shared_item_using(room, target, None, Some(SidebarNavigation { entry, prepared: None, verified_access, new_invitation: None, published_link: None }), window, cx);
     }
 
     #[cfg(target_os = "macos")]
@@ -214,7 +228,7 @@ impl Workspace {
                 match result {
                     Ok(store) if shared::access(&store, cx).is_some_and(Access::can_write)
                         && !shared::editing_paused(&store, cx) => ws.navigate_shared_item_using(requested, entry.id.clone(), None,
-                            Some(SidebarNavigation { entry: Some(entry), prepared: Some(store), verified_access: None, new_invitation: None,
+                            Some(SidebarNavigation { entry: Some(entry), prepared: Some(store), verified_access: None, new_invitation: None, published_link: None,
                                 created: None, folder_edit: Some(edit) }), window, cx),
                     Ok(_) => ws.show_toast_kind(ui::ToastKind::Error, tr("此共享文件夹当前不可写入。", "You cannot write to this shared folder right now."), cx),
                     Err(error) => ws.report_shared_open_error(&error, cx),
@@ -316,7 +330,7 @@ impl Workspace {
             }
         } else {
             self.navigate_shared_item_using(room, id, None, Some(SidebarNavigation {
-                entry: Some(entry), prepared: Some(store), verified_access: None, new_invitation: None, created: Some(created), folder_edit: None,
+                entry: Some(entry), prepared: Some(store), verified_access: None, new_invitation: None, published_link: None, created: Some(created), folder_edit: None,
             }), window, cx);
         }
     }
@@ -420,7 +434,7 @@ impl Workspace {
             Verifying => tr("正在确认 iCloud 账户，验证后会继续打开。", "Checking your iCloud account. Opening will continue after verification."),
             SignedOut => tr("请在系统设置中登录原 iCloud 账户，再打开共享文档。", "Sign in to your previous iCloud account in System Settings, then open the shared document."),
             Changed => tr("iCloud 账户已切换。请在「文档库 › iCloud」查看。", "The iCloud account changed. See Library › iCloud."),
-            AccessRequired => tr("请在「文档库 › iCloud」查看云功能权益。", "Check your cloud access in Library › iCloud."),
+            AccessRequired => shared::sharing_unavailable(),
             _ => tr("暂时无法确认 iCloud 账户，请稍后重试。", "Could not verify the iCloud account. Try again later."),
         };
         self.show_toast_kind(ui::ToastKind::Info, message, cx);
@@ -450,7 +464,7 @@ impl Workspace {
             self.create_shared_note(&room.scope.note, window, cx);
             return;
         }
-        if invitation.is_none() && sidebar.as_ref().is_none_or(|s| s.verified_access.is_none())
+        if invitation.is_none() && sidebar.as_ref().is_none_or(|s| s.verified_access.is_none() && s.published_link.is_none())
             && self.viewing_shared_item(&room, &target, cx) {
             self.sidebar_entry = sidebar.and_then(|sidebar| sidebar.entry);
             cx.notify();
@@ -464,8 +478,8 @@ impl Workspace {
         let created = sidebar.as_ref().and_then(|sidebar| sidebar.created.clone());
         #[cfg(target_os = "macos")]
         let folder_edit = sidebar.as_ref().and_then(|sidebar| sidebar.folder_edit);
-        let (entry, prepared, verified_access, new_invitation) = sidebar.map(|sidebar|
-            (sidebar.entry, sidebar.prepared, sidebar.verified_access, sidebar.new_invitation)).unwrap_or_default();
+        let (entry, prepared, verified_access, new_invitation, published_link) = sidebar.map(|sidebar|
+            (sidebar.entry, sidebar.prepared, sidebar.verified_access, sidebar.new_invitation, sidebar.published_link)).unwrap_or_default();
         let opened = match prepared {
             Some(store) => shared::check_opened_store(store, &room, cx),
             None => shared::store_for(&room, cx),
@@ -549,6 +563,7 @@ impl Workspace {
                 ws.sharing.original = original;
                 ws.manage_shared_note("invite", email, Some(permission), window, cx);
             }
+            if let Some(link) = published_link { ws.copy_link_to_clipboard(link, true, cx); }
             ws
         });
         cx.defer(cloud_sync::release_unused);

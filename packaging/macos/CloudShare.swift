@@ -38,7 +38,8 @@ private enum ShareAudience: String, Encodable {
 
     init(_ share: CKShare) {
         if share.publicPermission == .readOnly { self = .linkReadOnly }
-        else if share.publicPermission != .none { self = .linkReadWrite }
+        else if share.publicPermission == .readWrite { self = .linkReadWrite }
+        else if share.publicPermission != .none { self = .linkClosed }
         else if share[CKShare.SystemFieldKey.shareType] as? String == linkDraftType { self = .linkDraft }
         else if share[CKShare.SystemFieldKey.shareType] as? String == linkPublishedType { self = .linkClosed }
         else { self = .invited }
@@ -493,7 +494,9 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
             return await shareReply(share, scope: scope, revision: revision)
         }
         guard audience == .linkDraft, share.participants.allSatisfy({ $0.role == .owner }) else { throw ShareError.invitationOnly }
-        share.publicPermission = .readOnly
+        let permission = request.permission ?? .readOnly
+        guard permission == .readOnly || permission == .readWrite else { throw ShareError.invalid }
+        share.publicPermission = permission == .readWrite ? .readWrite : .readOnly
         share[CKShare.SystemFieldKey.shareType] = linkPublishedType
     case "closeLink":
         guard scope.folder != true else { throw ShareError.invalid }

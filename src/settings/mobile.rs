@@ -294,6 +294,23 @@ impl Workspace {
         json!({"title":tr("指定账户","Invited accounts"),"rows":rows,"footer":crate::sharing::private_invitation_delivery()})
     }
 
+    fn native_share_audience_section(&self) -> Value {
+        section("",vec![choices("share-audience",tr("访问范围","Who can access"),if self.sharing.public_link {"link"} else {"invited"},
+            &[("invited",crate::sharing::link_audience(crate::cloud_sync::shared::Audience::Invited)),("link",tr("任何持有链接的人","Anyone with the link"))])
+            .enabled(!self.sharing.busy)])
+    }
+
+    fn native_public_link_section(&self, enabled: bool) -> Value {
+        let editable = self.sharing.permission == Access::ReadWrite;
+        let mut rows = vec![choices("share-public-permission",tr("权限","Permission"),if editable {"write"} else {"read"},
+            &[("read",crate::sharing::role(Some(Access::ReadOnly))),("write",crate::sharing::role(Some(Access::ReadWrite)))])
+            .enabled(!self.sharing.busy && self.can_choose_sharing_audience()),
+            Row::new("share-link-details",crate::sharing::public_link_requirements()).kind("info")];
+        if editable { rows.push(Row::new("public-edit-warning",crate::sharing::public_edit_warning()).kind("info")); }
+        rows.push(Row::new("share-submit",tr("创建并复制链接","Create and copy link")).enabled(enabled));
+        section("",rows)
+    }
+
     fn native_shared_sections(&self,cx:&App,sections:&mut Vec<Value>) {
         let s = &self.sharing;
         let local = crate::cloud_restore::local_only();
@@ -308,7 +325,8 @@ impl Workspace {
             Some(Sheet::Accept) => {
                 let mut rows = vec![Row::new("share-accept",tr("接受并打开","Accept and open")).kind("invitation-link")
                     .detail(tr("粘贴飞记或 iCloud 邀请链接","Paste a Fei Notes or iCloud invitation link"))
-                    .value(s.link.read(cx).text.clone()).enabled(!s.busy && !local)];
+                    .value(s.link.read(cx).text.clone()).enabled(!s.busy && !local),
+                    Row::new("share-account-requirements",crate::sharing::invitation_account_requirements()).kind("info")];
                 if local { rows.push(Row::new("share-unavailable",cloud_required).kind("info")); }
                 if let Some((_,message)) = &s.message { rows.push(Row::new("share-message",message).kind("info")); }
                 if s.busy { rows.push(Row::new("share-busy",tr("正在连接 iCloud","Contacting iCloud")).kind("info")); }
@@ -339,7 +357,9 @@ impl Workspace {
                 if *folder {
                     sections.push(section("",vec![Row::new("share-effect",sharing_folder_scope()).kind("info")]));
                 }
-                sections.push(self.native_invitation_section(cx,enabled && !name.trim().is_empty()));
+                if self.can_choose_sharing_audience() { sections.push(self.native_share_audience_section()); }
+                if s.public_link { sections.push(self.native_public_link_section(enabled && !name.trim().is_empty())); }
+                else { sections.push(self.native_invitation_section(cx,enabled && !name.trim().is_empty())); }
             }
             Some(Sheet::Create(id)) => {
                 let entries = self.personal_navigation_entries(cx);
@@ -349,16 +369,9 @@ impl Workspace {
                 sections.push(share_target(entry.map_or("",|e|e.title.as_str()),folder,Some(if folder {
                     sharing_folder_scope()
                 } else { tr("与对方协作这篇原文。你仍可从原文件夹打开它。", "Collaborate on this document in its original folder.") })));
-                if self.can_choose_link(id) {
-                    sections.push(section("",vec![choices("share-audience",tr("访问范围","Who can access"),if s.public_link {"link"} else {"invited"},
-                        &[("invited",link_audience(Audience::Invited)),("link",tr("任何持有链接的人","Anyone with the link"))]).enabled(!s.busy)]));
-                }
-                if s.public_link {
-                    sections.push(section("",vec![Row::new("share-link-details",link_audience(Audience::LinkReadOnly)).detail(public_link_requirements()).kind("info"),
-                        Row::new("share-submit",tr("创建并复制链接","Create and copy link")).enabled(enabled)]));
-                } else {
-                    sections.push(self.native_invitation_section(cx,enabled));
-                }
+                if self.can_choose_sharing_audience() { sections.push(self.native_share_audience_section()); }
+                if s.public_link { sections.push(self.native_public_link_section(enabled)); }
+                else { sections.push(self.native_invitation_section(cx,enabled)); }
             }
             Some(Sheet::Invite(room)) => {
                 sections.push(share_target(&room.title,room.scope.folder,self.sharing_scope_detail(room,cx)));
@@ -520,6 +533,11 @@ impl Workspace {
                 self.sharing.email.update(cx,|f,cx|f.set_text(value.trim(),cx)); self.submit_sharing(window,cx);
             },
             "share-audience"=>self.set_public_link(value=="link",window,cx),
+            "share-public-permission"=>match value {
+                "read"=>self.set_public_link_permission(Access::ReadOnly,cx),
+                "write"=>self.set_public_link_permission(Access::ReadWrite,cx),
+                _=>{},
+            },
             "share-retry-link"=>self.retry_public_link(window,cx),
             "share-copy"=>if let Some(room) = self.sheet_room().cloned() {self.copy_shared_link(room,window,cx);},
             "share-close-link"=>self.confirm_close_link(window,cx),
