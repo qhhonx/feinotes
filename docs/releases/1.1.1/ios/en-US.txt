@@ -1,0 +1,11 @@
+Fei Notes 1.1.1 beta
+
+Sharing buttons on iPhone and iPad use system symbols, with consistent size and weight for the person-plus and two-person icons. Refined document and folder toolbars, formatting actions, and search prompts.
+
+Fixed missing audience options when inviting someone to a personal document from the iPad split view. Invitation actions now use “Create invitation.” Improved copying invitations and recreating an invitation after stopping sharing.
+
+Images in shared documents show a loading indicator while downloading and appear in place when ready.
+
+Please test sharing buttons in both interface styles, their tint before and after dismissing permission panels, personal-document invitations in iPad split view, copying invitations, and images with an empty cache. Joining a shared document requires an iCloud account.
+
+iCloud sync and real-time collaboration are included during TestFlight testing without a subscription.

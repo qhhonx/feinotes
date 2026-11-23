@@ -1,0 +1,11 @@
+Fei Notes 1.1.1 beta
+
+Improved document menus in the shared sidebar on Mac. Editors can drag documents and subfolders from the sidebar, list, or grid into other folders within the same shared tree.
+
+Images in shared documents show a loading indicator while downloading and appear in place when ready.
+
+Invitation actions now use “Create invitation.” Improved copying public invitations, recreating an invitation on another device after stopping sharing, and error messages.
+
+Please test shared document menus, dragging within a shared tree, read-only protections, images with an empty cache, and creating and copying invitations. Manual ordering inside shared folders is not part of this update.
+
+iCloud sync and real-time collaboration are included during TestFlight testing without a subscription.
