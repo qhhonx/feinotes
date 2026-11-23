@@ -4,20 +4,32 @@ A native Markdown document app for Mac, iPhone, and iPad. The ease of Lark Docs,
 
 [Website](https://feinotes.app/) · [Try TestFlight](https://feinotes.app/#testflight) · [Support](https://feinotes.app/support/) · [简体中文](README.zh-CN.md)
 
-![Fei Notes on macOS](website/assets/sync-before-en.webp)
+![Fei Notes on Mac, showing the block editor with a table and a checklist](docs/images/feinotes-readme/mac-en.webp)
 
-- **Local documents.** Write offline, organize documents in folders, search, and back up your library.
+- **Local documents.** Write offline, organize documents in folders, search the full text, and use the trash and library backups.
 - **Optional iCloud sync.** Sync documents, folders and attachments across your Macs, iPhone and iPad. Offline edits to different parts of the same paragraph merge when devices reconnect.
-- **Real-time collaboration.** Invite people to view a document or edit it together. Manage who has access from the app.
+- **Real-time collaboration.** Share a document or folder via iCloud. Invite people to view or edit, manage their access in the app, and see changes as you edit together. Invitees need an iCloud account.
 - **Markdown and rich content.** Use headings, lists, code, tables, images and attachments in a native block editor.
+- **Interface styles and document themes.** Choose the Lark or Notes interface style and independently set a Lark, Notes, Craft, Notion or Obsidian document theme.
 - **Boards.** Add Excalidraw drawings inside documents or create a standalone board, with local history and library backups.
 - **Import Quiet.md libraries.** Copy an existing library into Fei Notes through library settings.
+
+<details>
+<summary>See Fei Notes on iPad and iPhone</summary>
+
+![Fei Notes on iPad, with the document list and a shared document open side by side](docs/images/feinotes-readme/ipad-en.webp)
+
+<img src="docs/images/feinotes-readme/iphone-en.webp" alt="Fei Notes on iPhone, showing a document with a photo and a checklist" width="300">
+
+</details>
+
+Explore the sample documents in Markdown. [Seaside Book Fair](website/documents/feishu/en/book-fair.md) · [A weekend by the sea](website/documents/notes/en/coastal-note.md)
 
 ## Try the app
 
 The macOS distribution builds a universal app for Apple silicon and Intel Macs running macOS 14 or later. Intel support is compiled and packaged, but has not been tested on Intel hardware. Join through the [website's TestFlight section](https://feinotes.app/#testflight), which shows the current availability and review status.
 
-The iPhone and iPad build targets iOS 17 or later. Its TestFlight availability is listed separately on the website. Mobile build instructions are in [packaging/ios/README.md](packaging/ios/README.md).
+The iPhone and iPad apps require iOS 17 and iPadOS 17 or later, respectively. Their TestFlight availability is listed separately from Mac on the website. Mobile build instructions are in [packaging/ios/README.md](packaging/ios/README.md).
 
 ## Source and development
 
