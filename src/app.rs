@@ -2116,6 +2116,11 @@ impl Workspace {
             .on_click(cx.listener(|w, _, window, cx| w.open_search(window, cx))))
     }
 
+    pub(crate) fn header_action_labels(&self, window: &Window) -> bool {
+        let sidebar_w = if self.sidebar_open { self.sidebar_w(window) } else { 0. };
+        f32::from(window.viewport_size().width) - sidebar_w >= 500.
+    }
+
     /// `pane_w`: the width the header spans, to fold the breadcrumbs when narrow.
     fn top_bar(&self, pane_w: f32, _window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut title = self
@@ -2332,7 +2337,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .child(crate::ui::toolbar_group(div().flex_none().flex().items_center().gap(px(4.)))
-                    .children(self.document_mode_button(cx))
+                    .children(self.document_mode_button(_window, cx))
                     .children(sharing)
                     .when(self.current.is_some(), |d| {
                         d.child(

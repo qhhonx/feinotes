@@ -304,7 +304,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("已切换为编辑模式", "Mode édition activé"),
     ("可编辑文档", "Peut modifier"),
     ("阅读", "Lecture"),
-    ("仅查看或评论文档", "Peut seulement consulter ou commenter"),
+    ("仅查看文档", "Consulter ce document"),
     ("键盘快捷键", "Raccourcis clavier"),
     ("Markdown 是一种快速输入带格式文本的方式，让你书写文档时行云流水，一气呵成，例如输入#空格，即可输入一级标题。", "Markdown permet de mettre en forme le texte au fil de la frappe, sans interrompre votre élan. Par exemple, tapez # puis Espace pour créer un titre 1."),
     ("页宽设置", "Largeur de page"),

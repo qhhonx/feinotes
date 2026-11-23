@@ -4,7 +4,7 @@
 use crate::app::Workspace;
 use crate::theme::{self, Theme};
 use crate::trash::menu_label;
-use crate::ui::{TitleBarExt, ToastKind, icon, menu_glyph, menu_row, popover};
+use crate::ui::{TipExt, TitleBarExt, ToastKind, icon, menu_glyph, menu_row, popover};
 use gpui::{prelude::FluentBuilder, *};
 
 actions!(workspace, [EditMode, ReadMode, ToggleShortcuts]);
@@ -127,18 +127,23 @@ impl Workspace {
         let _ = self.store.update_meta(&id, |m| m.info = info);
     }
 
-    pub(crate) fn document_mode_button(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+    pub(crate) fn document_mode_button(&self, window: &Window, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
         if !crate::FEI_NOTES || !crate::settings::interface_feishu() || self.current.is_none() || self.preview.is_some() { return None; }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.is_shared() && (crate::cloud_sync::shared::editing_paused(&self.store, cx)
             || !crate::cloud_sync::shared::access(&self.store, cx).is_some_and(|access| access.can_write())) { return None; }
         let bounds = self.mode_btn_bounds.clone();
-        let text = if self.reading() { crate::settings::tr("阅读", "Read") } else { crate::settings::tr("编辑", "Edit") };
+        let (glyph, text) = if self.reading() { ("eye-open", crate::settings::tr("阅读", "Read")) }
+            else { ("pen-line", crate::settings::tr("编辑", "Edit")) };
+        let labels = self.header_action_labels(window);
+        let size = px(crate::app::HEADER_ACTIONS_H);
         Some(crate::ui::grouped_toolbar_control(div().id("doc-mode").no_drag().relative().flex_none()
-            .h(px(crate::app::HEADER_ACTIONS_H)).px(px(7.)).gap(px(4.)).flex().items_center().cursor_pointer(),
+            .h(size).min_w(size).flex().items_center().justify_center().gap(px(5.)).cursor_pointer(),
             8., Theme::fill_hover, Some(Theme::fill_pressed))
-            .child(crate::ui::ui_text(text))
-            .child(crate::ui::icon("chevron-down", 12., Theme::icon()))
+            .child(crate::ui::toolbar_icon(glyph, 16.))
+            .when(labels, |d| d.px(px(7.)).child(crate::ui::ui_text(text))
+                .child(crate::ui::icon("chevron-down", 12., Theme::icon())))
+            .when(!labels && !self.mode_menu, |d| d.tip(text, None))
             .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
             .on_click(cx.listener(|w, _, _, cx| {
                 w.doc_menu = false;
@@ -188,8 +193,8 @@ impl Workspace {
                 }
             }))
             .child(item("mode-edit", "pen-line", crate::settings::text("编辑"), crate::settings::text("可编辑文档"), !reading, false))
-            .child(item("mode-read", "eye-open", crate::settings::text("阅读"), crate::settings::text("仅查看或评论文档"), reading, true));
-        Some(deferred(anchored().position(point(at.left(), at.bottom() + px(4.))).child(menu)).with_priority(2).into_any_element())
+            .child(item("mode-read", "eye-open", crate::settings::text("阅读"), crate::settings::tr("仅查看文档", "View this document"), reading, true));
+        Some(deferred(anchored().position(point(at.left(), at.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
     /// The 快捷键 drawer to the right of the page, below the top bar.

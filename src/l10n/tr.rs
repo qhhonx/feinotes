@@ -303,7 +303,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("已切换为编辑模式", "Düzenleme moduna geçildi"),
     ("可编辑文档", "Düzenleyebilir"),
     ("阅读", "Okuma"),
-    ("仅查看或评论文档", "Yalnızca görüntüleyebilir veya yorum yapabilir"),
+    ("仅查看文档", "Bu belgeyi görüntüle"),
     ("键盘快捷键", "Klavye Kısayolları"),
     ("Markdown 是一种快速输入带格式文本的方式，让你书写文档时行云流水，一气呵成，例如输入#空格，即可输入一级标题。", "Markdown, hızınızı kesmeden yazarken metni biçimlendirmenizi sağlar. Örneğin Başlık 1 oluşturmak için # yazıp Boşluk tuşuna basın."),
     ("页宽设置", "Sayfa Genişliği"),

@@ -161,16 +161,16 @@ fn action(id: impl Into<ElementId>, label: &'static str, enabled: bool) -> State
 }
 
 /// Sharing control used by the Lark interface.
-fn feishu_share_button(id: &'static str, enabled: bool) -> Stateful<Div> {
+fn feishu_share_button(id: &'static str, labels: bool) -> Stateful<Div> {
     use crate::feishu_theme::ud;
     let ink = white();
-    div().id(id).no_drag().flex_none().h(px(32.)).min_w(px(80.)).px(px(10.)).rounded(px(6.))
+    let size = px(crate::app::HEADER_ACTIONS_H);
+    div().id(id).no_drag().flex_none().h(size).min_w(size).rounded(px(6.))
         .flex().items_center().justify_center().gap(px(5.))
         .bg(rgb(ud::B600)).text_color(ink).text_size(px(14.))
         .child(ui::icon("share", 16., ink))
-        .child(tr("分享", "Share"))
-        .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(rgb(ud::B700))).active(|s| s.bg(rgb(ud::B800))))
-        .when(!enabled, |d| d.opacity(0.45))
+        .when(labels, |d| d.min_w(px(80.)).px(px(10.)).child(tr("分享", "Share")))
+        .cursor_pointer().hover(|s| s.bg(rgb(ud::B700))).active(|s| s.bg(rgb(ud::B800)))
 }
 
 fn invitation_accent() -> Hsla {
@@ -407,7 +407,7 @@ impl Workspace {
             let id = self.current.clone()?;
             if self.store.local_path(&id).is_some() { return None; }
             let button = if settings::interface_feishu() {
-                feishu_share_button("doc-create-share", true)
+                feishu_share_button("doc-create-share", self.header_action_labels(window))
             } else {
                 ui::grouped_toolbar_control(div().id("doc-create-share").no_drag().size(px(crate::app::HEADER_ACTIONS_H))
                     .flex().items_center().justify_center().cursor_pointer(), 8., Theme::fill_hover, Some(Theme::fill_pressed))
@@ -459,10 +459,10 @@ impl Workspace {
             .flex().items_center().justify_center().gap(px(5.)).cursor_pointer();
         let button = if feishu {
             use crate::feishu_theme::ud;
-            button.rounded(px(6.)).px(px(9.)).bg(rgb(if open { ud::B700 } else { ud::B600 })).text_color(white())
+            button.rounded(px(6.)).bg(rgb(if open { ud::B700 } else { ud::B600 })).text_color(white())
                 .hover(|s| s.bg(rgb(ud::B700))).active(|s| s.bg(rgb(ud::B800)))
                 .child(ui::icon("shared-document", 18., white()))
-                .when(window.viewport_size().width >= px(500.), |d| d.child(tr("分享", "Share")))
+                .when(self.header_action_labels(window), |d| d.px(px(9.)).child(tr("分享", "Share")))
         } else {
             ui::grouped_toolbar_control(button, 8., Theme::fill_hover, Some(Theme::fill_pressed))
                 .when(open, |d| d.bg(ui::toolbar_color("toolbar.button.hover").unwrap_or_else(Theme::fill_hover)))
