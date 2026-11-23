@@ -25,9 +25,25 @@ const SAVE_MAX_DELAY: Duration = Duration::from_secs(2);
 
 actions!(workspace, [NewDoc, OpenFile, OpenFolder, ImportDoc, ImportFolder, ToggleSidebar, FocusSearch, FindInDoc, ReplaceInDoc, OpenSettings, OpenAbout, CheckForUpdates, GoHome, CloseWindow, Quit,
     ReplayOnboarding, HideApp, HideOthers, ShowAll, Minimize, Zoom, ToggleFullScreen]);
+// A confirmation dialog's keys, in its own key context: ↩ is the action button, Esc 取消.
+actions!(confirm, [ConfirmOk, ConfirmCancel]);
+
+thread_local! {
+    /// The menu bar is for a Markdown file: 插入 / 格式 leave out what it can't hold.
+    static MENU_MARKDOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The menu bar follows the document in the window in front; rebuilt only
+/// when that changes between a Markdown file and anything else.
+pub fn menus_follow(markdown: bool, cx: &mut App) {
+    if MENU_MARKDOWN.replace(markdown) != markdown { set_menus(cx); }
+}
 
 /// The menu bar, in the interface language.
-pub fn set_menus(cx: &mut App) {
+pub fn set_menus(cx: &mut App) { cx.set_menus(menu_bar(MENU_MARKDOWN.get())); }
+
+/// The menus; for a Markdown file without 提醒, 下划线 and 对齐, which it can't keep.
+fn menu_bar(markdown: bool) -> Vec<Menu> {
     use crate::settings::tr;
     let name = crate::app_name();
     let mut app_items = vec![MenuItem::action(format!("{} {name}", tr("关于", "About")), OpenAbout)];
@@ -44,7 +60,7 @@ pub fn set_menus(cx: &mut App) {
         MenuItem::separator(),
         MenuItem::action(format!("{} {name}", tr("退出", "Quit")), Quit),
     ]);
-    cx.set_menus(vec![
+    vec![
         Menu { disabled: false, name: name.into(), items: app_items },
         Menu {
             name: tr("文件", "File").into(),
@@ -75,7 +91,66 @@ pub fn set_menus(cx: &mut App) {
                     MenuItem::action(tr("拷贝为 Markdown", "Copy as Markdown"), k::CopyMarkdown),
                     MenuItem::os_action(tr("粘贴", "Paste"), k::Paste, OsAction::Paste),
                     MenuItem::os_action(tr("全选", "Select All"), k::SelectAll, OsAction::SelectAll),
+                    MenuItem::separator(),
+                    MenuItem::action(tr("整理本文空格", "Add Spaces Between Chinese and English"), k::SpaceCjk),
                 ]
+            },
+            disabled: false,
+        },
+        // 插入 and 格式: the menu-bar home of everything the page's
+        // right-click menu offers, so no action is reachable only by shortcut.
+        Menu {
+            name: tr("插入", "Insert").into(),
+            items: {
+                use crate::editor::keymap as k;
+                let mut items = vec![
+                    MenuItem::action(tr("链接", "Link"), k::Link),
+                    MenuItem::action(tr("表格", "Table"), k::InsertTable),
+                    MenuItem::action(tr("分隔线", "Divider"), k::InsertDivider),
+                ];
+                if !markdown { items.push(MenuItem::action(tr("提醒", "Reminder"), k::InsertReminder)); }
+                items
+            },
+            disabled: false,
+        },
+        Menu {
+            name: tr("格式", "Format").into(),
+            items: {
+                use crate::editor::keymap as k;
+                let mut items = vec![MenuItem::action(tr("粗体", "Bold"), k::Bold), MenuItem::action(tr("斜体", "Italic"), k::Italic)];
+                if !markdown { items.push(MenuItem::action(tr("下划线", "Underline"), k::Underline)); }
+                items.extend([
+                    MenuItem::action(tr("删除线", "Strikethrough"), k::Strike),
+                    MenuItem::action(tr("行内代码", "Inline code"), k::InlineCode),
+                    MenuItem::separator(),
+                    MenuItem::submenu(Menu {
+                        name: tr("转换为", "Turn into").into(),
+                        items: vec![
+                            MenuItem::action(tr("正文", "Text"), k::TurnText),
+                            MenuItem::action(tr("一级标题", "Heading 1"), k::TurnH1),
+                            MenuItem::action(tr("二级标题", "Heading 2"), k::TurnH2),
+                            MenuItem::action(tr("三级标题", "Heading 3"), k::TurnH3),
+                            MenuItem::action(tr("无序列表", "Bulleted list"), k::TurnBullet),
+                            MenuItem::action(tr("有序列表", "Numbered list"), k::TurnOrdered),
+                            MenuItem::action(tr("任务", "Task"), k::TurnTodo),
+                            MenuItem::action(tr("引用", "Quote"), k::TurnQuote),
+                            MenuItem::action(tr("代码块", "Code block"), k::TurnCode),
+                        ],
+                        disabled: false,
+                    }),
+                ]);
+                if !markdown {
+                    items.push(MenuItem::submenu(Menu {
+                        name: tr("对齐", "Align").into(),
+                        items: vec![
+                            MenuItem::action(tr("左对齐", "Align left"), k::AlignLeft),
+                            MenuItem::action(tr("居中对齐", "Align center"), k::AlignCenter),
+                            MenuItem::action(tr("右对齐", "Align right"), k::AlignRight),
+                        ],
+                        disabled: false,
+                    }));
+                }
+                items
             },
             disabled: false,
         },
@@ -89,7 +164,7 @@ pub fn set_menus(cx: &mut App) {
             ],
             disabled: false,
         },
-    ]);
+    ]
 }
 
 pub fn bind_keys(cx: &mut App) {
@@ -125,6 +200,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-f", FindInDoc, None),
         KeyBinding::new("cmd-shift-h", ReplaceInDoc, None),
         KeyBinding::new("cmd-q", Quit, None),
+        // The dialog takes focus while it is up, so ↩ never reaches the document.
+        KeyBinding::new("enter", ConfirmOk, Some("Confirm")),
+        KeyBinding::new("escape", ConfirmCancel, Some("Confirm")),
     ]);
     // macOS app and window keys. ⌥⌘H (隐藏其他) stays with the editor's
     // 应用上次的颜色, the Feishu shortcut; 隐藏其他 is in the menu. On Windows
@@ -209,32 +287,6 @@ pub(crate) fn save_windows_before(cx: &mut App, retry: fn(&mut App)) -> bool {
         .fold(true, |ready, saved| ready & saved)
 }
 
-/// 更改文档库: open documents are saved first (as for 退出), the folder is
-/// set up as a library if it isn't one, the current preferences go with
-/// it when it has none, and the app restarts into it. The old library
-/// stays where it is. Call it outside any window update (`cx.defer`).
-#[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-pub fn switch_library(root: std::path::PathBuf, cx: &mut App) {
-    use fdl_core::vfs::PathExt as _;
-    if cfg!(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-restore")) { return; }
-    let ready = cx
-        .windows()
-        .into_iter()
-        .filter_map(|w| w.downcast::<Workspace>())
-        .map(|w| { let again = root.clone(); w.update(cx, |ws, _, cx| ws.save_before(cx, move |_, _, cx| cx.defer(move |cx| switch_library(again, cx)))).unwrap_or(false) })
-        .fold(true, |ready, saved| ready & saved);
-    if !ready { return }
-    let prefs = crate::store::Store::internal_dir().join("preferences.json");
-    let set = crate::guides::initialize(&root).and_then(|_| crate::store::Store::set_root_dir(root.clone()));
-    if let Err(e) = set {
-        let msg = format!("{}{e}", crate::settings::tr("无法在这里创建文档库：", "Couldn't create the library here: "));
-        if let Some(ws) = cx.windows().into_iter().find_map(|w| w.downcast::<Workspace>()) { let _ = ws.update(cx, |w, _, cx| w.show_toast(&msg, cx)); }
-        return;
-    }
-    let mine = crate::store::Store::internal_dir().join("preferences.json");
-    if !mine.fs_exists() { let _ = fdl_core::vfs::create_dir_all(mine.parent().unwrap()).and_then(|_| fdl_core::vfs::copy(&prefs, &mine)); }
-    cx.restart();
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SaveStatus {
@@ -303,9 +355,8 @@ pub enum Confirm {
     /// The library should move to real folders, and the user is asked first
     /// (it is synced, or used from another computer): 改用文件夹 / 稍后.
     Migrate(crate::store::ConsentReason),
-    /// 设置 › 文档库 › 更改…: open this folder as the library (#94), after a restart.
-    #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-    SwitchLibrary(std::path::PathBuf),
+    /// 从侧栏移除 a root folder (key, name): the folder and its files stay.
+    RemoveRoot(String, String),
     /// Dropped on the sidebar from outside: import it into the library there?
     Import { what: DropImport, target: crate::sidebar_drop::SidebarDropAt },
 }
@@ -318,7 +369,8 @@ pub enum DropImport { Files(Vec<std::path::PathBuf>), Local(String) }
 pub type AfterSave = Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
 
 #[derive(Default)]
-struct ListedDocs { entries: Vec<crate::store::Entry>, trash: Vec<crate::store::TrashEntry>, warnings: Vec<String> }
+/// One root's lists as a background writer left them (`SharedStore::merge_entries`).
+struct ListedDocs { root: String, entries: Vec<crate::store::Entry>, trash: Vec<crate::store::TrashEntry>, warnings: Vec<String> }
 struct DeletedDocs { deleted: Vec<String>, errors: Vec<String>, changes: Vec<crate::store::FileDelta> }
 
 /// Inline 重命名 of a sidebar row.
@@ -449,6 +501,10 @@ pub struct Workspace {
     pub batch: Option<Vec<String>>,
     /// The open confirmation dialog.
     pub confirm: Option<Confirm>,
+    /// The dialog's focus while it is up, and where focus was before it
+    /// opened (given back when it closes); `None` while no dialog has it.
+    pub confirm_focus: FocusHandle,
+    pub confirm_return: Option<Option<WeakFocusHandle>>,
     /// The first-launch pages laid over the window again (⌘⌥⇧O, Settings › About).
     pub onboarding: Option<Entity<crate::onboarding::Onboarding>>,
     pub view: View,
@@ -463,6 +519,8 @@ pub struct Workspace {
     toast_task: Option<Task<()>>,
     /// Folded sidebar sections: 置顶, 我的文档.
     pub folded: [bool; 3],
+    /// Root folders folded shut in the sidebar, by key.
+    pub folded_roots: std::collections::HashSet<String>,
     /// Expanded pages of the 我的文档 tree.
     pub expanded: HashSet<String>,
     /// Where a drag from outside the tree (the Finder, 本机文件) would land in the sidebar.
@@ -673,12 +731,11 @@ impl Workspace {
         // A file written into the library from outside (a model writing a
         // note, say) joins it without going away and back: the library's
         // shape is compared every couple of seconds and the list re-read only
-        // when it changed. The folders opened under 本机文件 are watched the same way.
+        // when it changed. Every root folder is watched the same way.
         cx.spawn(async move |this, cx| {
             let bg = cx.background_executor().clone();
-            let root = match this.update(cx, |w, _| w.store.root().to_path_buf()) { Ok(root) => root, Err(_) => return };
-            let shape = |dirs: Vec<std::path::PathBuf>| { let root = root.clone(); bg.spawn(async move { (crate::store::Store::shape_at(&root), crate::store::Store::shape_of(&dirs)) }) };
-            let dirs = |cx: &mut AsyncApp| this.update(cx, |w, _| w.store.mount_dirs()).unwrap_or_default();
+            let shape = |dirs: Vec<std::path::PathBuf>| bg.spawn(async move { dirs.iter().map(|d| crate::store::Store::shape_at(d)).collect::<Vec<u64>>() });
+            let dirs = |cx: &mut AsyncApp| this.update(cx, |w, _| w.store.root_dirs()).unwrap_or_default();
             let mut last = shape(dirs(cx)).await;
             let mut last_file = None;
             loop {
@@ -731,7 +788,7 @@ impl Workspace {
         .detach();
         let settings = store.settings();
         let sidebar_width = settings.sidebar_width.unwrap_or(theme::SIDEBAR_WIDTH);
-        let history_limit = settings.history_limit();
+        let history_limit = store.history_limit();
         let mut ws = Workspace {
             quick_note: quick,
             shortcut_recording: None,
@@ -816,6 +873,8 @@ impl Workspace {
             row_sub_bounds: Rc::new(Cell::new(None)),
             batch: None,
             confirm: None,
+            confirm_focus: cx.focus_handle(),
+            confirm_return: None,
             onboarding: None,
             view: View::Doc,
             home: Default::default(),
@@ -830,6 +889,7 @@ impl Workspace {
             native_sidebar: Default::default(),
             shortcuts: false,
             folded: [false; 3],
+            folded_roots: Default::default(),
             expanded: HashSet::new(),
             sidebar_drop: None,
             move_dlg: None,
@@ -890,6 +950,7 @@ impl Workspace {
     pub(crate) fn sort(&mut self) {
         self.reapply_pending_tree_moves();
         self.entries.sort_by(|a, b| b.meta.modified.cmp(&a.meta.modified).then_with(|| a.id.cmp(&b.id)));
+        self.sync_note_rows();
     }
 
     pub fn query(&self, cx: &App) -> String {
@@ -941,6 +1002,8 @@ impl Workspace {
         // 阅读位置: remember where the document being left was, before the
         // editor is swapped out.
         self.remember_scroll(cx);
+        // A folder with a 正文 opens as that document (#357).
+        if let Some(note) = self.entries.iter().find(|e| e.id == id).and_then(|e| e.note.clone()) { return self.try_open(&note, window, cx); }
         if self.entries.iter().any(|e| e.id == id && e.meta.folder.is_some()) { return self.open_folder(id, window, cx); }
         if self.current.as_deref() == Some(id) {
             self.sidebar_entry = None;
@@ -982,7 +1045,7 @@ impl Workspace {
         let pinned = meta.as_ref().is_some_and(|m| !m.catalogue_closed);
         let editor = cx.new(|cx| {
             let mut e = Editor::new(doc, modified, width, window, cx);
-            e.set_library_root(self.store.root().to_path_buf());
+            e.set_library_root(self.store.document_root(id));
             e.cat_pinned = pinned;
             e.markdown = meta.as_ref().is_some_and(|m| m.markdown);
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -1034,6 +1097,7 @@ impl Workspace {
             && self.document_peers(previous, window, cx).is_empty() { self.store.forget_loaded(previous); }
         self.editor = Some(editor);
         self.current = Some(id.to_string());
+        if self.store.set_active(id) { cx.defer(crate::settings::root_switched); }
         self.sidebar_entry = None;
         if let Some(e) = self.editor.clone() { e.update(cx, |e, cx| e.adopt_remote(cx)); }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -1182,7 +1246,7 @@ impl Workspace {
     fn materialize_draft(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(draft) = &self.draft else { return true; };
         let changes = self.store.track_file_changes();
-        match self.store.with(|s| draft.materialize(s)) {
+        match self.store.with(None, |s| draft.materialize(s)) {
             Ok(id) => {
                 self.draft = None;
                 self.current = Some(id.clone());
@@ -1219,13 +1283,16 @@ impl Workspace {
             }
             return;
         }
-        self.confirm = Some(Confirm::Delete { ids: vec![id.to_string()], batch: false });
+        self.confirm = Some(Confirm::Delete { ids: vec![self.row_of(id)], batch: false });
         cx.notify();
     }
 
     /// Move documents to the trash; if the open one goes, open the next.
     pub fn delete_docs(&mut self, ids: &[String], window: &mut Window, cx: &mut Context<Self>) {
         if self.store.file_task_busy() || self.file_history.busy || self.tree_writes_pending() { return; }
+        // A root's row is never deleted this way: it leaves the sidebar (从侧栏移除).
+        let ids: Vec<String> = ids.iter().filter(|id| crate::shared_store::root_of_row(id).is_none()).cloned().collect();
+        let ids = &ids[..];
         // A page goes with its child pages: each topmost page is
         // trashed as one item that carries its subtree.
         let tree = crate::tree::Tree::new(&self.entries);
@@ -1259,15 +1326,28 @@ impl Workspace {
             }
         }
         let Some(task_guard) = self.store.begin_file_task() else { return };
-        let mut writer = self.store.tree_writer();
+        // A selection may span roots: one writer, and one write, per root.
+        let mut writers: Vec<(String, crate::store::Store, Vec<(String, Option<String>)>)> = vec![];
+        for g in groups {
+            let Some(key) = self.store.root_of(&g.0) else { continue };
+            match writers.iter_mut().find(|(k, _, _)| *k == key) {
+                Some((_, _, v)) => v.push(g),
+                None => if let Some(w) = self.store.root_writer(&key) { writers.push((key, w, vec![g])); },
+            }
+        }
         let task = cx.background_executor().spawn(async move {
-            let journal = writer.track_file_changes();
-            // One write for all of them: each index write waits for the disk.
-            let (deleted, result) = writer.delete_many(&groups);
-            let errors = result.err().map(|e| crate::localized_format!("删除失败：{}", "Could not delete document: {}", crate::settings::diagnostic(&e.to_string()))).into_iter().collect();
-            let warnings = writer.take_warnings();
-            let listed = ListedDocs { entries: writer.list(), trash: writer.list_trash(), warnings };
-            (DeletedDocs { deleted, errors, changes: journal.take() }, listed)
+            let (mut done, mut listed) = (DeletedDocs { deleted: vec![], errors: vec![], changes: vec![] }, vec![]);
+            for (key, mut writer, groups) in writers {
+                let journal = writer.track_file_changes();
+                // One write for all of them: each index write waits for the disk.
+                let (deleted, result) = writer.delete_many(&groups);
+                done.deleted.extend(deleted);
+                done.errors.extend(result.err().map(|e| crate::localized_format!("删除失败：{}", "Could not delete document: {}", crate::settings::diagnostic(&e.to_string()))));
+                let warnings = writer.take_warnings();
+                listed.push(ListedDocs { root: key, entries: writer.list(), trash: writer.list_trash(), warnings });
+                done.changes.extend(journal.take());
+            }
+            (done, listed)
         });
         // The rows go now; the list read back when the files have moved
         // replaces this, bringing back anything that could not go.
@@ -1277,9 +1357,15 @@ impl Workspace {
         self.row_menu = None;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let (done, listed) = task.await;
+            let (done, lists) = task.await;
             drop(task_guard);
             let _ = this.update_in(cx, |w, window, cx| {
+                let mut listed = ListedDocs { root: String::new(), entries: w.entries.clone(), trash: w.trash.clone(), warnings: vec![] };
+                for l in lists {
+                    listed.entries = w.store.merge_entries(&l.root, l.entries);
+                    listed.trash = w.store.merge_trash(&l.root, l.trash);
+                    listed.warnings.extend(l.warnings);
+                }
                 if w.current.as_ref().is_some_and(|c| done.deleted.contains(c)) {
                     w.save_task = None;
                     w.unsaved = false;
@@ -1489,6 +1575,7 @@ impl Workspace {
             if !matches!(self.sharing_access(cx), Some(crate::cloud_sync::shared::Access::Owner | crate::cloud_sync::shared::Access::ReadWrite)) { return; }
             if section.is_none() { self.sharing.folded = false; }
         }
+        if crate::shared_store::root_of_row(id).is_some() { return; }
         let Some(title) = self.entries.iter().find(|e| e.id == id).map(|e| e.title.trim().to_string()) else { return };
         let field = cx.new(|cx| {
             let mut f = TextField::new(crate::model::UNTITLED, cx);
@@ -1525,6 +1612,8 @@ impl Workspace {
         let refocus = r.field.read(cx).is_focused(window);
         let title = r.field.read(cx).text.trim().to_string();
         let old = self.entries.iter().find(|e| e.id == r.id).map(|e| e.title.trim().to_string());
+        // A document with children is renamed through its 正文, which renames the folder too.
+        let r = Rename { id: self.note_or(&r.id), ..r };
         if commit && old.is_some_and(|o| o != title) {
             if let Some(peer) = self.document_peers(&r.id, window, cx).first() {
                 peer.update(cx, |e, cx| e.set_title(&title, cx));
@@ -1537,6 +1626,8 @@ impl Workspace {
                             e.title = title.clone();
                             e.meta = meta;
                         }
+                        // The folder of a 正文 was renamed with it: its path, and those inside, changed.
+                        if self.entries.iter().any(|e| e.note.as_deref() == Some(r.id.as_str())) { self.entries = self.store.list(); }
                         self.sort();
                         if self.current.as_deref() == Some(r.id.as_str()) && let Some(ed) = &self.editor {
                             ed.update(cx, |e, cx| e.receive_file_title(&title, cx));
@@ -1575,7 +1666,7 @@ impl Workspace {
         let editor = editor.read(cx);
         let transient = !crate::FEI_NOTES || self.entries.iter().any(|e| e.id == id && e.meta.local());
         let selection = crate::editor::core::ReadingSelection::capture(&editor.core, transient);
-        let _ = self.store.with(|s| s.remember_position(&id, selection, editor.scroll_top()));
+        let _ = self.store.with(Some(&id), |s| s.remember_position(&id, selection, editor.scroll_top()));
         self.schedule_view_state(cx);
     }
 
@@ -1700,7 +1791,7 @@ impl Workspace {
         if cx.windows().into_iter().filter(|h| Some(h.window_id()) != on_stack).filter_map(|h| h.downcast::<Workspace>()?.entity(cx).ok())
             .filter(|p| p.entity_id() != cx.entity_id())
             .any(|p| { let w = p.read(cx); w.store.root() == self.store.root() && w.current.as_ref() == Some(&id) && (w.unsaved || w.editor.as_ref().is_some_and(|e| e.read(cx).marked.is_some())) }) { return }
-        if let Ok(Some(doc)) = self.store.with(|s| s.refresh_markdown(&id)) {
+        if let Ok(Some(doc)) = self.store.with(Some(&id), |s| s.refresh_markdown(&id)) {
             self.adopt_markdown(&id, doc, cx);
         }
     }
@@ -1764,7 +1855,7 @@ impl Workspace {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let result = crate::cloud_sync::save(&mut self.store, &id, &core, cx);
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-        let result = self.store.with(|s| s.save_editor(&id, doc)).map(|meta| (meta, false));
+        let result = self.store.with(Some(&id), |s| s.save_editor(&id, doc)).map(|meta| (meta, false));
         match result {
             Ok((meta, held)) => {
                 if let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
@@ -1838,7 +1929,7 @@ impl Workspace {
         match moved {
             Err(e) => self.show_toast_kind(ToastKind::Error, &crate::localized_format!("没能改为真实文件夹，文档库保持原样：{}", "Couldn't move to real folders; the library is unchanged: {}", crate::settings::diagnostic(&e.to_string())), cx),
             Ok((report, store)) => {
-                self.store.with(|s| *s = store);
+                let _ = self.store.with(None, |s| { *s = store; Ok(()) });
                 crate::changelog::migrated(&report);
                 crate::open_main_window(crate::devtools::scripted(), Some(window.bounds()), cx);
                 window.remove_window();
@@ -1935,6 +2026,8 @@ impl Workspace {
         let docs = self
             .entries
             .iter()
+            // A folder with a 正文 is mentioned as that document (#357).
+            .filter(|e| e.note.is_none())
             .map(|e| crate::editor::links::DocRef { id: e.id.clone(), title: e.title.clone(), icon: e.icon.clone(), folder: e.meta.folder.is_some(), modified: e.meta.modified, opened: e.meta.opened })
             .collect();
         let backlinks = self
@@ -2501,11 +2594,19 @@ impl Render for Workspace {
                 { crate::logging::write(&format!("Shared note read state: {error:#}")); }
             });
         }
+        self.sync_note_rows();
+        // The menu bar is the front window's: a Markdown file's 插入 / 格式 leave out what it can't hold.
+        if !cfg!(target_os = "ios") && window.is_window_active() {
+            let markdown = self.view == View::Doc && self.editor.as_ref().is_some_and(|e| e.read(cx).markdown);
+            cx.defer(move |cx| menus_follow(markdown, cx));
+        }
         // Clicks no longer take focus from the editor (see the root's mouse
         // down), so leaving the document hands it back to the window's keys.
         let departed = self.departing_focus.take();
         if self.view != View::Doc && (departed.is_some_and(|f| f.is_focused(window) || window.focused(cx).is_none())
             || self.editor.as_ref().is_some_and(|e| e.read(cx).focus.is_focused(window))) { crate::gpui_compat::focus(window, &self.focus, cx); }
+        #[cfg(not(target_os = "ios"))]
+        self.sync_confirm_focus(window, cx);
         crate::editor::image::frame_drawn(window, cx);
         #[cfg(target_os = "ios")]
         if crate::mobile::native_shell(window) { return self.render_mobile(window, cx); }
@@ -2910,5 +3011,35 @@ impl Workspace {
                 if w.search_open { w.close_search(window, cx); } else { w.open_search(window, cx); }
                 cx.stop_propagation();
             }))
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::{Menu, MenuItem, menu_bar};
+    use crate::settings::tr;
+
+    fn names(menus: &[Menu]) -> Vec<String> {
+        fn walk(items: &[MenuItem], out: &mut Vec<String>) {
+            for i in items {
+                match i {
+                    MenuItem::Action { name, .. } => out.push(name.to_string()),
+                    MenuItem::Submenu(m) => { out.push(m.name.to_string()); walk(&m.items, out); }
+                    _ => {}
+                }
+            }
+        }
+        let mut out = vec![];
+        for m in menus { out.push(m.name.to_string()); walk(&m.items, &mut out); }
+        out
+    }
+
+    #[test]
+    fn markdown_menus_leave_out_what_markdown_cannot_keep() {
+        let (doc, md) = (names(&menu_bar(false)), names(&menu_bar(true)));
+        let gone = [tr("提醒", "Reminder"), tr("下划线", "Underline"), tr("对齐", "Align"), tr("左对齐", "Align left"), tr("居中对齐", "Align center"), tr("右对齐", "Align right")];
+        for n in gone { assert!(doc.iter().any(|d| d == n) && !md.iter().any(|d| d == n), "{n}"); }
+        // Everything else stays, in the same order.
+        assert_eq!(doc.into_iter().filter(|d| !gone.contains(&d.as_str())).collect::<Vec<_>>(), md);
     }
 }

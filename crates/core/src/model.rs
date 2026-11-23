@@ -793,7 +793,9 @@ pub enum BlockKind {
     Bullet { dash: bool },
     Ordered { seq: Option<u32> },
     Todo { done: bool },
-    Code { lang: String, caption: Option<String>, wrap: bool },
+    /// `show_code`: a Mermaid block shows its source instead of the diagram
+    /// (`view="code"`; the diagram is the default, see src/mermaid.rs).
+    Code { lang: String, caption: Option<String>, wrap: bool, show_code: bool },
     Quote,
     Callout {
         emoji: String,

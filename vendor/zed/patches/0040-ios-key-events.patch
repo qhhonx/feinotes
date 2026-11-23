@@ -1,0 +1,122 @@
+gpui_ios sends no key events: a hardware keyboard's ⌘B, arrows, Tab and Esc never reached GPUI's actions, the soft keyboard's Return arrived as insertText("\n") and Delete at the start of the editable range was dropped, so an editor whose input handler covers one block could neither split nor merge blocks. pressesBegan now turns keys GPUI binds (anything with ⌘ or ⌃, and the named keys) into KeyDown/KeyUp, leaving plain typing and unhandled keys to UIKit and composition to the IME; Return outside composition and Delete at the range start become the enter and backspace keys. Needs objc2-ui-kit's UIKey, UIKeyConstants, UIPress and UIPressesEvent features.
+
+diff --git a/crates/gpui_ios/Cargo.toml b/crates/gpui_ios/Cargo.toml
+index 0544070bf688bac8100610d0eb5d2afcd0a7c496..3aecf74cd683ccc4d0eceacc7c9389fa87a1f848 100644
+--- a/crates/gpui_ios/Cargo.toml
++++ b/crates/gpui_ios/Cargo.toml
+@@ -42,7 +42,7 @@ gpui_apple = { workspace = true, features = ["font-kit"] }
+ log.workspace = true
+ objc2.workspace = true
+ objc2-foundation = { workspace = true, features = ["NSThread", "NSOperation", "NSUserActivity", "block2"] }
+-objc2-ui-kit.workspace = true
++objc2-ui-kit = { workspace = true, features = ["UIKey", "UIKeyConstants", "UIPress", "UIPressesEvent"] }
+ objc2-quartz-core = { workspace = true, features = ["CADisplayLink"] }
+ objc2-core-foundation = { workspace = true, default-features = true }
+ parking_lot.workspace = true
+diff --git a/crates/gpui_ios/src/ios/text_input.rs b/crates/gpui_ios/src/ios/text_input.rs
+index 5464d6f7c85768147c906f9cd22777a754fae1a0..cf72a35a405b48e62e5c6e222b68a492ad0ad917 100644
+--- a/crates/gpui_ios/src/ios/text_input.rs
++++ b/crates/gpui_ios/src/ios/text_input.rs
+@@ -136,6 +136,15 @@ define_class!(
+     unsafe impl NSObjectProtocol for TextInputView {}
+ 
+     impl TextInputView {
++        // quiet.md: hardware keys GPUI binds (shortcuts with ⌘ or ⌃, arrows,
++        // Return, Delete, Tab, Esc) go to GPUI as key events; plain typing and
++        // anything unhandled continue to UIKit, which calls insertText.
++        #[unsafe(method(pressesBegan:withEvent:))]
++        fn presses_began(&self, presses: &objc2_foundation::NSSet<UIPress>, event: Option<&UIPressesEvent>) {
++            let handled = presses.len() == 1 && presses.iter().next().is_some_and(|press| self.hardware_key(&press));
++            if !handled { let _: () = unsafe { msg_send![super(self), pressesBegan: presses, withEvent: event] }; }
++        }
++
+         #[unsafe(method(canBecomeFirstResponder))]
+         fn can_become_first_responder(&self) -> bool {
+             self.ivars().keyboard_desired.get()
+@@ -200,16 +209,21 @@ define_class!(
+         }
+         #[unsafe(method(insertText:))]
+         fn insert_text(&self, text: &NSString) {
++            // quiet.md: the soft keyboard's Return is the Enter key, as on a hardware keyboard.
++            if text.to_string() == "\n" && self.with_handler(|handler| handler.marked_text_range().is_none()).unwrap_or(true) && self.key("enter", gpui::Modifiers::default()) { return; }
+             self.edit(|handler| handler.replace_text_in_range(None, &text.to_string()));
+         }
+         #[unsafe(method(deleteBackward))]
+         fn delete_backward(&self) {
++            let mut needs_key = false;
+             self.edit(|handler| {
+                 let Some(selection) = handler.selected_text_range(false) else { return; };
+                 let mut range = selection.range;
+                 if range.is_empty() {
+                     let start = handler.text_input_editable_range().map_or(0, |range| range.start);
+-                    if range.start <= start { return; }
++                    // quiet.md: at the start of the editable text (the caret's block) Delete
++                    // is the Backspace key, so the editor can merge blocks.
++                    if range.start <= start { needs_key = true; return; }
+                     let Some(text) = read_text(handler, start..range.start) else { return; };
+                     let Some(character) = composed_character_range(&text, text.length().saturating_sub(1)) else { return; };
+                     range.start = start + character.start;
+@@ -218,6 +232,7 @@ define_class!(
+                     handler.replace_text_in_range(Some(range), "");
+                 }
+             });
++            if needs_key { self.key("backspace", gpui::Modifiers::default()); }
+         }
+     }
+ 
+@@ -535,6 +550,34 @@ impl TextInputView {
+             .flatten()
+     }
+ 
++    fn key(&self, key: &str, modifiers: gpui::Modifiers) -> bool {
++        let keystroke = gpui::Keystroke { modifiers, key: key.into(), key_char: None };
++        self.ivars().window.with_window(|window| window.dispatch_key(keystroke)).unwrap_or(false)
++    }
++
++    fn hardware_key(&self, press: &UIPress) -> bool {
++        let Some(key) = press.key(self.mtm()) else { return false };
++        // Composition owns the keys until it commits.
++        if self.with_handler(|handler| handler.marked_text_range().is_some()).unwrap_or(false) { return false; }
++        let flags = key.modifierFlags();
++        let modifiers = gpui::Modifiers {
++            control: flags.contains(UIKeyModifierFlags::Control), alt: flags.contains(UIKeyModifierFlags::Alternate),
++            shift: flags.contains(UIKeyModifierFlags::Shift), platform: flags.contains(UIKeyModifierFlags::Command), function: false,
++        };
++        let named = match key.keyCode() {
++            UIKeyboardHIDUsage::KeyboardReturnOrEnter => "enter", UIKeyboardHIDUsage::KeyboardDeleteOrBackspace => "backspace",
++            UIKeyboardHIDUsage::KeyboardTab => "tab", UIKeyboardHIDUsage::KeyboardEscape => "escape",
++            UIKeyboardHIDUsage::KeyboardDeleteForward => "delete", UIKeyboardHIDUsage::KeyboardLeftArrow => "left",
++            UIKeyboardHIDUsage::KeyboardRightArrow => "right", UIKeyboardHIDUsage::KeyboardUpArrow => "up",
++            UIKeyboardHIDUsage::KeyboardDownArrow => "down", UIKeyboardHIDUsage::KeyboardHome => "home",
++            UIKeyboardHIDUsage::KeyboardEnd => "end", UIKeyboardHIDUsage::KeyboardPageUp => "pageup",
++            UIKeyboardHIDUsage::KeyboardPageDown => "pagedown", _ => "",
++        };
++        let chars = key.charactersIgnoringModifiers().to_string().to_lowercase();
++        let name = if !named.is_empty() { named.to_string() } else if modifiers.platform || modifiers.control { chars } else { return false };
++        !name.is_empty() && self.key(&name, modifiers)
++    }
++
+     fn edit(&self, callback: impl FnOnce(&mut PlatformInputHandler)) {
+         let previous = self.ivars().native_edit.replace(true);
+         self.with_handler(|handler| {
+diff --git a/crates/gpui_ios/src/ios/window.rs b/crates/gpui_ios/src/ios/window.rs
+index 1eed0a14860e3e3ae6e835d43273972964f059b8..6de57d298f68822dea45798f99b58976eddf02b7 100644
+--- a/crates/gpui_ios/src/ios/window.rs
++++ b/crates/gpui_ios/src/ios/window.rs
+@@ -528,6 +528,16 @@ impl IosWindowState {
+     }
+ 
+     /// Delivers a UIKit touch through GPUI's platform-neutral touch API.
++    /// quiet.md: a key press as GPUI key events (hardware keyboard, and the
++    /// soft keyboard's Return and Delete at the edge of the editable text);
++    /// true when something handled the key down.
++    pub(crate) fn dispatch_key(&self, keystroke: gpui::Keystroke) -> bool {
++        let down = PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false });
++        let handled = self.input_callback.with(|callback| !callback(down).propagate).unwrap_or(false);
++        self.input_callback.with(|callback| callback(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke })));
++        handled
++    }
++
+     pub fn handle_touch(&self, touch: &UITouch, _event: Option<&UIEvent>) {
+         // GPUI timestamps delivery itself. Replaying UIKit's historical coalesced
+         // samples here would make them appear simultaneous and distort fling velocity.

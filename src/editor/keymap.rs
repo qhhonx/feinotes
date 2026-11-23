@@ -39,6 +39,7 @@ actions!(
         SelectAll,
         Copy,
         CopyMarkdown,
+        SpaceCjk,
         Cut,
         Paste,
         PastePlain,

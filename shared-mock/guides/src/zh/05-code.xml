@@ -1,0 +1,61 @@
+<title>代码与公式</title>
+<p>收藏一段好用的脚本、写一份 API 文档，或者推导一道公式，都可以在这里完成。代码块支持语法高亮和行号，LaTeX 公式能和正文自然地排在一起。</p>
+<h1>行内代码</h1><p>命令、文件名和函数名适合写成行内代码，比如 <code>brew install ripgrep</code> 或 <code>~/.zshrc</code>。输入时用反引号把文字包起来，或者选中文字后按 <code>⌘ ⌃ C</code>。</p>
+<h1>代码块</h1><h2>插入代码块</h2><ul><li>在行首输入三个反引号，再按空格或 Enter。如果在后面写上语言，比如 <code>```python</code>，会直接选好这种语言。</li><li>在斜杠菜单中选择“代码块”，或按 <code>⌘ ⌥ C</code>。</li><li>也可以通过块菜单，把已有的段落转换为代码块。</li></ul>
+<p>在代码块里，Tab 会插入四个空格，Shift-Tab 减少缩进，Enter 换行。代码块内不识别 Markdown 格式，粘贴进来的内容一律按纯文本处理。</p>
+<h2>语言与高亮</h2><p>把指针移到代码块上，就可以选择它的语言。语言选择器支持搜索，内置七十多种语言。</p>
+<pre lang="python" caption="fetch_weather.py"><code>import json
+from urllib.request import urlopen
+
+def fetch_weather(city: str) -&gt; dict:
+    """示例客户端：运行前请把占位 API 换成真实地址。"""
+    url = f"https://api.example.com/weather?city={city}"
+    with urlopen(url, timeout=5) as response:
+        return json.load(response)
+
+if __name__ == "__main__":
+    print(fetch_weather("Beijing")["temp"], "°C")</code></pre>
+<pre lang="typescript" caption="useDebounce.ts"><code>import { useEffect, useState } from "react";
+
+// 输入停止 delay 毫秒后才更新。
+export function useDebounce&lt;T&gt;(value: T, delay = 300): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() =&gt; {
+    const id = setTimeout(() =&gt; setDebounced(value), delay);
+    return () =&gt; clearTimeout(id);
+  }, [value, delay]);
+  return debounced;
+}</code></pre>
+<pre lang="rust" caption="word_count.rs"><code>use std::collections::HashMap;
+
+/// 统计每个单词出现的次数，不区分大小写。
+fn word_count(text: &amp;str) -&gt; HashMap&lt;String, usize&gt; {
+    let mut counts = HashMap::new();
+    for word in text.split_whitespace() {
+        *counts.entry(word.to_lowercase()).or_insert(0) += 1;
+    }
+    counts
+}</code></pre>
+<pre lang="sql" caption="月活跃用户"><code>SELECT date_trunc('month', visited_at) AS month,
+       COUNT(DISTINCT user_id)         AS mau
+FROM   visits
+WHERE  visited_at &gt;= '2026-01-01'
+GROUP  BY 1
+ORDER  BY 1;</code></pre>
+<pre lang="json" caption="settings.json"><code>{
+  "sidebar_width": 284,
+  "window_size": [1280, 800],
+  "quick_note_size": [640, 800]
+}</code></pre>
+<pre lang="bash" caption="备份文档"><code># 给文档打一个带日期的压缩包。
+cd ~/Documents
+tar -czf "Quiet-$(date +%F).tar.gz" Quiet.md</code></pre>
+<h2>命名与换行</h2><p>点击代码块上方的描述，可以写上文件名或一句说明。长代码行默认横向滚动；如果更想不滚动就能读完，可以在代码块的控件里打开“自动换行”。</p>
+<pre lang="plaintext" caption="错误日志示例" wrap="true"><code>2026-11-01 09:42:17.381 ERROR [save] 磁盘空间不足（No space left on device）。文档尚未保存，请先清理出一些磁盘空间，然后再重新保存这篇文档。</code></pre>
+<h2>复制与折叠</h2><ul><li>点击复制按钮，会复制整个代码块的内容，不带行号。</li><li>代码块很长时，可以点左侧的三角形把它折叠起来。</li><li>是否显示行号由文档主题决定：Craft、飞书和 Obsidian 显示行号，Notion 不显示。</li></ul>
+<h1>公式</h1><h2>插入公式</h2><p>在两个美元符号之间输入 LaTeX：输入 <code>$a^2+b^2=c^2$</code>，敲下结尾的美元符号时，它就会变成 <latex>a^2+b^2=c^2</latex>。用两个美元符号作为分隔符也可以。</p><p>也可以在斜杠菜单中选择“公式”。按 Esc 结束编辑。点击已有的公式可以再次编辑；输入有误时会被标出来，但不会破坏文档。</p>
+<h2>常用写法</h2><table><colgroup><col width="300"/><col width="390"/></colgroup><thead><tr><th><p>效果</p></th><th><p>LaTeX</p></th></tr></thead><tbody>
+<tr><td><p><latex>\frac{a}{b} + \sqrt{x}</latex></p></td><td><p><code>\frac{a}{b} + \sqrt{x}</code></p></td></tr><tr><td><p><latex>x_1, x_2, \ldots, x_n</latex></p></td><td><p><code>x_1, x_2, \ldots, x_n</code></p></td></tr><tr><td><p><latex>\sum_{i=1}^{n} i = \frac{n(n+1)}{2}</latex></p></td><td><p><code>\sum_{i=1}^{n} i = \frac{n(n+1)}{2}</code></p></td></tr><tr><td><p><latex>\int_0^1 x^2 \, dx = \frac{1}{3}</latex></p></td><td><p><code>\int_0^1 x^2 \, dx = \frac{1}{3}</code></p></td></tr><tr><td><p><latex>\lim_{x \to 0} \frac{\sin x}{x} = 1</latex></p></td><td><p><code>\lim_{x \to 0} \frac{\sin x}{x} = 1</code></p></td></tr><tr><td><p><latex>\alpha, \beta, \gamma, \Delta, \Omega</latex></p></td><td><p><code>\alpha, \beta, \gamma, \Delta, \Omega</code></p></td></tr><tr><td><p><latex>A = \begin{pmatrix} 1 &amp; 2 \\ 3 &amp; 4 \end{pmatrix}</latex></p></td><td><p><code>\begin{pmatrix} 1 &amp; 2 \\ 3 &amp; 4 \end{pmatrix}</code></p></td></tr><tr><td><p><latex>f(x) = \begin{cases} x &amp; x \ge 0 \\ -x &amp; x &lt; 0 \end{cases}</latex></p></td><td><p><code>\begin{cases} x &amp; x \ge 0 \\ -x &amp; x &lt; 0 \end{cases}</code></p></td></tr>
+</tbody></table>
+<h2>在正文中写数学</h2><p>一元二次方程 <latex>ax^2 + bx + c = 0</latex> 的解为 <latex>x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}</latex>。当 <latex>\Delta = b^2 - 4ac &lt; 0</latex> 时，方程没有实数解。</p><p>想让公式单独占一行，就把它放进一个居中的段落：</p><p align="center"><latex>e^{i\pi} + 1 = 0</latex></p><p align="center"><latex>\mathbb{E}[X] = \sum_x x \, P(X=x)</latex></p>
+<callout emoji="📐" background-color="light-purple" border-color="purple"><p>导出 Markdown 时，公式会保留为 <code>$…$</code>，可以直接放进其他支持 LaTeX 的编辑器。</p></callout><hr/><p>下一篇：{{doc:media}}。</p>

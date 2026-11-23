@@ -1,0 +1,29 @@
+<title>导入、导出与备份</title>
+<p>笔记不该被锁在某个应用里。你可以就地编辑 Markdown 文件，导入 Markdown 或飞书 DocxXML，把页面导出为 PDF 或 Markdown，还能像备份普通文件夹一样备份你的文档。</p>
+<h1>导入</h1><p>在“文件”菜单中选择“导入为文档…”，或按 <code>⌘ ⇧ I</code>，然后选择一个或多个文件。每个文件都会成为一篇新文档；导入完成后，会打开最后导入的那一篇。</p>
+<table><colgroup><col width="220"/><col width="470"/></colgroup><thead><tr><th><p>格式</p></th><th><p>导入效果</p></th></tr></thead><tbody><tr><td><p>Markdown</p></td><td><p>仍以 Markdown 文件保存在文档文件夹中。标题、列表、任务、代码、引用、表格、链接和图片都会变成可编辑的块。</p></td></tr><tr><td><p>纯文本</p></td><td><p>按导入器支持的 Markdown 语法导入文字。</p></td></tr><tr><td><p>飞书 DocxXML</p></td><td><p>保留支持的富文本、高亮块、分栏、表格和行内对象。</p></td></tr></tbody></table>
+<ul><li>文件名会作为文档标题。</li><li>Markdown 中以相对路径或 file 链接引用的本地图片，会被复制到文档文件夹中。</li><li>文件无法读取或格式不支持时，会提示导入失败，已有的笔记不会被替换。</li></ul><callout emoji="📋" background-color="light-blue" border-color="blue"><p>也可以直接粘贴到已有页面中。结构化内容会保留支持的格式，Markdown 文本会自动转换。按 <code>⌘ ⇧ V</code> 粘贴为纯文本。</p></callout>
+<h2>导入文件夹</h2><p>在“文件”菜单中选择“导入文件夹…”。这个文件夹会连同子文件夹一起出现在“我的文档”中，其中的 Markdown 和 DocxXML 文件按名称顺序变成文档。隐藏文件夹和 <code>node_modules</code> 会被跳过，原文件夹不会有任何改动。</p>
+<h1>电脑上的 Markdown 文件</h1><p>在“文件”菜单中选择“打开 Markdown 文件…”，或按 <code>⌘ O</code>。在访达中，也可以用“打开方式 › Quiet.md”打开。文件会在原位置编辑：不会复制到文档文件夹，而是列在侧栏的“本机文件”下。</p>
+<ul><li><b>只提供 Markdown 能表达的内容：</b>Markdown 页面只提供 Markdown 能保存的功能。颜色、对齐、高亮块、分栏、公式、按钮、提醒、倒计时、图标和封面都不会出现在它的菜单里。</li><li><b>你的格式原样保留：</b>保存时只重写你改动过的块，其他行、空行和 front matter 都保持原样。</li><li><b>图片放在文件旁边：</b>粘贴或插入的图片会复制到以文件命名的文件夹里，比如 <code>计划.assets</code>，并用相对路径链接。</li><li><b>标题就是文件名：</b>重命名页面，就是重命名文件。</li><li><b>外部修改不被覆盖：</b>如果文件打开期间有其他应用保存了它，Quiet.md 不会覆盖。</li></ul>
+<p>在条目的“更多”菜单里，可以“导入到文档库”（复制一份到文档文件夹），在访达中显示该文件，或“从列表中移除”。从列表中移除不会删除文件。</p>
+<h1>导出</h1><p>打开文档的“更多”菜单，或右键点击侧栏中的条目，选择下载格式。</p><h2>PDF</h2><p>PDF 导出按 A4 纸张排版，保留文档样式、图片和表格。适合分享只读副本，或检查打印效果。</p><h2>Markdown</h2><grid><column width-ratio="0.5"><h3>仅文本</h3><p>导出单个 Markdown 文件，不复制图片和附件。</p></column><column width-ratio="0.5"><h3>所有内容</h3><p>导出 Markdown 文件和一个资源文件夹。图片和附件以相对路径链接。</p></column></grid>
+<p>有些富文本排版在 Markdown 中没有完全对应的写法：</p><table><colgroup><col width="220"/><col width="470"/></colgroup><tbody><tr><td><p>高亮块</p></td><td><p>以高亮块图标开头的引用</p></td></tr><tr><td><p>公式</p></td><td><p>用美元符号包裹的 LaTeX</p></td></tr><tr><td><p>表格</p></td><td><p>用竖线分隔的表格；单元格中的多个段落用换行分隔</p></td></tr><tr><td><p>分栏</p></td><td><p>各栏内容依次排列，而不是并排</p></td></tr><tr><td><p>颜色和精细排版</p></td><td><p>无法全部保留；在意外观时，请导出 PDF</p></td></tr></tbody></table>
+<h2>打印</h2><p>在文档菜单中选择“打印”，会打开系统的打印对话框。可以在那里选择打印机，或存储为 PDF。</p>
+<h1>文档文件夹</h1><p>默认位置是 <code>~/Documents/Quiet.md</code>，首次打开 Quiet.md 时也可以另选位置。在 设置 › 文档库 中可以看到它在哪里。它就是一个普通文件夹，你在访达里看到的，就是侧栏里显示的。</p><pre lang="plaintext" caption="~/Documents/Quiet.md"><code>Quiet.md/
+├── 工作/              侧栏里的文件夹，在这里也是文件夹
+│   ├── 周会.xml       每篇文档一个文件，以标题命名
+│   └── 计划.md        Markdown 文档仍是 Markdown
+├── 想法.xml
+├── .assets/           图片和附件（隐藏）
+└── .quiet/            Quiet.md 自己的数据（隐藏）
+    ├── index.json     置顶、收藏、排序和日期
+    ├── trash/         已删除的文档
+    ├── history/       每篇文档的历史版本
+    ├── themes/        自定义 CSS 主题
+    └── preferences.json, shortcuts.json</code></pre>
+<p>文档文件使用 DocxXML 格式，Markdown 文档则保存为 Markdown。文档之间的链接以相对路径保存，所以复制整个文件夹后，链接依然有效。你可以用任何编辑器查看这些文件；要在应用外修改，请先退出 Quiet.md。</p>
+<p>旧版本的文档库首次打开时，会迁移到这种布局。如果它位于 iCloud 云盘、Dropbox 等同步文件夹中，Quiet.md 会先征求你的同意，因为别的电脑上可能还在运行旧版本。旧布局会在 <code>.quiet</code> 中保留 30 天。</p>
+<h2>保存与冲突</h2><ul><li><b>自动保存：</b>停顿片刻后自动写入修改。替换文档前，会先写入一个临时文件。</li><li><b>出错一目了然：</b>保存失败的文档会一直标记为未保存。切换文档或退出前，应用会询问你如何处理。</li><li><b>索引备份：</b><code>.quiet/index.json.bak</code> 可用于恢复无法读取的索引。</li><li><b>版本历史：</b>在 ⋯ 菜单中打开“版本历史”，文档的历史版本按时间倒序、按天分组列出。选中一个版本，笔记会在原位以只读方式显示它，新增或改写的块会着色标出；按 Esc 回到当前内容。你可以给版本命名以便日后查找，也可以恢复它或另存为副本。保留的份数在 设置 › 文档库 中设置。</li><li><b>多窗口：</b>同一应用进程中的窗口会共享修改。独立运行的实例保存前，会把磁盘上的文档和自己打开时的版本进行比对。有冲突的保存会被拒绝，不会覆盖较新的内容；请先导出未保存的内容，再重新打开。</li></ul>
+<h2>备份</h2><p>备份时要包含整个文档文件夹（包括隐藏文件夹），而不仅仅是文档文件。只要“文稿”文件夹在时间机器的备份范围内，它也会一并受到保护。如需手动归档，先退出 Quiet.md，再运行：</p><pre lang="bash" caption="按日期命名的文档备份"><code>cd ~/Documents &amp;&amp; tar -czf "Quiet-$(date +%F).tar.gz" Quiet.md</code></pre><p>同步服务不能代替备份。不要在两台电脑上同时编辑同一份同步的文档：本地文件锁无法协调不同的电脑。</p>
+<h2>迁移到另一台 Mac</h2><ol><li>在旧 Mac 上按 <code>⌘ Q</code> 退出 Quiet.md。</li><li>把完整的 Quiet.md 文件夹拷贝到新 Mac 的“文稿”文件夹中。</li><li>然后打开 Quiet.md。这个文件夹包含你的文档、目录结构、主题和快捷键。</li></ol><callout emoji="🧩" background-color="light-purple" border-color="purple"><p>在访达中放进这个文件夹的 Markdown 和 DocxXML 文件，也会显示为文档。用这种方式添加大量文件之前，请先做好备份。</p></callout><hr/><p>下一篇：{{doc:personalize}}。</p>

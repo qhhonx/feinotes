@@ -145,7 +145,9 @@ pub fn card(on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> 
     let title: String = if notes.is_some() { crate::localized_format!("已更新到 {}", "Updated to {}", VERSION) } else { crate::settings::tr("文档库已改为真实文件夹", "Your library now uses real folders").into() };
     let line = |text: String| div().w_full().min_w_0().flex().gap(px(6.)).text_size(px(12.)).line_height(px(18.)).text_color(Theme::text_caption())
         .child(div().flex_none().child("·")).child(div().flex_1().min_w_0().child(text));
-    let mut list = div().mt(px(6.)).w_full().min_w_0().flex().flex_col().gap(px(4.));
+    // Padding, not margin: the scroll area's extent leaves a child's margin
+    // out, so scrolled to the end the last line lost its bottom 6pt.
+    let mut list = div().pt(px(6.)).w_full().min_w_0().flex().flex_col().gap(px(4.));
     if let Some((docs, folders)) = moved {
         let s = |n: usize| if n == 1 { "" } else { "s" };
         let lang = crate::settings::lang();

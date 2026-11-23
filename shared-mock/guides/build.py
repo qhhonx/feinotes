@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the 开始指南 sample library from shared-mock/guides/src.
 
-usage: python3 shared-mock/guides/build.py <out_library_dir>
+usage: python3 shared-mock/guides/build.py [--lang zh] <out_library_dir>
 
 Each src/*.xml is one document (file name order = reading order). Placeholders:
   {{doc:key}}                       @文档 link to the guide whose KEYS entry is key
@@ -11,6 +11,11 @@ Each src/*.xml is one document (file name order = reading order). Placeholders:
   {{button:Action|url|text|color}}  inline button (OpenLink / DuplicatePage)
 Assets under guides/assets are copied to <out>/.assets/guides.
 
+`--lang zh` builds the Simplified Chinese guides from src/zh/*.xml (same file
+names, same keys) into shared-mock/library-zh, without .assets: the app
+seeds it with the English library's (`guides.rs`), so its images and covers
+must be ones the English guides bring along too.
+
 The output is a FORMAT 4 library: folders on disk, each document a file named
 after its title (store::file_name_for), links as paths relative to the file,
 and what the files cannot say in .quiet/index.json, keyed by path.
@@ -19,10 +24,14 @@ import datetime as dt, json, re, shutil, sys, time, uuid
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
-out = Path(sys.argv[1]).resolve()
+args = sys.argv[1:]
+zh = args[:2] == ["--lang", "zh"]
+if zh: args = args[2:]
+assert len(args) == 1, __doc__
+out = Path(args[0]).resolve()
 NS = uuid.UUID("6f7c1e9a-9d0b-4a51-8c7e-2a1d3b4c5e6f")
 # Folders in the guide library: key -> title, a folder on disk.
-FOLDERS = {"writing-guides": "Writing and formatting", "examples": "Examples"}
+FOLDERS = {"writing-guides": "写作与排版", "examples": "示例"} if zh else {"writing-guides": "Writing and formatting", "examples": "Examples"}
 # The top level, in order; every entry gets its place, so the sidebar and
 # Home's manual order (the default) read the same.
 TOP = ["welcome", "writing-guides", "examples", "organize", "data", "personalize", "practice"]
@@ -45,7 +54,7 @@ KEYS = {
 }
 ids = {k: str(uuid.uuid5(NS, k)) for k, _, _ in KEYS.values()}
 ids.update({k: str(uuid.uuid5(NS, k)) for k in FOLDERS})
-srcs = {KEYS[p.stem][0]: p.read_text() for p in sorted((here / "src").glob("*.xml"))}
+srcs = {KEYS[p.stem][0]: p.read_text() for p in sorted((here / "src" / ("zh" if zh else "")).glob("*.xml"))}
 missing = set(ids) - set(srcs) - set(FOLDERS)
 assert not missing, f"no source for {missing}"
 
@@ -147,6 +156,13 @@ for i, k in enumerate(TOP):
     index[key_of[k]]["root_order"] = i + 1
 (out / ".quiet" / "index.json").write_text(json.dumps(dict(sorted(index.items())), ensure_ascii=False, indent=2) + "\n")
 (out / ".quiet" / "format.json").write_text('{\n  "format": 4\n}')
+if zh:
+    # Images and covers come from the English library (see above).
+    used = {m for x in srcs.values() for m in re.findall(r'(?:src|path)="assets/guides/([^"]+)"', x)}
+    missing = {m for m in used if not (here / "assets" / m).is_file()} | (covers - {c for p in (here / "src").glob("*.xml") for c in re.findall(r'cover="covers/([^"]+)"', p.read_text())})
+    assert not missing, f"not in the English guides' assets: {missing}"
+    print(out)
+    sys.exit()
 shutil.copytree(here / "assets", out / ".assets" / "guides")
 (out / ".assets" / "guides" / "covers").mkdir()
 for name in sorted(covers):

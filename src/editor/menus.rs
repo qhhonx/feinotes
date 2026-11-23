@@ -325,7 +325,7 @@ pub fn heading(level: u8) -> BlockKind {
 }
 
 pub fn code_block(lang: &str) -> BlockKind {
-    BlockKind::Code { lang: lang.to_string(), caption: None, wrap: false }
+    BlockKind::Code { lang: lang.to_string(), caption: None, wrap: false, show_code: false }
 }
 
 pub fn callout(emoji: Option<&str>) -> BlockKind {

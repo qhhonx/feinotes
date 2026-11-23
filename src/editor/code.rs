@@ -43,7 +43,7 @@ impl Editor {
         use super::object_mobile::field;
         use crate::settings::tr;
         use serde_json::json;
-        let Some(BlockKind::Code { caption,lang,wrap }) = self.core.kind_of(block) else { return None };
+        let Some(BlockKind::Code { caption,lang,wrap,.. }) = self.core.kind_of(block) else { return None };
         let editable = !self.read_only && crate::cloud_sync::shared::can_edit_in(&self.library_root,cx);
         let mut name = field("caption",tr("名称","Name"),"text",caption.as_deref().unwrap_or(crate::settings::text(super::caption::CODE_CAPTION)));
         name["enabled"] = json!(editable);

@@ -1,0 +1,49 @@
+<title>欢迎使用 Quiet.md</title>
+<p>Quiet.md 是一个安静记笔记的地方。不用注册账号，也没有云端空间：每篇文档都是 Mac 上的一个文件。随手记下一个想法也好，用标题、列表、表格、代码和图片梳理一件复杂的事也好，都可以在这里完成。</p>
+<p>这组指南大约十分钟就能带你熟悉 Quiet.md。它们本身就是用 Quiet.md 写的，你看到的每一种排版都可以自己做出来。<b>尽管放心修改。</b>它们是可以动手练习的示例，而不是只读的说明书。</p>
+<callout emoji="💡" background-color="light-blue" border-color="blue"><p>最好的学习方式是边读边试。想找一块空白的地方随便练习，可以打开 <cite type="doc" href="练习场.xml" file-type="docx">练习场</cite>。</p></callout>
+<h1>认识界面</h1>
+<img src=".assets/guides/home.jpg" caption="主页：所有文档一目了然" align="center"/>
+<p>窗口主要分为两个区域。</p>
+<ol><li><b>侧栏</b>包含主页、置顶、我的文档和设置。按 <code>⌘ ]</code> 可以展开或收起侧栏。</li><li><b>文档</b>是中间白色的书写区域。顶部显示页面路径和标题，右侧是更多、搜索和新建按钮。</li></ol>
+<p>带标题的文档还会在页面左上方显示<b>目录</b>。点击某个标题即可跳转过去；滚动页面时，当前所在的章节会高亮显示。</p>
+<h1>上手五分钟</h1>
+<p>跟着下面的清单做一遍。点击复选框可以把一项标记为完成，也可以把光标放在这一项上按 <code>⌘ Enter</code>。</p>
+<checkbox done="true">打开这篇指南</checkbox>
+<checkbox done="false">按 <code>⌘ N</code> 新建一篇文档，并给它起个标题</checkbox>
+<checkbox done="false">在空行输入 <code>/</code>，插入一个任务</checkbox>
+<checkbox done="false">选中几个字，用浮动工具栏把它们设为粗体</checkbox>
+<checkbox done="false">输入 <code>## </code>，把这一行变成二级标题</checkbox>
+<checkbox done="false">按 <code>⌘ J</code>，搜索“表格”，然后打开 <cite type="doc" href="写作与排版/表格与分栏.xml" file-type="docx">表格与分栏</cite></checkbox>
+<checkbox done="false">在侧栏右键点击一篇文档，把它置顶</checkbox>
+<p>修改会在你停顿片刻后自动保存。如果保存失败，顶部会显示错误提示，方便你在离开文档之前处理好。</p>
+<h1>三种书写方式</h1>
+<grid><column width-ratio="0.3333"><h3>斜杠命令</h3><p>在空行输入 <code>/</code> 插入一个块。继续输入可以筛选，试试 <code>/表格</code> 或 <code>/代码</code>。</p></column><column width-ratio="0.3333"><h3>Markdown</h3><p>输入 <code># </code> 得到标题，输入 <code>- </code> 得到列表。用 <code>**粗体**</code> 把文字包起来，输完结尾的符号就会变成<b>粗体</b>。</p></column><column width-ratio="0.3334"><h3>快捷键</h3><p>用 <code>⌘ B</code> 设为粗体，用 <code>⌘ ⌥ 1</code> 设为标题。按 <code>⌘ /</code> 可以查看所有快捷键。</p></column></grid>
+<h1>浏览指南</h1>
+<p>可以按顺序读，也可以直接跳到需要的那一篇。在侧栏里，讲书写的几篇指南都放在“写作与排版”文件夹中。</p>
+<table><colgroup><col width="300"/><col width="390"/></colgroup><thead><tr><th><p>指南</p></th><th><p>你会学到</p></th></tr></thead><tbody>
+<tr><td><p><cite type="doc" href="写作与排版/书写：文字、标题与段落.xml" file-type="docx">书写：文字、标题与段落</cite></p></td><td><p>标题、文字样式、颜色、链接、对齐、缩进和 Markdown 快捷输入</p></td></tr>
+<tr><td><p><cite type="doc" href="写作与排版/块：列表、引用与高亮块.xml" file-type="docx">块：列表、引用与高亮块</cite></p></td><td><p>列表、任务、引用、高亮块、分隔线、日期提醒、倒计时和按钮</p></td></tr>
+<tr><td><p><cite type="doc" href="写作与排版/表格与分栏.xml" file-type="docx">表格与分栏</cite></p></td><td><p>表格、合并单元格、标题行、单元格颜色和分栏</p></td></tr>
+<tr><td><p><cite type="doc" href="写作与排版/代码与公式.xml" file-type="docx">代码与公式</cite></p></td><td><p>语法高亮、代码块名称、自动换行和 LaTeX 公式</p></td></tr>
+<tr><td><p><cite type="doc" href="写作与排版/图片、附件与封面.xml" file-type="docx">图片、附件与封面</cite></p></td><td><p>图片、裁剪、附件、文档图标和封面</p></td></tr>
+<tr><td><p><cite type="doc" href="写作与排版/画板：图表与草图.xml" file-type="docx">画板：图表与草图</cite></p></td><td><p>在画板上画图形、连接箭头、便签和草图</p></td></tr>
+<tr><td><p><cite type="doc" href="整理与查找笔记.xml" file-type="docx">整理与查找笔记</cite></p></td><td><p>文件夹、置顶、收藏、反向链接、搜索、阅读模式和回收站</p></td></tr>
+<tr><td><p><cite type="doc" href="导入、导出与备份.xml" file-type="docx">导入、导出与备份</cite></p></td><td><p>导入、导出、打印、备份和迁移文档</p></td></tr>
+<tr><td><p><cite type="doc" href="个性化：主题与快捷键.xml" file-type="docx">个性化：主题与快捷键</cite></p></td><td><p>主题、自定义 CSS、快捷键、快速笔记和界面语言</p></td></tr>
+</tbody></table>
+<h1>值得记住的快捷键</h1>
+<table><colgroup><col width="210"/><col width="480"/></colgroup><tbody>
+<tr><td><p><code>⌘ N</code> / <code>⌘ J</code></p></td><td><p>新建文档 / 搜索文档</p></td></tr>
+<tr><td><p><code>/</code> / <code>⌘ F</code></p></td><td><p>插入块 / 在当前文档内查找</p></td></tr>
+<tr><td><p><code>⌘ B</code> / <code>⌘ I</code> / <code>⌘ U</code></p></td><td><p>粗体 / 斜体 / 下划线</p></td></tr>
+<tr><td><p><code>⌘ K</code></p></td><td><p>添加或编辑链接</p></td></tr>
+<tr><td><p><code>Tab</code> / <code>⇧ Tab</code></p></td><td><p>缩进 / 取消缩进</p></td></tr>
+<tr><td><p><code>⌘ Z</code> / <code>⌘ ⇧ Z</code></p></td><td><p>撤销 / 重做</p></td></tr>
+<tr><td><p><code>⌘ ]</code> / <code>⌘ /</code></p></td><td><p>展开或收起侧栏 / 查看快捷键</p></td></tr>
+</tbody></table>
+<h1>笔记完全属于你</h1>
+<p>你的文档保存在 <code>~/Documents/Quiet.md</code>。每篇文档都是 <code>docs</code> 里的一个 XML 文件，图片和附件保存在 <code>assets</code> 里。用时间机器备份整个文件夹，或者把它拷到另一台 Mac 上即可。</p>
+<blockquote><p>在本地书写和阅读笔记都不需要联网。加载网络图片时会访问网络，是否自动下载可以在设置里控制。</p></blockquote>
+<p>备份和迁移的详细说明，请看 <cite type="doc" href="导入、导出与备份.xml" file-type="docx">导入、导出与备份</cite>。</p>
+<hr/><p align="center">准备好了吗？打开 <cite type="doc" href="写作与排版/书写：文字、标题与段落.xml" file-type="docx">书写：文字、标题与段落</cite>。</p>

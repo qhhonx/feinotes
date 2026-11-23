@@ -80,7 +80,7 @@ impl Workspace {
     /// The place a drop goes, for the dialog and the toast.
     pub(crate) fn drop_place(&self, target: &SidebarDropAt) -> String {
         target.parent.as_ref().and_then(|t| self.entries.iter().find(|e| &e.id == t)).map(|e| crate::settings::display_title(&e.title))
-            .unwrap_or_else(|| tr("我的文档", "My documents").to_string())
+            .unwrap_or_else(|| self.top_name())
     }
 
     /// 导入 confirmed: bring it in where it was dropped.
@@ -131,7 +131,7 @@ impl Workspace {
         }
         let Some(doc) = self.doc_of(id, cx) else { return };
         let front = self.store.front_matter_of(id);
-        match self.store.with(|s| s.create_markdown_in(&doc, &front, target.parent.as_deref())) {
+        match self.store.create_markdown_in(&doc, &front, target.parent.as_deref()) {
             Ok(new) => {
                 self.place_dropped(&[new], &target);
                 self.landed_in(target.parent.as_deref());
@@ -147,7 +147,7 @@ impl Workspace {
     fn place_dropped(&mut self, ids: &[String], target: &SidebarDropAt) {
         let journal = self.store.track_file_changes();
         if target.slot.is_some() {
-            for id in ids { let _ = self.store.with(|s| s.move_in_tree(id, target.parent.as_deref(), target.before.as_deref())); }
+            for id in ids { let _ = self.store.move_in_tree(id, target.parent.as_deref(), target.before.as_deref()); }
         }
         self.entries = self.store.list();
         self.sort();

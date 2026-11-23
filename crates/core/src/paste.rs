@@ -617,7 +617,7 @@ fn code(pre: &Handle) -> Block {
     let text = text.replace("\r\n", "\n");
     let text = text.strip_suffix('\n').unwrap_or(&text).to_string();
     let lang = code_lang(pre).map_or(crate::lang::from_token(""), |l| crate::lang::resolve(&l).to_string());
-    Block::new(BlockKind::Code { lang, caption: None, wrap: false }, RichText::plain(text))
+    Block::new(BlockKind::Code { lang, caption: None, wrap: false, show_code: false }, RichText::plain(text))
 }
 
 /// Language from `language-x` / `lang-x` / `highlight-source-x` classes or a
@@ -1072,7 +1072,7 @@ fn md_blocks(lines: &[&str], off: Off, mut spans: Option<&mut Vec<(usize, usize)
                 j += 1;
             }
             let lang = crate::lang::resolve(info.split_whitespace().next().unwrap_or("")).to_string();
-            out.push(Block::new(BlockKind::Code { lang, caption: None, wrap: false }, RichText::plain(code.join("\n"))));
+            out.push(Block::new(BlockKind::Code { lang, caption: None, wrap: false, show_code: false }, RichText::plain(code.join("\n"))));
             i = j + 1;
             last_list = false;
             continue;

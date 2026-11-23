@@ -691,7 +691,7 @@ impl Workspace {
         if !matches!(self.view, crate::app::View::Home | crate::app::View::Folder) { self.home.folders.file_drop = None; return None; }
         let dragging = cx.has_active_drag() || crate::devtools::file_drag();
         let target_title = |w: &Self, id: Option<&String>| id.and_then(|id| w.entries.iter().find(|e| &e.id == id)).map(|e| display_title(&e.title))
-            .unwrap_or_else(|| crate::settings::tr("我的文档", "My documents").to_string());
+            .unwrap_or_else(|| w.top_name());
         let page = if self.view == crate::app::View::Folder { self.folder_current.clone() } else { None };
         let d = self.home.folders.file_drop.as_ref()?;
         let place = target_title(self, d.landed.clone().flatten().as_ref().or(d.over.as_ref()).or(page.as_ref()));

@@ -105,7 +105,7 @@ fn hash_block(b: &Block, orders: &rustc_hash::FxHashMap<BlockId, String>, h: &mu
     match &b.kind {
         BlockKind::Heading { level, .. } => (level, orders.get(&b.id)).hash(h),
         BlockKind::Bullet { dash } => dash.hash(h),
-        BlockKind::Code { wrap, .. } => wrap.hash(h),
+        BlockKind::Code { wrap, show_code, .. } => (wrap, show_code).hash(h),
         BlockKind::Image { src, width, height, caption, crop, .. } => {
             (src, width.map(f32::to_bits), height.map(f32::to_bits), caption.as_ref().map(String::len), crop.map(|c| c.map(f32::to_bits))).hash(h)
         }
@@ -903,6 +903,11 @@ impl R<'_> {
         let inside = st.code_tools_inside;
         // Keep the labels above the rim when the paragraph gap is shorter than the tool row.
         let tools_above = gap_above.map_or(COMPACT_CODE_TOOLS_H, |gap| (gap + 5.5).min(COMPACT_CODE_TOOLS_H));
+        let show_code = matches!(b.kind, BlockKind::Code { show_code: true, .. });
+        let mermaid = !folded && lang == crate::mermaid::LANG && crate::mermaid::SUPPORTED;
+        // A Mermaid block shows its diagram, under the code while the caret is in it.
+        let reveal = editing && !self.ed.read_only;
+        let diagram = if mermaid && !show_code { self.diagram(b, reveal, 36., 16., cx) } else { None };
         // Handle hovered / its menu open (`.hovered`): light blue ring
         // over a clear body so the block tint shows; block-selected: blue
         // border on the gray body.
@@ -1086,6 +1091,18 @@ impl R<'_> {
                                         ),
                                 )
                             })
+                            .when(mermaid, |d| {
+                                d.child(
+                                    header_btn("code-view")
+                                        .child(icon(if show_code { "view-preview" } else { "code" }, 14., Theme::icon()))
+                                        .child(if show_code { crate::settings::tr("显示图表", "Show diagram") } else { crate::settings::tr("隐藏图表", "Hide diagram") })
+                                        .child(sep(-3.))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(move |e, _, window, cx| {
+                                            cx.stop_propagation();
+                                            e.toggle_diagram(id, window, cx);
+                                        })),
+                                )
+                            })
                             .child(
                                 header_btn("code-copy")
                                     .child(icon("copy", 14., Theme::icon()))
@@ -1118,7 +1135,7 @@ impl R<'_> {
                     }))
             ))
             .when(folded, |d| d.child(div().h(px(36.))))
-            .when(!folded, |d| {
+            .when(!folded && (diagram.is_none() || reveal), |d| {
                 d.child(
                     div()
                         .pt(px(if cfg!(target_os = "ios") && inside && compact { st.num("pre.pad-y").max(14.) } else if cfg!(target_os = "ios") && inside { 48. } else if compact { st.num("pre.pad-y") } else { 36. }))
@@ -1149,7 +1166,8 @@ impl R<'_> {
                         ))
                         .child(self.code_column(id, wrap, el, 12.)),
                 )
-            });
+            })
+            .children(diagram);
         if compact && !inside {
             // Include the tools in the hover area without reserving space inside the code panel.
             div().group(g).pt(px(tools_above))
@@ -1163,6 +1181,85 @@ impl R<'_> {
 
 /// Code blocks: SF Mono 13 / 20, a 36pt line-number gutter.
 const GUTTER_W: f32 = 36.;
+
+impl R<'_> {
+    /// A Mermaid block's diagram (mermaid.rs) with its state: below the code
+    /// (`below`) while the caret is in the block, else in its place (`top`
+    /// clears the toolbar), where a click puts the caret in the code.
+    fn diagram(&self, b: &Block, below: bool, top: f32, side: f32, cx: &mut Context<Editor>) -> Option<AnyElement> {
+        if b.text.text.trim().is_empty() { return None; }
+        let id = b.id;
+        let (shown, note) = match crate::mermaid::look(id.0, &b.text.text, cx) {
+            crate::mermaid::Look::Ready(d) => (Some(d), None),
+            crate::mermaid::Look::Pending(d) => {
+                let note = d.is_none().then(|| crate::settings::tr("正在绘制图表…", "Drawing the diagram…").to_string());
+                (d, note)
+            }
+            crate::mermaid::Look::Failed(m, d) => {
+                let m: Vec<&str> = m.lines().take(6).collect();
+                (d, Some(format!("{}{}", crate::settings::tr("图表有误：", "Diagram error: "), m.join("\n"))))
+            }
+        };
+        let pic = shown.map(|d| {
+            // Shrunk to the text column (inside columns or cells it may still clip).
+            let avail = (self.ed.content_width() - 2. * side - 2.).max(40.);
+            let k = (avail / d.size.0).min(1.);
+            div().w(px(d.size.0 * k)).h(px(d.size.1 * k)).max_w_full().child(img(d.image).size_full().object_fit(ObjectFit::Contain))
+        });
+        Some(
+            div()
+                .id(("code-diagram", id.0))
+                .when(below, |d| d.mt(px(-4.)).pt(px(12.)).border_t_1().border_color(Theme::line_divider()))
+                .when(!below, |d| d.pt(px(top)))
+                .pb(px(12.))
+                .px(px(side))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(8.))
+                .children(pic)
+                .children(note.map(|n| {
+                    div().w_full().font_family(theme::MONO_FONT).text_size(px(12.)).line_height(px(18.)).text_color(Theme::text_caption()).child(n)
+                }))
+                .when(!below && !self.ed.read_only, |d| {
+                    d.cursor_text().on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |e, _, window, cx| {
+                            cx.stop_propagation();
+                            e.core.clear_block_sel();
+                            e.menu = None;
+                            e.core.caret_to_end_of(id);
+                            window.focus(&e.focus, cx);
+                            cx.notify();
+                        }),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+}
+
+impl Editor {
+    /// 隐藏图表 / 显示图表 on a Mermaid block: a saved property, like 自动换行.
+    fn toggle_diagram(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only { return; }
+        self.core.checkpoint(core::EditKind::Other);
+        if let Some(b) = self.core.block_mut(id)
+            && let BlockKind::Code { show_code, .. } = &mut b.kind
+        {
+            *show_code = !*show_code;
+        }
+        self.changed_preserving_viewport(window, cx);
+    }
+
+    /// The row of a Mermaid block the caret is in shows its code too.
+    fn diagram_nonce(&self, focused: bool) -> Option<(BlockId, u64)> {
+        let id = self.core.sel.head.block;
+        let on = crate::mermaid::SUPPORTED && focused && !self.read_only
+            && matches!(self.core.kind_of(id), Some(BlockKind::Code { lang, show_code: false, .. }) if lang == crate::mermaid::LANG);
+        on.then(|| (id, 0x6d65_726d_u64.wrapping_mul(id.0 | 1)))
+    }
+}
 
 pub(super) const TOP: Env = Env { depth: 0, cell: false, color: None, in_callout: false, root: true, column: false, quote: false, width: 0. };
 
@@ -1187,7 +1284,7 @@ impl Editor {
         let mut items = vec![Item::Header];
         let mut h = FxHasher::default();
         // Every row re-measures when the text column changes width.
-        let seed = (self.layout.ml.to_bits(), self.layout.mr.to_bits(), self.column_max().map(f32::to_bits), self.img.generation, crate::themes::generation(), &self.sub_pages, self.links.generation);
+        let seed = (self.layout.ml.to_bits(), self.layout.mr.to_bits(), self.column_max().map(f32::to_bits), self.img.generation, crate::themes::generation(), &self.sub_pages, self.links.generation, crate::mermaid::generation());
         seed.hash(&mut h);
         let seed = h.finish();
         self.core.doc.title.text.len().hash(&mut h);
@@ -1200,7 +1297,7 @@ impl Editor {
         let links = self.links_key();
         // Rows whose look depends on editor state, not the document.
         let mut nonces = self.grid_overrides();
-        nonces.extend(self.image_nonces(focused).into_iter().chain(self.button_nonce()));
+        nonces.extend(self.image_nonces(focused).into_iter().chain(self.button_nonce()).chain(self.diagram_nonce(focused)));
         // Walking a long document costs ~1.5ms (1M chars): skip it when
         // nothing the rows depend on changed, as on every scrolling frame.
         let mut fh = FxHasher::default();
@@ -1779,6 +1876,7 @@ impl Editor {
                     .font_family(theme::DOC_UI_FONT)
                     .cursor(CursorStyle::IBeam)
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+                    .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_click))
                     .on_drag_move(cx.listener(Self::file_drag_move))
                     .on_drop(cx.listener(Self::drop_files))
                     .child(list(self.list.clone(), cx.processor(Self::render_item)).size_full()),
@@ -1875,15 +1973,15 @@ fn spec_for_feishu(&self, b: &Block, env: Env) -> TextSpec {
 
         let mut spec = TextSpec::body();
         if env.cell {
-            spec.size = 14.;
-            spec.line_height = 22.;
+            spec.size = crate::themes::doc_len(14.);
+            spec.line_height = crate::themes::doc_len(22.);
         }
         if let BlockKind::Heading { level, .. } = b.kind {
             let m = theme::heading_metrics(level);
-            spec.size = m.size;
-            spec.line_height = m.line_height;
+            spec.size = crate::themes::doc_len(m.size);
+            spec.line_height = crate::themes::doc_len(m.line_height);
             spec.weight = FontWeight::MEDIUM;
-            spec.letter_spacing = m.size * -0.02;
+            spec.letter_spacing = spec.size * -0.02;
         }
         spec.dim_marks = env.quote;
         if let Some(c) = env.color {
@@ -2223,9 +2321,10 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
 
         let id = b.id;
         let g = SharedString::from(format!("code-{}", id.0));
+        let line = crate::themes::doc_len(22.);
         let spec = TextSpec {
-            size: 14.,
-            line_height: 22.,
+            size: crate::themes::doc_len(14.),
+            line_height: line,
             weight: FontWeight::NORMAL,
             color: Theme::text_code(),
             mono: true,
@@ -2259,6 +2358,11 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
         // right-aligned), revealed on hover / while editing.
         let editing = self.focused && self.ed.core.sel.head.block == id;
         let folded = b.folded;
+        let show_code = matches!(b.kind, BlockKind::Code { show_code: true, .. });
+        let mermaid = !folded && lang == crate::mermaid::LANG && crate::mermaid::SUPPORTED;
+        // A Mermaid block shows its diagram, under the code while the caret is in it.
+        let reveal = editing && !self.ed.read_only;
+        let diagram = if mermaid && !show_code { self.diagram(b, reveal, 40., 20., cx) } else { None };
         // Handle hovered / its menu open (`.hovered`): light blue ring
         // over a clear body so the block tint shows; block-selected: blue
         // border on the gray body.
@@ -2421,6 +2525,18 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
                                         ),
                                 )
                             })
+                            .when(mermaid, |d| {
+                                d.child(
+                                    header_btn("code-view")
+                                        .child(icon(if show_code { "view-preview" } else { "code" }, 16., Theme::icon()))
+                                        .child(if show_code { crate::settings::tr("显示图表", "Show diagram") } else { crate::settings::tr("隐藏图表", "Hide diagram") })
+                                        .child(sep(-9.))
+                                        .on_mouse_down(MouseButton::Left, cx.listener(move |e, _, window, cx| {
+                                            cx.stop_propagation();
+                                            e.toggle_diagram(id, window, cx);
+                                        })),
+                                )
+                            })
                             .child(
                                 header_btn("code-copy")
                                     .child(icon("copy", 16., Theme::icon()))
@@ -2437,7 +2553,7 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
             )
             .child(fold_btn)
             .when(folded, |d| d.child(div().h(px(38.))))
-            .when(!folded, |d| {
+            .when(!folded && (diagram.is_none() || reveal), |d| {
                 d.child(
                     div()
                         .pt(px(40.))
@@ -2455,18 +2571,19 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
                                 .items_end()
                                 .font_family(theme::MONO_FONT)
                                 .text_size(px(14.))
-                                .line_height(px(22.))
+                                .line_height(px(line))
                                 .text_color(Theme::text_caption())
                                 .children(
                                     rows_per_line
                                         .iter()
                                         .enumerate()
-                                        .map(|(i, n)| div().h(px(22. * *n as f32)).child(format!("{}", i + 1))),
+                                        .map(|(i, n)| div().h(px(line * *n as f32)).child(format!("{}", i + 1))),
                                 ),
                         )
                         .child(self.code_column(id, wrap, el, 14.)),
                 )
             })
+            .children(diagram)
             .into_any_element()
     }
 }

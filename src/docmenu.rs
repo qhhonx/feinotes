@@ -1,5 +1,5 @@
 //! The header "…" menu: page width, find & replace, move, pin, star,
-//! duplicate, 下载为 PDF / Markdown, 复制为 Markdown, 打印, document info,
+//! 新建子文档, duplicate, 下载为 PDF / Markdown, 复制为 Markdown, 打印, document info,
 //! 阅读模式 and 显示引用列表 switches, delete.
 
 use crate::app::Workspace;
@@ -126,7 +126,9 @@ impl Workspace {
         match made {
             Ok(new) => {
                 let _ = self.store.set_width(&new, width);
-                let parent = self.entries.iter().find(|e| e.id == id).filter(|e| !e.meta.local()).and_then(|e| e.meta.parent.clone());
+                // A document with children is copied alone, beside its folder.
+                let row = self.row_of(id);
+                let parent = self.entries.iter().find(|e| e.id == row).filter(|e| !e.meta.local()).and_then(|e| e.meta.parent.clone());
                 if let Some(parent) = parent { let _ = self.store.set_parent(&new, Some(&parent)); }
                 Some(new)
             }
@@ -265,6 +267,9 @@ impl Workspace {
         };
         let (pin_id, star_id, mv_id, del_id, dup_id, print_id) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
         let rename = id.clone();
+        // 新建子文档 (#357): under a document of the library.
+        let child = !board_file && self.takes_children(&id);
+        let child_id = id.clone();
         let menu = popover()
             .id("doc-menu")
             .occlude()
@@ -340,6 +345,11 @@ impl Workspace {
                     })),
             )
             .child(divider())
+            .when(child, |d| d.child(
+                menu_item("dm-child", "plus", crate::settings::tr("新建子文档", "New child page"), false, false)
+                    .on_hover(hover_sub(None))
+                    .on_click(cx.listener(move |w, _, window, cx| { w.close_doc_menu(cx); w.new_child(&child_id, window, cx); })),
+            ))
             .when(!shared, |d| d.child(
                 menu_item("dm-copy", "copy", crate::settings::text("创建副本"), false, false)
                     .on_hover(hover_sub(None))
@@ -479,7 +489,7 @@ impl Workspace {
             Some(DocSub::Width) => Some((item_top(0, 0) - 1. - PAD, self.width_panel(width, cx).child(recorder()).into_any_element())),
             // Level the submenu's first item with 下载为.
             Some(DocSub::Download) => Some((
-                item_top(6 + extra_rows - hidden.0 - hidden_actions, 3 - hidden.1) - 1. - PAD,
+                item_top(6 + extra_rows + usize::from(child) - hidden.0 - hidden_actions, 3 - hidden.1) - 1. - PAD,
                 {
                     let pdf = id.clone();
                     popover()

@@ -59,7 +59,7 @@ impl Workspace {
         let (dirs, files): (Vec<PathBuf>, Vec<PathBuf>) = paths.iter().cloned().partition(|p| p.fs_is_dir());
         let (md, other): (Vec<PathBuf>, Vec<PathBuf>) = files.into_iter().partition(|p| is_markdown_path(p));
         if !other.is_empty() { self.import_paths(&other, None, true, window, cx); }
-        if !dirs.is_empty() { self.mount_dirs(&dirs, window, cx); }
+        if !dirs.is_empty() { self.add_roots(&dirs, window, cx); }
         let mut last = None;
         for p in &md {
             match self.store.open_local(p) {
@@ -84,7 +84,7 @@ impl Workspace {
             // `[[page]]`, looked up across the vault the way Obsidian does.
             Some(raw) => {
                 let (name, anchor) = crate::markdown::wiki_parts(raw);
-                let vault = crate::markdown::wiki_vault(&source, self.store.folder_dir(None).as_deref(), &self.store.mount_dirs());
+                let vault = crate::markdown::wiki_vault(&source, self.store.folder_dir(None).as_deref(), &self.store.root_dirs());
                 (crate::markdown::resolve_wiki(name, &source, &vault).unwrap_or_default(), anchor.to_string())
             }
             None => {

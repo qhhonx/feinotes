@@ -6,7 +6,8 @@ rev = "e2f00a41ac6789f0ae52b229567ad5715266e400"
 # Crate directories copied from the Zed repository, at their upstream paths.
 # macOS needs the first 15; Windows and Linux add gpui_windows, gpui_linux and
 # gpui_wgpu (checked with `cargo metadata --filter-platform` for each target).
-# gpui_web and gpui_ios are left out for now.
+# gpui_web is the website's live notebooks; gpui_ios is the iOS/iPadOS backend
+# (docs/design/mobile.md).
 crates = [
     "crates/gpui",
     "crates/gpui_platform",
@@ -27,6 +28,7 @@ crates = [
     "crates/gpui_linux",
     "crates/gpui_wgpu",
     "crates/gpui_web",
+    "crates/gpui_ios",
 ]
 
 # Directories dropped from every copied crate (not built for a non-member path

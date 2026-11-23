@@ -2414,7 +2414,9 @@ pub(crate) fn clipboard_image_data(img: &gpui::Image) -> Result<(std::borrow::Co
         ImageFormat::Gif => "gif",
         ImageFormat::Webp => "webp",
         ImageFormat::Bmp => "bmp",
-        ImageFormat::Svg | ImageFormat::Ico | ImageFormat::Pnm => return Err(BAD_FORMAT),
+        ImageFormat::Svg => return Err(BAD_FORMAT),
+        #[cfg(not(target_os = "ios"))]
+        ImageFormat::Ico | ImageFormat::Pnm => return Err(BAD_FORMAT),
         ImageFormat::Tiff => {
             let im = image::ImageReader::with_format(std::io::Cursor::new(&img.bytes), image::ImageFormat::Tiff)
                 .decode().map_err(|_| BAD_DIMS)?;

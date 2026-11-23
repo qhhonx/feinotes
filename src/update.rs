@@ -401,7 +401,7 @@ pub fn prompt(window: &mut Window, cx: &mut Context<crate::app::Workspace>) -> O
 
 enum Error { Unsupported, Failed(String) }
 
-fn platform() -> Option<&'static str> {
+pub(crate) fn platform() -> Option<&'static str> {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) { Some("macos-arm64") }
     else if cfg!(all(target_os = "macos", target_arch = "x86_64")) { Some("macos-x86_64") }
     else if cfg!(all(target_os = "windows", target_arch = "x86_64")) { Some("windows-x64") }
@@ -409,13 +409,17 @@ fn platform() -> Option<&'static str> {
     else { None }
 }
 
-fn package_name(version: &str, platform: &str) -> String {
+pub(crate) fn package_name(version: &str, platform: &str) -> String {
     if platform.starts_with("windows") { format!("quiet-md-{version}-{platform}-setup.exe") }
     else if platform == "linux-x86_64" { format!("quiet-md-{version}-x86_64.AppImage") }
     else { format!("quiet-md-{version}-{platform}.zip") }
 }
 
-fn override_url() -> Option<String> { std::env::var("QUIET_MD_UPDATE_URL").ok().filter(|u| !u.is_empty()) }
+/// The release self-test's local server and download folder (`selftest.rs`).
+static REDIRECT: std::sync::OnceLock<(String, PathBuf)> = std::sync::OnceLock::new();
+pub(crate) fn redirect(url: String, dir: PathBuf) { let _ = REDIRECT.set((url, dir)); }
+
+fn override_url() -> Option<String> { REDIRECT.get().map(|r| r.0.clone()).or_else(|| std::env::var("QUIET_MD_UPDATE_URL").ok().filter(|u| !u.is_empty())) }
 
 fn public_key() -> Option<minisign_verify::PublicKey> {
     minisign_verify::PublicKey::decode(KEY.trim()).ok().or_else(|| minisign_verify::PublicKey::from_base64(KEY.trim()).ok())
@@ -474,11 +478,12 @@ fn validate(m: &Manifest, platform: &str, testing: bool) -> Result<(), String> {
 }
 
 /// `bytes` carry a signature by `key` whose trusted comment is the package name.
-fn signed(bytes: &[u8], signature: &str, name: &str, key: &minisign_verify::PublicKey) -> bool {
+pub(crate) fn signed(bytes: &[u8], signature: &str, name: &str, key: &minisign_verify::PublicKey) -> bool {
     minisign_verify::Signature::decode(signature).is_ok_and(|sig| sig.trusted_comment() == name && key.verify(bytes, &sig, false).is_ok())
 }
 
 fn updates_dir() -> PathBuf {
+    if let Some((_, dir)) = REDIRECT.get() { return dir.clone() }
     let base = dirs::cache_dir().unwrap_or_else(fdl_core::vfs::temp_dir);
     if cfg!(target_os = "macos") { base.join("com.s1dashu.quietmd").join("updates") }
     else if cfg!(target_os = "linux") { base.join("quiet.md").join("updates").join(fdl_core::vfs::process_id().to_string()) }
@@ -538,12 +543,112 @@ fn curl_to(args: &[&str], stdout: Stdio) -> Result<Vec<u8>, String> {
 
 /// `curl` as every download here runs it (fonts too: font_downloads):
 /// HTTPS only, redirects too, unless `testing` (a test server may be plain
-/// http); the system's proxy settings, as curl reads them.
+/// http); the proxy from the environment, as curl reads it, else the system's.
 pub(crate) fn curl_command(testing: bool) -> Command {
     let proto = if testing { "=https,http" } else { "=https" };
     let mut c = command("curl");
     c.args(["-fsSL", "--proto", proto, "--proto-redir", proto, "--connect-timeout", "15"]);
+    if let Some(p) = system_proxy() { c.arg("-x").arg(&p.url).arg("--noproxy").arg(&p.bypass); }
     c
+}
+
+/// A proxy for curl's `-x` and the hosts that skip it, for `--noproxy`.
+#[derive(Debug, PartialEq)]
+struct Proxy { url: String, bypass: String }
+
+/// The proxy set in macOS's network settings or Windows's Internet Options,
+/// which curl does not read itself. None when the environment names a proxy
+/// (curl takes that one) and on Linux, where the environment is the convention.
+fn system_proxy() -> Option<Proxy> {
+    let env = ["https_proxy", "HTTPS_PROXY", "http_proxy", "all_proxy", "ALL_PROXY"];
+    if env.iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty())) { return None }
+    settings_proxy()
+}
+
+#[cfg(target_os = "macos")]
+fn settings_proxy() -> Option<Proxy> {
+    let out = Command::new("/usr/sbin/scutil").arg("--proxy").stdin(Stdio::null()).output().ok()?;
+    scutil_proxy(&String::from_utf8_lossy(&out.stdout))
+}
+
+#[cfg(target_os = "windows")]
+fn settings_proxy() -> Option<Proxy> {
+    let out = command("reg").args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"]).stdin(Stdio::null()).output().ok()?;
+    reg_proxy(&String::from_utf8_lossy(&out.stdout))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn settings_proxy() -> Option<Proxy> { None }
+
+/// `scutil --proxy`: the top-level keys of its dictionary (not the per-interface
+/// `__SCOPED__` ones) and the items of its ExceptionsList. HTTPS, else HTTP, else
+/// SOCKS (v5, the host resolved by the proxy). An automatic (PAC) setup is not read.
+#[cfg(any(target_os = "macos", test))]
+fn scutil_proxy(text: &str) -> Option<Proxy> {
+    let (mut keys, mut exceptions) = (std::collections::HashMap::new(), Vec::new());
+    let (mut depth, mut list) = (0, false);
+    for line in text.lines().map(str::trim) {
+        if line == "}" { depth -= 1; if depth == 1 { list = false } continue }
+        let (k, v) = line.split_once(" : ").unwrap_or((line, ""));
+        if depth == 1 { if v.ends_with('{') { list = k == "ExceptionsList" } else { keys.insert(k, v); } }
+        else if depth == 2 && list { exceptions.push(v) }
+        if line.ends_with('{') { depth += 1 }
+    }
+    let key = |kind: &str, k: &str| keys.get(&*format!("{kind}{k}")).copied().unwrap_or("");
+    let (kind, scheme) = [("HTTPS", "http"), ("HTTP", "http"), ("SOCKS", "socks5h")].into_iter()
+        .find(|(kind, _)| key(kind, "Enable") == "1" && !key(kind, "Proxy").is_empty())?;
+    let host = key(kind, "Proxy");
+    let host = if host.contains(':') { format!("[{host}]") } else { host.to_string() };
+    let url = match key(kind, "Port") { "" | "0" => format!("{scheme}://{host}"), port => format!("{scheme}://{host}:{port}") };
+    Some(Proxy { url, bypass: bypass(exceptions) })
+}
+
+/// `reg query` of Internet Settings: ProxyEnable, ProxyServer (`host:port` for
+/// every protocol, or `https=…;http=…;socks=…`) and ProxyOverride. A `socks=`
+/// server is SOCKS v4, as WinINet speaks it.
+#[cfg(any(target_os = "windows", test))]
+fn reg_proxy(text: &str) -> Option<Proxy> {
+    let value = |name: &str| text.lines().find_map(|l| {
+        let mut f = l.split_whitespace();
+        f.next()?.eq_ignore_ascii_case(name).then(|| f.skip(1).collect::<Vec<_>>().join(" "))
+    });
+    let enabled = value("ProxyEnable")?;
+    if u32::from_str_radix(enabled.trim_start_matches("0x"), 16).ok()? == 0 { return None }
+    let server = value("ProxyServer")?;
+    let entries: Vec<(&str, &str)> = server.split(';').map(str::trim).filter(|e| !e.is_empty())
+        .map(|e| if e.contains("://") { ("", e) } else { e.split_once('=').unwrap_or(("", e)) }).collect();
+    let (addr, scheme) = [("https", "http"), ("", "http"), ("http", "http"), ("socks", "socks4a")].into_iter()
+        .find_map(|(p, scheme)| entries.iter().find(|(q, a)| q.eq_ignore_ascii_case(p) && !a.is_empty()).map(|(_, a)| (*a, scheme)))?;
+    let url = if addr.contains("://") { addr.to_string() } else { format!("{scheme}://{addr}") };
+    Some(Proxy { url, bypass: bypass(value("ProxyOverride").as_deref().unwrap_or("").split(';')) })
+}
+
+/// The system's exceptions as curl's `--noproxy` list, after this machine's own
+/// addresses. `*.lan` and `.lan` become `lan` (curl matches its subdomains too),
+/// `169.254/16` and `10.*` become CIDR ranges; other wildcards and `<local>`
+/// (hosts without a dot) curl cannot say, so those go through the proxy.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn bypass<'a>(exceptions: impl IntoIterator<Item = &'a str>) -> String {
+    let mut hosts = vec!["localhost".to_string(), "127.0.0.1".into(), "::1".into()];
+    for h in exceptions.into_iter().filter_map(noproxy_host) { if !hosts.contains(&h) { hosts.push(h) } }
+    hosts.join(",")
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn noproxy_host(e: &str) -> Option<String> {
+    let e = e.trim().to_ascii_lowercase();
+    if e.is_empty() || e.starts_with('<') { return None }
+    if e == "*" { return Some(e) }
+    if let Some(d) = e.strip_prefix("*.").or_else(|| e.strip_prefix('.')) { return (!d.is_empty() && !d.contains('*')).then(|| d.to_string()) }
+    let (ip, bits) = match e.split_once('/') { Some((ip, b)) => (ip, Some(b.parse::<u32>().ok()?)), None => (&*e, None) };
+    let parts: Vec<&str> = ip.split('.').collect();
+    let num = |p: &str| p.parse::<u8>().is_ok();
+    let cidr = |octets: &[&str], bits: usize| { let mut o = octets.to_vec(); o.resize(4, "0"); format!("{}/{bits}", o.join(".")) };
+    if e.contains('*') {
+        let n = parts.iter().take_while(|p| num(p)).count();
+        return (bits.is_none() && (1..4).contains(&n) && parts[n..].iter().all(|p| *p == "*")).then(|| cidr(&parts[..n], 8 * n));
+    }
+    match bits { Some(b) if parts.len() < 4 && parts.iter().all(|p| num(p)) => Some(cidr(&parts, b as usize)), _ => Some(e) }
 }
 
 /// A command that opens no console window on Windows.
@@ -699,7 +804,69 @@ fn start_installer(_: &Path) -> Result<(), String> { Err("unsupported".into()) }
 
 #[cfg(test)]
 mod tests {
-    use super::{newer, offers, policy_comment, required_version, signed, validate, verify_policy, Manifest, Policy};
+    use super::{newer, offers, policy_comment, reg_proxy, required_version, scutil_proxy, signed, validate, verify_policy, Manifest, Policy, Proxy};
+
+    fn proxy(url: &str, bypass: &str) -> Option<Proxy> { Some(Proxy { url: url.into(), bypass: bypass.into() }) }
+
+    #[test]
+    fn macos_proxy_settings() {
+        let clash = "<dictionary> {
+  ExceptionsList : <array> {
+    0 : *.local
+    1 : 169.254/16
+    2 : 192.168.0.0/16
+    3 : 10.*
+    4 : example.com
+    5 : *foo*
+  }
+  ExcludeSimpleHostnames : 1
+  FTPPassive : 1
+  HTTPEnable : 1
+  HTTPPort : 7890
+  HTTPProxy : 127.0.0.1
+  HTTPSEnable : 1
+  HTTPSPort : 7891
+  HTTPSProxy : 127.0.0.1
+  SOCKSEnable : 1
+  SOCKSPort : 7892
+  SOCKSProxy : 127.0.0.1
+  __SCOPED__ : <dictionary> {
+    en0 : <dictionary> {
+      HTTPSEnable : 1
+      HTTPSPort : 1
+      HTTPSProxy : scoped.example
+    }
+  }
+}
+";
+        let bypass = "localhost,127.0.0.1,::1,local,169.254.0.0/16,192.168.0.0/16,10.0.0.0/8,example.com";
+        assert_eq!(scutil_proxy(clash), proxy("http://127.0.0.1:7891", bypass));
+        let http = clash.replace("HTTPSEnable : 1\n  HTTPSPort", "HTTPSEnable : 0\n  HTTPSPort");
+        assert_eq!(scutil_proxy(&http), proxy("http://127.0.0.1:7890", bypass));
+        let socks = "<dictionary> {\n  SOCKSEnable : 1\n  SOCKSPort : 1080\n  SOCKSProxy : ::1\n}\n";
+        assert_eq!(scutil_proxy(socks), proxy("socks5h://[::1]:1080", "localhost,127.0.0.1,::1"));
+        // No proxy: only the defaults (this Mac mini's own output), or an automatic one.
+        assert_eq!(scutil_proxy("<dictionary> {\n  ExceptionsList : <array> {\n    0 : *.local\n    1 : 169.254/16\n  }\n  FTPPassive : 1\n}\n"), None);
+        assert_eq!(scutil_proxy("<dictionary> {\n  ProxyAutoConfigEnable : 1\n  ProxyAutoConfigURLString : http://127.0.0.1/pac\n}\n"), None);
+        assert_eq!(scutil_proxy(""), None);
+    }
+
+    #[test]
+    fn windows_proxy_settings() {
+        let reg = |enable: &str, server: &str| format!("\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\r\n    \
+            ProxyEnable    REG_DWORD    {enable}\r\n    ProxyServer    REG_SZ    {server}\r\n    \
+            ProxyOverride    REG_SZ    localhost;127.*;10.*;172.16.*;192.168.*;*.lan;<local>\r\n");
+        let bypass = "localhost,127.0.0.1,::1,127.0.0.0/8,10.0.0.0/8,172.16.0.0/16,192.168.0.0/16,lan";
+        assert_eq!(reg_proxy(&reg("0x1", "127.0.0.1:7890")), proxy("http://127.0.0.1:7890", bypass));
+        assert_eq!(reg_proxy(&reg("0x0", "127.0.0.1:7890")), None);
+        assert_eq!(reg_proxy(&reg("0x1", "http=127.0.0.1:8080;https=127.0.0.1:8443;socks=127.0.0.1:1080")), proxy("http://127.0.0.1:8443", bypass));
+        assert_eq!(reg_proxy(&reg("0x1", "http=127.0.0.1:8080;socks=127.0.0.1:1080")), proxy("http://127.0.0.1:8080", bypass));
+        assert_eq!(reg_proxy(&reg("0x1", "socks=127.0.0.1:1080")), proxy("socks4a://127.0.0.1:1080", bypass));
+        assert_eq!(reg_proxy(&reg("0x1", "socks5://127.0.0.1:1080")), proxy("socks5://127.0.0.1:1080", bypass));
+        assert_eq!(reg_proxy(&reg("0x1", "ftp=127.0.0.1:21")), None);
+        // Enabled once, the server since cleared: no ProxyServer line at all.
+        assert_eq!(reg_proxy("    ProxyEnable    REG_DWORD    0x1\r\n"), None);
+    }
 
     #[test]
     fn versions_compare_numerically() {

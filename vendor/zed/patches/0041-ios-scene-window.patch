@@ -1,0 +1,20 @@
+gpui_ios set the window's frame to the screen's bounds. iPadOS 26 runs apps in resizable windows, often smaller than the screen: the view still reported the full screen, so the app drew past its window (cut off on the right, and after rotation only partly visible) and ignored resizing. A scene's UIWindow is sized by the scene and follows it; take the initial bounds from the window.
+
+diff --git a/crates/gpui_ios/src/ios/window.rs b/crates/gpui_ios/src/ios/window.rs
+index 3e81578a11695cd53145b7174f3531e6a95d6a22..e42db72e2346111c2664af3f8933be3aceb3b84f 100644
+--- a/crates/gpui_ios/src/ios/window.rs
++++ b/crates/gpui_ios/src/ios/window.rs
+@@ -310,9 +310,11 @@ impl IosWindow {
+         let window_scene = window_scene.as_deref();
+         let (window, screen_bounds_cg, scale) = if let Some(scene) = window_scene {
+             let screen = scene.screen();
+-            let bounds = screen.bounds();
++            // quiet.md: the scene sizes its window. iPadOS 26 runs apps in
++            // resizable windows smaller than the screen; a frame set to the
++            // screen's bounds drew past the window and ignored resizing.
+             let window = UIWindow::initWithWindowScene(UIWindow::alloc(main_thread), scene);
+-            window.setFrame(bounds);
++            let bounds = window.bounds();
+             (window, bounds, screen.scale())
+         } else {
+             let screen = UIScreen::mainScreen(main_thread);

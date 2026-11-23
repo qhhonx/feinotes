@@ -5,7 +5,7 @@ use crate::{app::Workspace, settings::tr, theme::Theme};
 
 pub struct Shortcuts { base: Vec<KeyBinding>, custom: BTreeMap<String, String> }
 impl Global for Shortcuts {}
-fn path() -> std::path::PathBuf { crate::store::Store::internal_dir().join("shortcuts.json") }
+fn path() -> std::path::PathBuf { crate::store::Store::settings_dir().join("shortcuts.json") }
 /// The system-wide quick note hotkey unless the user picked another.
 pub const GLOBAL_DEFAULT: &str = "alt-space";
 pub fn global_key() -> String { saved("global").unwrap_or_else(|| GLOBAL_DEFAULT.into()) }
@@ -29,7 +29,7 @@ pub fn mac() -> bool {
         static MAC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *MAC.get_or_init(|| web_sys::window().map(|w| w.navigator()).is_some_and(|n| n.platform().is_ok_and(|p| p.starts_with("Mac")) || n.user_agent().is_ok_and(|a| a.contains("Mac OS X") && !a.contains("Mobile"))))
     }
-    #[cfg(not(target_family = "wasm"))] { cfg!(target_os = "macos") }
+    #[cfg(not(target_family = "wasm"))] { cfg!(target_vendor = "apple") }
 }
 
 pub fn init(cx: &mut App) {

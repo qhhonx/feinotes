@@ -1,0 +1,102 @@
+iOS leaves some trait numbers out of CTFont traits: Helvetica and Arial lack them entirely, some CJK fallback faces lack the slant. font-kit's Font::properties() unwraps all four, so load_family skipped those faces ("failed to resolve font 'Arial'") and is_italic panicked during layout. Read the italic bit and the traits with defaults (font_properties) instead. macOS faces report every trait, so their result is unchanged.
+
+diff --git a/crates/gpui_apple/src/text_system.rs b/crates/gpui_apple/src/text_system.rs
+index 430f37fa336d7149a5e1d8797952d254108d8708..c3b3c5c412f4081f1e33e2fdfeadad901810b0a2 100644
+--- a/crates/gpui_apple/src/text_system.rs
++++ b/crates/gpui_apple/src/text_system.rs
+@@ -17,8 +17,7 @@ use core_text::{
+     font::CTFont,
+     font_collection::CTFontCollectionRef,
+     font_descriptor::{
+-        CTFontDescriptor, kCTFontDefaultOrientation, kCTFontSlantTrait, kCTFontSymbolicTrait, kCTFontWeightTrait,
+-        kCTFontWidthTrait,
++        CTFontDescriptor, kCTFontDefaultOrientation, kCTFontItalicTrait, kCTFontSlantTrait, kCTFontSymbolicTrait, kCTFontWeightTrait,
+     },
+     line::CTLine,
+     string_attributes::kCTFontAttributeName,
+@@ -213,7 +212,7 @@ impl PlatformTextSystem for AppleTextSystem {
+ 
+             let candidate_properties = candidates
+                 .iter()
+-                .map(|font_id| lock.fonts[font_id.0].properties())
++                .map(|font_id| font_properties(&lock.fonts[font_id.0]))
+                 .collect::<SmallVec<[_; 4]>>();
+ 
+             let ix = font_kit::matching::find_best_match(
+@@ -382,31 +381,11 @@ impl AppleTextSystemState {
+             // We've seen a number of panics in production caused by calling font.properties()
+             // which unwraps a downcast to CFNumber. This is an attempt to avoid the panic,
+             // and to try and identify the incalcitrant font.
+-            let traits = font.native_font().all_traits();
+-            if unsafe {
+-                !(traits
+-                    .get(kCTFontSymbolicTrait)
+-                    .downcast::<CFNumber>()
+-                    .is_some()
+-                    && traits
+-                        .get(kCTFontWidthTrait)
+-                        .downcast::<CFNumber>()
+-                        .is_some()
+-                    && traits
+-                        .get(kCTFontWeightTrait)
+-                        .downcast::<CFNumber>()
+-                        .is_some()
+-                    && traits
+-                        .get(kCTFontSlantTrait)
+-                        .downcast::<CFNumber>()
+-                        .is_some())
+-            } {
+-                log::error!(
+-                    "Failed to read traits for font {:?} (PostScript name {:?})",
+-                    font.full_name(),
+-                    font.postscript_name(),
+-                );
+-                continue;
++            // quiet.md: font.properties() unwraps four trait numbers. iOS leaves
++            // some out (Helvetica, Arial), so they are read with defaults
++            // (font_properties) instead of skipping the face.
++            if font.native_font().all_traits().get(unsafe { kCTFontSymbolicTrait }).downcast::<CFNumber>().is_none() {
++                log::warn!("font {:?} has no symbolic traits; reading defaults", font.full_name());
+             }
+ 
+             let Some(postscript_name) = font.postscript_name() else {
+@@ -495,7 +474,9 @@ impl AppleTextSystemState {
+     }
+ 
+     fn is_italic(&self, font_id: FontId) -> bool {
+-        self.oblique.contains(&font_id) || self.fonts[font_id.0].properties().style != FontkitStyle::Normal
++        // quiet.md: font_properties, not font-kit's properties(): iOS leaves the
++        // slant number out of some fallback faces' traits and properties() unwraps it.
++        self.oblique.contains(&font_id) || font_properties(&self.fonts[font_id.0]).style != FontkitStyle::Normal
+     }
+ 
+     fn is_emoji(&self, font_id: FontId) -> bool {
+@@ -842,6 +823,28 @@ fn fontkit_weight(value: FontWeight) -> FontkitWeight {
+     FontkitWeight(value.0)
+ }
+ 
++/// quiet.md: font-kit's `Font::properties` without its unwraps: a missing
++/// trait reads as regular (iOS omits some, see load_family).
++fn font_properties(font: &FontKitFont) -> font_kit::properties::Properties {
++    let ct = font.native_font();
++    let traits = ct.all_traits();
++    let number = |key| traits.find(key).and_then(|v| v.downcast::<CFNumber>()).and_then(|n| n.to_f64());
++    let italic = ct.symbolic_traits() & kCTFontItalicTrait != 0 || number(unsafe { kCTFontSlantTrait }).is_some_and(|s| s.abs() > 0.01);
++    // Core Text weights at the CSS hundreds, as font-kit maps them.
++    const W: [f64; 9] = [-0.7, -0.5, -0.23, 0.0, 0.2, 0.3, 0.4, 0.6, 0.8];
++    let w = number(unsafe { kCTFontWeightTrait }).unwrap_or(0.0);
++    let weight = match W.iter().position(|&x| w <= x) {
++        Some(0) => 100.0,
++        Some(i) => 100.0 * i as f64 + 100.0 * (w - W[i - 1]) / (W[i] - W[i - 1]),
++        None => 900.0,
++    };
++    font_kit::properties::Properties {
++        style: if italic { FontkitStyle::Italic } else { FontkitStyle::Normal },
++        weight: FontkitWeight(weight as f32),
++        stretch: Default::default(),
++    }
++}
++
+ fn fontkit_style(style: FontStyle) -> FontkitStyle {
+     match style {
+         FontStyle::Normal => FontkitStyle::Normal,

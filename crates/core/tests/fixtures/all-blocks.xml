@@ -59,6 +59,11 @@
 }</code></pre>
 <pre lang="plaintext"><code></code></pre>
 <pre lang="bash" folded="true"><code>被折叠的代码</code></pre>
+<pre lang="mermaid"><code>flowchart LR
+    A[开始] --&gt; B{判断}
+    B --&gt;|是| C[结束]</code></pre>
+<pre lang="mermaid" view="code"><code>sequenceDiagram
+    A-&gt;&gt;B: 你好</code></pre>
 <hr/>
 <callout emoji="💡" background-color="light-orange" border-color="orange">
   <p>提示</p>

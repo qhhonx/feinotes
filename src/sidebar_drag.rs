@@ -262,7 +262,7 @@ impl Workspace {
     pub(crate) fn move_folder_drag(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(d) = self.folder_drag.active.as_mut() else { return };
         d.at = at;
-        if !d.started && (f32::from(at.x - d.start.x).hypot(f32::from(at.y - d.start.y)) >= 4.) {
+        if !d.started && crate::shared_store::root_of_row(&d.id).is_none() && (f32::from(at.x - d.start.x).hypot(f32::from(at.y - d.start.y)) >= 4.) {
             // A shared child is only a projection in either sidebar tree.
             if d.navigation_only {
                 self.folder_drag.active = None;
@@ -452,16 +452,20 @@ impl Workspace {
         let Some(movement) = self.folder_drag.pending.front().cloned() else { return };
         self.folder_drag.saving = true;
         let history = movement.history;
-        let mut writer = self.store.tree_writer();
+        let Some((key, mut writer)) = self.store.tree_writer(Some(&movement.id)) else { self.folder_drag.saving = false; self.folder_drag.pending.pop_front(); return; };
+        // Moves stay inside a root (W7); a root's row is its top level.
+        let allowed = self.store.same_root(&movement.id, movement.parent.as_deref());
+        let (parent, before) = (self.store.real_parent(movement.parent.as_deref()).map(str::to_string), self.store.real_parent(movement.before.as_deref()).map(str::to_string));
         let task = cx.background_executor().spawn(async move {
             let journal = writer.track_file_changes();
-            let result = writer.move_in_tree(&movement.id, movement.parent.as_deref(), movement.before.as_deref());
+            let result = allowed.and_then(|_| writer.move_in_tree(&movement.id, parent.as_deref(), before.as_deref()));
             let restored = writer.list();
             (result, restored, journal.take())
         });
         cx.spawn(async move |this, cx| {
             let (result, restored, changes) = task.await;
             let _ = this.update(cx, |w, cx| {
+                let restored = w.store.merge_entries(&key, restored);
                 w.store.adopt_listing(&restored);
                 w.folder_drag.pending.pop_front();
                 w.folder_drag.saving = false;
@@ -520,7 +524,8 @@ impl Workspace {
         let section = if shared { crate::sidebar::SidebarSection::Shared } else { crate::sidebar::SidebarSection::Personal };
         let renaming = self.rename.as_ref().and_then(|rename| self.sidebar_rename(&rename.id, section))
             .filter(|rename| rows.iter().any(|row| row.entry.id == rename.id)).map(|r| r.id.clone());
-        self.folder_drag.parents = self.drag_entries().iter().filter_map(|e| e.meta.parent.clone()).collect();
+        let notes: std::collections::HashSet<&str> = self.entries.iter().filter_map(|e| e.note.as_deref()).collect();
+        self.folder_drag.parents = self.drag_entries().iter().filter(|e| !notes.contains(e.id.as_str())).filter_map(|e| e.meta.parent.clone()).collect();
         let high = crate::settings::motion_high();
         // The visible band in this list's coordinates, from last frame's layout. Both edges are
         // measured against the list itself (sections above it scroll too), and padded so a
@@ -884,6 +889,14 @@ impl Workspace {
     fn sidebar_click(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let on_icon = std::mem::take(&mut self.folder_drag.icon_press) && self.folder_drag.has_children(id);
         let all = std::mem::take(&mut self.folder_drag.icon_alt);
+        // A document with children opens; its chevron folds it.
+        if let Some(note) = self.entries.iter().find(|e| e.id == id).and_then(|e| e.note.clone()) {
+            if on_icon {
+                if !self.expanded.remove(id) { self.expanded.insert(id.to_string()); }
+                cx.notify();
+            } else { self.open(&note, window, cx); }
+            return;
+        }
         if self.drag_entries().iter().any(|e| e.id == id && e.meta.folder.is_some()) {
             let shown = self.view == crate::app::View::Folder && self.sidebar_row_selected(crate::sidebar::SidebarSection::Personal, id);
             if on_icon || shown {

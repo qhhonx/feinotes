@@ -50,7 +50,7 @@ impl FolderItem {
         crate::store::Entry { id: self.id.clone(), title: self.title.clone(), icon: self.icon.clone(),
             meta: crate::store::Meta { parent: Some(self.parent.clone()), folder: self.folder.then(|| self.title.clone()),
                 share_root: Some(scope.note.clone()), created: self.created, modified: self.modified, order: self.order, markdown: self.markdown,
-                kind: self.kind, ..Default::default() }, body: Default::default(), reminders: vec![], links: vec![] }
+                kind: self.kind, ..Default::default() }, body: Default::default(), reminders: vec![], links: vec![], note: None, root: String::new() }
     }
 }
 

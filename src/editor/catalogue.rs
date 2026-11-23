@@ -478,7 +478,8 @@ impl Editor {
         // A list that scrolls ends 44 below its last row: GPUI 0.2's
         // uniform_list counted the bottom padding twice.
         .pb(px(if scrolls { 44. } else { 22. }));
-        div().w(px(width)).child(list).into_any_element()
+        // A list that scrolls keeps the wheel: the page under it stays put.
+        div().w(px(width)).when(scrolls, |d| d.on_scroll(|_, _, cx| cx.stop_propagation())).child(list).into_any_element()
     }
 }
 

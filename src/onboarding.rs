@@ -337,6 +337,9 @@ pub(crate) fn library_in(dir: PathBuf) -> PathBuf {
 #[derive(Clone, Copy, PartialEq)]
 enum Page { Setup, Import }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Pick { New, Open, More }
+
 pub struct Onboarding {
     focus: FocusHandle,
     film: Option<film::Film>,
@@ -348,7 +351,13 @@ pub struct Onboarding {
     /// Over a running app's window (⌘⌥⇧O, Settings): a look only, nothing is written.
     replay: bool,
     page: Page,
+    /// 新建文件夹: where a new, empty root folder would go.
     root: PathBuf,
+    /// 打开文件夹: folders already on this computer, opened where they are
+    /// (W12, the main choice); none means the new folder above.
+    open: Vec<PathBuf>,
+    /// The found and picked folders go in as copies (导入副本), not opened.
+    copy: bool,
     /// 界面语言: the system's at first, applied as it is picked.
     lang: crate::settings::Lang,
     /// The language menu is open, with this one under the keys.
@@ -407,7 +416,7 @@ impl Onboarding {
         let cut_at = now + Duration::from_secs_f32(HOLD);
         Onboarding {
             focus,
-            film: film::decode(), film_tex: None, opened: now, cut_at, replay, page: Page::Setup, root,
+            film: film::decode(), film_tex: None, opened: now, cut_at, replay, page: Page::Setup, root, open: vec![], copy: false,
             lang: crate::settings::prefs().lang(), lang_menu: None, lang_anchor: Default::default(),
             hotkey: crate::shortcuts::global_key(), recording: false, hotkey_error: None,
             picked: vec![], found: None, show_all: false, chosen: vec![], error: None, scripted, incoming: Some(incoming), importing: None, _ticker: ticker,
@@ -441,16 +450,22 @@ impl Onboarding {
         self.finish(window, cx);
     }
 
-    fn pick_folder(&mut self, for_library: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// `Pick::New`: where the new folder goes; `Pick::Open`: folders to open
+    /// where they are; `Pick::More`: one more folder for the second page.
+    fn pick_folder(&mut self, what: Pick, window: &mut Window, cx: &mut Context<Self>) {
         let _ = window;
         let picked = crate::devtools::take_pick();
-        let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(tr("选择", "Choose").into()), #[cfg(not(target_os = "ios"))] extensions: None }));
+        let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: what == Pick::Open, prompt: Some(tr("选择", "Choose").into()), #[cfg(not(target_os = "ios"))] extensions: None }));
         cx.spawn(async move |this, cx| {
             let paths = match prompt { Some(p) => p.await.ok().and_then(Result::ok).flatten(), None => picked };
-            let Some(dir) = paths.and_then(|p| p.into_iter().next()) else { return };
+            let Some(dirs) = paths.filter(|p| !p.is_empty()) else { return };
             let _ = this.update(cx, |w, cx| {
-                if for_library { w.root = library_in(dir); w.error = None; }
-                else if !w.picked.contains(&dir) { w.picked.push(dir); }
+                match what {
+                    Pick::New => { w.root = library_in(dirs[0].clone()); w.open.clear(); }
+                    Pick::Open => for d in dirs { if !w.open.contains(&d) { w.open.push(d); } },
+                    Pick::More => for d in dirs { if !w.picked.contains(&d) { w.picked.push(d); } },
+                }
+                w.error = None;
                 cx.notify();
             });
         }).detach();
@@ -532,30 +547,45 @@ impl Onboarding {
             if let Some((_, t)) = self.film_tex.take() { let _ = window.drop_image(t); }
             return cx.emit(Done);
         }
-        let root = self.root.clone();
-        let existed = crate::guides::seeded(&root).unwrap_or(false);
-        let set = crate::store::Store::set_root_dir(root.clone()).and_then(|_| if self.scripted { Ok(()) } else { crate::guides::initialize(&root) });
-        if let Err(e) = set {
-            self.error = Some(format!("{}{e}", tr("无法在这里创建文档库：", "Couldn't create the library here: ")));
-            return cx.notify();
+        // 工作区: the folders picked open where they are, else a new one (W12).
+        let fixed = std::env::var_os("QUIET_MD_HOME").is_some();
+        // A test run's one folder (`QUIET_MD_HOME`) is the root; it gets the guides as a new folder would.
+        let home = crate::store::Store::legacy_root();
+        let new_root = (self.open.is_empty() && !fixed).then(|| self.root.clone());
+        let existed = crate::guides::seeded(new_root.as_ref().unwrap_or(&home)).unwrap_or(false);
+        if fixed && !self.scripted { let _ = crate::guides::initialize(&home); }
+        let mut ws = fdl_core::workspace::Workspace::load();
+        let mut failed: Vec<String> = vec![];
+        if let Some(root) = &new_root {
+            let made = if self.scripted { Ok(()) } else { crate::guides::initialize(root) };
+            if let Err(e) = made.map_err(|e| e.to_string()).and_then(|_| ws.add(root).map(|_| ()).or_else(|e| match e { fdl_core::workspace::AddError::Open(_) => Ok(()), e => Err(e.to_string()) })) {
+                self.error = Some(format!("{}{e}", tr("无法在这里创建文件夹：", "Couldn't create the folder here: ")));
+                return cx.notify();
+            }
+        }
+        let others: Vec<PathBuf> = self.open.iter().cloned().chain(if self.copy && new_root.is_some() { vec![] } else { self.imports().into_iter().map(|(p, _)| p).collect() }).collect();
+        for d in others {
+            if let Err(e) = ws.add(&d) && !matches!(e, fdl_core::workspace::AddError::Open(_) | fdl_core::workspace::AddError::Inside(_)) { failed.push(format!("{}：{e}", short_path(&d))); }
         }
         PENDING.store(false, Ordering::Relaxed);
-        // The chosen library may already hold preferences (one synced from another Mac).
+        let target = new_root.clone();
+        cx.set_global(crate::shared_store::SharedStore::with_workspace(ws));
         crate::settings::load();
         save_lang(self.lang);
         crate::settings::apply_appearance(&crate::settings::prefs().appearance);
         crate::settings::sync_dark(cx);
         crate::themes::load(&crate::settings::prefs().theme_id(), false, || cx.text_system().all_font_names());
-        let imports = self.imports();
-        if imports.is_empty() { return self.hand_over(existed, None, window, cx); }
+        let open_error = (!failed.is_empty()).then(|| crate::localized_format!("有文件夹没能打开：{}", "Some folders could not be opened: {}", failed.join("；")));
+        let imports = if self.copy { self.imports() } else { vec![] };
+        let Some(target) = target.filter(|_| !imports.is_empty()) else { return self.hand_over(existed, open_error, window, cx); };
         // Copy the notes in before the main window opens, off the main thread,
         // so the button's spinner keeps moving.
         self.importing = Some(Instant::now());
         cx.notify();
-        let work = cx.background_executor().spawn(async move { import_all(&imports) });
+        let work = cx.background_executor().spawn(async move { import_all(&target, &imports) });
         cx.spawn_in(window, async move |this, cx| {
             let failed = work.await;
-            let _ = this.update_in(cx, |w, window, cx| w.hand_over(existed, failed, window, cx));
+            let _ = this.update_in(cx, |w, window, cx| w.hand_over(existed, failed.or(open_error), window, cx));
         }).detach();
     }
 
@@ -597,12 +627,23 @@ impl Onboarding {
                 .child(canvas(move |b, _, _| anchor.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
                 .relative()
                 .on_click(cx.listener(move |w, _, _, cx| { w.lang_menu = if open { None } else { Some(current) }; cx.notify(); })));
+        // Where notes live (W12): a folder already here, opened where it is, comes
+        // first; a new folder is the other choice, ticked while none is picked.
+        let opening = !self.open.is_empty();
+        let open_desc: SharedString = if opening { self.open.iter().map(|p| short_path(p)).collect::<Vec<_>>().join("、").into() }
+            else { tr("用电脑上已有的文件夹，比如 Obsidian 库或 git 仓库，文件就地编辑", "Use a folder you already have, such as an Obsidian vault or a git repository; files are edited where they are").into() };
+        let open_card = card()
+            .child(card_icon("folder-input"))
+            .child(card_text(tr("打开文件夹", "Open a folder").into(), open_desc, false))
+            .child(soft_button("onb-open", if opening { tr("再选…", "Add…") } else { tr("打开…", "Open…") }).on_click(cx.listener(|w, _, window, cx| w.pick_folder(Pick::Open, window, cx))))
+            .when(opening, |d| d.child(soft_button("onb-open-clear", tr("清除", "Clear")).on_click(cx.listener(|w, _, _, cx| { w.open.clear(); cx.notify(); }))));
         let lib = card()
+            .when(opening, |d| d.opacity(0.55))
             .child(card_icon("folder"))
-            .child(card_text(short_path(&self.root).into(), (if cfg!(target_os = "macos") { tr("文档以文件保存在这里，在访达里也能直接打开", "Documents are saved here as files you can open in Finder") }
+            .child(card_text(crate::localized_format!("新建文件夹 · {}", "New folder · {}", short_path(&self.root)).into(), (if cfg!(target_os = "macos") { tr("文档以文件保存在这里，在访达里也能直接打开", "Documents are saved here as files you can open in Finder") }
                 else if cfg!(target_os = "windows") { tr("文档以文件保存在这里，在文件资源管理器里也能直接打开", "Documents are saved here as files you can open in File Explorer") }
                 else { tr("文档以文件保存在这里，在文件管理器里也能直接打开", "Documents are saved here as files you can open in your file manager") }).into(), false))
-            .child(soft_button("onb-change", tr("更改…", "Change…")).on_click(cx.listener(|w, _, window, cx| w.pick_folder(true, window, cx))));
+            .child(soft_button("onb-change", tr("更改…", "Change…")).on_click(cx.listener(|w, _, window, cx| w.pick_folder(Pick::New, window, cx))));
         let hotkey = cfg!(target_os = "macos").then(|| {
             let key = if self.recording { String::new() } else { self.hotkey.clone() };
             let (desc, error) = match (self.hotkey_error, self.recording) {
@@ -626,6 +667,7 @@ impl Onboarding {
                 .child(lifted(over, 15., 23., false, true, tr("一个又快又安静的本地文档应用。", "A fast, quiet, local document app."))))
             .child(div().w_full().max_w(px(560.)).mt(px(40.)).flex().flex_col().gap(px(12.))
                 .child(lang)
+                .child(open_card)
                 .child(lib)
                 .children(hotkey)
                 .children(self.error.clone().map(|e| note_owned(e, true))))
@@ -663,8 +705,8 @@ impl Onboarding {
 
     fn import_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut pick_rows = vec![
-            row(tr("导入文件夹", "Import a folder"), Some(tr("Obsidian、Typora 或任何放着 Markdown 的文件夹", "Obsidian, Typora or any folder of Markdown").into()),
-                soft_button("onb-pick", tr("选择…", "Choose…")).on_click(cx.listener(|w, _, window, cx| w.pick_folder(false, window, cx)))).into_any_element(),
+            row(tr("打开其他文件夹", "Open another folder"), Some(tr("Obsidian、Typora 或任何放着 Markdown 的文件夹", "Obsidian, Typora or any folder of Markdown").into()),
+                soft_button("onb-pick", tr("选择…", "Choose…")).on_click(cx.listener(|w, _, window, cx| w.pick_folder(Pick::More, window, cx)))).into_any_element(),
         ];
         for (i, p) in self.picked.iter().enumerate() {
             pick_rows.push(row(short_path(p), None, soft_button(("onb-unpick", i), tr("移除", "Remove"))
@@ -694,16 +736,21 @@ impl Onboarding {
             let all = !can.is_empty() && can.iter().all(|&i| self.chosen.get(i).copied().unwrap_or(false));
             let head = div().w_full().px(px(4.)).flex().items_center().justify_between()
                 .child(lifted(over, 12., 16., false, true, crate::localized_format!("在这台电脑上找到 {} 个文档库", "Document libraries found on this computer ({})", found.len())))
-                .when(can.len() > 1, |d| d.child(soft_button("onb-all", if all { tr("全不选", "Select none") } else { tr("全选", "Select all") })
-                    .when(over, |b| b.bg(hsla(0., 0., 0., 0.28)).text_color(gpui::white()).hover(|s| s.bg(hsla(0., 0., 0., 0.4))))
+                .when(can.len() > 1, |d| d.child(soft_button_hover("onb-all", if all { tr("全不选", "Select none") } else { tr("全选", "Select all") }, if over { hsla(0., 0., 0., 0.4) } else { Theme::fill_hover_strong() })
+                    .when(over, |b| b.bg(hsla(0., 0., 0., 0.28)).text_color(gpui::white()))
                     .on_click(cx.listener(move |w, _, _, cx| { for &i in &can { if let Some(c) = w.chosen.get_mut(i) { *c = !all; } } cx.notify(); }))));
             (head, rows)
         });
         // Auto margins centre it while it fits; taller, it starts at the top and scrolls.
         div().id("onb-scroll").size_full().overflow_y_scroll().flex().flex_col().items_center().px(px(48.)).pt(px(56.)).pb(px(88.))
             .child(div().my_auto().flex_none().w_full().max_w(px(560.)).flex().flex_col().gap(px(24.))
-                .child(heading(over, tr("带上已有的文档", "Import your documents"), tr("导入的是副本，原来的文件不会被改动。也可以跳过，以后从菜单导入。", "Imports are copies; your files stay as they are. You can skip this and import later.")))
+                .child(heading(over, tr("带上已有的文档", "Import your documents"), if self.copy { tr("导入的是副本，原来的文件不会被改动。也可以跳过，以后从菜单导入。", "Imports are copies; your files stay as they are. You can skip this and import later.") }
+                    else { tr("选中的文件夹会直接打开，文件留在原处。也可以跳过，以后从菜单打开。", "The folders you pick open where they are; the files stay put. You can skip this and open them later.") }))
                 .child(sheet(None, pick_rows))
+                // 导入副本 needs a folder to copy into: the new one.
+                .when(self.open.is_empty(), |d| d.child(sheet(None, vec![div().id("onb-copy").cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+                    .on_click(cx.listener(|w, _, _, cx| { w.copy = !w.copy; cx.notify(); }))
+                    .child(row(tr("改为导入副本", "Import copies instead"), Some(tr("复制到新文件夹里，和原来的文件夹分开", "Copy them into the new folder, apart from the originals").into()), tick(self.copy))).into_any_element()])))
                 .children(found.map(|(head, rows)| sheet(Some(head.into_any_element()), rows)))
                 .children(self.error.clone().map(|e| note_owned(e, true))))
             .into_any_element()
@@ -713,19 +760,21 @@ impl Onboarding {
     /// step marks in the middle, the main button bottom right.
     fn chrome(&self, cx: &mut Context<Self>) -> Div {
         let n = self.imports().len();
-        let label = match self.page { Page::Setup => tr("下一步", "Next"), Page::Import if n == 0 => tr("开始使用", "Get started"), Page::Import => tr("导入并开始", "Import and start") };
+        let label = match self.page { Page::Setup => tr("下一步", "Next"), Page::Import if n == 0 => tr("开始使用", "Get started"), Page::Import if self.copy && self.open.is_empty() => tr("导入并开始", "Import and start"), Page::Import => tr("打开并开始", "Open and start") };
         let over = self.film.is_some();
         let mark = |on: bool| div().w(px(20.)).h(px(3.)).rounded(px(2.)).bg(match (over, on) {
             (true, true) => gpui::white(), (true, false) => hsla(0., 0., 1., 0.4), (false, true) => Theme::text(), (false, false) => Theme::fill_hover_strong(),
         });
         let soft = if over { hsla(0., 0., 1., 0.9) } else { Theme::text_caption() };
+        // Over the film the links sit on a dark veil that darkens on hover.
+        let veil_hover = if over { hsla(0., 0., 0., 0.4) } else { Theme::fill_hover() };
         div().absolute().inset_0()
             .when(self.importing.is_none(), |d| d.child(div().absolute().top(px(10.)).right(px(16.))
-                .child(crate::settings::link_button("onb-skip", tr("跳过", "Skip")).text_color(soft).when(over, |d| d.bg(hsla(0., 0., 0., 0.28)).hover(|s| s.bg(hsla(0., 0., 0., 0.4)))).on_click(cx.listener(|w, _, window, cx| w.skip(window, cx))))))
+                .child(crate::settings::link_button_hover("onb-skip", tr("跳过", "Skip"), veil_hover).text_color(soft).when(over, |d| d.bg(hsla(0., 0., 0., 0.28))).on_click(cx.listener(|w, _, window, cx| w.skip(window, cx))))))
             .child(div().absolute().left_0().right_0().bottom(px(40.)).flex().justify_center().gap(px(6.))
                 .child(mark(self.page == Page::Setup)).child(mark(self.page == Page::Import)))
             .when(self.page == Page::Import && self.importing.is_none(), |d| d.child(div().absolute().left(px(24.)).bottom(px(30.))
-                .child(crate::settings::link_button("onb-back", tr("‹ 上一步", "‹ Back")).text_size(px(13.)).text_color(soft).when(over, |d| d.bg(hsla(0., 0., 0., 0.28)).hover(|s| s.bg(hsla(0., 0., 0., 0.4))))
+                .child(crate::settings::link_button_hover("onb-back", tr("‹ 上一步", "‹ Back"), veil_hover).text_size(px(13.)).text_color(soft).when(over, |d| d.bg(hsla(0., 0., 0., 0.28)))
                     .on_click(cx.listener(|w, _, _, cx| w.go(Page::Setup, cx))))))
             .child(div().absolute().right(px(24.)).bottom(px(28.)).child(match self.importing {
                 // The label stays (transparent) so the button keeps its width.
@@ -738,13 +787,14 @@ impl Onboarding {
 
 /// Copy each folder into the library (one write for all of them); what went
 /// wrong, for a toast in the main window.
-fn import_all(dirs: &[(PathBuf, Option<String>)]) -> Option<String> {
-    let mut store = match crate::store::Store::open() { Ok(s) => s, Err(e) => return Some(e.to_string()) };
-    let (mut failed, batch) = (0, store.begin_batch().is_ok());
+fn import_all(root: &Path, dirs: &[(PathBuf, Option<String>)]) -> Option<String> {
+    let mut store = match crate::store::Store::open_root(root) { Ok(s) => s, Err(e) => return Some(e.to_string()) };
+    let (mut failed, mut cloud, batch) = (0, 0, store.begin_batch().is_ok());
     for (dir, name) in dirs {
         match crate::transfer::scan_folder(dir, 0) {
             Some(t) if t.files > crate::transfer::IMPORT_FOLDER_LIMIT => failed += t.files,
             Some(mut t) => {
+                cloud += t.cloud;
                 if let Some(n) = name { t.name = n.clone(); }
                 crate::transfer::import_tree(&mut store, &t, None, &mut failed);
             }
@@ -754,7 +804,7 @@ fn import_all(dirs: &[(PathBuf, Option<String>)]) -> Option<String> {
     let saved = if batch { store.end_batch() } else { Ok(()) };
     match saved {
         Err(e) => Some(crate::localized_format!("导入未能完成：{}", "Import could not finish: {}", crate::settings::diagnostic(&e.to_string()))),
-        Ok(()) => (failed > 0).then(|| crate::localized_count!(failed, "有 {failed} 个文件未能导入", "{failed} file could not be imported", "{failed} files could not be imported")),
+        Ok(()) => crate::transfer::import_problems(failed, cloud),
     }
 }
 
@@ -836,9 +886,12 @@ fn card_text(title: SharedString, desc: SharedString, error: bool) -> Div {
 
 /// Every lesser action on these pages: no outline, a grey tint that deepens
 /// under the pointer. The one main action is the dark pill.
-fn soft_button(id: impl Into<ElementId>, label: &'static str) -> Stateful<Div> {
+fn soft_button(id: impl Into<ElementId>, label: &'static str) -> Stateful<Div> { soft_button_hover(id, label, Theme::fill_hover_strong()) }
+
+/// `soft_button` with its own hover fill (one `.hover()` per element, see `link_button_hover`).
+fn soft_button_hover(id: impl Into<ElementId>, label: &'static str, hover: Hsla) -> Stateful<Div> {
     div().id(id).flex_none().h(px(28.)).px(px(12.)).flex().items_center().justify_center().rounded(px(8.)).cursor_pointer()
-        .bg(Theme::fill_hover()).hover(|s| s.bg(Theme::fill_hover_strong()))
+        .bg(Theme::fill_hover()).hover(move |s| s.bg(hover))
         .text_size(px(13.)).line_height(px(18.)).text_color(Theme::text()).child(crate::settings::label(label))
 }
 

@@ -19,16 +19,20 @@ use std::collections::{HashMap, HashSet};
 pub(crate) struct Tree<'a> {
     roots: Vec<&'a Entry>,
     kids: HashMap<&'a str, Vec<&'a Entry>>,
+    /// Folder → its 正文 (#357), shown as the folder's own row, not among its children.
+    notes: HashMap<&'a str, &'a str>,
 }
 
 impl<'a> Tree<'a> {
     pub fn new(entries: &'a [Entry]) -> Self {
         let ids: HashSet<&str> = entries.iter().filter(|e| e.meta.folder.is_some()).map(|e| e.id.as_str()).collect();
         let parent = |e: &'a Entry| e.meta.parent.as_deref().filter(|p| ids.contains(p) && *p != e.id);
+        let notes: HashMap<&str, &str> = entries.iter().filter_map(|e| Some((e.id.as_str(), e.note.as_deref()?))).collect();
+        let is_note: HashSet<&str> = notes.values().copied().collect();
         let mut roots: Vec<&Entry> = vec![];
         let mut kids: HashMap<&str, Vec<&Entry>> = HashMap::new();
         // 本机文件 are not in 我的文档: the sidebar lists them on their own.
-        for e in entries.iter().filter(|e| !e.meta.local()) {
+        for e in entries.iter().filter(|e| !e.meta.local() && !is_note.contains(e.id.as_str())) {
             match parent(e) {
                 Some(p) => kids.entry(p).or_default().push(e),
                 None => roots.push(e),
@@ -42,7 +46,7 @@ impl<'a> Tree<'a> {
                 stack.extend(kids.get(id).map_or(vec![], |v| v.iter().map(|e| e.id.as_str()).collect()));
             }
         }
-        for e in entries.iter().filter(|e| !e.meta.local()) {
+        for e in entries.iter().filter(|e| !e.meta.local() && !is_note.contains(e.id.as_str())) {
             if !seen.contains(e.id.as_str()) {
                 seen.insert(&e.id);
                 if let Some(v) = parent(e).and_then(|p| kids.get_mut(p)) {
@@ -57,7 +61,7 @@ impl<'a> Tree<'a> {
         for v in kids.values_mut() {
             v.sort_by(|a, b| (a.meta.place(), &a.id).cmp(&(b.meta.place(), &b.id)));
         }
-        Tree { roots, kids }
+        Tree { roots, kids, notes }
     }
 
     pub fn children(&self, id: Option<&str>) -> &[&'a Entry] {
@@ -80,12 +84,13 @@ impl<'a> Tree<'a> {
         out
     }
 
-    /// `id` and every page under it.
+    /// `id` and every page under it, folders' 正文 included.
     pub fn subtree(&self, id: &str) -> Vec<String> {
         let mut out = vec![id.to_string()];
         let mut i = 0;
         while i < out.len() {
-            let kids: Vec<String> = self.children(Some(&out[i])).iter().map(|e| e.id.clone()).collect();
+            let mut kids: Vec<String> = self.notes.get(out[i].as_str()).map(|n| n.to_string()).into_iter().collect();
+            kids.extend(self.children(Some(&out[i])).iter().map(|e| e.id.clone()));
             out.extend(kids);
             i += 1;
         }
@@ -117,8 +122,37 @@ impl Workspace {
             out.push(p);
             cur = Some(p);
         }
+        // A folder's 正文 is the folder's row: the folder is not above it.
+        if out.first().is_some_and(|f| f.note.as_deref() == Some(id)) { out.remove(0); }
         out.reverse();
         out
+    }
+
+    /// The row document `id` is shown as: its folder when it is the folder's
+    /// 正文 (#357), so 删除, 移动 and 重命名 take the whole folder.
+    pub(crate) fn row_of(&self, id: &str) -> String {
+        self.entries.iter().find(|e| e.note.as_deref() == Some(id)).map_or_else(|| id.to_string(), |f| f.id.clone())
+    }
+
+    /// The document row `id` opens: a folder's 正文, or itself.
+    pub(crate) fn note_or(&self, id: &str) -> String {
+        self.entries.iter().find(|e| e.id == id).and_then(|e| e.note.clone()).unwrap_or_else(|| id.to_string())
+    }
+
+    /// Whether 新建子文档 is offered on `id`'s row: a document of the library, or one with children.
+    pub(crate) fn takes_children(&self, id: &str) -> bool {
+        self.entries.iter().find(|e| e.id == id).is_some_and(|e| match e.meta.folder {
+            Some(_) => e.note.is_some(),
+            None => !e.meta.local() && e.meta.kind.is_doc() && self.store.can_have_children(id),
+        })
+    }
+
+    /// The folder rows show their 正文's title and icon, also while it is typed.
+    pub(crate) fn sync_note_rows(&mut self) {
+        let notes: HashMap<String, usize> = self.entries.iter().enumerate().filter(|(_, e)| e.note.is_some()).map(|(i, e)| (e.note.clone().unwrap(), i)).collect();
+        if notes.is_empty() { return; }
+        let picks: Vec<(usize, String, Option<String>)> = self.entries.iter().filter_map(|e| notes.get(&e.id).map(|&f| (f, e.title.clone(), e.icon.clone()))).collect();
+        for (f, title, icon) in picks { let e = &mut self.entries[f]; e.title = title; e.icon = icon; }
     }
 
     /// Expand the sidebar down to `id`.
@@ -140,11 +174,13 @@ impl Workspace {
         self.sync_links(cx);
     }
 
-    /// The row "+" → 文档: a new page under `parent`, opened.
+    /// A new page under `parent`, opened: in a folder (the folder's "+" →
+    /// 文档), or 新建子文档 under a document or a document with children (#357),
+    /// which puts a document without children in a folder of its name first.
     pub fn new_child(&mut self, parent: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let parent = if self.entries.iter().any(|e| e.id == parent && e.meta.folder.is_some()) { parent.to_string() }
-            else { return; };
-        let parent = parent.as_str();
+        let Some(e) = self.entries.iter().find(|e| e.id == parent) else { return };
+        let plain_folder = e.meta.folder.is_some() && e.note.is_none();
+        if !plain_folder && !self.takes_children(parent) { return; }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if !self.is_shared() && crate::cloud_sync::shared::original::owner_room(&self.entries, parent).is_some() {
             self.create_doc(false, Some(parent.into()), window, cx); return;
@@ -159,22 +195,28 @@ impl Workspace {
             return;
         }
         let file_before = self.store.track_file_changes();
-        let made = self.store.create().and_then(|(id, _)| self.store.set_parent(&id, Some(parent)).map(|_| id));
+        let made = if plain_folder { self.store.create_from_in(&crate::model::Document::default(), Some(parent)) }
+            else { self.store.create_child(parent, &crate::model::Document::default()) };
         match made {
             Ok(id) => {
                 self.entries = self.store.list();
                 self.sort();
-                self.expanded.insert(parent.to_string());
+                if let Some(folder) = self.entries.iter().find(|e| e.id == id).and_then(|e| e.meta.parent.clone()) {
+                    self.expanded.insert(folder.clone());
+                    self.reveal_in_tree(&folder);
+                }
                 self.open(&id, window, cx);
+                if let Some(ed) = &self.editor { let f = ed.read(cx).focus.clone(); window.focus(&f, cx); }
             }
             Err(e) => self.status = crate::app::SaveStatus::Failed(crate::localized_format!("新建失败：{}", "Could not create document: {}", crate::settings::diagnostic(&e.to_string()))),
         }
-        self.remember_files(file_before, crate::settings::tr("新建文档", "New document"));
+        self.remember_files(file_before, if plain_folder { crate::settings::tr("新建文档", "New document") } else { crate::settings::tr("新建子文档", "New subdocument") });
         cx.notify();
     }
 
     pub(crate) fn open_move(&mut self, ids: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.row_menu = None;
+        let ids: Vec<String> = ids.iter().map(|id| self.row_of(id)).collect();
         let search = cx.new(|cx| {
             let mut f = TextField::new("搜索目标位置", cx);
             f.placeholder_color = Theme::text_placeholder();
@@ -208,7 +250,8 @@ impl Workspace {
         let target = target.or_else(|| self.current_room(cx).filter(|room| room.scope.folder).map(|room| room.scope.note));
         let file_before = self.store.track_file_changes();
         let mut failed = false;
-        for id in ids {
+        let ids: Vec<String> = ids.iter().map(|id| self.row_of(id)).collect();
+        for id in &ids {
             let inside = target.as_ref().is_some_and(|t| Tree::new(&self.entries).subtree(id).contains(t));
             if inside {
                 continue;
@@ -303,7 +346,7 @@ impl Workspace {
         };
         let title = |t: String| div().ml(px(9.)).flex_1().min_w_0().text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(t));
         let page_icon = |e: &Entry| match &e.icon {
-            _ if e.meta.folder.is_some() => icon("folder", 16., Theme::icon()).into_any_element(),
+            _ if e.meta.folder.is_some() && e.note.is_none() => icon("folder", 16., Theme::icon()).into_any_element(),
             Some(em) => div().size(px(16.)).flex_none().flex().items_center().justify_center().text_size(px(14.)).child(em.clone()).into_any_element(),
             None => icon(crate::search::file_glyph(&e.meta), 16., Theme::icon()).into_any_element(),
         };

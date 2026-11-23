@@ -87,6 +87,10 @@ Snapshot: Zed `e2f00a41ac67` (2026-11-15). Legacy numbers refer to the GPUI 0.2.
 | 0036 web-focus-reentry | New | `gpui_web/events.rs`, `gpui_web/window.rs` | A browser focus or blur can fire synchronously while GPUI is handling another event (focusing the input-method mirror on a press, or the site moving focus into the iframe). Refreshing the window's active state then re-entered the window update and panicked with "attempted to read a window that is already on the stack", after which the app stopped drawing and taking input (the site's live notebook froze on the first click). Refresh the active state on the next turn instead. |
 | 0037 rtl-decorations | New | `gpui/text_system/line.rs` | `paint_line` and `paint_line_background` look a glyph's decoration run up again from the start when its byte index runs backwards. Right-to-left glyphs come in visual order, so the forward-only lookup painted a coloured, underlined or highlighted Arabic span with the previous run's style. Lines without such scripts never go backwards and paint as before. |
 | 0038 windows-rtl | New | `gpui_windows/direct_write.rs` | DirectWrite lists a right-to-left run's glyphs in reading order and advances them leftwards from the run's right edge. Place them left to right and return them in visual order, as CoreText does. Lines whose first letter is right-to-left get a right-to-left reading direction with a finite width and no wrapping, so run origins stay within the line and neutrals and embedded Latin words sit where macOS puts them. Laid out in reading order from the left, Arabic came out reversed and its joining forms fell apart (the same bug users report in Zed). Left-to-right runs in left-to-right lines take the unchanged path. |
+| 0039 ios-font-traits | New | `gpui_apple/text_system.rs` | iOS leaves trait numbers out of some faces (Helvetica and Arial lack them, some CJK fallback faces lack the slant). font-kit's `properties()` unwraps them, so those families failed to load and `is_italic` panicked during layout. Read the italic bit and the traits with defaults (`font_properties`). macOS faces report every trait; their result is unchanged. See docs/design/mobile-spike.md. |
+| 0040 ios-key-events | New | `gpui_ios/text_input.rs`, `gpui_ios/window.rs`, `gpui_ios/Cargo.toml` | gpui_ios sent no key events. `pressesBegan` turns hardware keys GPUI binds (⌘/⌃ combinations, Return, Delete, Tab, Esc, arrows, Home/End, Page Up/Down) into KeyDown/KeyUp, leaving plain typing and composition to UIKit. The soft keyboard's Return (outside composition) and Delete at the start of the editable range become `enter` and `backspace`, so an editor whose input handler covers one block can split and merge blocks. |
+| 0041 ios-scene-window | New | `gpui_ios/window.rs` | Let the scene size its window instead of setting the screen's bounds. iPadOS 26 runs apps in resizable windows; with a screen-sized frame the app drew past its window and ignored rotation and resizing. |
+| 0045 windows-render-to-image | New | `gpui_windows/window.rs`, `gpui_windows/directx_renderer.rs` | Offscreen `render_to_image` is no longer limited to `test-support` builds, as on macOS. The release self-test (`src/selftest.rs`) checks that the window draws and saves a PNG of a failing scenario. |
 
 ## Retired patches
 
@@ -194,7 +198,7 @@ Of 40 checks, 28 passed on macOS (including the macOS portion of 0028), two were
 
 ## Upstream crates omitted
 
-The snapshot omits gpui_ios. Add it to the crates array in upstream.toml if needed. It includes gpui_web for the website's live notebooks. See [Web build](../web/README.md).
+None of the platform backends are omitted. gpui_web serves the website's live notebooks (see [Web build](../web/README.md)). gpui_ios, added on 2026-11-22 at the same snapshot for the iOS/iPadOS work in [docs/design/mobile.md](../docs/design/mobile.md), builds only for `target_os = "ios"`; desktop and web builds do not compile it.
 
 ## Other upstream capabilities and measurements
 
@@ -208,4 +212,4 @@ The snapshot omits gpui_ios. Add it to the crates array in upstream.toml if need
 
 ## Fei Notes additions
 
-Patch `0039-feinotes-universal-links` ports the previous product `application:continueUserActivity:restorationHandler:` delegate callback to `gpui_macos`. Browsing activities enter the same URL handler as explicit URL opens, preserving CloudKit invitation handling. The old `vendor/gpui` layout is retired with upstream.
+Patch `0046-feinotes-universal-links` ports the previous product `application:continueUserActivity:restorationHandler:` delegate callback to `gpui_macos`. Browsing activities enter the same URL handler as explicit URL opens, preserving CloudKit invitation handling. The old `vendor/gpui` layout is retired with upstream.

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 #[cfg(test)]
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{LazyLock, RwLock};
 
 // ---- what a theme can set
@@ -445,6 +445,33 @@ fn pick_font(chosen: Option<&'static str>, st: &Style, key: &str) -> &'static st
         _ => st.font(key),
     }
 }
+
+/// 设置 › 正文字号: how many px the body text moves from the theme's
+/// `page.size` (0 follows the theme). Headings, the title, tables and code go
+/// by the same ratio, so a theme keeps its proportions. Callers scale through
+/// `doc_len`; `Style::num` stays the theme's own value (it is also what a
+/// duplicated theme writes out).
+static DOC_STEP: AtomicI32 = AtomicI32::new(0);
+
+/// The `Preferences::doc_size` choices and their step: 小 / 标准 / 大 / 特大,
+/// like 界面字号's −1 / +2 with one more step up.
+pub fn doc_step(pref: &str) -> i32 { match pref { "small" => -1, "large" => 2, "xlarge" => 4, _ => 0 } }
+pub fn set_doc_size(pref: &str) {
+    if DOC_STEP.swap(doc_step(pref), Ordering::Relaxed) != doc_step(pref) { touch(); }
+}
+
+/// A type metric of the note (font size or line height) at the reader's
+/// 正文字号, for the active theme.
+pub fn doc_len(n: f32) -> f32 { doc_len_in(active(), n) }
+
+/// `doc_len` for a theme that need not be the active one (外观's sample).
+pub fn doc_len_in(st: &Style, n: f32) -> f32 { scale_len(n, st.num("page.size"), DOC_STEP.load(Ordering::Relaxed)) }
+
+/// Whole pixels keep baselines crisp; step 0 returns `n` untouched.
+fn scale_len(n: f32, body: f32, step: i32) -> f32 {
+    if step == 0 || body <= 0. { return n }
+    (n * (body + step as f32).max(1.) / body).round()
+}
 /// Bumped whenever what is drawn may change (the editor re-measures its rows).
 pub fn generation() -> u64 { GENERATION.load(Ordering::Relaxed) }
 /// Something every theme draws changed (light / dark).
@@ -452,7 +479,12 @@ pub fn touch() { GENERATION.fetch_add(1, Ordering::Relaxed); }
 pub fn themes() -> std::sync::RwLockReadGuard<'static, Vec<Theme>> { THEMES.read().unwrap() }
 /// Files that could not be read at all, from the last load.
 pub fn errors() -> Vec<String> { ERRORS.read().unwrap().clone() }
-pub fn dir() -> PathBuf { crate::store::Store::internal_dir().join("themes") }
+/// The themes folder: the root in front's (W21), else this computer's.
+pub fn dir() -> PathBuf {
+    if crate::FEI_NOTES { return crate::store::Store::settings_dir().join("themes"); }
+    let root = crate::store::Store::root_dir();
+    if root.join(crate::store::INTERNAL).exists() { crate::store::Store::themes_dir_of(&root) } else { crate::store::Store::settings_dir().join("themes") }
+}
 
 // ---- CSS
 
@@ -1025,6 +1057,18 @@ const FEISHU_DESCRIPTION: &str = "飞书文档的正文样式：16 / 26，标题
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn document_size_scales_by_the_body_step() {
+        // Empty (and anything unknown) is the theme's size, untouched.
+        assert_eq!((doc_step(""), doc_step("huge")), (0, 0));
+        assert_eq!(scale_len(55.25, 16., 0), 55.25);
+        // craft: 15 → 14 / 17 / 19; headings and lines keep the ratio, in whole px.
+        assert_eq!([doc_step("small"), doc_step("large"), doc_step("xlarge")].map(|s| scale_len(15., 15., s)), [14., 17., 19.]);
+        assert_eq!(scale_len(22., 15., doc_step("large")), 25.);
+        assert_eq!(scale_len(28., 15., doc_step("xlarge")), 35.);
+        assert_eq!(scale_len(13., 16., doc_step("small")), 12.);
+    }
+
     #[test]
     fn document_font_covers_prose_not_code() {
         let st = Style::plain(true);

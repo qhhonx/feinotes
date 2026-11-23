@@ -42,7 +42,7 @@ fn script_path() -> Option<std::path::PathBuf> {
     }
     None
 }
-pub fn scripted() -> bool { script_path().is_some() }
+pub fn scripted() -> bool { script_path().is_some() || crate::selftest::active() }
 fn shots_dir() -> String {
     if let Ok(path) = std::env::var("FDL_SHOTS") { return path; }
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]

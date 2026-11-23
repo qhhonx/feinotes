@@ -87,7 +87,7 @@ pub fn parent_of(window: &Window) -> usize {
 }
 
 #[cfg(target_os = "macos")]
-mod native {
+pub(crate) mod native {
     use super::*;
     use core_graphics::geometry::{CGPoint, CGRect, CGSize};
     use objc::declare::ClassDecl;
@@ -133,7 +133,7 @@ mod native {
         decl.register()
     }
 
-    unsafe fn ns_string(s: &str) -> *mut Object {
+    pub(crate) unsafe fn ns_string(s: &str) -> *mut Object {
         unsafe {
             let o: *mut Object = msg_send![class!(NSString), alloc];
             let o: *mut Object = msg_send![o, initWithBytes: s.as_ptr() length: s.len() encoding: 4usize];
@@ -145,31 +145,44 @@ mod native {
         CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
     }
 
-    pub async fn run(html: String, title: String, job: Job, ns_view: usize, cx: &mut AsyncApp) -> Result<bool, String> {
-        let width_px = (PAPER.0 - 2. * MARGIN_X) * PX_PER_PT;
-        let (holder, web) = unsafe {
+    /// A WKWebView `width` points wide in a window far off screen (never
+    /// shown), loading `html`: (window, web view). `setup` gets its
+    /// configuration first. Also Mermaid's (mermaid.rs).
+    pub(crate) fn offscreen(width: f64, html: &str, setup: impl FnOnce(*mut Object)) -> (*mut Object, *mut Object) {
+        unsafe {
             let holder: *mut Object = msg_send![class!(NSWindow), alloc];
             let holder: *mut Object = msg_send![holder,
-                initWithContentRect: rect(-20000., -20000., width_px, 1000.)
+                initWithContentRect: rect(-20000., -20000., width, 1000.)
                 styleMask: 0usize
                 backing: 2usize
                 defer: NO];
             let _: () = msg_send![holder, setReleasedWhenClosed: NO];
             let conf: *mut Object = msg_send![class!(WKWebViewConfiguration), new];
+            setup(conf);
             let web: *mut Object = msg_send![class!(WKWebView), alloc];
-            let web: *mut Object = msg_send![web, initWithFrame: rect(0., 0., width_px, 1000.) configuration: conf];
+            let web: *mut Object = msg_send![web, initWithFrame: rect(0., 0., width, 1000.) configuration: conf];
             let _: () = msg_send![conf, release];
             let _: () = msg_send![holder, setContentView: web];
             let nil: *mut Object = std::ptr::null_mut();
-            let _: *mut Object = msg_send![web, loadHTMLString: ns_string(&html) baseURL: nil];
+            let _: *mut Object = msg_send![web, loadHTMLString: ns_string(html) baseURL: nil];
             (holder, web)
-        };
-        let cleanup = move || unsafe {
+        }
+    }
+
+    /// Releases what `offscreen` made.
+    pub(crate) fn close(holder: *mut Object, web: *mut Object) {
+        unsafe {
             let _: () = msg_send![holder, setContentView: std::ptr::null_mut::<Object>()];
             let _: () = msg_send![web, release];
             let _: () = msg_send![holder, close];
             let _: () = msg_send![holder, release];
-        };
+        }
+    }
+
+    pub async fn run(html: String, title: String, job: Job, ns_view: usize, cx: &mut AsyncApp) -> Result<bool, String> {
+        let width_px = (PAPER.0 - 2. * MARGIN_X) * PX_PER_PT;
+        let (holder, web) = offscreen(width_px, &html, |_| {});
+        let cleanup = move || close(holder, web);
         let started = web_time::Instant::now();
         loop {
             cx.background_executor().timer(Duration::from_millis(50)).await;
@@ -236,7 +249,7 @@ mod native {
 }
 
 #[cfg(target_os = "windows")]
-mod webview2 {
+pub(crate) mod webview2 {
     use super::*;
     use std::cell::RefCell;
     use std::fmt::Write as _;
@@ -261,11 +274,11 @@ mod webview2 {
     const MARGIN_Y: f64 = 40. / 72.;
     const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
 
-    type Slot<T> = Rc<RefCell<Option<T>>>;
+    pub(crate) type Slot<T> = Rc<RefCell<Option<T>>>;
 
     /// Waits on the UI thread (whose message loop delivers WebView2's
     /// callbacks) until a callback fills `slot`.
-    async fn wait<T>(slot: &Slot<T>, limit: Option<Duration>, cx: &mut AsyncApp) -> Option<T> {
+    pub(crate) async fn wait<T>(slot: &Slot<T>, limit: Option<Duration>, cx: &mut AsyncApp) -> Option<T> {
         let started = Instant::now();
         loop {
             if let Some(v) = slot.borrow_mut().take() {
@@ -357,7 +370,7 @@ mod webview2 {
 
     /// `path` as a file:// URL; WebView2's NavigateToString stops at 2 MB,
     /// less than a page with a few embedded images.
-    fn file_url(path: &std::path::Path) -> String {
+    pub(crate) fn file_url(path: &std::path::Path) -> String {
         let mut url = String::from("file:///");
         for b in path.to_string_lossy().replace('\\', "/").bytes() {
             if b.is_ascii_alphanumeric() || b"/:-_.~".contains(&b) {
@@ -401,6 +414,17 @@ mod webview2 {
 
     /// `Err(None)` is a plain failure, `Err(Some(_))` one with its own message.
     async fn print_in(host: HWND, page: &std::path::Path, job: Job, choice: Option<Choice>, cx: &mut AsyncApp) -> Result<bool, Option<String>> {
+        let (env, controller) = controller(host, cx).await?;
+        let res = print_with(&env, &controller, page, job, choice, cx).await;
+        unsafe {
+            let _ = controller.Close();
+        }
+        res
+    }
+
+    /// A WebView2 environment and a controller hosted in `host`. Also
+    /// Mermaid's (mermaid.rs). `Err` as for `print_in`.
+    pub(crate) async fn controller(host: HWND, cx: &mut AsyncApp) -> Result<(ICoreWebView2Environment, ICoreWebView2Controller), Option<String>> {
         // The profile can't live next to the exe (Program Files is read-only).
         let data = dirs::data_local_dir().unwrap_or_else(fdl_core::vfs::temp_dir).join("quiet.md").join("WebView2");
         let env_slot: Slot<windows::core::Result<ICoreWebView2Environment>> = Rc::default();
@@ -433,11 +457,7 @@ mod webview2 {
             .map_err(|_| None)?;
         }
         let controller = wait(&ctl_slot, Some(LOAD_TIMEOUT), cx).await.ok_or(None)?.map_err(|_| None)?;
-        let res = print_with(&env, &controller, page, job, choice, cx).await;
-        unsafe {
-            let _ = controller.Close();
-        }
-        res
+        Ok((env, controller))
     }
 
     async fn print_with(

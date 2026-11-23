@@ -1,0 +1,18 @@
+<title cover=".assets/guides/covers/landscape-2.jpg" cover-y="0.45">图片、附件与封面</title>
+<p>有时候，一张图胜过一大段文字。你可以在笔记里放入截图、文档和其他文件，再给常用页面配上图标和封面，一眼就能认出来。</p>
+<h1>图片</h1><h2>添加图片</h2><ol><li>在斜杠菜单中选择“图片”，然后选择文件。</li><li>从访达把图片拖进文档。</li><li>按 <code>⌘ V</code> 粘贴剪贴板里的图片。在 macOS 上，按 <code>⌘ ⌃ ⇧ 4</code> 可以把框选的区域截图到剪贴板。</li></ol><p>支持 JPG、PNG、GIF、WebP 和 BMP 格式，每张图片不超过 20 MB。图片会复制一份到文档文件夹里，所以移动原文件也不会影响笔记。</p>
+<img src=".assets/guides/sample-photo.jpg" width="690" caption="图片下方可以加一行描述" align="center"/>
+<h2>调整大小与对齐</h2><p>点击图片将它选中，拖动四角的手柄即可等比缩放。通过工具栏可以把图片左对齐、居中或右对齐。</p>
+<h2>裁剪</h2><p>点击“裁剪”，调整裁剪框，然后点击“保存裁剪”或在框内双击。裁剪不会改动原始文件，之后随时可以重置图片。</p><img src=".assets/guides/sample-photo.jpg" width="690" crop="0.25,0.1,0.75,0.9" caption="同一张图片的中间部分，裁剪后原图保持不变" align="center"/>
+<h2>描述</h2><p>点击“添加描述”，可以写上图片来源、日期或一句简短说明。导出时描述会一并保留。</p>
+<h2>图片查看器</h2><p>再次点击已选中的图片，即可打开查看器。</p><table><colgroup><col width="300"/><col width="390"/></colgroup><tbody><tr><td><p>放大 / 缩小</p></td><td><p><code>⌘ +</code> / <code>⌘ -</code>，或 <code>↑</code> / <code>↓</code></p></td></tr><tr><td><p>适应页面 / 原始尺寸</p></td><td><p><code>⌘ 0</code> / <code>⌘ 1</code></p></td></tr><tr><td><p>上一张 / 下一张</p></td><td><p><code>←</code> / <code>→</code></p></td></tr><tr><td><p>旋转 / 关闭</p></td><td><p><code>R</code> / <code>Esc</code></p></td></tr></tbody></table>
+<h2>网络图片</h2><p>从网页粘贴来的内容，可能通过网址引用图片。在 设置 › 通用 中可以打开“自动下载网络图片”。关闭时，网络图片先显示为占位，等你点击后才加载。</p>
+<h1>附件与视频</h1><p>在斜杠菜单中选择“视频或文件”，或者直接把文件拖进文档。PDF、Office 文档、音频、视频和压缩包都会复制一份到文档文件夹里。</p>
+<h2>附件的三种展示方式</h2><h3>卡片视图</h3><p>以紧凑的卡片显示文件的图标、名称和大小。</p><figure view-type="Card"><source path=".assets/guides/quiet-md-cheatsheet.pdf" name="quiet-md-cheatsheet.pdf"/></figure>
+<h3>预览视图</h3><p>直接在笔记里展示支持的内容：PDF、Office 文档、图片、文本和代码。音频文件可以显示播放器。</p><figure view-type="Preview"><source path=".assets/guides/meeting-notes.md" name="meeting-notes.md"/></figure>
+<h3>文本视图</h3><p>在句子中间提到某个文件，比如这份参考资料：<source path=".assets/guides/quiet-md-cheatsheet.pdf" name="quiet-md-cheatsheet.pdf"/>。</p>
+<h2>打开与另存</h2><ul><li>再次点击已选中的文件，会用 macOS 的“快速查看”打开它。点击“全屏”按钮效果相同。</li><li>点击“下载”，可以把文件另存一份到文档文件夹之外。</li><li>MP4、MOV 和 M4V 支持视频预览。其他格式可以保留为卡片，用外部应用打开。</li></ul>
+<h1>文档图标</h1><p>把指针移到标题上方，点击“添加图标”，即可选择一个表情符号。点击已有的图标，可以搜索、按分类浏览、随机挑选或移除。</p><p>这些指南使用的是默认图标。在侧栏中，带有子文档的文档仍显示自己的图标，并多出一个展开箭头。</p>
+<h1>封面</h1><p>封面是显示在文档标题上方的一条横幅。这篇指南就有封面，其他大多数指南没有。</p><h2>选择封面</h2><p>把指针移到标题上方，点击“添加封面”。可以从官方图库中挑选，也可以本地上传自己的图片。宽幅图片效果最好，推荐尺寸约 2000 × 400 像素。</p>
+<grid><column width-ratio="0.5"><h3>官方图库</h3><p>浏览渐变、山峦等各种图案，也可以点“随机”让它帮你挑一张。</p></column><column width-ratio="0.5"><h3>自己的图片</h3><p>可以使用 Mac 里的照片、插画或项目横幅。</p></column></grid>
+<h2>调整封面</h2><p>把指针移到封面上，可以更换、调整位置或移除封面。调整位置时拖动图片，选好要显示的区域后点击确认。</p><callout emoji="🎨" background-color="light-orange" border-color="orange"><p>封面会显示在主页的文档卡片上。不同的封面能帮你一眼认出熟悉的文档。</p></callout><hr/><p>下一篇：<cite type="doc" href="画板：图表与草图.xml" file-type="docx">画板：图表与草图</cite>。</p>

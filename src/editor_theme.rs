@@ -1,5 +1,6 @@
 pub use crate::theme::{craft, c, ca, rgbaf, ta, TITLE, MONO_FONT, BlockMetrics};
 pub use crate::theme::{ui_family, DOC_UI_FONT};
+pub use crate::themes::doc_len;
 /// The active theme's resolved style (themes.rs).
 pub fn style() -> &'static crate::themes::Style { crate::themes::active() }
 #[cfg(target_os = "ios")]
@@ -8,7 +9,7 @@ fn mobile_metric_for(style: &crate::themes::Style, key: &str, value: f32, floor:
     #[cfg(target_os = "ios")]
     { style.num_override(key).unwrap_or(value.max(floor)) * (unsafe { fei_ios_type_scale() }).clamp(0.8, 3.5) }
     #[cfg(not(target_os = "ios"))]
-    { let _ = (style,key,floor); value }
+    { let _ = (key,floor); crate::themes::doc_len_in(style, value) }
 }
 fn mobile_metric(key: &str, value: f32, floor: f32) -> f32 { mobile_metric_for(style(),key,value,floor) }
 pub fn body_size_for(s: &crate::themes::Style) -> f32 { mobile_metric_for(s,"mobile.page.size",s.num("page.size"),17.) }

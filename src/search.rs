@@ -218,6 +218,8 @@ impl SearchCache {
         if !matches!(&self.hits, Some(h) if h.generation == self.generation && h.q == q) {
             let (mut rows, mut body) = (vec![], vec![]);
             for (i, d) in self.docs.iter().enumerate() {
+                // A folder with a 正文 is found as that document (#357), not twice.
+                if entries[i].note.is_some() { continue; }
                 if d.title_l().contains(q) {
                     rows.push(i)
                 } else if d.body_l().contains(q) {
@@ -455,7 +457,7 @@ impl Workspace {
     /// [`Self::search_results`] as indices into `entries`.
     fn search_rows(&self, entries: &[Entry], q: &str) -> Vec<usize> {
         if q.is_empty() {
-            let mut recent: Vec<usize> = (0..entries.len()).collect();
+            let mut recent: Vec<usize> = (0..entries.len()).filter(|&i| entries[i].note.is_none()).collect();
             recent.sort_by_key(|&i| std::cmp::Reverse(entries[i].meta.opened.max(entries[i].meta.modified)));
             recent.truncate(RECENT);
             return recent;
@@ -706,7 +708,7 @@ mod tests {
     use crate::store::Entry;
 
     fn entry(id: &str, title: &str, body: &str) -> Entry {
-        Entry { id: id.into(), meta: Default::default(), title: title.into(), icon: None, body: body.into(), reminders: vec![], links: vec![] }
+        Entry { id: id.into(), meta: Default::default(), title: title.into(), icon: None, body: body.into(), reminders: vec![], links: vec![], note: None, root: String::new() }
     }
 
     /// The pre-#332 ranking: lowercase each title, then each body.

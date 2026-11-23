@@ -3,7 +3,9 @@
 //! or DocxXML files picked straight away. The Word / PDF settings and
 //! 打印选项 only choose what happens to comments, so they are left out.
 
-use fdl_core::vfs::{PathExt as _, KindExt as _};
+use fdl_core::vfs::KindExt as _;
+#[cfg(not(target_os = "ios"))]
+use fdl_core::vfs::PathExt as _;
 use crate::app::Workspace;
 use crate::settings::display_title;
 use crate::model::{Block, BlockKind, Document, RichText};
@@ -35,17 +37,21 @@ const IMPORT_FILE_LIMIT: u64 = 32 * 1024 * 1024;
 pub(crate) type AfterImport = Box<dyn FnOnce(&mut Workspace, &str)>;
 
 /// What a background 导入文件夹 did.
-enum Imported { Empty, TooMany(usize), Done { top: Option<String>, failed: usize, saved: anyhow::Result<()>, changes: Vec<crate::store::FileDelta> } }
+/// `cloud`: what was skipped as only in iCloud (`Scanned::cloud`).
+enum Imported { Empty { cloud: usize }, TooMany(usize), Done { top: Option<String>, failed: usize, cloud: usize, saved: anyhow::Result<()>, changes: Vec<crate::store::FileDelta> } }
 struct ImportedFiles { last: Option<String>, failed: bool, changes: Vec<crate::store::FileDelta> }
 
-/// A folder to import: its documents and the sub-folders that hold some.
-pub(crate) struct Scanned { pub(crate) name: String, dir: PathBuf, dirs: Vec<Scanned>, docs: Vec<PathBuf>, pub(crate) files: usize }
+/// A folder to import: its documents and the sub-folders that hold some;
+/// `cloud`: the documents and folders under it left out as only in iCloud.
+pub(crate) struct Scanned { pub(crate) name: String, dir: PathBuf, dirs: Vec<Scanned>, docs: Vec<PathBuf>, pub(crate) files: usize, pub(crate) cloud: usize }
 
 /// Markdown and DocxXML files under `dir`, by name; hidden folders,
-/// dependency folders and symlinks are skipped.
+/// dependency folders and symlinks are skipped, and so is what is only in
+/// iCloud (`cloud_only`), without starting its download.
 pub(crate) fn scan_folder(dir: &Path, depth: usize) -> Option<Scanned> {
     let name = dir.file_name()?.to_string_lossy().into_owned();
-    let mut t = Scanned { name, dir: dir.to_path_buf(), dirs: vec![], docs: vec![], files: 0 };
+    let mut t = Scanned { name, dir: dir.to_path_buf(), dirs: vec![], docs: vec![], files: 0, cloud: 0 };
+    if cloud_only(dir) { t.cloud = 1; return Some(t); }
     if depth > 32 { return Some(t); }
     let mut items: Vec<_> = fdl_core::vfs::read_dir(dir).ok()?.flatten().collect();
     items.sort_by_key(|e| e.file_name().to_string_lossy().to_lowercase());
@@ -53,11 +59,19 @@ pub(crate) fn scan_folder(dir: &Path, depth: usize) -> Option<Scanned> {
         let p = e.path();
         let n = e.file_name().to_string_lossy().into_owned();
         let Ok(ft) = e.file_type() else { continue };
-        if n.starts_with('.') || ft.is_symlink() { continue; }
+        if n.starts_with('.') || ft.is_symlink() {
+            // An older macOS's stand-in for a note left in iCloud: `.Note.md.icloud`.
+            if n.strip_prefix('.').and_then(|n| n.strip_suffix(".icloud")).is_some_and(|n| importable(Path::new(n))) { t.cloud += 1; }
+            continue;
+        }
         if ft.fs_is_dir() {
             if matches!(n.as_str(), "node_modules" | "target") { continue; }
-            if let Some(sub) = scan_folder(&p, depth + 1).filter(|s| s.files > 0) { t.files += sub.files; t.dirs.push(sub); }
-        } else if crate::local_files::is_markdown_path(&p) || p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml")) {
+            if let Some(sub) = scan_folder(&p, depth + 1) {
+                t.cloud += sub.cloud;
+                if sub.files > 0 { t.files += sub.files; t.dirs.push(sub); }
+            }
+        } else if importable(&p) {
+            if cloud_only(&p) { t.cloud += 1; continue; }
             t.docs.push(p);
             t.files += 1;
         }
@@ -66,18 +80,68 @@ pub(crate) fn scan_folder(dir: &Path, depth: usize) -> Option<Scanned> {
     Some(t)
 }
 
+fn importable(p: &Path) -> bool { crate::local_files::is_markdown_path(p) || p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml")) }
+
+/// Kept only in iCloud (or another File Provider): 优化存储 took the file or
+/// folder off this Mac (#352) and reading it would start a download, which
+/// can take hours. SF_DATALESS (<sys/stat.h>) says so without reading.
+#[cfg(target_os = "macos")]
+fn cloud_only(p: &Path) -> bool {
+    use std::os::macos::fs::MetadataExt;
+    std::fs::symlink_metadata(p).is_ok_and(|m| m.st_flags() & 0x4000_0000 != 0)
+}
+#[cfg(not(target_os = "macos"))]
+fn cloud_only(_: &Path) -> bool { false }
+
+/// While alive, files only in iCloud fail to read on this thread instead of
+/// downloading: around reading what a folder import brings in (a note's
+/// pictures, the vault's settings), never around the library's own files.
+struct NoCloudDownloads { #[cfg(target_os = "macos")] was: i32 }
+
+// <sys/resource.h>: IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, IOPOL_MATERIALIZE_DATALESS_FILES_OFF.
+#[cfg(target_os = "macos")]
+const DATALESS: i32 = 3;
+#[cfg(target_os = "macos")]
+const THREAD: i32 = 1;
+#[cfg(target_os = "macos")]
+const OFF: i32 = 1;
+#[cfg(target_os = "macos")]
+unsafe extern "C" { fn getiopolicy_np(iotype: i32, scope: i32) -> i32; fn setiopolicy_np(iotype: i32, scope: i32, policy: i32) -> i32; }
+
+impl NoCloudDownloads {
+    #[cfg(target_os = "macos")]
+    fn new() -> Self {
+        let was = unsafe { getiopolicy_np(DATALESS, THREAD) };
+        unsafe { setiopolicy_np(DATALESS, THREAD, OFF) };
+        Self { was }
+    }
+    #[cfg(not(target_os = "macos"))]
+    fn new() -> Self { Self {} }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for NoCloudDownloads {
+    fn drop(&mut self) { if self.was >= 0 { unsafe { setiopolicy_np(DATALESS, THREAD, self.was) }; } }
+}
+
 /// A Markdown file as a new Markdown document inside `parent`; `root`: the
 /// folder being imported, where `![[picture.png]]` embeds are also looked up.
 pub(crate) fn import_markdown(store: &mut crate::store::Store, path: &Path, root: Option<&Path>, parent: Option<&str>) -> anyhow::Result<String> {
+    let (mut doc, front) = read_markdown(path, root)?;
+    crate::editor::image::localize_pasted_images(store.library_root(), &mut doc.blocks);
+    store.create_markdown_in(&doc, &front, parent)
+}
+
+/// `import_markdown`'s document and front matter, before the library is touched.
+fn read_markdown(path: &Path, root: Option<&Path>) -> anyhow::Result<(Document, String)> {
     let bytes = crate::store::read_bounded(path, IMPORT_FILE_LIMIT)?;
     let text = String::from_utf8_lossy(&bytes);
     let text = text.trim_start_matches('\u{feff}');
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().trim().to_string();
     let mut doc = crate::markdown::parse_file(text, &stem, path.parent());
     if let Some(dir) = path.parent() { crate::markdown::wiki_images(&mut doc.blocks, dir, root); }
-    crate::editor::image::localize_pasted_images(store.library_root(), &mut doc.blocks);
     if doc.blocks.is_empty() { doc.blocks.push(Block::text("")); }
-    store.create_markdown_in(&doc, crate::markdown::front_matter(text).0, parent)
+    Ok((doc, crate::markdown::front_matter(text).0.to_string()))
 }
 
 /// One scanned folder as a library folder under `parent`; its id. Needs no
@@ -96,10 +160,26 @@ fn tree(store: &mut crate::store::Store, t: &Scanned, root: &Path, parent: Optio
     if parent.is_some() { let _ = store.set_parent(&id, parent); }
     for sub in &t.dirs { tree(store, sub, root, Some(&id), failed); }
     for p in &t.docs {
-        let made = if crate::local_files::is_markdown_path(p) { import_markdown(store, p, Some(root), Some(&id)) } else { store.import_into(p, Some(&id)) };
+        let made = if crate::local_files::is_markdown_path(p) {
+            let read = { let _local = NoCloudDownloads::new(); read_markdown(p, Some(root)) };
+            read.and_then(|(doc, front)| store.create_markdown_in(&doc, &front, Some(&id)))
+        } else { store.import_into(p, Some(&id)) };
         if made.is_err() { *failed += 1; }
     }
     Some(id)
+}
+
+/// What a folder import left behind, for its toast.
+pub(crate) fn import_problems(failed: usize, cloud: usize) -> Option<String> {
+    let failed = (failed > 0).then(|| crate::localized_count!(failed, "有 {failed} 个文件未能导入", "{failed} file could not be imported", "{failed} files could not be imported"));
+    let parts: Vec<String> = failed.into_iter().chain((cloud > 0).then(|| cloud_skipped(cloud))).collect();
+    (!parts.is_empty()).then(|| parts.join(crate::settings::tr("；", "; ")))
+}
+
+fn cloud_skipped(cloud: usize) -> String {
+    crate::localized_count!(cloud, "{cloud} 项只在 iCloud 中、没有下载到这台 Mac，已跳过；在访达中下载后可再导入",
+        "Skipped {cloud} item that is only in iCloud; download it in Finder, then import again",
+        "Skipped {cloud} items that are only in iCloud; download them in Finder, then import again")
 }
 
 fn downloads() -> PathBuf {
@@ -299,7 +379,7 @@ impl Workspace {
         cx.notify();
         let Some(doc) = self.doc_of(&id, cx) else { return };
         let subs = self.sub_page_titles(&id);
-        let root = self.store.root().to_path_buf();
+        let root = self.store.document_root(&id);
         let path = save_path(&format!("{}.md", file_name(&doc)), cx);
         cx.spawn_in(window, async move |this, cx| {
             let Some(path) = path.await else { return };
@@ -353,7 +433,7 @@ impl Workspace {
         }
         cx.notify();
         let Some(doc) = self.doc_of(id, cx) else { return };
-        let library_root = self.store.root().to_path_buf();
+        let library_root = self.store.document_root(id);
         let subs = self.sub_page_titles(id);
         let name = file_name(&doc);
         let path = save_path(&format!("{name}.pdf"), cx);
@@ -427,7 +507,7 @@ impl Workspace {
         let Some(doc) = self.doc_of(id, cx) else { return };
         let subs = self.sub_page_titles(id);
         let name = file_name(&doc);
-        let html = crate::html::to_html(&doc, &crate::html::Options { library_root: self.store.root(), sub_pages: &subs });
+        let html = crate::html::to_html(&doc, &crate::html::Options { library_root: &self.store.document_root(id), sub_pages: &subs });
         let view = printing::parent_of(window);
         self.show_toast_kind(ToastKind::Info, crate::settings::text("文档打印中"), cx);
         cx.spawn_in(window, async move |this, cx| {
@@ -464,8 +544,9 @@ impl Workspace {
         if !self.save_before(cx, move |w, window, cx| w.import_paths(&again, retry.clone(), open, window, cx)) {
             return;
         }
+        let Some((key, mut writer)) = self.store.tree_writer(parent.as_deref()) else { return self.show_toast_kind(ToastKind::Error, &crate::shared_store::no_root().to_string(), cx) };
         let Some(task_guard) = self.store.begin_file_task() else { return };
-        let mut writer = self.store.tree_writer();
+        let parent = self.store.real_parent(parent.as_deref()).map(str::to_string);
         let paths = paths.to_vec();
         let task = cx.background_executor().spawn(async move {
             let journal = writer.track_file_changes();
@@ -492,6 +573,7 @@ impl Workspace {
             let (imported, entries) = task.await;
             drop(task_guard);
             let _ = this.update_in(cx, |w, window, cx| {
+                let entries = w.store.merge_entries(&key, entries);
                 w.sync_peers(cx, &entries, None);
                 w.entries = entries;
                 w.sort();
@@ -619,15 +701,17 @@ impl Workspace {
             return;
         }
         let then = held.take();
-        let Some(task_guard) = self.store.begin_file_task() else { return };
         // Scanning and writing hundreds of files takes seconds (an fsync each),
         // so it runs on its own store off the window's thread; the library
         // lock keeps it one write, as `tree_writer` does for drags.
-        let mut writer = self.store.tree_writer();
+        let Some((key, mut writer)) = self.store.tree_writer(parent.as_deref()) else { return self.show_toast_kind(ToastKind::Error, &crate::shared_store::no_root().to_string(), cx) };
+        let Some(task_guard) = self.store.begin_file_task() else { return };
+        let parent = self.store.real_parent(parent.as_deref()).map(str::to_string);
         let dir = dir.to_path_buf();
         let task = cx.background_executor().spawn(async move {
-            let imported = match scan_folder(&dir, 0).filter(|t| t.files > 0) {
-                None => Imported::Empty,
+            let imported = match scan_folder(&dir, 0) {
+                None => Imported::Empty { cloud: 0 },
+                Some(tree) if tree.files == 0 => Imported::Empty { cloud: tree.cloud },
                 Some(tree) if tree.files > IMPORT_FOLDER_LIMIT => Imported::TooMany(tree.files),
                 Some(tree) => {
             let journal = writer.track_file_changes();
@@ -638,11 +722,11 @@ impl Workspace {
             let batch = writer.begin_batch().is_ok();
             let top = import_tree(&mut writer, &tree, parent.as_deref(), &mut failed);
             let saved = if batch { writer.end_batch() } else { Ok(()) };
-            Imported::Done { top, failed, saved, changes: journal.take() }
+            Imported::Done { top, failed, cloud: tree.cloud, saved, changes: journal.take() }
                 }
             };
             match imported {
-                Imported::Empty | Imported::TooMany(_) => (imported, Vec::new()),
+                Imported::Empty { .. } | Imported::TooMany(_) => (imported, Vec::new()),
                 Imported::Done { .. } => (imported, writer.list()),
             }
         });
@@ -650,21 +734,22 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let (imported, entries) = task.await;
             drop(task_guard);
-            let _ = this.update_in(cx, |w, window, cx| w.finish_import_folder(imported, entries, open, then, window, cx));
+            let _ = this.update_in(cx, |w, window, cx| { let entries = if entries.is_empty() { entries } else { w.store.merge_entries(&key, entries) }; w.finish_import_folder(imported, entries, open, then, window, cx) });
         }).detach();
     }
 
     fn finish_import_folder(&mut self, imported: Imported, entries: Vec<crate::store::Entry>, open: bool, then: Option<AfterImport>, window: &mut Window, cx: &mut Context<Self>) {
-        let (top, failed, saved, changes) = match imported {
-            Imported::Empty => {
-                self.show_toast_kind(ToastKind::Error, crate::settings::tr("这个文件夹里没有 Markdown 或 XML 文件", "This folder has no Markdown or XML files"), cx);
+        let (top, failed, cloud, saved, changes) = match imported {
+            Imported::Empty { cloud } => {
+                let msg = if cloud > 0 { cloud_skipped(cloud) } else { crate::settings::tr("这个文件夹里没有 Markdown 或 XML 文件", "This folder has no Markdown or XML files").to_string() };
+                self.show_toast_kind(ToastKind::Error, &msg, cx);
                 return;
             }
             Imported::TooMany(files) => {
                 self.show_toast_kind(ToastKind::Error, &crate::localized_format!("文件夹里有 {} 个文件，一次最多导入 {} 个", "The folder has {} files; up to {} can be imported at once", files, IMPORT_FOLDER_LIMIT), cx);
                 return;
             }
-            Imported::Done { top, failed, saved, changes } => (top, failed, saved, changes),
+            Imported::Done { top, failed, cloud, saved, changes } => (top, failed, cloud, saved, changes),
         };
         self.sync_peers(cx, &entries, None);
         self.entries = entries;
@@ -677,8 +762,8 @@ impl Workspace {
         }
         if let Err(e) = saved {
             self.show_toast_kind(ToastKind::Error, &crate::localized_format!("导入未能完成：{}", "Import could not finish: {}", crate::settings::diagnostic(&e.to_string())), cx);
-        } else if failed > 0 {
-            self.show_toast_kind(ToastKind::Error, &crate::localized_count!(failed, "有 {failed} 个文件未能导入", "{failed} file could not be imported", "{failed} files could not be imported"), cx);
+        } else if let Some(msg) = import_problems(failed, cloud) {
+            self.show_toast_kind(ToastKind::Error, &msg, cx);
         } else if self.toast.as_ref().is_some_and(|t| matches!(t.0, ToastKind::Info) && t.1.as_ref() == crate::settings::tr("正在导入…", "Importing…")) { self.toast = None; }
         cx.notify();
     }
@@ -823,6 +908,43 @@ mod tests {
             assert_eq!(std::fs::read_to_string(path).unwrap().trim(), format!("body {n}"));
         }
         std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn notes_left_in_icloud_are_counted_not_read() {
+        let tmp = fdl_core::vfs::temp_dir().join(format!("quiet-icloud-{}", uuid::Uuid::new_v4()));
+        let source = tmp.join("vault");
+        std::fs::create_dir_all(source.join("journals")).unwrap();
+        std::fs::write(source.join("here.md"), "here").unwrap();
+        // An older macOS's stand-ins for notes iCloud kept: a few bytes of plist, not the note.
+        std::fs::write(source.join(".gone.md.icloud"), "bplist").unwrap();
+        std::fs::write(source.join("journals/.2021_03_01.md.icloud"), "bplist").unwrap();
+        std::fs::write(source.join(".photo.png.icloud"), "bplist").unwrap();
+        std::fs::write(source.join(".hidden.md"), "hidden").unwrap();
+        let tree = super::scan_folder(&source, 0).unwrap();
+        assert_eq!((tree.files, tree.cloud), (1, 2));
+        // A folder with only such notes adds nothing to import but still counts them.
+        let journals = super::scan_folder(&source.join("journals"), 0).unwrap();
+        assert_eq!((journals.files, journals.cloud), (0, 1));
+        assert!(super::import_problems(0, 0).is_none());
+        assert!(super::import_problems(0, 2).is_some_and(|m| m.contains('2')));
+        assert!(super::import_problems(3, 2).is_some_and(|m| m.contains('3') && m.contains('2')));
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    /// The guard turns iCloud downloads off for its thread only while it lives.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reads_skip_icloud_downloads_while_guarded() {
+        use super::{getiopolicy_np, DATALESS, OFF, THREAD};
+        let before = unsafe { getiopolicy_np(DATALESS, THREAD) };
+        assert_ne!(before, OFF);
+        {
+            let _local = super::NoCloudDownloads::new();
+            assert_eq!(unsafe { getiopolicy_np(DATALESS, THREAD) }, OFF);
+            std::thread::spawn(move || assert_eq!(unsafe { getiopolicy_np(DATALESS, THREAD) }, before)).join().unwrap();
+        }
+        assert_eq!(unsafe { getiopolicy_np(DATALESS, THREAD) }, before);
     }
 
     #[test]

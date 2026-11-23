@@ -496,6 +496,8 @@ impl EntityInputHandler for TextField {
         Some(self.text[r].to_string())
     }
 
+    fn text_length_utf16(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<usize> { Some(self.text.encode_utf16().count()) }
+
     fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
         Some(UTF16Selection { range: self.range16(&self.sel), reversed: self.reversed })
     }

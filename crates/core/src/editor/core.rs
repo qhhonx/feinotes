@@ -673,6 +673,22 @@ impl Core {
         si != ei && i >= si && i <= ei
     }
 
+    /// Whether a click at `pos` lands inside what is already selected.
+    ///
+    /// A right-click inside the selection keeps it; anywhere else it has to
+    /// replace it (browsers get this wrong and Copy then acts on something
+    /// the user can no longer see selected).
+    pub fn selection_holds(&self, pos: Pos) -> bool {
+        if self.block_sel.is_some() {
+            return self.block_sel_ids().contains(&pos.block);
+        }
+        if self.sel.is_collapsed() {
+            return false;
+        }
+        let us = self.units();
+        self.range_in(pos.block, &us).is_some_and(|r| pos.offset >= r.start && pos.offset <= r.end)
+    }
+
     pub fn selected_text(&self) -> String {
         let us = self.units();
         let (s, e) = self.ordered_in(&us);
@@ -2968,13 +2984,14 @@ impl Core {
     /// Line-start trigger for `prefix` (text before the caret, trigger
     /// character included). `enter` is true when the trigger is Enter.
     fn block_trigger(&self, id: BlockId, prefix: &str, enter: bool) -> Option<BlockKind> {
+        let prefix = &ascii_marker(prefix);
         let cur = self.kind_of(id)?;
         let in_cell = self.is_in_table(id);
         let in_quote = self.parent_kind_is(id, |k| matches!(k, BlockKind::Quote));
         let in_callout = self.parent_kind_is(id, |k| matches!(k, BlockKind::Callout { .. }));
         let code = |lang: &str| -> Option<BlockKind> {
             (!lang.contains(char::is_whitespace) && !in_callout)
-                .then(|| BlockKind::Code { lang: crate::lang::resolve(lang).into(), caption: None, wrap: false })
+                .then(|| BlockKind::Code { lang: crate::lang::resolve(lang).into(), caption: None, wrap: false, show_code: false })
         };
         if enter {
             return prefix.strip_prefix("```").and_then(code);
@@ -3100,6 +3117,47 @@ impl Core {
         self.break_coalescing();
         self.text_mut(p.block).unwrap().update_marks(range, |m| m.link = Some(href.clone()));
         true
+    }
+
+    /// 中英文之间自动加空格 while typing: the `n` bytes just typed before the
+    /// caret get a space between them and the character before them, and
+    /// among themselves, where `spacing::text_gaps` puts one; not in code.
+    /// Coalesces with the typing, so one 撤销 takes both.
+    pub fn space_typed(&mut self, n: usize) -> bool {
+        let p = self.sel.head;
+        if !self.sel.is_collapsed() || self.is_code(p.block) { return false; }
+        let Some(start) = p.offset.checked_sub(n) else { return false };
+        let Some(t) = self.text_of(p.block) else { return false };
+        let gaps: Vec<usize> = crate::spacing::text_gaps(t).into_iter().filter(|g| (start..p.offset).contains(g)).collect();
+        if gaps.is_empty() { return false; }
+        self.checkpoint(EditKind::Typing);
+        crate::spacing::insert_spaces(self.text_mut(p.block).unwrap(), &gaps);
+        self.sel = Selection::caret(Pos::new(p.block, p.offset + gaps.len()));
+        true
+    }
+
+    /// 整理本文空格: the spaces `space_typed` adds, everywhere in the document
+    /// (title, folded and table text too; not code), as one undo step.
+    /// Returns how many were added.
+    pub fn space_document(&mut self) -> usize {
+        let mut plan = vec![];
+        let title = crate::spacing::text_gaps(&self.doc.title);
+        if !title.is_empty() { plan.push((TITLE, title)); }
+        self.doc.for_each_block(|b| if b.kind.has_text() && !matches!(b.kind, BlockKind::Code { .. }) {
+            let g = crate::spacing::text_gaps(&b.text);
+            if !g.is_empty() { plan.push((b.id, g)); }
+        });
+        if plan.is_empty() { return 0; }
+        self.checkpoint(EditKind::Other);
+        self.break_coalescing();
+        for (id, gaps) in &plan {
+            if let Some(t) = self.text_mut(*id) { crate::spacing::insert_spaces(t, gaps); }
+            // The selection stays on the characters it was on.
+            for p in [&mut self.sel.anchor, &mut self.sel.head] {
+                if p.block == *id { p.offset += gaps.iter().filter(|g| **g < p.offset).count(); }
+            }
+        }
+        plan.iter().map(|(_, g)| g.len()).sum()
     }
 
     /// Inline Markdown, run after each typed character: the closing delimiter
@@ -3434,6 +3492,31 @@ impl Core {
     }
 }
 
+/// The full-width spellings a Chinese input method types for a line-start
+/// marker (`＃＃ `, `－ `, `—— `, `1． `, `＞ `, `···lang`), as the ASCII
+/// `block_trigger` matches. Only the comparison sees it: the prefix is
+/// removed either way, so ⌘Z still brings back what was typed.
+fn ascii_marker(prefix: &str) -> String {
+    if prefix == "—— " {
+        return "- ".into();
+    }
+    let (fence, rest) = match prefix.strip_prefix("···").or_else(|| prefix.strip_prefix("｀｀｀")) {
+        Some(rest) => ("```", rest),
+        None => ("", prefix),
+    };
+    let ascii = |c| match c {
+        '＃' => '#',
+        '－' => '-',
+        '＋' => '+',
+        '＊' => '*',
+        '＞' => '>',
+        '｜' => '|',
+        '．' => '.',
+        c => c,
+    };
+    fence.chars().chain(rest.chars().map(ascii)).collect()
+}
+
 /// A column goes once its last block does, and the
 /// others share its width in proportion.
 pub const MAX_COLUMNS: usize = 10;
@@ -3595,6 +3678,29 @@ mod tests {
         c.units()[n].id
     }
 
+    /// 右键: a click inside the selection keeps it, one outside replaces it.
+    #[test]
+    fn right_click_keeps_the_selection_it_lands_in() {
+        let mut c = doc("<title>t</title><p>one two</p><p>three four</p>");
+        let (a, b) = (id(&c, 1), id(&c, 2));
+        // A caret has nothing to keep.
+        c.sel = Selection::caret(Pos::new(a, 2));
+        assert!(!c.selection_holds(Pos::new(a, 2)));
+        // A selection across blocks: kept anywhere from its start to its end,
+        // in the middle block's whole length included.
+        c.sel = Selection { anchor: Pos::new(a, 4), head: Pos::new(b, 5) };
+        assert!(c.selection_holds(Pos::new(a, 4)));
+        assert!(c.selection_holds(Pos::new(a, 6)));
+        assert!(c.selection_holds(Pos::new(b, 3)));
+        assert!(!c.selection_holds(Pos::new(a, 1)));
+        assert!(!c.selection_holds(Pos::new(b, 7)));
+        // Whole blocks selected (handle click, Esc): kept on those blocks.
+        c.clear_block_sel();
+        c.select_block(a);
+        assert!(c.selection_holds(Pos::new(a, 0)));
+        assert!(!c.selection_holds(Pos::new(b, 0)));
+    }
+
     /// #220: a pasted web image relinked to its download, in tables too and
     /// across undo / redo, so stepping back never revives the expiring link.
     #[test]
@@ -3697,7 +3803,7 @@ mod tests {
     fn code_keeps_equations_as_source_and_never_holds_children() {
         let mut c = doc("<title>T</title><p>e <latex>x^2</latex><ul><li>kid</li></ul></p><p>b <b>bold</b></p>");
         let p = id(&c, 1);
-        c.turn_into(&[p], BlockKind::Code { lang: "plaintext".into(), caption: None, wrap: false });
+        c.turn_into(&[p], BlockKind::Code { lang: "plaintext".into(), caption: None, wrap: false, show_code: false });
         assert!(xml(&c).starts_with("<title>T</title>\n<pre lang=\"plaintext\"><code>e x^2</code></pre>\n<ul>"), "{}", xml(&c));
         // Deleting into code merges the tail as plain text, its children after the code block.
         let mut c = doc("<title>T</title><pre lang=\"plaintext\"><code>c</code></pre><p>b <b>bold</b><ul><li>kid</li></ul></p>");
@@ -4044,6 +4150,39 @@ mod tests {
         assert!(xml(&c).contains("<p>见 <a href=\"https://www.a.com/x\">www.a.com/x</a>). https:// </p>"), "{}", xml(&c));
     }
 
+    /// 中英文之间自动加空格 (#293): typing, IME commits of several characters,
+    /// code blocks left alone; 整理本文空格 over title, folded, table and nested
+    /// text in one undo step, the caret kept on its character.
+    #[test]
+    fn cjk_spacing_typed_and_whole_document() {
+        let mut c = doc("<title>T</title><p>用</p><pre lang=\"go\"><code>中a</code></pre>");
+        let b = id(&c, 1);
+        c.sel = Selection::caret(Pos::new(b, "用".len()));
+        for s in ["i", "Phone", "拍了3张", " ", "a"] {
+            c.insert_text(s);
+            c.space_typed(s.len());
+        }
+        assert_eq!(c.text_of(b).unwrap().text, "用 iPhone 拍了 3 张 a");
+        assert_eq!(c.sel.head.offset, c.text_of(b).unwrap().len());
+        let code = id(&c, 2);
+        c.sel = Selection::caret(Pos::new(code, "中a".len()));
+        c.insert_text("文");
+        assert!(!c.space_typed("文".len()));
+        assert_eq!(c.text_of(code).unwrap().text, "中a文");
+
+        let mut c = doc("<title>标题v2</title><h2 folded=\"true\">折叠a</h2><p>藏b</p><table><tr><td><p>格c</p></td></tr></table><ul><li>一<ul><li>二d</li></ul></li></ul><pre><code>码e</code></pre>");
+        let b = id(&c, 1);
+        c.sel = Selection::caret(Pos::new(b, "折叠a".len()));
+        let before = xml(&c);
+        assert_eq!(c.space_document(), 5);
+        let after = xml(&c);
+        for t in ["标题 v2", "折叠 a", "藏 b", "格 c", "二 d", "码e"] { assert!(after.contains(t), "{t}: {after}"); }
+        assert_eq!(c.sel.head.offset, "折叠 a".len());
+        assert_eq!(c.space_document(), 0);
+        c.undo();
+        assert_eq!(xml(&c), before);
+    }
+
     #[test]
     fn list_enter_on_empty_exits() {
         let mut c = doc("<title>T</title><ul><li>a</li></ul>");
@@ -4358,11 +4497,75 @@ mod tests {
             typed(&mut c, input);
             assert!(xml(&c).contains(want), "{input:?} -> {}", xml(&c));
         }
+        // Full-width markers from a Chinese input method, then a half-width space.
+        for (input, want) in [
+            ("＃ ", "<h1>"),
+            ("＃＃＃ ", "<h3>"),
+            ("－ ", "<ul>\n  <li list-style-type=\"dash\"></li>\n</ul>"),
+            ("＋ ", "<ul>\n  <li></li>\n</ul>"),
+            ("＊ ", "<ul>\n  <li></li>\n</ul>"),
+            ("—— ", "<ul>\n  <li list-style-type=\"dash\"></li>\n</ul>"),
+            ("1． ", "<ol>\n  <li></li>\n</ol>"),
+            ("3． ", "<ol>\n  <li seq=\"3\"></li>\n</ol>"),
+            ("＞ ", "<blockquote>"),
+            ("｜ ", "<blockquote>"),
+            ("···rust ", "<pre lang=\"rust\""),
+        ] {
+            let mut c = doc("<title>T</title><p></p>");
+            let b = id(&c, 1);
+            c.sel = Selection::caret(Pos::new(b, 0));
+            typed(&mut c, input);
+            assert!(xml(&c).contains(want), "{input:?} -> {}", xml(&c));
+            assert!(!xml(&c).contains(input.trim_end()), "{input:?} -> {}", xml(&c));
+        }
+        // Not a marker: full-width text stays as typed.
+        for input in ["＃标题 ", "——破折号 ", "中＃ ", "1．5 ", "· ", "·· "] {
+            let mut c = doc("<title>T</title><p></p>");
+            c.sel = Selection::caret(Pos::new(id(&c, 1), 0));
+            typed(&mut c, input);
+            assert_eq!(xml(&c), format!("<title>T</title>\n<p>{input}</p>\n"), "{input:?}");
+        }
         // "[x] " stays literal.
         let mut c = doc("<title>T</title><p></p>");
         c.sel = Selection::caret(Pos::new(id(&c, 1), 0));
         typed(&mut c, "[x] ");
         assert!(xml(&c).contains("<p>[x] </p>"), "{}", xml(&c));
+    }
+
+    #[test]
+    fn markdown_full_width_markers() {
+        // Typed in front of existing text: the text stays, ⌘Z brings back the marker as typed.
+        let mut c = doc("<title>T</title><p>a<b>bc</b></p>");
+        let b = id(&c, 1);
+        c.sel = Selection::caret(Pos::new(b, 0));
+        typed(&mut c, "＃＃ ");
+        assert_eq!(xml(&c), "<title>T</title>\n<h2>a<b>bc</b></h2>\n");
+        c.undo();
+        assert_eq!(xml(&c), "<title>T</title>\n<p>＃＃ a<b>bc</b></p>\n");
+        // Mid-paragraph is not a line start.
+        let mut c = doc("<title>T</title><p>中文</p>");
+        let b = id(&c, 1);
+        c.sel = Selection::caret(Pos::new(b, "中".len()));
+        typed(&mut c, "＞ ");
+        assert_eq!(xml(&c), "<title>T</title>\n<p>中＞ 文</p>\n");
+        // "···lang" + Enter, like "```lang" + Enter; the text after the caret stays.
+        let mut c = doc("<title>T</title><p>x</p>");
+        let b = id(&c, 1);
+        c.sel = Selection::caret(Pos::new(b, 0));
+        typed(&mut c, "···java");
+        assert!(c.markdown_enter_shortcut());
+        assert!(matches!(c.kind_of(b), Some(BlockKind::Code { lang, .. }) if lang == "Java"), "{}", xml(&c));
+        assert_eq!(c.text_of(b).unwrap().text, "x");
+        let mut c = doc("<title>T</title><p></p>");
+        c.sel = Selection::caret(Pos::new(id(&c, 1), 0));
+        typed(&mut c, "··java");
+        assert!(!c.markdown_enter_shortcut());
+        // Not in a table cell, as with "| ".
+        let mut c = doc("<title>T</title><table><tr><td></td></tr></table>");
+        let cell = c.units().into_iter().find(|u| u.id != TITLE).unwrap().id;
+        c.sel = Selection::caret(Pos::new(cell, 0));
+        typed(&mut c, "｜ ");
+        assert_eq!(c.text_of(cell).unwrap().text, "｜ ");
     }
 
     #[test]

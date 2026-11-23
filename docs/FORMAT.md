@@ -28,6 +28,29 @@ Quiet.md/
 
 The scanner recursively finds `.md`, `.xml` and `.excalidraw` files, including files added in Finder. It skips names beginning with a dot, including `.quiet`, `.assets`, `.git` and `.obsidian`. Window dimensions belong to the device and live in local application data. Standalone whiteboards use official Excalidraw JSON and take their title from the filename. Older versions skip this extension. The write lock allows multiple app instances.
 
+### Child pages: a folder's own document
+
+A document can have child pages without a second kind of tree. **A folder holding a document with the folder's own name is that document, and the rest of the folder are its child pages:**
+
+```text
+Quiet.md/
+└── Plan/
+    ├── Plan.xml        The page "Plan" (the folder's own document)
+    ├── Budget.md       A child page of "Plan"
+    └── Schedule/
+        ├── Schedule.xml   A child page of "Plan" with child pages of its own
+        └── Week 1.xml
+```
+
+- **The rule reads only the disk.** The folder `X/` and the file `X/X.xml` or `X/X.md` must have the same name (exact, after the escaping of `layout::file_name_for`). A `.excalidraw` or `.sqlite` file never is the folder's document. When both `X.xml` and `X.md` exist, `X.xml` is it and `X.md` is an ordinary child page. `index.json` has no field for this and `store::FORMAT` is unchanged, so older builds read the same files as a folder holding a document.
+- **Shown as a document.** The sidebar and Home show the folder as one document row or card with the document's title, icon and format, and an expand arrow when there are other entries in it. Opening it opens `X/X.*`. The document is not repeated among the children, search and @-mentions list it once (as the document), and its breadcrumbs stop above the folder.
+- **Adding the first child page** (the row's hover "+", or 新建子文档 in the row and document "…" menus) creates `X/` where `X.xml` was, moves the document into it as `X/X.xml` (first in the folder's order, the folder taking the document's place), then creates the new page last in the folder. Links to the moved document and from it are rewritten as for any move. The steps are one entry in the file-operation undo history. A document already in its folder gets the new page directly. The folder is named after the file (`Plan 2.xml` gives `Plan 2/Plan 2.xml`), numbered when the name is taken.
+- **The pair keeps one name.** Renaming the document (in the editor or the sidebar) renames the folder and then the file after the folder. A child page that already holds that name inside the folder is numbered first. Moving, dragging and deleting the row act on the whole folder, and dropping something on the row puts it in the folder.
+- **Without children the folder stays.** When the last child page is moved out or deleted, `X/X.xml` is left as it is and still shows as a plain document. Undoing 新建子文档 moves the document back out and removes the empty folder.
+- **Existing libraries.** The FORMAT 2 and FORMAT 4 migrations turned pages with child pages into exactly this shape (`migrate::pages_to_folders`), so those pages have their children again.
+
+The same mapping (a page with children ⇄ a folder with its own document) is meant for importing and exporting Feishu wikis and for the command line.
+
 ### Links and images
 
 - Document links are relative to the current file. DocxXML uses `<cite type="doc" href="../Work/Weekly report.xml">` and Markdown uses standard links. On read, the app resolves paths to runtime IDs. On write, it converts them back, so copying the whole folder preserves the links. The reader still accepts legacy `doc-id` links.
@@ -97,6 +120,7 @@ DocxXML is Feishu/Lark's XML document format. The canonical representation of ev
 These constructs extend DocxXML. Other tools may treat them as unknown elements or attributes.
 
 - `<countdown duration start-time notify color timing/>` stores a countdown. Cloud countdowns are widgets outside DocxXML.
+- A Mermaid diagram is a code block, `<pre lang="mermaid"><code>…</code></pre>`, so its source survives in any tool and Markdown export writes a ```` ```mermaid ```` fence. Quiet.md draws the diagram; `view="code"` keeps showing the code instead.
 - `<time … is-whole-day="true">` stores an all-day reminder. The model has `isWholeDay`, but the original XML has no equivalent attribute. Without it, a reminder at 23:59 local time also counts as all-day.
 - Local images and attachments use `path="…"` where the cloud uses `token` / `href`. A video or file is represented by `<figure><source path=… name=…/></figure>`.
 

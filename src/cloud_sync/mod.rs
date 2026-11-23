@@ -846,7 +846,7 @@ pub fn save(store: &mut SharedStore, id: &str, core: &Core, cx: &mut App) -> Res
     let root = store.root().to_path_buf();
     if session(&root, cx).is_none() {
         ensure!(!store.is_shared() && crate::cloud_restore::local_only(), "This library has no active sync session");
-        return store.with(|s| s.save_editor(id, &core.doc)).map(|meta| (meta, false));
+        return store.with(Some(id), |s| s.save_editor(id, &core.doc)).map(|meta| (meta, false));
     }
     let result = journal_mut(&root, cx).save(store, id, core)?;
     if let Some(scope) = scope(&root, cx)

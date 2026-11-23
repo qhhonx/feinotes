@@ -274,6 +274,7 @@ fn parse_block(e: &Element, out: &mut Vec<Block>) {
                     lang: crate::lang::from_token(e.attr("lang").unwrap_or("")),
                     caption: e.attr("caption").map(str::to_string),
                     wrap: e.attr("wrap") == Some("true"),
+                    show_code: e.attr("view") == Some("code"),
                 },
                 RichText::plain(text),
             )
@@ -893,13 +894,16 @@ fn write_block(b: &Block, s: &mut String, depth: usize) {
             s.push_str("</checkbox>\n");
         }
         BlockKind::Bullet { .. } | BlockKind::Ordered { .. } => unreachable!("handled by write_blocks"),
-        BlockKind::Code { lang, caption, wrap } => {
+        BlockKind::Code { lang, caption, wrap, show_code } => {
             s.push_str(&format!("<pre lang=\"{}\"", esc_attr(&crate::lang::to_token(lang))));
             if let Some(c) = caption {
                 s.push_str(&format!(" caption=\"{}\"", esc_attr(c)));
             }
             if *wrap {
                 s.push_str(" wrap=\"true\"");
+            }
+            if *show_code {
+                s.push_str(" view=\"code\"");
             }
             s.push_str(fo);
             s.push_str("><code>");
@@ -1423,6 +1427,8 @@ mod tests {
         assert!(doc.blocks.iter().any(|b| matches!(&b.kind, BlockKind::Board(bd) if bd.elements.len() == 3 && bd.height == 360.)));
         assert!(doc.blocks.iter().any(|b| matches!(&b.kind, BlockKind::Raw { tag, .. } if tag == "whiteboard")), "a 飞书 board stays as it came");
         assert!(doc.blocks.iter().any(|b| matches!(&b.kind, BlockKind::Code { .. }) && b.folded && b.text.text == "被折叠的代码"));
+        let mermaid: Vec<bool> = doc.blocks.iter().filter_map(|b| match &b.kind { BlockKind::Code { lang, show_code, .. } if lang == "Mermaid" => Some(*show_code), _ => None }).collect();
+        assert_eq!(mermaid, [false, true], "Mermaid blocks: the diagram by default, `view=\"code\"` for the source");
         let text = doc.plain_text();
         for s in ["被折叠的段落", "尾随空格 \n", "\n \n", "fn main() {\n    println!(\"<hi> & 'q'\");\n\n}", "a = 1\nb = 2", "\\frac{1}{2}", "空项下的段落", "画板 <&>"] {
             assert!(text.contains(s), "{s:?} missing from {text:?}");

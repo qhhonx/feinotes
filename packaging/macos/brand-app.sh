@@ -54,6 +54,7 @@ mkdir -p "$licenses"
 cp "$repo/assets/icons/LICENSE-lucide" "$licenses/Lucide-Interface.txt"
 cp "$repo/assets/editor-icons/LICENSE-lucide" "$licenses/Lucide-Editor.txt"
 cp "$repo/assets/fonts/katex/LICENSE" "$licenses/KaTeX.txt"
+cp "$repo/assets/mermaid/LICENSE" "$licenses/Mermaid.txt"
 {
     printf 'Fei Notes / 飞记\nOpen Source Licenses / 开源许可\n\nQuiet.md — MIT License\n\n'
     cat "$resources/Quiet.md-LICENSE"

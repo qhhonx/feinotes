@@ -35,7 +35,7 @@ impl Workspace {
             let mut entry = Entry { id, title: row.room.title.clone(), icon: row.icon.clone(), body: row.body.clone(),
                 meta: crate::store::Meta { parent, folder: row.room.scope.folder.then(|| row.room.title.clone()),
                     created: row.created, modified: row.modified, opened: row.opened, ..Default::default() },
-                reminders: vec![], links: vec![] };
+                reminders: vec![], links: vec![], note: None, root: String::new() };
             prefs.project(&mut entry);
             if row.room.scope.owner.is_none() && let Some(meta) = originals.get(entry.id.as_str()) {
                 entry.meta.pinned = meta.pinned;

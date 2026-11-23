@@ -320,20 +320,20 @@ pub fn shadow_button() -> Vec<BoxShadow> {
 
 /// The platform's sans: the interface's family unless 外观 › 界面字体 says
 /// otherwise, and the document's when its theme names no family.
-#[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows"))]
+#[cfg(any(target_vendor = "apple", target_os = "windows"))]
 pub const SYSTEM_FONT: &str = ".SystemUIFont";
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", target_family = "wasm")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "windows", target_family = "wasm")))]
 pub const SYSTEM_FONT: &str = "Noto Sans";
 /// The web build brings its own fonts (src/web.rs).
 #[cfg(target_family = "wasm")]
 pub const SYSTEM_FONT: &str = "Inter";
-pub const NUMERAL_FONT: &str = if cfg!(any(target_os = "macos", target_os = "windows")) { "Helvetica Neue" } else { SYSTEM_FONT };
+pub const NUMERAL_FONT: &str = if cfg!(any(target_vendor = "apple", target_os = "windows")) { "Helvetica Neue" } else { SYSTEM_FONT };
 /// Platform monospace font.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 pub const MONO_FONT: &str = ".AppleSystemUIFontMonospaced";
 #[cfg(target_os = "windows")]
 pub const MONO_FONT: &str = "Consolas";
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_family = "wasm")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "windows", target_family = "wasm")))]
 pub const MONO_FONT: &str = "Noto Sans Mono";
 #[cfg(target_family = "wasm")]
 pub const MONO_FONT: &str = "JetBrains Mono";

@@ -113,7 +113,7 @@ mod tests {
             .map(|(text, kind)| {
                 let k = match *kind {
                     "h" => BlockKind::Heading { level: 1, seq_auto: false },
-                    "c" => BlockKind::Code { lang: String::new(), caption: None, wrap: false },
+                    "c" => BlockKind::Code { lang: String::new(), caption: None, wrap: false, show_code: false },
                     _ => BlockKind::Text,
                 };
                 Block::new(k, RichText::plain(text.to_string()))

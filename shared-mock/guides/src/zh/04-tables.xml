@@ -1,0 +1,28 @@
+<title>表格与分栏</title>
+<p>要在同样几个维度上对比多项内容，用表格；想把几块相互独立的内容并排摆放，用分栏。两种排版里都不只能放纯文字。</p>
+<h1>表格</h1><h2>插入表格</h2><p>在斜杠菜单中选择“表格”，然后在网格里选好行列数，最大 9 × 9。按 <code>⌘ ⌥ A</code> 可以直接插入一个 3 × 3 的表格。从 Markdown、网页或飞书粘贴过来的表格，也会变成可编辑的表格。</p>
+<h2>项目进度一览</h2><p>下面这个示例综合用到了标题行、合并单元格、背景色、对齐方式、任务和列表。</p>
+<table><colgroup><col width="130"/><col width="130"/><col width="150"/><col width="280"/></colgroup><thead><tr><th background-color="light-gray"><p>阶段</p></th><th background-color="light-gray"><p>负责人</p></th><th background-color="light-gray"><p>状态</p></th><th background-color="light-gray"><p>交付内容</p></th></tr></thead><tbody>
+<tr><td rowspan="2" vertical-align="middle"><p><b>设计</b></p></td><td><p>小林</p></td><td background-color="light-green"><p>已完成</p></td><td><checkbox done="true">交互设计</checkbox><checkbox done="true">视觉规范</checkbox></td></tr>
+<tr><td><p>小周</p></td><td background-color="light-yellow"><p>进行中</p></td><td><checkbox done="true">图标</checkbox><checkbox done="false">插画</checkbox></td></tr>
+<tr><td><p><b>开发</b></p></td><td><p>小陈</p></td><td background-color="light-blue"><p>已排期</p></td><td><ul><li>客户端评审：11 月 18 日</li><li>服务端评审：11 月 20 日</li></ul></td></tr>
+<tr><td><p><b>发布</b></p></td><td colspan="2" background-color="light-gray"><p align="center">等待前序阶段完成</p></td><td><p>发布说明和截图</p></td></tr>
+</tbody></table>
+<h2>选择与调整</h2><ul><li><b>选中单元格：</b>从一个单元格拖到另一个单元格，即可选中一片矩形区域。</li><li><b>选中整行或整列：</b>点击行或列的灰色手柄。按住 Shift 可以扩大选区。</li><li><b>插入行或列：</b>把指针移到两个手柄之间，点击出现的加号。</li><li><b>调整顺序：</b>选中一行或一列，然后拖动它。</li><li><b>调整列宽：</b>拖动列的边线。块菜单里的“均分列宽”可以让各列一样宽。</li><li><b>删除：</b>选中一行或一列，点击工具栏上的删除按钮。</li></ul>
+<h2>单元格工具栏</h2><table><colgroup><col width="210"/><col width="480"/></colgroup><tbody>
+<tr><td><p>合并与拆分</p></td><td><p>把选中的矩形区域合并成一个单元格，或把合并过的单元格重新拆开。</p></td></tr><tr><td><p>背景颜色</p></td><td><p>用单元格底色区分分组或标示状态。</p></td></tr><tr><td><p>对齐方式</p></td><td><p>水平方向可左对齐、居中或右对齐；垂直方向可顶部对齐、垂直居中或底部对齐。</p></td></tr><tr><td><p>文字样式</p></td><td><p>给选中的单元格统一设置加粗、斜体、下划线、删除线、行内代码或文字颜色。</p></td></tr>
+</tbody></table>
+<h2>标题行与标题列</h2><p>在表格的块菜单中打开“标题行”，第一行会显示为表头样式；表格很长时，滚动过程中它也会一直留在顶部。打开“标题列”，第一列会显示为表头样式，适合做对比表。</p>
+<table><colgroup><col width="180"/><col width="170"/><col width="170"/><col width="170"/></colgroup><thead><tr><th><p></p></th><th><p>方案 A</p></th><th><p>方案 B</p></th><th><p>方案 C</p></th></tr></thead><tbody>
+<tr><th><p>预算</p></th><td><p>¥12,000</p></td><td background-color="light-green"><p><b>¥8,000</b></p></td><td><p>¥15,000</p></td></tr><tr><th><p>周期</p></th><td><p>6 周</p></td><td background-color="light-green"><p><b>4 周</b></p></td><td><p>8 周</p></td></tr><tr><th><p>风险</p></th><td background-color="light-yellow"><p>中</p></td><td><p>低</p></td><td background-color="light-red"><p>高</p></td></tr><tr><th><p>灵活性</p></th><td><p>较好</p></td><td><p>有限</p></td><td><p>非常好</p></td></tr>
+</tbody></table>
+<h2>单元格里能放什么</h2><p>单元格里可以放段落、标题、列表、任务、代码和公式。在单元格内按 Enter，会新起一个段落。</p>
+<table><colgroup><col width="345"/><col width="345"/></colgroup><tbody><tr><td><pre lang="bash"><code>git switch -c feature/table&#10;git push -u origin HEAD</code></pre></td><td><p>用代码块整理常用命令，查起来很方便。</p></td></tr><tr><td><p>面积：<latex>S = \pi r^2</latex></p><p>周长：<latex>C = 2\pi r</latex></p></td><td><p>公式可以和文字混排，也可以分成多个段落。</p></td></tr></tbody></table>
+<callout emoji="💡" background-color="light-blue" border-color="blue"><p>粘贴用 <code>|</code> 分隔的 Markdown 表格，会直接生成表格。初始列宽随内容而定：内容短的列保持紧凑，文字多的列会分到更多空间。之后仍可拖动列的边线调整宽度。导出 Markdown 时，表格也会写成这种格式。</p></callout>
+<h1>分栏</h1><p>在斜杠菜单中选择“分栏”，再选择一到五栏。每一栏都是独立的区域，里面可以放其他块。</p>
+<h2>两栏做对比</h2><grid><column width-ratio="0.5"><callout emoji="👍" background-color="light-green" border-color="green"><p><b>做得好的地方</b></p><ul><li>本地文件，离线可用</li><li>文档可以自己备份</li><li>原生的书写界面</li></ul></callout></column><column width-ratio="0.5"><callout emoji="🤔" background-color="light-orange" border-color="orange"><p><b>需要提前考虑的地方</b></p><ul><li>没有内置的多设备同步</li><li>备份需要自己负责</li><li>目前支持 macOS</li></ul></callout></column></grid>
+<h2>三栏梳理流程</h2><grid><column width-ratio="0.3333"><h3>记录</h3><p>按 <code>⌘ ⇧ N</code> 打开一个新的笔记窗口，把想法记下来。</p></column><column width-ratio="0.3333"><h3>整理</h3><p>把相关页面归到一起，置顶最常用的，收藏有用的参考资料。</p></column><column width-ratio="0.3334"><h3>回顾</h3><p>用 <code>⌘ J</code> 搜索，顺着反向引用找到相关笔记。</p></column></grid>
+<h2>调整宽度</h2><p>拖动两栏之间的空隙即可。宽度接近等分或简单比例时，会轻轻吸附上去。</p>
+<grid><column width-ratio="0.3"><p><b>项目</b></p><p><b>周期</b></p><p><b>目标</b></p></column><column width-ratio="0.7"><p>Quiet.md</p><p>2026 年 10 月至 12 月</p><p>一款安静、可靠的书写工具，让笔记始终掌握在你自己手里</p></column></grid>
+<h2>增加或删除栏</h2><ul><li>把指针移到两栏之间，点击加号即可新增一栏，最多十栏。</li><li>清空某一栏的全部内容，这一栏就会被删除。只剩一栏时，分栏会还原成普通的块。</li></ul>
+<hr/><p>下一篇：{{doc:code}}。</p>

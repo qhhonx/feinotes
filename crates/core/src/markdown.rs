@@ -939,7 +939,7 @@ mod tests {
                     .with_children(vec![Block::new(BlockKind::Bullet { dash: false }, RichText::plain("sub"))]),
                 Block::new(BlockKind::Ordered { seq: None }, RichText::plain("two")),
                 Block::new(BlockKind::Todo { done: true }, RichText::plain("done")),
-                Block::new(BlockKind::Code { lang: "Rust".into(), caption: None, wrap: false }, RichText::plain("fn main() {}")),
+                Block::new(BlockKind::Code { lang: "Rust".into(), caption: None, wrap: false, show_code: false }, RichText::plain("fn main() {}")),
                 Block::new(BlockKind::Quote, RichText::default()).with_children(vec![Block::text("q")]),
                 Block::new(BlockKind::Divider, RichText::default()),
             ],
@@ -964,6 +964,21 @@ mod tests {
         let out = write_file(&doc, front_matter(src).0, Some(base));
         assert_eq!(out, src);
         assert_eq!(write_file(&parse_file(&out, "page", Some(base)), front_matter(&out).0, Some(base)), out);
+    }
+
+    /// A ```mermaid fence is a Mermaid code block (drawn as a diagram); either
+    /// view saves back as the same fence.
+    #[test]
+    fn mermaid_fences_round_trip() {
+        let src = "---\ntitle: x\n---\n\n```mermaid\nflowchart LR\n    A[开始] --> B{判断}\n```\n";
+        let mut doc = parse_file(src, "page", None);
+        let [b] = doc.blocks.as_mut_slice() else { panic!("{:?}", doc.blocks) };
+        assert!(matches!(&b.kind, BlockKind::Code { lang, show_code: false, .. } if lang == "Mermaid"), "{:?}", b.kind);
+        assert_eq!(write_file(&doc, front_matter(src).0, None), src);
+        if let BlockKind::Code { show_code, .. } = &mut doc.blocks[0].kind { *show_code = true; }
+        assert_eq!(write_file(&doc, front_matter(src).0, None), src);
+        let doc = crate::docxml::parse(&crate::docxml::serialize(&doc)).unwrap();
+        assert!(matches!(&doc.blocks[0].kind, BlockKind::Code { lang, show_code: true, .. } if lang == "Mermaid"));
     }
 
     #[test]

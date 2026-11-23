@@ -20,6 +20,8 @@ pub struct FileDelta { pub id: String, pub before: Option<FileState>, pub after:
 #[derive(Default)]
 pub struct FileChanges(std::sync::Arc<std::sync::Mutex<Vec<FileDelta>>>, bool);
 impl FileChanges {
+    /// A journal nothing writes to (no library to watch).
+    pub fn none() -> Self { FileChanges(Default::default(), true) }
     pub fn take(self) -> Vec<FileDelta> {
         if self.1 { return vec![]; }
         let mut merged: HashMap<String, FileDelta> = HashMap::new();
@@ -39,6 +41,12 @@ impl Store {
         let changes = FileChanges(Default::default(), !self.file_changes.is_empty());
         self.file_changes.push(std::sync::Arc::downgrade(&changes.0));
         changes
+    }
+
+    /// Record into `changes` too: one journal across the 工作区's roots.
+    pub fn share_file_changes(&mut self, changes: &FileChanges) {
+        self.file_changes.retain(|w| w.strong_count() > 0);
+        self.file_changes.push(std::sync::Arc::downgrade(&changes.0));
     }
 
     pub(super) fn file_state(&self, id: &str) -> Option<FileState> {
@@ -109,7 +117,6 @@ impl Store {
             }
             match (from, to) {
                 (Some(_), None) => {
-                    anyhow::ensure!(!self.index.iter().any(|(id, m)| m.parent.as_deref() == Some(&c.id) && !deleted.contains(id.as_str())), "文件夹里有后来新增的内容，不能撤销创建");
                     anyhow::ensure!(!self.trash.contains_key(&c.id) && !self.trash_path(&c.id).fs_try_exists()?, "回收站存在冲突，未覆盖");
                     projected.remove(&c.id);
                 }
@@ -127,6 +134,11 @@ impl Store {
                 _ => {}
             }
         }
+        // A folder going away must be empty once this gesture's own moves are
+        // done (新建子文档 undone moves the page back out of its new folder).
+        for (c, _) in pairs.iter().filter(|(_, (f, t))| f.is_some() && t.is_none()) {
+            anyhow::ensure!(!projected.iter().any(|(id, m)| m.parent.as_deref() == Some(&c.id) && !deleted.contains(id.as_str())), "文件夹里有后来新增的内容，不能撤销创建");
+        }
         // Validate what this gesture moves before touching files (including
         // external changes). Other entries are not its business: an old page
         // whose parent is gone already shows at the top level, and must not
@@ -142,18 +154,8 @@ impl Store {
         }
         let depth = |index: &HashMap<String, Meta>, id: &str| { let mut n = 0; let mut p = index.get(id).and_then(|m| m.parent.clone()); while let Some(q) = p.filter(|_| n < 64) { n += 1; p = index.get(&q).and_then(|m| m.parent.clone()); } n };
         let result = (|| -> Result<()> {
-            // What goes to the 回收站, deepest first; the root is the outermost
-            // folder going with it.
-            let mut gone: Vec<&str> = pairs.iter().filter(|(_, (f, t))| f.is_some() && t.is_none()).map(|(c, _)| c.id.as_str()).collect();
-            gone.sort_by_key(|id| std::cmp::Reverse(depth(&self.index, id)));
-            let roots: HashMap<&str, Option<String>> = gone.iter().map(|id| {
-                let mut root = None;
-                let mut ancestor = self.index.get(*id).and_then(|m| m.parent.clone());
-                while let Some(p) = ancestor.filter(|p| deleted.contains(p.as_str())) { ancestor = self.index.get(&p).and_then(|m| m.parent.clone()); root = Some(p); }
-                (*id, root)
-            }).collect();
-            for id in gone { self.trash_one(id, roots[id].clone())?; }
-            // What comes back, folders first.
+            // What comes back, folders first; then the moves, so a page can go
+            // into a folder that just came back or out of one about to go.
             let mut back: Vec<(&str, &FileState)> = pairs.iter().filter_map(|(c, (f, t))| if f.is_none() { t.as_ref().map(|t| (c.id.as_str(), t)) } else { None }).collect();
             back.sort_by_key(|(id, _)| depth(&projected, id));
             for (id, target) in back {
@@ -176,13 +178,24 @@ impl Store {
                         let out = docxml::serialize(&doc);
                         if out != text { write_atomic(&path, out.as_bytes())?; }
                     }
-                    self.follow_title(&c.id, &to.title)?;
+                    self.follow_title(&c.id, &to.title, true)?;
                     if let Some(m) = self.index.get_mut(&c.id) { m.modified = now(); }
                 }
                 if let Some(m) = self.index.get_mut(&c.id) && from.place() != to.place() {
                     m.parent = to.parent.clone(); m.order = to.order; m.root_order = to.root_order;
                 }
             }
+            // What goes to the 回收站, deepest first; the root is the outermost
+            // folder going with it.
+            let mut gone: Vec<&str> = pairs.iter().filter(|(_, (f, t))| f.is_some() && t.is_none()).map(|(c, _)| c.id.as_str()).collect();
+            gone.sort_by_key(|id| std::cmp::Reverse(depth(&self.index, id)));
+            let roots: HashMap<&str, Option<String>> = gone.iter().map(|id| {
+                let mut root = None;
+                let mut ancestor = self.index.get(*id).and_then(|m| m.parent.clone());
+                while let Some(p) = ancestor.filter(|p| deleted.contains(p.as_str())) { ancestor = self.index.get(&p).and_then(|m| m.parent.clone()); root = Some(p); }
+                (*id, root)
+            }).collect();
+            for id in gone { self.trash_one(id, roots[id].clone())?; }
             self.save_index()?;
             self.save_trash()
         })();

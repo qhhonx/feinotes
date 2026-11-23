@@ -190,6 +190,10 @@ pub struct Preferences {
     /// 外观 › 文档字体: the family the note's body text and headings are drawn
     /// in (a system family name); empty follows the document theme.
     pub doc_family: String,
+    /// 外观 › 正文字号: "small", "large" or "xlarge"; empty follows the
+    /// document theme. Headings, tables and code keep the theme's ratio (themes::doc_len).
+    #[serde(default)]
+    pub doc_size: String,
     /// When 稍后 put off moving the library to real folders (Unix seconds; 0 never).
     pub migrate_later: u64,
     /// 查找 › `.*`: the find box takes regular expressions.
@@ -197,6 +201,10 @@ pub struct Preferences {
     /// 退格键回到标题: Backspace at the start of the body merges the first
     /// paragraph into the title (the default); off keeps the caret in the body.
     pub backspace_to_title: bool,
+    /// 中英文之间自动加空格 (#293): typing puts a space between 汉字 and Latin
+    /// letters or digits. Off by default.
+    #[serde(default)]
+    pub cjk_spacing: bool,
     /// 外观's font lists: 收藏 (both lists share it) and the last families
     /// picked for each, newest first.
     #[serde(default)]
@@ -243,7 +251,7 @@ fn system_lang() -> Lang {
 impl Default for Preferences {
     fn default() -> Self {
         let lang = system_lang();
-        Preferences { theme: String::new(), interface_style: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), start_home: false, browser: String::new(), opaque_window: false, ui_font: String::new(), ui_family: String::new(), doc_family: String::new(), migrate_later: 0, find_regex: false, backspace_to_title: true, font_favorites: vec![], recent_doc_fonts: vec![], recent_ui_fonts: vec![] }
+        Preferences { theme: String::new(), interface_style: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), start_home: false, browser: String::new(), opaque_window: false, ui_font: String::new(), ui_family: String::new(), doc_family: String::new(), doc_size: String::new(), migrate_later: 0, find_regex: false, backspace_to_title: true, cjk_spacing: false, font_favorites: vec![], recent_doc_fonts: vec![], recent_ui_fonts: vec![] }
     }
 }
 
@@ -275,7 +283,7 @@ impl Preferences {
     }
 }
 
-fn path() -> std::path::PathBuf { crate::store::Store::internal_dir().join("preferences.json") }
+fn path() -> std::path::PathBuf { crate::store::Store::settings_dir().join("preferences.json") }
 
 /// Show the interface in `lang` without saving it (first launch, before the library exists).
 pub(crate) fn show_lang(lang: Lang) {
@@ -284,6 +292,8 @@ pub(crate) fn show_lang(lang: Lang) {
     apply(p);
 }
 
+/// The preferences: this computer's (应用级), the document theme, font and
+/// 正文字号 the root in front's own (W21: they go with its folder).
 pub fn load() {
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     let bytes = if crate::store::Store::sqlite_session() {
@@ -296,9 +306,47 @@ pub fn load() {
     } else { fdl_core::vfs::read(path()).ok() };
     #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
     let bytes = fdl_core::vfs::read(path()).ok();
-    let p = bytes.and_then(|b| serde_json::from_slice::<Preferences>(&b).ok()).unwrap_or_default();
+    let mut p = bytes.and_then(|b| serde_json::from_slice::<Preferences>(&b).ok()).unwrap_or_default();
+    if let Some(root) = look_root() {
+        let look = crate::store::Store::root_look_at(&root);
+        let d = Preferences::default();
+        p.theme = look.theme.unwrap_or(d.theme);
+        p.feishu = look.feishu.unwrap_or(d.feishu);
+        p.doc_family = look.doc_family.unwrap_or(d.doc_family);
+        p.doc_size = look.doc_size.unwrap_or(d.doc_size);
+    }
     apply(p);
 }
+
+/// The root whose look is in use: the one in front, when a root is open.
+fn look_root() -> Option<std::path::PathBuf> {
+    if crate::FEI_NOTES { return None; }
+    let root = crate::store::Store::root_dir();
+    (cx_has_roots() && root.join(crate::store::INTERNAL).exists()).then_some(root)
+}
+
+/// Whether the 工作区 has a root (none before first launch picks one).
+fn cx_has_roots() -> bool { HAS_ROOTS.load(Ordering::Relaxed) }
+static HAS_ROOTS: AtomicBool = AtomicBool::new(false);
+pub(crate) fn set_has_roots(on: bool) { HAS_ROOTS.store(on, Ordering::Relaxed); }
+
+/// Another root came to the front: its own look (theme, document font,
+/// themes folder) takes over in every window. Changing look between roots is
+/// meant (W21).
+pub(crate) fn root_switched(cx: &mut App) {
+    if crate::FEI_NOTES { return; }
+    let before = prefs();
+    load();
+    let now = prefs();
+    if (now.theme_id(), &now.doc_family) == (before.theme_id(), &before.doc_family) && themes::dir() == *THEMES_DIR.lock().unwrap() { return }
+    *THEMES_DIR.lock().unwrap() = themes::dir();
+    themes::load(&now.theme_id(), themes::all_loaded(), || cx.text_system().all_font_names());
+    check_fonts(cx);
+    for w in cx.windows() {
+        if let Some(h) = w.downcast::<Workspace>() { let _ = h.update(cx, |ws, _, cx| { ws.history_limit = ws.store.history_limit(); refresh_all(ws, cx) }); }
+    }
+}
+static THEMES_DIR: std::sync::Mutex<std::path::PathBuf> = std::sync::Mutex::new(std::path::PathBuf::new());
 
 pub(crate) fn apply(mut p: Preferences) {
     FEISHU.store(p.feishu, Ordering::Relaxed);
@@ -313,6 +361,7 @@ pub(crate) fn apply(mut p: Preferences) {
         themes::select_interface(interface);
     }
     themes::set_doc_font(&p.doc_family);
+    themes::set_doc_size(&p.doc_size);
     theme::set_ui_family(&p.ui_family);
     *PREFS.write().unwrap() = Some(p);
 }
@@ -438,13 +487,18 @@ pub(crate) fn save(p: &Preferences) -> anyhow::Result<()> {
         return Ok(());
     }
     use std::io::Write;
-    let root = crate::store::Store::internal_dir();
+    let root = crate::store::Store::settings_dir();
     fdl_core::vfs::create_dir_all(&root)?;
     let tmp = root.join("preferences.json.tmp");
     let mut f = fdl_core::vfs::File::create(&tmp)?;
     f.write_all(&serde_json::to_vec_pretty(p)?)?;
     f.sync_all()?;
     fdl_core::vfs::rename(tmp, path())?;
+    // The document theme, font and 正文字号 are the root in front's (W21).
+    if let Some(root) = look_root() {
+        let look = crate::store::RootLook { theme: Some(p.theme.clone()), feishu: Some(p.feishu), doc_family: Some(p.doc_family.clone()), doc_size: Some(p.doc_size.clone()) };
+        if crate::store::Store::root_look_at(&root) != look { crate::store::Store::save_root_look_at(&root, &look)?; }
+    }
     apply(p.clone());
     Ok(())
 }
@@ -916,9 +970,13 @@ pub(crate) fn keycap(id: impl Into<ElementId>, key: &str, recording: bool) -> St
 }
 
 /// A small text button (恢复默认 …).
-pub(crate) fn link_button(id: impl Into<ElementId>, label: &'static str) -> Stateful<Div> {
+pub(crate) fn link_button(id: impl Into<ElementId>, label: &'static str) -> Stateful<Div> { link_button_hover(id, label, Theme::fill_hover()) }
+
+/// `link_button` with its own hover fill: GPUI takes one `.hover()` per
+/// element (a second one asserts in debug builds).
+pub(crate) fn link_button_hover(id: impl Into<ElementId>, label: &'static str, hover: Hsla) -> Stateful<Div> {
     div().id(id).flex_none().h(px(26.)).px(px(10.)).flex().items_center().rounded(px(7.)).cursor_pointer()
-        .text_size(px(crate::mobile::ui_font_small())).line_height(px(crate::mobile::ui_font_small() + 4.)).text_color(Theme::primary()).hover(|s| s.bg(Theme::fill_hover()))
+        .text_size(px(crate::mobile::ui_font_small())).line_height(px(crate::mobile::ui_font_small() + 4.)).text_color(Theme::primary()).hover(move |s| s.bg(hover))
         .child(label)
 }
 
@@ -1027,14 +1085,16 @@ fn sample_page(t: &themes::Theme, s: f32) -> Div {
     let st = t.style;
     let sc = |v: f32| px((v * s).max(0.5));
     let text = st.color("page.color").unwrap_or_else(|| st.token("text"));
-    let (body, line) = (st.num("page.size"), st.num("page.line"));
+    // 正文字号 too, by the same ratio as the note (themes::doc_len).
+    let dl = |n: f32| themes::doc_len_in(st, n);
+    let (body, line) = (dl(st.num("page.size")), dl(st.num("page.line")));
     // 文档字体 follows into the sample: what the page shows is what the note looks like.
     let (font, mono): (SharedString, SharedString) = (themes::doc_font_in(st, "page.font").into(), st.font("pre.font").into());
     let gap = sc(st.num("p.gap")).clamp(px(4.), px(9.));
     let p = |c: Div| c.text_size(sc(body)).line_height(sc(line));
     let heading = |l: u8, s: &'static str| {
         let h = format!("h{l}");
-        div().text_size(sc(st.num(&format!("{h}.size")))).line_height(sc(st.num(&format!("{h}.line")))).font_weight(FontWeight(st.num(&format!("{h}.weight"))))
+        div().text_size(sc(dl(st.num(&format!("{h}.size"))))).line_height(sc(dl(st.num(&format!("{h}.line"))))).font_weight(FontWeight(st.num(&format!("{h}.weight"))))
             .text_color(st.color(&format!("{h}.color")).unwrap_or(text)).child(s)
     };
     let link = st.color("a.color").unwrap_or(text);
@@ -1099,7 +1159,7 @@ fn sample_page(t: &themes::Theme, s: f32) -> Div {
     let row = |a: &'static str, b: &'static str, head: bool, last: bool| div().flex().when(!last, |d| d.border_b_1().border_color(line_c))
         .child(cell(a, head).border_r_1().border_color(line_c)).child(cell(b, head));
     let table = div().w_full().rounded(sc(st.num("table.radius"))).border_1().border_color(line_c).overflow_hidden()
-        .text_size(sc(st.num("table.size"))).line_height(sc(st.num("table.line-height")))
+        .text_size(sc(dl(st.num("table.size")))).line_height(sc(dl(st.num("table.line-height"))))
         .child(row(tr("按键", "Keys"), tr("作用", "Does"), true, false)).child(row(crate::shortcuts::keys("⌘ N"), tr("新建文档", "New document"), false, false)).child(row(crate::shortcuts::keys("⌘ J"), tr("搜索所有文档", "Search documents"), false, true));
     let (hr_c, hr_w) = (st.color("hr.color").unwrap_or_else(|| st.token("separator_dots")), (st.num("hr.width") * s).max(0.6));
     // Painted to the column's width: a row of fixed-size dots would set the
@@ -1120,7 +1180,7 @@ fn sample_page(t: &themes::Theme, s: f32) -> Div {
         .children(parts);
     let code = div().w_full().overflow_hidden().px(px(10.)).py(px(7.)).rounded(sc(st.num("pre.radius"))).bg(st.color("pre.bg").unwrap_or_else(|| st.token("code_bg")))
         .border_1().border_color(st.color("pre.border").unwrap_or_else(|| st.token("code_border")))
-        .font_family(mono.clone()).text_size(sc(st.num("pre.size"))).line_height(sc(st.num("pre.line"))).text_color(st.color("pre.color").unwrap_or_else(|| st.token("code_text")))
+        .font_family(mono.clone()).text_size(sc(dl(st.num("pre.size")))).line_height(sc(dl(st.num("pre.line")))).text_color(st.color("pre.color").unwrap_or_else(|| st.token("code_text")))
         .child(code_line("1", vec![tok("# ", syn("comment")), tok(tr("备份文档库", "back up your documents"), syn("comment"))]))
         .child(code_line("2", vec![tok("cd ", syn("function")), tok("~/Documents ", text), tok("&& ", syn("keyword")), tok("tar ", syn("function")), tok("-czf ", syn("attr")), tok("\"Quiet.tar.gz\" ", syn("string")), tok("Quiet.md", text)]))
         .child(code_line("3", vec![tok("echo ", syn("function")), tok("\"done\"", syn("string"))]));
@@ -1134,7 +1194,7 @@ fn sample_page(t: &themes::Theme, s: f32) -> Div {
     div().relative().size_full().flex().justify_center().items_start().bg(paper).rounded_b(px(SAMPLE_RADIUS)).font_family(font).text_color(text).overflow_hidden()
         // min_w_0: the column follows the frame, not its widest unbreakable line.
         .child(div().w_full().min_w_0().overflow_hidden().max_w((sc(st.num("page.width")) * 1.5).min(px(880.))).px(px(40.)).pt(px(28.)).flex().flex_col().gap(gap)
-            .child(div().text_size(sc(st.num("title.size"))).line_height(sc(st.num("title.size") * 1.25)).font_weight(FontWeight(st.num("title.weight")))
+            .child(div().text_size(sc(dl(st.num("title.size")))).line_height(sc(dl(st.num("title.size")) * 1.25)).font_weight(FontWeight(st.num("title.weight")))
                 .font_family(SharedString::from(themes::doc_font_in(st, "title.font"))).text_color(st.color("title.color").unwrap_or(text)).child(tr("开始指南", "Getting started")))
             .child(para)
             .child(long)
@@ -1588,7 +1648,7 @@ impl Workspace {
         }
         if p.doc_family != old.doc_family { crate::fonts::probe(&p.doc_family, cx); }
         if p.ui_family != old.ui_family { crate::fonts::probe(&p.ui_family, cx); }
-        if p.theme_id() != old.theme_id() || p.interface_style() != old.interface_style() || p.lang() != old.lang() || p.doc_family != old.doc_family || p.ui_family != old.ui_family || sync_dark(cx) {
+        if p.theme_id() != old.theme_id() || p.interface_style() != old.interface_style() || p.lang() != old.lang() || p.doc_family != old.doc_family || p.doc_size != old.doc_size || p.ui_family != old.ui_family || sync_dark(cx) {
             refresh_all(self, cx);
         }
         cx.notify();
@@ -1819,6 +1879,7 @@ impl Workspace {
         // 打开链接: which browser a clicked link (and 网页搜索) opens in. The
         // list is what this Mac has, so the row is only there when there is a
         // choice to make.
+        let new_key = crate::shortcuts::hint("workspace::NewDoc", "⌘N");
         let browsers = browsers();
         let links = if browsers.is_empty() {
             vec![]
@@ -1850,6 +1911,14 @@ impl Workspace {
                     switch("pref-remote", p.remote_images).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.remote_images = !p.remote_images, cx)))).into_any_element(),
                 row(tr("退格键回到标题", "Backspace returns to title"), desc(tr("在正文开头按退格键时回到标题，第一段文字并入标题。关闭后光标留在正文。", "Backspace at the start of the body moves to the title, joining the first paragraph to it. When off the caret stays in the body.")),
                     switch("pref-backspace-title", p.backspace_to_title).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.backspace_to_title = !p.backspace_to_title, cx)))).into_any_element(),
+                row(tr("中英文之间自动加空格", "Space between Chinese and English"), desc(tr("输入时在汉字和英文字母、数字之间自动加一个空格，代码、链接和公式里不加。已有的文字可用「编辑 › 整理本文空格」。", "While typing, adds a space between Chinese characters and Latin letters or digits, except in code, links and formulas. For existing text use Edit › Add Spaces Between Chinese and English.")),
+                    switch("pref-cjk-spacing", p.cjk_spacing).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.cjk_spacing = !p.cjk_spacing, cx)))).into_any_element(),
+                // The key as bound (Ctrl+N off macOS, or the user's own), in every language's text.
+                row(tr("快捷新建默认类型", "Quick new (⌘N)").replace("⌘N", new_key), Some(tr("⌘N 新建时创建的类型；「记住上次」沿用你上次从新建菜单选的类型。", "What ⌘N creates; “Last used” repeats the type you last picked from the New menu.").replace("⌘N", new_key).into()), {
+                    let sel = match p.new_default.as_str() { "doc" => 1, "markdown" => 2, _ => 0 };
+                    self.select("quick-new", vec![tr("记住上次", "Last used"), tr("文档", "Document"), "Markdown"], sel,
+                        |w, i, cx| w.set_pref(|p| p.new_default = ["", "doc", "markdown"][i].into(), cx), cx)
+                }).into_any_element(),
                 // 网页搜索 opens the selection in the browser; which site is the
                 // user's habit, so it is a preference rather than a constant.
                 #[cfg(not(target_os = "ios"))]
@@ -1981,6 +2050,11 @@ impl Workspace {
             row(tr("文档主题", "Document theme"), None, picker).into_any_element(),
             self.font_row(FontTarget::Doc, tr("文档字体", "Document font"),
                 tr("正文和标题用这个字体，代码块仍用主题的等宽字体。", "Body text and headings use it; code keeps the theme's monospace face."), cx).into_any_element(),
+            row(tr("正文字号", "Text size"), None, {
+                let sel = match prefs().doc_size.as_str() { "small" => 0, "large" => 2, "xlarge" => 3, _ => 1 };
+                segmented("doc-size", &[tr("小", "Small"), tr("标准", "Default"), tr("大", "Large"), tr("特大", "Extra large")], sel,
+                    |w, i, cx| w.set_pref(|p| p.doc_size = ["small", "", "large", "xlarge"][i].into(), cx), cx)
+            }).into_any_element(),
             sample.into_any_element(),
         ]);
         if THEME_CSS { rows.push(row(tr("主题 CSS", "Theme CSS"), Some(where_),
@@ -2011,10 +2085,9 @@ impl Workspace {
     /// window sees it; the cached copy only avoids reading a file per frame.
     pub(crate) fn change_history_limit(&mut self, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
         let Some(store) = self.personal_settings_store(cx) else { return; };
-        let mut s = store.settings();
-        let next = (s.history_limit() as i32 + delta).clamp(1, 30) as u32;
-        s.set_history_limit(next);
-        if store.save_settings(&s).is_err() { return; }
+        let base = store.history_limit();
+        let next = (base as i32 + delta).clamp(1, 30) as u32;
+        if store.set_history_limit(next).is_err() { return; }
         if self.store.root() == store.root() { self.history_limit = next; }
         // Other windows cache the number for their settings page; saving
         // always reads the library, so this is display-only.
@@ -2038,24 +2111,27 @@ impl Workspace {
         let mut rows = Vec::new();
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         rows.extend(self.library_mode_rows(cx));
-        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-        {
-            let root = crate::store::Store::root_dir();
-            let location = if cfg!(target_os = "windows") { root.display().to_string() } else {
+        if !crate::FEI_NOTES {
+            let reveal = crate::local_folders::show_in_files();
+            let short = |root: &std::path::Path| if cfg!(target_os = "windows") { root.display().to_string() } else {
                 dirs::home_dir().and_then(|h| root.strip_prefix(h).ok().map(|r| format!("~/{}", r.display()))).unwrap_or_else(|| root.display().to_string())
             };
-            let reveal = if cfg!(target_os = "macos") { tr("在访达中显示", "Show in Finder") } else if cfg!(target_os = "windows") {
-                tr("在文件资源管理器中显示", "Show in File Explorer")
-            } else { tr("在文件管理器中显示", "Show in File Manager") };
-            rows.extend([
-                row(tr("文档库文件夹", "Documents folder"), Some(location.into()), div().flex_none().flex().gap(px(8.))
-                    .child(button("reveal-library", reveal).on_click(|_, _, cx| cx.reveal_path(&crate::store::Store::root_dir())))
-                    // A test run's library (`QUIET_MD_HOME`) is fixed: a restart would lose it.
-                    .when(!cfg!(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-restore")) && std::env::var_os("QUIET_MD_HOME").is_none(), |d| d.child(button("change-library", tr("更改…", "Change…")).on_click(cx.listener(|w, _, _, cx| w.pick_library(cx)))))).into_any_element(),
-                row(tr("回收站", "Trash"), Some(crate::trash::retention_note().into()),
-                    button("open-trash", tr("打开", "Open")).on_click(cx.listener(|w, _, _, cx| w.open_settings_trash(cx)))).into_any_element(),
-            ]);
+            // 工作区: every root folder alike, each with its own 回收站 and history.
+            let mut folders: Vec<AnyElement> = self.store.roots().into_iter().map(|(key, name, path, error)| {
+                let (k, n, p) = (key.clone(), name.clone(), path.clone());
+                let sub: SharedString = match error { Some(e) => format!("{} · {}", short(&path), diagnostic(&e)).into(), None => short(&path).into() };
+                row(name, Some(sub), div().flex_none().flex().gap(px(8.))
+                    .child(button(SharedString::from(format!("reveal-{key}")), reveal).on_click(move |_, _, cx| cx.reveal_path(&p)))
+                    // A test run's one root (`QUIET_MD_HOME`) is fixed.
+                    .when(std::env::var_os("QUIET_MD_HOME").is_none() || std::env::var_os("QUIET_MD_ROOTS").is_some(), |d| d.child(button(SharedString::from(format!("remove-{key}")), tr("移除", "Remove")).on_click(cx.listener(move |w, _, _, cx| { w.confirm = Some(crate::app::Confirm::RemoveRoot(k.clone(), n.clone())); cx.notify(); }))))).into_any_element()
+            }).collect();
+            folders.push(row(tr("添加文件夹", "Add a folder"), Some(tr("打开电脑上已有的文件夹，或新建一个，都会显示在侧栏里。", "Open a folder already on your computer, or make a new one; either shows in the sidebar.").into()), div().flex_none().flex().gap(px(8.))
+                .child(button("open-root", tr("打开…", "Open…")).on_click(cx.listener(|w, _, window, cx| w.open_folder_dialog(window, cx))))
+                .child(button("new-root", tr("新建…", "New…")).on_click(cx.listener(|w, _, window, cx| w.new_root_dialog(window, cx))))).into_any_element());
+            rows.extend(folders);
         }
+        rows.push(row(tr("回收站", "Trash"), Some(crate::trash::retention_note().into()),
+                    button("open-trash", tr("打开", "Open")).on_click(cx.listener(|w, _, _, cx| w.open_settings_trash(cx)))).into_any_element());
         rows.push(row(tr("版本历史", "Version history"),
             desc(tr("每篇文档保留的历史版本数（1–30 份）", "Snapshots kept for each document (1–30)")),
             div().flex_none().flex().items_center().gap(px(12.))
@@ -2225,21 +2301,6 @@ impl Workspace {
             _ => crate::cloud_restore::startup_fallback().unwrap_or(tr("当前使用本机文档库。开启后可跨设备同步和多人实时协作。",
                 "You’re using your local library. Turn on iCloud to sync between devices and collaborate in real time.")),
         }
-    }
-
-    /// 更改…: a folder picked as the next library, used as it is (see `library_in`).
-    #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-    fn pick_library(&mut self, cx: &mut Context<Self>) {
-        if cfg!(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-restore")) { return; }
-        let picked = crate::devtools::take_pick();
-        let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(tr("选择", "Choose").into()), #[cfg(not(target_os = "ios"))] extensions: None }));
-        cx.spawn(async move |this, cx| {
-            let paths = match prompt { Some(p) => p.await.ok().and_then(Result::ok).flatten(), None => picked };
-            let Some(dir) = paths.and_then(|p| p.into_iter().next()) else { return };
-            let root = crate::onboarding::library_in(dir);
-            if root == crate::store::Store::root_dir() { return }
-            let _ = this.update(cx, |w, cx| { w.confirm = Some(crate::app::Confirm::SwitchLibrary(root)); cx.notify(); });
-        }).detach();
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -3198,6 +3259,12 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "打印" => "Print",
         "显示引用列表" => "Show references",
         "复制为 Markdown" => "Copy as Markdown",
+        "粘贴为纯文本" => "Paste as plain text",
+        "插入链接" => "Insert link",
+        "插入" => "Insert",
+        "对齐" => "Align",
+        "上移块" => "Move block up",
+        "下移块" => "Move block down",
         "复制文件地址" => "Copy file path",
         "已复制文件地址" => "File path copied",
         "已复制为 Markdown" => "Copied as Markdown",
@@ -3447,6 +3514,12 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "单元格背景颜色" => "Cell background",
         "删除列" => "Delete columns",
         "删除行" => "Delete rows",
+        "上方插入行" => "Insert row above",
+        "下方插入行" => "Insert row below",
+        "左侧插入列" => "Insert column left",
+        "右侧插入列" => "Insert column right",
+        "清空内容" => "Clear contents",
+        "删除表格" => "Delete table",
         "顶部对齐" => "Align top",
         "垂直居中" => "Align middle",
         "底部对齐" => "Align bottom",
@@ -3978,6 +4051,8 @@ mod tests {
     fn old_preferences_have_no_fonts() {
         let p: Preferences = serde_json::from_str(r#"{"theme":"craft","ui_font":"large"}"#).unwrap();
         assert_eq!((p.ui_family.as_str(), p.doc_family.as_str(), p.ui_font.as_str()), ("", "", "large"));
+        // …and 正文字号 follows the theme.
+        assert_eq!(p.doc_size, "");
     }
 }
 

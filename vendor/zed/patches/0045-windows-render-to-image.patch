@@ -1,0 +1,33 @@
+Windows: offscreen render_to_image outside tests
+
+The release self-test (src/selftest.rs) checks that the window draws and saves a
+PNG of a failing scenario through Window::render_offscreen. The DirectX
+renderer already implements it; only the test-support gate kept it out of
+shipped builds, as on macOS before.
+
+diff --git a/crates/gpui_windows/src/directx_renderer.rs b/crates/gpui_windows/src/directx_renderer.rs
+index 26718a007b1a06986ce17a05a09a3e98643c3dba..f436a137846855ca404ed865aacc4e73e3e3ea22 100644
+--- a/crates/gpui_windows/src/directx_renderer.rs
++++ b/crates/gpui_windows/src/directx_renderer.rs
+@@ -479,7 +479,7 @@ impl DirectXRenderer {
+     /// goes through MetalRenderer; this is the Windows analogue). Draws into
+     /// the existing render target, copies it into a `D3D11_USAGE_STAGING`
+     /// texture, maps it, and converts BGRA to RGBA.
+-    #[cfg(feature = "test-support")]
++    // quiet.md: also outside tests, for the release self-test and scripted captures.
+     pub(crate) fn render_to_image(
+         &mut self,
+         scene: &Scene,
+diff --git a/crates/gpui_windows/src/window.rs b/crates/gpui_windows/src/window.rs
+index 3f70e9b132c1ac73af2e8167e188092de353cd80..6351c81452bf6b55a5e32f2a25711e754264a0ee 100644
+--- a/crates/gpui_windows/src/window.rs
++++ b/crates/gpui_windows/src/window.rs
+@@ -1025,7 +1025,7 @@ impl PlatformWindow for WindowsWindow {
+             .log_err();
+     }
+ 
+-    #[cfg(feature = "test-support")]
++    // quiet.md: also outside tests, for the release self-test and scripted captures.
+     fn render_to_image(&self, scene: &Scene) -> anyhow::Result<image::RgbaImage> {
+         self.state
+             .renderer

@@ -75,10 +75,38 @@ pub enum BlockSub {
     Add(usize),
 }
 
+/// Where a right-click landed: which menu it opens. A right-click inside the
+/// selection keeps it, anywhere else moves the caret first (see
+/// `Editor::on_right_click`), so the menu always describes what it will act on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CtxKind {
+    /// Text with a selection (or blocks selected as a whole).
+    Selection,
+    /// A caret in text: paste, insert and turn into.
+    Caret,
+    /// A caret in the title: paste and insert; the title is no block to
+    /// turn, align or move.
+    Title,
+    /// A read-only page: copy what is selected (`sel`), or select all.
+    ReadOnly { sel: bool },
+    /// A table cell, by slot. Right-clicking does not select the cell.
+    Cell { block: BlockId, row: usize, col: usize },
+}
+
+/// An open submenu of the right-click menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CtxSub {
+    Insert,
+    Turn,
+    Align,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Menu {
     /// "+" on an empty line: slash items without a trigger.
     Add { block: BlockId, selected: usize },
+    /// Right-click; `pos` is the page-local point the menu hangs from.
+    Ctx { pos: Point<Pixels>, kind: CtxKind, sub: Option<CtxSub> },
     /// Handle click.
     Block { block: BlockId, sub: Option<BlockSub> },
     /// Toolbar dropdowns.
@@ -2107,6 +2135,16 @@ impl Editor {
         }
     }
 
+    /// 整理本文空格 (#293): the spaces typing would add, over the whole
+    /// document at once; one 撤销 takes them all back.
+    fn on_space_cjk(&mut self, _: &k::SpaceCjk, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.guard(window, cx) || self.read_only { return; }
+        let n = self.core.space_document();
+        if n == 0 { return self.toast(crate::settings::tr("没有需要加空格的地方", "No spaces to add"), cx); }
+        self.toast(&crate::localized_count!(n, "已加 {} 个空格", "Added {} space", "Added {} spaces", n), cx);
+        self.changed_preserving_viewport(window, cx);
+    }
+
     fn on_copy(&mut self, _: &k::Copy, window: &mut Window, cx: &mut Context<Self>) {
         if !self.guard(window, cx) {
             return;
@@ -2508,6 +2546,7 @@ impl Editor {
             .on_action(guard(cx, Self::on_select_all))
             .on_action(guard(cx, Self::on_copy))
             .on_action(guard(cx, Self::on_copy_markdown))
+            .on_action(guard(cx, Self::on_space_cjk))
             .on_action(guard(cx, Self::on_cut))
             .on_action(guard(cx, Self::on_paste))
             .on_action(guard(cx, Self::on_paste_plain))
@@ -2656,6 +2695,59 @@ impl Editor {
         self.restart_blink(window, cx);
         #[cfg(target_os = "ios")]
         if !self.read_only { gpui_mobile::show_keyboard(); }
+        cx.notify();
+    }
+
+    /// Right-click on the page: the menu for what was hit.
+    ///
+    /// The selection rule is the one browsers keep getting wrong: a click
+    /// *inside* the selection keeps it, anywhere else moves the caret and
+    /// clears it. The menu then matches what its items will act on, and
+    /// copy / cut never act on something the user can't see selected.
+    pub fn on_right_click(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // The page's own click handling must not also run.
+        cx.stop_propagation();
+        if self.marked.is_some() { return; }
+        crate::gpui_compat::focus(window, &self.focus, cx);
+        // A context menu replaces whatever was open, like any other click.
+        self.menu = None;
+        self.menu_hovered = false;
+        self.slash = None;
+        self.marked = None;
+        self.hide_link_card(cx);
+        if self.read_only {
+            // Nothing to change, but what is selected can still be copied.
+            let Some((pos, _)) = self.pos_at_row(ev.position) else { return cx.notify() };
+            let sel = self.core.selection_holds(pos);
+            self.menu = Some(Menu::Ctx { pos: self.rel(ev.position), kind: CtxKind::ReadOnly { sel }, sub: None });
+            return cx.notify();
+        }
+        self.dragging = false;
+        self.gap_press = None;
+        self.tables.danger = false;
+        let Some((pos, at_row_end)) = self.pos_at_row(ev.position) else { return cx.notify() };
+        // A table cell: 行 / 列 operations act on the slot under the pointer,
+        // so the cell selection is left as it is (a multi-cell selection the
+        // click sits inside stays, for 合并单元格).
+        if let Some((block, row, col)) = self.core.cell_of(pos.block) {
+            self.menu = Some(Menu::Ctx { pos: self.rel(ev.position), kind: CtxKind::Cell { block, row, col }, sub: None });
+            return cx.notify();
+        }
+        // Nothing to put a caret in (image, file, divider, ...): the block menu
+        // already has 剪切 / 复制 / 删除 and 在下方添加 for those.
+        // The title is text too, though no block.
+        if pos.block != TITLE && !self.core.block(pos.block).is_some_and(|b| b.kind.has_text()) {
+            return self.open_block_menu(pos.block, false, window, cx);
+        }
+        let in_sel = self.core.selection_holds(pos);
+        if !in_sel {
+            self.core.clear_block_sel();
+            self.set_caret(pos, false);
+            self.caret_row_end = at_row_end.then_some((pos.block, pos.offset));
+            self.restart_blink(window, cx);
+        }
+        let kind = if in_sel { CtxKind::Selection } else if pos.block == TITLE { CtxKind::Title } else { CtxKind::Caret };
+        self.menu = Some(Menu::Ctx { pos: self.rel(ev.position), kind, sub: None });
         cx.notify();
     }
 
@@ -2919,6 +3011,7 @@ impl Editor {
             return;
         }
         self.core.insert_text(&s);
+        if crate::settings::prefs().cjk_spacing { self.core.space_typed(s.len()); }
         if s == " " {
             let _ = self.core.markdown_block_shortcut() || self.core.markdown_divider() || self.core.autolink();
         } else if s == "-" {
@@ -3003,6 +3096,12 @@ impl EntityInputHandler for Editor {
         let r = from16(&t, range.start)..from16(&t, range.end);
         actual.replace(to16(&t, r.start)..to16(&t, r.end));
         Some(t[r].to_string())
+    }
+
+    /// The caret block's length: iOS (gpui_ios) brings up the keyboard only
+    /// for a handler that reports one.
+    fn text_length_utf16(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+        Some(self.head_text()?.encode_utf16().count())
     }
 
     fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {

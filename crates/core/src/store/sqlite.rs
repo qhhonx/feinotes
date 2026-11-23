@@ -796,16 +796,16 @@ impl Store {
                     while let Some(part) = parts.next()? { body.push_str(part.get_ref(0)?.as_str()?); }
                 }
                 entries.push(Entry { id, meta: meta.clone(), title: row.get(1)?, icon: row.get(2)?, body: body.into(),
-                    reminders: serde_json::from_str(&row.get::<_, String>(4)?)?, links: serde_json::from_str(&row.get::<_, String>(5)?)? });
+                    reminders: serde_json::from_str(&row.get::<_, String>(4)?)?, links: serde_json::from_str(&row.get::<_, String>(5)?)?, note: None, root: String::new() });
             }
         }
         tx.commit()?;
         for (id, meta) in &self.index {
             if let Some(title) = &meta.folder {
-                entries.push(Entry { id: id.clone(), meta: meta.clone(), title: title.clone(), icon: None, body: Default::default(), reminders: vec![], links: vec![] });
+                entries.push(Entry { id: id.clone(), meta: meta.clone(), title: title.clone(), icon: None, body: Default::default(), reminders: vec![], links: vec![], note: None, root: String::new() });
             } else if meta.local() && let Ok(doc) = self.load(id) {
                 entries.push(Entry { id: id.clone(), meta: meta.clone(), title: doc.title.text.clone(), icon: doc.icon.clone(), body: doc.plain_text().into(),
-                    reminders: doc.reminders(), links: doc.doc_links() });
+                    reminders: doc.reminders(), links: doc.doc_links(), note: None, root: String::new() });
             }
         }
         entries.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1298,7 +1298,7 @@ mod tests {
 
         let legacy_root = temp.0.join("legacy");
         std::fs::create_dir_all(legacy_root.join("docs"))?;
-        save_json(&legacy_root.join("format.json"), &FormatMarker { format: 3 })?;
+        save_json(&legacy_root.join("format.json"), &FormatMarker { format: 3, id: String::new() })?;
         let mut legacy = Store::open_at(legacy_root)?;
         let folder = legacy.create_folder("旧库目录", None)?;
         let id = legacy.create_from(&docxml::parse("<title>正文</title><p>原来的笔记</p><figure><source path=\"/old/Quiet.md/assets/files/test.txt\" name=\"test.txt\"/></figure>")?)?;

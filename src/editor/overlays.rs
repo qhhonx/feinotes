@@ -5,7 +5,7 @@
 use super::core::{Pos, TITLE};
 use super::menus::{self, SLASH_ITEMS, TURN_ITEMS};
 use super::table::CellSelKind;
-use super::view::{BlockAct, BlockSub, Editor, Mark, Menu};
+use super::view::{BlockAct, BlockSub, CtxKind, Editor, Mark, Menu};
 use crate::model::*;
 use crate::feishu_theme as theme;
 use crate::editor_theme::Theme;
@@ -15,7 +15,7 @@ use gpui::{prelude::FluentBuilder, *};
 const SLASH_W: f32 = 247.;
 const SLASH_MAX_H: f32 = 351.;
 const SCROLLBAR_GUTTER: f32 = 15.;
-const MENU_W: f32 = 247.;
+pub(super) const MENU_W: f32 = 247.;
 /// Text toolbar: 1px border, padding 8, T▾ 44, sep, ≡▾ 44, sep, six 24px
 /// marks, A▾ 44 (gap 8), a full-height divider 12px either side, 更多 24.
 /// Table handle: 44.5 left of the grid, centred on the column-dot row 16.5 above it.
@@ -119,12 +119,12 @@ fn block_icon(name: &str, size: f32, color: Hsla) -> AnyElement {
 }
 
 /// 32-tall menu row: icon, label, optional right hint.
-fn row(id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, right: Option<&str>, highlighted: bool) -> Stateful<Div> {
+pub(super) fn row(id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, right: Option<&str>, highlighted: bool) -> Stateful<Div> {
     row_tinted(id, icon_name, label, right, highlighted, Theme::text(), Theme::icon())
 }
 
 /// `row` with explicit label / icon colours (active and disabled items).
-fn row_tinted(
+pub(super) fn row_tinted(
     id: impl Into<ElementId>,
     icon_name: &str,
     label: impl Into<SharedString>,
@@ -216,7 +216,7 @@ fn grid_rows<T>(cells: Vec<(menus::SlashKind, T)>) -> Vec<Vec<T>> {
     rows
 }
 
-fn separator_h() -> Div {
+pub(super) fn separator_h() -> Div {
     div().flex_none().mx(px(MENU_INSET + 8.)).my(px(4.)).h(px(1.)).bg(Theme::line_border())
 }
 
@@ -330,11 +330,16 @@ impl Editor {
         self.callout_zone.borrow_mut().clear();
         let mut out = vec![];
         if self.read_only {
+            // Only the right-click menu's 复制 / 全选.
+            if let Some(Menu::Ctx { pos, kind: kind @ CtxKind::ReadOnly { .. }, sub }) = self.menu.clone() {
+                out.extend(self.ctx_menu(pos, kind, sub, cx));
+            }
             return out;
         }
         #[cfg(target_os = "ios")]
         out.extend(self.touch_block_handle(window,cx));
         let menu_el = match self.menu.clone() {
+            Some(Menu::Ctx { pos, kind, sub }) => self.ctx_menu(pos, kind, sub, cx),
             Some(Menu::OrderedNumber { block, pos, edit, depth }) => self.ordered_number_menu(block, pos, edit, depth, cx),
             Some(Menu::Block { block, sub }) => self.block_menu(block, sub, cx),
             Some(Menu::Link { block, range, only_link }) => self.link_panel(block, range, only_link, window, cx),
@@ -374,6 +379,9 @@ impl Editor {
             return None;
         }
         match &self.menu {
+            // A right-click menu brings no handle: the pointer is not there
+            // to drag anything.
+            Some(Menu::Ctx { .. }) => None,
             Some(Menu::Block { block, .. }) | Some(Menu::Add { block, .. }) => Some(*block),
             _ => self.hover.filter(|_| !self.hover_clipped && !self.typing),
         }

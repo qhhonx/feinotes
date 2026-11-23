@@ -87,6 +87,29 @@ jobs:
           sudo softwareupdate --install-rosetta --agree-to-license
           cargo test --release --locked --target x86_64-apple-darwin --bin quiet_md update::tests
 
+      # The packages as shipped, end to end (src/selftest.rs): unpacked into a
+      # path with spaces and CJK, each runs its built-in scenarios on a
+      # temporary library; Intel runs under Rosetta.
+      - name: Release self-test of both packages
+        if: steps.filter.outputs.skip != 'true'
+        run: |
+          status=0
+          for arch in arm64 x86_64; do
+            scripts/self-test-macos.sh dist-release.*/quiet-md-*-macos-$arch-unsigned.zip "self-test/macos-$arch" || status=1
+          done
+          exit $status
+
+      - name: Upload self-test reports
+        if: always() && steps.filter.outputs.skip != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: self-test-macos
+          path: |
+            self-test/
+            !self-test/**/文档库 Library/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Upload macOS validation packages
         if: steps.filter.outputs.skip != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -145,6 +168,28 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows checks failed' }
           & scripts/package-windows.ps1 -Iscc "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe"
           if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
+
+      # The installer as shipped, end to end (src/selftest.rs): installed
+      # silently into a path with spaces and CJK, the app runs its built-in
+      # scenarios on a temporary library, then it is uninstalled.
+      - name: Release self-test of the installer
+        if: steps.filter.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist/windows/unsigned/quiet-md-*-windows-x64-setup.exe | Select-Object -First 1
+          & scripts/self-test-windows.ps1 -Installer $setup.FullName -Output self-test/windows-x64
+          if ($LASTEXITCODE -ne 0) { throw 'Release self-test failed' }
+
+      - name: Upload self-test report
+        if: always() && steps.filter.outputs.skip != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: self-test-windows
+          path: |
+            self-test/
+            !self-test/**/文档库 Library/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload Windows installer
         if: steps.filter.outputs.skip != 'true'

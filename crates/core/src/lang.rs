@@ -44,6 +44,7 @@ pub const LANGS: &[(&str, &str, &[&str])] = &[
     ("MATLAB", "matlab", &[]),
     ("Makefile", "makefile", &["mak", "mk", "make"]),
     ("Markdown", "markdown", &["md"]),
+    ("Mermaid", "mermaid", &["mmd"]),
     ("Nginx", "nginx", &[]),
     ("Objective-C", "objectivec", &["oc", "objc", "mm"]),
     ("OpenGL Shading Language", "glsl", &[]),

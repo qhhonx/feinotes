@@ -2,7 +2,7 @@
 //! Deleted pages wait in the library's `trash/` for 30 days; each row is a
 //! deleted page together with the child pages that went with it.
 
-use crate::app::{Confirm, Workspace};
+use crate::app::{Confirm, ConfirmCancel, ConfirmOk, Workspace};
 use crate::settings::display_title;
 use crate::search::doc_icon;
 use crate::store::{TRASH_DAYS, TrashEntry};
@@ -13,6 +13,8 @@ use gpui::{prelude::FluentBuilder, *};
 
 pub const TRASH_MENU_W: f32 = 160.;
 
+struct ListedTrash { lists: Vec<(String, Vec<TrashEntry>)>, warnings: Vec<String> }
+struct PurgedTrash { errors: Vec<String> }
 
 /// 剩余时间: whole days left before the automatic 彻底删除.
 pub(crate) fn remaining(deleted: u64) -> String {
@@ -308,7 +310,7 @@ impl Workspace {
         )
     }
 
-    fn restore_doc(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(crate) fn restore_doc(&mut self, id: &str, cx: &mut Context<Self>) {
         let file_before = self.store.track_file_changes();
         match self.store.restore(id) {
             Ok(moved) => {
@@ -401,12 +403,24 @@ impl Workspace {
             return;
         }
         let Some(task_guard) = self.store.begin_file_task() else { return };
-        let mut writer = self.store.tree_writer();
-        let gone = ids.clone();
+        // Each root's 回收站 is its own: one writer, and one write, per root.
+        let mut writers: Vec<(String, crate::store::Store, Vec<String>)> = vec![];
+        for id in &ids {
+            let Some(key) = self.store.trash_root(id) else { continue };
+            match writers.iter_mut().find(|(k, _, _)| *k == key) {
+                Some((_, _, v)) => v.push(id.clone()),
+                None => if let Some(w) = self.store.root_writer(&key) { writers.push((key, w, vec![id.clone()])); },
+            }
+        }
         let task = cx.background_executor().spawn(async move {
-            let mut errors: Vec<_> = writer.purge_many(&gone).err().map(|e| e.to_string()).into_iter().collect();
-            errors.extend(writer.take_warnings());
-            errors
+            let (mut errors, mut lists, mut warnings) = (vec![], vec![], vec![]);
+            for (key, mut writer, gone) in writers {
+                // The 回收站's index is written once, not once a page.
+                errors.extend(writer.purge_many(&gone).err().map(|e| e.to_string()));
+                warnings.extend(writer.take_warnings());
+                lists.push((key, writer.list_trash()));
+            }
+            (PurgedTrash { errors }, ListedTrash { lists, warnings })
         });
         // The rows go now; the 回收站 read back afterwards replaces this.
         let ids: std::collections::HashSet<String> = ids.into_iter().collect();
@@ -414,13 +428,14 @@ impl Workspace {
         self.trash_menu = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let mut errors = task.await;
+            let (done, listed) = task.await;
             drop(task_guard);
             let _ = this.update(cx, |w, cx| {
-                w.trash = w.store.list_trash();
+                for (key, trash) in listed.lists { w.trash = w.store.merge_trash(&key, trash); }
+                let mut errors = done.errors;
+                errors.extend(listed.warnings.iter().map(|s| crate::settings::diagnostic(s)));
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 crate::cloud_sync::recheck_account(w.store.root(), cx);
-                errors.extend(w.store.take_warnings());
                 if errors.is_empty() { w.show_toast(success, cx); }
                 else {
                     let msg = errors.iter().map(|e| crate::localized_format!("删除失败：{}", "Could not delete document: {}", crate::settings::diagnostic(e))).collect::<Vec<_>>().join("；");
@@ -488,6 +503,34 @@ impl Workspace {
         }
     }
 
+    /// A dialog takes focus as it opens, so ↩ can't reach the document
+    /// beneath, and gives it back where it was once it closes (unless what
+    /// the dialog did moved it on).
+    pub(crate) fn dismiss_confirm(&mut self, cx: &mut Context<Self>) {
+        self.confirm = None;
+        self.after_save = None;
+        cx.notify();
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    pub(crate) fn sync_confirm_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match (self.confirm.is_some(), self.confirm_return.is_some()) {
+            (true, false) => {
+                self.confirm_return = Some(window.focused(cx).map(|f| f.downgrade()));
+                window.focus(&self.confirm_focus, cx);
+            }
+            (false, true) => {
+                let back = self.confirm_return.take().flatten().and_then(|f| f.upgrade());
+                if !self.confirm_focus.is_focused(window) { return }
+                match back.or_else(|| self.editor.as_ref().map(|e| e.read(cx).focus.clone())) {
+                    Some(f) => window.focus(&f, cx),
+                    None => window.focus(&self.focus, cx),
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn confirm_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(c) = self.confirm.take() else { return };
         match c {
@@ -514,8 +557,7 @@ impl Workspace {
             Confirm::EmptyTrash => self.empty_trash(window, cx),
             Confirm::RemoveUnused(files) => self.remove_unused_assets(files, window, cx),
             Confirm::Migrate(_) => self.migrate_library(window,cx),
-            #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-            Confirm::SwitchLibrary(root) => cx.defer(move |cx|crate::app::switch_library(root,cx)),
+            Confirm::RemoveRoot(key, _) => self.remove_root(&key, window, cx),
             Confirm::Import { what,target } => self.import_dropped(what,target,window,cx),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::DiscardOfflineRecovery(id) => self.resolve_offline_recovery(&id, false, window, cx),
@@ -635,11 +677,10 @@ impl Workspace {
                     false,
                 )
             }
-            #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-            Confirm::SwitchLibrary(root) => (
-                crate::settings::tr("换用这个文档库？", "Switch to this library?").to_string(),
-                crate::localized_format!("Quiet.md 会保存当前文档并重启，然后打开 {}。原来的文档库留在原处，不会移动或删除，之后可以再换回来。", "Quiet.md saves the open document, restarts and opens {}. The current library stays where it is, nothing is moved or deleted, and you can switch back later.", root.display()),
-                crate::settings::tr("切换并重启", "Switch and Restart"),
+            Confirm::RemoveRoot(_, name) => (
+                crate::localized_format!("从侧栏移除「{}」？", "Remove “{}” from the sidebar?", name),
+                crate::settings::tr("只是从侧栏去掉，文件夹里的文件不会删除。以后重新打开这个文件夹，置顶、历史版本和回收站都还在。", "It only leaves the sidebar; nothing in the folder is deleted. Open the folder again later and its pins, history and Trash are still there.").to_string(),
+                crate::settings::tr("移除", "Remove"),
                 false,
             ),
             Confirm::Import { what, target } => {
@@ -752,6 +793,10 @@ impl Workspace {
         let max_width = px(if matches!(c, Confirm::SaveFailed) || version_list.is_some() { 520. } else { 400. });
         let width = (window.viewport_size().width - px(32.)).min(max_width);
         let dialog = dialog("confirm-dialog")
+            .key_context("Confirm")
+            .track_focus(&self.confirm_focus)
+            .on_action(cx.listener(move |w, _: &ConfirmOk, window, cx| { if ready { w.confirm_current(window, cx); } }))
+            .on_action(cx.listener(|w, _: &ConfirmCancel, _, cx| w.dismiss_confirm(cx)))
             .w(width)
             .px(px(24.))
             .pt(px(20.))
@@ -787,9 +832,7 @@ impl Workspace {
                     .child(secondary_button("confirm-cancel", if matches!(c, Confirm::Migrate(_)) { crate::settings::tr("稍后", "Later") } else { crate::settings::text("取消") }).on_click(cx.listener(|w, _, _, cx| {
                         // 稍后 asks again in a week, not at every launch.
                         if matches!(w.confirm, Some(Confirm::Migrate(_))) { crate::settings::migrate_later(); }
-                        w.confirm = None;
-                        w.after_save = None;
-                        cx.notify();
+                        w.dismiss_confirm(cx);
                     })))
                     .when(matches!(c, Confirm::SaveFailed), |d| {
                         d.child(secondary_button("confirm-save-copy", crate::settings::tr("另存副本", "Save a copy")).on_click(cx.listener(|w, _, window, cx| {

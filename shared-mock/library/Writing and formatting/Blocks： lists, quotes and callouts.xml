@@ -27,11 +27,11 @@
 <callout emoji="🗒️" background-color="light-gray"><p>A quiet, borderless note for supporting details.</p></callout>
 <p>Hover over a callout to change its text, border and fill colors with the palette control. Click its icon to choose another emoji.</p>
 <h1>Dividers</h1><p>Type <code>---</code> or press <code>⌘ ⌥ S</code>. The document theme decides whether the divider is dotted, solid or dashed.</p><hr/>
-<h1>Interactive blocks</h1><h2>Date reminders</h2><p>Insert a reminder from the slash menu or press <code>⌘ ⌥ W</code>. For example, a review could be scheduled for <time expire-time="1794236400000" notify-time="1794236400000" should-notify="true">2026-11-09 10:00</time>, with a year-end deadline of <time expire-time="1798779540000" notify-time="1798725600000" should-notify="true" is-whole-day="true">2026-12-31</time>.</p>
+<h1>Interactive blocks</h1><h2>Date reminders</h2><p>Insert a reminder from the slash menu or press <code>⌘ ⌥ W</code>. For example, a review could be scheduled for <time expire-time="1794178800000" notify-time="1794178800000" should-notify="true">2026-11-09 10:00</time>, with a year-end deadline of <time expire-time="1798721940000" notify-time="1798668000000" should-notify="true" is-whole-day="true">2026-12-31</time>.</p>
 <ul><li>Click the date to edit it. Add a time or use an all-day event.</li><li>Choose a notification at the event time or in advance. All-day reminders use 9:00 a.m.</li><li>Upcoming dates within a week appear orange, overdue dates red, and later dates blue.</li></ul>
 <callout emoji="🔔" background-color="light-yellow" border-color="yellow"><p>Quiet.md must be running to send a reminder notification. Quitting the app stops reminders until it is running again.</p></callout>
 <h2>Countdowns</h2><p>Insert a countdown, then use its pencil control to set a duration or a date. Use the palette to change its color. This example counts down to New Year's Day:</p>
-<countdown duration="4084145" start-time="1794695456000" notify="true" color="#4E83FD" timing="date" date="2027-01-01" time="00:00"/>
+<countdown duration="3342774" start-time="1795379227000" notify="true" color="#4E83FD" timing="date" date="2027-01-01" time="00:00"/>
 <p>You can enable an in-app notification when the countdown finishes.</p>
 <h2>Buttons</h2><p>A button can open a URL or duplicate the current document. A duplicate button is useful on a reusable meeting or journal template.</p>
 <p><button action="OpenLink" src="https://www.apple.com/macos/" background-color="light-blue">Explore macOS</button> <button action="DuplicatePage" background-color="light-green">Make a copy of this guide</button></p><p>Hover over a button and edit it to change its label, color or action.</p>

@@ -115,7 +115,10 @@ impl Workspace {
         };
         let root = store.root().to_path_buf();
         let personal = crate::store::Store::root_dir();
-        let mut writer = store.tree_writer();
+        let Some((_, mut writer)) = store.tree_writer(None) else {
+            self.show_toast_kind(ui::ToastKind::Error, tr("暂时无法打开共享文档库。", "Could not open the shared library."), cx);
+            return;
+        };
         let scope = room.scope;
         let written_scope = scope.clone();
         let written_root = root.clone();

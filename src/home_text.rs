@@ -141,6 +141,8 @@ impl Element for PreviewText {
         let area = Bounds::new(bounds.origin, size(ready.width, ready.height));
         window.with_content_mask(Some(ContentMask { bounds: area }), |window| {
             for (line, tops) in &ready.lines {
+                #[cfg(target_os = "ios")]
+                let _ = tops;
                 #[cfg(not(target_os = "ios"))]
                 let _ = line.paint_background_rows(bounds.origin, px(self.line_height), tops, align, Some(area), window, cx);
                 #[cfg(target_os = "ios")]

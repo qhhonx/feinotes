@@ -1,0 +1,48 @@
+<title>书写：文字、标题与段落</title>
+<p>结构清晰的文档，写起来顺手，读起来也轻松。这篇指南介绍标题、文字样式和段落排版，并附上最常用操作的快捷键。</p>
+<h1>用标题搭起文章结构</h1>
+<p>Quiet.md 支持九级标题。一般两三级就够用了；更深的层级适合篇幅很长的规格文档和细致的大纲。</p>
+<h2>标题层级</h2><p>下面是几个示例：</p>
+<h3>章节中的一个小节</h3><h4>一个更小的要点</h4><h5>再往下一层细节</h5>
+<p>输入一到九个 <code>#</code> 再加一个空格即可。也可以用 <code>⌘ ⌥ 1</code> 到 <code>⌘ ⌥ 9</code>。斜杠菜单里列出了前五级标题；<code>⌘ ⌥ 0</code> 可以把标题变回正文。</p>
+<table><colgroup><col width="200"/><col width="240"/><col width="250"/></colgroup><thead><tr><th><p>样式</p></th><th><p>输入</p></th><th><p>快捷键</p></th></tr></thead><tbody>
+<tr><td><p>正文</p></td><td><p>—</p></td><td><p><code>⌘ ⌥ 0</code></p></td></tr>
+<tr><td><p>一级标题</p></td><td><p><code># </code></p></td><td><p><code>⌘ ⌥ 1</code></p></td></tr>
+<tr><td><p>二级标题</p></td><td><p><code>## </code></p></td><td><p><code>⌘ ⌥ 2</code></p></td></tr>
+<tr><td><p>三级标题</p></td><td><p><code>### </code></p></td><td><p><code>⌘ ⌥ 3</code></p></td></tr>
+<tr><td><p>四至九级标题</p></td><td><p><code>#### </code> 到 <code>######### </code></p></td><td><p><code>⌘ ⌥ 4</code> 到 <code>⌘ ⌥ 9</code></p></td></tr>
+</tbody></table>
+<p>标题会自动出现在页面目录中。写长文档时，可以先列好提纲，再逐节填充内容。</p>
+<h2>标题自动编号</h2><p>在标题开头输入 <code>1. </code> 即可开启自动编号。编号跟随标题层级，插入或移动章节时会自动更新。</p>
+<h3 seq="auto">调研</h3><p>先弄清楚你想解决的问题。</p><h4 seq="auto">用户访谈</h4><h4 seq="auto">现有方案</h4><h3 seq="auto">设计</h3><p>编号也会显示在目录里。</p>
+<h2>折叠章节</h2><p>把鼠标移到标题左侧，点击出现的三角形，就能隐藏或显示它下面的内容。带有子级的段落和列表项也能折叠。</p>
+<h3 folded="true">展开这个标题</h3><p>折叠只影响显示，不影响保存的内容。再次点击三角形，可以把这一节折叠起来。</p>
+<h1>文字样式</h1><p>选中文字会弹出格式工具栏，也可以直接用快捷键。</p>
+<img src=".assets/guides/toolbar.jpg" caption="选中文字即可弹出格式工具栏" align="center"/>
+<table><colgroup><col width="200"/><col width="210"/><col width="280"/></colgroup><thead><tr><th><p>样式</p></th><th><p>快捷键</p></th><th><p>Markdown</p></th></tr></thead><tbody>
+<tr><td><p><b>粗体</b></p></td><td><p><code>⌘ B</code></p></td><td><p><code>**文本**</code></p></td></tr>
+<tr><td><p><em>斜体</em></p></td><td><p><code>⌘ I</code></p></td><td><p><code>*文本*</code></p></td></tr>
+<tr><td><p><u>下划线</u></p></td><td><p><code>⌘ U</code></p></td><td><p><code>~文本~</code></p></td></tr>
+<tr><td><p><del>删除线</del></p></td><td><p><code>⌘ ⇧ X</code></p></td><td><p><code>~~文本~~</code></p></td></tr>
+<tr><td><p><code>行内代码</code></p></td><td><p><code>⌘ ⌃ C</code></p></td><td><p>用反引号把文字包起来</p></td></tr>
+<tr><td><p><b><em>粗斜体</em></b></p></td><td><p>先 <code>⌘ B</code>，再 <code>⌘ I</code></p></td><td><p><code>***文本***</code></p></td></tr>
+</tbody></table>
+<p>样式可以叠加使用：<b><u>既加粗又带下划线</u></b>，或者<del><em>斜体再划掉</em></del>。Markdown 格式会在你输入结尾的标记时生效。如果想保留原样的字符，按一次 <code>⌘ Z</code> 撤销转换即可。</p>
+<callout emoji="📌" background-color="light-yellow" border-color="yellow"><p><code>~文本~</code>、<code>_斜体_</code> 和 <code>__粗体__</code> 的前后需要有空格或位于行首行尾。这样像 <code>file_name</code> 这样的名字就不会被误转成格式。</p></callout>
+<h1>颜色与高亮</h1><p>工具栏里的 A 按钮提供文字颜色和背景高亮。固定使用少数几种颜色，读者更容易记住每种颜色代表什么。</p>
+<h2>文字颜色</h2><p><span text-color="gray">灰色</span>、<span text-color="red">红色</span>、<span text-color="orange">橙色</span>、<span text-color="yellow">黄色</span>、<span text-color="green">绿色</span>、<span text-color="blue">蓝色</span>和<span text-color="purple">紫色</span>。</p>
+<h2>背景高亮</h2><p><span background-color="light-gray">浅灰色</span> <span background-color="light-red">浅红色</span> <span background-color="light-orange">浅橙色</span> <span background-color="light-yellow">浅黄色</span> <span background-color="light-green">浅绿色</span> <span background-color="light-blue">浅蓝色</span> <span background-color="light-purple">浅紫色</span></p>
+<p><span background-color="medium-gray">中灰色</span> <span background-color="gray">灰色</span> <span background-color="red">红色</span> <span background-color="orange">橙色</span> <span background-color="yellow">黄色</span> <span background-color="green">绿色</span> <span background-color="blue">蓝色</span> <span background-color="purple">紫色</span></p>
+<p>颜色可以组合使用：<span text-color="red" background-color="light-red">需要关注</span>，或者<span text-color="green" background-color="light-green">已检查完成</span>。按 <code>⌘ ⌥ H</code> 可以把上次用过的颜色应用到新的选区。要去掉颜色，在颜色面板里点“恢复默认”。</p>
+<h2>段落背景</h2><p background-color="light-blue">想给整段文字上色，打开它的块菜单，选一个背景颜色即可。这一段用的是浅蓝色。</p><p background-color="light-green">相邻且背景色相同的段落，看起来会连成一整块。</p>
+<h1>链接</h1><p>选中文字后按 <code>⌘ K</code> 添加网址，比如 <a href="https://www.apple.com/macos/">macOS 官网</a>。没有选中文字时，可以同时填写链接文字和网址。</p>
+<ul><li>输入以 <code>https://</code>、<code>http://</code> 或 <code>www.</code> 开头的地址，再输入一个空格，它就会变成链接。</li><li>鼠标悬停在链接上，可以编辑、移除链接或复制地址。</li><li>点击链接会在浏览器中打开。</li><li>要在笔记之间互相链接，输入 <code>@</code> 即可，详见 <cite type="doc" href="../整理与查找笔记.xml" file-type="docx">整理与查找笔记</cite>。</li></ul>
+<h1>段落排版</h1><h2>新段落与换行</h2><p><code>Enter</code> 开始一个新段落。<code>⇧ Enter</code> 在当前段落内换行。<br/>这一行和上一行属于同一个段落。</p>
+<h2>对齐</h2><p align="center">用 <code>⌘ ⇧ E</code> 居中对齐。</p><p align="right">用 <code>⌘ ⇧ R</code> 右对齐。</p><p>用 <code>⌘ ⇧ L</code> 恢复左对齐。块菜单里也有这些选项。</p>
+<h2>缩进</h2><p>按 <code>Tab</code> 让段落成为上一段的子级，按 <code>⇧ Tab</code> 移回原来的层级。<p>这是一个子段落，它会跟着父段落一起移动和折叠。<p>子段落下面还可以再有子段落。</p></p></p>
+<h1>Markdown 输入速查</h1><p>在行首输入标记，再输入一个空格（另有说明的除外）。</p>
+<table><colgroup><col width="310"/><col width="380"/></colgroup><tbody>
+<tr><td><p><code>#</code> 到 <code>#########</code></p></td><td><p>一至九级标题</p></td></tr><tr><td><p><code>-</code>、<code>*</code> 或 <code>+</code></p></td><td><p>无序列表</p></td></tr><tr><td><p><code>1.</code></p></td><td><p>有序列表；<code>5.</code> 表示从 5 开始编号</p></td></tr><tr><td><p><code>[]</code></p></td><td><p>任务</p></td></tr><tr><td><p><code>&gt;</code></p></td><td><p>引用</p></td></tr><tr><td><p><code>```</code> 或 <code>```python</code></p></td><td><p>代码块；按空格或 Enter 完成</p></td></tr><tr><td><p><code>---</code></p></td><td><p>分隔线，输入第三个短横线时立即生效</p></td></tr><tr><td><p><code>$E=mc^2$</code></p></td><td><p>行内公式 <latex>E=mc^2</latex></p></td></tr>
+</tbody></table>
+<h1>撤销、复制与粘贴</h1><ul><li><code>⌘ Z</code> 撤销编辑；<code>⌘ ⇧ Z</code> 或 <code>⌘ Y</code> 重做。连续输入的内容会合并为一步撤销。</li><li>在 Quiet.md 内复制，会保留样式、颜色、表格和图片。</li><li>从网页或飞书粘贴时，会保留支持的文档结构。Markdown 文本在粘贴时会自动转换。</li><li><code>⌘ ⇧ V</code> 粘贴为纯文本。</li><li>选中文字后，右下角的计数会显示所选内容的字数。</li></ul>
+<hr/><p>下一篇：<cite type="doc" href="块：列表、引用与高亮块.xml" file-type="docx">块：列表、引用与高亮块</cite>。</p>

@@ -102,6 +102,7 @@ This approach copies the entire document at each history step. A historical benc
 | `paste.rs` | HTML and Markdown to blocks, shared by paste and import |
 | `markdown.rs` | Markdown export |
 | `lang.rs` | Code language table |
+| `spacing.rs` | Where a space goes between 汉字 and Latin letters or digits (盘古之白), for typing with the preference on and Edit › 整理本文空格 |
 | `palette.rs` | RGBA text, background and callout palettes independent of GPUI. `theme.rs` converts them to GPUI colors. |
 | `time.rs` | Date conversion, local timezone and current time |
 | `editor/core.rs` | Editing engine |
@@ -121,26 +122,29 @@ Whiteboard and history modules in core:
 | Output | `display` (shared backend display list), `export_svg` |
 | `versions.rs` | Directory-indexed document snapshots, throttling, quotas and trash integration |
 | `diff.rs` / `changes.rs` | Dependency-free line LCS and block-level LCS for snapshot highlighting |
+| `merge.rs` | Three-way merge of two versions of a document by block, for sync (docs/design/sync.md §3.2); not wired into the app yet |
 
 ### Application (`src/`)
 
 | Module | Contents |
 |---|---|
-| `main.rs` | Entry point, `FDL_SCRIPT` mode (devtools builds only) and core module re-exports |
+| `main.rs` | Entry point, `FDL_SCRIPT` mode (devtools builds only), `--self-test` and core module re-exports |
 | `guides.rs` | Seeds an empty library with the bundled Getting Started guides once |
 | `app.rs` | `Workspace`, the two-pane window, open/create/save/delete actions, save state and reminder scheduling |
 | `html.rs` / `printing.rs` / `transfer.rs` | HTML/PDF export, printing and import/export UI |
 | `clipboard.rs` | System clipboard HTML and the simulated clipboard in script mode |
-| `sidebar.rs` / `tree.rs` | Sidebar and document tree, including child documents and Move to |
+| `sidebar.rs` / `tree.rs` | Sidebar and document tree, including child pages (a folder's own document, see FORMAT.md and core's `subdocs.rs`) and Move to |
 | `home.rs` / `trash.rs` | Home and trash |
 | `search.rs` | Search dialog and advanced search |
 | `docmenu.rs` / `docinfo.rs` / `modes.rs` | More menu, document information, edit/read mode switch and shortcut panel |
 | `theme.rs` | `craft` scale, semantic `Theme::*` colors, named display colors, `shadow_*`, type scale and note panel dimensions |
 | `ui.rs` / `input.rs` | Shared menu shells and rows, white pill buttons, hints, toasts and single-line input |
 | `highlight.rs` | Code highlighting |
+| `mermaid.rs` | Mermaid code blocks drawn as diagrams: bundled mermaid.js in an off-screen web view (macOS, Windows), SVG cached by source and theme |
 | `assets.rs` | Embedded icons, fonts and cover gallery |
 | `fonts.rs` / `font_classes.rs` / `font_downloads.rs` | Installed families for the font settings and what each is (黑体, 宋体 …, scripts covered: read from the font files); fonts fetched on demand (the board's Xiaolai, downloadable document fonts). See [Downloadable fonts](FONTS.md). |
 | `devtools.rs` | Script driver compiled with `--features devtools`. See tools/harness/README.md. |
+| `selftest.rs` | Release self-test: fixed end-to-end scenarios that shipped builds run with `--self-test`. See tools/harness/README.md. |
 | `history.rs` | Version drawer grouped by day, in-place read-only preview, change highlighting, naming, restore, save a copy and delete |
 | `board/` view | `BoardView` replaces the document in the note area. `mod.rs` owns the scene, store and commit loop, `canvas.rs` dispatches pointers, `keys.rs` handles shortcuts, `run.rs` / `action.rs` implement actions and clipboard, `text_editor.rs` edits text and `frame_name.rs` renames frames. `fonts.rs` registers Excalidraw's fonts; `font_hint.rs` shows the CJK one downloading (`font_downloads.rs`, docs/FONTS.md). `editor/board.rs` handles thumbnails and entering/leaving the board. |
 | `board/tools/` | Tool state machines: `selection` (drag, handles and marquee), `shape`, `linear`, `freedraw`, `text`, `eraser`, `lasso`, `image`, `crop`, `flowchart` |

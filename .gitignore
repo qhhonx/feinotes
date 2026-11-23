@@ -5,6 +5,7 @@
 /archive/
 /shared-mock/*
 !/shared-mock/library/
+!/shared-mock/library-zh/
 !/shared-mock/guides/
 
 /dist-release.*

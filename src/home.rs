@@ -224,7 +224,7 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
             return node.relative().p(px(bs::INSET * s)).rounded(px(bs::CALLOUT_RADIUS * s)).border(px(s)).border_color(bs::border(border.as_ref().map(|c| c.0.as_str()))).bg(bs::fill(bg.as_ref().map(|c| c.0.as_str())))
                 .child(div().flex().gap(px(bs::ICON_GAP * s)).child(div().size(px(bs::ICON * s)).mt(px((first_line - bs::ICON) / 2. * s)).text_size(px(20. * s)).line_height(px(22. * s)).flex_none().child(emoji.clone())).child(body)).into_any_element();
         }
-        BlockKind::Code { lang, caption, wrap } => {
+        BlockKind::Code { lang, caption, wrap, .. } => {
             node = node.rounded(px(bs::RADIUS * s)).border(px(s)).border_color(Theme::line_border()).bg(bs::code_surface()).font_family(theme::MONO_FONT)
                 .child(div().h(px(bs::CODE_HEADER * s)).pl(px(28. * s)).pr(px(8. * s)).rounded_t(px((bs::RADIUS - 1.) * s)).bg(bs::code_header()).flex().items_center().font_family(theme::ui_family()).text_size(px(13. * s)).text_color(Theme::text_caption()).child(caption.clone().unwrap_or_else(|| crate::settings::text("代码块").into())));
             let spans = crate::highlight::spans(lang, &b.text.text);
@@ -586,7 +586,9 @@ impl Workspace {
 
     /// One level of the tree as 主页 shows it (a folder's page uses it too).
     pub(crate) fn level_entries(&self, parent: Option<&str>) -> Vec<Entry> {
-        self.sorted_entries_by(self.entries.iter().filter(|e| e.meta.parent.as_deref() == parent && !(parent.is_none() && e.meta.mounted())).cloned().collect(), self.home.sort)
+        // A folder's 正文 is the folder's own card, not one inside it.
+        let notes: std::collections::HashSet<&str> = self.entries.iter().filter_map(|e| e.note.as_deref()).collect();
+        self.sorted_entries(self.entries.iter().filter(|e| e.meta.parent.as_deref() == parent && !notes.contains(e.id.as_str())).cloned().collect())
     }
 
     pub(crate) fn prepare_manual_order(&mut self, cx: &mut Context<Self>) -> bool {
@@ -661,7 +663,9 @@ impl Workspace {
         // A child-page list shows the other pages in the document's folder, as in
         // the open document (`sync_sub_pages`).
         let tree = crate::tree::Tree::new(&self.entries);
-        let children: Vec<&Entry> = tree.children(e.meta.parent.as_deref()).iter().copied().filter(|p| p.id != e.id).collect();
+        // A document with children (a folder's 正文) lists them.
+        let level = if e.note.is_some() { Some(e.id.as_str()) } else { e.meta.parent.as_deref() };
+        let children: Vec<&Entry> = tree.children(level).iter().copied().filter(|p| p.id != e.id).collect();
         let mut full_stamp = rustc_hash::FxHasher::default();
         e.meta.modified.hash(&mut full_stamp);
         file_time.hash(&mut full_stamp);
@@ -687,8 +691,8 @@ impl Workspace {
         let mut budget = 32;
         let mut eqnos = HashMap::new();
         #[allow(unused_mut)]
-        let mut loaded_root = self.store.root().to_path_buf();
-        let loaded = self.store.load(&e.id);
+        let mut loaded_root = self.store.document_root(e.note.as_deref().unwrap_or(&e.id));
+        let loaded = self.store.load(e.note.as_deref().unwrap_or(&e.id));
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let loaded = loaded.or_else(|error| {
             if let Ok(root) = crate::cloud_sync::shared::room_root(&crate::store::Store::root_dir(), &e.id) { loaded_root = root.clone(); return crate::store::Store::read_cached_note(&root, &e.id); }
@@ -1108,7 +1112,7 @@ impl Workspace {
         let main_w = f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w(window) } else { 0. };
         let avail = (main_w - 48.).max(1.);
         let entries = entries.to_vec();
-        let mixed = entries.iter().any(|e| e.meta.folder.is_some());
+        let mixed = entries.iter().any(|e| e.meta.folder.is_some() && e.note.is_none());
         // Folders spill past their cell (shadow, tab, the front flaring open), so
         // a level holding them gets more air between cells.
         let gap = if mixed { 24. } else { 16. };
@@ -1127,7 +1131,8 @@ impl Workspace {
                 div().w_full().h(px(card_h + gap)).px(px(24.)).pb(px(gap))
                     .grid().grid_cols(n as u16).gap(px(gap))
                     .children(entries[start..end].iter().map(|e| {
-                        if e.meta.folder.is_some() { workspace.render_folder_card(e, col_w, card_h, window, cx) }
+                        // A folder with a 正文 is a document with child pages: a document's card (#357).
+                        if e.meta.folder.is_some() && e.note.is_none() { workspace.render_folder_card(e, col_w, card_h, window, cx) }
                         else if mixed { div().w_full().min_w_0().h(px(card_h)).flex().flex_col().justify_end()
                             .child(workspace.render_home_card(e, doc_h, cx)).into_any_element() }
                         else { workspace.render_home_card(e, card_h, cx) }

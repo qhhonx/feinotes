@@ -1025,7 +1025,7 @@ impl PlatformWindow for WindowsWindow {
             .log_err();
     }
 
-    #[cfg(feature = "test-support")]
+    // quiet.md: also outside tests, for the release self-test and scripted captures.
     fn render_to_image(&self, scene: &Scene) -> anyhow::Result<image::RgbaImage> {
         self.state
             .renderer

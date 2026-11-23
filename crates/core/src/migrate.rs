@@ -483,7 +483,7 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     crate::vfs::create_dir_all(local_path.parent().unwrap())?;
     write_atomic(&local_path, &serde_json::to_vec_pretty(&local)?)?;
     if plan.assets { crate::vfs::rename(&assets, root.join(ASSETS))?; }
-    write_atomic(&internal.join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?;
+    write_atomic(&internal.join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT, id: uuid::Uuid::new_v4().to_string() })?)?;
     Ok((written.len(), folders.len()))
 }
 
