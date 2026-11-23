@@ -28,6 +28,15 @@ pub(crate) fn cloud(value: &str) -> Result<String> {
     anyhow::bail!("Invalid invitation link")
 }
 
+pub(super) fn pasted_invitation(value: &str) -> Result<String> {
+    if let Ok(link) = cloud(value) { return Ok(link); }
+    // A single-line native text field may drop the line break in a pasted invitation.
+    let (_, link) = value.trim().rsplit_once(WEB)
+        .filter(|(text, _)| text.starts_with("邀请你在飞记中协作《") || text.starts_with("Join me in Fei Notes: "))
+        .ok_or_else(|| anyhow::anyhow!("Invalid invitation link"))?;
+    cloud(&format!("{WEB}{link}"))
+}
+
 pub(crate) fn branded(value: &str) -> Result<String> {
     let raw = cloud(value)?;
     for (region, host) in REGIONS {
@@ -67,6 +76,16 @@ mod tests {
             assert!(cloud(&format!("{WEB}v1_aHR0cHM6Ly93d3cuaWNsb3VkLmNvbS9zaGFyZS8wc3ludGhldGlj")).is_err());
             assert!(short.len() <= raw.len() + 1);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn pasted_invitation_message_keeps_the_validated_link() -> Result<()> {
+        let link = "https://feinotes.app/share/?g=0synthetic";
+        for prefix in ["邀请你在飞记中协作《验收样文》\n", "Join me in Fei Notes: Test document "] {
+            assert_eq!(pasted_invitation(&format!("{prefix}{link}"))?, "https://www.icloud.com/share/0synthetic");
+        }
+        assert!(pasted_invitation(&format!("Join me in Fei Notes: Test\n{link}&c=other")).is_err());
         Ok(())
     }
 }

@@ -27,14 +27,16 @@ impl Workspace {
         }
     }
 
-    pub(super) fn copy_link_to_clipboard(&mut self, link: String, public_link: bool, cx: &mut Context<Self>) {
-        if !crate::devtools::scripted() { cx.write_to_clipboard(ClipboardItem::new_string(link.clone())); }
-        self.sharing.copied_text = Some(link);
-        self.show_toast(if public_link { tr("已复制公开链接", "Public link copied") }
-            else { tr("已复制邀请链接", "Invitation link copied") }, cx);
+    pub(super) fn write_invitation_to_clipboard(&mut self, text: String, cx: &mut Context<Self>) {
+        if !crate::devtools::scripted() { cx.write_to_clipboard(ClipboardItem::new_string(text.clone())); }
+        self.sharing.copied_text = Some(text);
     }
 
-    pub(crate) fn copy_shared_link(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn public_invitation_copied(&mut self, cx: &mut Context<Self>) {
+        self.show_toast(tr("已复制公开邀请", "Public invitation copied"), cx);
+    }
+
+    pub(crate) fn copy_shared_invitation(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
         if room.scope.owner.is_some() || self.sharing.busy || !self.sharing_account_ready(cx) { return; }
         let epoch = self.begin_sharing_request(cx);
         let personal = crate::store::Store::root_dir();
@@ -49,7 +51,11 @@ impl Workspace {
                         let link = reply.url.as_deref().and_then(|url| links::branded(url).ok());
                         let closed = reply.audience == Audience::LinkClosed;
                         if w.sheet_room().is_some_and(|open| open.scope == room.scope) { w.sharing.reply = Some(reply); }
-                        if let Some(link) = link { w.copy_link_to_clipboard(link, public_link, cx); }
+                        if let Some(link) = link {
+                            w.write_invitation_to_clipboard(invitation_text(&room.title, &link), cx);
+                            if public_link { w.public_invitation_copied(cx); }
+                            else { w.show_toast(tr("已复制邀请", "Invitation copied"), cx); }
+                        }
                         else {
                             w.show_toast_kind(ui::ToastKind::Error, if closed { link_audience(Audience::LinkClosed) }
                                 else { tr("共享链接暂不可用，请刷新后重试。", "Share link unavailable. Refresh and try again.") }, cx);

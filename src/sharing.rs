@@ -114,7 +114,21 @@ fn sync_badge() -> Div {
 }
 
 fn invitation_text(title: &str, link: &str) -> String {
-    format!("{}\n{link}", crate::localized_format!("邀请你在飞记中协作《{}》", "Join me in Fei Notes: {}", display_title(title)))
+    let title = display_title(title);
+    let title = title.replace(['\r', '\n'], " ");
+    format!("{}\n{link}", crate::localized_format!("邀请你在飞记中协作《{}》", "Join me in Fei Notes: {}", title))
+}
+
+pub(crate) fn create_public_invitation_label() -> &'static str {
+    tr("创建并复制邀请", "Create and copy invitation")
+}
+
+pub(crate) fn copy_invitation_label(public: bool) -> &'static str {
+    if public { tr("复制公开邀请", "Copy public invitation") } else { tr("复制邀请", "Copy invitation") }
+}
+
+pub(crate) fn retry_public_invitation_label() -> &'static str {
+    tr("重试并复制邀请", "Retry and copy invitation")
 }
 
 pub(crate) fn link_audience(audience: Audience) -> &'static str {
@@ -794,19 +808,20 @@ impl Workspace {
                 self.sharing.message = Some((true, settings::diagnostic(&error.to_string())));
             }
             Ok(Some(link)) if open => {
+                let text = invitation_text(&room.title, &link);
+                self.write_invitation_to_clipboard(text.clone(), cx);
+                self.public_invitation_copied(cx);
                 self.close_sharing(window, cx);
-                self.navigate_published_link(room, link, window, cx);
+                self.navigate_published_invitation(room, text, window, cx);
             }
             Ok(link) => {
                 self.sharing.reply = outcome.reply;
-                self.public_link_feedback(link, cx);
+                if let Some(link) = link {
+                    self.write_invitation_to_clipboard(invitation_text(&room.title, &link), cx);
+                    self.public_invitation_copied(cx);
+                } else { self.show_toast(link_audience(Audience::LinkClosed), cx); }
             }
         }
-    }
-
-    fn public_link_feedback(&mut self, link: Option<String>, cx: &mut Context<Self>) {
-        if let Some(link) = link { self.copy_link_to_clipboard(link, true, cx); }
-        else { self.show_toast(link_audience(Audience::LinkClosed), cx); }
     }
 
     pub(crate) fn can_close_link(&self, room: &Room, cx: &App) -> bool {
@@ -983,16 +998,16 @@ impl Workspace {
                         .child(caption(link_audience(reply.audience)));
                     if reply.audience == Audience::LinkDraft {
                         if self.can_retry_public_link(room, cx) {
-                            body = body.child(action("retry-public-link", tr("重试启用并复制链接", "Retry and copy link"), true)
+                            body = body.child(action("retry-public-link", retry_public_invitation_label(), true)
                                 .on_click(cx.listener(|w, _, window, cx| w.retry_public_link(window, cx))));
                         }
                         body = body.child(caption(tr("仍可从共享列表打开这篇文档，也可以邀请指定账户。", "You can still open this document from the shared list or invite specific accounts.")));
                     }
                     if reply.url.is_some() {
                         let copy = room.clone();
-                        let label = if invited { tr("复制邀请链接", "Copy invitation link") } else { tr("复制公开链接", "Copy public link") };
+                        let label = copy_invitation_label(!invited);
                         body = body.child(action("copy-share-link", label, !busy)
-                            .on_click(cx.listener(move |w, _, window, cx| w.copy_shared_link(copy.clone(), window, cx))));
+                            .on_click(cx.listener(move |w, _, window, cx| w.copy_shared_invitation(copy.clone(), window, cx))));
                     }
                     if reply.audience.link_active() {
                         let confirming = self.sharing.close_link_confirm;
@@ -1019,7 +1034,7 @@ impl Workspace {
             .when_some(self.sharing.message.as_ref(), |d, (error, message)| d.pb(px(10.)).child(
                 div().id("sharing-message").text_size(px(13.)).line_height(px(20.))
                     .text_color(if *error { Theme::danger() } else { Theme::text_caption() }).child(ui::ui_para(message.clone()))));
-        let submit = match sheet { Sheet::MoveInto(..) => Some(tr("移入并共享", "Move and share")), Sheet::RenameCollection(_) => Some(tr("保存", "Save")), Sheet::Create(_) | Sheet::CreateNew(..) if self.sharing.public_link => Some(tr("创建并复制链接", "Create and copy link")), Sheet::Create(_) | Sheet::CreateNew(..) => Some(tr("创建邀请", "Create invitation")), Sheet::Accept => Some(tr("接受并打开", "Accept and open")),
+        let submit = match sheet { Sheet::MoveInto(..) => Some(tr("移入并共享", "Move and share")), Sheet::RenameCollection(_) => Some(tr("保存", "Save")), Sheet::Create(_) | Sheet::CreateNew(..) if self.sharing.public_link => Some(create_public_invitation_label()), Sheet::Create(_) | Sheet::CreateNew(..) => Some(tr("创建邀请", "Create invitation")), Sheet::Accept => Some(tr("接受并打开", "Accept and open")),
             Sheet::Invite(_) => Some(tr("创建邀请", "Create invitation")), Sheet::EndMany(..) => Some(tr("确认移除", "Remove documents")), Sheet::End(room) => Some(self.shared_end_label(room,cx)), _ => None };
         let input_ok = if matches!(sheet, Sheet::RenameCollection(_)) { !self.sharing.folder_name.read(cx).text.trim().is_empty() } else if matches!(sheet, Sheet::End(_) | Sheet::EndMany(..) | Sheet::MoveInto(..)) { true } else if matches!(sheet, Sheet::Accept) { !self.sharing.link.read(cx).text.trim().is_empty() }
             else if let Sheet::CreateNew(_, id) = sheet {
@@ -1235,6 +1250,11 @@ impl Workspace {
     pub(crate) fn accept_shared_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let link = self.sharing.link.read(cx).text.trim().to_owned();
         if link.is_empty() { return; }
+        let Ok(link) = links::pasted_invitation(&link) else {
+            self.sharing.message = Some((true, tr("请粘贴有效的邀请链接后重试。", "Paste a valid invitation link and try again.").into()));
+            cx.notify();
+            return;
+        };
         let epoch = self.begin_sharing_request(cx);
         let root = crate::store::Store::root_dir();
         cx.spawn_in(window, async move |this, cx| {
@@ -1282,16 +1302,14 @@ impl Workspace {
         let mut copied = false;
         if self.sharing.original.is_some()
             && let Some(link) = self.sharing.reply.as_ref().and_then(|reply| reply.url.as_deref()).and_then(|url| links::branded(url).ok()) {
-            let text = invitation_text(&room.title, &link);
-            if !crate::devtools::scripted() { cx.write_to_clipboard(ClipboardItem::new_string(text.clone())); }
-            self.sharing.copied_text = Some(text);
+            self.write_invitation_to_clipboard(invitation_text(&room.title, &link), cx);
             copied = true;
         }
         self.sharing.sheet = Some(Sheet::Members(room));
         crate::gpui_compat::focus(window, &self.focus, cx);
         self.sharing.email.update(cx, |field, cx| field.set_text("", cx));
-        let message = if copied { tr("邀请链接已复制。请发给对方。", "Invitation link copied. Send it to the recipient.") }
-            else { tr("邀请已创建。请复制链接发给对方。", "Invitation created. Copy the link and send it to the recipient.") };
+        let message = if copied { tr("已复制邀请。请发给对方。", "Invitation copied. Send it to the recipient.") }
+            else { tr("邀请已创建。请复制邀请并发给对方。", "Invitation created. Copy it and send it to the recipient.") };
         self.sharing.message = Some((false,message.into()));
         self.show_toast(message,cx);
     }

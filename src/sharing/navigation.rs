@@ -8,7 +8,7 @@ struct SidebarNavigation {
     prepared: Option<crate::shared_store::SharedStore>,
     verified_access: Option<shared::VerifiedRoomAccess>,
     new_invitation: Option<Reply>,
-    published_link: Option<String>,
+    published_invitation: Option<String>,
     action: Option<SharedAction>,
     #[cfg(target_os = "macos")]
     created: Option<SidebarCreatedItem>,
@@ -122,7 +122,7 @@ impl Workspace {
             entry: Some(SidebarEntry::new(crate::sidebar::SidebarSection::Shared, &target)),
             prepared: None,
             verified_access: None,
-            new_invitation: Some(reply), published_link: None, action: None,
+            new_invitation: Some(reply), published_invitation: None, action: None,
             #[cfg(target_os = "macos")]
             created: None,
             #[cfg(target_os = "macos")]
@@ -131,10 +131,10 @@ impl Workspace {
         self.navigate_shared_item_using(room, target, None, Some(sidebar), window, cx);
     }
 
-    pub(super) fn navigate_published_link(&mut self, room: Room, link: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn navigate_published_invitation(&mut self, room: Room, text: String, window: &mut Window, cx: &mut Context<Self>) {
         let target = room.scope.note.clone();
         let sidebar = SidebarNavigation {
-            entry: None, prepared: None, verified_access: None, new_invitation: None, published_link: Some(link), action: None,
+            entry: None, prepared: None, verified_access: None, new_invitation: None, published_invitation: Some(text), action: None,
             #[cfg(target_os = "macos")]
             created: None,
             #[cfg(target_os = "macos")]
@@ -251,7 +251,7 @@ impl Workspace {
                     Ok(store) => {
                         let sidebar = SidebarNavigation {
                             entry: source.entry, prepared: Some(store), verified_access: source.verified_access,
-                            new_invitation: None, published_link: None, action: source.action,
+                            new_invitation: None, published_invitation: None, action: source.action,
                             #[cfg(target_os = "macos")]
                             created: None,
                             #[cfg(target_os = "macos")]
@@ -379,7 +379,7 @@ impl Workspace {
                 match result {
                     Ok(store) if shared::access(&store, cx).is_some_and(Access::can_write)
                         && !shared::editing_paused(&store, cx) => ws.navigate_shared_item_using(requested, entry.id.clone(), None,
-                            Some(SidebarNavigation { entry: Some(entry), prepared: Some(store), verified_access: None, new_invitation: None, published_link: None, action: None,
+                            Some(SidebarNavigation { entry: Some(entry), prepared: Some(store), verified_access: None, new_invitation: None, published_invitation: None, action: None,
                                 created: None, folder_edit: Some(edit) }), window, cx),
                     Ok(_) => ws.show_toast_kind(ui::ToastKind::Error, tr("此共享文件夹当前不可写入。", "You cannot write to this shared folder right now."), cx),
                     Err(error) => ws.report_shared_open_error(&error, cx),
@@ -484,7 +484,7 @@ impl Workspace {
             }
         } else {
             self.navigate_shared_item_using(room, id, None, Some(SidebarNavigation {
-                entry: Some(entry), prepared: Some(store), verified_access: None, new_invitation: None, published_link: None, action: None, created: Some(created), folder_edit: None,
+                entry: Some(entry), prepared: Some(store), verified_access: None, new_invitation: None, published_invitation: None, action: None, created: Some(created), folder_edit: None,
             }), window, cx);
         }
     }
@@ -627,7 +627,7 @@ impl Workspace {
             self.create_shared_note(&room.scope.note, window, cx);
             return;
         }
-        if invitation.is_none() && sidebar.as_ref().is_none_or(|s| s.verified_access.is_none() && s.published_link.is_none())
+        if invitation.is_none() && sidebar.as_ref().is_none_or(|s| s.verified_access.is_none() && s.published_invitation.is_none())
             && self.viewing_shared_item(&room, &target, cx) {
             if let Some(sidebar) = sidebar {
                 self.sidebar_entry = sidebar.entry;
@@ -644,8 +644,8 @@ impl Workspace {
         let created = sidebar.as_ref().and_then(|sidebar| sidebar.created.clone());
         #[cfg(target_os = "macos")]
         let folder_edit = sidebar.as_ref().and_then(|sidebar| sidebar.folder_edit);
-        let (entry, prepared, verified_access, new_invitation, published_link, action) = sidebar.map(|sidebar|
-            (sidebar.entry, sidebar.prepared, sidebar.verified_access, sidebar.new_invitation, sidebar.published_link, sidebar.action)).unwrap_or_default();
+        let (entry, prepared, verified_access, new_invitation, published_invitation, action) = sidebar.map(|sidebar|
+            (sidebar.entry, sidebar.prepared, sidebar.verified_access, sidebar.new_invitation, sidebar.published_invitation, sidebar.action)).unwrap_or_default();
         let opened = match prepared {
             Some(store) => shared::check_opened_store(store, &room, cx),
             None => shared::store_for(&room, cx),
@@ -733,7 +733,10 @@ impl Workspace {
                 // Run after the new root is installed so callbacks can use normal window commands.
                 cx.defer_in(window, move |ws, window, cx| ws.run_shared_open_action(action, &target, window, cx));
             }
-            if let Some(link) = published_link { ws.copy_link_to_clipboard(link, true, cx); }
+            if let Some(text) = published_invitation {
+                ws.sharing.copied_text = Some(text);
+                ws.public_invitation_copied(cx);
+            }
             ws
         });
         cx.defer(cloud_sync::release_unused);

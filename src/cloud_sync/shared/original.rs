@@ -5,6 +5,7 @@ use super::*;
 use crate::store::{Meta, SQLITE_FILE, Trashed};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::collections::{BTreeMap, BTreeSet};
+use std::os::unix::fs::MetadataExt;
 
 fn connect(root: &Path) -> Result<Connection> {
     let db = Connection::open_with_flags(root.join(SQLITE_FILE), rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
@@ -153,33 +154,76 @@ fn stage_public_access(staged: &Path, public: Option<Access>) -> Result<()> {
 
 pub(crate) fn prepare(personal: &Path, id: &str, title: String, public_link: Option<Access>) -> Result<Room> {
     Command::new(&account(personal)?, "checkAccess", None)?.send()?;
-    prepare_with_access(personal, id, title, public_link)
+    prepare_recovering(personal, id, title, public_link, |room| owned_zone_exists(personal, room))
 }
 
 #[cfg(any(test, feature = "devtools"))]
 pub(in crate::cloud_sync) fn prepare_local(personal: &Path, id: &str, title: String, public_link: bool) -> Result<Room> {
-    prepare_with_access(personal, id, title, public_link.then_some(Access::ReadOnly))
+    prepare_with_access(personal, id, &title, public_link.then_some(Access::ReadOnly), None)
 }
 
-fn prepare_with_access(personal: &Path, id: &str, title: String, public_link: Option<Access>) -> Result<Room> {
+#[derive(Debug)]
+struct RetainedOwnerCache(Room);
+
+impl std::fmt::Display for RetainedOwnerCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(crate::settings::tr("这篇文档仍有共享记录。请刷新「共享文档」并核对成员与权限后再试。",
+            "This document still has a sharing record. Refresh Shared Documents, check Members and Access, then try again."))
+    }
+}
+
+impl std::error::Error for RetainedOwnerCache {}
+
+fn prepare_recovering(personal: &Path, id: &str, title: String, public_link: Option<Access>,
+    zone_exists: impl FnOnce(&Room) -> Result<bool>) -> Result<Room> {
+    let revision = super::super::account_revision();
+    let conflict = match prepare_with_access(personal, id, &title, public_link, None) {
+        Err(error) if error.is::<RetainedOwnerCache>() => error,
+        outcome => return outcome,
+    };
+    let room = &conflict.downcast_ref::<RetainedOwnerCache>().expect("retained owner cache").0;
+    crate::logging::write("Sharing preparation found a retained owner cache");
+    let root = room_root(personal, id)?;
+    let identity = fs::metadata(&root)?;
+    let lock = crate::cloud_restore::lock_library(&root).map_err(|_| anyhow::anyhow!("{}", crate::settings::tr(
+        "请先关闭这篇共享文档，再从原位置重试。", "Close this shared document, then try again from its original location.")))?;
+    if zone_exists(room)? { return Err(conflict); }
+    let journal = Journal::open_locked(&root, None, lock.try_clone()?)?;
+    ensure!(journal.counts()? == (0, 0, 0, 0), "{}", crate::settings::tr(
+        "这台设备还有待恢复的共享改动。请先保留这些改动。", "This device has shared changes to recover. Keep those changes first."));
+    drop(journal);
+    super::super::check_account_revision(revision)?;
+    prepare_with_access(personal, id, &title, public_link, Some(&identity))
+}
+
+fn prepare_with_access(personal: &Path, id: &str, title: &str, public_link: Option<Access>, retired_cache: Option<&fs::Metadata>) -> Result<Room> {
     let mut db = connect(personal)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let all = entries(&tx)?;
     let ids = subtree(&all, id)?;
     let root_meta = &all[id];
     ensure!(!root_meta.local(), "External files cannot be shared in place");
-    let room = Room { scope: Scope { note: id.into(), owner: None, folder: root_meta.folder.is_some() }, title };
+    let room = Room { scope: Scope { note: id.into(), owner: None, folder: root_meta.folder.is_some() }, title: title.into() };
     ensure!(public_link.is_none() || !room.scope.folder, "Public links are only available for documents");
     let root = room_root(personal, id)?;
     if root_meta.share_root.as_deref() == Some(id) {
         ensure!(descriptor(&root)?.is_some_and(|r| r.scope == room.scope), "Shared library unavailable");
         return Ok(room);
     }
-    ensure!(ids.iter().all(|id| all[id].share_root.is_none()), "This selection already contains a shared item");
+    let access_changed = || crate::settings::tr("所选文档的共享状态已变化。请刷新文档库后重试。",
+        "Sharing for the selected item has changed. Refresh the library and try again.");
+    ensure!(ids.iter().all(|id| all[id].share_root.is_none()), "{}", access_changed());
     // A crash before the catalogue transaction commits leaves a private, unpublished stage.
     if root.exists() {
-        ensure!(descriptor(&root)?.is_some_and(|r| r.scope == room.scope) && account(&root)? == account(personal)?
-            && (root.join("shared-note-ended").exists() || root.join("original-stage").exists() && !root.join("seed-published").exists()), "Conflicting share");
+        ensure!(descriptor(&root)?.is_some_and(|r| r.scope == room.scope) && account(&root)? == account(personal)?, "{}", access_changed());
+        let was_published = root.join("seed-published").is_file();
+        let ended = root.join("shared-note-ended").is_file();
+        let recoverable = !room.scope.folder && !ended && was_published && !pending_new(&root);
+        let verified = recoverable && retired_cache.is_some_and(|checked| fs::metadata(&root)
+            .is_ok_and(|now| now.dev() == checked.dev() && now.ino() == checked.ino()));
+        if recoverable && !verified { return Err(RetainedOwnerCache(room).into()); }
+        ensure!(ended || root.join("original-stage").is_file() && !was_published || verified, "{}", access_changed());
+        let _lock = if verified { None } else { Some(crate::cloud_restore::lock_library(&root)?) };
         let retired = personal.join("retired-shared-notes");
         fs::create_dir_all(&retired)?;
         fs::rename(&root, retired.join(format!("{id}-{}", uuid::Uuid::new_v4())))?;
@@ -440,6 +484,59 @@ pub(crate) fn move_into(personal: &Path, room: &Room, selection: &[String], dest
 mod tests {
     use super::*;
     use crate::cloud_sync::{Bytes, Changes};
+
+    #[test]
+    fn stopped_share_on_one_owner_device_can_be_shared_again_on_another() -> Result<()> {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        let temp = Fixture(std::env::temp_dir().join(format!("fei-stop-republish-{}", uuid::Uuid::new_v4())));
+        let first = temp.0.join("first");
+        let second = temp.0.join("second");
+        for path in [&first, &second] {
+            Store::initialize_local_sqlite(path)?;
+            fs::write(path.join(".cloud-restore-ready"), format!("{}\n", "a".repeat(64)))?;
+        }
+        let doc = crate::docxml::parse("<title>Synthetic reuse</title><p>Original body</p>")?;
+        let id = Store::open_sqlite_at(first.clone())?.create_from(&doc)?;
+        let room = prepare_local(&first, &id, doc.title.text.clone(), true)?;
+        fs::write(room_root(&first, &id)?.join("seed-published"), b"1")?;
+        let mirror_catalogue = || -> Result<()> {
+            let source = connect(&first)?;
+            let target = connect(&second)?;
+            copy_entry((&source, &first), (&target, &second), &id, &entries(&source)?[&id])
+        };
+        mirror_catalogue()?;
+        let stale_root = room_root(&second, &id)?;
+        prepare_room(&second, &stale_root, &room)?;
+        let other = Store::open_sqlite_at(second.clone())?.create_from(&Document::default())?;
+        let other_room = prepare_local(&second, &other, "Unrelated named share".into(), false)?;
+        let other_cache = room_root(&second, &other)?;
+        fs::write(other_cache.join("seed-published"), b"1")?;
+
+        let remote_present = std::cell::Cell::new(true);
+        restore(&first, &room, || { remote_present.set(false); Ok(()) })?;
+        mirror_catalogue()?;
+        assert!(!is_original(&second, &room)?);
+        assert!(stale_root.join("seed-published").is_file());
+        assert!(prepare_local(&second, &id, room.title.clone(), true)
+            .is_err_and(|error| error.is::<RetainedOwnerCache>()));
+        assert!(prepare_recovering(&second, &id, room.title.clone(), Some(Access::ReadOnly), |_| Ok(true))
+            .is_err_and(|error| error.is::<RetainedOwnerCache>()));
+        assert!(stale_root.join("seed-published").is_file());
+
+        let recreated = prepare_recovering(&second, &id, room.title.clone(), Some(Access::ReadWrite), |requested| {
+            assert_eq!(requested.scope, room.scope);
+            Ok(remote_present.get())
+        })?;
+        assert_eq!(recreated.scope, room.scope);
+        assert!(is_original(&second, &room)?);
+        assert!(!stale_root.join("seed-published").exists());
+        assert_eq!(pending_public_access(&second, &recreated), Some(Access::ReadWrite));
+        assert_eq!(Store::open_sqlite_at(stale_root)?.load(&id)?.plain_text(), doc.plain_text());
+        assert_eq!(fs::read_dir(second.join("retired-shared-notes"))?.count(), 1);
+        assert!(other_cache.join("seed-published").is_file() && is_original(&second, &other_room)?);
+        Ok(())
+    }
 
     #[test]
     fn owner_folder_trash_and_restore_follow_the_shared_catalogue() -> Result<()> {

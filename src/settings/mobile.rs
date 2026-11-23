@@ -307,7 +307,7 @@ impl Workspace {
             .enabled(!self.sharing.busy && self.can_choose_sharing_audience()),
             Row::new("share-link-details",crate::sharing::public_link_requirements()).kind("info")];
         if editable { rows.push(Row::new("public-edit-warning",crate::sharing::public_edit_warning()).kind("info")); }
-        rows.push(Row::new("share-submit",tr("创建并复制链接","Create and copy link")).enabled(enabled));
+        rows.push(Row::new("share-submit",crate::sharing::create_public_invitation_label()).enabled(enabled));
         section("",rows)
     }
 
@@ -427,11 +427,11 @@ impl Workspace {
                 if reply.audience == Audience::LinkDraft {
                     links.push(Row::new("share-draft-details",tr("仍可从共享列表打开这篇文档，也可以邀请指定账户。", "You can still open this document from the shared list or invite specific accounts.")).kind("info"));
                     if self.can_retry_public_link(room,cx) {
-                        links.push(Row::new("share-retry-link",tr("重试启用并复制链接","Retry and copy link")));
+                        links.push(Row::new("share-retry-link",crate::sharing::retry_public_invitation_label()));
                     }
                 }
                 if reply.url.is_some() {
-                    links.push(Row::new("share-copy",if invited {tr("复制邀请链接","Copy invitation link")} else {tr("复制公开链接","Copy public link")}).enabled(!s.busy));
+                    links.push(Row::new("share-copy",crate::sharing::copy_invitation_label(!invited)).enabled(!s.busy));
                 }
                 if reply.audience.link_active() {
                     links.push(Row::new("share-link-details",if s.close_link_confirm {close_link_warning()} else {public_link_requirements()}).kind("info"));
@@ -539,7 +539,7 @@ impl Workspace {
                 _=>{},
             },
             "share-retry-link"=>self.retry_public_link(window,cx),
-            "share-copy"=>if let Some(room) = self.sheet_room().cloned() {self.copy_shared_link(room,window,cx);},
+            "share-copy"=>if let Some(room) = self.sheet_room().cloned() {self.copy_shared_invitation(room,window,cx);},
             "share-close-link"=>self.confirm_close_link(window,cx),
             "share-cancel-close-link"=>{self.sharing.close_link_confirm=false;cx.notify();},
             "share-refresh"=>self.manage_shared_note("members",String::new(),None,window,cx),

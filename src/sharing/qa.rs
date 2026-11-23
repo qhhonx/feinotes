@@ -588,6 +588,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
         "accept-home" => primary.update(cx, |ws, window, cx| -> Result<()> { ws.open_accept_invitation_from("accept-home", window, cx); ensure!(ws.accept_invitation_open(), "Home invitation trigger did not open"); Ok(()) })??,
         "accept-sidebar-toggle" => primary.update(cx, |ws, window, cx| -> Result<()> { ensure!(ws.accept_invitation_open(), "Invitation triggers lost shared state"); ws.open_accept_invitation_from("accept-sidebar", window, cx); ensure!(!ws.accept_invitation_open(), "Sidebar trigger did not close the same invitation"); Ok(()) })??,
         "public-link-prepare" => primary.update(cx, |ws, window, cx| -> Result<()> {
+            ws.set_pref(|p| { p.language="zh".into(); p.english=false; }, cx);
             let id = ws.current.clone().context("Missing personal fixture")?;
             ws.open(&id, window, cx);
             ws.create_shared_note(&id, window, cx);
@@ -640,7 +641,14 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let room = ws.sheet_room().context("Missing access management")?;
             ensure!(ws.can_retry_public_link(room, cx) && ws.sharing.reply.as_ref().is_some_and(|reply| reply.audience.can_invite()),
                 "Missing explicit retry or account invitation");
+            ensure!(ws.sharing.message.as_ref().is_some_and(|(error, message)| *error && message.contains("请刷新")
+                && !message.contains("Conflicting share")) && ws.sharing.copied_text.is_none(), "The sharing conflict was not localized or copied an invitation");
             std::fs::write(root.join("fail-link-reply-once"), b"fault")?;
+            ws.retry_public_link(window, cx);
+            Ok(())
+        })??,
+        "public-link-retry-conflict" => primary.update(cx, |ws, window, cx| -> Result<()> {
+            std::fs::write(root.join("fail-link-conflict-once"), b"fault")?;
             ws.retry_public_link(window, cx);
             Ok(())
         })??,
@@ -648,13 +656,22 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let id = std::fs::read_to_string(root.join("qa-public-note"))?;
             let room = ws.current_room(cx).context("Public share did not stay open")?;
             ensure!(ws.current.as_deref() == Some(id.as_str()) && room.scope.note == id && !shared::public_link_pending(&personal, &room), "Public share did not retain the original document");
-            ensure!(ws.sharing.copied_text.as_deref() == Some("https://feinotes.app/share/?g=synthetic-fei-ui")
+            ensure!(ws.sharing.copied_text.as_deref() == Some("邀请你在飞记中协作《Personal fixture》\nhttps://feinotes.app/share/?g=synthetic-fei-ui")
                 && ws.sharing.message.is_none(), "Readback did not recover the lost acknowledgement");
+            Ok(())
+        })??,
+        "public-link-recopy" => primary.update(cx, |ws, window, cx| -> Result<()> {
+            let room = ws.sheet_room().context("Missing published share")?.clone();
+            ws.set_pref(|p| { p.language="en".into(); p.english=true; }, cx);
+            ws.sharing.copied_text = None;
+            ws.copy_shared_invitation(room, window, cx);
             Ok(())
         })??,
         "public-link-close" => primary.update(cx, |ws, window, cx| -> Result<()> {
             let reply = ws.sharing.reply.as_ref().context("Missing public share state")?;
             ensure!(reply.audience == Audience::LinkReadOnly && reply.members.is_empty() && reply.url.is_some(), "Link must be read-only");
+            ensure!(ws.sharing.copied_text.as_deref() == Some("Join me in Fei Notes: Personal fixture\nhttps://feinotes.app/share/?g=synthetic-fei-ui"),
+                "Copying an existing invitation did not include its English message");
             ws.confirm_close_link(window, cx);
             ensure!(!ws.sharing.busy && ws.sharing.close_link_confirm, "Closing must ask for confirmation");
             ws.confirm_close_link(window, cx);
@@ -667,7 +684,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             ensure!(shared::manage(&personal, &room, "publishLink", "", None)?.audience == Audience::LinkClosed, "Retry reopened the closed link");
             ensure!(shared::manage(&personal, &room, "invite", "person@example.test", Some(Access::ReadOnly)).is_err(), "Closed link unexpectedly changed to account invitations");
             ws.sharing.copied_text = None;
-            ws.copy_shared_link(room, window, cx);
+            ws.copy_shared_invitation(room, window, cx);
             Ok(())
         })??,
         "public-link-copy-denied" => primary.update(cx, |ws, _, _| -> Result<()> {
@@ -708,11 +725,26 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let reply = shared::manage(&personal, &room, "members", "", None)?;
             ensure!(reply.audience == Audience::LinkReadWrite && reply.members.is_empty()
                 && !shared::public_link_pending(&personal, &room)
-                && ws.sharing.copied_text.as_deref() == Some("https://feinotes.app/share/?g=synthetic-fei-ui"),
-                "New public editing link did not match confirmed access or hand off its URL");
+                && ws.sharing.copied_text.as_deref() == Some("Join me in Fei Notes: Public editing fixture\nhttps://feinotes.app/share/?g=synthetic-fei-ui"),
+                "New public editing invitation did not match confirmed access or include its English message");
             eprintln!("PUBLIC_LINK_EDIT_UI_OK selection=explicit creation=new-document copy=confirmed");
             Ok(())
         })??,
+        "public-link-stop-recover" => {
+            let doc = crate::docxml::parse("<title>Stop recovery fixture</title><p>Keep the original</p>")?;
+            let id = crate::store::Store::open_sqlite_at(personal.clone())?.create_from(&doc)?;
+            let room = shared::original::prepare(&personal, &id, doc.title.text.clone(), Some(Access::ReadOnly))?;
+            shared::ensure_created(&personal, &room)?;
+            let cache = shared::room_root(&personal, &id)?;
+            let stop = || shared::end(&personal, &room, Some(crate::cloud_restore::lock_library(&cache)?));
+            std::fs::write(root.join("fail-end-reply-once"), b"fault")?;
+            ensure!(stop().is_err() && !cache.join("shared-note-ended").exists(), "Unconfirmed stop was treated as finished");
+            stop()?;
+            let mut store = crate::store::Store::open_sqlite_at(personal.clone())?;
+            ensure!(cache.join("shared-note-ended").is_file() && shared::original::owner_room(&store.list(), &id).is_none()
+                && store.load(&id)?.plain_text() == doc.plain_text(), "Confirmed stop retry did not restore the original document");
+            eprintln!("PUBLIC_LINK_STOP_RECOVERY_OK delete=lost-reply original=retained");
+        }
         "create" => primary.update(cx, |ws, window, cx| -> Result<()> {
             ensure!(ws.view == View::Home && ws.home.tab == crate::home::HomeTab::Shared, "Shared documents did not use the Home tab");
             let id = ws.current.clone().context("Missing personal fixture")?;

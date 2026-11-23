@@ -128,7 +128,8 @@ fn stage_with(personal: &Path, room: &Room, seed: impl FnOnce(&Path) -> Result<(
     let root = room_root(personal, &room.scope.note)?;
     if root.exists() {
         ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope)
-            && account(&root)? == account(personal)?, "Conflicting shared document");
+            && account(&root)? == account(personal)?, "{}", crate::settings::tr(
+                "这篇文档的共享记录已变化。请刷新文档库后重试。", "This document’s sharing record changed. Refresh the library and try again."));
         return Ok(root);
     }
     let parent = root.parent().unwrap();
@@ -238,7 +239,7 @@ impl<'a> Command<'a> {
     fn send(&self) -> Result<Reply> {
         let reply = self.receive()?;
         use crate::settings::tr;
-        if let Some(error) = reply.error.as_deref() {
+        if reply.error.is_some() {
             match reply.error_kind.as_deref() {
                 Some("linkRegionRestricted") => return Err(LinkWriteError::Region.into()),
                 Some("linkWriteRejected") => return Err(LinkWriteError::Rejected.into()),
@@ -256,14 +257,21 @@ impl<'a> Command<'a> {
                 Some("signedOut") => tr("请在系统设置中登录 iCloud，再重新连接飞记。", "Sign in to iCloud in System Settings, then reconnect Fei Notes."),
                 Some("accountMismatch") => tr("当前 iCloud 账户与文档库不一致。请在文档库设置中重新连接。", "The iCloud account does not match this library. Reconnect in Library settings."),
                 Some("shareConflict") => tr("其他设备修改了共享权限。请刷新后重试。", "Sharing permissions changed on another device. Refresh and try again."),
+                Some("existingShare") => existing_share_message(),
+                Some("stopUnconfirmed") => tr("iCloud 尚未确认停止共享。请在当前确认页重试。", "iCloud has not confirmed that sharing stopped. Try again from this confirmation."),
                 Some("invitationOnly") => tr("这篇文档已使用指定账户邀请。现有权限无法切换成公开链接。", "This document uses account invitations. Its existing access cannot be changed to a public link."),
                 Some("linkOnly") => tr("这篇文档使用链接权限，无法逐人邀请或改权。", "This document uses link access. Individual invitations and permissions are unavailable."),
-                _ => error,
+                _ => tr("暂时无法完成共享操作。请稍后重试。", "Could not complete the sharing request. Try again shortly."),
             };
             anyhow::bail!("{message}");
         }
         Ok(reply)
     }
+}
+
+fn existing_share_message() -> &'static str {
+    crate::settings::tr("iCloud 仍有此文档的共享记录。请刷新「共享文档」，在成员与权限中核对后再试。",
+        "iCloud still has a share for this document. Refresh Shared Documents and check Members and Access before trying again.")
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -304,6 +312,8 @@ pub(crate) struct Reply {
     discovered_rooms: Option<Vec<DiscoveredRoom>>,
     #[serde(rename = "verifiedAccess", default, skip_serializing_if = "Option::is_none")]
     verified_access: Option<Access>,
+    #[serde(rename = "ownedZoneExists", default, skip_serializing_if = "Option::is_none")]
+    owned_zone_exists: Option<bool>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -339,7 +349,10 @@ pub(crate) fn ensure_created(personal: &Path, room: &Room) -> Result<()> {
     let mut command = Command::new(&key, action, Some(&room.scope))?;
     command.title = Some(&room.title);
     command.trace = ShareTrace::for_room(room);
-    command.send()?;
+    let draft = command.send()?;
+    let expected = if action == "createLinkDraft" { Audience::LinkDraft } else { Audience::Invited };
+    ensure!(draft.scope.as_ref() == Some(&room.scope) && draft.audience == expected && draft.members.is_empty(),
+        "{}", existing_share_message());
     let mut journal = Journal::open(&root, None)?;
     let start = std::time::Instant::now();
     while journal.counts()?.0 > 0 {
@@ -377,8 +390,8 @@ impl std::fmt::Display for LinkWriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::settings::tr;
         f.write_str(match self {
-            Self::Region => tr("iCloud 报告地区限制，未能启用公开链接。", "iCloud reported a regional restriction and could not enable the public link."),
-            Self::Rejected => tr("iCloud 拒绝启用公开链接。", "iCloud rejected the public link change."),
+            Self::Region => tr("iCloud 报告地区限制，未能启用公开链接。你可以改用指定账户邀请。", "iCloud reported a regional restriction and could not enable the public link. You can invite specific accounts."),
+            Self::Rejected => tr("iCloud 拒绝启用公开链接。请刷新共享权限后重试。", "iCloud rejected the public link change. Refresh access and try again."),
             Self::Unconfirmed => tr("暂时无法确认公开链接是否已启用。请刷新共享权限后再试。", "Could not confirm whether the public link is enabled. Refresh access and try again."),
         })
     }
@@ -563,16 +576,30 @@ pub(crate) fn prepare_end(personal: &Path, room: &Room, cx: &mut gpui::App) -> R
     Ok(Some(crate::cloud_restore::lock_library(&root)?))
 }
 
+fn owned_zone_exists(personal: &Path, room: &Room) -> Result<bool> {
+    ensure!(room.scope.owner.is_none(), "Invalid owner share lookup");
+    let reply = Command::new(&account(personal)?, "inspectOwnedZone", Some(&room.scope))?.send()?;
+    ensure!(reply.scope.as_ref() == Some(&room.scope), "CloudKit returned the wrong sharing scope");
+    reply.owned_zone_exists.context("Missing owner share lookup result")
+}
+
 pub(crate) fn end(personal: &Path, room: &Room, lock: Option<std::fs::File>) -> Result<()> {
     let root = room_root(personal, &room.scope.note)?;
     ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope) && account(&root)? == account(personal)?, "Shared document belongs to another account");
     if let Some(lock) = lock {
         let mut journal = Journal::open_locked(&root, None, lock)?;
+        let stop_ready = root.join("original-stop-ready");
+        let already_deleted = stop_ready.is_file() && !owned_zone_exists(personal, room)?;
+        if already_deleted {
+            journal.merge(&Default::default())?;
+            ensure!(journal.counts()? == (0, 0, 0, 0), "{}", crate::settings::tr(
+                "这台设备还有待恢复的共享改动。请先保留这些改动。", "This device has shared changes to recover. Keep those changes first."));
+        }
         #[cfg(feature = "devtools")]
         let simulated = ui_qa::enabled();
         #[cfg(not(feature = "devtools"))]
         let simulated = false;
-        if !simulated {
+        if !simulated && !already_deleted {
             journal.merge(&Default::default())?;
             let start = std::time::Instant::now();
             loop {
@@ -591,7 +618,11 @@ pub(crate) fn end(personal: &Path, room: &Room, lock: Option<std::fs::File>) -> 
             }
         }
         original::restore(personal, room, || {
-            Command::new(&account(personal)?, "delete", Some(&room.scope))?.send()?;
+            if !already_deleted {
+                // Recovery can finish after a lost delete response using the validated local copy.
+                fs::write(&stop_ready, b"1")?;
+                Command::new(&account(personal)?, "delete", Some(&room.scope))?.send()?;
+            }
             Ok(())
         })?;
         fs::write(root.join("shared-note-ended"), b"Stopped sharing original")?;

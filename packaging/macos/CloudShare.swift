@@ -3,6 +3,7 @@
 import CloudKit
 import CryptoKit
 import Foundation
+import OSLog
 
 private let sharePrefix = "QuietSharedNote-v1-"
 private let folderPrefix = "QuietSharedFolder-v1-"
@@ -48,7 +49,7 @@ private enum ShareAudience: String, Encodable {
 
 enum ShareError: LocalizedError {
     case invalid, account, signedOut, ownerOnly, timeout, unavailableLink, deniedLink, invitationOnly, linkOnly, refresh
-    case linkRegionRestricted, linkWriteRejected, linkWriteUnconfirmed
+    case linkRegionRestricted, linkWriteRejected, linkWriteUnconfirmed, existingShare, stopUnconfirmed
 
     var errorDescription: String? {
         switch self {
@@ -65,6 +66,8 @@ enum ShareError: LocalizedError {
         case .linkRegionRestricted: "iCloud reported a regional restriction on the public link."
         case .linkWriteRejected: "iCloud rejected the public link change."
         case .linkWriteUnconfirmed: "Could not confirm the public link settings with iCloud."
+        case .existingShare: "iCloud still has a share for this document. Check its members and access."
+        case .stopUnconfirmed: "Could not confirm that sharing stopped. Try again."
         }
     }
 }
@@ -252,6 +255,7 @@ private struct ShareReply: Encodable {
     var discoveredRooms: [DiscoveredRoom]?
     var ownerName: String?
     var verifiedAccess: ShareAccess?
+    var ownedZoneExists: Bool?
 }
 
 private struct DiscoveredRoom: Encodable {
@@ -346,14 +350,33 @@ private func saveShare(_ share: CKShare, to db: CKDatabase, trace: ShareTrace?, 
         return saved
     } catch {
         trace?.event(phase, "error", error: error, record: share.recordID, boundary: boundary)
-        if let cloud = error as? CKError, cloud.code == .serverRecordChanged { throw ShareError.refresh }
-        throw error
+        let item = targetShareError(error, id: share.recordID)
+        logShareError(item, stage: phase)
+        if let cloud = item as? CKError {
+            if cloud.code == .serverRecordChanged { throw ShareError.refresh }
+            if cloud.code == .alreadyShared { throw ShareError.existingShare }
+        }
+        throw item
     }
 }
 
+private let shareLogger = Logger(subsystem: "app.feinotes", category: "CloudShare")
+
+private func logShareError(_ error: Error, stage: String) {
+    let issue = error as NSError
+    let domain = [CKErrorDomain, NSURLErrorDomain, NSCocoaErrorDomain].contains(issue.domain) ? issue.domain : "other"
+    let underlying = issue.userInfo[NSUnderlyingErrorKey] as? NSError
+    let internalCode = underlying?.domain == "CKInternalErrorDomain" ? underlying?.code ?? 0 : 0
+    shareLogger.error("\(stage, privacy: .public) domain=\(domain, privacy: .public) code=\(issue.code) internal=\(internalCode)")
+}
+
+private func targetShareError(_ error: Error, id: CKRecord.ID) -> Error {
+    (error as? CKError)?.partialErrorsByItemID?[AnyHashable(id)] ?? error
+}
+
 private func publicLinkWriteError(_ error: Error, id: CKRecord.ID) -> ShareError {
-    if case ShareError.refresh = error { return .refresh }
-    let item = (error as? CKError)?.partialErrorsByItemID?[AnyHashable(id)] ?? error
+    if let share = error as? ShareError { return share }
+    let item = targetShareError(error, id: id)
     // CloudKit's public error codes have no region-specific case. Use the
     // observed server message only to explain this failed share write.
     if let cloudError = item as? CKError {
@@ -365,12 +388,21 @@ private func publicLinkWriteError(_ error: Error, id: CKRecord.ID) -> ShareError
         switch cloudError.code {
         case .serverRecordChanged:
             return .refresh
+        case .alreadyShared:
+            return .existingShare
         case .serverRejectedRequest, .permissionFailure, .managedAccountRestricted, .invalidArguments, .batchRequestFailed:
             return .linkWriteRejected
         default: break
         }
     }
     return .linkWriteUnconfirmed
+}
+
+private func ownedZoneExists(_ db: CKDatabase, _ zone: CKRecordZone.ID) async throws -> Bool {
+    do { _ = try await db.recordZone(for: zone); return true }
+    catch let error as CKError where [.unknownItem, .zoneNotFound, .userDeletedZone].contains(error.code) {
+        return false
+    }
 }
 
 private func acceptShare(_ value: String, container: CKContainer, revision: UInt64) async throws -> ShareReply {
@@ -409,7 +441,7 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
     let container = CKContainer(identifier: containerID)
     try await shareAccount(container, expected: request.account)
     // Existing participants can still be inspected or removed after access ends.
-    if !["members", "revoke", "closeLink", "delete", "leave"].contains(request.action) {
+    if !["members", "revoke", "closeLink", "delete", "leave", "inspectOwnedZone"].contains(request.action) {
         try await CloudAccess.shared.require(account: request.account, channel: request.accessChannel)
     }
     try checkCloudAccountRevision(revision)
@@ -433,6 +465,12 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
         catch let error as CKError where error.code == .permissionFailure { throw ShareError.deniedLink }
         catch where shareIsGone(error) { throw ShareError.unavailableLink }
     }
+    if request.action == "inspectOwnedZone" {
+        guard let scope = request.scope, scope.owner == nil else { throw ShareError.ownerOnly }
+        let exists = try await ownedZoneExists(container.privateCloudDatabase, scope.zone())
+        try checkCloudAccountRevision(revision)
+        return ShareReply(scope: scope, ownedZoneExists: exists)
+    }
     if request.action == "delete" || request.action == "leave" {
         guard let scope = request.scope,
               (request.action == "delete" && scope.owner == nil) || (request.action == "leave" && scope.owner != nil)
@@ -444,6 +482,10 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
             if request.action == "delete" { _ = try await db.deleteRecordZone(withID: zone) }
             else { _ = try await db.deleteRecord(withID: shareID(in: zone)) }
         } catch let error as CKError where [.unknownItem, .zoneNotFound, .userDeletedZone].contains(error.code) { }
+        if request.action == "delete" {
+            try checkCloudAccountRevision(revision)
+            guard try await !ownedZoneExists(db, zone) else { throw ShareError.stopUnconfirmed }
+        }
         return ShareReply(scope: scope)
     }
     guard let scope = request.scope, scope.owner == nil else { throw ShareError.ownerOnly }
@@ -454,7 +496,7 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
         do {
             _ = try await db.recordZone(for: zone)
             trace?.event("draftZone", "reused")
-        } catch where shareIsGone(error) {
+        } catch let error as CKError where [.unknownItem, .zoneNotFound, .userDeletedZone].contains(error.code) {
             trace?.event("draftZoneLookup", "error", error: error)
             try checkCloudAccountRevision(revision)
             do {
@@ -590,14 +632,20 @@ public func quietCloudShare(_ json: UnsafePointer<CChar>) -> UnsafeMutablePointe
                 case .linkRegionRestricted: completion.reply.errorKind = "linkRegionRestricted"
                 case .linkWriteRejected: completion.reply.errorKind = "linkWriteRejected"
                 case .linkWriteUnconfirmed: completion.reply.errorKind = "linkWriteUnconfirmed"
+                case .existingShare: completion.reply.errorKind = "existingShare"
+                case .stopUnconfirmed: completion.reply.errorKind = "stopUnconfirmed"
                 default: break
                 }
             }
             if let cloud = error as? CKError, [.networkUnavailable, .networkFailure].contains(cloud.code) {
                 completion.reply.errorKind = "offline"
             }
+            if let cloud = error as? CKError, cloud.code == .serverResponseLost {
+                completion.reply.errorKind = "shareTimeout"
+            }
             if case CloudAccessError.required = error { completion.reply.errorKind = "subscriptionRequired" }
             if case CloudAccessError.testflightVerification = error { completion.reply.errorKind = "testflightVerification" }
+            logShareError(error, stage: completion.reply.errorKind ?? "shareRequest")
             trace?.event("command", "error", error: error, errorKind: completion.reply.errorKind)
         }
         completion.done.signal()

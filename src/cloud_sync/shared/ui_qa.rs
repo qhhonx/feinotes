@@ -13,7 +13,7 @@ fn root() -> Option<PathBuf> {
 
 pub(super) fn enabled() -> bool { root().is_some() }
 
-fn reply() -> Reply { Reply { scope: None, title: None, url: None, audience: Audience::Invited, members: vec![], error: None, error_kind: None, discovered_rooms: None, verified_access: None, owner_name: None } }
+fn reply() -> Reply { Reply { scope: None, title: None, url: None, audience: Audience::Invited, members: vec![], error: None, error_kind: None, discovered_rooms: None, verified_access: None, owner_name: None, owned_zone_exists: None } }
 
 pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
     let root = root()?;
@@ -26,6 +26,12 @@ pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
             return Ok(result);
         }
         let scope = command.scope.context("Missing synthetic scope")?;
+        if command.action == "inspectOwnedZone" {
+            let mut result = reply();
+            result.scope = Some(scope.clone());
+            result.owned_zone_exists = Some(!root.join(format!("qa-deleted-{}", scope.note)).is_file());
+            return Ok(result);
+        }
         if command.action == "checkRoomAccess" || command.action == "inspectRoomAccess" {
             let denied = root.join("qa-room-access-denied").is_file();
             ensure!(!denied || command.action == "inspectRoomAccess", "Synthetic shared permission denied");
@@ -37,6 +43,15 @@ pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
         if command.action == "delete" || command.action == "leave" {
             ensure!((command.action == "delete") == scope.owner.is_none(), "Synthetic removal role mismatch");
             if root.join("fail-end-once").exists() { fs::remove_file(root.join("fail-end-once"))?; anyhow::bail!("Synthetic removal failed. Recovery copy retained."); }
+            if command.action == "delete" {
+                fs::write(root.join(format!("qa-deleted-{}", scope.note)), b"1")?;
+                if fs::remove_file(root.join("fail-end-reply-once")).is_ok() {
+                    let mut result = reply();
+                    result.error = Some("Synthetic stop response lost after deletion".into());
+                    result.error_kind = Some("stopUnconfirmed".into());
+                    return Ok(result);
+                }
+            }
             return Ok(reply());
         }
         ensure!(scope.owner.is_none(), "Only synthetic owners manage invitations");
@@ -48,6 +63,11 @@ pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
         match command.action {
             "members" => {},
             "publishLink" => {
+                if fs::remove_file(root.join("fail-link-conflict-once")).is_ok() {
+                    result.error = Some("Conflicting share".into());
+                    result.error_kind = Some("shareConflict".into());
+                    return Ok(result);
+                }
                 if root.join("fail-link-write-once").is_file() {
                     fs::remove_file(root.join("fail-link-write-once"))?;
                     result.error = Some("Cannot perform action due to region".into());
