@@ -840,7 +840,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 self.documentSheet = nil
                 self.documentSheetKey = nil
                 self.documentSheetChanging = false
-                self.refreshSharedToolbarTint()
                 self.syncDocumentSheet()
             }
             return
@@ -912,7 +911,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         if needsPresentation {
             presenter.view.endEditing(true)
             documentSheetChanging = true
-            refreshSharedToolbarTint()
             presenter.present(sheet,animated: true) { [weak self] in
                 self?.documentSheetChanging = false
                 self?.syncDocumentSheet()
@@ -933,23 +931,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         closeDocumentSheet()
         documentSheet = nil
         documentSheetKey = nil
-        refreshSharedToolbarTint()
-    }
-
-    private var sharedToolbarTint: UIColor? {
-        // Let the navigation bar choose its inactive foreground behind a sheet.
-        documentSheet == nil ? theme.accentColor : nil
-    }
-
-    private func refreshSharedToolbarTint() {
-        guard let state,state.shared_session else { return }
-        let identifiers = ["fei.share","fei.more","fei.folder.share","fei.library-actions"]
-        let detail = host?.navigationController?.topViewController?.navigationItem.rightBarButtonItems ?? []
-        let browser = state.browser?.personal == false
-            ? host?.padWorkspace?.visibleBrowserController?.navigationItem.rightBarButtonItems ?? [] : []
-        for item in detail + browser where identifiers.contains(item.accessibilityIdentifier ?? "") {
-            item.tintColor = sharedToolbarTint
-        }
     }
 
     private func showInformation(_ information: FeiNavigationState.Information?) {
@@ -1202,9 +1183,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             share.accessibilityLabel = state.labels[shared ? "already-shared" : "share-object"]
             share.accessibilityIdentifier = "fei.share"
             share.isEnabled = !state.busy
-            if shared {
-                share.tintColor = sharedToolbarTint
-            }
             if !state.editing_collaborators.isEmpty {
                 share.accessibilityValue = "\(state.editing_collaborators.count) \(label("online-collaborators"))"
             }
@@ -1382,20 +1360,64 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         guard let state,state.kind == "note",state.can_edit,!state.busy else { return }
         send("toolbar-command",value: redo ? "redo" : "undo",id: state.current,scope: state.editor_scope)
     }
+    private lazy var shareToolbarImages = (
+        invite: Self.renderShareImage(shared: false),
+        shared: Self.renderShareImage(shared: true),
+        online: Self.renderShareImage(shared: true,online: true)
+    )
+
     private func shareImage(shared: Bool,count: Int = 0) -> UIImage? {
+        guard shared else { return shareToolbarImages.invite }
+        return count > 0 ? shareToolbarImages.online : shareToolbarImages.shared
+    }
+
+    private static func renderShareImage(shared: Bool,online: Bool = false) -> UIImage? {
         let name = shared ? "person.2" : "person.badge.plus"
-        guard let symbol = UIImage(systemName: name,withConfiguration: UIImage.SymbolConfiguration(pointSize: 18,weight: .regular)) else { return nil }
-        let size = CGSize(width: 27,height: 24)
-        let scale = min(24 / symbol.size.width,16 / symbol.size.height)
-        let width = symbol.size.width * scale
-        let height = symbol.size.height * scale
-        return UIGraphicsImageRenderer(size: size).image { _ in
-            symbol.draw(in: CGRect(x: (size.width-width)/2,y: (size.height-height)/2,width: width,height: height))
-            if shared && count > 0 {
+        let configuration = UIImage.SymbolConfiguration(pointSize: 16,weight: .regular)
+        guard let symbol = UIImage(systemName: name,withConfiguration: configuration) else { return nil }
+        guard let ink = visibleSymbolBounds(symbol) else { return symbol }
+        let canvas = CGSize(width: 26,height: 24)
+        let inkWidth: CGFloat = 22.5
+        let scale = inkWidth / ink.width
+        return UIGraphicsImageRenderer(size: canvas).image { _ in
+            symbol.draw(in: CGRect(x: (canvas.width - inkWidth) / 2 - ink.minX * scale,
+                                   y: canvas.height / 2 - ink.midY * scale,
+                                   width: symbol.size.width * scale,height: symbol.size.height * scale))
+            if online {
                 UIColor.black.setFill()
-                UIBezierPath(ovalIn: CGRect(x: size.width-5,y: 2,width: 4,height: 4)).fill()
+                UIBezierPath(ovalIn: CGRect(x: 22,y: 1.5,width: 4,height: 4)).fill()
             }
         }.withRenderingMode(.alwaysTemplate)
+    }
+
+    private static func visibleSymbolBounds(_ symbol: UIImage) -> CGRect? {
+        // Measure the symbol's ink rather than its image margins so sharing states align.
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 4
+        let sample = UIGraphicsImageRenderer(size: symbol.size,format: format).image { _ in symbol.draw(at: .zero) }
+        guard let image = sample.cgImage else { return nil }
+        let width = image.width
+        let height = image.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        var pixels = [UInt8](repeating: 0,count: width * height * 4)
+        let drewImage = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress,width: width,height: height,bitsPerComponent: 8,
+                                          bytesPerRow: width * 4,space: colorSpace,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image,in: CGRect(x: 0,y: 0,width: width,height: height))
+            return true
+        }
+        guard drewImage else { return nil }
+        var minX = width, minY = height, maxX = -1, maxY = -1
+        for y in 0..<height {
+            for x in 0..<width where pixels[(y * width + x) * 4 + 3] >= 128 {
+                minX = min(minX,x); minY = min(minY,y)
+                maxX = max(maxX,x); maxY = max(maxY,y)
+            }
+        }
+        guard maxX >= minX,maxY >= minY else { return nil }
+        return CGRect(x: CGFloat(minX)/sample.scale,y: CGFloat(minY)/sample.scale,
+                      width: CGFloat(maxX-minX+1)/sample.scale,height: CGFloat(maxY-minY+1)/sample.scale)
     }
 
     private func toolbarGlyph(_ symbol: UIImage,size: CGSize,verticalOffset: CGFloat = 0,badge: String?) -> UIImage {
@@ -1441,7 +1463,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         item.accessibilityIdentifier = "fei.folder.share"
         item.accessibilityLabel = state.labels[shared ? "shared-folder-access" : "share-object"]
         item.isEnabled = !state.busy
-        if shared { item.tintColor = sharedToolbarTint }
         return item
     }
 
@@ -1537,7 +1558,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     }
     private func menuAction(_ key: String,_ symbol: String,destructive: Bool = false,enabled: Bool = true,perform: @escaping () -> Void) -> UIAction {
         let current = state?.current,scope = state?.editor_scope,listingScope = state?.listing?.scope,browserScope = state?.browser?.listing.scope
-        return UIAction(title: label(key),image: symbol == "textformat.size" ? FeiEditorToolbar.formatIcon : UIImage(systemName: symbol),attributes: !enabled ? .disabled : destructive ? .destructive : []) { [weak self] _ in
+        return UIAction(title: label(key),image: symbol == "textformat.size" ? FeiEditorToolbar.menuFormatIcon(compatibleWith: host?.traitCollection) : UIImage(systemName: symbol),attributes: !enabled ? .disabled : destructive ? .destructive : []) { [weak self] _ in
             guard let self,self.state?.busy == false,self.state?.current == current,self.state?.editor_scope == scope,self.state?.listing?.scope == listingScope,self.state?.browser?.listing.scope == browserScope else { return }
             self.host?.settleEditorComposition(); perform()
         }
@@ -1658,7 +1679,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         if state.labels["copy-object-link"] != nil {
             export.insert(menuAction("copy-object-link","link") { [weak self] in self?.send("copy-object-link",id: id,scope: state.editor_scope) },at: 0)
         }
-        var groups: [UIMenuElement] = [search,UIMenu(title: label("format"),image: FeiEditorToolbar.formatIcon,children: editing)]
+        var groups: [UIMenuElement] = [search,UIMenu(title: label("format"),image: FeiEditorToolbar.menuFormatIcon(compatibleWith: host?.traitCollection),children: editing)]
         groups.append(UIMenu(title: label("options"),image: UIImage(systemName: "folder"),children: organization))
         if state.shared_session {
             if let collaboration = collaborationSection(nil,state: state) { groups.append(collaboration) }
@@ -1692,20 +1713,18 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         let symbol = UIImage(systemName: "ellipsis",withConfiguration: UIImage.SymbolConfiguration(pointSize: 17))
         let theme = state.theme ?? .system
         let shared = state.shared_session
-        item.tintColor = shared ? sharedToolbarTint : nil
         if #available(iOS 26.0,*) {
             var badge = UIBarButtonItem.Badge.string("!")
             badge.backgroundColor = theme.syncWarningColor
             badge.foregroundColor = theme.syncWarningInk
             badge.font = .systemFont(ofSize: 8,weight: .bold)
             item.badge = shared && attention ? badge : nil
+            item.image = symbol
+            return
         }
         guard shared,let symbol else { item.image = symbol; return }
-        // Both states use the same fixed canvas and never change bar-item identity.
-        let badge: String?
-        if #available(iOS 26.0,*) { badge = nil }
-        else { badge = attention ? "!" : nil }
-        item.image = toolbarGlyph(symbol,size: CGSize(width: 27,height: 25),badge: badge)
+        // Keep the pre-iOS 26 sync warning in the same slot as the unbadged item.
+        item.image = toolbarGlyph(symbol,size: CGSize(width: 27,height: 25),badge: attention ? "!" : nil)
     }
 
     private func restoreSharedSyncIfNeeded() {

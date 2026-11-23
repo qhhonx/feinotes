@@ -3,9 +3,16 @@ import UIKit
 @MainActor
 final class FeiEditorToolbar: UIToolbar {
     /// A fixed Latin Aa avoids the localized CJK textformat symbol variants.
-    static var formatIcon: UIImage {
-        let size = CGSize(width: 26,height: 24)
-        let font = UIFont.systemFont(ofSize: 20,weight: .regular)
+    static var formatIcon: UIImage { formatIcon(scale: 1) }
+
+    static func menuFormatIcon(compatibleWith traits: UITraitCollection?) -> UIImage {
+        let size = min(24,UIFontMetrics(forTextStyle: .body).scaledValue(for: 20,compatibleWith: traits))
+        return formatIcon(scale: size / 20,width: .condensed)
+    }
+
+    private static func formatIcon(scale: CGFloat,width: UIFont.Width = .standard) -> UIImage {
+        let size = CGSize(width: 26 * scale,height: 24 * scale)
+        let font = UIFont.systemFont(ofSize: 20 * scale,weight: .regular,width: width)
         return UIGraphicsImageRenderer(size: size).image { _ in
             let text = "Aa" as NSString
             let bounds = text.size(withAttributes: [.font:font])
@@ -41,6 +48,7 @@ final class FeiEditorToolbar: UIToolbar {
     private var phoneEditingMinimumWidth: NSLayoutConstraint?
     private var phoneEditingCommands: EditingCommands?
     private var phoneEditingButtons: [(item: UIBarButtonItem, button: UIButton)] = []
+    private var phoneFormatIcon: (pointSize: CGFloat, image: UIImage)?
 
     private struct EditingCommands {
         let checklist, table, slash, block, styles, insert, undo, keyboard: UIBarButtonItem
@@ -333,13 +341,18 @@ final class FeiEditorToolbar: UIToolbar {
         let pointSize = min(26,max(21,metrics.scaledValue(for: 21,compatibleWith: traitCollection)))
         phoneEditingMinimumWidth?.constant = width * CGFloat(phoneEditingButtons.count)
         let symbols = UIImage.SymbolConfiguration(pointSize: pointSize,weight: .regular)
+        if phoneFormatIcon?.pointSize != pointSize {
+            phoneFormatIcon = (pointSize, Self.formatIcon(scale: pointSize / 21))
+        }
         phoneEditingButtons.forEach { $0.button.setPreferredSymbolConfiguration(symbols,forImageIn: .normal) }
+        refreshPhoneEditingItems()
     }
     private func refreshPhoneEditingItems() {
         for (item,control) in phoneEditingButtons {
             control.accessibilityLabel = item.accessibilityLabel
             control.isEnabled = item.isEnabled
-            if control.image(for: .normal) != item.image { control.setImage(item.image,for: .normal) }
+            let image = item.accessibilityIdentifier == "fei.edit.styles" ? phoneFormatIcon?.image ?? item.image : item.image
+            if control.image(for: .normal) != image { control.setImage(image,for: .normal) }
         }
     }
     func refreshContentSize() {

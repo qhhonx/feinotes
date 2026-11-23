@@ -72,7 +72,6 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     #if FEI_MOBILE_QA
     private var observedEmptyInsertionSlot = false
     #endif
-    private let selectionCount = UILabel()
     private struct PendingMove { let scope:String; let order:[String]; var writing = false }
     private var pendingMove: PendingMove?
     private enum ListAnchor {
@@ -207,10 +206,6 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         reorderPress.delegate = self
         tableView.addGestureRecognizer(reorderPress)
         tableView.panGestureRecognizer.require(toFail: reorderPress)
-        selectionCount.font = .preferredFont(forTextStyle: .footnote)
-        selectionCount.adjustsFontForContentSizeCategory = true
-        selectionCount.textColor = .secondaryLabel
-        selectionCount.adjustsFontSizeToFitWidth = true
         tableView.accessibilityIdentifier = "fei.notes.list"
         tableView.register(UITableViewCell.self,forCellReuseIdentifier: "note")
         tableView.estimatedRowHeight = 86; tableView.rowHeight = UITableView.automaticDimension
@@ -272,8 +267,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
                     tint = state.isSelected ? self.palette.accentColor : .tertiaryLabel
                     size = CGSize(width: 24,height: 24)
                 } else if row.shared_badge && !self.isSelecting && !self.isReordering {
-                    image = UIImage(systemName: "person.2",withConfiguration: UIImage.SymbolConfiguration(
-                        pointSize: UIFontMetrics(forTextStyle: .footnote).scaledValue(for: 13),weight: .regular))
+                    let pointSize = min(17,UIFontMetrics(forTextStyle: .footnote).scaledValue(for: 13,compatibleWith: cell.traitCollection))
+                    image = UIImage(systemName: "person.2",withConfiguration: UIImage.SymbolConfiguration(pointSize: pointSize,weight: .regular))
                     tint = highlight ? self.palette.selectedTextColor : .secondaryLabel
                     size = CGSize(width: 30,height: 24)
                 } else if row.folder && !isTrash && !self.isSelecting {
@@ -478,9 +473,15 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         empty.font = interfaceFont(.body); noticeText.font = interfaceFont(.subheadline)
         rows = Dictionary(uniqueKeysWithValues: next.rows.map { ($0.id,$0) })
         let key = !next.query.isEmpty ? "result-count" : next.rows.contains(where: { $0.folder }) ? "item-count" : "note-count"
-        count.text = next.header_detail ?? String(format: labels[key] ?? "%d items",next.rows.count)
-        count.numberOfLines = next.header_detail == nil ? 1 : 0
-        count.accessibilityIdentifier = next.header_detail == nil ? "fei.notes.count" : "fei.notes.trash-retention"
+        if let selection = next.selection {
+            count.text = String(format: labels["selected-count"] ?? "%d selected",selection.selected.count)
+            count.numberOfLines = 1
+            count.accessibilityIdentifier = "fei.notes.count"
+        } else {
+            count.text = next.header_detail ?? String(format: labels[key] ?? "%d items",next.rows.count)
+            count.numberOfLines = next.header_detail == nil ? 1 : 0
+            count.accessibilityIdentifier = next.header_detail == nil ? "fei.notes.count" : "fei.notes.trash-retention"
+        }
         search.accessibilityLabel = labels["search"]
         if !isSearching,search.text != next.query { search.text = next.query }
         tabs.setTitle(labels["all-notes"],forSegmentAt: 0); tabs.setTitle(labels["favorites"],forSegmentAt: 1); tabs.setTitle(labels["sharing"],forSegmentAt: 2)
@@ -560,7 +561,6 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         if let selection=listing?.selection {
             if #available(iOS 26.0, *) { updateCompactSearch(in: controller,visible: false,showCompose: false) }
             controller.navigationItem.searchController=nil
-            selectionCount.text=String(format: labels["selected-count"] ?? "%d selected",selection.selected.count)
             selectAllItem.title=labels[selection.selected.count == min(selection.ids.count,selection.limit) && !selection.ids.isEmpty ? "deselect-all" : "select-all"]
             selectAllItem.accessibilityIdentifier="fei.notes.selection.all"
             selectionDone.title=labels["done"]; selectionDone.accessibilityIdentifier="fei.notes.selection.done"
@@ -572,7 +572,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
                 item.isEnabled=enabled && !selection.selected.isEmpty && (id != "move" || selection.can_move)
             }
             deleteSelection.tintColor = .systemRed
-            controller.toolbarItems=[UIBarButtonItem(customView: selectionCount),.flexibleSpace(),copySelection,.flexibleSpace(),moveSelection,.flexibleSpace(),deleteSelection]
+            controller.toolbarItems=[.flexibleSpace(),copySelection,.flexibleSpace(),moveSelection,.flexibleSpace(),deleteSelection,.flexibleSpace()]
             if !preparing { controller.navigationController?.setToolbarHidden(false,animated: false) }
             updateCloudResumeProbe(); searchLayout=nil; return
         }

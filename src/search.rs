@@ -568,7 +568,7 @@ impl Workspace {
             )
             .child(div().flex_1().min_w_0().pl(px(2.)).flex().child(self.search.clone()))
             .when(has_text, |d| {
-                d.child(input_button("search-clear", "search-clear", 18., Theme::text_disabled()).ml(px(8.)).on_click(cx.listener(
+                d.child(input_button("search-clear", "search-clear", 18., Theme::icon()).ml(px(8.)).on_click(cx.listener(
                     |w, _, window, cx| {
                         w.search.update(cx, |s, cx| s.set_text("", cx));
                         crate::gpui_compat::focus(window, &w.search.focus_handle(cx), cx);
