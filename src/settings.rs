@@ -1878,7 +1878,6 @@ impl Workspace {
         // 打开链接: which browser a clicked link (and 网页搜索) opens in. The
         // list is what this Mac has, so the row is only there when there is a
         // choice to make.
-        let new_key = crate::shortcuts::hint("workspace::NewDoc", "⌘N");
         let browsers = browsers();
         let links = if browsers.is_empty() {
             vec![]
@@ -1912,12 +1911,6 @@ impl Workspace {
                     switch("pref-backspace-title", p.backspace_to_title).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.backspace_to_title = !p.backspace_to_title, cx)))).into_any_element(),
                 row(tr("中英文之间自动加空格", "Space between Chinese and English"), desc(tr("输入时在汉字和英文字母、数字之间自动加一个空格，代码、链接和公式里不加。已有的文字可用「编辑 › 整理本文空格」。", "While typing, adds a space between Chinese characters and Latin letters or digits, except in code, links and formulas. For existing text use Edit › Add Spaces Between Chinese and English.")),
                     switch("pref-cjk-spacing", p.cjk_spacing).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.cjk_spacing = !p.cjk_spacing, cx)))).into_any_element(),
-                // The key as bound (Ctrl+N off macOS, or the user's own), in every language's text.
-                row(tr("快捷新建默认类型", "Quick new (⌘N)").replace("⌘N", new_key), Some(tr("⌘N 新建时创建的类型；「记住上次」沿用你上次从新建菜单选的类型。", "What ⌘N creates; “Last used” repeats the type you last picked from the New menu.").replace("⌘N", new_key).into()), {
-                    let sel = match p.new_default.as_str() { "doc" => 1, "markdown" => 2, _ => 0 };
-                    self.select("quick-new", vec![tr("记住上次", "Last used"), tr("文档", "Document"), "Markdown"], sel,
-                        |w, i, cx| w.set_pref(|p| p.new_default = ["", "doc", "markdown"][i].into(), cx), cx)
-                }).into_any_element(),
                 // 网页搜索 opens the selection in the browser; which site is the
                 // user's habit, so it is a preference rather than a constant.
                 #[cfg(not(target_os = "ios"))]
@@ -1930,7 +1923,8 @@ impl Workspace {
         #[cfg(target_os = "ios")]
         rows.push(row(tr("日期提醒通知","Reminder notifications"),desc(tr("查看通知权限和已安排的提醒。","View notification permission and scheduled reminders.")),button("reminder-notifications",tr("设置","Settings")).on_click(|_,_,_|crate::ipad_notifications::present_settings())).into_any_element());
         if !crate::FEI_NOTES {
-            rows.insert(2, row(tr("快捷新建默认类型", "Quick new (⌘N)"), desc(tr("⌘N 新建时创建的类型；「记住上次」沿用你上次从新建菜单选的类型。", "What ⌘N creates; “Last used” repeats the type you last picked from the New menu.")), {
+            let new_key = crate::shortcuts::hint("workspace::NewDoc", "⌘N");
+            rows.insert(2, row(tr("快捷新建默认类型", "Quick new (⌘N)").replace("⌘N", new_key), Some(tr("⌘N 新建时创建的类型；「记住上次」沿用你上次从新建菜单选的类型。", "What ⌘N creates; “Last used” repeats the type you last picked from the New menu.").replace("⌘N", new_key).into()), {
                     let sel = match p.new_default.as_str() { "doc" => 1, "markdown" => 2, _ => 0 };
                     self.select("quick-new", vec![tr("记住上次", "Last used"), tr("文档", "Document"), "Markdown"], sel,
                         |w, i, cx| w.set_pref(|p| p.new_default = ["", "doc", "markdown"][i].into(), cx), cx)
@@ -3247,7 +3241,6 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "编辑" => "Edit",
         "可编辑文档" => "Edit this document",
         "阅读" => "Read",
-        "仅查看或评论文档" => "View this document",
         "键盘快捷键" => "Keyboard shortcuts",
         "Markdown 是一种快速输入带格式文本的方式，让你书写文档时行云流水，一气呵成，例如输入#空格，即可输入一级标题。" => "Markdown lets you format text as you type. For example, type # followed by Space to create a heading.",
         "页宽设置" => "Page width",
