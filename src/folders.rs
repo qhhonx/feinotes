@@ -399,7 +399,8 @@ impl Workspace {
         let path: Vec<_> = self.ancestors(&id).into_iter().filter(|e| crate::shared_store::root_of_row(&e.id).is_none()).collect();
         // The path starts at its root folder, by that folder's name (W5).
         let root = self.entries.iter().find(|e| e.id == id).map(|e| e.root.clone()).unwrap_or_default();
-        let first = link("home".into(), self.root_name(&root), None).into_any_element();
+        let root_title = if crate::FEI_NOTES { self.breadcrumb_library_title().to_string() } else { self.root_name(&root) };
+        let first = link("home".into(), root_title, None).into_any_element();
         // A root's own page is the root: its name is the page's title, not a crumb before it.
         let own = crate::shared_store::root_of_row(&id).is_some();
         let mut crumbs = div().min_w_0().flex().items_center().text_size(px(17.)).line_height(px(24.)).when(!own, |d| d.child(first));

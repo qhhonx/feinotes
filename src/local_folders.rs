@@ -182,6 +182,7 @@ impl Workspace {
     /// What the top of the tree is called where nothing names a root: the
     /// one root's folder name, else the root in front's.
     pub(crate) fn top_name(&self) -> String {
+        if crate::FEI_NOTES { return tr("我的文档", "My documents").to_string(); }
         let roots = self.store.roots();
         let key = if roots.len() == 1 { Some(roots[0].0.clone()) } else { self.store.active_root() };
         key.and_then(|k| roots.into_iter().find(|r| r.0 == k)).map(|r| r.1).unwrap_or_else(|| tr("我的文档", "My documents").to_string())

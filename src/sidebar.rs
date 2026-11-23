@@ -272,7 +272,8 @@ impl Workspace {
         if roots.is_empty() {
             list = list.child(self.empty_roots(cx));
         } else {
-            let title = if roots.len() == 1 { roots[0].1.clone() } else { crate::settings::tr("文件夹", "Folders").to_string() };
+            let title = if crate::FEI_NOTES { crate::settings::tr("我的文档", "My documents") }
+                else if roots.len() == 1 { &roots[0].1 } else { crate::settings::tr("文件夹", "Folders") };
             list = list.child(self.section(1, title, cx).rounded(px(ROW_R)).when(self.sidebar_drop_top(), |d| d.bg(Theme::sidebar_selected())));
             if !self.folded[1] {
                 list = list.child(self.render_folder_rows(window, cx));
