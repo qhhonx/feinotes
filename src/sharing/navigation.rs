@@ -190,6 +190,11 @@ impl Workspace {
         self.open_shared_item(room, target, OpenSource::new(entry, None), window, cx);
     }
 
+    pub(super) fn open_verified_shared_item(&mut self, room: Room, target: String, access: shared::VerifiedRoomAccess, window: &mut Window, cx: &mut Context<Self>) {
+        let source = OpenSource { verified_access: Some(access), ..OpenSource::new(None, None) };
+        self.open_shared_item(room, target, source, window, cx);
+    }
+
     pub(super) fn open_shared_room_for_action(&mut self, room: Room, action: SharedAction, window: &mut Window, cx: &mut Context<Self>) {
         if self.sharing.busy { return; }
         let retry_room = room.clone();

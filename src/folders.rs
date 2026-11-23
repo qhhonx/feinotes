@@ -488,6 +488,16 @@ impl Workspace {
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { None::<Stateful<Div>> }
             })
+            .children({
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                {
+                    let target = m.id.clone();
+                    self.object_link_available(cx).then(|| row("fr-copy-object-link", "copy", tr("复制链接", "Copy Link"))
+                        .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&target, None, personal, cx))))
+                }
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+                { None::<Stateful<Div>> }
+            })
             .child(row("fr-delete", "bin", tr("删除", "Delete")).on_click(cx.listener(move |w, _, _, cx| w.ask_delete(&del, cx))))))
             .with_priority(2).into_any_element()]
     }

@@ -1654,7 +1654,10 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         })
         editing.append(menuAction(state.reading ? "editing" : "reading","book",enabled: state.write_allowed) { [weak self] in self?.send(state.reading ? "editing" : "reading",id: id) })
         let info = UIMenu(title: label("doc-info"),image: UIImage(systemName: "info.circle"),children: [menuAction("doc-info","info.circle") { [weak self] in self?.send("doc-info",id: id) },menuAction("history","clock.arrow.circlepath") { [weak self] in self?.send("history-open",id: id,scope: state.editor_scope) },menuAction("attachments","paperclip") { [weak self] in self?.send("attachments-menu") }])
-        let export: [UIMenuElement] = [menuAction("export","square.and.arrow.up") { [weak self] in self?.showExport(id) },menuAction("pdf","doc.richtext") { [weak self] in self?.send("pdf",id: id) },menuAction("print","printer") { [weak self] in self?.send("print",id: id) }]
+        var export: [UIMenuElement] = [menuAction("export","square.and.arrow.up") { [weak self] in self?.showExport(id) },menuAction("pdf","doc.richtext") { [weak self] in self?.send("pdf",id: id) },menuAction("print","printer") { [weak self] in self?.send("print",id: id) }]
+        if state.labels["copy-object-link"] != nil {
+            export.insert(menuAction("copy-object-link","link") { [weak self] in self?.send("copy-object-link",id: id,scope: state.editor_scope) },at: 0)
+        }
         var groups: [UIMenuElement] = [search,UIMenu(title: label("format"),image: FeiEditorToolbar.formatIcon,children: editing)]
         groups.append(UIMenu(title: label("options"),image: UIImage(systemName: "folder"),children: organization))
         if state.shared_session {
@@ -1787,7 +1790,8 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         if item.id.hasPrefix("collection-") {
             return UIMenu(children: [action("rename","pencil","collection-rename"),action("organize-shared-entry","folder",perform: { [weak self] in self?.showMove(id) }),action("remove-personal-folder","folder.badge.minus","collection-remove")])
         }
-        let flags: [UIMenuElement] = item.folder ? [] : [action(item.pinned ? "unpin" : "pin","pin",item.shared ? "shared-pin" : "pin"),action(item.starred ? "unstar" : "star","star",item.shared ? "shared-star" : "star")]
+        var flags: [UIMenuElement] = item.folder ? [] : [action(item.pinned ? "unpin" : "pin","pin",item.shared ? "shared-pin" : "pin"),action(item.starred ? "unstar" : "star","star",item.shared ? "shared-star" : "star")]
+        if state?.labels["copy-object-link"] != nil { flags.insert(action("copy-object-link","link"),at: 0) }
         if item.inherited_share && !inherited {
             return UIMenu(children: [group(flags),group([action("shared-folder-access","person.2","shared-child-access")])])
         }

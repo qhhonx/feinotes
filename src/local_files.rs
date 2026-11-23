@@ -179,7 +179,7 @@ impl Incoming {
         let me = Self::default();
         me.0.borrow_mut().extend(std::env::args_os().skip(1).map(PathBuf::from).filter(|p| (is_markdown_path(p) && p.fs_is_file()) || (!crate::FEI_NOTES && p.fs_is_dir())));
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        me.1.borrow_mut().extend(std::env::args().skip(1).filter(|url| crate::sharing::links::incoming(url)));
+        me.1.borrow_mut().extend(std::env::args().skip(1).filter(|url| crate::sharing::links::incoming(url) || url.starts_with("https://feinotes.app/o/")));
         me
     }
 
@@ -187,7 +187,7 @@ impl Incoming {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         {
             let mut invitations = self.1.borrow_mut(); let available = 8usize.saturating_sub(invitations.len());
-            invitations.extend(urls.iter().filter(|url| crate::sharing::links::incoming(url)).take(available).cloned());
+            invitations.extend(urls.iter().filter(|url| crate::sharing::links::incoming(url) || url.starts_with("https://feinotes.app/o/")).take(available).cloned());
         }
         let paths = urls.iter().filter_map(|u| u.strip_prefix("file://")).map(|p| PathBuf::from(crate::markdown::percent_decode(p.trim_end_matches('/'))));
         self.0.borrow_mut().extend(paths.filter(|p| is_markdown_path(p) || (!crate::FEI_NOTES && p.fs_is_dir())));

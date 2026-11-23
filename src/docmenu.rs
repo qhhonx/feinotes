@@ -381,6 +381,18 @@ impl Workspace {
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { None::<Stateful<Div>> }
             })
+            .children({
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                {
+                    let target = id.clone();
+                    self.object_link_available(cx).then(|| menu_item("dm-copy-object-link", "copy",
+                        crate::settings::tr("复制链接", "Copy Link"), false, false)
+                        .on_hover(hover_sub(None))
+                        .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&target, None, !w.is_shared(), cx))))
+                }
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+                { None::<Stateful<Div>> }
+            })
             .child(
                 menu_item("dm-download", "export", crate::settings::text("下载为"), true, sub == Some(DocSub::Download))
                     .on_hover(hover_sub(Some(DocSub::Download))),

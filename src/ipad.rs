@@ -426,7 +426,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         routes.push(NavigationRoute { key:format!("history-preview:{}",history.token),title:label.clone() });
         label
     } else { title };
-    let labels = [
+    let mut labels: std::collections::BTreeMap<_, _> = [
         ("folders",tr("文件夹","Folders")),("select-note",tr("选择一篇文档","Select a document")),("show-browser",tr("显示文档列表","Show documents")),("focus-note",tr("专注正文","Focus on document")),("hide-browser",tr("隐藏文档列表","Hide documents")),
         ("sidebar-open",tr("已展开","Expanded")),("sidebar-closed",tr("已收起","Collapsed")),
         ("history",tr("版本历史","Version history")),("history-save",tr("保存当前版本","Save current version")),("history-named",tr("仅看命名版本","Named versions only")),("history-marks",tr("显示改动","Show changes")),("history-return",tr("返回版本列表","Back to version list")),("history-restore",tr("恢复此版本","Restore this version")),("history-copy",tr("另存为新文档","Save as a new document")),("history-name",tr("命名版本","Name version")),("history-delete",tr("删除此版本","Delete version")),("history-filter",tr("筛选版本","Filter versions")),("history-restore-confirm",tr("恢复此版本并替换当前正文？","Restore this version and replace the current document?")),("history-delete-confirm",tr("删除这个本机历史版本？","Delete this local version?")),
@@ -483,6 +483,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         ("keep-recovery",tr("另存为新文档","Save as New Document")),("discard-recovery",tr("移除恢复项","Remove Recovery Item")),
         ("empty-trash",tr("清空","Empty")),
     ].into_iter().collect();
+    if workspace.object_link_available(cx) { labels.insert("copy-object-link",tr("复制链接","Copy Link")); }
     let mut navigation_entries = workspace.personal_navigation_entries(cx);
     let personal_ids: std::collections::HashSet<_> = navigation_entries.iter().map(|entry| entry.id.clone()).collect();
     if workspace.home.tab == crate::home::HomeTab::Starred { navigation_entries.extend(workspace.favorite_entries(cx)); }
@@ -831,6 +832,25 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                             workspace.new_and_share(command.action == "new-shared-folder", window, cx);
                         }
                         "accept-invitation" => workspace.open_accept_invitation(window,cx),
+                        "copy-object-link" => {
+                            let expected = command.scope.as_deref();
+                            let browser = expected == Some(crate::ipad_browser::scope(workspace,cx).as_str());
+                            let editor = expected == Some(editor_scope(workspace).as_str());
+                            if !browser && !editor && expected != Some(listing_scope(workspace).as_str()) { return; }
+                            if let Some(id) = id.as_deref() {
+                                let personal_browser = browser && workspace.mobile_personal_browser(cx)
+                                    && workspace.home.tab != crate::home::HomeTab::Shared;
+                                let in_editor = editor && workspace.current.as_deref() == Some(id);
+                                let in_share = workspace.is_shared() && !personal_browser
+                                    && (in_editor || workspace.entries.iter().any(|entry| entry.id == id));
+                                let room = if in_share {
+                                    workspace.current_room(cx)
+                                } else if workspace.home.shared() && !in_editor && !personal_browser {
+                                    workspace.shared_list_room(id,cx).or_else(|| workspace.shared_child_room(id,cx))
+                                } else { None };
+                                workspace.copy_object_link(id, room, !in_share, cx);
+                            }
+                        }
                         "shared-list" => {
                             if workspace.is_shared() { workspace.navigate_personal(crate::app::View::Shared,None,window,cx); }
                             else if workspace.save_before(cx,|w,_,cx|w.show_view(crate::app::View::Shared,cx)) { workspace.folder_current = None; workspace.show_view(crate::app::View::Shared,cx); }

@@ -15,6 +15,7 @@ mod paragraphs;
 pub(crate) mod presence;
 mod progress;
 pub(crate) mod shared;
+pub(crate) mod object_link;
 mod table;
 pub(crate) mod library;
 #[cfg(feature = "devtools")]

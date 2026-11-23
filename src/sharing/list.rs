@@ -49,6 +49,7 @@ impl Workspace {
         let pin = if prefs.get("pin", id) != 0 { tr("取消置顶", "Unpin") } else { tr("置顶", "Pin") };
         let star = if prefs.get("star", id) != 0 { tr("取消收藏", "Remove from Favorites") } else { tr("收藏", "Favorite") };
         let open_room = room.clone();
+        let (link_room, link_target) = (room.clone(), id.to_owned());
         let (open, pin_id, star_id) = (id.to_owned(), id.to_owned(), id.to_owned());
         let row = |id, icon, label| ui::menu_row(id, SharedString::from(id)).child(ui::icon(icon,16.,Theme::icon())).child(label);
         let divider = || div().mx(px(8.)).my(px(5.)).h(px(1.)).bg(Theme::line_border());
@@ -63,6 +64,8 @@ impl Workspace {
             .child(row("shared-child-pin", "pin", pin).on_click(cx.listener(move |w, _, _, cx| w.toggle_pin(&pin_id,cx))))
             .child(row("shared-child-star", "star", star).on_click(cx.listener(move |w, _, _, cx| w.toggle_star(&star_id,cx))))
             .child(divider())
+            .when(self.object_link_available(cx), |d| d.child(row("shared-child-copy-object-link", "copy", tr("复制链接", "Copy Link"))
+                .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&link_target, Some(link_room.clone()), false, cx)))))
             .child(row("shared-child-access", "shared-document", shared_access_title(true))
                 .on_click(cx.listener(move |w, _, window, cx| {
                     w.row_menu = None;
@@ -80,7 +83,10 @@ impl Workspace {
         let row = |id, glyph, label| ui::menu_row(id, SharedString::from(id)).child(ui::icon(glyph, 16., Theme::icon())).child(label);
         let open = entry.clone();
         let open_room = room.clone();
+        let (link_room, link_target) = (room.clone(), entry.id.clone());
         let body = ui::popover().id("shared-folder-row-menu").occlude().w(px(190.)).py(px(ui::MENU_PAD_Y))
+            .when(self.object_link_available(cx), |d| d.child(row("shared-folder-copy-object-link", "copy", tr("复制链接", "Copy Link"))
+                .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&link_target, Some(link_room.clone()), false, cx)))))
             .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }))
             .child(row("shared-folder-open", "folder", tr("打开", "Open"))
                 .on_click(cx.listener(move |w, _, window, cx| {
@@ -135,6 +141,7 @@ impl Workspace {
         #[cfg(target_os = "ios")]
         let folder_writable = room.scope.folder && editable;
         let folder_actions = room.clone();
+        let (link_room, link_target) = (room.clone(), room.scope.note.clone());
         let (copy, pin, star, link) = (menu.id.clone(), menu.id.clone(), menu.id.clone(), room.clone());
         let item = |id: &'static str, glyph: &'static str, label: &'static str| {
             ui::menu_row(id, SharedString::from(id)).child(ui::icon(glyph, 16., Theme::icon())).child(label)
@@ -195,6 +202,8 @@ impl Workspace {
                         if owner { w.open_member_management(manage.clone(),window,cx); }
                         else { w.sharing_sheet(Sheet::Access(manage.clone()),window,cx); }
                     })))
+                .when(self.object_link_available(cx), |d| d.child(item("shared-row-copy-object-link", "copy", tr("复制链接", "Copy Link"))
+                    .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&link_target, Some(link_room.clone()), false, cx)))))
                 .when(owner, |d| d.child(item("shared-row-link", "copy", tr("复制共享链接", "Copy share link"))
                     .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.copy_shared_link(link.clone(), window, cx); }))))
                 .when(!room.scope.folder, |d| d.child(item("shared-row-markdown", "export", tr("下载为 Markdown…", "Download Markdown…"))

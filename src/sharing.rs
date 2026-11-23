@@ -12,6 +12,7 @@ pub(crate) mod qa;
 #[cfg(feature = "devtools")]
 mod qa_parity;
 mod navigation;
+mod object_link;
 #[cfg(target_os = "macos")]
 pub(crate) use navigation::SharedFolderEdit;
 mod lifecycle;
@@ -392,6 +393,10 @@ impl Workspace {
     }
 
     pub(crate) fn receive_invitation(&mut self, link: String, window: &mut Window, cx: &mut Context<Self>) {
+        if link.starts_with("https://feinotes.app/o/") {
+            self.receive_object_link(&link, window, cx);
+            return;
+        }
         if self.sharing.busy {
             self.show_toast_kind(ui::ToastKind::Info, tr("请先完成当前共享操作，再打开邀请。", "Finish the current sharing action, then open the invitation again."), cx);
             return;

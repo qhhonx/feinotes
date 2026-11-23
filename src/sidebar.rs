@@ -1136,6 +1136,17 @@ impl Workspace {
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { d }
             })
+            .children({
+                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                {
+                    let target = doc.to_owned();
+                    self.object_link_available(cx).then(|| item("rm-copy-object-link", "copy", crate::settings::tr("复制链接", "Copy Link"))
+                        .on_hover(set_sub(false))
+                        .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&target, None, !w.is_shared(), cx))))
+                }
+                #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+                { None::<Stateful<Div>> }
+            })
             .child(divider())
             .child(
                 item_c("rm-del", "bin", crate::settings::text("删除"), Theme::danger(), Theme::danger())
@@ -1144,6 +1155,8 @@ impl Workspace {
             );
         let vh = f32::from(window.viewport_size().height);
         let extra = usize::from(child);
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let extra = extra + usize::from(self.object_link_available(cx));
         let shared_rows = usize::from(share_row);
         let menu_h = row_menu_height(ROW_ITEMS + shared_rows + extra, ROW_DIVIDERS + shared_rows);
         // From the "…" button: hang 2px below it, or sit 2px above it when
