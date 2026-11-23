@@ -2031,6 +2031,8 @@ impl Workspace {
                 segmented("ui-font", &[tr("小", "Small"), tr("标准", "Default"), tr("大", "Large")], sel,
                     |w, i, cx| w.set_pref(|p| p.ui_font = ["small", "", "large"][i].into(), cx), cx)
             }).into_any_element(),
+            self.font_row(FontTarget::Ui, tr("界面字体", "Interface font"),
+                tr("侧栏、菜单和设置页用这个字体；文档用下面的「文档字体」。", "The sidebar, menus and settings use it; the note has its own below."), cx).into_any_element(),
         ]);
         if crate::FEI_NOTES {
             rows.push(row(tr("界面风格", "Interface style"), None,
@@ -2038,8 +2040,6 @@ impl Workspace {
                     |w, i, cx| w.set_pref(|p| p.interface_style = InterfaceStyle::ALL[i].id().into(), cx), cx)).into_any_element());
         }
         rows.extend([
-            self.font_row(FontTarget::Ui, tr("界面字体", "Interface font"),
-                tr("侧栏、菜单和设置页用这个字体；文档用下面的「文档字体」。", "The sidebar, menus and settings use it; the note has its own below."), cx).into_any_element(),
             row(tr("文档主题", "Document theme"), None, picker).into_any_element(),
             self.font_row(FontTarget::Doc, tr("文档字体", "Document font"),
                 tr("正文和标题用这个字体，代码块仍用主题的等宽字体。", "Body text and headings use it; code keeps the theme's monospace face."), cx).into_any_element(),

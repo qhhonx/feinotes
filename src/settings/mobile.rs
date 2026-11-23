@@ -116,8 +116,6 @@ impl Workspace {
                 sections.push(section("",vec![
                     choices("appearance",tr("外观","Appearance"),&p.appearance,&[("",tr("跟随系统","System")),("light",tr("浅色","Light")),("dark",tr("深色","Dark"))]),
                     choices("ui-font",tr("界面字号","Interface size"),&p.ui_font,&[("small",tr("小","Small")),("",tr("标准","Default")),("large",tr("大","Large"))]),
-                    Row::new("interface-style",tr("界面风格","Interface style")).value(p.interface_style().id())
-                        .choices(InterfaceStyle::ALL.into_iter().map(|style| (style.id().into(),style.title().into()))),
                 ]));
                 let list = themes::themes();
                 let current = p.theme_id();
@@ -125,7 +123,11 @@ impl Workspace {
                 picker.choices = list.iter().map(|t| Choice { value:t.id.clone(),title:t.name().into(),preview:Some(theme_preview(t.style)) }).collect();
                 let mut preview = Row::new("theme-preview",tr("预览","Preview")).kind("preview").enabled(false);
                 preview.preview = picker.choices.iter().find(|choice| choice.value == current).and_then(|choice| choice.preview.clone());
-                let mut rows = vec![picker];
+                let mut rows = vec![
+                    Row::new("interface-style",tr("界面风格","Interface style")).value(p.interface_style().id())
+                        .choices(InterfaceStyle::ALL.into_iter().map(|style| (style.id().into(),style.title().into()))),
+                    picker,
+                ];
                 if let Some(t) = list.iter().find(|t|t.id == current) {
                     rows.push(preview);
                     if THEME_CSS {
