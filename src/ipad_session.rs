@@ -47,6 +47,11 @@ pub(crate) fn sync_badge_fixture() -> bool {
         && cloud_restore::parent(&config.base,config.channel).join("pause-cloud").is_file())
 }
 
+#[cfg(all(feature = "mobile-qa", target_abi = "sim"))]
+pub(crate) fn offline_invitation_fixture() -> bool {
+    std::env::var("FEI_QA_OFFLINE_INVITATION").as_deref() == Ok("1") && sync_badge_fixture()
+}
+
 fn local_root(config: &Config) -> Result<PathBuf> {
     let target = config.base.join("local-only");
     if !target.join(crate::store::SQLITE_FILE).is_file() && config.base.join(crate::store::SQLITE_FILE).is_file() {

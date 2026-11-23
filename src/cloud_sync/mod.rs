@@ -569,6 +569,12 @@ fn start_library(store: SharedStore, cx: &mut App) -> Result<()> {
 }
 
 fn install_session(store: SharedStore, opened: Journal, cx: &mut App) -> Result<()> {
+    #[cfg(target_os = "ios")]
+    #[cfg(all(target_abi = "sim", feature = "mobile-qa"))]
+    if crate::ipad_session::offline_invitation_fixture() {
+        // Use the personal session's pause marker for rooms opened from this fixture.
+        return install_session_in(store, opened, Store::root_dir().parent().map(Path::to_path_buf), cx);
+    }
     install_session_in(store, opened, test_root()?, cx)
 }
 
@@ -598,6 +604,9 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
     let first = { let mut watch = watch.lock().unwrap(); let first = watch.is_empty(); watch.insert(root.clone(), (marker, retry_tx, account_tx)); first };
     let local_session_qa = cfg!(feature = "devtools") && crate::devtools::scripted()
         && std::env::var_os("QUIET_SYNC_QA_SHARED_SESSIONS").is_some();
+    #[cfg(target_os = "ios")]
+    #[cfg(all(target_abi = "sim", feature = "mobile-qa"))]
+    let local_session_qa = local_session_qa || crate::ipad_session::offline_invitation_fixture();
     if first && !local_session_qa { unsafe { quiet_cloud_watch_sync_resume(sync_resumed) }; }
     update_status(&root, cx, SyncPhase::Connecting);
     if let Err(error) = presence::start(cx, root.clone(), generation, pause.clone(), presence_rx) { release(&root, cx); return Err(error); }

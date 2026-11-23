@@ -593,7 +593,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let id = ws.current.clone().context("Missing personal fixture")?;
             ws.open(&id, window, cx);
             ws.create_shared_note(&id, window, cx);
-            ensure!(ws.can_choose_link(&id) && !ws.sharing.public_link, "Account invitation must be the default");
+            ensure!(ws.can_choose_sharing_audience(cx) && !ws.sharing.public_link, "Account invitation must be the default");
             ws.set_public_link(true, window, cx);
             ensure!(ws.sharing.public_link && ws.sharing.email.read(cx).text.is_empty(), "Public link should not require a recipient");
             std::fs::write(root.join("qa-public-note"), &id)?;
@@ -610,7 +610,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             ws.close_sharing(window, cx);
             ws.entries = ws.store.list();
             ws.create_shared_note(&id, window, cx);
-            ensure!(ws.sharing.public_link && !ws.can_choose_link(&id), "Reopening lost the prepared link scope");
+            ensure!(ws.sharing.public_link && !ws.can_choose_sharing_audience(cx), "Reopening lost the prepared link scope");
             ws.submit_sharing(window, cx);
             Ok(())
         })??,

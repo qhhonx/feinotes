@@ -614,6 +614,71 @@ final class EditorProbeTests: XCTestCase {
         shot("feedback-attachment-source")
     }
 
+    func testPersonalDocumentSharingAudienceAndPermissions() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
+        XCUIDevice.shared.orientation = pad ? .landscapeLeft : .portrait
+        app.launchArguments += ["-AppleLanguages", "(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_PERSONAL_SYNC_STATE"] = "ready"
+        app.launchEnvironment["FEI_QA_OFFLINE_INVITATION"] = "1"
+        app.launch()
+
+        let tabs = app.segmentedControls["fei.notes.tabs"]
+        let list = app.tables["fei.notes.list"]
+        let personal = list.staticTexts["FEI_PERSONAL_SESSION"]
+        let sharedEditor = app.navigationBars["FEI_SHARED_READONLY"]
+        XCTAssertTrue(personal.waitForExistence(timeout: 12))
+        if pad {
+            tabs.buttons["Shared documents"].tap()
+            let received = list.staticTexts["FEI_SHARED_READONLY"]
+            XCTAssertTrue(received.waitForExistence(timeout: 8)); received.tap()
+            XCTAssertTrue(sharedEditor.waitForExistence(timeout: 8))
+            tabs.buttons["My documents"].tap()
+            XCTAssertTrue(personal.waitForExistence(timeout: 8))
+            XCTAssertTrue(sharedEditor.exists)
+        }
+        personal.press(forDuration: 0.8)
+        let share = app.buttons["Share"]
+        XCTAssertTrue(share.waitForExistence(timeout: 5)); share.tap()
+        XCTAssertTrue(app.navigationBars["Share document"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["FEI_PERSONAL_SESSION"].exists)
+        shot("personal-share-invited-default")
+
+        func setting(_ id: String) -> XCUIElement { app.cells["fei.setting." + id] }
+        func option(_ id: String, _ value: String) -> XCUIElement { setting("option.\(id).\(value)") }
+        func change(_ id: String, from: String, to: String) {
+            let row = setting(id)
+            XCTAssertTrue(row.waitForExistence(timeout: 5)); row.tap()
+            let current = option(id, from)
+            XCTAssertTrue(current.waitForExistence(timeout: 5)); XCTAssertTrue(current.isSelected)
+            option(id, to).tap()
+            XCTAssertTrue(row.waitForExistence(timeout: 5))
+        }
+
+        XCTAssertTrue(setting("share-audience").exists, "Sharing a personal document must show both audiences")
+        XCTAssertTrue(setting("share-invite").staticTexts["Create invitation"].exists)
+        change("share-permission", from: "read", to: "write")
+        change("share-permission", from: "write", to: "read")
+        change("share-audience", from: "invited", to: "link")
+        XCTAssertFalse(setting("share-invite").exists)
+        XCTAssertTrue(setting("share-submit").isEnabled)
+        XCTAssertTrue(setting("share-submit").staticTexts["Create invitation"].exists)
+        change("share-public-permission", from: "read", to: "write")
+        XCTAssertTrue(setting("public-edit-warning").exists)
+        shot("personal-share-public-editable")
+        change("share-public-permission", from: "write", to: "read")
+        XCTAssertFalse(setting("public-edit-warning").exists)
+        change("share-audience", from: "link", to: "invited")
+        XCTAssertTrue(setting("share-invite").exists)
+        app.buttons["fei.share.done"].tap()
+        XCTAssertTrue(personal.waitForExistence(timeout: 8))
+        XCTAssertEqual(sharedEditor.exists, pad)
+    }
+
     func testSharingOverviewInvitationAndCreation() {
         continueAfterFailure = false
         let app = XCUIApplication()

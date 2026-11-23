@@ -119,8 +119,8 @@ fn invitation_text(title: &str, link: &str) -> String {
     format!("{}\n{link}", crate::localized_format!("邀请你在飞记中协作《{}》", "Join me in Fei Notes: {}", title))
 }
 
-pub(crate) fn create_public_invitation_label() -> &'static str {
-    tr("创建并复制邀请", "Create and copy invitation")
+pub(crate) fn create_invitation_label() -> &'static str {
+    tr("创建邀请", "Create invitation")
 }
 
 pub(crate) fn copy_invitation_label(public: bool) -> &'static str {
@@ -378,6 +378,10 @@ impl Workspace {
         #[cfg(target_os = "macos")]
         if matches!(self.sharing.sheet, Some(Sheet::CreateNew(..)))
             && let Some(personal) = _cx.try_global::<crate::shared_store::SharedStore>() { return personal.root(); }
+        #[cfg(target_os = "ios")]
+        if self.is_shared() && matches!(self.sharing.sheet, Some(Sheet::Create(_))) {
+            return _cx.global::<crate::shared_store::SharedStore>().root();
+        }
         self.store.root()
     }
 
@@ -759,21 +763,22 @@ impl Workspace {
         self.sharing_sheet(Sheet::Create(id.into()), window, cx);
     }
 
-    pub(crate) fn can_choose_link(&self, id: &str) -> bool {
+    pub(crate) fn can_choose_link(&self, id: &str, entries: &[crate::store::Entry]) -> bool {
         self.sharing.prepared.is_none()
-            && self.entries.iter().any(|entry| entry.id == id && entry.meta.folder.is_none())
+            && entries.iter().any(|entry| entry.id == id && entry.meta.folder.is_none() && !entry.meta.local())
     }
 
-    pub(crate) fn can_choose_sharing_audience(&self) -> bool {
+    pub(crate) fn can_choose_sharing_audience(&self, cx: &App) -> bool {
         match self.sharing.sheet.as_ref() {
-            Some(Sheet::Create(id)) => self.can_choose_link(id),
+            Some(Sheet::Create(id)) if self.is_shared() => self.can_choose_link(id, &self.personal_navigation_entries(cx)),
+            Some(Sheet::Create(id)) => self.can_choose_link(id, &self.entries),
             Some(Sheet::CreateNew(false, None)) => true,
             _ => false,
         }
     }
 
     pub(crate) fn set_public_link(&mut self, public_link: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sharing.busy || !self.can_choose_sharing_audience() || self.sharing.public_link == public_link { return; }
+        if self.sharing.busy || !self.can_choose_sharing_audience(cx) || self.sharing.public_link == public_link { return; }
         self.sharing.public_link = public_link;
         self.sharing.permission = Access::ReadOnly;
         self.sharing.message = None;
@@ -904,7 +909,7 @@ impl Workspace {
                     caption(self.sharing.folder_name.read(cx).text.clone()).into_any_element()
                 } else {
                     TextField::framed(&self.sharing.folder_name, px(360.), window, cx).w_full().max_w_full().into_any_element()
-                }).children(self.can_choose_sharing_audience().then(|| self.sharing_audience_fields(cx)))
+                }).children(self.can_choose_sharing_audience(cx).then(|| self.sharing_audience_fields(cx)))
                     .child(if self.sharing.public_link { self.public_link_fields(cx) } else { self.invitation_fields(window, cx) });
             }
             Sheet::Create(id) => {
@@ -915,7 +920,7 @@ impl Workspace {
                     .child(caption(if folder { sharing_folder_scope() } else {
                         tr("与对方协作这篇原文。你仍可从原文件夹打开它。", "Collaborate on this document in its original folder.")
                     }));
-                if self.can_choose_sharing_audience() { body = body.child(self.sharing_audience_fields(cx)); }
+                if self.can_choose_sharing_audience(cx) { body = body.child(self.sharing_audience_fields(cx)); }
                 body = if self.sharing.public_link {
                     body.child(self.public_link_fields(cx))
                 } else { body.child(self.invitation_fields(window, cx)) };
@@ -1034,8 +1039,8 @@ impl Workspace {
             .when_some(self.sharing.message.as_ref(), |d, (error, message)| d.pb(px(10.)).child(
                 div().id("sharing-message").text_size(px(13.)).line_height(px(20.))
                     .text_color(if *error { Theme::danger() } else { Theme::text_caption() }).child(ui::ui_para(message.clone()))));
-        let submit = match sheet { Sheet::MoveInto(..) => Some(tr("移入并共享", "Move and share")), Sheet::RenameCollection(_) => Some(tr("保存", "Save")), Sheet::Create(_) | Sheet::CreateNew(..) if self.sharing.public_link => Some(create_public_invitation_label()), Sheet::Create(_) | Sheet::CreateNew(..) => Some(tr("创建邀请", "Create invitation")), Sheet::Accept => Some(tr("接受并打开", "Accept and open")),
-            Sheet::Invite(_) => Some(tr("创建邀请", "Create invitation")), Sheet::EndMany(..) => Some(tr("确认移除", "Remove documents")), Sheet::End(room) => Some(self.shared_end_label(room,cx)), _ => None };
+        let submit = match sheet { Sheet::MoveInto(..) => Some(tr("移入并共享", "Move and share")), Sheet::RenameCollection(_) => Some(tr("保存", "Save")), Sheet::Create(_) | Sheet::CreateNew(..) | Sheet::Invite(_) => Some(create_invitation_label()), Sheet::Accept => Some(tr("接受并打开", "Accept and open")),
+            Sheet::EndMany(..) => Some(tr("确认移除", "Remove documents")), Sheet::End(room) => Some(self.shared_end_label(room,cx)), _ => None };
         let input_ok = if matches!(sheet, Sheet::RenameCollection(_)) { !self.sharing.folder_name.read(cx).text.trim().is_empty() } else if matches!(sheet, Sheet::End(_) | Sheet::EndMany(..) | Sheet::MoveInto(..)) { true } else if matches!(sheet, Sheet::Accept) { !self.sharing.link.read(cx).text.trim().is_empty() }
             else if let Sheet::CreateNew(_, id) = sheet {
                 (id.is_some() || !self.sharing.folder_name.read(cx).text.trim().is_empty()) && (self.sharing.public_link || !self.sharing.email.read(cx).text.trim().is_empty())
@@ -1129,7 +1134,7 @@ impl Workspace {
     }
 
     pub(crate) fn set_public_link_permission(&mut self, access: Access, cx: &mut Context<Self>) {
-        if self.sharing.busy || !self.sharing.public_link || !self.can_choose_sharing_audience() { return; }
+        if self.sharing.busy || !self.sharing.public_link || !self.can_choose_sharing_audience(cx) { return; }
         if matches!(access, Access::ReadOnly | Access::ReadWrite) { self.sharing.permission = access; cx.notify(); }
     }
 
@@ -1139,7 +1144,7 @@ impl Workspace {
     }
 
     fn sharing_permission_fields(&self, public: bool, cx: &mut Context<Self>) -> Div {
-        let enabled = !self.sharing.busy && (!public || self.can_choose_sharing_audience());
+        let enabled = !self.sharing.busy && (!public || self.can_choose_sharing_audience(cx));
         div().flex_none().flex().flex_col().gap(px(8.))
             .child(Self::sharing_section_title(tr("权限", "Permission")))
             .child(div().flex().flex_wrap().gap(px(8.)).children([Access::ReadOnly, Access::ReadWrite].into_iter().map(|access| {
