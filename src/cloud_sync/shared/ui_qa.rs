@@ -13,7 +13,7 @@ fn root() -> Option<PathBuf> {
 
 pub(super) fn enabled() -> bool { root().is_some() }
 
-fn reply() -> Reply { Reply { scope: None, title: None, url: None, audience: Audience::Invited, members: vec![], error: None, error_kind: None, owned_rooms: None, verified_access: None, owner_name: None } }
+fn reply() -> Reply { Reply { scope: None, title: None, url: None, audience: Audience::Invited, members: vec![], error: None, error_kind: None, discovered_rooms: None, verified_access: None, owner_name: None } }
 
 pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
     let root = root()?;
@@ -26,11 +26,12 @@ pub(super) fn command(command: &Command<'_>) -> Option<Result<Reply>> {
             return Ok(result);
         }
         let scope = command.scope.context("Missing synthetic scope")?;
-        if command.action == "checkRoomAccess" {
-            ensure!(!root.join("qa-room-access-denied").is_file(), "Synthetic shared permission denied");
+        if command.action == "checkRoomAccess" || command.action == "inspectRoomAccess" {
+            let denied = root.join("qa-room-access-denied").is_file();
+            ensure!(!denied || command.action == "inspectRoomAccess", "Synthetic shared permission denied");
             let mut result = reply();
             result.scope = Some(scope.clone());
-            result.verified_access = Some(if scope.owner.is_some() { Access::ReadOnly } else { Access::Owner });
+            result.verified_access = Some(if denied { Access::Revoked } else if scope.owner.is_some() { Access::ReadOnly } else { Access::Owner });
             return Ok(result);
         }
         if command.action == "delete" || command.action == "leave" {

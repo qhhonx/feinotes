@@ -594,7 +594,7 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
     update_status(&root, cx, SyncPhase::Connecting);
     if let Err(error) = presence::start(cx, root.clone(), generation, pause.clone(), presence_rx) { release(&root, cx); return Err(error); }
     if !room {
-        activity::start(cx, root.clone(), account, pause.clone(), generation, discover_owned && !local_session_qa);
+        activity::start(cx, root.clone(), account, pause.clone(), generation, discover_owned, !local_session_qa);
     }
     let account_root = root.clone();
     cx.spawn(async move |cx| {
@@ -652,8 +652,12 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                 update_status(&root, cx, status(&root, cx).unwrap().phase);
                 failure_phase = SyncPhase::Failed;
                 let allow_upload = !legacy && upload_retry_at.is_none_or(|time| std::time::Instant::now() >= time);
+                let open_notes = app::cloud_open_document_ids(&root, cx);
                 let journal = &journal(&root, cx);
-                let request = if legacy { journal.legacy_request()? } else { journal.request_with_uploads(allow_upload)? };
+                let mut request = if legacy { journal.legacy_request()? } else { journal.request_with_uploads(allow_upload)? };
+                if request.room.as_ref().is_some_and(|room| room.folder) {
+                    request.downloads = journal.attachment_downloads(&open_notes)?;
+                }
                 #[cfg(feature = "devtools")]
                 let request = {
                     let mut request = request;
@@ -698,13 +702,14 @@ fn install_session_in(store: SharedStore, opened: Journal, parent: Option<PathBu
                 round.download_advanced = more && cursor_advanced;
                 if access_changed { app::cloud_notes_changed(&root, &[], true, cx); }
                 merge(&root, &mut round, cx)?;
+                let open_notes = app::cloud_open_document_ids(&root, cx);
                 let journal = journal(&root, cx);
                 let (uploads, _, held, attachments) = journal.counts()?;
                 let (active_uploads, active_downloads, conflicts) = journal.pending_work()?;
                 let access = journal.access();
                 let revoked = access == Some(shared::Access::Revoked);
                 let read_only = access == Some(shared::Access::ReadOnly);
-                let next_downloads = if legacy || more || revoked { vec![] } else { journal.attachment_downloads()? };
+                let next_downloads = if legacy || more || revoked { vec![] } else { journal.attachment_downloads(&open_notes)? };
                 round.download_advanced |= !more && round.applied && wanted.iter().any(|id| !next_downloads.contains(id));
                 round.downloading = more || !next_downloads.is_empty();
                 round.applying = !revoked && active_downloads > 0;
@@ -823,7 +828,7 @@ fn merge(root: &Path, round: &mut progress::Round, cx: &mut App) -> Result<()> {
     };
     round.apply_blocked_by_local_edits = false;
     let journal = journal_mut(root, cx);
-    let (library_changed, changed) = journal.merge(&positions).inspect_err(|_| {
+    let (library_changed, changed, attachments_ready) = journal.merge(&positions).inspect_err(|_| {
         journal.apply_wait.local_error = true;
     })?;
     round.applied |= journal.inbox_count()? < before;
@@ -831,6 +836,7 @@ fn merge(root: &Path, round: &mut progress::Round, cx: &mut App) -> Result<()> {
         if let Some(scope) = scope(root, cx) { shared::original::refresh_owner(root, scope, None)?; }
         app::cloud_notes_changed(root, &changed, true, cx);
     }
+    if attachments_ready { app::cloud_attachments_ready(root, cx); }
     Ok(())
 }
 

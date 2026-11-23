@@ -197,6 +197,9 @@ impl FileUi {
 
     pub(super) fn set_library_root(&mut self, root: PathBuf) { self.root = root; }
 
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(super) fn invalidate_missing_sizes(&mut self) { self.sizes.get_mut().retain(|_, size| size.is_some()); }
+
     fn size(&self, p: &Path) -> Option<u64> {
         if let Some(s) = self.sizes.borrow().get(p) {
             return *s;

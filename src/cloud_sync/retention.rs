@@ -201,16 +201,19 @@ pub(super) fn stale_assets(db: &Connection, retained: &HashSet<String>) -> Resul
 #[derive(Deserialize)]
 pub(super) struct RemoteChunk { pub id: String, pub path: String, pub digest: String, pub part: i64, pub parts: i64 }
 
-pub(super) fn downloads(db: &Connection, root: &std::path::Path) -> Result<Vec<String>> {
+pub(super) fn downloads(db: &Connection, root: &std::path::Path, open_notes: Option<&[String]>) -> Result<Vec<String>> {
     if !ready(db)? { return Ok(vec![]); }
     let mut ids = vec![];
     let mut stmt = db.prepare("SELECT c.id,c.path FROM cloud_inventory c WHERE c.path IS NOT NULL AND EXISTS (
-        SELECT 1 FROM notes n JOIN library_documents d USING(id), json_each(n.assets) a WHERE a.value=c.path)
+        SELECT 1 FROM notes n JOIN library_documents d USING(id), json_each(n.assets) a WHERE a.value=c.path
+            AND (?1 IS NULL OR n.id IN (SELECT value FROM json_each(?1))
+                OR EXISTS(SELECT 1 FROM sync_asset_repairs m WHERE m.path=c.path)))
         AND (NOT EXISTS(SELECT 1 FROM sync_assets a WHERE a.path=c.path AND a.digest=c.digest)
             OR EXISTS(SELECT 1 FROM sync_asset_repairs m WHERE m.path=c.path))
         AND NOT EXISTS(SELECT 1 FROM sync_asset_chunks s WHERE s.path=c.path AND s.digest=c.digest AND s.part=c.part)
         ORDER BY c.path,c.part")?;
-    let mut rows = stmt.query([])?;
+    let scope = open_notes.map(serde_json::to_string).transpose()?;
+    let mut rows = stmt.query([scope])?;
     while let Some(r) = rows.next()? {
         if !assets::present(root, r.get_ref(1)?.as_str()?) { ids.push(r.get(0)?); }
         if ids.len() == 8 { break; }

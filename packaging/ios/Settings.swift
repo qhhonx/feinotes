@@ -361,7 +361,7 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
             content.image = UIImage(systemName: symbols[String(row.id.dropFirst(5))] ?? "gearshape")
             content.imageProperties.tintColor = palette?.accentColor ?? view.tintColor
         }
-        content.textProperties.font = font(.body)
+        content.textProperties.font = font(row.kind == "share-target" ? .headline : .body)
         content.textProperties.numberOfLines = 0; content.textProperties.adjustsFontForContentSizeCategory = true
         content.secondaryTextProperties.font = font(.subheadline)
         content.secondaryTextProperties.numberOfLines = 0; content.secondaryTextProperties.adjustsFontForContentSizeCategory = true
@@ -369,7 +369,11 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         let secondary = value.isEmpty || hasValueAndDetail ? row.detail : value
         content.secondaryText = secondary.isEmpty ? nil : secondary
         let enabled = row.enabled && !busy
-        content.textProperties.color = row.kind == "info" || !enabled ? .secondaryLabel : row.danger ? .systemRed : .label
+        let informational = ["info","share-target","brand","toggle"].contains(row.kind)
+        if row.kind == "info" || !enabled { content.textProperties.color = .secondaryLabel }
+        else if row.danger || row.kind == "destructive-page" { content.textProperties.color = .systemRed }
+        else if row.kind == "share-email" { content.textProperties.color = palette?.accentColor ?? view.tintColor }
+        else { content.textProperties.color = .label }
         content.secondaryTextProperties.color = .secondaryLabel
         if row.kind == "brand" {
             content.textProperties.font = font(.title2)
@@ -382,14 +386,14 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
             installSettingValue(value,content: content,in: cell)
         } else { cell.contentConfiguration = content }
         cell.accessibilityIdentifier = "fei.setting."+row.id
-        cell.selectionStyle = enabled && !["info","brand","toggle"].contains(row.kind) ? .default : .none
+        cell.selectionStyle = enabled && !informational ? .default : .none
         if row.kind == "toggle" {
             let toggle = UISwitch(); toggle.isOn = row.value == "true"; toggle.isEnabled = enabled
             toggle.accessibilityLabel = row.title; toggle.accessibilityIdentifier = "fei.setting.switch."+row.id
             let scope = model?.scope ?? ""
             toggle.addAction(UIAction { [weak self,weak toggle] _ in self?.command(row,value: toggle?.isOn == true ? "true" : "false",scope: scope) },for: .valueChanged)
             cell.accessoryView = toggle
-        } else if ["page","choice","shortcut","input","link"].contains(row.kind) { cell.accessoryType = .disclosureIndicator }
+        } else if ["page","choice","shortcut","input","link","destructive-page","share-email"].contains(row.kind) { cell.accessoryType = .disclosureIndicator }
         if !enabled {
             cell.isUserInteractionEnabled = false
             cell.accessibilityTraits.insert(.notEnabled)
@@ -445,8 +449,8 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
             let picker = FeiSettingsChoiceController(row: row,state: model,coordinator: coordinator)
             navigationController?.pushViewController(picker,animated: !UIAccessibility.isReduceMotionEnabled)
         } else if row.kind == "shortcut" { showShortcut(row,scope: model.scope) }
-        else if row.kind == "input" { showInput(row,scope: model.scope) }
-        else if !["info","brand","toggle"].contains(row.kind) { command(row,value: "",scope: model.scope) }
+        else if row.kind == "input" || row.kind == "share-email" { showInput(row,scope: model.scope) }
+        else if !["info","share-target","brand","toggle"].contains(row.kind) { command(row,value: "",scope: model.scope) }
     }
     private func command(_ row:FeiSettingsState.Row,value:String,scope:String) {
         let send = { [weak self] in self?.coordinator?.send("settings-command",value: value,id: row.id,scope: scope) }
@@ -457,17 +461,27 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         present(alert,animated: true)
     }
     private func showInput(_ row:FeiSettingsState.Row,scope:String) {
-        let alert = UIAlertController(title: row.title,message: row.detail,preferredStyle: .alert)
+        let isInvitation = row.kind == "share-email"
+        let title = isInvitation ? coordinator?.localized("创建邀请","Create invitation") : row.title
+        let alert = UIAlertController(title: title,message: isInvitation ? nil : row.detail,preferredStyle: .alert)
+        let submit = UIAlertAction(title: isInvitation ? title : coordinator?.localized("继续","Continue"),style: .default) { [weak self,weak alert] _ in
+            self?.coordinator?.send("settings-command",value: alert?.textFields?.first?.text ?? "",id: row.id,scope: scope)
+        }
+        submit.isEnabled = !isInvitation || !row.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         alert.addTextField { field in
             field.placeholder = row.detail; field.autocorrectionType = .no; field.autocapitalizationType = .none
             field.text = row.value
             field.keyboardType = row.id == "share-accept" ? .URL : row.id == "share-new-name" ? .default : .emailAddress
             field.accessibilityIdentifier = "fei.settings.input"
+            if isInvitation {
+                field.textContentType = .emailAddress
+                field.addAction(UIAction { [weak field,weak submit] _ in
+                    submit?.isEnabled = !(field?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                },for: .editingChanged)
+            }
         }
         alert.addAction(UIAlertAction(title: coordinator?.localized("取消","Cancel"),style: .cancel))
-        alert.addAction(UIAlertAction(title: coordinator?.localized("继续","Continue"),style: .default) { [weak self,weak alert] _ in
-            self?.coordinator?.send("settings-command",value: alert?.textFields?.first?.text ?? "",id: row.id,scope: scope)
-        })
+        alert.addAction(submit)
         present(alert,animated: true)
     }
     func didDismissSearchController(_ searchController:UISearchController) {
@@ -502,9 +516,19 @@ final class FeiSettingsChoiceController: UITableViewController {
         guard row != next || state.interface_size != self.state.interface_size || view.isUserInteractionEnabled != enabled else { return }
         row = next; self.state = state; title = next.title; view.isUserInteractionEnabled = enabled; tableView.reloadData()
     }
-    override func numberOfSections(in tableView:UITableView) -> Int { comparesThemes ? row.choices.count : 1 }
-    override func tableView(_ tableView:UITableView,numberOfRowsInSection section:Int) -> Int { comparesThemes ? 1 : row.choices.count }
-    private func choiceIndex(_ indexPath:IndexPath) -> Int { comparesThemes ? indexPath.section : indexPath.row }
+    private var memberChoices: Bool { row.id.hasPrefix("member:") && row.choices.last?.value == "revoke" }
+    override func numberOfSections(in tableView:UITableView) -> Int { comparesThemes ? row.choices.count : memberChoices ? 2 : 1 }
+    override func tableView(_ tableView:UITableView,numberOfRowsInSection section:Int) -> Int {
+        if comparesThemes || memberChoices && section == 1 { return 1 }
+        return row.choices.count - (memberChoices ? 1 : 0)
+    }
+    override func tableView(_ tableView:UITableView,titleForHeaderInSection section:Int) -> String? {
+        memberChoices && section == 0 ? coordinator?.localized("权限","Permission") : nil
+    }
+    private func choiceIndex(_ indexPath:IndexPath) -> Int {
+        if comparesThemes { return indexPath.section }
+        return memberChoices && indexPath.section == 1 ? row.choices.count - 1 : indexPath.row
+    }
     override func tableView(_ tableView:UITableView,cellForRowAt indexPath:IndexPath) -> UITableViewCell {
         let item = row.choices[choiceIndex(indexPath)]; let cell = UITableViewCell()
         let selected = row.value == item.value
@@ -543,16 +567,22 @@ final class FeiSettingsChoiceController: UITableViewController {
         content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 14,leading: 16,bottom: 14,trailing: 16)
         if item.value == "revoke" { content.textProperties.color = .systemRed }
         cell.contentConfiguration = content; cell.accessoryType = selected ? .checkmark : .none
+        if selected { cell.accessibilityTraits.insert(.selected) }
         return cell
     }
     override func tableView(_ tableView:UITableView,didSelectRowAt indexPath:IndexPath) {
         let item = row.choices[choiceIndex(indexPath)]
         let value = item.value
+        tableView.deselectRow(at: indexPath,animated: true)
+        if memberChoices && value == row.value {
+            navigationController?.popViewController(animated: !UIAccessibility.isReduceMotionEnabled)
+            return
+        }
         let send = { [weak self] in guard let self else { return }; self.coordinator?.send("settings-command",value: value,id: self.row.id,scope: self.scope); self.navigationController?.popViewController(animated: !UIAccessibility.isReduceMotionEnabled) }
         if value == "revoke" {
             let alert = UIAlertController(title: item.title,message: row.title,preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: coordinator?.localized("取消","Cancel"),style: .cancel))
-            alert.addAction(UIAlertAction(title: row.choices[indexPath.row].title,style: .destructive) { _ in send() }); present(alert,animated: true)
+            alert.addAction(UIAlertAction(title: item.title,style: .destructive) { _ in send() }); present(alert,animated: true)
         } else { send() }
     }
 }

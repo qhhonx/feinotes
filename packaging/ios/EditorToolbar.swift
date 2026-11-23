@@ -125,7 +125,8 @@ final class FeiEditorToolbar: UIToolbar {
             bar.tintColor = palette.accentColor
             bar.standardAppearance = appearance; bar.scrollEdgeAppearance = appearance; bar.compactAppearance = appearance
         }
-        let nextMode = next.kind == "history-preview" ? "preview" : next.can_edit && typing ? "editing" : next.write_allowed && (next.can_edit || next.reading) ? "reading" : "locked"
+        let lockedMode = palette.id == "notes" ? "locked-notes" : "locked"
+        let nextMode = next.kind == "history-preview" ? "preview" : next.can_edit && typing ? "editing" : next.write_allowed && (next.can_edit || next.reading) ? "reading" : lockedMode
         let stacked = needsComponentRow(next)
         let blockTools = next.can_edit && (!phone || nextMode == "editing" || next.block_selected)
         let labelsChanged = labels != next.labels
@@ -201,6 +202,12 @@ final class FeiEditorToolbar: UIToolbar {
                     list.append(edit)
                     if let compose { commandButtons.append(compose) }
                     items = list
+                } else if nextMode == "locked-notes" {
+                    let edit = button("pencil","edit-note","mode",#selector(editCommand))
+                    edit.isEnabled = false
+                    edit.accessibilityIdentifier = "fei.editor.read-only"
+                    commandButtons = compose.map { [$0] } ?? []
+                    items = commandButtons + [spacer(),edit]
                 } else {
                     let status = UILabel()
                     status.font = .preferredFont(forTextStyle: .subheadline)

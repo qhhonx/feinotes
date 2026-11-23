@@ -1059,13 +1059,13 @@ impl Workspace {
             if let Some(m) = &meta {
                 e.created = m.created;
                 e.info = m.info;
-                if !e.table_file && (crate::FEI_NOTES || !e.board_file) { e.set_read_only(m.reading, cx); }
+                if !e.table_file && (crate::FEI_NOTES || !e.board_file) { e.set_read_only(self.reading_document(id), cx); }
                 if e.table_file && !crate::DATATABLE { e.set_read_only(true, cx); }
             }
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-            if crate::cloud_sync::shared::editing_paused(&self.store, cx)
-                || crate::cloud_sync::shared::access(&self.store, cx).is_some_and(|access| !access.can_write()) {
-                e.set_read_only(true, cx);
+            if self.is_shared() {
+                e.set_shared_access(self.reading_document(id), crate::cloud_sync::shared::editing_paused(&self.store, cx),
+                    crate::cloud_sync::shared::access(&self.store, cx).is_some_and(|access| access.can_write()), cx);
             }
             e
         });
@@ -1101,7 +1101,12 @@ impl Workspace {
         self.sidebar_entry = None;
         if let Some(e) = self.editor.clone() { e.update(cx, |e, cx| e.adopt_remote(cx)); }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        self.refresh_shared_entry(cx);
+        {
+            self.refresh_shared_entry(cx);
+            if crate::cloud_sync::scope(self.store.root(), cx).is_some_and(|scope| scope.folder) {
+                crate::cloud_sync::recheck_account(self.store.root(), cx);
+            }
+        }
         crate::quick_note::used(id, cx);
         if !cfg!(target_os = "macos") || !self.is_shared() { self.reveal_in_tree(id); }
         self.sync_sub_pages(cx);
@@ -2327,6 +2332,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .child(crate::ui::toolbar_group(div().flex_none().flex().items_center().gap(px(4.)))
+                    .children(self.document_mode_button(cx))
                     .children(sharing)
                     .when(self.current.is_some(), |d| {
                         d.child(
@@ -2384,6 +2390,13 @@ impl Workspace {
             .child(crate::trash::page_header(self, crate::settings::tr("共享文档", "Shared Document"), 26., cx))
             .child(body).into_any_element()
     }
+}
+
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+pub(crate) fn cloud_open_document_ids(root: &std::path::Path, cx: &mut App) -> Vec<String> {
+    cx.windows().into_iter().filter_map(|window| window.downcast::<Workspace>()).filter_map(|window|
+        window.update(cx, |ws, _, _| (ws.store.root() == root && ws.editor.is_some())
+            .then(|| ws.current.clone()).flatten()).ok().flatten()).collect()
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -2462,6 +2475,17 @@ pub(crate) fn cloud_account_notice(root: &std::path::Path, phase: crate::cloud_s
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+pub(crate) fn cloud_attachments_ready(root: &std::path::Path, cx: &mut App) {
+    for window in cx.windows().into_iter().filter_map(|window| window.downcast::<Workspace>()) {
+        let _ = window.update(cx, |ws, _, cx| {
+            if ws.store.root() == root && let Some(editor) = &ws.editor {
+                editor.update(cx, |editor, cx| editor.cloud_attachments_ready(cx));
+            }
+        });
+    }
+}
+
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 pub(crate) fn cloud_notes_changed(root: &std::path::Path, notes: &[crate::cloud_sync::NoteChange], remote: bool, cx: &mut App) {
     apply_cloud_notes(root, notes, remote, None, cx)
 }
@@ -2526,8 +2550,7 @@ fn apply_cloud_notes(root: &std::path::Path, notes: &[crate::cloud_sync::NoteCha
                 let reading = ws.reading();
                 if let Some(editor) = &ws.editor {
                     editor.update(cx, |editor, cx| {
-                        let locked = access_paused || access.is_some_and(|access| !access.can_write());
-                        if editor.read_only != (reading || locked) { editor.set_read_only(reading || locked, cx); }
+                        editor.set_shared_access(reading, access_paused, access.is_some_and(|access| access.can_write()), cx);
                     });
                 }
             }

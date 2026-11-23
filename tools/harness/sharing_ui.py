@@ -337,9 +337,17 @@ shot invite-failed
 sharing-ui retry-invite
 wait 1200
 shot members
+sharing-ui members-compact
 sharing-ui narrow
 wait 600
 shot members-dark-narrow
+sharing-ui members-overflow
+wait 250
+shot members-many
+sharing-ui members-scroll-bottom
+wait 250
+shot members-many-scrolled
+sharing-ui members-restore
 sharing-ui wide
 wait 400
 key escape
@@ -743,7 +751,7 @@ if args.folder_scope:
     assert len(list(root.glob('*.png'))) == 8, 'Expected eight UI captures'
 else:
     assert 'SHARING_UI_OK' in text and 'SHARING_INTERACTIONS_OK' in text, text[-3000:]
-    assert len(list(root.glob('*.png'))) == 19, 'Expected nineteen UI captures'
+    assert len(list(root.glob('*.png'))) == 21, 'Expected twenty-one UI captures'
 assert 'SHARED_FOLDERS_UI_OK' in text
 assert 'SHARED_PERSONAL_FOLDER_REMOVAL_OK' in text
 marker = 'SHARED_PERSONAL_FOLDER_REMOVAL_OK' if args.folder_scope else 'SHARING_UI_OK'

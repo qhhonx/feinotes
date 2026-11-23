@@ -301,6 +301,7 @@ pub struct Editor {
     pub created: u64,
     /// 阅读模式 (`reading.rs`), and the document as it was when it began.
     pub read_only: bool,
+    pub(super) shared_read_only_hint: Option<&'static str>,
     /// A Markdown file: only what Markdown can hold is offered (no colors,
     /// alignment, callouts, columns, add-on blocks, icon or cover).
     pub markdown: bool,
@@ -357,6 +358,12 @@ impl Editor {
         self.file.set_library_root(root.clone());
         self.library_root = root;
     }
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) fn cloud_attachments_ready(&mut self, cx: &mut Context<Self>) {
+        self.file.invalidate_missing_sizes();
+        cx.notify();
+    }
+
     pub(crate) fn asset_source(&self, path: &std::path::Path) -> String {
         crate::store::asset_source_in(&self.library_root, path)
     }
@@ -546,6 +553,7 @@ impl Editor {
             modified,
             created: modified,
             read_only: false,
+            shared_read_only_hint: None,
             markdown: false,
             board_file: false,
             ro_doc: None,

@@ -307,6 +307,9 @@ pub struct Settings {
     pub scroll_top: HashMap<String, [f32; 2]>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub selections: HashMap<String, crate::editor::core::ReadingSelection>,
+    /// Local reading preferences for documents in this shared library.
+    #[serde(default, skip_serializing_if = "std::collections::HashSet::is_empty")]
+    pub shared_reading: std::collections::HashSet<String>,
     /// 版本历史: snapshots kept per document (1–30). None is the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_limit: Option<u32>,

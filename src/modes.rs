@@ -4,7 +4,7 @@
 use crate::app::Workspace;
 use crate::theme::{self, Theme};
 use crate::trash::menu_label;
-use crate::ui::{ToastKind, icon, menu_glyph, menu_row, popover};
+use crate::ui::{TitleBarExt, ToastKind, icon, menu_glyph, menu_row, popover};
 use gpui::{prelude::FluentBuilder, *};
 
 actions!(workspace, [EditMode, ReadMode, ToggleShortcuts]);
@@ -76,13 +76,18 @@ fn section(title: &'static str) -> Div {
 impl Workspace {
     /// The open document is in 阅读模式.
     pub fn reading(&self) -> bool {
-        self.current.as_ref().and_then(|id| self.entries.iter().find(|e| &e.id == id)).is_some_and(|e| e.meta.reading)
+        self.current.as_deref().is_some_and(|id| self.reading_document(id))
+    }
+
+    pub(crate) fn reading_document(&self, id: &str) -> bool {
+        if self.is_shared() { return self.store.settings().shared_reading.contains(id); }
+        self.entries.iter().find(|e| e.id == id).is_some_and(|e| e.meta.reading)
     }
 
     pub fn set_mode(&mut self, reading: bool, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        if !reading && (crate::cloud_sync::shared::editing_paused(&self.store, cx)
-            || crate::cloud_sync::shared::access(&self.store, cx).is_some_and(|access| !access.can_write())) { return; }
+        if self.is_shared() && (crate::cloud_sync::shared::editing_paused(&self.store, cx)
+            || !crate::cloud_sync::shared::access(&self.store, cx).is_some_and(|access| access.can_write())) { return; }
         self.mode_menu = false;
         cx.notify();
         let Some(id) = self.current.clone() else { return };
@@ -93,10 +98,18 @@ impl Workspace {
         if !self.save_before(cx, move |w, window, cx| w.set_mode(reading, window, cx)) {
             return;
         }
-        if let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
-            e.meta.reading = reading;
+        if self.is_shared() {
+            let mut settings = self.store.settings();
+            if reading { settings.shared_reading.insert(id); }
+            else { settings.shared_reading.remove(&id); }
+            if self.store.save_settings(&settings).is_err() {
+                self.show_toast_kind(ToastKind::Error, crate::settings::tr("无法保存阅读设置", "Could not save reading preference"), cx);
+                return;
+            }
+        } else {
+            if let Some(e) = self.entries.iter_mut().find(|e| e.id == id) { e.meta.reading = reading; }
+            let _ = self.store.update_meta(&id, |m| m.reading = reading);
         }
-        let _ = self.store.update_meta(&id, |m| m.reading = reading);
         if let Some(ed) = &self.editor {
             ed.update(cx, |e, cx| e.set_read_only(reading, cx));
             crate::gpui_compat::focus(window, &ed.read(cx).focus_handle(cx), cx);
@@ -112,6 +125,26 @@ impl Workspace {
             e.meta.info = info;
         }
         let _ = self.store.update_meta(&id, |m| m.info = info);
+    }
+
+    pub(crate) fn document_mode_button(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        if !crate::FEI_NOTES || !crate::settings::interface_feishu() || self.current.is_none() || self.preview.is_some() { return None; }
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if self.is_shared() && (crate::cloud_sync::shared::editing_paused(&self.store, cx)
+            || !crate::cloud_sync::shared::access(&self.store, cx).is_some_and(|access| access.can_write())) { return None; }
+        let bounds = self.mode_btn_bounds.clone();
+        let text = if self.reading() { crate::settings::tr("阅读", "Read") } else { crate::settings::tr("编辑", "Edit") };
+        Some(crate::ui::grouped_toolbar_control(div().id("doc-mode").no_drag().relative().flex_none()
+            .h(px(crate::app::HEADER_ACTIONS_H)).px(px(7.)).gap(px(4.)).flex().items_center().cursor_pointer(),
+            8., Theme::fill_hover, Some(Theme::fill_pressed))
+            .child(crate::ui::ui_text(text))
+            .child(crate::ui::icon("chevron-down", 12., Theme::icon()))
+            .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
+            .on_click(cx.listener(|w, _, _, cx| {
+                w.doc_menu = false;
+                w.mode_menu = !w.mode_menu;
+                cx.notify();
+            })))
     }
 
     /// The mode menu: a native menu with two-line rows (name over a

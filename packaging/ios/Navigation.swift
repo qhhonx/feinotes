@@ -889,7 +889,14 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         case .sharing:
             content.title = state.sharing_title
             done.accessibilityIdentifier = "fei.share.done"
-            if let settings = state.settings { (content as? FeiSettingsController)?.update(settings,busy: state.busy,theme: theme) }
+            if let settings = state.settings {
+                let ids = Set(settings.sections.flatMap(\.rows).map(\.id))
+                if !ids.isDisjoint(with: ["share-invite","share-submit","share-new-name"]) {
+                    done.style = .plain
+                    done.title = state.labels["cancel"]
+                }
+                (content as? FeiSettingsController)?.update(settings,busy: state.busy,theme: theme)
+            }
         case .invitation:
             content.title = state.sharing_title
             done.style = .plain
@@ -1109,7 +1116,10 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             #endif
             controller.navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = !state.busy }
             let editorActionsEnabled = !state.busy && !state.conflict_review
-            controller.navigationItem.rightBarButtonItems?.forEach { $0.isEnabled = editorActionsEnabled }
+            controller.navigationItem.rightBarButtonItems?.forEach { item in
+                let identifier = item.accessibilityIdentifier ?? ""
+                item.isEnabled = editorActionsEnabled && (!identifier.hasPrefix("fei.edit.") || state.can_edit)
+            }
             controller.navigationItem.rightBarButtonItems?.filter { $0.accessibilityIdentifier == "fei.edit.block-actions" }.forEach {
                 $0.isEnabled = editorActionsEnabled && state.can_edit && state.block_actions &&
                     (host?.editorHasKeyboardFocus == true || state.block_selected)
@@ -1187,20 +1197,13 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             more.accessibilityLabel = state.labels["note-more"]
             more.accessibilityIdentifier = "fei.more"
             updateSharedSyncButton(more,state: state,folder: false)
-            let share = UIBarButtonItem(image: shareImage(shared: shared,count: state.editing_collaborators.count),style: .plain,target: self,action: #selector(shareNote))
+            let activity = state.theme?.id == "notes" ? 0 : state.editing_collaborators.count
+            let share = UIBarButtonItem(image: shareImage(shared: shared,count: activity),style: .plain,target: self,action: #selector(shareNote))
             share.accessibilityLabel = state.labels[shared ? "already-shared" : "share-object"]
             share.accessibilityIdentifier = "fei.share"
             share.isEnabled = !state.busy
             if shared {
                 share.tintColor = sharedToolbarTint
-                if #available(iOS 26.0,*), !state.editing_collaborators.isEmpty {
-                    let count = state.editing_collaborators.count
-                    var badge = UIBarButtonItem.Badge.string(count > 99 ? "99+" : String(count))
-                    badge.backgroundColor = .secondarySystemFill
-                    badge.foregroundColor = .label
-                    badge.font = .monospacedDigitSystemFont(ofSize: 8,weight: .semibold)
-                    share.badge = badge
-                }
             }
             if !state.editing_collaborators.isEmpty {
                 share.accessibilityValue = "\(state.editing_collaborators.count) \(label("online-collaborators"))"
@@ -1380,12 +1383,19 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         send("toolbar-command",value: redo ? "redo" : "undo",id: state.current,scope: state.editor_scope)
     }
     private func shareImage(shared: Bool,count: Int = 0) -> UIImage? {
-        guard shared else { return UIImage(systemName: "person.badge.plus") }
-        guard let symbol = UIImage(systemName: "person.2",withConfiguration: UIImage.SymbolConfiguration(pointSize: 16)) else { return nil }
-        let badge: String?
-        if #available(iOS 26.0,*) { badge = nil }
-        else { badge = count > 99 ? "99+" : count > 0 ? String(count) : nil }
-        return toolbarGlyph(symbol,size: CGSize(width: max(27,ceil(symbol.size.width)),height: 24),verticalOffset: 1,badge: badge)
+        let name = shared ? "person.2" : "person.badge.plus"
+        guard let symbol = UIImage(systemName: name,withConfiguration: UIImage.SymbolConfiguration(pointSize: 18,weight: .regular)) else { return nil }
+        let size = CGSize(width: 27,height: 24)
+        let scale = min(24 / symbol.size.width,16 / symbol.size.height)
+        let width = symbol.size.width * scale
+        let height = symbol.size.height * scale
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            symbol.draw(in: CGRect(x: (size.width-width)/2,y: (size.height-height)/2,width: width,height: height))
+            if shared && count > 0 {
+                UIColor.black.setFill()
+                UIBezierPath(ovalIn: CGRect(x: size.width-5,y: 2,width: 4,height: 4)).fill()
+            }
+        }.withRenderingMode(.alwaysTemplate)
     }
 
     private func toolbarGlyph(_ symbol: UIImage,size: CGSize,verticalOffset: CGFloat = 0,badge: String?) -> UIImage {

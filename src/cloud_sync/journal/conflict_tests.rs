@@ -58,7 +58,7 @@ fn conflicting_document_preserves_queues_and_does_not_stop_other_documents() -> 
     let healthy_update = wire(&healthy, content::edit(&other_remote, remote_peer, &other_body)?.unwrap());
     let new_local = store.create_from(&crate::docxml::parse("<title>Healthy upload</title><p>New note</p>")?)?;
     journal.receive(page(vec![remote_insert.clone(), healthy_update], vec![], 2))?;
-    let (_, changed) = journal.merge(&Default::default())?;
+    let (_, changed, _) = journal.merge(&Default::default())?;
     assert_eq!(changed.iter().map(|change| change.id.as_str()).collect::<Vec<_>>(), [healthy.as_str()]);
     assert_eq!(store.load_for_edit(&healthy, false)?, other_body);
     assert_eq!(store.load_for_edit(&id, false)?, local_uncaptured);
@@ -105,7 +105,7 @@ fn conflicting_document_preserves_queues_and_does_not_stop_other_documents() -> 
     assert_eq!(queued(&journal.db, &id)?, local_queue);
     journal.db.execute_batch("DROP TRIGGER reject_test_projection;")?;
 
-    let (_, changes) = journal.merge(&Default::default())?;
+    let (_, changes, _) = journal.merge(&Default::default())?;
     assert_eq!(changes.len(), 1);
     assert_eq!(journal.pending_work()?.2, 0);
     assert_eq!(journal.counts()?.1, 0);
@@ -288,7 +288,7 @@ fn catalogue_replay_pause_survives_restart_and_existing_documents_sync() -> Resu
     let mut staged = page(vec![rejected.clone(), remote_update], vec![], 2);
     staged.retention = None;
     journal.receive(staged)?;
-    let (_, changed) = journal.merge(&Default::default())?;
+    let (_, changed, _) = journal.merge(&Default::default())?;
     assert_eq!(changed.len(), 1);
     assert_eq!(changed[0].id, incoming_body);
     assert_eq!(store.load_for_edit(&incoming_body, false)?, downloaded);

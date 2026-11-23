@@ -27,10 +27,21 @@ impl Editor {
     }
 
     fn read_only_hint(&self) -> &'static str {
-        if self.preview { PREVIEW_HINT } else { READ_ONLY_HINT }
+        if self.preview { PREVIEW_HINT } else { self.shared_read_only_hint.unwrap_or(READ_ONLY_HINT) }
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub(crate) fn set_shared_access(&mut self, reading: bool, paused: bool, writable: bool, cx: &mut Context<Self>) {
+        self.shared_read_only_hint = if paused {
+            Some(crate::settings::tr("协作已暂停，请检查 iCloud 状态", "Collaboration is paused. Check iCloud status."))
+        } else if !writable {
+            Some(crate::settings::tr("你仅有查看权限", "You have view-only access."))
+        } else { None };
+        self.set_read_only(reading || self.shared_read_only_hint.is_some(), cx);
     }
 
     pub fn set_read_only(&mut self, on: bool, cx: &mut Context<Self>) {
+        let on = on || (self.table_file && !crate::DATATABLE);
         if self.read_only == on {
             return;
         }
@@ -101,7 +112,8 @@ impl Editor {
         }
         if k.key == "e" && !m.shift && !m.alt {
             cx.stop_propagation();
-            cx.emit(EditorEvent::Mode(false));
+            if let Some(hint) = self.shared_read_only_hint { self.toast_kind(ToastKind::Info, hint, cx); }
+            else { cx.emit(EditorEvent::Mode(false)); }
             return;
         }
         let typing = k.key_char.as_ref().is_some_and(|c| !c.is_empty()) || matches!(k.key.as_str(), "enter" | "backspace" | "delete" | "tab");

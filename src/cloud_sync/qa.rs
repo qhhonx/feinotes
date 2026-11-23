@@ -289,8 +289,10 @@ pub fn run(command: &str) -> Result<()> {
             println!("CURSOR_EXPIRED_REPLAY records={count}");
         }
         "share-owner" => super::shared::live_owner_smoke(&root)?,
+        "share-owner-folder" => super::shared::live_owner_folder_smoke(&root, &mut store)?,
         "share-accept" | "share-accept-read-only" => super::shared::live_accept_smoke(&root, command == "share-accept-read-only")?,
-        "share-members" | "share-invite-read" | "share-invite-write" | "share-permit-write" | "share-revoke" =>
+        "share-members" | "share-invite-read" | "share-invite-write" | "share-permit-write" | "share-permit-read" | "share-revoke"
+        | "share-invite-read-folder" | "share-permit-write-folder" | "share-permit-read-folder" | "share-revoke-folder" =>
             super::shared::live_member_change(&root, command)?,
         "structure-seed" => {
             ensure!(store.list().is_empty(), "Use an isolated empty structure test library");

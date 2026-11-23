@@ -67,7 +67,6 @@ impl InterfaceStyle {
 
 pub(crate) fn lark_name() -> &'static str { if english() { "Lark" } else { "飞书" } }
 
-#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 pub(crate) fn interface_feishu() -> bool {
     if crate::FEI_NOTES { prefs().interface_style() == InterfaceStyle::Feishu } else { feishu() }
 }

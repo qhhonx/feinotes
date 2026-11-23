@@ -96,7 +96,8 @@ impl Workspace {
         if !self.mobile_contextual_sharing() { return None; }
         Some(match self.sharing.sheet.as_ref() {
             Some(super::Sheet::Create(id)) if self.personal_navigation_entries(cx).iter().any(|e| &e.id == id && e.meta.folder.is_some()) => tr("共享文件夹","Share folder"),
-            Some(super::Sheet::Create(_)) => tr("共享","Share"),
+            Some(super::Sheet::Create(_)) => tr("共享文档","Share document"),
+            Some(super::Sheet::Invite(_)) => tr("邀请参与者","Invite participant"),
             Some(super::Sheet::CreateNew(folder, _)) => super::new_shared_title(*folder),
             Some(super::Sheet::Accept) => tr("接受邀请","Accept invitation"),
             Some(super::Sheet::End(room)) => self.shared_end_label(room,cx),

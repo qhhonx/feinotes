@@ -1006,7 +1006,8 @@ impl Journal {
             } }
         }
         let maintenance = if allow_upload && edits.is_empty() { self.maintenance()? } else { None };
-        Ok(Exchange { downloads: retention::downloads(&self.db,&self.root)?, maintenance, account: self.account.clone(), channel: self.channel.clone(),
+        Ok(Exchange { downloads: if self.room.as_ref().is_some_and(|room| room.folder) { vec![] }
+            else { retention::downloads(&self.db, &self.root, None)? }, maintenance, account: self.account.clone(), channel: self.channel.clone(),
             token: get_state(&self.db, "token")?.map(super::Bytes), edits, legacy: false, room: self.room.clone(), activity_only: false,
             #[cfg(feature = "devtools")]
             expire_cursor_for_qa: false,
@@ -1028,8 +1029,8 @@ impl Journal {
         Ok(self.db.query_row("SELECT count(*) FROM inbox", [], |row| row.get(0))?)
     }
 
-    pub(super) fn attachment_downloads(&self) -> Result<Vec<String>> {
-        retention::downloads(&self.db, &self.root)
+    pub(super) fn attachment_downloads(&self, open_notes: &[String]) -> Result<Vec<String>> {
+        retention::downloads(&self.db, &self.root, self.room.as_ref().is_some_and(|room| room.folder).then_some(open_notes))
     }
 
     fn success_key(&self) -> Result<String> {
@@ -1241,9 +1242,9 @@ impl Journal {
         Ok((changed, uploaded))
     }
 
-    pub fn merge(&mut self, open_positions: &HashMap<String, Vec<Pos>>) -> Result<(bool, Vec<NoteChange>)> {
+    pub fn merge(&mut self, open_positions: &HashMap<String, Vec<Pos>>) -> Result<(bool, Vec<NoteChange>, bool)> {
         self.apply_wait = Default::default();
-        if self.access == Some(Access::Revoked) { return Ok((false, vec![])); }
+        if self.access == Some(Access::Revoked) { return Ok((false, vec![], false)); }
         self.history.retain(|id, _| open_positions.contains_key(id));
         // Store writes through a separate connection. A quiet poll needn't
         // decode the entire library index again just to fetch a CloudKit page.
@@ -1258,7 +1259,7 @@ impl Journal {
             && self.pending_work()?.1 == 0
             && !self.db.query_row("SELECT EXISTS(SELECT 1 FROM sync_document_conflicts WHERE retry = 1)",
                 [], |row| row.get::<_, bool>(0))?
-        { return Ok((false, vec![])); }
+        { return Ok((false, vec![], false)); }
         let mut tx = self.db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let has_catalogue = self.room.as_ref().is_none_or(|room| room.folder);
         let writable = self.access.is_none_or(Access::can_write);
@@ -1310,7 +1311,7 @@ impl Journal {
             work.insert(id, Some(trashed));
         }
 
-        assets::ingest(&tx, &self.root)?;
+        let attachments_ready = assets::ingest(&tx, &self.root)?;
         let mut changed = vec![];
         for (id, trashed) in work {
             // Keep bodies for unknown entries pending until their catalogue
@@ -1406,7 +1407,7 @@ impl Journal {
         self.retry_catalogue = false;
         self.apply_wait = wait;
         self.merged_data_version = Some(version);
-        Ok((library_changed, changed))
+        Ok((library_changed, changed, attachments_ready))
     }
 }
 
@@ -1934,7 +1935,7 @@ fn missing_cached_attachment_replays_without_dropping_pending_edits() -> Result<
     assert!(journal.issues()?[0].attachments[0].recovering);
     journal.receive(Changes { retention: None, uploaded: vec![], edits: vec![asset], token: Some(super::Bytes(vec![2])),
         more: false, legacy: false, room_access: None, #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
-    journal.merge(&Default::default())?;
+    assert!(journal.merge(&Default::default())?.2, "A repaired attachment must refresh open editors");
     assert_eq!(std::fs::read(path)?, b"previously synced bytes");
     assert!(journal.issues()?.is_empty());
     assert_eq!(journal.request()?.edits.iter().map(|edit| &edit.id).collect::<Vec<_>>(),

@@ -13,6 +13,8 @@ use crate::store::{Meta, Store, Trashed};
 use super::{content, journal};
 
 pub const SCOPE: &str = "00000000-0000-0000-0000-000000000001";
+// Internal projection key. The wire format uses a separate Loro map, also read by Web.
+const LIST_TITLE: &str = "list-title";
 type Fields = BTreeMap<String, Value>;
 pub type Catalogue = BTreeMap<String, Fields>;
 
@@ -63,7 +65,7 @@ fn fields(meta: &Meta, life: Life) -> Result<Fields> {
 pub fn local(db: &Connection) -> Result<Catalogue> {
     let mut result = Catalogue::new();
     for (table, trashed) in [("library_entries", false), ("library_trash", true)] {
-        let mut stmt = db.prepare(&format!("SELECT id, meta FROM {table} ORDER BY id"))?;
+        let mut stmt = db.prepare(&format!("SELECT e.id, e.meta, d.title FROM {table} e LEFT JOIN library_documents d ON e.id = d.id ORDER BY e.id"))?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
@@ -74,7 +76,13 @@ pub fn local(db: &Connection) -> Result<Catalogue> {
             } else {
                 (serde_json::from_str(&raw)?, Life::Live)
             };
-            if !meta.local() { result.insert(id, fields(&meta, life)?); }
+            if !meta.local() {
+                let mut entry = fields(&meta, life)?;
+                if let Some(title) = row.get::<_, Option<String>>(2)? {
+                    entry.insert(LIST_TITLE.to_string(), json!(title));
+                }
+                result.insert(id, entry);
+            }
         }
     }
     Ok(result)
@@ -82,8 +90,11 @@ pub fn local(db: &Connection) -> Result<Catalogue> {
 
 pub fn capture(db: &Connection, doc: &LoroDoc, old: &Catalogue, new: &Catalogue) -> Result<()> {
     let index = doc.get_map("entries");
+    let titles = doc.get_map("list-titles");
     for (id, current) in new {
-        if old.get(id) == Some(current) { continue; }
+        let title = current.get(LIST_TITLE).and_then(Value::as_str);
+        let title_missing = title.is_some() && titles.get(id).is_none();
+        if old.get(id) == Some(current) && !title_missing { continue; }
         ensure!(uuid::Uuid::parse_str(id).is_ok(), "Invalid library entry ID");
         let entry = doc.get_map(format!("entry-{id}"));
         if permanently_deleted(doc, id) {
@@ -91,18 +102,23 @@ pub fn capture(db: &Connection, doc: &LoroDoc, old: &Catalogue, new: &Catalogue)
             continue;
         }
         if index.get(id).is_none() { index.insert(id, true)?; }
+        if let Some(title) = title
+            && (title_missing || old.get(id).and_then(|entry| entry.get(LIST_TITLE)).and_then(Value::as_str) != Some(title)) {
+            titles.insert(id, title)?;
+        }
         for (key, value) in current {
-            if old.get(id).and_then(|entry| entry.get(key)) != Some(value) {
+            if key != LIST_TITLE && old.get(id).and_then(|entry| entry.get(key)) != Some(value) {
                 entry.insert(key, serde_json::to_string(value)?)?;
             }
         }
         if let Some(previous) = old.get(id) {
-            for key in previous.keys().filter(|key| !current.contains_key(*key)) {
+            for key in previous.keys().filter(|key| key.as_str() != LIST_TITLE && !current.contains_key(*key)) {
                 entry.delete(key)?;
             }
         }
     }
     for id in old.keys().filter(|id| !new.contains_key(*id)) {
+        if titles.get(id).is_some() { titles.delete(id)?; }
         capture_purge(db, doc, id)?;
     }
     Ok(())

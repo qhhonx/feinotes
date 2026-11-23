@@ -106,7 +106,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<(Chunk, &[u8])> {
     Ok((header, data))
 }
 
-pub fn ingest(db: &Connection, root: &Path) -> Result<()> {
+pub fn ingest(db: &Connection, root: &Path) -> Result<bool> {
     let mut stmt = db.prepare("SELECT id, data FROM inbox WHERE note = ?1 ORDER BY rowid")?;
     let mut rows = stmt.query([SCOPE])?;
     let mut ids = Vec::new();
@@ -130,6 +130,7 @@ pub fn ingest(db: &Connection, root: &Path) -> Result<()> {
         HAVING COUNT(*) = MAX((MAX(size, 1) + ?1 - 1) / ?1)")?
         .query_map([CHUNK as i64], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let materialized = !completed.is_empty();
     for (source, digest) in completed {
         let target = path(root, &source)?;
         let parent = target.parent().context("Missing attachment parent")?;
@@ -142,7 +143,7 @@ pub fn ingest(db: &Connection, root: &Path) -> Result<()> {
         db.execute("INSERT OR REPLACE INTO sync_assets VALUES (?1, ?2)", params![source, digest])?;
         db.execute("DELETE FROM sync_asset_repairs WHERE path = ?1", [&source])?;
     }
-    Ok(())
+    Ok(materialized)
 }
 
 fn materialize(db: &Connection, source: &str, digest: &str, staged: &Path, target: &Path) -> Result<()> {

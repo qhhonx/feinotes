@@ -695,7 +695,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             ws.submit_sharing(window, cx);
             Ok(())
         })??,
-        "failed-invite" | "retry-invite" | "narrow" | "wide" | "reopen-members" | "members" | "readonly" | "revoke" | "remove-confirm" | "revoked" | "collaboration" => {
+        "failed-invite" | "retry-invite" | "narrow" | "wide" | "members-compact" | "members-overflow" | "members-scroll-bottom" | "members-restore" | "reopen-members" | "members" | "readonly" | "revoke" | "remove-confirm" | "revoked" | "collaboration" => {
             let room: Room = serde_json::from_slice(&std::fs::read(root.join("qa-created-room.json"))?)?;
             let shared = handles.into_iter().find(|h| h.read(cx).is_ok_and(|ws| shared::scope(&ws.store, cx) == Some(&room.scope))).context("Missing newly created shared window")?;
             shared.update(cx, |ws, window, cx| -> Result<()> {
@@ -708,7 +708,30 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
                         ensure!(shared::rooms(&personal)?.len() == 3, "Invite failure created another note");
                         if name == "retry-invite" { ws.submit_sharing(window, cx); }
                     }
+                    "members-compact" => {
+                        ensure!(ws.sharing.scroll.max_offset().y <= px(2.), "A single invite requires scrolling the members sheet");
+                    }
+                    "members-overflow" => {
+                        let reply = ws.sharing.reply.as_mut().context("Missing members")?;
+                        let sample = reply.members.first().context("Missing test participant")?.clone();
+                        reply.members.extend((0..20).map(|i| shared::Member {
+                            id: format!("qa-member-{i}"), name: format!("Collaborator {} with a long account name", i + 2),
+                            accepted: i % 2 == 0, ..sample.clone()
+                        }));
+                        cx.notify();
+                    }
+                    "members-scroll-bottom" => {
+                        let overflow = ws.sharing.scroll.max_offset().y;
+                        ensure!(overflow > px(100.), "The long members sheet did not scroll");
+                        ws.sharing.scroll.set_offset(point(px(0.), -overflow)); cx.notify();
+                    }
+                    "members-restore" => {
+                        ensure!(ws.sharing.scroll.offset().y < px(-100.), "Could not reach the bottom of the members sheet");
+                        ws.sharing.reply.as_mut().context("Missing members")?.members.truncate(1);
+                        ws.sharing.scroll.set_offset(point(px(0.), px(0.))); cx.notify();
+                    }
                     "narrow" => {
+                        ensure!(ws.sharing.message.as_ref().is_some_and(|(error, _)| !*error), "Invitation success did not keep the next step visible");
                         ws.set_pref(|p| { p.appearance="dark".into(); }, cx);
                         window.resize(size(px(480.), px(600.)));
                     }

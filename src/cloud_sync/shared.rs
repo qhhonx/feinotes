@@ -293,10 +293,18 @@ pub(crate) struct Reply {
     error: Option<String>,
     #[serde(rename = "errorKind")]
     error_kind: Option<String>,
-    #[serde(rename = "ownedRooms")]
-    owned_rooms: Option<Vec<Room>>,
+    #[serde(rename = "discoveredRooms")]
+    discovered_rooms: Option<Vec<DiscoveredRoom>>,
     #[serde(rename = "verifiedAccess", default, skip_serializing_if = "Option::is_none")]
     verified_access: Option<Access>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct DiscoveredRoom {
+    #[serde(flatten)]
+    room: Room,
+    #[serde(rename = "ownerName")]
+    owner_name: Option<String>,
 }
 
 #[cfg(feature = "devtools")]
@@ -502,16 +510,32 @@ pub(crate) fn rooms(personal: &Path) -> Result<Vec<Room>> {
     Ok(rooms)
 }
 
-pub(super) fn discover_owned(personal: &Path, key: &str) -> Result<()> {
-    let mut command = Command::new(key, "discoverOwned", None)?;
-    command.known_owned = rooms(personal)?.into_iter().filter(|room| room.scope.owner.is_none())
+pub(super) fn discover(personal: &Path, key: &str, joined: bool) -> Result<()> {
+    let mut command = Command::new(key, if joined { "discoverJoined" } else { "discoverOwned" }, None)?;
+    command.known_owned = rooms(personal)?.into_iter().filter(|room| room.scope.owner.is_some() == joined)
         .map(|room| room.scope.note).collect();
     let revision = super::account_revision();
-    let found = command.send()?.owned_rooms.context("Missing owned shares")?;
-    for room in found {
+    let found = command.send()?.discovered_rooms.context("Missing discovered shares")?;
+    ensure!(account(personal)? == key, "Shared document belongs to another library");
+    for DiscoveredRoom { room, owner_name } in found {
         super::check_account_revision(revision)?;
-        stage_discovered_owner(personal, &room)?;
+        if joined { stage_discovered_guest(personal, &room, owner_name.as_deref())?; }
+        else { stage_discovered_owner(personal, &room)?; }
     }
+    Ok(())
+}
+
+fn stage_discovered_guest(personal: &Path, room: &Room, owner_name: Option<&str>) -> Result<()> {
+    ensure!(room.scope.owner.is_some(), "Invalid discovered participant share");
+    let root = room_root(personal, &room.scope.note)?;
+    // A concurrent link acceptance or leave owns an existing registration.
+    if root.exists() { return Ok(()); }
+    stage_with(personal, room, |staged| {
+        if let Some(name) = super::presence::display_name(owner_name) {
+            let _ = fs::write(staged.join("shared-owner-name"), name.as_bytes());
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -672,6 +696,12 @@ fn check_room_account(personal: &Path, cx: &gpui::App) -> Result<()> {
 
 #[derive(Clone, Copy)]
 pub(crate) struct VerifiedRoomAccess { access: Access, revision: u64 }
+
+pub(super) fn inspect_room_access(account: &str, room: &Room) -> Result<Access> {
+    let reply = Command::new(account, "inspectRoomAccess", Some(&room.scope))?.send()?;
+    ensure!(reply.scope.as_ref() == Some(&room.scope), "CloudKit returned the wrong sharing scope");
+    reply.verified_access.context("Missing shared access")
+}
 
 pub(crate) fn verify_room_access(personal: &Path, room: &Room) -> Result<VerifiedRoomAccess> {
     let revision = super::account_revision();
@@ -895,19 +925,46 @@ pub(super) fn live_accept_smoke(personal: &Path, expect_read_only: bool) -> Resu
 }
 
 #[cfg(feature = "devtools")]
+pub(super) fn live_owner_folder_smoke(personal: &Path, store: &mut Store) -> Result<()> {
+    ensure!(super::test_root()?.is_some(), "Use an isolated sharing QA root");
+    let title = "共享合成文件夹";
+    let root = store.create_folder(title, None)?;
+    let mut document = sample(personal)?;
+    document.title = crate::model::RichText::plain("合成文件夹 · 路线");
+    store.create_from_in(&document, Some(&root))?;
+    document.title = crate::model::RichText::plain("合成文件夹 · 补给");
+    let separate = "assets/files/shared-folder-supplies.txt";
+    fs::write(personal.join(separate), b"folder supplies attachment fixture")?;
+    if let crate::model::BlockKind::File(file) = &mut document.blocks[1].kind {
+        file.src = separate.into();
+        file.name = "shared-folder-supplies.txt".into();
+    }
+    store.create_from_in(&document, Some(&root))?;
+    let room = original::prepare(personal, &root, title.into(), false)?;
+    ensure_created(personal, &room)?;
+    let reply = manage(personal, &room, "members", "", None)?;
+    ensure!(reply.members.is_empty(), "Expected an uninvited private sharing folder");
+    fs::write(personal.join("qa-share-folder-link"), reply.url.context("Missing synthetic invitation URL")?)?;
+    println!("SHARE_FOLDER_OWNER_OK room={} documents=2", room.scope.note);
+    Ok(())
+}
+
+#[cfg(feature = "devtools")]
 pub(super) fn live_member_change(personal: &Path, operation: &str) -> Result<()> {
     ensure!(super::test_root()?.is_some(), "Use an isolated sharing QA root");
-    let link = fs::read_to_string(personal.join("qa-share-link"))?;
+    let (operation, folder) = operation.strip_suffix("-folder").map_or((operation, false), |command| (command, true));
+    let link = fs::read_to_string(personal.join(if folder { "qa-share-folder-link" } else { "qa-share-link" }))?;
     let room = accept(personal, &link)?;
-    ensure!(room.scope.owner.is_none() && room.title == "共享合成笔记", "Only manage the synthetic owner room");
+    let title = if folder { "共享合成文件夹" } else { "共享合成笔记" };
+    ensure!(room.scope.owner.is_none() && room.scope.folder == folder && room.title == title, "Only manage the synthetic owner room");
     let reply = match operation {
         "share-members" => manage(personal, &room, "members", "", None)?,
-        "share-permit-write" | "share-revoke" => {
+        "share-permit-write" | "share-permit-read" | "share-revoke" => {
             let reply = manage(personal, &room, "members", "", None)?;
             let [member] = reply.members.as_slice() else { anyhow::bail!("Expected one synthetic test participant") };
             ensure!(member.accepted, "The test participant has not accepted the invitation");
             if operation == "share-revoke" { manage(personal, &room, "revoke", &member.id, None)? }
-            else { manage(personal, &room, "permission", &member.id, Some(Access::ReadWrite))? }
+            else { manage(personal, &room, "permission", &member.id, Some(if operation == "share-permit-write" { Access::ReadWrite } else { Access::ReadOnly }))? }
         }
         _ => {
             let email = fs::read_to_string(personal.join("qa-share-email"))?;
@@ -994,6 +1051,31 @@ mod tests {
         assert!(ShareTrace::sample(&format!("{prefix} public notes"), token).is_none());
         assert!(ShareTrace::sample("Fei share trace wrong public", token).is_none());
         assert!(ShareTrace::sample("Fei share trace wrong public", "wrong").is_none());
+    }
+
+    #[test]
+    fn discovered_guest_lists_note_and_folder_without_opening_either() -> Result<()> {
+        let temp = Fixture(std::env::temp_dir().join(format!("quiet-joined-discovery-{}", uuid::Uuid::new_v4())));
+        fs::create_dir_all(&temp.0)?;
+        fs::write(temp.0.join(".cloud-restore-ready"), format!("{}\n", "a".repeat(64)))?;
+        for folder in [false, true] {
+            let room = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(), owner: Some("owner".into()), folder },
+                title: if folder { "Shared folder" } else { "Shared document" }.into() };
+            stage_discovered_guest(&temp.0, &room, Some("Collaborator"))?;
+            let root = session_root(&temp.0, &room.scope.note)?;
+            assert_eq!(owner_display_name(&root).map(|name| name.to_string()).as_deref(), Some("Collaborator"));
+            let row = super::super::activity::row(&temp.0, room.clone())?.unwrap();
+            assert_eq!(row.room, room);
+            assert!(row.body.is_empty());
+            assert!(row.folder_items.is_empty());
+            assert!(Store::open_sqlite_at(root.clone())?.list().is_empty());
+            stage_discovered_guest(&temp.0, &room, None)?;
+            fs::write(root.join("shared-note-ended"), b"1")?;
+            stage_discovered_guest(&temp.0, &room, None)?;
+            assert!(root.join("shared-note-ended").is_file());
+            assert!(!rooms(&temp.0)?.contains(&room));
+        }
+        Ok(())
     }
 
     #[test]

@@ -8,6 +8,9 @@ private let sharePrefix = "QuietSharedNote-v1-"
 private let folderPrefix = "QuietSharedFolder-v1-"
 private let linkDraftType = "app.feinotes.document-link.draft"
 private let linkPublishedType = "app.feinotes.document-link.published"
+#if FEI_CLOUD_QA
+private let qaShareType = "app.feinotes.qa-share."
+#endif
 let sharedAssetScope = "00000000-0000-0000-0000-000000000002"
 
 struct ShareScope: Codable, Equatable {
@@ -103,6 +106,10 @@ func shareAccess(_ db: CKDatabase, _ scope: ShareScope, in zone: CKRecordZone.ID
     do { share = try await getShare(db, in: zone) }
     catch where shareIsGone(error) { return .revoked }
     if scope.owner == nil { return .owner }
+    return participantAccess(share)
+}
+
+private func participantAccess(_ share: CKShare) -> ShareAccess {
     guard let member = share.currentUserParticipant, member.acceptanceStatus == .accepted else { return .revoked }
     if member.role == .publicUser {
         if share.publicPermission == .none { return .revoked }
@@ -241,17 +248,18 @@ private struct ShareReply: Encodable {
     var members: [ShareMember] = []
     var error: String?
     var errorKind: String?
-    var ownedRooms: [OwnedRoom]?
+    var discoveredRooms: [DiscoveredRoom]?
     var ownerName: String?
     var verifiedAccess: ShareAccess?
 }
 
-private struct OwnedRoom: Encodable {
+private struct DiscoveredRoom: Encodable {
     let scope: ShareScope
     let title: String
+    let ownerName: String?
 }
 
-private func discoverOwned(_ db: CKDatabase, known: Set<String>, revision: UInt64) async throws -> [OwnedRoom] {
+private func discoverRooms(_ db: CKDatabase, joined: Bool, known: Set<String>, channel: String?, revision: UInt64) async throws -> [DiscoveredRoom] {
     let zones = try await db.allRecordZones()
     let targets = zones.compactMap { zone -> (CKRecord.ID, ShareScope)? in
         let name = zone.zoneID.zoneName
@@ -260,18 +268,26 @@ private func discoverOwned(_ db: CKDatabase, known: Set<String>, revision: UInt6
         guard name.hasPrefix(prefix) else { return nil }
         let id = String(name.dropFirst(prefix.count))
         guard !known.contains(id), UUID(uuidString: id)?.uuidString.lowercased() == id else { return nil }
-        return (shareID(in: zone.zoneID), ShareScope(note: id, owner: nil, folder: folder ? true : nil))
+        let scope = ShareScope(note: id, owner: joined ? zone.zoneID.ownerName : nil, folder: folder ? true : nil)
+        guard !joined || (try? scope.zone()) == zone.zoneID else { return nil }
+        return (shareID(in: zone.zoneID), scope)
     }
-    var rooms: [OwnedRoom] = []
+    var rooms: [DiscoveredRoom] = []
     for offset in stride(from: 0, to: targets.count, by: 50) {
         try checkCloudAccountRevision(revision)
         let batch = targets[offset..<min(offset + 50, targets.count)]
-        let records = try await db.records(for: batch.map { $0.0 }, desiredKeys: [CKShare.SystemFieldKey.title])
+        let records = try await db.records(for: batch.map { $0.0 },
+            desiredKeys: [CKShare.SystemFieldKey.title, CKShare.SystemFieldKey.shareType])
         for (id, scope) in batch {
             guard let result = records[id] else { throw ShareError.invalid }
             do {
                 guard let share = try result.get() as? CKShare else { continue }
-                rooms.append(OwnedRoom(scope: scope, title: share[CKShare.SystemFieldKey.title] as? String ?? ""))
+                if joined && participantAccess(share) == .revoked { continue }
+                #if FEI_CLOUD_QA
+                if let channel, share[CKShare.SystemFieldKey.shareType] as? String != qaShareType + channel { continue }
+                #endif
+                rooms.append(DiscoveredRoom(scope: scope, title: share[CKShare.SystemFieldKey.title] as? String ?? "",
+                    ownerName: joined ? cloudShareDisplayName(share.owner.userIdentity) : nil))
             } catch where shareIsGone(error) { continue }
         }
     }
@@ -398,16 +414,18 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
     try checkCloudAccountRevision(revision)
     trace?.event("accountAndAccess", "ok")
     if request.action == "checkAccess" { return ShareReply() }
-    if request.action == "checkRoomAccess" {
+    if request.action == "checkRoomAccess" || request.action == "inspectRoomAccess" {
         guard let scope = request.scope else { throw ShareError.invalid }
         let access = try await shareAccess(shareDatabase(container, scope), scope, in: scope.zone())
         try checkCloudAccountRevision(revision)
-        guard access != .revoked else { throw ShareError.deniedLink }
+        guard access != .revoked || request.action == "inspectRoomAccess" else { throw ShareError.deniedLink }
         return ShareReply(scope: scope, verifiedAccess: access)
     }
-    if request.action == "discoverOwned" {
-        return ShareReply(ownedRooms: try await discoverOwned(container.privateCloudDatabase,
-            known: Set(request.knownOwned ?? []), revision: revision))
+    if request.action == "discoverOwned" || request.action == "discoverJoined" {
+        let joined = request.action == "discoverJoined"
+        let db = joined ? container.sharedCloudDatabase : container.privateCloudDatabase
+        return ShareReply(discoveredRooms: try await discoverRooms(db, joined: joined,
+            known: Set(request.knownOwned ?? []), channel: request.accessChannel, revision: revision))
     }
     if request.action == "accept", let url = request.url {
         do { return try await acceptShare(url, container: container, revision: revision) }
@@ -502,6 +520,11 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
         // The owner explicitly chose an account invitation. Keep the scope
         // private and record that choice only if the invitation save succeeds.
         if audience == .linkDraft { share[CKShare.SystemFieldKey.shareType] = nil }
+        #if FEI_CLOUD_QA
+        if let channel = request.accessChannel, share[CKShare.SystemFieldKey.shareType] == nil {
+            share[CKShare.SystemFieldKey.shareType] = qaShareType + channel
+        }
+        #endif
     case "permission", "revoke":
         guard audience == .invited || audience == .linkDraft else { throw ShareError.linkOnly }
         guard let member = share.participants.first(where: {

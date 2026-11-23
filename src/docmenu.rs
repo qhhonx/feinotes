@@ -288,6 +288,14 @@ impl Workspace {
                 menu_item("dm-width", "page-width", crate::settings::text("页宽设置"), true, sub == Some(DocSub::Width))
                     .on_hover(hover_sub(Some(DocSub::Width))),
             )
+            .when(crate::FEI_NOTES && editable && !crate::settings::interface_feishu() && !board_file, |d| d.child(
+                menu_item("dm-reading", "eye-open", crate::settings::tr("阅读模式", "Reading mode"), false, false)
+                    .when(self.reading(), |item| item.child(crate::ui::icon("check", 14., Theme::icon())))
+                    .on_click(cx.listener(|w, _, window, cx| {
+                        w.close_doc_menu(cx);
+                        w.set_mode(!w.reading(), window, cx);
+                    })),
+            ))
             .child(divider())
             .child(
                 menu_item("dm-find", "text-search", if editable { crate::settings::text("查找和替换") } else { crate::settings::tr("查找", "Find") }, false, false)

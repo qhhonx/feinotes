@@ -206,9 +206,18 @@ fn room_db(personal: &Path, room: &Room) -> Result<Connection> {
 
 fn poll(personal: &Path, account: &str, room: &Room) -> Result<bool> {
     let mut db = room_db(personal, room)?;
+    let revision = super::account_revision();
+    let has_body: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM library_documents WHERE id = ?1)",
+        [&room.scope.note], |row| row.get(0))?;
+    if !has_body {
+        // A catalogue row and revoked-access checks must not download the first body.
+        let access = shared::inspect_room_access(account, room)?;
+        super::check_account_revision(revision)?;
+        remember_access(&db, access)?;
+        return Ok(false);
+    }
     schema(&db)?;
     let token = value(&db, "shared-activity-token")?.map(Bytes);
-    let revision = super::account_revision();
     let page = exchange(Exchange { downloads: vec![], maintenance: None, account: account.into(), channel: None, token, edits: vec![], legacy: false,
         room: Some(room.scope.clone()), activity_only: true,
         #[cfg(feature = "devtools")] expire_cursor_for_qa: false,
@@ -278,23 +287,29 @@ fn cached_folder_items(db: &Connection, scope: &shared::Scope) -> Result<Vec<Fol
     Ok(items)
 }
 
-pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Option<PathBuf>, generation: uuid::Uuid, discover_owned: bool) {
+pub(super) fn start(cx: &mut App, personal: PathBuf, account: String, pause: Option<PathBuf>, generation: uuid::Uuid, discover_owned: bool, discover_joined: bool) {
     cx.set_global(ActivityView::default());
-    if discover_owned {
+    for joined in [false, true].into_iter().filter(|joined| if *joined { discover_joined } else { discover_owned && discover_joined }) {
         let root = personal.clone();
         let key = account.clone();
+        let paused = pause.clone();
         cx.spawn(async move |cx| {
             let mut last_error = None;
             loop {
                 if !crate::gpui_compat::async_update(cx, |cx| super::current(&root, generation, cx)).unwrap_or(false) { break; }
+                if paused.as_ref().is_some_and(|path| path.exists()) {
+                    cx.background_executor().timer(Duration::from_secs(2)).await;
+                    continue;
+                }
                 let (root, key) = (root.clone(), key.clone());
                 let lease = crate::store::Store::session_lease(&root);
                 let error = cx.background_executor().spawn(async move {
                     let _lease = lease;
-                    shared::discover_owned(&root, &key).err().map(|error| format!("{error:#}"))
+                    shared::discover(&root, &key, joined).err().map(|error| format!("{error:#}"))
                 }).await;
                 if let Some(error) = &error && last_error.as_ref() != Some(error) {
-                    crate::logging::write(&format!("Discover owned shares: {error}"));
+                    let kind = if joined { "joined" } else { "owned" };
+                    crate::logging::write(&format!("Discover {kind} shares: {error}"));
                 }
                 last_error = error;
                 cx.background_executor().timer(Duration::from_secs(30)).await;
