@@ -329,6 +329,8 @@ pub enum Confirm {
     Delete { ids: Vec<String>, batch: bool },
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     DeleteSharedFolder { room: crate::cloud_sync::shared::Room, id: String, title: String },
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    DeleteSharedDocument { room: crate::cloud_sync::shared::Room, id: String, title: String },
     /// 回收站 → 恢复.
     Restore(String),
     /// 回收站 → 彻底删除.
@@ -604,7 +606,14 @@ impl Workspace {
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub(crate) fn new_shared_window(store: SharedStore, note: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::build_window(true, Some(note), Some(store), window, cx)
+        #[cfg(target_os = "macos")]
+        {
+            let mut workspace = Self::build_window(true, Some(note.clone()), Some(store), window, cx);
+            if workspace.view == View::Home { workspace.sharing.sidebar_waiting = Some(note); }
+            workspace
+        }
+        #[cfg(target_os = "ios")]
+        { Self::build_window(true, Some(note), Some(store), window, cx) }
     }
 
     pub(crate) fn build_window(quick: bool, document: Option<String>, store: Option<SharedStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -1286,6 +1295,11 @@ impl Workspace {
             }
             return;
         }
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if let Some(room) = self.shared_child_room(id, cx) {
+            self.ask_delete_shared_descendant(&room, id, false, cx);
+            return;
+        }
         self.confirm = Some(Confirm::Delete { ids: vec![self.row_of(id)], batch: false });
         cx.notify();
     }
@@ -1616,7 +1630,8 @@ impl Workspace {
 
     pub(crate) fn finish_rename(&mut self, commit: bool, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let commit = commit && (!self.is_shared() || matches!(self.sharing_access(cx), Some(crate::cloud_sync::shared::Access::Owner | crate::cloud_sync::shared::Access::ReadWrite)));
+        let commit = commit && (!self.is_shared() || (self.sharing_access(cx).is_some_and(crate::cloud_sync::shared::Access::can_write)
+            && !crate::cloud_sync::shared::editing_paused(&self.store, cx)));
         let Some(r) = self.rename.take() else { return };
         let refocus = r.field.read(cx).is_focused(window);
         let title = r.field.read(cx).text.trim().to_string();

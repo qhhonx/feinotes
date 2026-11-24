@@ -391,6 +391,11 @@ impl Workspace {
 
     fn can_manage_room(&self, room: &Room, cx: &App) -> bool {
         if room.scope.owner.is_some() { return false; }
+        #[cfg(target_os = "macos")]
+        if self.is_shared() && shared::scope(&self.store, cx) != Some(&room.scope) {
+            return self.shared_list_room(&room.scope.note, cx).is_some_and(|listed| listed.scope == room.scope)
+                && shared::room_account(&crate::store::Store::root_dir(), cx) == shared::RoomAccount::Ready;
+        }
         #[cfg(target_os = "ios")]
         if self.is_shared() && shared::scope(&self.store,cx) != Some(&room.scope) {
             return self.sharing_account_ready(cx) &&
@@ -745,8 +750,19 @@ impl Workspace {
         }).detach();
     }
 
+    pub(crate) fn personal_row_can_share(&self, id: &str, cx: &App) -> bool {
+        if crate::cloud_restore::local_only() { return false; }
+        let entries = self.personal_navigation_entries(cx);
+        let Some(row) = entries.iter().find(|row| row.id == id && !row.meta.local()
+            && row.meta.kind != crate::store::DocKind::Table) else { return false; };
+        if row.meta.share_root.as_deref() == Some(id) { return true; }
+        let members = crate::tree::Tree::new(&entries).subtree(id);
+        entries.iter().filter(|row| members.contains(&row.id)).all(|row|
+            row.meta.share_root.is_none() && !row.meta.local() && row.meta.kind != crate::store::DocKind::Table)
+    }
+
     pub(crate) fn create_shared_note(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_shared() || self.store.local_path(id).is_some() || self.sharing.busy || !self.flush(cx) { return; }
+        if self.is_shared() || !self.personal_row_can_share(id, cx) || self.sharing.busy || !self.flush(cx) { return; }
         if let Some(room) = shared::original::owner_room(&self.entries, id) {
             if shared::original::awaiting_publication(self.store.root(), &room) {
                 self.sharing_sheet(Sheet::Create(room.scope.note.clone()), window, cx);

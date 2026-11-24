@@ -341,9 +341,10 @@ impl Workspace {
             .child(crate::sidebar::entry_icon(entry, false, false, cx))
             .child(self.sidebar_title(entry, SidebarSection::Shared, selected, false, cx))
             .children(end)
-            .when(!member, |d| d.on_mouse_down(MouseButton::Right, cx.listener({ let id = id.clone(); move |w, event: &MouseDownEvent, _, cx| {
+            .when((!member || cfg!(target_os = "macos")) && (!member || !batch), |d| d.on_mouse_down(MouseButton::Right, cx.listener({ let id = id.clone(); move |w, event: &MouseDownEvent, _, cx| {
                 if w.batch.is_some() && !w.batch.as_ref().is_some_and(|ids| ids.contains(&id)) { w.toggle_check(&id); }
                 w.row_menu = Some(crate::app::RowMenu { id: format!("shared:{id}"), pos: event.position, corner: Anchor::TopLeft, sub: false, batch: w.batch.is_some() });
+                w.create_menu = None;
                 cx.stop_propagation(); cx.notify();
             }})))
             .on_mouse_down(MouseButton::Left, cx.listener(move |w, event: &MouseDownEvent, _, cx| {

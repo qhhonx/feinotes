@@ -544,6 +544,9 @@ impl Workspace {
             }
             #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
             Confirm::DeleteSharedFolder { room, id, .. } => self.delete_shared_folder(room, id, window, cx),
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            Confirm::DeleteSharedDocument { room, id, .. } =>
+                self.change_shared_trash(room, id, crate::sharing::SharedTrashAction::DeleteDocument, window, cx),
             Confirm::Restore(id) => {
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 if self.handle_linked_trash(&id, crate::sharing::SharedTrashAction::Restore, window, cx) { return; }
@@ -608,6 +611,13 @@ impl Workspace {
                 } else {
                     crate::settings::tr("此文件夹及其内容将从协作成员的列表移除，并进入回收站。", "The folder and its contents will be removed for collaborators and moved to Trash.")
                 }.into(),
+                crate::settings::text("删除"),
+                true,
+            ),
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            Confirm::DeleteSharedDocument { title, .. } => (
+                crate::localized_format!("是否删除： {}？", "Delete {}?", display_title(title)),
+                crate::settings::tr("此文档将从协作成员的列表移除，并进入回收站。", "The document will be removed for collaborators and moved to Trash.").into(),
                 crate::settings::text("删除"),
                 true,
             ),

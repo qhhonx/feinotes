@@ -5,26 +5,56 @@ type Action = Box<dyn FnOnce(&mut Workspace, &str, &mut Window, &mut Context<Wor
 pub(super) type SharedAction = std::rc::Rc<std::cell::RefCell<Option<Action>>>;
 
 impl Workspace {
+    #[cfg(target_os = "ios")]
     pub(crate) fn with_shared_document(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>, action: impl FnOnce(&mut Self, &str, &mut Window, &mut Context<Self>) + 'static) {
         let action = std::rc::Rc::new(std::cell::RefCell::new(Some(Box::new(action) as Action)));
         self.open_shared_room_for_action(room, action, window, cx);
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn with_shared_sidebar_document(&mut self, room: Room, entry: crate::sidebar::SidebarEntry, write: bool,
+        window: &mut Window, cx: &mut Context<Self>, action: impl FnOnce(&mut Self, &str, &mut Window, &mut Context<Self>) + 'static) {
+        self.row_menu = None;
+        let expected = room.scope.clone();
+        let guarded: Action = Box::new(move |w, id, window, cx| {
+            let access = w.sharing_access(cx);
+            if shared::scope(&w.store, cx) != Some(&expected) || shared::editing_paused(&w.store, cx)
+                || !access.is_some_and(|access| if write { access.can_write() } else { access != Access::Revoked })
+                || !w.entries.iter().any(|e| e.id == id && e.meta.folder.is_none()) { return; }
+            action(w, id, window, cx);
+        });
+        self.open_shared_item_for_action(room, entry.id.clone(), Some(entry), std::rc::Rc::new(std::cell::RefCell::new(Some(guarded))), window, cx);
     }
 
     pub(crate) fn open_shared_window(&mut self, room: Room, window: &Window, cx: &mut Context<Self>) {
         #[cfg(target_os = "ios")]
         { let _ = window; shared::launch(&room,cx).detach(); self.row_menu = None; }
         #[cfg(target_os = "macos")]
-        {
-        let window_id = window.window_handle().window_id(); self.row_menu = None;
+        self.open_shared_window_at(room, None, window, cx);
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn open_shared_child_window(&mut self, room: Room, target: String, window: &Window, cx: &mut Context<Self>) {
+        self.open_shared_window_at(room, Some(target), window, cx);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open_shared_window_at(&mut self, room: Room, target: Option<String>, window: &Window, cx: &mut Context<Self>) {
+        let window_id = window.window_handle().window_id();
+        self.row_menu = None;
+        cx.notify();
         cx.defer(move |cx| {
-            if let Err(error) = shared::open_window(&room, cx) {
+            let result = match target {
+                Some(id) => shared::open_child_window(&room, &id, cx),
+                None => shared::open_window(&room, cx),
+            };
+            if let Err(error) = result {
                 let message = settings::diagnostic(&error.to_string());
                 if let Some(handle) = cx.windows().into_iter().find(|handle| handle.window_id() == window_id).and_then(|handle| handle.downcast::<Workspace>()) {
                     let _ = handle.update(cx, |w, _, cx| w.show_toast_kind(ui::ToastKind::Error, &message, cx));
                 }
             }
         });
-        }
     }
 
     pub(super) fn write_invitation_to_clipboard(&mut self, text: String, cx: &mut Context<Self>) {
@@ -73,7 +103,7 @@ impl Workspace {
         let personal = crate::store::Store::root_dir();
         let mut sources = vec![];
         for id in ids {
-            let Some(room) = self.shared_list_room(&id, cx) else { continue };
+            let Some(room) = self.shared_list_room(&id, cx).filter(|room| !room.scope.folder) else { continue };
             match shared::store_for(&room, cx) {
                 Ok(store) if shared::access(&store, cx).is_some_and(|access| access != Access::Revoked) => sources.push((id, store.root().to_path_buf(), crate::localized_format!("{} 副本", "{} Copy", display_title(&room.title)))),
                 Ok(_) => { self.show_toast_kind(ui::ToastKind::Error, tr("文档暂不可用，请稍后再试", "Document unavailable. Try again later"), cx); return; }

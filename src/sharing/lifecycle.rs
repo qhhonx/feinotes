@@ -5,6 +5,8 @@ use super::*;
 pub(crate) enum SharedTrashAction {
     #[cfg(target_os = "macos")]
     DeleteFolder,
+    #[cfg(target_os = "macos")]
+    DeleteDocument,
     Restore,
     Purge,
 }
@@ -15,6 +17,8 @@ impl SharedTrashAction {
         match self {
             #[cfg(target_os = "macos")]
             Self::DeleteFolder => writer.trash_sqlite_folder(id),
+            #[cfg(target_os = "macos")]
+            Self::DeleteDocument => writer.delete(id, None),
             Self::Restore => {
                 let item = writer.list_trash().into_iter().find(|entry| &entry.id == id)
                     .ok_or_else(|| anyhow::anyhow!("The item is no longer in Trash"))?;
@@ -29,7 +33,7 @@ impl SharedTrashAction {
     fn label(self) -> &'static str {
         match self {
             #[cfg(target_os = "macos")]
-            Self::DeleteFolder => tr("删除成功", "Moved to Trash"),
+            Self::DeleteFolder | Self::DeleteDocument => tr("删除成功", "Moved to Trash"),
             Self::Restore => tr("恢复成功", "Restored"),
             Self::Purge => tr("已彻底删除", "Permanently deleted"),
         }
@@ -46,6 +50,21 @@ impl Workspace {
         } else {
             self.change_shared_trash(room, id, SharedTrashAction::DeleteFolder, window, cx);
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn ask_delete_shared_descendant(&mut self, room: &Room, id: &str, folder: bool, cx: &mut Context<Self>) {
+        self.row_menu = None;
+        if id == room.scope.note || !self.shared_sidebar_folder_writable(room, cx) { cx.notify(); return; }
+        let entries = if shared::scope(&self.store, cx) == Some(&room.scope) { self.entries.clone() }
+            else { self.shared_sidebar_entries(cx) };
+        let tree = crate::tree::Tree::new(&entries);
+        let Some(entry) = entries.iter().find(|entry| entry.id == id && entry.meta.folder.is_some() == folder
+            && tree.subtree(&room.scope.note).iter().any(|child| child == id)) else { cx.notify(); return; };
+        let confirm = if folder { crate::app::Confirm::DeleteSharedFolder { room: room.clone(), id: id.into(), title: entry.title.clone() } }
+            else { crate::app::Confirm::DeleteSharedDocument { room: room.clone(), id: id.into(), title: entry.title.clone() } };
+        self.confirm = Some(confirm);
+        cx.notify();
     }
 
     pub(crate) fn change_shared_trash(&mut self, room: Room, id: String, action: SharedTrashAction, window: &mut Window, cx: &mut Context<Self>) {
@@ -91,11 +110,15 @@ impl Workspace {
             anyhow::ensure!(shared::access(&store, cx).is_some_and(Access::can_write) && !shared::editing_paused(&store, cx),
                 "{}", tr("此共享文件夹当前不可写入。", "You cannot write to this shared folder right now."));
             #[cfg(target_os = "macos")]
-            if matches!(action, SharedTrashAction::DeleteFolder) {
+            if matches!(action, SharedTrashAction::DeleteFolder | SharedTrashAction::DeleteDocument) {
                 let listing = store.clone().list();
-                let id = ids.first().filter(|id| listing.iter().any(|entry| &entry.id == *id && entry.meta.folder.is_some()))
-                    .ok_or_else(|| anyhow::anyhow!("Folder no longer exists"))?;
-                let affected = crate::tree::Tree::new(&listing).subtree(id);
+                let tree = crate::tree::Tree::new(&listing);
+                let folder = matches!(action, SharedTrashAction::DeleteFolder);
+                let room_items = tree.subtree(&room.scope.note);
+                let id = ids.first().filter(|id| room_items.contains(id) && listing.iter()
+                    .any(|entry| &entry.id == *id && entry.meta.folder.is_some() == folder))
+                    .ok_or_else(|| anyhow::anyhow!("The shared item no longer exists"))?;
+                let affected = tree.subtree(id);
                 if self.store.root() == store.root() && self.current.as_ref().is_some_and(|id| affected.contains(id)) {
                     anyhow::ensure!(self.flush(cx), "{}", tr("请先保存正在编辑的文档。", "Save the open document before deleting."));
                 }

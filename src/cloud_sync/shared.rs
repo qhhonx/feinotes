@@ -674,6 +674,17 @@ pub(crate) fn launch(room: &Room, cx: &mut gpui::App) -> gpui::Task<Result<()>> 
 
 #[cfg(target_os = "macos")]
 pub(crate) fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
+    open_window_at(room, None, cx)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn open_child_window(room: &Room, id: &str, cx: &mut gpui::App) -> Result<()> {
+    ensure!(room.scope.folder && id != room.scope.note, "Expected a document inside the shared folder");
+    open_window_at(room, Some(id), cx)
+}
+
+#[cfg(target_os = "macos")]
+fn open_window_at(room: &Room, target: Option<&str>, cx: &mut gpui::App) -> Result<()> {
     room.scope.validate()?;
     let personal = Store::root_dir();
     check_room_account(&personal, cx)?;
@@ -685,20 +696,30 @@ pub(crate) fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
     ensure!(!root.join("shared-note-ended").exists(), "This shared document has been removed");
     ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope) && account(&root)? == account(&personal)?,
         "Shared document belongs to another library");
-    for window in cx.windows().into_iter().filter_map(|w| w.downcast::<crate::app::Workspace>()) {
-        if window.read(cx).is_ok_and(|ws| ws.store.root() == root) {
-            window.update(cx, |_, window, cx| {
-                if !crate::devtools::scripted() { window.activate_window(); cx.activate(true); }
-            })?;
-            return Ok(());
+    if target.is_none() {
+        for window in cx.windows().into_iter().filter_map(|w| w.downcast::<crate::app::Workspace>()) {
+            if window.read(cx).is_ok_and(|ws| ws.store.root() == root) {
+                window.update(cx, |_, window, cx| {
+                    if !crate::devtools::scripted() { window.activate_window(); cx.activate(true); }
+                })?;
+                return Ok(());
+            }
         }
     }
-    let store = store_for(room, cx)?;
+    let mut store = check_opened_store(store_for(room, cx)?, room, cx)?;
+    if let Some(target) = target {
+        ensure!(access(&store, cx).is_some_and(|access| access != Access::Revoked)
+            && !editing_paused(&store, cx), "{}", sharing_unavailable());
+        let entries = store.list();
+        ensure!(entries.iter().any(|entry| entry.id == target && entry.meta.folder.is_none())
+            && crate::tree::Tree::new(&entries).subtree(&room.scope.note).iter().any(|id| id == target),
+            "{}", crate::settings::tr("此共享文档暂不可用。", "This shared document is not available."));
+    }
     let mut options = crate::main_window_options(crate::devtools::scripted(), None, cx);
     if let Some(bar) = &mut options.titlebar {
         bar.title = Some(format!("{} · {}", crate::app_name(), crate::settings::tr("共享文档", "Shared document")).into());
     }
-    let note = room.scope.note.clone();
+    let note = target.unwrap_or(&room.scope.note).to_owned();
     cx.open_window(options, |window, cx| {
         #[cfg(feature = "devtools")]
         crate::devtools::park_window(window, cx);

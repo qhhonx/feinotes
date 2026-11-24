@@ -195,13 +195,18 @@ impl Workspace {
         self.open_shared_item(room, target, source, window, cx);
     }
 
+    #[cfg(target_os = "ios")]
     pub(super) fn open_shared_room_for_action(&mut self, room: Room, action: SharedAction, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sharing.busy { return; }
-        let retry_room = room.clone();
-        let retry_action = action.clone();
-        if !self.save_before(cx, move |ws, window, cx| ws.open_shared_room_for_action(retry_room, retry_action, window, cx)) { return; }
         let target = room.scope.note.clone();
-        self.open_shared_item(room, target, OpenSource::new(None, Some(action)), window, cx);
+        self.open_shared_item_for_action(room, target, None, action, window, cx);
+    }
+
+    pub(super) fn open_shared_item_for_action(&mut self, room: Room, target: String, entry: Option<SidebarEntry>, action: SharedAction,
+        window: &mut Window, cx: &mut Context<Self>) {
+        if self.sharing.busy { return; }
+        let (retry_room, retry_target, retry_entry, retry_action) = (room.clone(), target.clone(), entry.clone(), action.clone());
+        if !self.save_before(cx, move |ws, window, cx| ws.open_shared_item_for_action(retry_room, retry_target, retry_entry, retry_action, window, cx)) { return; }
+        self.open_shared_item(room, target, OpenSource::new(entry, Some(action)), window, cx);
     }
 
     fn open_shared_item(&mut self, room: Room, target: String, source: OpenSource, window: &mut Window, cx: &mut Context<Self>) {
@@ -394,7 +399,8 @@ impl Workspace {
 
     #[cfg(target_os = "macos")]
     fn finish_shared_folder_edit(&mut self, entry: SidebarEntry, edit: SharedFolderEdit, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.entries.iter().any(|row| row.id == entry.id && row.meta.folder.is_some()) { return; }
+        if !self.sharing_access(cx).is_some_and(Access::can_write) || shared::editing_paused(&self.store, cx)
+            || !self.entries.iter().any(|row| row.id == entry.id && row.meta.folder.is_some()) { return; }
         match edit {
             SharedFolderEdit::Rename => {
                 self.start_rename_in_sidebar(&entry.id, Some(entry.section), window, cx);

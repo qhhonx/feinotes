@@ -248,6 +248,15 @@ impl Workspace {
         if self.confirm_shared_move(ids, target.as_deref(), cx) { return; }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let target = target.or_else(|| self.current_room(cx).filter(|room| room.scope.folder).map(|room| room.scope.note));
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if let Some(room) = self.current_room(cx) {
+            let tree = Tree::new(&self.entries);
+            let items = tree.subtree(&room.scope.note);
+            if !room.scope.folder || !self.shared_sidebar_folder_writable(&room, cx)
+                || !target.as_ref().is_some_and(|target| items.contains(target)
+                    && self.entries.iter().any(|entry| &entry.id == target && entry.meta.folder.is_some()))
+                || ids.iter().any(|id| *id == room.scope.note || !items.contains(id)) { return; }
+        }
         let file_before = self.store.track_file_changes();
         let mut failed = false;
         let ids: Vec<String> = ids.iter().map(|id| self.row_of(id)).collect();

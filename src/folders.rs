@@ -462,7 +462,7 @@ impl Workspace {
         let folder = if personal { CreateTarget::PersonalSidebar(Some(folder)) } else { CreateTarget::Library(Some(folder)) };
         let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::ui::menu_row(id, SharedString::from(id)).child(icon(glyph, 16., Theme::icon())).child(label);
         let pos = if m.pos.x < px(0.) { point(-m.pos.x, m.pos.y + px(22.)) } else { m.pos };
-        vec![deferred(anchored().position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("folder-row-menu").occlude().min_w(px(190.)).py(px(crate::ui::MENU_PAD_Y))
+        vec![deferred(anchored().anchor(m.corner).position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("folder-row-menu").occlude().min_w(px(190.)).py(px(crate::ui::MENU_PAD_Y))
             .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }))
             .child(row("fr-new-doc", "doc", tr("新建文档", "New document")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None;
                 let doc = doc.clone();
@@ -481,7 +481,7 @@ impl Workspace {
             })))
             .children({
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                { let target = m.id.clone(); personal.then(|| row("share-folder", "share", tr("共享", "Share"))
+                { let target = m.id.clone(); (personal && self.personal_row_can_share(&target, cx)).then(|| row("share-folder", "share", tr("共享", "Share"))
                     .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None;
                         let target = target.clone();
                         w.personal_action(window, cx, move |w, window, cx| w.create_shared_note(&target, window, cx)); }))) }
@@ -498,7 +498,13 @@ impl Workspace {
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { None::<Stateful<Div>> }
             })
-            .child(row("fr-delete", "bin", tr("删除", "Delete")).on_click(cx.listener(move |w, _, _, cx| w.ask_delete(&del, cx))))))
+            .child(row("fr-delete", "bin", tr("删除", "Delete")).text_color(Theme::danger())
+                .on_click(cx.listener(move |w, _, window, cx| {
+                    let id = del.clone();
+                    if personal { w.personal_action(window, cx, move |w, _, cx| w.ask_delete(&id, cx)); }
+                    else { w.ask_delete(&id, cx); }
+                })))
+            ))
             .with_priority(2).into_any_element()]
     }
 }

@@ -102,6 +102,8 @@ impl Workspace {
             self.entries = self.store.list();
             self.sort();
             self.open(&new, window, cx);
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            if self.is_shared() { self.publish_shared_folder_change(cx); }
         }
         self.remember_files(file_before, crate::settings::tr("创建副本", "Duplicate"));
         cx.notify();
@@ -109,7 +111,22 @@ impl Workspace {
 
     /// Write "<标题> 副本" of `id` to the library; the caller refreshes the list.
     pub(crate) fn copy_doc(&mut self, id: &str, cx: &mut Context<Self>) -> Option<String> {
-        if self.entries.iter().any(|e| e.id == id && e.meta.folder.is_some()) { return self.copy_folder(id, cx); }
+        let entry = self.entries.iter().find(|e| e.id == id);
+        let row = self.row_of(id);
+        let parent = self.entries.iter().find(|e| e.id == row).filter(|e| !e.meta.local()).and_then(|e| e.meta.parent.clone());
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if self.is_shared() {
+            use crate::cloud_sync::shared;
+            let room = self.current_room(cx)?;
+            let items = crate::tree::Tree::new(&self.entries).subtree(&room.scope.note);
+            if !room.scope.folder || id == room.scope.note || !items.iter().any(|item| item == id)
+                || !parent.as_ref().is_some_and(|parent| items.contains(parent))
+                || !entry.is_some_and(|e| e.meta.folder.is_none() && e.meta.kind != crate::store::DocKind::Table)
+                || !self.sharing_access(cx).is_some_and(shared::Access::can_write)
+                || shared::editing_paused(&self.store, cx) { return None; }
+        }
+        if entry.is_some_and(|e| e.meta.folder.is_some()) { return self.copy_folder(id, cx); }
+        let destination = if self.is_shared() { parent.as_deref() } else { None };
         let mut doc = self.doc_of(id, cx)?;
         let title = crate::localized_format!("{} 副本", "{} copy", display_title(&doc.title.text));
         doc.title = crate::model::RichText::plain(title);
@@ -121,15 +138,14 @@ impl Workspace {
         let table = self.entries.iter().any(|e| e.id == id && e.meta.kind == crate::store::DocKind::Table);
         if table { crate::table::flush_all(cx); }
         let made = if table { self.store.copy_table(id, &doc.title.text) }
-            else if let Some(board) = board { self.store.create_board_in(&doc.title.text, &board, None) }
-            else if self.store.is_markdown(id) { let front = self.store.front_matter_of(id); self.store.create_markdown(&doc, &front) } else { self.store.create_from(&doc) };
+            else if let Some(board) = board { self.store.create_board_in(&doc.title.text, &board, destination) }
+            else if self.store.is_markdown(id) { let front = self.store.front_matter_of(id); self.store.create_markdown_in(&doc, &front, destination) }
+            else { self.store.create_from_in(&doc, destination) };
         match made {
             Ok(new) => {
                 let _ = self.store.set_width(&new, width);
                 // A document with children is copied alone, beside its folder.
-                let row = self.row_of(id);
-                let parent = self.entries.iter().find(|e| e.id == row).filter(|e| !e.meta.local()).and_then(|e| e.meta.parent.clone());
-                if let Some(parent) = parent { let _ = self.store.set_parent(&new, Some(&parent)); }
+                if !self.is_shared() && let Some(parent) = parent { let _ = self.store.set_parent(&new, Some(&parent)); }
                 Some(new)
             }
             Err(e) => {

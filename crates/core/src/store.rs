@@ -2233,6 +2233,7 @@ impl Store {
     pub fn create_markdown_in(&mut self, doc: &Document, front: &str, parent: Option<&str>) -> Result<String> {
         #[cfg(feature = "sqlite-store")]
         if self.sqlite.is_some() {
+            self.check_shared_writer(None)?;
             let _lock = self.begin_write()?;
             self.validate_folder(None, parent)?;
             let id = uuid::Uuid::new_v4().to_string();
@@ -2267,6 +2268,7 @@ impl Store {
     pub fn create_board_in(&mut self, title: &str, board: &crate::whiteboard::Board, parent: Option<&str>) -> Result<String> {
         #[cfg(feature = "sqlite-store")]
         if self.sqlite.is_some() {
+            self.check_shared_writer(None)?;
             let _lock = self.begin_write()?;
             self.validate_folder(None, parent)?;
             let id = uuid::Uuid::new_v4().to_string();

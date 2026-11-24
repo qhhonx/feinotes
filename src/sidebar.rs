@@ -24,21 +24,13 @@ impl SidebarEntry {
 pub(crate) const ROW_MENU_W: f32 = 180.;
 const ROW_ITEM: f32 = crate::ui::MENU_ROW_H;
 const ROW_DIVIDER: f32 = 11.;
-const ROW_ITEMS: usize = 9;
+const ROW_ITEMS: usize = 8;
 const ROW_DIVIDERS: usize = 2;
-const DOWNLOAD_INDEX: usize = 6;
-const DIVIDERS_BEFORE_DOWNLOAD: usize = 1;
 
 const fn row_menu_height(items: usize, dividers: usize) -> f32 {
     2. + crate::ui::MENU_PAD_Y * 2. + items as f32 * ROW_ITEM + dividers as f32 * ROW_DIVIDER
 }
 
-const fn row_sub_top(menu_top: f32) -> f32 {
-    menu_top + DOWNLOAD_INDEX as f32 * ROW_ITEM + DIVIDERS_BEFORE_DOWNLOAD as f32 * ROW_DIVIDER
-}
-
-const _: () = assert!(row_menu_height(ROW_ITEMS, ROW_DIVIDERS) == 324.);
-const _: () = assert!(row_sub_top(0.) == 203.);
 
 /// Sidebar geometry (measured from the window edge), shared by the
 /// document sidebar and 设置's: selection pills start 14pt in, every row is
@@ -624,6 +616,7 @@ impl Workspace {
 
     fn row_base(&self, e: &Entry, key: &str, cx: &mut Context<Self>) -> Stateful<Div> {
         let id = e.id.clone();
+        let personal_menu = self.personal_sidebar_menu_id(e, key);
         let id2 = e.id.clone();
         let stable_menu = cfg!(target_os = "macos") && e.meta.folder.is_some();
         let in_lib = key == "doc";
@@ -664,6 +657,12 @@ impl Workspace {
                 MouseButton::Right,
                 cx.listener(move |w, ev: &MouseDownEvent, window, cx| {
                     let id2 = id2.clone(); let pos = ev.position;
+                    if w.batch.is_none() && let Some(id) = &personal_menu {
+                        w.row_menu = Some(RowMenu { id: id.clone(), pos, corner: Anchor::TopLeft, sub: false, batch: false });
+                        w.create_menu = None;
+                        cx.notify();
+                        return;
+                    }
                     if stable_menu {
                         w.row_menu = Some(RowMenu { id: id2, pos, corner: Anchor::TopLeft, sub: false, batch: false });
                         w.create_menu = None;
@@ -686,6 +685,19 @@ impl Workspace {
         self.more_button_with_status(e, key, None, cx)
     }
 
+    fn personal_sidebar_menu_id(&self, entry: &Entry, key: &str) -> Option<String> {
+        (cfg!(all(target_os = "macos", feature = "cloudkit-sync")) && self.is_shared() && matches!(key, "doc" | "pinned")).then(|| format!("personal:{}", entry.id))
+    }
+
+    fn row_document_action(&mut self, personal: bool, window: &mut Window, cx: &mut Context<Self>, action: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static) {
+        if personal {
+            self.row_menu = None;
+            self.personal_action(window, cx, action);
+        } else {
+            action(self, window, cx);
+        }
+    }
+
     pub(crate) fn document_has_shared_status(&self, entry: &Entry, cx: &App) -> bool {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         { self.published_document_share(entry, cx) }
@@ -694,7 +706,8 @@ impl Workspace {
     }
 
     pub(crate) fn more_button_with_status(&self, e: &Entry, key: &str, status: Option<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
-        let id = if key.starts_with("shared") { format!("shared:{}", e.id) } else { e.id.clone() };
+        let personal_menu = self.personal_sidebar_menu_id(e, key);
+        let id = if key.starts_with("shared") { format!("shared:{}", e.id) } else { personal_menu.clone().unwrap_or_else(|| e.id.clone()) };
         let stable_menu = cfg!(target_os = "macos") && e.meta.folder.is_some();
         let shared = key.starts_with("shared");
         let slot = format!("{key}-{}", e.id);
@@ -730,7 +743,7 @@ impl Workspace {
                     let b = lookup.borrow().get(&slot2).copied();
                     let pos = b.map_or(ev.position, |b| point(-b.left() - px(1.), b.top()));
                     let id = id.clone();
-                    if shared || stable_menu || id.starts_with("collection-") {
+                    if shared || stable_menu || personal_menu.is_some() || id.starts_with("collection-") {
                         w.row_menu = Some(RowMenu { id, pos, corner: Anchor::TopLeft, sub: false, batch: false });
                         w.create_menu = None;
                         cx.notify();
@@ -874,7 +887,8 @@ impl Workspace {
             #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
             { crate::folders::CreateTarget::PersonalSidebar(Some(e.id.clone())) }
         });
-        let menu_open = self.row_menu.as_ref().is_some_and(|m| m.id == e.id && !m.batch && m.pos.x < px(0.))
+        let personal_menu = self.personal_sidebar_menu_id(e, key);
+        let menu_open = self.row_menu.as_ref().is_some_and(|m| m.id == personal_menu.as_deref().unwrap_or(&e.id) && !m.batch && m.pos.x < px(0.))
             || self.create_menu.as_ref().is_some_and(|(item, _)| target.as_ref() == Some(item));
         let give = if float { (if folder { 74. } else if child { 52. } else { 28. }) * if menu_open { 1. } else { self.folder_drag.reveal(&e.id) } } else { 0. };
         let title = div().flex_1().min_w_0().flex().mr(px(give)).child(self.sidebar_title(e, section, selected, drop_target, cx));
@@ -952,7 +966,10 @@ impl Workspace {
     }
 
     pub(crate) fn render_row_menu(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let Some(m) = self.row_menu.clone() else { return vec![] };
+        let Some(mut m) = self.row_menu.clone() else { return vec![] };
+        // Showing a menu on the personal projection must not replace the live shared editor.
+        let personal_sidebar = m.id.starts_with("personal:");
+        if let Some(id) = m.id.strip_prefix("personal:") { m.id = id.to_owned(); }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         {
             let shared_id = m.id.strip_prefix("shared:").unwrap_or(&m.id);
@@ -960,16 +977,24 @@ impl Workspace {
             if !m.batch && let Some((room, _)) = self.shared_folder_context(shared_id, cx)
                 && shared_id != room.scope.note {
                 let section = if m.id.starts_with("shared:") || room.scope.owner.is_some() { SidebarSection::Shared } else { SidebarSection::Personal };
-                return self.shared_nested_folder_menu(&m, room, SidebarEntry::new(section, shared_id), cx);
+                return self.shared_nested_folder_menu(&m, room, SidebarEntry::new(section, shared_id), window, cx);
             }
             if self.shared_list_room(shared_id, cx).is_some() {
                 let mut menu = m.clone();
                 menu.id = shared_id.to_owned();
-                let section = if m.id.starts_with("shared:") || self.home.shared() { SidebarSection::Shared } else { SidebarSection::Personal };
+                let section = if m.id.starts_with("shared:") || (!personal_sidebar && self.home.shared()) { SidebarSection::Shared } else { SidebarSection::Personal };
                 return self.shared_row_menu(menu, section, window, cx);
             }
-            if (m.id.starts_with("shared:") || !self.is_shared()) && let Some(room) = self.shared_child_room(shared_id,cx) {
-                return self.shared_child_row_menu(&m,shared_id,room,cx);
+            #[cfg(target_os = "macos")]
+            if !m.batch && let Some(room) = self.shared_child_room(shared_id, cx) {
+                let section = if m.id.starts_with("shared:") || (!personal_sidebar && self.home.shared()) || room.scope.owner.is_some() {
+                    SidebarSection::Shared
+                } else { SidebarSection::Personal };
+                return self.shared_child_row_menu(&m, room, SidebarEntry::new(section, shared_id), window, cx);
+            }
+            #[cfg(target_os = "ios")]
+            if (m.id.starts_with("shared:") || !self.is_shared()) && let Some(room) = self.shared_child_room(shared_id, cx) {
+                return self.shared_child_row_menu(&m, shared_id, room, cx);
             }
         }
         if let Some(key) = crate::shared_store::root_of_row(&m.id).map(str::to_string) { return self.root_row_menu(&key, m, cx); }
@@ -977,8 +1002,15 @@ impl Workspace {
         if !m.batch && self.entries.iter().any(|e| e.id == m.id && e.meta.local()) { return self.local_row_menu(m, cx); }
         // A document with children (a folder with a 正文, #357): the document's menu, its
         // file for what concerns the page, the folder for 移动到, 重命名 and 删除.
-        let doc = self.note_or(&m.id);
-        let child = !m.batch && self.takes_children(&m.id);
+        let personal_entry = if personal_sidebar {
+            let Some(entry) = self.folder_drag.personal_rows.iter().flatten().find(|e| e.id == m.id) else { return vec![]; };
+            Some(entry)
+        } else { None };
+        let doc = personal_entry.map_or_else(|| self.note_or(&m.id), |entry| entry.note.clone().unwrap_or_else(|| entry.id.clone()));
+        let child = !m.batch && personal_entry.map_or_else(|| self.takes_children(&m.id), |entry| {
+            entry.note.is_some() || !entry.meta.local() && entry.meta.kind.is_doc()
+                && cx.global::<crate::shared_store::SharedStore>().can_have_children(&m.id)
+        });
         // The context menu: rows on the quiet hover fill.
         let item_c = |id: &'static str, ic: &'static str, label: &'static str, color: Hsla, icon_color: Hsla| {
             let g = SharedString::from(id);
@@ -993,16 +1025,20 @@ impl Workspace {
         if m.id.starts_with("collection-") {
             let rename = m.id.clone(); let remove = rename.clone();
             let pos = if m.pos.x < px(0.) { point(-m.pos.x, m.pos.y + px(22.)) } else { m.pos };
-            return vec![deferred(anchored().anchor(m.corner).position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("private-folder-menu").occlude().w(px(180.))
+            return vec![deferred(anchored().anchor(m.corner).position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("private-folder-menu").occlude().min_w(px(180.))
                 .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }))
                 .child(item("private-folder-rename", "square-pen", crate::settings::tr("重命名", "Rename")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.rename_collection(rename.clone(), window, cx); })))
+                .child(div().mx(px(8.)).my(px(5.)).h(px(1.)).bg(Theme::line_border()))
                 .child(item("private-folder-remove", "folder", crate::settings::tr("移除分类并保留文档", "Remove folder, keep items")).on_click(cx.listener(move |w, _, _, cx| w.remove_collection(&remove, cx))))))
                 .with_priority(2).into_any_element()];
         }
         if !m.batch && self.entries.iter().chain(self.folder_drag.personal_rows.iter().flatten())
             .any(|e| e.id == m.id && e.meta.folder.is_some()) { return self.folder_row_menu(m, cx); }
         if !m.batch && self.entries.iter().any(|e| e.id == m.id && e.meta.local()) { return self.local_row_menu(m, cx); }
-        let Some((pinned, starred)) = self.entries.iter().find(|e| e.id == m.id).map(|e| (e.meta.pinned, e.meta.starred > 0)) else { return vec![] };
+        let Some(entry) = personal_entry.or_else(|| self.entries.iter().find(|e| e.id == m.id)) else { return vec![] };
+        let (pinned, starred) = (entry.meta.pinned, entry.meta.starred > 0);
+        // A standalone data table exports CSV from its table view, not as a document.
+        let document_export = entry.meta.kind != crate::store::DocKind::Table;
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let (pinned, starred) = self.shared_child_marks(&m.id,cx).map_or((pinned,starred), |(pin,star)| (pin,star>0));
         let divider = || div().mx(px(8.)).my(px(5.)).h(px(1.)).bg(Theme::line_border());
@@ -1029,24 +1065,20 @@ impl Workspace {
                     .into_any_element(),
             ];
         }
-        // Hovering 下载 opens its submenu; hovering any other item closes it.
-        let set_sub = |open: bool| {
-            cx.listener(move |w: &mut Workspace, hovered: &bool, _, cx| {
-                if let Some(m) = w.row_menu.as_mut().filter(|m| *hovered && m.sub != open) {
-                    m.sub = open;
-                    cx.notify();
-                }
-            })
-        };
-        let (dup, mv, path, pin, star, dl, ren, del) = (doc.clone(), m.id.clone(), doc.clone(), doc.clone(), doc.clone(), doc.clone(), m.id.clone(), m.id.clone());
-        let pdf = doc.clone();
+        let (dup, mv, pin, star, ren, del) = (doc.clone(), m.id.clone(), doc.clone(), doc.clone(), m.id.clone(), m.id.clone());
         let new_window = doc.clone();
         let sub_doc = m.id.clone();
-        let sub_bounds = self.row_sub_bounds.clone();
+        let store = if personal_sidebar { cx.global::<crate::shared_store::SharedStore>() } else { &self.store };
+        let path_id = doc.clone();
+        let has_file = store.file_path(&path_id).is_some();
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let share_row = !self.is_shared() && !crate::cloud_restore::local_only();
+        let share_row = (personal_sidebar || !self.is_shared()) && self.personal_row_can_share(&m.id, cx);
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let share_row = false;
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        let link_row = self.object_link_available(cx);
+        #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
+        let link_row = false;
         // The menu follows its longest translation too (#225); its rendered
         // width (from the previous frame — a submenu only opens after one)
         // places the 下载 submenu beside it.
@@ -1058,20 +1090,18 @@ impl Workspace {
             .child(canvas(move |b, _, _| menu_w_record.set(Some(f32::from(b.size.width))), |_, _, _, _| {}).absolute().inset_0())
             .px(px(5.))
             .py(px(crate::ui::MENU_PAD_Y))
-            .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
-                if sub_bounds.get().is_none_or(|b| !b.contains(&ev.position)) {
-                    w.row_menu = None;
-                    cx.notify();
-                }
-            }))
+            .on_mouse_down_out(cx.listener(Self::dismiss_row_menu))
             .when(child, |d| d.child(
                 item("rm-child", "plus", crate::settings::tr("新建子文档", "New child page"))
-                    .on_hover(set_sub(false))
-                    .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.new_child(&sub_doc, window, cx); })),
+                    .on_hover(cx.listener(Self::close_row_download))
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        let id = sub_doc.clone();
+                        w.row_document_action(personal_sidebar, window, cx, move |w, window, cx| { w.row_menu = None; w.new_child(&id, window, cx); });
+                    })),
             ))
             .child(
                 item("rm-window", "copy", crate::settings::text("在新窗口中打开"))
-                    .on_hover(set_sub(false))
+                    .on_hover(cx.listener(Self::close_row_download))
                     .on_click(cx.listener(move |w, _, _, cx| {
                         w.row_menu = None;
                         let id = new_window.clone();
@@ -1080,56 +1110,71 @@ impl Workspace {
                     })),
             )
             .child(
-                item("rm-pin", if pinned { "pin-off" } else { "pin" }, if pinned { crate::settings::text("从“置顶”移除") } else { crate::settings::text("添加到“置顶”") })
-                    .on_hover(set_sub(false))
-                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_pin(&pin, cx))),
-            )
-            .child(
-                item("rm-star", if starred { "star-off" } else { "star" }, if starred { crate::settings::text("取消收藏") } else { crate::settings::tr("收藏", "Add to favorites") })
-                    .on_hover(set_sub(false))
-                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_star(&star, cx))),
-            )
-            .child(
-                item("rm-rename", "square-pen", crate::settings::text("重命名"))
-                    .on_hover(set_sub(false))
-                    .on_click(cx.listener(move |w, _, window, cx| w.start_rename(&ren, window, cx))),
+                item("rm-copy", "copy", crate::settings::text("创建副本"))
+                    .on_hover(cx.listener(Self::close_row_download))
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        let id = dup.clone();
+                        w.row_document_action(personal_sidebar, window, cx, move |w, window, cx| w.duplicate_doc(&id, window, cx));
+                    })),
             )
             .child(
                 item("rm-move", "folder-input", crate::settings::text("移动到"))
-                    .on_hover(set_sub(false))
-                    .on_click(cx.listener(move |w, _, window, cx| w.open_move(vec![mv.clone()], window, cx))),
+                    .on_hover(cx.listener(Self::close_row_download))
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        let id = mv.clone();
+                        w.row_document_action(personal_sidebar, window, cx, move |w, window, cx| w.open_move(vec![id], window, cx));
+                    })),
             )
-            .child(
-                item("rm-copy", "copy", crate::settings::text("创建副本"))
-                    .on_hover(set_sub(false))
-                    .on_click(cx.listener(move |w, _, window, cx| w.duplicate_doc(&dup, window, cx))),
-            )
-            .child(
+            .when(has_file, |d| d.child(
                 item("rm-path", "copy", crate::settings::text("复制文件地址"))
-                    .on_hover(set_sub(false))
+                    .on_hover(cx.listener(Self::close_row_download))
                     .on_click(cx.listener(move |w, _, _, cx| {
                         w.row_menu = None;
-                        if let Some(path) = w.store.file_path(&path) {
+                        let store = if personal_sidebar { cx.global::<crate::shared_store::SharedStore>() } else { &w.store };
+                        if let Some(path) = store.file_path(&path_id) {
                             cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string()));
                             w.show_toast(crate::settings::text("已复制文件地址"), cx);
                         }
+                        cx.notify();
+                    })),
+            ))
+            .child(
+                item("rm-pin", if pinned { "pin-off" } else { "pin" }, if pinned { crate::settings::text("从“置顶”移除") } else { crate::settings::text("添加到“置顶”") })
+                    .when(cfg!(feature = "devtools"), |d| d.relative().child(self.home.track("qa-personal-row-pin")))
+                    .on_hover(cx.listener(Self::close_row_download))
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        let id = pin.clone();
+                        w.row_document_action(personal_sidebar, window, cx, move |w, _, cx| w.toggle_pin(&id, cx));
+                    })),
+            )
+            .child(
+                item("rm-star", if starred { "star-off" } else { "star" }, if starred { crate::settings::text("取消收藏") } else { crate::settings::tr("收藏", "Add to favorites") })
+                    .on_hover(cx.listener(Self::close_row_download))
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        let id = star.clone();
+                        w.row_document_action(personal_sidebar, window, cx, move |w, _, cx| w.toggle_star(&id, cx));
                     })),
             )
             .child(divider())
+            .when(document_export, |d| d.child(self.row_download_item(item("rm-download", "export", crate::settings::text("下载")), m.sub, cx)))
             .child(
-                item("rm-download", "export", crate::settings::text("下载"))
-                    .when(m.sub, |d| d.bg(Theme::fill_hover()))
-                    .child(icon("chevron-right", 10., Theme::icon()))
-                    .on_hover(set_sub(true)),
+                item("rm-rename", "square-pen", crate::settings::text("重命名"))
+                    .on_hover(cx.listener(Self::close_row_download))
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        let id = ren.clone();
+                        w.row_document_action(personal_sidebar, window, cx, move |w, window, cx| w.start_rename(&id, window, cx));
+                    })),
             )
+            .when(share_row || link_row, |d| d.child(divider()))
             .map(|d| {
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 {
                     let target = m.id.clone();
-                    d.when(share_row, |d| d.child(divider()).child(item("rm-share", "share", crate::settings::tr("共享", "Share"))
-                        .on_hover(set_sub(false)).on_click(cx.listener(move |w, _, window, cx| {
+                    d.when(share_row, |d| d.child(item("rm-share", "share", crate::settings::tr("共享", "Share"))
+                        .on_hover(cx.listener(Self::close_row_download)).on_click(cx.listener(move |w, _, window, cx| {
                             w.row_menu = None;
-                            w.create_shared_note(&target,window,cx);
+                            let id = target.clone();
+                            w.row_document_action(personal_sidebar, window, cx, move |w, window, cx| w.create_shared_note(&id, window, cx));
                         }))))
                 }
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
@@ -1139,9 +1184,9 @@ impl Workspace {
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 {
                     let target = doc.to_owned();
-                    self.object_link_available(cx).then(|| item("rm-copy-object-link", "copy", crate::settings::tr("复制链接", "Copy Link"))
-                        .on_hover(set_sub(false))
-                        .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&target, None, !w.is_shared(), cx))))
+                    link_row.then(|| item("rm-copy-object-link", "copy", crate::settings::tr("复制链接", "Copy Link"))
+                        .on_hover(cx.listener(Self::close_row_download))
+                        .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&target, None, personal_sidebar || !w.is_shared(), cx))))
                 }
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
                 { None::<Stateful<Div>> }
@@ -1149,15 +1194,15 @@ impl Workspace {
             .child(divider())
             .child(
                 item_c("rm-del", "bin", crate::settings::text("删除"), Theme::danger(), Theme::danger())
-                    .on_hover(set_sub(false))
-                    .on_click(cx.listener(move |w, _, _, cx| w.ask_delete(&del, cx))),
+                    .on_hover(cx.listener(Self::close_row_download))
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        let id = del.clone();
+                        w.row_document_action(personal_sidebar, window, cx, move |w, _, cx| w.ask_delete(&id, cx));
+                    })),
             );
         let vh = f32::from(window.viewport_size().height);
-        let extra = usize::from(child);
-        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let extra = extra + usize::from(self.object_link_available(cx));
-        let shared_rows = usize::from(share_row);
-        let menu_h = row_menu_height(ROW_ITEMS + shared_rows + extra, ROW_DIVIDERS + shared_rows);
+        let items = ROW_ITEMS - usize::from(!document_export) + [child, has_file, share_row, link_row].into_iter().filter(|shown| *shown).count();
+        let menu_h = row_menu_height(items, ROW_DIVIDERS + usize::from(share_row || link_row));
         // From the "…" button: hang 2px below it, or sit 2px above it when
         // there's no room below. From a right-click: at the pointer.
         let (origin, corner) = if m.pos.x < px(0.) {
@@ -1170,47 +1215,72 @@ impl Workspace {
         } else {
             (m.pos, m.corner)
         };
-        let menu_top = match corner {
-            Anchor::BottomLeft | Anchor::BottomRight => f32::from(origin.y) - menu_h,
-            _ => f32::from(origin.y),
-        };
-        let mut out = vec![
-            deferred(anchored().anchor(corner).position(origin).snap_to_window_with_margin(px(8.)).child(menu))
-                .with_priority(2)
-                .into_any_element(),
-        ];
-        if m.sub {
-            let record = self.row_sub_bounds.clone();
-            record.set(None);
-            // Level the submenu's first item with 下载.
-            let top = row_sub_top(menu_top + extra as f32 * ROW_ITEM);
-            let menu_w = self.row_menu_w.get().unwrap_or(ROW_MENU_W);
-            let left = match corner {
-                Anchor::TopRight | Anchor::BottomRight => origin.x - px(menu_w),
-                _ => origin.x,
-            };
-            let x = left + px(menu_w + 4.);
-            out.push(
-                deferred(
-                    anchored().anchor(Anchor::TopLeft).position(point(x, px(top))).snap_to_window_with_margin(px(8.)).child(
-                        popover()
-                            .id("rm-download-menu")
-                            .occlude()
-                            .min_w(px(130.))
-                            .px(px(5.))
-                            .py(px(crate::ui::MENU_PAD_Y))
-                            .child(canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
-                            .when(crate::printing::SUPPORTED, |d| d.child(crate::docmenu::sub_item("rm-pdf", "PDF").on_click(cx.listener(move |w, _, window, cx| w.export_pdf(&pdf, window, cx)))))
-                            .child(crate::docmenu::sub_item("rm-md", "Markdown").on_click(cx.listener(move |w, _, _, cx| w.open_export_md(&dl, cx)))),
-                    ),
-                )
-                .with_priority(2)
-                .into_any_element(),
-            );
-        } else {
-            self.row_sub_bounds.set(None);
-        }
+        let mut out = vec![deferred(anchored().anchor(corner).position(origin).snap_to_window_with_margin(px(8.)).child(menu))
+            .with_priority(2).into_any_element()];
+        out.extend(self.row_download_submenu(document_export && m.sub, window, cx, move |w, format, window, cx| {
+            let id = doc.clone();
+            w.row_document_action(personal_sidebar, window, cx, move |w, window, cx| format.export(w, &id, window, cx));
+        }));
         out
+    }
+
+    pub(crate) fn dismiss_row_menu(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.row_menu.as_ref().is_some_and(|menu| menu.sub)
+            && self.row_sub_bounds.get().is_some_and(|bounds| bounds.contains(&event.position)) { return; }
+        self.row_menu = None;
+        self.row_sub_bounds.set(None);
+        cx.notify();
+    }
+
+    pub(crate) fn close_row_download(&mut self, hovered: &bool, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = self.row_menu.as_mut().filter(|menu| *hovered && menu.sub) {
+            menu.sub = false;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn row_download_item(&self, row: Stateful<Div>, open: bool, cx: &Context<Self>) -> Stateful<Div> {
+        row.relative().child(self.home.track("row-download-anchor"))
+            .when(open, |d| d.bg(Theme::fill_hover()))
+            .child(icon("chevron-right", 10., Theme::icon()))
+            .on_hover(cx.listener(|w, hovered: &bool, _, cx| {
+                if let Some(menu) = w.row_menu.as_mut().filter(|menu| *hovered && !menu.sub) {
+                    menu.sub = true;
+                    cx.notify();
+                }
+            }))
+    }
+
+    pub(crate) fn row_download_submenu(&self, open: bool, window: &Window, cx: &Context<Self>,
+        action: impl Fn(&mut Self, RowDownload, &mut Window, &mut Context<Self>) + Clone + 'static) -> Option<AnyElement> {
+        let record = self.row_sub_bounds.clone();
+        record.set(None);
+        let bounds = self.home.anchor("row-download-anchor").filter(|_| open)?;
+        let pdf = action.clone();
+        let body = popover().id("rm-download-menu").occlude().min_w(px(130.))
+            .px(px(5.)).py(px(crate::ui::MENU_PAD_Y))
+            .child(canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
+            .when(crate::printing::SUPPORTED, |d| d.child(crate::docmenu::sub_item("rm-pdf", "PDF")
+                .on_click(cx.listener(move |w, _, window, cx| pdf(w, RowDownload::Pdf, window, cx)))))
+            .child(crate::docmenu::sub_item("rm-md", "Markdown")
+                .on_click(cx.listener(move |w, _, window, cx| action(w, RowDownload::Markdown, window, cx))));
+        let flip = bounds.right() + px(140.) > window.viewport_size().width;
+        let (corner, x) = if flip { (Anchor::TopRight, bounds.left() - px(4.)) } else { (Anchor::TopLeft, bounds.right() + px(4.)) };
+        Some(deferred(anchored().anchor(corner).position(point(x, bounds.top() - px(crate::ui::MENU_PAD_Y)))
+            .snap_to_window_with_margin(px(8.)).child(body)).with_priority(3).into_any_element())
+    }
+
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RowDownload { Pdf, Markdown }
+
+impl RowDownload {
+    pub(crate) fn export(self, ws: &mut Workspace, id: &str, window: &mut Window, cx: &mut Context<Workspace>) {
+        match self {
+            Self::Pdf => ws.export_pdf(id, window, cx),
+            Self::Markdown => ws.open_export_md(id, cx),
+        }
     }
 }
 
