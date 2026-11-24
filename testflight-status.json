@@ -23,14 +23,9 @@
     "IOS": {
       "state": "available",
       "url": "https://testflight.apple.com/join/NdcXugMy",
-      "version": "1.0.10",
-      "build": "1022",
-      "pending": {
-        "state": "review",
-        "version": "1.1.1",
-        "build": "1034"
-      }
+      "version": "1.1.1",
+      "build": "1034"
     }
   },
-  "updatedAt": "2026-11-23T17:03:49.186148+00:00"
+  "updatedAt": "2026-11-24T00:11:30.330709+00:00"
 }
