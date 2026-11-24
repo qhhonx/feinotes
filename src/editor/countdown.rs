@@ -10,7 +10,8 @@ use super::view::{Editor, Menu};
 use crate::input::{TextField, TextFieldEvent};
 use crate::model::{Block, BlockId, BlockKind, COUNTDOWN_COLORS, Countdown};
 use crate::editor_theme::{self as theme, Theme, craft};
-use crate::editor_ui::{ROW_RADIUS, TipExt, ToastKind, icon, popover};
+use crate::editor_ui::{TipExt, ToastKind, icon};
+use crate::design::{self as design, Button, ButtonSize, Checkbox, Field, FieldSize, MenuItem, Popover, Radio, color, menu as dmenu};
 use gpui::{prelude::FluentBuilder, *};
 use web_time::Instant;
 use std::{
@@ -30,11 +31,11 @@ const OPTIONS: [u32; 4] = [100, 24, 60, 60];
 /// `.timer-item.{d,h,m,s}` and `.timer-separate.{d,h,m}` right offsets.
 const ITEM_RIGHT: [f32; 4] = [204., 136., 68., 0.];
 const SEP_RIGHT: [f32; 3] = [188., 120., 52.];
-/// Dropdown row pitch (26pt list rows, no gaps) and list height.
-const ITEM_H: f32 = crate::editor_ui::MENU_ROW_H;
+/// Dropdown row pitch (menu rows, no gaps) and list height.
+const ITEM_H: f32 = dmenu::ROW_H;
 const LIST_H: f32 = 240.;
-/// Vertical padding of a dropdown list (6 above, 6 below).
-const LIST_PAD: f32 = 2. * crate::editor_ui::MENU_PAD_Y;
+/// Vertical padding of a dropdown list (the menu's, above and below).
+const LIST_PAD: f32 = 2. * dmenu::PAD;
 /// Blocks in the page stay crisp: the card and its tiles at 5.
 const RADIUS: f32 = 5.;
 /// The hues of `COUNTDOWN_COLORS`, in order.
@@ -293,18 +294,7 @@ impl R<'_> {
         );
 
         let tools = !self.ghost && !ed.read_only && (ed.cd.hover == Some(id) || ed.cd.palette == Some(id));
-        let tool = |key: &'static str, name: &'static str| {
-            div()
-                .id((key, id.0))
-                .size(px(24.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(RADIUS))
-                .cursor_pointer()
-                .hover(|s| s.bg(Theme::fill_hover_strong()))
-                .child(icon(name, 18., Theme::icon()))
-        };
+        let tool = |key: &'static str, name: &'static str| Button::ghost((key, id.0)).sized(ButtonSize::Xs).icon(name);
         let toolbar = tools.then(|| {
             div()
                 .absolute()
@@ -357,8 +347,7 @@ impl R<'_> {
                         ),
                 );
             }
-            popover()
-                .id(("cd-palette", id.0))
+            Popover::new(("cd-palette", id.0))
                 .absolute()
                 .top(px(8.))
                 .right(px(36.))
@@ -622,7 +611,7 @@ impl Editor {
                 .when(!active, |d| d.cursor_pointer().hover(|s| s.border_color(rim_hover())))
         };
         let title = |on: bool, label: &'static str| {
-            div().flex().items_center().child(crate::transfer::radio(on)).child(div().ml(px(8.)).line_height(px(22.)).child(label))
+            div().flex().items_center().child(Radio::new(on)).child(div().ml(px(8.)).line_height(px(22.)).child(label))
         };
         let open = d.drop;
 
@@ -631,22 +620,14 @@ impl Editor {
         for i in 0..4 {
             let active = open == Some(Drop::Dur(i));
             let key: &'static str = ["cd-d", "cd-h", "cd-m", "cd-s"][i];
-            let picker = div()
-                .id(key)
+            let picker = Field::new(key)
+                .sized(FieldSize::Sm)
+                .focused(active)
+                .disabled(by_date)
                 .relative()
                 .w(px(50.))
-                .h(px(30.))
-                .pl(px(12.))
-                .flex()
-                .items_center()
                 .overflow_hidden()
-                .border_1()
-                .rounded(px(8.))
                 .cursor_pointer()
-                .when(by_date, |d| d.bg(theme::c(craft::N200)).border_color(Theme::line_border()))
-                .when(!by_date, |d| {
-                    d.bg(crate::theme::raised(Theme::bg_body())).border_color(if active { accent() } else { Theme::line_border() }).when(!active, |d| d.hover(|s| s.border_color(rim_hover())))
-                })
                 .child(div().w_full().child(self.cd.fields[i].clone()))
                 .child(track(bounds, key))
                 .when(by_date, |d| {
@@ -689,22 +670,13 @@ impl Editor {
                 .child(s)
                 .child(track(bounds, key))
         };
-        let stamp = div()
-            .id("cd-stamp")
+        let stamp = Field::new("cd-stamp")
+            .sized(FieldSize::Sm)
+            .focused(by_date && open.is_some())
+            .disabled(!by_date)
             .relative()
             .w(px(278.))
-            .h(px(30.))
-            .pl(px(12.))
-            .pr(px(12.))
-            .flex()
-            .items_center()
-            .border_1()
-            .rounded(px(8.))
             .cursor_pointer()
-            .when(!by_date, |d| d.bg(theme::c(craft::N200)).border_color(Theme::line_border()).text_color(theme::c(craft::N500)))
-            .when(by_date, |d| {
-                d.bg(crate::theme::raised(Theme::bg_body())).border_color(if open.is_some() { accent() } else { Theme::line_border() }).when(open.is_none(), |d| d.hover(|s| s.border_color(rim_hover())))
-            })
             .child(track(bounds, "cd-stamp"))
             .child(
                 div()
@@ -731,7 +703,7 @@ impl Editor {
                         )
                     })),
             )
-            .child(div().ml(px(10.)).child(icon("calendar", 16., Theme::icon())))
+            .child(div().ml(px(10.)).child(icon("calendar", 16., color::muted_foreground())))
             .when(by_date, |d| d.on_mouse_down(MouseButton::Left, cx.listener(|e, _, _, cx| e.cd_open_drop(Drop::Date, cx))));
         let stamp_opt = option("cd-opt-date", by_date)
             .mt(px(16.))
@@ -741,46 +713,8 @@ impl Editor {
 
         // Footer
         let notify = d.notify;
-        // The check box: rounded, a hairline rim open, accent with a white check on.
-        let check = div()
-            .size(px(16.))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(4.))
-            .when(notify, |d| d.bg(accent()).child(icon("check", 12., gpui::white())))
-            .when(!notify, |d| d.border_1().border_color(Theme::todo_box()).bg(crate::theme::raised(gpui::white())));
-        // Buttons: 30 tall, radius 9; primary the accent in white
-        // semibold, secondary white with a hairline and a 1px drop.
-        let button = |key: &'static str, label: &'static str, primary: bool| {
-            div()
-                .id(key)
-                .ml(px(8.))
-                .h(px(30.))
-                .px(px(14.))
-                .flex()
-                .items_center()
-                .rounded(px(9.))
-                .border_1()
-                .cursor_pointer()
-                .line_height(px(20.))
-                .when(primary, |d| {
-                    d.bg(accent())
-                        .shadow(theme::shadow_button())
-                        .border_color(accent())
-                        .text_color(gpui::white())
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .hover(|s| s.bg(theme::c(craft::B600)).border_color(theme::c(craft::B600)))
-                        .active(|s| s.bg(theme::c(craft::B700)).border_color(theme::c(craft::B700)))
-                })
-                .when(!primary, |d| {
-                    d.bg(crate::theme::raised(gpui::white())).border_color(Theme::button_border()).shadow(theme::shadow_button()).hover(|s| s.bg(theme::c(craft::N100))).active(|s| s.bg(theme::c(craft::N200)))
-                })
-                .child(label)
-        };
+        let check = Checkbox::new(notify);
         let footer = div()
-            .mt(px(24.))
             .flex()
             .items_center()
             .justify_between()
@@ -805,36 +739,15 @@ impl Editor {
             .child(
                 div()
                     .flex()
-                    .child(button("cd-cancel", crate::settings::text("取消"), false).on_click(cx.listener(|e, _, window, cx| e.close_countdown(window, cx))))
-                    .child(button("cd-ok", crate::settings::text("确定"), true).on_click(cx.listener(|e, _, window, cx| e.confirm_countdown(window, cx)))),
+                    .child(Button::outline("cd-cancel").sized(ButtonSize::Sm).label(crate::settings::text("取消")).on_click(cx.listener(|e, _, window, cx| e.close_countdown(window, cx))))
+                    .child(Button::primary("cd-ok").sized(ButtonSize::Sm).ml(px(8.)).label(crate::settings::text("确定")).on_click(cx.listener(|e, _, window, cx| e.confirm_countdown(window, cx)))),
             );
 
-        let close = div()
-            .id("cd-close")
-            .absolute()
-            .top(px(22.))
-            .right(px(20.))
-            .size(px(28.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(8.))
-            .cursor_pointer()
-            .hover(|s| s.bg(Theme::fill_hover_strong()))
-            .active(|s| s.bg(Theme::fill_pressed()))
-            .child(icon("x", 18., Theme::icon()))
-            .on_click(cx.listener(|e, _, window, cx| e.close_countdown(window, cx)));
-        // The dialog: white, radius 16, the deep soft drop; 13pt body.
-        let dialog = div()
-            .id("cd-dialog")
+        // The dialog: its title, the two options, the footer.
+        let dialog = design::Dialog::new("cd-dialog")
             .relative()
             .w(px(600.))
-            .rounded(px(16.))
-            .bg(crate::theme::raised(Theme::bg_body()))
-            .shadow(theme::shadow_dialog())
-            .occlude()
-            .text_size(px(13.))
-            .text_color(Theme::text())
+            .title(crate::settings::text("倒计时设置"))
             // A click anywhere in the dialog first closes the open list and
             // settles typed values; the clicked control may reopen one.
             .capture_any_mouse_down(cx.listener(|e, _, _, cx| {
@@ -845,9 +758,9 @@ impl Editor {
                 cx.notify();
             }))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().p(px(24.)).pr(px(56.)).text_size(px(15.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).child(crate::settings::text("倒计时设置")))
-            .child(close)
-            .child(div().px(px(24.)).pb(px(24.)).child(duration).child(stamp_opt).child(footer));
+            .closable(cx.listener(|e, _, window, cx| e.close_countdown(window, cx)))
+            .child(div().child(duration).child(stamp_opt))
+            .footer(footer);
         let layer = div()
             .id("cd-mask")
             .key_context("CountdownDialog")
@@ -858,8 +771,7 @@ impl Editor {
             .flex()
             .items_center()
             .justify_center()
-            .bg(theme::rgbaf(0, 0, 0, 0.55))
-            .font_family(theme::ui_family())
+            .bg(color::overlay())
             .on_key_down(cx.listener(|e, ev: &KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" {
                     cx.stop_propagation();
@@ -913,13 +825,13 @@ impl Editor {
                     .shadow(vec![])
                     .rounded(px(0.))
                 };
-                let panel = list_box()
+                let panel = list_box("cd-time-panel")
                     .flex()
                     .overflow_hidden()
                     .child(col(self, 1, 24, hh, cx))
-                    .child(div().w(px(1.)).h(px(240.)).bg(Theme::line_divider()))
+                    .child(design::Separator::new().vertical().h(px(240.)))
                     .child(col(self, 2, 60, mm, cx));
-                (panel.into_any_element(), 115., 242.)
+                (panel.into_any_element(), 113., 240.)
             }
             Drop::Date => (self.cd_calendar(d, cx).into_any_element(), 278., 316.),
         };
@@ -938,34 +850,20 @@ impl Editor {
         cur: Option<u32>,
         pick: impl Fn(&mut Editor, u32, &mut Window, &mut Context<Editor>) + Clone + 'static,
         cx: &mut Context<Self>,
-    ) -> Div {
+    ) -> Popover {
         let mut col = div().id(("cd-list", ix)).h(px(LIST_H)).py(px(LIST_PAD / 2.)).overflow_y_scroll().track_scroll(&self.cd.lists[ix]);
         for v in 0..n {
             let on = cur == Some(v);
             let pick = pick.clone();
-            // List rows: 32 tall, 13pt, grey hover; the current value
-            // in the accent (on its tint in the time columns).
+            // List rows: menu rows, the current value highlighted.
             col = col.child(
-                div()
-                    .id(("cd-item", v as usize))
-                    .flex_none()
-                    .mx(px(5.))
-                    .h(px(ITEM_H))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(ROW_RADIUS))
-                    .line_height(px(20.))
-                    .text_size(px(13.))
-                    .cursor_pointer()
-                    .text_color(if on { accent() } else { Theme::text() })
-                    .when(on && ix > 0, |d| d.bg(accent_tint()))
-                    .when(!(on && ix > 0), |d| d.hover(|s| s.bg(Theme::fill_hover())))
-                    .child(if ix == 0 { v.to_string() } else { format!("{v:02}") })
+                MenuItem::new(("cd-item", v as usize))
+                    .selected(on)
+                    .label(if ix == 0 { v.to_string() } else { format!("{v:02}") })
                     .on_mouse_down(MouseButton::Left, cx.listener(move |e, _, window, cx| pick(e, v, window, cx))),
             );
         }
-        list_box().child(col)
+        list_box(("cd-list-box", ix)).child(col)
     }
 
     fn cd_calendar(&self, d: &Dialog, cx: &mut Context<Self>) -> impl IntoElement {
@@ -974,16 +872,9 @@ impl Editor {
         let first = crate::time::days_from_civil(vy, vm, 1);
         let start = first - i64::from(crate::time::weekday(vy, vm, 1));
         let nav = |key: &'static str, name: &'static str, delta: i32| {
-            div()
-                .id(key)
-                .size(px(24.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(ROW_RADIUS))
-                .cursor_pointer()
-                .hover(|s| s.bg(Theme::fill_hover_strong()))
-                .child(icon(name, 16., Theme::icon()))
+            Button::ghost(key)
+                .sized(ButtonSize::Xs)
+                .icon(name)
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |e, _, _, cx| {
@@ -1057,14 +948,13 @@ impl Editor {
             }
             body = body.child(row);
         }
-        list_box().w(px(278.)).child(header).child(div().px(px(15.)).pb(px(16.)).child(body))
+        list_box("cd-calendar").w(px(278.)).child(header).child(div().px(px(15.)).pb(px(16.)).child(body))
     }
 }
 
-/// The dropdown shell (`ud__select-dropdown`): the popover — the menu
-/// material, hairline, radius 12, the menu drop.
-pub(super) fn list_box() -> Div {
-    popover()
+/// The dropdown shell (`ud__select-dropdown`): a popover.
+pub(super) fn list_box(id: impl Into<ElementId>) -> Popover {
+    Popover::new(id)
 }
 
 #[cfg(target_os = "ios")]

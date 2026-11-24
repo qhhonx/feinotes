@@ -12,6 +12,7 @@ use crate::settings::display_title;
 use crate::model::{BlockId, DocLink};
 use crate::editor_theme::Theme;
 use crate::editor_ui::{TipExt, icon, ui_text};
+use crate::design::{Button, ButtonSize, MenuItem, Popover, color};
 use gpui::{prelude::FluentBuilder, *};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -237,7 +238,7 @@ impl Editor {
         let (p, lh) = self.point_of(Pos::new(m.block, m.trigger))?;
         let q = self.mention_query();
         let results = self.mention_results();
-        let mut list = div().id("mention-list").max_h(px(366.)).overflow_y_scroll().track_scroll(&self.mention_scroll).py(px(crate::editor_ui::MENU_PAD_Y)).flex().flex_col();
+        let mut list = div().id("mention-list").max_h(px(366.)).overflow_y_scroll().track_scroll(&self.mention_scroll).py(px(crate::design::menu::PAD)).flex().flex_col();
         if results.is_empty() {
             list = list.child(div().p(px(16.)).text_size(px(13.)).line_height(px(20.)).text_color(Theme::text_caption()).child(ui_text(crate::settings::text("没有匹配结果，换个关键词试试吧"))));
         }
@@ -274,18 +275,10 @@ impl Editor {
             };
             let pick = d.clone();
             list = list.child(
-                div()
-                    .id(("mention", k))
-                    .flex_none()
+                MenuItem::new(("mention", k))
                     .h(px(48.))
-                    .mx(px(crate::editor_ui::MENU_INSET))
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(crate::ui::ROW_RADIUS))
-                    .flex()
-                    .items_center()
-                    .cursor_pointer()
-                    .when(k == m.selected, |d| d.bg(Theme::fill_hover()))
+                    .selected(k == m.selected)
+                    .leading(avatar)
                     .on_mouse_move(cx.listener(move |e, _: &MouseMoveEvent, _, cx| {
                         if let Some(m) = &mut e.mention
                             && m.selected != k
@@ -301,7 +294,6 @@ impl Editor {
                             e.pick_mention(pick.clone(), window, cx);
                         }),
                     )
-                    .child(div().mr(px(8.)).child(avatar))
                     .child(
                         div()
                             .flex_1()
@@ -327,9 +319,7 @@ impl Editor {
                     ),
             );
         }
-        let el = crate::editor_ui::menu()
-            .id("mention-box")
-            .occlude()
+        let el = Popover::new("mention-box")
             .w(px(280.))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(list);
@@ -382,17 +372,10 @@ impl Editor {
             .ml(px(4.))
             .child(icon("circle-help", 14., Theme::icon()))
             .tip_above(crate::settings::text("本文被以下文档所引用"), None);
-        let close = div()
-            .id("refs-hide")
-            .size(px(24.))
-            .rounded(px(ROW))
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .hover(|s| s.bg(Theme::fill_hover_strong()))
+        let close = Button::ghost("refs-hide")
+            .sized(ButtonSize::Xs)
+            .icon("x")
             .on_click(cx.listener(|_, _, _, cx| cx.emit(EditorEvent::HideRefs)))
-            .child(icon("x", 16., Theme::icon()))
             .tip_above(crate::settings::text("隐藏引用列表"), None);
         let tabs = div()
             .flex()
@@ -433,23 +416,16 @@ impl Editor {
                 .when_some(chevron, |d, expanded| {
                     let key = id.clone();
                     d.child(
-                        div()
-                            .id(("refs-fold", row))
+                        Button::ghost(("refs-fold", row))
+                            .sized(ButtonSize::Xs)
                             .size(px(20.))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(ROW))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(Theme::fill_hover_strong()))
                             .on_click(cx.listener(move |e, _, _, cx| {
                                 if !e.links.collapsed.remove(&key) {
                                     e.links.collapsed.insert(key.clone());
                                 }
                                 cx.notify();
                             }))
-                            .child(icon(if expanded { "triangle-down" } else { "triangle-right" }, 12., Theme::icon()))
+                            .child(icon(if expanded { "triangle-down" } else { "triangle-right" }, 12., color::muted_foreground()))
                             .tip_above(if expanded { crate::settings::text("收起") } else { crate::settings::text("展开") }, None),
                     )
                 })

@@ -121,6 +121,7 @@ impl Focusable for TextField {
 
 impl TextField {
     /// The standard single-line input used alongside buttons.
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub(crate) fn framed(field: &Entity<Self>, width: Pixels, window: &Window, cx: &App) -> Div {
         let focused = field.read(cx).is_focused(window);
         div().w(width).h(px(crate::mobile::control(30.))).px(px(10.)).flex().items_center().rounded(px(9.))

@@ -1,6 +1,6 @@
-# Fei Notes storage after upstream FORMAT 4
+# Fei Notes storage and the Quiet.md file library
 
-Fei Notes keeps two storage implementations behind `Store`. The upstream-compatible build uses the file backend: FORMAT 4 title-named files, real folders, `.quiet/` metadata and `.assets/` attachments. Old file libraries retain upstream migration consent and rollback behavior. `docs/FORMAT.md` documents this backend.
+Fei Notes keeps two storage implementations behind `Store`. The upstream-compatible build uses title-named files, real folders, `.quiet/` metadata and `.assets/` attachments. FORMAT 5 stores file-library metadata in per-device files. Eligible local FORMAT 4 libraries upgrade when opened. Synced folders keep FORMAT 4 under the upstream compatibility rules. `docs/FORMAT.md` documents the file backend and its migrations.
 
 The macOS product (`cloudkit-sync`, including its local-only mode) continues to use the startup-selected SQLite library. Its schema stays at version 7, with stable block/table identities and the existing CloudKit/Loro protocol. No file-layout migration, file-library picker or upstream onboarding may replace this selected root. iCloud is synchronization on top of SQLite, not a third document backend.
 
@@ -27,7 +27,7 @@ Settings > Documents keeps upstream library rows together (location, Trash and l
 
 ## Import and recovery
 
-FORMAT 3 and FORMAT 4 libraries are imported through an isolated staged copy. The source is never rewritten. Existing document IDs are checked for duplicates; paths and links are resolved by the file backend, then attachments are rebased into an import-specific `assets/legacy-*` directory. Imported live and trashed documents and their metadata commit together in SQLite. Symlinks and unsupported files are rejected.
+FORMAT 3, 4 and 5 file libraries are imported through an isolated staged copy. The source is never rewritten. Existing document IDs are checked for duplicates. The file backend resolves paths and links, then the import rebases attachments into an import-specific `assets/legacy-*` directory. Imported live and trashed documents and their metadata commit together in SQLite. Symlinks and unsupported files are rejected.
 
 The upstream version drawer works with both backends. File snapshots retain upstream raw text. SQLite snapshots serialize the prior committed document after the body and sync transaction succeeds; snapshots are ancillary local files under `.quiet/history/` and are not CloudKit records. SQLite remains the authoritative document store. Existing cloud recovery history and durable queues are preserved.
 

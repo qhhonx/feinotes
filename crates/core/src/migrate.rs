@@ -186,7 +186,7 @@ pub(super) fn restore(root: &Path) -> Result<RestoreReport> {
     }
     let inner = kept.join(INTERNAL);
     crate::vfs::create_dir_all(&inner)?;
-    for name in ["format.json", "index.json", "index.json.bak", "trash", "settings.json"] {
+    for name in ["format.json", "index.json", "index.json.bak", "index.json.v4", "meta", "trash", "settings.json"] {
         let p = internal.join(name);
         if p.fs_symlink_metadata().is_ok() { crate::vfs::rename(&p, inner.join(name))?; }
     }
@@ -342,7 +342,7 @@ impl Names {
             crate::vfs::read_dir(path).map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_lowercase()).collect()).unwrap_or_default()
         });
         for n in 1.. {
-            let stem = if n == 1 { base.to_string() } else { format!("{base} {n}") };
+            let stem = if n == 1 { base.to_string() } else { layout::numbered(base, n) };
             let name = match ext { Some(e) => format!("{stem}.{e}"), None => stem };
             if used.insert(name.to_lowercase()) { return name; }
         }
@@ -475,7 +475,7 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     for (id, rel, meta, _) in &written { disk.insert(rel.clone(), Attached::of(id, meta)); }
     write_atomic(&internal.join("index.json"), &serde_json::to_vec_pretty(&disk)?)?;
     // This computer's: recently opened, 本机文件, window sizes.
-    let local_path = local_file_for(root);
+    let local_path = local_file_for(root, &library_key(root));
     let mut local: Local = reread(&local_path).unwrap_or_default();
     local.opened = index.iter().filter(|(_, m)| m.opened > 0).map(|(k, m)| (k.clone(), m.opened)).collect();
     local.files = index.iter().filter(|(_, m)| m.local()).map(|(k, m)| (k.clone(), m.clone())).collect();
@@ -483,7 +483,7 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     crate::vfs::create_dir_all(local_path.parent().unwrap())?;
     write_atomic(&local_path, &serde_json::to_vec_pretty(&local)?)?;
     if plan.assets { crate::vfs::rename(&assets, root.join(ASSETS))?; }
-    write_atomic(&internal.join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT, id: uuid::Uuid::new_v4().to_string() })?)?;
+    write_atomic(&internal.join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: 4, id: uuid::Uuid::new_v4().to_string() })?)?;
     Ok((written.len(), folders.len()))
 }
 

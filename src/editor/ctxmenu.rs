@@ -12,27 +12,25 @@
 
 use super::keymap as k;
 use super::menus::{TURN_ITEMS, TurnItem};
-use super::overlays::{MENU_W, at, row, row_tinted, separator_h};
+use super::overlays::{MENU_W, at, row, separator_h};
 use super::table::{CellSel, CellSelKind};
 use super::view::{BlockAct, CtxKind, CtxSub, Editor, Menu};
 use crate::model::BlockKind;
-use crate::editor_ui::{MENU_PAD_Y, MENU_ROW_H, menu};
-use crate::feishu_theme::Theme;
+use crate::design::menu::{PAD as MENU_PAD_Y, ROW_H as MENU_ROW_H, SEP_H};
+use crate::design::{MenuItem, Popover};
 use gpui::{prelude::FluentBuilder, *};
 
-/// A separator: a 1px rule in 4px margins.
-const SEP_H: f32 = 9.;
 /// How far a submenu sits right of its menu.
 const SUB_DX: f32 = 4.;
 
 /// The menu being built: rows and group rules, one child at a time.
 struct Panel {
-    div: Stateful<Div>,
+    div: Popover,
 }
 
 impl Panel {
     fn new() -> Self {
-        Self { div: menu().id("ctx-menu").occlude().w(px(MENU_W)).py(px(MENU_PAD_Y)).flex().flex_col() }
+        Self { div: Popover::new("ctx-menu").menu().w(px(MENU_W)) }
     }
 
     fn push(mut self, el: impl IntoElement) -> Self {
@@ -51,26 +49,17 @@ impl Panel {
 }
 
 /// A submenu panel, hung at `top` beside the main one.
-fn sub_menu(id: &'static str, top: f32) -> Stateful<Div> {
-    menu()
-        .id(id)
-        .occlude()
-        .absolute()
-        .left(px(MENU_W + SUB_DX))
-        .top(px(top))
-        .w(px(MENU_W))
-        .py(px(MENU_PAD_Y))
-        .flex()
-        .flex_col()
+fn sub_menu(id: &'static str, top: f32) -> Popover {
+    Popover::new(id).menu().absolute().left(px(MENU_W + SUB_DX)).top(px(top)).w(px(MENU_W))
 }
 
-fn item(id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>) -> Stateful<Div> {
-    row(id, icon_name, label, None, false)
+fn item(id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>) -> MenuItem {
+    row(id, icon_name, label, false, false)
 }
 
 /// A destructive row: red label and glyph.
-fn danger_row(id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>) -> Stateful<Div> {
-    row_tinted(id, icon_name, label, None, false, Theme::danger(), Theme::danger())
+fn danger_row(id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>) -> MenuItem {
+    MenuItem::new(id).icon(icon_name).label(crate::settings::label(label.into())).destructive(true)
 }
 
 /// A click: close the menu, then run `a` exactly as its shortcut would.
@@ -109,12 +98,12 @@ fn hover(s: Option<CtxSub>, cx: &Context<Editor>) -> impl Fn(&MouseMoveEvent, &m
 }
 
 /// A row that runs an action.
-fn fire_row<A: Action + Clone + 'static>(cx: &Context<Editor>, id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, a: A) -> Stateful<Div> {
+fn fire_row<A: Action + Clone + 'static>(cx: &Context<Editor>, id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, a: A) -> MenuItem {
     item(id, icon_name, label).on_mouse_move(hover(None, cx)).on_mouse_down(MouseButton::Left, fire(cx, a))
 }
 
 /// A row that runs editor code.
-fn act_row<F>(cx: &Context<Editor>, id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, f: F) -> Stateful<Div>
+fn act_row<F>(cx: &Context<Editor>, id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, f: F) -> MenuItem
 where
     F: Fn(&mut Editor, &mut Window, &mut Context<Editor>) + 'static,
 {
@@ -122,7 +111,7 @@ where
 }
 
 /// A destructive row that runs editor code.
-fn danger_act<F>(cx: &Context<Editor>, id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, f: F) -> Stateful<Div>
+fn danger_act<F>(cx: &Context<Editor>, id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, f: F) -> MenuItem
 where
     F: Fn(&mut Editor, &mut Window, &mut Context<Editor>) + 'static,
 {
@@ -130,8 +119,8 @@ where
 }
 
 /// A row that opens a submenu.
-fn sub_row(cx: &Context<Editor>, id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, s: CtxSub, open: bool) -> Stateful<Div> {
-    row(id, icon_name, label, Some("›"), open).on_mouse_move(hover(Some(s), cx))
+fn sub_row(cx: &Context<Editor>, id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, s: CtxSub, open: bool) -> MenuItem {
+    row(id, icon_name, label, true, open).on_mouse_move(hover(Some(s), cx))
 }
 
 /// 转换为's rows: 正文 through 标题 3, lists, 引用, 代码块 (by kind, not label).

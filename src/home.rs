@@ -16,8 +16,9 @@ use crate::search::doc_icon;
 use crate::store::Entry;
 use crate::editor::image::picture;
 use crate::theme::{self, Theme};
-use crate::trash::{empty_state, list_header_text, list_line, menu_label, page_header, row_hover};
-use crate::ui::{ROW_RADIUS, TipExt, icon, menu_glyph, menu_row, popover, ui_text};
+use crate::trash::{empty_state, list_header_text, list_line, page_header, row_hover};
+use crate::design::Popover;
+use crate::ui::{ROW_RADIUS, TipExt, icon, menu_glyph, menu_label, menu_row, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::RefCell;
 use std::collections::{HashMap};
@@ -528,12 +529,12 @@ impl Workspace {
     }
 
     /// The row's / card's checkbox while 批量管理 is on.
-    fn home_check(&self, e: &Entry) -> Option<Div> {
+    fn home_check(&self, e: &Entry) -> Option<crate::design::Checkbox> {
         use crate::sidebar::{BATCH_LIMIT, Check, checkbox};
         let sel = self.batch.as_ref()?;
         if self.shared_batch() && e.meta.folder.is_some() { return None; }
         let on = sel.contains(&e.id);
-        Some(checkbox(if on { Check::On } else { Check::Off }, !on && sel.len() >= BATCH_LIMIT, "home-card"))
+        Some(checkbox(if on { Check::On } else { Check::Off }, !on && sel.len() >= BATCH_LIMIT))
     }
 
     pub(crate) fn home_entries(&self, cx: &App) -> Vec<Entry> {
@@ -746,23 +747,15 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(crate) fn home_more(&self, e: &Entry, key: String, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(crate) fn home_more(&self, e: &Entry, key: String, cx: &mut Context<Self>) -> crate::design::Button {
         let id = e.id.clone();
         let (rec, k2) = (self.more_bounds.clone(), key.clone());
         let open = self.row_menu.as_ref().is_some_and(|m| m.id == e.id && m.pos.x > px(0.) && m.corner == Anchor::TopRight);
-        div()
-            .id(SharedString::from(key.clone()))
+        crate::design::Button::ghost(SharedString::from(key.clone()))
+            .sized(crate::design::ButtonSize::Xs)
             .relative()
-            .size(px(24.))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.))
-            .cursor_pointer()
-            .hover(|s| s.bg(Theme::fill_hover_strong()))
-            .when(open, |d| d.bg(Theme::fill_hover_strong()))
-            .child(icon("ellipsis", 16., Theme::icon()))
+            .icon("ellipsis")
+            .selected(open)
             .child(canvas(move |b, _, _| {
                 rec.borrow_mut().insert(key.clone(), b);
             }, |_, _, _, _| {}).absolute().inset_0())
@@ -773,22 +766,11 @@ impl Workspace {
             }))
     }
 
-    /// The grid / list switcher: one white pill, the current view on a quiet
-    /// fill. 主页 and folder pages share it, so a folder opens in the view its parent showed.
-    pub(crate) fn view_switch(&self, cx: &mut Context<Self>) -> Div {
+    /// The grid / list switcher: a segmented control of two glyphs. 主页 and folder pages share it, so a folder opens in the view its parent showed.
+    pub(crate) fn view_switch(&self, cx: &mut Context<Self>) -> crate::design::Segmented {
         let toggle = |id: &'static str, ic: &'static str, on: bool, tip: &'static str, grid: bool| {
-            div()
-                .id(id)
-                .w(px(30.))
-                .h(px(24.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(7.))
-                .cursor_pointer()
-                .when(on, |d| d.bg(Theme::fill_hover_strong()))
-                .when(!on, |d| d.tip(tip, None).hover(|s| s.bg(Theme::fill_hover())))
-                .child(icon(ic, 14., Theme::icon()))
+            crate::design::Segment::new(id, "").icon(ic).selected(on)
+                .when(!on, |d| d.tip(tip, None))
                 .on_click(cx.listener(move |w, _, _, cx| {
                     w.home.grid = grid;
                     w.save_home();
@@ -796,11 +778,7 @@ impl Workspace {
                     cx.notify();
                 }))
         };
-        crate::ui::pill()
-            .p(px(1.))
-            .flex()
-            .gap(px(2.))
-            .rounded(px(9.))
+        crate::design::Segmented::new()
             .child(toggle("home-grid", "view-grid", self.home.grid, crate::settings::text("切换为宫格视图"), true))
             .child(toggle("home-list", "view-list", !self.home.grid, crate::settings::text("切换为列表视图"), false))
     }
@@ -862,7 +840,7 @@ impl Workspace {
             })
             .when(!personal_destination || shared_create, |d| d.child(crate::ui::header_icon("home-new", "plus")
                 .child(self.home.track("create-home"))
-                .when(self.create_menu.as_ref().is_some_and(|(_, pos)| self.home.anchor("create-home").is_some_and(|b| point(b.left(), b.bottom() + px(4.)) == *pos)), |d| d.bg(Theme::fill_hover()))
+                .selected(self.create_menu.as_ref().is_some_and(|(_, pos)| self.home.anchor("create-home").is_some_and(|b| point(b.left(), b.bottom() + px(4.)) == *pos)))
                 .tip(if shared_create { crate::settings::tr("新建并共享", "Create and share") } else { crate::settings::tr("新建", "New") }, (!shared_create).then(|| crate::shortcuts::hint("workspace::NewDoc", "⌘ + N")))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |w, ev: &ClickEvent, _, cx| {
@@ -875,24 +853,13 @@ impl Workspace {
         let shared_tab = self.home.tab == HomeTab::Shared;
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
         let shared_tab = false;
+        if self.store.roots().is_empty() {
+            return div().flex_1().min_w_0().h_full().flex().flex_col().child(header).child(self.empty_main(cx)).into_any_element();
+        }
         let entries = self.home_entries(cx);
         // Tabs as segmented items: the current one on a quiet fill, no accent.
         let tab = |id: &'static str, label: &'static str, t: HomeTab| {
-            let on = self.home.tab == t;
-            div()
-                .id(id)
-                .mr(px(8.))
-                .h(px(28.))
-                .px(px(10.))
-                .flex()
-                .items_center()
-                .rounded(px(9.))
-                .cursor_pointer()
-                .text_size(px(13.))
-                .line_height(px(20.))
-                .when(on, |d| d.bg(Theme::fill_hover_strong()).text_color(Theme::text()))
-                .when(!on, |d| d.text_color(Theme::text_caption()).hover(|s| s.bg(Theme::fill_hover())))
-                .child(crate::settings::label(label))
+            crate::design::Segment::new(id, crate::settings::label(label)).selected(self.home.tab == t)
                 .on_click(cx.listener(move |w, _, _, cx| {
                     w.row_menu = None;
                     w.create_menu = None;
@@ -904,12 +871,7 @@ impl Workspace {
         // 批量管理: the sidebar's 批量操作 selection, entered and shown here
         // too, with a toolbar of its own.
         let text_btn = |id: &'static str, ic: &'static str, label: &'static str, enabled: bool| {
-            div().id(id).flex_none().h(px(28.)).px(px(10.)).flex().items_center().gap(px(6.)).rounded(px(9.))
-                .text_size(px(13.)).line_height(px(20.))
-                .text_color(if enabled { Theme::text() } else { Theme::text_disabled() })
-                .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover())))
-                .child(icon(ic, 14., if enabled { Theme::icon() } else { Theme::text_disabled() }))
-                .child(label)
+            crate::design::Button::ghost(id).icon(ic).label(crate::settings::label(label)).disabled(!enabled)
         };
         let toolbar = div()
             .mt(px(12.))
@@ -927,7 +889,7 @@ impl Workspace {
             use crate::sidebar::{Check, checkbox};
             toolbar
                 .child(div().id("home-batch-all").flex_none().ml(px(10.)).size(px(14.)).cursor_pointer().group("home-batch-all")
-                    .child(checkbox(if all { Check::On } else if n > 0 { Check::Partial } else { Check::Off }, false, "home-batch-all"))
+                    .child(checkbox(if all { Check::On } else if n > 0 { Check::Partial } else { Check::Off }, false))
                     .tip(crate::settings::text("全选"), None)
                     .on_click(cx.listener(move |w, _, _, cx| { w.batch = Some(if all { vec![] } else { ids.clone() }); cx.notify(); })))
                 .child(div().ml(px(10.)).text_size(px(13.)).line_height(px(20.)).text_color(Theme::text()).child(crate::localized_format!("已选 {n} 项", "Selected: {n}")))
@@ -956,7 +918,7 @@ impl Workspace {
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 { (!crate::cloud_restore::local_only()).then(|| tab("home-tab-shared", crate::settings::tr("共享文档", "Shared documents"), HomeTab::Shared)) }
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-                { None::<Stateful<Div>> }
+                { None::<crate::design::Segment> }
             })
             .child(div().flex_1())
             .map(|d| d.child(text_btn("home-batch", "batch", crate::settings::text("批量管理"), true).text_color(Theme::text_caption()).mr(px(8.))
@@ -1274,7 +1236,7 @@ impl Workspace {
         if self.view != crate::app::View::Home {
             return out;
         }
-        let place = |pos: Point<Pixels>, corner: Anchor, menu: Stateful<Div>| {
+        let place = |pos: Point<Pixels>, corner: Anchor, menu: Popover| {
             deferred(anchored().anchor(corner).position(pos).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element()
         };
         if self.home.sort_menu
@@ -1282,7 +1244,7 @@ impl Workspace {
                 let selected_order = self.home.order();
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             let selected_order = if self.home.shared() { self.shared_order(&self.shared_collection_entries(cx)) } else { selected_order };
-            let mut menu = popover().id("sort-menu").occlude().min_w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
+                    let mut menu = Popover::new("sort-menu").menu().min_w(px(200.))
                     .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.home.sort_menu = false; cx.notify(); }));
                 for (index, order) in [HomeSort::Manual, HomeSort::Visited, HomeSort::Modified, HomeSort::Created, HomeSort::Title].into_iter().enumerate() {
 

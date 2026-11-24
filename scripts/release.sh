@@ -31,7 +31,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/"
 # Kept beside the package, not in it: resolves the addresses a panic logs
 # (`atos -o <dSYM> -l <base> <addresses>`) and crash reports, matched by UUID.
-ditto -c -k --keepParent "$binary.dSYM/" "$out/dSYM-quiet-md-$version-macos-$arch.zip"
+ditto -c -k --norsrc --noextattr --noqtn --keepParent "$binary.dSYM/" "$out/dSYM-quiet-md-$version-macos-$arch.zip"
 cp LICENSE THIRD_PARTY.md "$app/Contents/Resources/"
 icons="$out/AppIcon.iconset"
 mkdir -p "$icons"
@@ -82,7 +82,7 @@ if [ "$SIGNING_IDENTITY" = - ]; then
   suffix=-unsigned
   echo "CI package only: ad-hoc signed, without notarization; do not publish."
 else
-  ditto -c -k --keepParent "$app" "$out/notarization.zip"
+  ditto -c -k --norsrc --noextattr --noqtn --keepParent "$app" "$out/notarization.zip"
   xcrun notarytool submit "$out/notarization.zip" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json > "$out/notarization.json"
   python3 - "$out/notarization.json" <<'PYTHON'
 import json, sys
@@ -96,6 +96,10 @@ PYTHON
   spctl --assess --type execute --verbose=2 "$app"
 fi
 archive="$out/quiet-md-$version-macos-$arch$suffix.zip"
-ditto -c -k --keepParent "$app" "$archive"
+# No extended attributes: ditto stores them as `._*` entries, which unzip and
+# other tools unpack as real files inside the bundle, breaking its signature
+# ("damaged and can't be opened", #407).
+ditto -c -k --norsrc --noextattr --noqtn --keepParent "$app" "$archive"
+if unzip -l "$archive" | grep '/\._' >/dev/null; then echo "AppleDouble entries in $archive" >&2; exit 1; fi
 (cd "$out" && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")
 printf 'Release artifact: %s\nDebug symbols (keep, do not publish): %s\n' "$archive" "$out/dSYM-quiet-md-$version-macos-$arch.zip"

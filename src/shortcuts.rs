@@ -229,6 +229,7 @@ fn info(name: &str) -> Option<(usize, &'static str, &'static str)> {
         "OpenSettings" => (0, "打开设置", "Open Settings"),
         "GoHome" => (0, "返回主页", "Go to Home"),
         "ToggleSidebar" => (0, "展开 / 收起侧栏", "Show / hide sidebar"),
+        "ToggleDarkMode" => (0, "切换深色 / 浅色", "Toggle dark mode"),
         "FocusSearch" => (0, "搜索文档", "Search documents"),
         "ToggleShortcuts" => (0, "查看快捷键", "Show shortcuts"),
         "OpenFile" => (1, "打开 Markdown 文件", "Open Markdown file"),
@@ -310,8 +311,12 @@ pub fn rows(cx: &App) -> Vec<(String, String, String)> {
 }
 pub fn pretty(key: &str) -> String {
     if key.is_empty() { return tr("未设置", "Not set").into(); }
-    key.split(' ').map(|stroke| {
-        let Ok(ks) = parse_key(stroke) else { return stroke.to_string() };
+    strokes(key).into_iter().map(|parts| parts.join(if mac() { " " } else { "+" })).collect::<Vec<_>>().join("  →  ")
+}
+/// Each stroke of `key` as the names of its keys (⌘, ⇧, K …), one key cap each.
+pub fn strokes(key: &str) -> Vec<Vec<String>> {
+    key.split(' ').filter(|s| !s.is_empty()).map(|stroke| {
+        let Ok(ks) = parse_key(stroke) else { return vec![stroke.to_string()] };
         let m = ks.modifiers;
         let win = !mac();
         let names = if win { [(m.control, "Ctrl"), (m.alt, "Alt"), (m.shift, "Shift"), (m.platform, if cfg!(target_os = "windows") { "Win" } else { "Super" })] } else { [(m.control, "⌃"), (m.alt, "⌥"), (m.shift, "⇧"), (m.platform, "⌘")] };
@@ -324,8 +329,8 @@ pub fn pretty(key: &str) -> String {
             k if k.chars().count() == 1 => k.to_uppercase(),
             k => { let mut c = k.chars(); c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default() }
         });
-        out.join(if win { "+" } else { " " })
-    }).collect::<Vec<_>>().join("  →  ")
+        out
+    }).collect()
 }
 fn sequence(key: &str) -> anyhow::Result<Vec<Keystroke>> {
     key.split_whitespace().map(|k| parse_key(k).map_err(Into::into)).collect()
@@ -489,8 +494,8 @@ impl Workspace {
         let customized = cx.try_global::<Shortcuts>().is_some_and(|s| s.custom.keys().any(|k| !is_global(k)));
         div().flex_none().flex().items_center().gap(px(8.))
             .when(customized, |d| d.child(crate::settings::link_button("shortcuts-reset-all", tr("全部恢复默认", "Reset all")).on_click(cx.listener(|w, _, _, cx| w.reset_all_shortcuts(cx)))))
-            .child(div().w(px(200.)).h(px(28.)).px(px(8.)).flex().items_center().gap(px(6.)).rounded(px(8.)).bg(Theme::fill_hover())
-                .child(crate::ui::icon("search", 14., Theme::icon()))
+            .child(crate::design::Field::new("shortcuts-search").sized(crate::design::FieldSize::Sm).w(px(200.))
+                .child(crate::design::icon("search", 14., crate::design::color::muted_foreground()))
                 .child(div().flex_1().min_w_0().child(self.settings_filter.clone())))
             .into_any_element()
     }
@@ -510,8 +515,7 @@ impl Workspace {
             groups[g].push(div().group("shortcut-row").w_full().px(px(16.)).py(px(7.)).flex().flex_col().gap(px(2.))
                 .child(div().w_full().min_h(px(28.)).flex().items_center().gap(px(12.))
                     .child(div().flex_1().min_w_0().text_size(px(13.)).line_height(px(20.)).child(title))
-                    .when(is_custom && !recording, |d| d.child(div().id(SharedString::from(format!("reset-{reset}"))).h(px(26.)).px(px(8.)).flex().items_center().rounded(px(7.)).cursor_pointer()
-                        .text_size(px(12.)).text_color(Theme::primary()).hover(|s| s.bg(Theme::fill_hover())).child(tr("恢复默认", "Reset"))
+                    .when(is_custom && !recording, |d| d.child(crate::settings::link_button(SharedString::from(format!("reset-{reset}")), tr("恢复默认", "Reset"))
                         .on_click(cx.listener(move |w, _, _, cx| w.reset_shortcut(&reset, cx)))))
                     .when(!recording && !key.is_empty(), |d| d.child(crate::settings::link_button(SharedString::from(format!("clear-{clear}")), tr("移除", "Remove")).invisible().group_hover("shortcut-row", |s| s.visible()).on_click(cx.listener(move |w, _, _, cx| w.clear_shortcut(&clear, cx)))))
                     .child(crate::settings::keycap(SharedString::from(id.clone()), &shown_key, recording)
@@ -555,13 +559,7 @@ impl Workspace {
             .children(general_error.map(|e| div().px(px(4.)).text_size(px(12.)).line_height(px(18.)).text_color(Theme::danger()).child(e)))
             .when(show_global, |d| d.child(global_group))
             .when(empty, |d| d.child(div().py(px(40.)).flex().justify_center().text_size(px(13.)).text_color(Theme::text_caption()).child(tr("没有匹配的快捷键", "No matching shortcuts"))))
-            .children(groups.into_iter().enumerate().filter(|(_, rows)| !rows.is_empty()).map(|(g, rows)| {
-                let n = rows.len();
-                div().w_full().flex().flex_col().gap(px(8.))
-                    .child(div().px(px(4.)).text_size(px(13.)).line_height(px(18.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::sidebar_section()).child(tr(GROUPS[g].0, GROUPS[g].1)))
-                    .child(div().w_full().flex().flex_col().rounded(px(12.)).border_1().border_color(Theme::line_border()).overflow_hidden()
-                        .children(rows.into_iter().enumerate().map(move |(i, r)| div().w_full().flex().flex_col().when(i + 1 < n, |d| d.border_b_1().border_color(crate::ui::list_line())).child(r))))
-            }))
+            .children(groups.into_iter().enumerate().filter(|(_, rows)| !rows.is_empty()).map(|(g, rows)| crate::settings::group(Some(tr(GROUPS[g].0, GROUPS[g].1)), rows)))
             .into_any_element()
     }
 }

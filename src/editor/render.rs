@@ -1953,22 +1953,26 @@ impl Editor {
         } else {
             crate::docinfo::word_count(&self.core.selected_text())
         };
-        // Selection word count: a small white pill at the note's bottom right.
+        // Selection word count at the note's bottom right: an outline xs
+        // button's face (1px `border`, shadow-xs, radius 8, text-xs), not a
+        // button; opaque (`background`) as it floats over the text.
         Some(
             div()
                 .absolute()
                 .bottom(px(10.))
                 .right(px(34.))
                 .h(px(24.))
-                .px(px(9.))
+                .px(px(8.))
+                .flex()
+                .items_center()
                 .rounded(px(8.))
-                .bg(crate::theme::raised(Theme::bg_body()))
+                .bg(crate::design::color::background())
                 .border_1()
-                .border_color(Theme::button_border())
-                .shadow(theme::shadow_button())
+                .border_color(crate::design::color::border())
+                .shadow(crate::design::shadow::xs())
+                .font_family(crate::theme::ui_family())
                 .text_size(px(12.))
-                .line_height(px(22.))
-                .text_color(Theme::text_caption())
+                .text_color(crate::design::color::muted_foreground())
                 .child(crate::settings::localized(crate::settings::lang(), "{n} 字", || format!("{n} 字"), || format!("{n} {}", if n == 1 { "word" } else { "words" })))
                 .into_any_element(),
         )
@@ -1990,6 +1994,7 @@ fn spec_for_feishu(&self, b: &Block, env: Env) -> TextSpec {
             spec.line_height = crate::themes::doc_len(m.line_height);
             spec.weight = FontWeight::MEDIUM;
             spec.letter_spacing = spec.size * -0.02;
+            if let Some(c) = crate::editor_theme::heading_color(level) { spec.color = c; }
         }
         spec.dim_marks = env.quote;
         if let Some(c) = env.color {

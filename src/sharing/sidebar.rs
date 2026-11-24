@@ -336,7 +336,7 @@ impl Workspace {
             .flex().items_center().gap(px(0.)).rounded(px(crate::sidebar::ROW_R)).cursor_pointer()
             .text_size(px(crate::theme::ui_font())).text_color(crate::sidebar::text_color()).group("doc-row")
             .when(batch, |d| d.child(crate::sidebar::batch_check_slot().mr(px(4.)).when(!member, |slot|
-                slot.child(crate::sidebar::checkbox(if checked { crate::sidebar::Check::On } else { crate::sidebar::Check::Off }, blocked, "doc-row")))))
+                slot.child(crate::sidebar::checkbox(if checked { crate::sidebar::Check::On } else { crate::sidebar::Check::Off }, blocked)))))
             .when(batch && !member && checked, |d| d.bg(crate::sidebar::selection_fill()))
             .child(crate::sidebar::entry_icon(entry, false, false, cx))
             .child(self.sidebar_title(entry, SidebarSection::Shared, selected, false, cx))

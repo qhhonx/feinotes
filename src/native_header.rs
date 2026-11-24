@@ -14,7 +14,7 @@ pub fn supported() -> bool { Class::get("NSGlassEffectView").is_some() }
 /// scrolling keep their existing renderer and event handling.
 #[derive(Default)]
 pub struct NativeSidebar { view: RefCell<Option<SidebarView>> }
-struct SidebarView { view: *mut Object, frame: CGRect, hidden: bool }
+struct SidebarView { view: *mut Object, frame: CGRect, hidden: bool, dark: Option<bool> }
 impl NativeSidebar {
     /// Fit the glass to the sidebar. A change is shown with this frame, not a refresh
     /// ahead of it: GPUI presents on its own, so the glass would go (or come)
@@ -37,13 +37,26 @@ impl NativeSidebar {
                 let view: *mut Object = msg_send![view, initWithFrame:frame];
                 let _: () = msg_send![view, setCornerRadius:0f64];
                 let _: () = msg_send![parent, addSubview:view positioned:-1isize relativeTo:gpui];
-                *slot = Some(SidebarView { view, frame, hidden: false });
+                *slot = Some(SidebarView { view, frame, hidden: false, dark: None });
                 window.present_next_frame_in_transaction();
             }
             if let Some(sidebar) = slot.as_mut() {
                 if sidebar.frame.origin.x != frame.origin.x || sidebar.frame.origin.y != frame.origin.y || sidebar.frame.size.width != frame.size.width || sidebar.frame.size.height != frame.size.height {
                     let _: () = msg_send![sidebar.view, setFrame:frame];
                     sidebar.frame = frame;
+                    window.present_next_frame_in_transaction();
+                }
+                // The glass takes the app's light or dark, not the system's: with 跟随系统 the
+                // app is left unpinned (so it still hears the system change), and the glass
+                // would otherwise show the system's look until the theme caught up, or
+                // whenever the two part (a theme drawn dark on a light system).
+                let dark = crate::theme::dark();
+                if sidebar.dark != Some(dark) {
+                    let name = if dark { c"NSAppearanceNameDarkAqua" } else { c"NSAppearanceNameAqua" };
+                    let s: *mut Object = msg_send![Class::get("NSString").unwrap(), stringWithUTF8String: name.as_ptr()];
+                    let look: *mut Object = msg_send![Class::get("NSAppearance").unwrap(), appearanceNamed: s];
+                    let _: () = msg_send![sidebar.view, setAppearance: look];
+                    sidebar.dark = Some(dark);
                     window.present_next_frame_in_transaction();
                 }
                 let hidden = width <= 0.;

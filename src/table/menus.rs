@@ -4,8 +4,7 @@
 
 use super::style::*;
 use super::*;
-use crate::feishu_theme::{c, ud};
-use crate::ui::{popover, ui_text, TipExt};
+use crate::ui::{ui_text, TipExt};
 
 fn label(s: &str) -> String { crate::settings::label(s) }
 
@@ -22,11 +21,7 @@ fn tool_icons(t: &Table, view: &View, add: bool, cx: &Context<TableView>) -> Div
     let mut row = div().flex_none().flex().items_center().gap(px(4.))
         .when(add, |d| d.child(icon_button("tb-add", "plus", false).tip_above(crate::settings::text("添加记录"), None).on_click(cx.listener(|v, _, window, cx| v.add_record(None, window, cx)))));
     for (id, glyph, tip, n, kind) in tools {
-        let on = n > 0;
-        row = row.child(div().id(id).flex_none().h(px(28.)).min_w(px(28.)).px(px(if on { 6. } else { 0. })).flex().items_center().justify_center().gap(px(2.)).rounded(px(6.)).cursor_pointer()
-            .when(on, |d| d.bg(Theme::primary_fill_1())).hover(|s| s.bg(Theme::fill_hover()))
-            .child(icon(glyph, 15., if on { Theme::primary() } else { Theme::icon() }))
-            .when(on, |d| d.child(div().text_size(px(TEXT)).text_color(Theme::primary()).child(format!("{n}"))))
+        row = row.child(tool_btn(id, glyph, n)
             .tip_above(crate::settings::text(tip), None)
             .on_click(cx.listener(move |v, ev: &ClickEvent, window, cx| { let p = ev.position(); panels::open(v, kind, point(p.x - px(200.), p.y + px(18.)), window, cx); })));
     }
@@ -35,8 +30,8 @@ fn tool_icons(t: &Table, view: &View, add: bool, cx: &Context<TableView>) -> Div
 
 /// A 28pt square icon button; `off` greys it out and makes it inert.
 fn icon_button(id: &'static str, glyph: &'static str, off: bool) -> Stateful<Div> {
-    div().id(id).flex_none().size(px(28.)).rounded(px(6.)).flex().items_center().justify_center()
-        .when(!off, |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))).child(icon(glyph, 15., if off { c(ud::N400) } else { Theme::icon() }))
+    div().id(id).flex_none().size(px(28.)).rounded(px(crate::design::geo().tool_r)).flex().items_center().justify_center()
+        .when(!off, |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))).child(icon(glyph, 15., if off { Theme::text_disabled() } else { Theme::icon() }))
 }
 
 /// A file is one table with one view: the pane's chrome is one line. Left, the tools as icons;
@@ -97,7 +92,7 @@ fn rename_box(v: &TableView, cx: &Context<TableView>) -> Div {
 /// A press anywhere outside it keeps the name typed and ends renaming.
 fn rename_frame(d: Div, cx: &Context<TableView>) -> Div {
     let ring = |a: f32, spread: f32, blur: f32| { let mut c = Theme::primary(); c.a = a; BoxShadow { color: c, offset: point(px(0.), px(0.)), blur_radius: px(blur), spread_radius: px(spread), inset: false } };
-    d.flex().items_center().rounded(px(6.)).bg(Theme::bg_body()).shadow(vec![ring(0.9, 1., 0.5), ring(0.15, 3., 1.)])
+    d.flex().items_center().rounded(px(crate::design::geo().tool_r)).bg(Theme::bg_body()).shadow(vec![ring(0.9, 1., 0.5), ring(0.15, 3., 1.)])
         .on_mouse_down_out(cx.listener(|v, _, _, cx| v.finish_rename(true, cx)))
 }
 
@@ -109,7 +104,7 @@ pub(crate) fn find_bar(v: &TableView, cx: &Context<TableView>) -> Option<AnyElem
     let empty = v.find_input.read(cx).text.is_empty();
     let step = |id: &'static str, glyph: &'static str, by: i32| div().id(id).size(px(24.)).rounded(px(4.)).flex().items_center().justify_center().cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
         .child(icon(glyph, 13., Theme::icon())).on_click(cx.listener(move |v, _, _, cx| v.find_step(by, cx)));
-    Some(div().absolute().top(px(8.)).right(px(16.)).child(popover().id("tb-findbar").occlude().h(px(40.)).w(px(320.)).px(px(10.)).flex().items_center().gap(px(6.))
+    Some(div().absolute().top(px(8.)).right(px(16.)).child(crate::design::Popover::new("tb-findbar").occlude().h(px(40.)).w(px(320.)).px(px(10.)).flex().items_center().gap(px(6.))
         .child(icon("search", 14., Theme::text_placeholder()))
         .child(div().flex_1().min_w_0().child(v.find_input.clone()))
         .child(div().flex_none().text_size(px(12.)).text_color(Theme::text_caption()).child(if empty { String::new() } else if n == 0 { label("无结果") } else { format!("{}/{n}", f.at + 1) }))
@@ -122,9 +117,9 @@ pub(crate) fn find_bar(v: &TableView, cx: &Context<TableView>) -> Option<AnyElem
 pub(crate) fn selection_bar(v: &TableView, _t: &Table, cx: &Context<TableView>) -> Option<AnyElement> {
     let n = v.rows_sel.len();
     if n == 0 { return None; }
-    let btn = |id: &'static str, glyph: &'static str, text: &str, danger: bool| div().id(id).h(px(28.)).px(px(8.)).flex().items_center().gap(px(4.)).rounded(px(6.)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+    let btn = |id: &'static str, glyph: &'static str, text: &str, danger: bool| div().id(id).h(px(28.)).px(px(8.)).flex().items_center().gap(px(4.)).rounded(px(crate::design::geo().tool_r)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
         .child(icon(glyph, 14., if danger { Theme::danger() } else { Theme::icon() })).child(div().text_color(if danger { Theme::danger() } else { Theme::text() }).child(label(text)));
-    Some(div().absolute().bottom(px(FOOTER_H + 16.)).left_0().right_0().flex().justify_center().child(popover().id("tb-selbar").occlude().h(px(44.)).px(px(12.)).flex().items_center().gap(px(8.))
+    Some(div().absolute().bottom(px(footer_h() + 16.)).left_0().right_0().flex().justify_center().child(crate::design::Popover::new("tb-selbar").occlude().h(px(44.)).px(px(12.)).flex().items_center().gap(px(8.))
         .child(div().text_color(Theme::text()).child(format!("{} {n} {}", label("已选"), label("条记录"))))
         .child(div().w(px(1.)).h(px(16.)).bg(Theme::line_divider()))
         .child(btn("tb-sel-dup", "copy", "创建副本", false).on_click(cx.listener(|v, _, _, cx| { let (tid, ids) = (v.table, v.rows_sel.iter().copied().collect::<Vec<_>>()); v.edit(cx, |d| d.duplicate_records(tid, &ids)); })))
@@ -165,8 +160,8 @@ pub(crate) fn edit_field(v: &mut TableView, fid: FieldId, pos: Point<Pixels>, wi
     v.open_popup(pos, Popup::FieldForm(form), cx);
 }
 
-fn shell(id: &'static str, w: f32, cx: &Context<TableView>) -> Stateful<Div> {
-    popover().id(id).occlude().w(px(w)).py(px(4.)).on_mouse_down_out(cx.listener(|v, _, window, cx| if v.dropdown.is_none() { v.close_popup(window, cx) }))
+fn shell(id: &'static str, w: f32, cx: &Context<TableView>) -> crate::design::Popover {
+    crate::design::Popover::new(id).occlude().w(px(w)).py(px(4.)).on_mouse_down_out(cx.listener(|v, _, window, cx| if v.dropdown.is_none() { v.close_popup(window, cx) }))
 }
 
 /// The open popup, hung at its position.
@@ -190,11 +185,11 @@ pub(crate) fn popup(v: &TableView, base: &Base, t: &Table, view: &View, _window:
 /// The list on top of a popup (a form's select boxes).
 pub(crate) fn dropdown(v: &TableView, cx: &Context<TableView>) -> Option<AnyElement> {
     let d = v.dropdown.as_ref()?;
-    let mut list = popover().id("tb-dropdown").occlude().w(px(d.width)).max_h(px(320.)).overflow_y_scroll().py(px(4.))
+    let mut list = crate::design::Popover::new("tb-dropdown").occlude().w(px(d.width)).max_h(px(320.)).overflow_y_scroll().py(px(4.))
         .on_mouse_down_out(cx.listener(|v, _, _, cx| { v.dropdown = None; cx.notify(); }));
     for (i, it) in d.items.iter().enumerate() {
         let pick = d.pick.clone();
-        list = list.child(div().id(("tb-drop", i)).flex_none().h(px(32.)).mx(px(4.)).px(px(8.)).flex().items_center().gap(px(8.)).rounded(px(6.)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+        list = list.child(list_row(("tb-drop", i)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
             .when_some(it.glyph, |d, g| d.child(icon(g, 15., Theme::icon())))
             .child(match it.tag { Some(slot) => div().flex_1().min_w_0().flex().child(tag(&it.label, slot)), None => div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().when(it.on, |d| d.text_color(Theme::primary())).child(it.label.clone()) })
             .when(it.on, |d| d.child(icon("check", 14., Theme::primary())))

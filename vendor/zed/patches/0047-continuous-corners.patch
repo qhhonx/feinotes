@@ -1,0 +1,97 @@
+Draw rounded corners as continuous corners, as Apple does, in the Metal quad SDF: a corner of radius r starts 1.528 r from the corner and is a superellipse in that box, its exponent chosen to cross the diagonal where the circle does (back to the circle when the box must shrink, as in a pill); gradient-normalised so antialiasing keeps one pixel. Experiment for Quiet.md's design system (R 14); Windows and wgpu shaders unchanged.
+
+diff --git a/crates/gpui_apple/src/shaders.metal b/crates/gpui_apple/src/shaders.metal
+index 680842f890d985595e160c2f187a251b643350fa..4dfcce75d6d717574415ba8212a9acb6ec86b56e 100644
+--- a/crates/gpui_apple/src/shaders.metal
++++ b/crates/gpui_apple/src/shaders.metal
+@@ -38,7 +38,8 @@ float quarter_ellipse_sdf(float2 point, float2 radii);
+ float pick_corner_radius(float2 center_to_point, Corners_ScaledPixels corner_radii);
+ float quad_sdf(float2 point, Bounds_ScaledPixels bounds,
+                Corners_ScaledPixels corner_radii);
+-float quad_sdf_impl(float2 center_to_point, float corner_radius);
++float quad_sdf_impl(float2 center_to_point, float corner_radius, float n);
++float2 continuous_corner(float corner_radius, float2 half_size);
+ float4 over(float4 below, float4 above);
+ float radians(float degrees);
+ 
+@@ -129,6 +130,8 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
+ 
+   // Radius of the nearest corner
+   float corner_radius = pick_corner_radius(center_to_point, quad.corner_radii);
++  float2 continuous = continuous_corner(corner_radius, half_size);
++  corner_radius = continuous.x;
+ 
+   // Width of the nearest borders
+   float2 border = float2(
+@@ -179,7 +182,7 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
+   }
+ 
+   // Signed distance of the point to the outside edge of the quad's border
+-  float outer_sdf = quad_sdf_impl(corner_center_to_point, corner_radius);
++  float outer_sdf = quad_sdf_impl(corner_center_to_point, corner_radius, continuous.y);
+ 
+   // Approximate signed distance of the point to the inside edge of the quad's
+   // border. It is negative outside this edge (within the border), and
+@@ -1139,28 +1142,49 @@ float quad_sdf(float2 point, Bounds_ScaledPixels bounds,
+     float2 half_size = float2(bounds.size.width, bounds.size.height) / 2.0;
+     float2 center = float2(bounds.origin.x, bounds.origin.y) + half_size;
+     float2 center_to_point = point - center;
+-    float corner_radius = pick_corner_radius(center_to_point, corner_radii);
++    float2 continuous = continuous_corner(pick_corner_radius(center_to_point, corner_radii), half_size);
++    float corner_radius = continuous.x;
+     float2 corner_to_point = fabs(center_to_point) - half_size;
+     float2 corner_center_to_point = corner_to_point + corner_radius;
+-    return quad_sdf_impl(corner_center_to_point, corner_radius);
++    return quad_sdf_impl(corner_center_to_point, corner_radius, continuous.y);
+ }
+ 
+ // Implementation of quad signed distance field
+-float quad_sdf_impl(float2 corner_center_to_point, float corner_radius) {
++// Continuous corners (as Apple draws them): a corner of radius r starts
++// 1.528 r from the corner instead of r, and is a superellipse
++// |x|^n + |y|^n = e^n in that e × e box, its exponent chosen so the curve
++// crosses the diagonal where the circle of radius r does. The curvature thus
++// eases in from the straight sides instead of jumping. When the box has to
++// shrink to fit (a pill), n falls back towards 2, the circle.
++// Returns (e, n).
++float2 continuous_corner(float corner_radius, float2 half_size) {
++    if (corner_radius <= 0.0) {
++        return float2(0.0, 2.0);
++    }
++    float e = max(corner_radius, min(corner_radius * 1.528, min(half_size.x, half_size.y)));
++    float n = -1.0 / log2(1.0 - (1.0 - M_SQRT1_2_F) * corner_radius / e);
++    return float2(e, max(n, 2.0));
++}
++
++// Implementation of quad signed distance field. `corner_radius` is the
++// corner's box and `n` its exponent (2: a circular corner).
++float quad_sdf_impl(float2 corner_center_to_point, float corner_radius, float n) {
+     if (corner_radius == 0.0) {
+         // Fast path for unrounded corners
+         return max(corner_center_to_point.x, corner_center_to_point.y);
+-    } else {
+-        // Signed distance of the point from a quad that is inset by corner_radius
+-        // It is negative inside this quad, and positive outside
+-        float signed_distance_to_inset_quad =
+-            // 0 inside the inset quad, and positive outside
+-            length(max(float2(0.0), corner_center_to_point)) +
+-            // 0 outside the inset quad, and negative inside
+-            min(0.0, max(corner_center_to_point.x, corner_center_to_point.y));
+-
+-        return signed_distance_to_inset_quad - corner_radius;
+     }
++    float2 q = max(float2(0.0), corner_center_to_point);
++    // 0 outside the inset quad, and negative inside
++    float inside = min(0.0, max(corner_center_to_point.x, corner_center_to_point.y));
++    if (q.x == 0.0 || q.y == 0.0) {
++        return max(q.x, q.y) + inside - corner_radius;
++    }
++    // The p-norm, divided by its gradient's length so it stays a distance
++    // near the edge and antialiasing keeps a one-pixel width.
++    float2 qn = pow(q / corner_radius, float2(n));
++    float norm = corner_radius * pow(qn.x + qn.y, 1.0 / n);
++    float2 g = pow(q / norm, float2(n - 1.0));
++    return (norm - corner_radius) / max(length(g), 1e-4) + inside;
+ }
+ 
+ ClippedVertex clip_to_mask(float2 unit_vertex, Bounds_ScaledPixels bounds,

@@ -64,6 +64,21 @@ impl std::fmt::Display for AddError {
     }
 }
 
+/// Why a root could not be renamed; the folder keeps its name.
+#[derive(Debug, PartialEq)]
+pub enum RenameError {
+    /// Something else in the same folder has this name.
+    Taken(String),
+    Empty,
+    /// No permission, or a read-only disk.
+    Denied,
+    /// Not open (an unplugged disk, a folder gone missing).
+    Unavailable,
+    /// A folder the system names, or a test run's fixed root.
+    Fixed,
+    Other(String),
+}
+
 #[derive(Default)]
 pub struct Workspace {
     pub roots: Vec<Root>,
@@ -102,10 +117,13 @@ impl Workspace {
             return (home.into_iter().collect(), false);
         }
         if let Some(home) = std::env::var_os("QUIET_MD_HOME") {
-            return (vec![RootEntry { key: "home".into(), path: PathBuf::from(home), bookmark: None, added: 0 }], true);
+            // Named by its path, so two test runs never share what this computer keeps.
+            let path = PathBuf::from(home);
+            return (vec![RootEntry { key: crate::store::library_key(&path), path, bookmark: None, added: 0 }], true);
         }
         if cfg!(target_family = "wasm") {
-            return (vec![RootEntry { key: "web".into(), path: Store::default_root(), bookmark: None, added: 0 }], true);
+            let path = Store::default_root();
+            return (vec![RootEntry { key: crate::store::library_key(&path), path, bookmark: None, added: 0 }], true);
         }
         if let Ok(b) = crate::vfs::read(Self::roots_file()) && let Ok(f) = serde_json::from_slice::<RootsFile>(&b) { return (f.roots, false); }
         (Self::from_legacy(), false)
@@ -130,7 +148,7 @@ impl Workspace {
         let legacy = Store::legacy_root();
         let mut ws = Workspace { fixed, ..Default::default() };
         for e in entries {
-            let store = if e.path == legacy && e.path.fs_is_dir() { Store::check_file_root(&e.path).and_then(|()| Store::open_library(e.path.clone())) } else { Store::open_root(&e.path) };
+            let store = if e.path == legacy && e.path.fs_is_dir() { Store::open_library_as(e.path.clone(), &e.key) } else { Store::open_root_as(&e.path, &e.key) };
             ws.push(e.key, e.path, store);
         }
         ws
@@ -193,8 +211,8 @@ impl Workspace {
     /// Open folder `dir` as a new root at the end; its key.
     pub fn add(&mut self, dir: &Path) -> std::result::Result<String, AddError> {
         let dir = self.check(dir)?;
-        let store = Store::open_root(&dir).map_err(|e| AddError::Other(e.to_string()))?;
         let key = new_key();
+        let store = Store::open_root_as(&dir, &key).map_err(|e| AddError::Other(e.to_string()))?;
         self.push(key.clone(), dir, Ok(store));
         self.save().map_err(|e| AddError::Other(e.to_string()))?;
         Ok(key)
@@ -216,13 +234,57 @@ impl Workspace {
     /// Try a root that could not be opened again (the disk is back).
     pub fn retry(&mut self, key: &str) {
         let Some(r) = self.roots.iter_mut().find(|r| r.key == key && r.store.is_none()) else { return };
-        match Store::open_root(&r.path) { Ok(s) => { r.store = Some(s); r.error = None; } Err(e) => r.error = Some(e.to_string()) }
+        match Store::open_root_as(&r.path, &r.key) { Ok(s) => { r.store = Some(s); r.error = None; } Err(e) => r.error = Some(e.to_string()) }
+    }
+
+    /// 重命名 (2.11): root `key`'s folder takes `name` on disk, in the same
+    /// folder as before. The key stays, so the ids the windows hold and what
+    /// this computer keeps about the root stay valid. The new path.
+    pub fn rename(&mut self, key: &str, name: &str) -> std::result::Result<PathBuf, RenameError> {
+        if self.root(key).is_none_or(|r| r.store.is_none()) { return Err(RenameError::Unavailable); }
+        if !self.can_rename(key) { return Err(RenameError::Fixed); }
+        let r = self.roots.iter_mut().find(|r| r.key == key).ok_or(RenameError::Unavailable)?;
+        let store = r.store.as_mut().ok_or(RenameError::Unavailable)?;
+        if name.trim().is_empty() { return Err(RenameError::Empty); }
+        let name = crate::store::file_name_for(name.trim());
+        let to = r.path.with_file_name(&name);
+        if to == r.path { return Ok(to); }
+        // Taken: anything there but the folder itself (a change of case on a disk that ignores case).
+        let same = |a: &Path, b: &Path| a.file_name().map(|n| n.to_string_lossy().to_lowercase()) == b.file_name().map(|n| n.to_string_lossy().to_lowercase()) && canonical(a) == canonical(b);
+        if crate::vfs::symlink_metadata(&to).is_ok() && !same(&r.path, &to) { return Err(RenameError::Taken(name)); }
+        store.flush_view_state().map_err(|e| RenameError::Other(e.to_string()))?;
+        crate::vfs::rename(&r.path, &to).map_err(|e| match e.kind() {
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => RenameError::Denied,
+            std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty => RenameError::Taken(name.clone()),
+            _ => RenameError::Other(e.to_string()),
+        })?;
+        store.moved_to(to.clone());
+        r.path = to.clone();
+        let _ = self.save();
+        Ok(to)
+    }
+
+    /// Whether root `key` may be renamed from the sidebar: open, not a test
+    /// run's one root (`QUIET_MD_HOME`), and not a folder the system names
+    /// (home, Desktop, Documents, Downloads …).
+    pub fn can_rename(&self, key: &str) -> bool {
+        // A test run's one root stays where the run put it.
+        let pinned = cfg!(target_family = "wasm") || (std::env::var_os("QUIET_MD_HOME").is_some() && std::env::var_os("QUIET_MD_ROOTS").is_none());
+        let Some(r) = self.root(key).filter(|r| r.store.is_some() && !pinned) else { return false };
+        let system = [dirs::home_dir(), dirs::desktop_dir(), dirs::document_dir(), dirs::download_dir(), dirs::picture_dir(), dirs::audio_dir(), dirs::video_dir(), dirs::public_dir()];
+        r.path.parent().is_some() && !system.into_iter().flatten().any(|d| canonical(&d) == canonical(&r.path))
     }
 
     pub fn root(&self, key: &str) -> Option<&Root> { self.roots.iter().find(|r| r.key == key) }
 
     /// The first root that opened: where things go when nothing says otherwise.
     pub fn first(&self) -> Option<&Root> { self.roots.iter().find(|r| r.store.is_some()) }
+
+    /// Where a 快速笔记 goes (2.8): root `chosen` (Settings › 文档库) while it
+    /// is open, else the first that is; `None` with no root open.
+    pub fn quick_note_root(&self, chosen: &str) -> Option<&Root> {
+        self.roots.iter().find(|r| r.key == chosen && r.store.is_some()).or_else(|| self.first())
+    }
 
     /// The key of the root `id` is in.
     pub fn owner(&mut self, id: &str) -> Option<String> {
@@ -333,8 +395,9 @@ mod tests {
         drop(s);
         let b = dir("copy");
         crate::vfs::copy(a.join("one.xml"), b.join("one.xml")).unwrap();
-        crate::vfs::create_dir_all(b.join(".quiet")).unwrap();
-        for name in ["format.json", "index.json"] { crate::vfs::copy(a.join(".quiet").join(name), b.join(".quiet").join(name)).unwrap(); }
+        crate::vfs::create_dir_all(b.join(".quiet/meta")).unwrap();
+        let own = format!("meta/{}.json", crate::store::device().id);
+        for name in ["format.json", own.as_str()] { crate::vfs::copy(a.join(".quiet").join(name), b.join(".quiet").join(name)).unwrap(); }
         let mut ws = Workspace { fixed: true, ..Default::default() };
         ws.add(&a).unwrap();
         ws.add(&b).unwrap();
@@ -343,6 +406,84 @@ mod tests {
         assert_eq!(ids.len(), list.len(), "no id in two roots");
         let (la, lb) = (ws.roots[0].store.as_ref().unwrap().library_id(), ws.roots[1].store.as_ref().unwrap().library_id());
         assert!(!la.is_empty() && la != lb, "the copy is a library of its own");
+    }
+
+    #[test]
+    fn quick_notes_go_to_the_chosen_root_while_it_is_open() {
+        let (a, b) = (dir("qa"), dir("qb"));
+        let mut ws = Workspace { fixed: true, ..Default::default() };
+        let ka = ws.add(&a).unwrap();
+        let kb = ws.add(&b).unwrap();
+        let at = |ws: &Workspace, chosen: &str| ws.quick_note_root(chosen).map(|r| r.key.clone());
+        assert_eq!(at(&ws, ""), Some(ka.clone()), "nothing chosen: the first root");
+        assert_eq!(at(&ws, &kb), Some(kb.clone()));
+        assert_eq!(at(&ws, "gone"), Some(ka.clone()), "a root no longer listed: the first");
+        // The chosen root can't be opened (an unplugged disk): the first that can.
+        ws.roots[1].store = None;
+        assert_eq!(at(&ws, &kb), Some(ka.clone()));
+        // The first can't either: the next one that can.
+        ws.roots[1].store = Some(Store::open_root(&b).unwrap());
+        ws.roots[0].store = None;
+        assert_eq!(at(&ws, &ka), Some(kb.clone()));
+        ws.roots[1].store = None;
+        assert_eq!(at(&ws, &kb), None, "none open: the empty state");
+        assert!(Workspace::default().quick_note_root("").is_none());
+    }
+
+    #[test]
+    fn a_renamed_root_keeps_its_key_ids_and_data() {
+        // In a folder of their own: the new names are looked for beside them.
+        let (a, b) = (dir("ra").join("a"), dir("rb"));
+        crate::vfs::create_dir_all(&a).unwrap();
+        let mut ws = Workspace { fixed: true, ..Default::default() };
+        let ka = ws.add(&a).unwrap();
+        ws.add(&b).unwrap();
+        let id = ws.store(&ka).unwrap().create_from(&doc("kept")).unwrap();
+        ws.store(&ka).unwrap().touch(&id);
+        ws.list();
+        let to = ws.rename(&ka, " renamed/root ").unwrap();
+        assert_eq!(to.file_name().unwrap().to_str(), Some(crate::store::file_name_for("renamed/root").as_str()), "the same name rules as a document's file");
+        assert_ne!(to.file_name().unwrap(), "renamed/root");
+        assert!(!a.fs_exists() && to.join(".quiet/format.json").fs_is_file(), "the folder itself moved");
+        assert_eq!(ws.root(&ka).unwrap().path, to);
+        assert_eq!(ws.store(&ka).unwrap().root(), to.as_path());
+        let list = ws.list();
+        let e = list.iter().find(|e| e.id == id).expect("same id after the rename");
+        assert_eq!((e.root.as_str(), e.title.as_str()), (ka.as_str(), "kept"));
+        assert!(e.meta.opened > 0, "this computer's 最近打开 still found by the key");
+        assert!(ws.store_of(&id).unwrap().load(&id).is_ok());
+        // Taken by a sibling, empty, or not open: the name stays.
+        crate::vfs::create_dir_all(to.with_file_name("other")).unwrap();
+        assert_eq!(ws.rename(&ka, "other"), Err(RenameError::Taken("other".into())));
+        assert_eq!(ws.rename(&ka, "  "), Err(RenameError::Empty));
+        assert_eq!(ws.rename("nope", "x"), Err(RenameError::Unavailable));
+        assert_eq!(ws.root(&ka).unwrap().path, to);
+        // A change of case only is a rename of the same folder.
+        let upper = ws.rename(&ka, &to.file_name().unwrap().to_string_lossy().to_uppercase()).unwrap();
+        assert!(upper != to && upper.fs_is_dir() && ws.root(&ka).unwrap().path == upper);
+    }
+
+    #[test]
+    fn data_kept_by_path_moves_to_the_key_once() {
+        let a = dir("adopt");
+        let mut s = Store::open_root(&a).unwrap();
+        let id = s.create_from(&doc("one")).unwrap();
+        s.touch(&id);
+        s.list();
+        s.recover_later(&doc("unsaved")).unwrap();
+        drop(s);
+        let key = new_key();
+        let mut ws = Workspace::open(vec![RootEntry { key: key.clone(), path: a.clone(), bookmark: None, added: 0 }], true);
+        let s = ws.store(&key).unwrap();
+        assert_eq!(s.key(), key);
+        let list = s.list();
+        assert!(list.iter().any(|e| e.title == "unsaved (recovered copy)"), "the recovery copy kept by path comes back");
+        assert!(list.iter().find(|e| e.id == id).unwrap().meta.opened > 0, "最近打开 kept by path is found");
+        drop(ws);
+        // Taken over once: the next launch neither restores nor loses anything.
+        let mut ws = Workspace::open(vec![RootEntry { key: key.clone(), path: a.clone(), bookmark: None, added: 0 }], true);
+        assert_eq!(ws.list().len(), 2);
+        if let Some(d) = dirs::data_local_dir() { let _ = crate::vfs::remove_dir_all(d.join("quiet-md/recovery").join(&key)); }
     }
 
     #[test]

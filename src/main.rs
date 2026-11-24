@@ -59,6 +59,7 @@ mod devtools {
     pub fn take_pick() -> Option<Vec<std::path::PathBuf>> { None }
     pub fn file_drag() -> bool { false }
 }
+mod design;
 mod docinfo;
 mod docmenu;
 mod editor;
@@ -102,6 +103,8 @@ mod themes;
 mod fonts;
 mod font_classes;
 mod font_downloads;
+#[cfg(not(any(target_os = "ios", target_family = "wasm")))]
+mod gallery;
 mod shortcuts;
 #[allow(dead_code, unused_imports)]
 mod feishu_theme;
@@ -293,6 +296,7 @@ fn main() {
     // `--self-test`: runs the built-in release checks in launches of its own.
     if !FEI_NOTES && let Some(code) = selftest::command() { std::process::exit(code) }
     logging::init();
+    if gallery::wanted() { return gallery::run(); }
     #[cfg(all(target_os = "macos", feature = "cloudkit-restore"))]
     {
         #[cfg(feature = "cloudkit-sync")]

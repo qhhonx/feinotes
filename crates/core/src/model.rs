@@ -1120,6 +1120,37 @@ impl Document {
         walk(&self.blocks, &mut f);
     }
 
+    /// Every link (`[text](url)`), in order, tables' cells included.
+    pub fn links(&self) -> Vec<String> {
+        let mut out = vec![];
+        self.for_each_block(|b| out.extend(b.text.runs.iter().filter_map(|r| r.marks.link.clone())));
+        out
+    }
+
+    /// Change links: `f` gives the new URL of one it changes. Whether any changed.
+    pub fn map_links(&mut self, f: &mut dyn FnMut(&str) -> Option<String>) -> bool {
+        fn walk(blocks: &mut [Block], f: &mut dyn FnMut(&str) -> Option<String>, changed: &mut bool) {
+            for b in blocks {
+                if b.text.runs.iter().any(|r| r.marks.link.is_some()) {
+                    let mut out = RichText::default();
+                    for (r, m) in b.text.spans() {
+                        let mut m = m.clone();
+                        if let Some(new) = m.link.as_deref().and_then(&mut *f) { m.link = Some(new); *changed = true; }
+                        out.push(&b.text.text[r], m);
+                    }
+                    b.text = out;
+                }
+                walk(&mut b.children, f, changed);
+                if let BlockKind::Table(t) = &mut b.kind {
+                    for row in &mut t.rows { for cell in row { walk(&mut cell.blocks, f, changed); } }
+                }
+            }
+        }
+        let mut changed = false;
+        walk(&mut self.blocks, f, &mut changed);
+        changed
+    }
+
     /// The 日期提醒 in the document.
     pub fn reminders(&self) -> Vec<InlineReminder> {
         let mut out = vec![];

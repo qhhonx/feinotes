@@ -4,6 +4,7 @@
 //! history, settings, or unrelated attachments enter its CloudKit zone.
 
 use anyhow::{Context, Result, ensure};
+#[cfg(target_os = "macos")]
 use gpui::AppContext;
 use serde::{Deserialize, Serialize};
 use std::{ffi::{CStr, CString, c_char}, fs, path::{Path, PathBuf}, sync::Mutex};

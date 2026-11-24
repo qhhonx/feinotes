@@ -292,7 +292,7 @@ pub enum RowHeight { #[default] Short, Medium, Tall, ExtraTall }
 
 impl RowHeight {
     pub const ALL: &'static [RowHeight] = &[RowHeight::Short, RowHeight::Medium, RowHeight::Tall, RowHeight::ExtraTall];
-    pub fn px(self) -> f32 { match self { RowHeight::Short => 32., RowHeight::Medium => 56., RowHeight::Tall => 88., RowHeight::ExtraTall => 128. } }
+    pub fn px(self) -> f32 { match self { RowHeight::Short => 36., RowHeight::Medium => 44., RowHeight::Tall => 88., RowHeight::ExtraTall => 128. } }
     pub fn label(self) -> &'static str { match self { RowHeight::Short => "低", RowHeight::Medium => "中等", RowHeight::Tall => "高", RowHeight::ExtraTall => "超高" } }
 }
 

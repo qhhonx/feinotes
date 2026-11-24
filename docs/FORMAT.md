@@ -1,10 +1,10 @@
 # Storage format
 
-## Library directory (FORMAT 4)
+## Library directory (FORMAT 5)
 
 The default library is a folder users can browse and back up at `~/Documents/Quiet.md`. Users can select a different location on first launch. The app stores it in `quiet-md/library.json` in the local application data directory. The `store::Location` record currently has one field, `path`. Add `#[serde(default)]` to future fields. Set `QUIET_MD_HOME` for a temporary override and always use it for tests.
 
-The sidebar mirrors the filesystem. Folders are directories and each document is a file named after its title. See `layout::file_name_for` for escaping. A duplicate gets a suffix such as ` 2`. The design is described in [Real folders](design/real-folders.md).
+The sidebar mirrors the filesystem. Folders are directories and each document is a file named after its title. See `layout::file_name_for` for escaping. A duplicate gets a suffix such as ` (2)`; ` 2` from older versions is still read as one. The design is described in [Real folders](design/real-folders.md).
 
 ```text
 Quiet.md/
@@ -14,9 +14,10 @@ Quiet.md/
 ├── Notes.xml
 ├── .assets/                Pasted or inserted images and attachments, with previews in .assets/thumbs
 └── .quiet/                 Application data
-    ├── format.json         {"format": 4}, the layout version (store::FORMAT)
-    ├── index.json          Relative path → attached metadata
-    ├── index.json.bak      Previous index.json
+    ├── format.json         {"format": 5}, the layout version (store::FORMAT)
+    ├── meta/<device id>.json  Attached metadata, one file per device (below)
+    ├── meta/<device id>.json.bak  That device's previous file
+    ├── index.json.v4       The FORMAT 4 index, kept after the move to 5
     ├── settings.json       Window UI settings, including sidebar width
     ├── preferences.json, shortcuts.json, emoji.json, themes/
     ├── .lock               Write lock (flock), held briefly when updating the index
@@ -44,7 +45,7 @@ Quiet.md/
 
 - **The rule reads only the disk.** The folder `X/` and the file `X/X.xml` or `X/X.md` must have the same name (exact, after the escaping of `layout::file_name_for`). A `.excalidraw` or `.sqlite` file never is the folder's document. When both `X.xml` and `X.md` exist, `X.xml` is it and `X.md` is an ordinary child page. `index.json` has no field for this and `store::FORMAT` is unchanged, so older builds read the same files as a folder holding a document.
 - **Shown as a document.** The sidebar and Home show the folder as one document row or card with the document's title, icon and format, and an expand arrow when there are other entries in it. Opening it opens `X/X.*`. The document is not repeated among the children, search and @-mentions list it once (as the document), and its breadcrumbs stop above the folder.
-- **Adding the first child page** (the row's hover "+", or 新建子文档 in the row and document "…" menus) creates `X/` where `X.xml` was, moves the document into it as `X/X.xml` (first in the folder's order, the folder taking the document's place), then creates the new page last in the folder. Links to the moved document and from it are rewritten as for any move. The steps are one entry in the file-operation undo history. A document already in its folder gets the new page directly. The folder is named after the file (`Plan 2.xml` gives `Plan 2/Plan 2.xml`), numbered when the name is taken.
+- **Adding the first child page** (the row's hover "+", or 新建子文档 in the row and document "…" menus) creates `X/` where `X.xml` was, moves the document into it as `X/X.xml` (first in the folder's order, the folder taking the document's place), then creates the new page last in the folder. Links to the moved document and from it are rewritten as for any move. The steps are one entry in the file-operation undo history. A document already in its folder gets the new page directly. The folder is named after the file (`Plan (2).xml` gives `Plan (2)/Plan (2).xml`), numbered when the name is taken.
 - **The pair keeps one name.** Renaming the document (in the editor or the sidebar) renames the folder and then the file after the folder. A child page that already holds that name inside the folder is numbered first. Moving, dragging and deleting the row act on the whole folder, and dropping something on the row puts it in the folder.
 - **Without children the folder stays.** When the last child page is moved out or deleted, `X/X.xml` is left as it is and still shows as a plain document. Undoing 新建子文档 moves the document back out and removes the empty folder.
 - **Existing libraries.** The FORMAT 2 and FORMAT 4 migrations turned pages with child pages into exactly this shape (`migrate::pages_to_folders`), so those pages have their children again.
@@ -55,10 +56,31 @@ The same mapping (a page with children ⇄ a folder with its own document) is me
 
 - Document links are relative to the current file. DocxXML uses `<cite type="doc" href="../Work/Weekly report.xml">` and Markdown uses standard links. On read, the app resolves paths to runtime IDs. On write, it converts them back, so copying the whole folder preserves the links. The reader still accepts legacy `doc-id` links.
 - Image and attachment paths are relative to the library root (`.assets/…`).
+- Plain links to files, such as `[Report](attachments/Report.pdf)` or `[Weekly report](../Work/Weekly%20report.md)` in Markdown and `<a href>` in DocxXML, are relative to the current file. Moving or renaming a document, the file a link points at or a folder holding either rewrites them like document links; a link that leaves the library still points at the same file. Clicking one opens a library document or a Markdown file in the app, opens another file in its system app, and only reveals a folder or a file that would run a program.
 
-### Index (.quiet/index.json)
+### Metadata by device (.quiet/meta/, FORMAT 5)
 
-Keys are relative paths. Folder keys end in a slash (e.g. `"Work/"`). Each value is an `Attached` record.
+What the files cannot say is split by device so a synced library never has two computers writing one file ([sync design](design/sync.md) 3.3, `crates/core/src/meta.rs`). Each device writes only `meta/<device id>.json`; the device id is made once per computer and kept in the local application data folder (`quiet-md/device.json`), shared by every root.
+
+```json
+{ "v": 1, "device": { "id": "9b2f…", "name": "", "platform": "macos" },
+  "items": {
+    "3e5c…": { "path": ["Work/Weekly report.xml", 1763800000123], "pinned": [true, 1763800000456], "scroll": [[3, 12.5], 1763800001000] },
+    "7d1a…": { "path": ["Work/", 1763700000000] },
+    "_root": { "history_limit": [7, 1763700000000], "look.theme": ["ink", 1763700000000] } } }
+```
+
+- **Every field is `[value, stamp]`.** The stamp is a hybrid logical clock in milliseconds: this computer's time, or one past the latest stamp seen when the clock is behind. Reading merges all devices' files and takes, per item and field, the value with the latest stamp (ties: the larger device id). `null` puts a field back to its default.
+- **Items are ids**, with the entry's place in `path` (folders end in `/`). Renaming or moving rewrites `path`; removing a document in the app writes `path: null`. A file that is not on disk is left out of the list but keeps its entry, so metadata that arrives before its file (another device's sync) is not lost.
+- **A write stamps only what changed** since the store last read the files (`Store::begin_write` re-reads them, as it re-read `index.json`), so a value another device wrote in between is not overwritten. A device keeps in its file only the fields it still wins.
+- **Files found on disk** with no entry get the id derived from their NFC relative path (`meta::path_id`), the same on every device. Two ids claiming one path merge into the older one.
+- **`_root`** holds the root's own settings: `history_limit` and the root's look (`look.theme`, `look.feishu`, `look.doc_family`, …), each field on its own. `scroll` (the reading position) is a field of its document. Fields this build does not know are kept.
+- **Moving from FORMAT 4.** `Store::open_at` writes `index.json` and the root-level parts of `settings.json` as this device's file, every field stamped at that moment, then `format.json` (last, so a crash redoes it), and renames `index.json` to `index.json.v4`. A library in a synced folder (`migrate::sync_of`) stays FORMAT 4 for now, since another computer may still run a build that cannot open 5; asking first is left to the sync work. A FORMAT 4 store still open when another copy moves the library to 5 stops writing.
+- **Not here yet** (sync design 1a): deletions (`trashed`, `purged`) still go through `trash/index.json`, `order` is still a number rather than a fractional index, and the merged view is not cached locally.
+
+### Index fields (.quiet/index.json in FORMAT 4)
+
+In FORMAT 4 keys are relative paths. Folder keys end in a slash (e.g. `"Work/"`). Each value is an `Attached` record. FORMAT 5 keeps the same fields per item, with the path as `path`.
 
 | Field | Meaning | If omitted |
 |---|---|---|
@@ -87,12 +109,12 @@ The old layout stored documents in a flat `docs/<id>.xml` directory and represen
 
 The sidebar and home page share `Meta::place()` for manual ordering. Unpositioned items come first, newest modification first. Manually positioned items follow by order number. The ID breaks ties.
 
-Older versions refuse to open FORMAT 4.
+Older versions refuse to open FORMAT 4, and builds that know only 4 refuse 5.
 
 ### Reliability
 
 - **Atomic writes.** Write a temporary file (`<name>.tmp`) and replace the destination with `rename`. After a crash, the destination contains either the old or the new contents.
-- **Index recovery.** Before saving `index.json`, copy the previous file to `.bak`. If parsing fails on read, keep the damaged file as `<name>.corrupt-<seconds>`, load the backup and notify the user once. If the backup is unusable, start with an empty index. Documents and folders remain on disk, but pins, stars and manual order may be lost.
+- **Index recovery.** Before saving `index.json` (in FORMAT 5, this device's `meta/` file), copy the previous file to `.bak`. If parsing fails on read, keep the damaged file as `<name>.corrupt-<seconds>`, load the backup and notify the user once. If the backup is unusable, start with an empty index. Documents and folders remain on disk, but pins, stars and manual order may be lost.
 - **Version checks.** If `format.json` specifies a newer format, refuse to open the library and prompt for an upgrade. Recheck after acquiring the lock for every write. Increment `FORMAT` whenever older versions would misinterpret a layout change.
 - **Files added externally.** Markdown and XML files copied into the library appear in the document list, including DocxXML exported from Feishu.
 - **Save errors.** Report failures to the user.

@@ -8,6 +8,7 @@ use fdl_core::vfs::{PathExt as _, KindExt as _};
 use crate::settings::tr;
 use crate::theme::{self, Theme};
 use crate::ui;
+use crate::design::{Button, ButtonSize, Card, Checkbox, Field, FieldSize, Separator};
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use std::path::{Path, PathBuf};
@@ -619,11 +620,10 @@ impl Onboarding {
         let anchor = self.lang_anchor.clone();
         let open = self.lang_menu.is_some();
         let current = self.lang;
-        let lang = card()
+        let lang = card("onb-lang-card")
             .child(card_icon("globe"))
             .child(card_text(tr("界面语言", "Language").into(), tr("默认跟随系统，之后可以在设置里更改", "Follows the system; you can change it in Settings").into(), false))
-            .child(soft_button("onb-lang", current.name()).gap(px(6.)).when(open, |d| d.bg(Theme::fill_hover_strong()))
-                .child(ui::icon("chevron-down", 12., Theme::icon()))
+            .child(Field::select("onb-lang").sized(FieldSize::Sm).open(open).child(ui::ui_text(current.name()))
                 .child(canvas(move |b, _, _| anchor.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
                 .relative()
                 .on_click(cx.listener(move |w, _, _, cx| { w.lang_menu = if open { None } else { Some(current) }; cx.notify(); })));
@@ -632,12 +632,12 @@ impl Onboarding {
         let opening = !self.open.is_empty();
         let open_desc: SharedString = if opening { self.open.iter().map(|p| short_path(p)).collect::<Vec<_>>().join("、").into() }
             else { tr("用电脑上已有的文件夹，比如 Obsidian 库或 git 仓库，文件就地编辑", "Use a folder you already have, such as an Obsidian vault or a git repository; files are edited where they are").into() };
-        let open_card = card()
+        let open_card = card("onb-open-card")
             .child(card_icon("folder-input"))
             .child(card_text(tr("打开文件夹", "Open a folder").into(), open_desc, false))
             .child(soft_button("onb-open", if opening { tr("再选…", "Add…") } else { tr("打开…", "Open…") }).on_click(cx.listener(|w, _, window, cx| w.pick_folder(Pick::Open, window, cx))))
             .when(opening, |d| d.child(soft_button("onb-open-clear", tr("清除", "Clear")).on_click(cx.listener(|w, _, _, cx| { w.open.clear(); cx.notify(); }))));
-        let lib = card()
+        let lib = card("onb-lib-card")
             .when(opening, |d| d.opacity(0.55))
             .child(card_icon("folder"))
             .child(card_text(crate::localized_format!("新建文件夹 · {}", "New folder · {}", short_path(&self.root)).into(), (if cfg!(target_os = "macos") { tr("文档以文件保存在这里，在访达里也能直接打开", "Documents are saved here as files you can open in Finder") }
@@ -651,7 +651,7 @@ impl Onboarding {
                 (None, true) => (tr("按下新的组合键 · Esc 取消", "Press a new shortcut · Esc to cancel"), false),
                 (None, false) => (tr("在任何应用里按下，打开一个小窗口记下想法", "Press it in any app to jot a thought in a small window"), false),
             };
-            card()
+            card("onb-hotkey-card")
                 .child(card_icon("keyboard"))
                 .child(card_text(tr("快速新建文档", "Quick document").into(), desc.into(), error))
                 .child(soft_button("onb-hotkey", "").min_w(px(96.)).when(self.recording, |d| d.bg(Theme::fill_hover_strong()).text_color(Theme::text_caption()))
@@ -682,21 +682,18 @@ impl Onboarding {
         let b = self.lang_anchor.get()?;
         let rows = Lang::ALL.map(|l| {
             let g = SharedString::from(format!("onb-lang-{}", l.code()));
-            ui::menu_row(g.clone(), g.clone())
-                .when(l == focused, |d| d.bg(Theme::fill_hover()))
-                .child(div().flex_1().min_w_0().overflow_hidden().child(ui::menu_label(l.name(), g.clone(), gpui::white())))
-                .child(div().flex_none().w(px(14.)).when(l == self.lang, |d| d.child(ui::menu_glyph("check", 14., g.clone()))))
+            crate::design::MenuItem::new(g).label(l.name()).selected(l == focused).checked(l == self.lang)
                 .on_hover(cx.listener(move |w, hovered: &bool, _, cx| if *hovered && w.lang_menu != Some(l) { w.lang_menu = Some(l); cx.notify(); }))
                 .on_click(cx.listener(move |w, _, _, cx| w.set_lang(l, cx)))
         });
         let anchor = self.lang_anchor.clone();
-        let menu = ui::popover().id("onb-lang-menu").occlude().flex()
+        let menu = crate::design::Popover::new("onb-lang-menu").menu().w(px(160.))
             .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
                 if anchor.get().is_some_and(|b| b.contains(&ev.position)) { return }
                 w.lang_menu = None;
                 cx.notify();
             }))
-            .child(div().w(px(160.)).py(px(ui::MENU_PAD_Y)).flex().flex_col().children(rows));
+            .children(rows);
         let menu = anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu);
         // A replay is itself drawn deferred, over the notes, and deferred
         // drawing cannot nest: there the menu is simply the page's last child.
@@ -723,7 +720,7 @@ impl Onboarding {
                 let desc = crate::localized_count!(f.count, "{} · {} 篇 Markdown", "{} · {} Markdown file", "{} · {} Markdown files", where_short(&f.path), f.count);
                 div().id(("onb-found", i)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
                     .on_click(cx.listener(move |w, _, _, cx| { if let Some(c) = w.chosen.get_mut(i) { *c = !*c; } cx.notify(); }))
-                    .child(row(title, Some(desc.into()), tick(on))).into_any_element()
+                    .child(row(title, Some(desc.into()), Checkbox::new(on))).into_any_element()
             }).collect();
             if shown < found.len() {
                 let more = crate::localized_format!("再显示 {} 处", "Show {} more", found.len() - shown);
@@ -736,7 +733,7 @@ impl Onboarding {
             let all = !can.is_empty() && can.iter().all(|&i| self.chosen.get(i).copied().unwrap_or(false));
             let head = div().w_full().px(px(4.)).flex().items_center().justify_between()
                 .child(lifted(over, 12., 16., false, true, crate::localized_format!("在这台电脑上找到 {} 个文档库", "Document libraries found on this computer ({})", found.len())))
-                .when(can.len() > 1, |d| d.child(soft_button_hover("onb-all", if all { tr("全不选", "Select none") } else { tr("全选", "Select all") }, if over { hsla(0., 0., 0., 0.4) } else { Theme::fill_hover_strong() })
+                .when(can.len() > 1, |d| d.child(Button::ghost("onb-all").sized(ButtonSize::Sm).label(if all { tr("全不选", "Select none") } else { tr("全选", "Select all") })
                     .when(over, |b| b.bg(hsla(0., 0., 0., 0.28)).text_color(gpui::white()))
                     .on_click(cx.listener(move |w, _, _, cx| { for &i in &can { if let Some(c) = w.chosen.get_mut(i) { *c = !all; } } cx.notify(); }))));
             (head, rows)
@@ -746,12 +743,12 @@ impl Onboarding {
             .child(div().my_auto().flex_none().w_full().max_w(px(560.)).flex().flex_col().gap(px(24.))
                 .child(heading(over, tr("带上已有的文档", "Import your documents"), if self.copy { tr("导入的是副本，原来的文件不会被改动。也可以跳过，以后从菜单导入。", "Imports are copies; your files stay as they are. You can skip this and import later.") }
                     else { tr("选中的文件夹会直接打开，文件留在原处。也可以跳过，以后从菜单打开。", "The folders you pick open where they are; the files stay put. You can skip this and open them later.") }))
-                .child(sheet(None, pick_rows))
+                .child(sheet("onb-pick-sheet", None, pick_rows))
                 // 导入副本 needs a folder to copy into: the new one.
-                .when(self.open.is_empty(), |d| d.child(sheet(None, vec![div().id("onb-copy").cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+                .when(self.open.is_empty(), |d| d.child(sheet("onb-copy-sheet", None, vec![div().id("onb-copy").cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
                     .on_click(cx.listener(|w, _, _, cx| { w.copy = !w.copy; cx.notify(); }))
-                    .child(row(tr("改为导入副本", "Import copies instead"), Some(tr("复制到新文件夹里，和原来的文件夹分开", "Copy them into the new folder, apart from the originals").into()), tick(self.copy))).into_any_element()])))
-                .children(found.map(|(head, rows)| sheet(Some(head.into_any_element()), rows)))
+                    .child(row(tr("改为导入副本", "Import copies instead"), Some(tr("复制到新文件夹里，和原来的文件夹分开", "Copy them into the new folder, apart from the originals").into()), Checkbox::new(self.copy))).into_any_element()])))
+                .children(found.map(|(head, rows)| sheet("onb-found-sheet", Some(head.into_any_element()), rows)))
                 .children(self.error.clone().map(|e| note_owned(e, true))))
             .into_any_element()
     }
@@ -765,20 +762,16 @@ impl Onboarding {
         let mark = |on: bool| div().w(px(20.)).h(px(3.)).rounded(px(2.)).bg(match (over, on) {
             (true, true) => gpui::white(), (true, false) => hsla(0., 0., 1., 0.4), (false, true) => Theme::text(), (false, false) => Theme::fill_hover_strong(),
         });
-        let soft = if over { hsla(0., 0., 1., 0.9) } else { Theme::text_caption() };
-        // Over the film the links sit on a dark veil that darkens on hover.
-        let veil_hover = if over { hsla(0., 0., 0., 0.4) } else { Theme::fill_hover() };
         div().absolute().inset_0()
             .when(self.importing.is_none(), |d| d.child(div().absolute().top(px(10.)).right(px(16.))
-                .child(crate::settings::link_button_hover("onb-skip", tr("跳过", "Skip"), veil_hover).text_color(soft).when(over, |d| d.bg(hsla(0., 0., 0., 0.28))).on_click(cx.listener(|w, _, window, cx| w.skip(window, cx))))))
+                .child(lesser(over, true, "onb-skip", tr("跳过", "Skip"), cx.listener(|w, _, window, cx| w.skip(window, cx))))))
             .child(div().absolute().left_0().right_0().bottom(px(40.)).flex().justify_center().gap(px(6.))
                 .child(mark(self.page == Page::Setup)).child(mark(self.page == Page::Import)))
             .when(self.page == Page::Import && self.importing.is_none(), |d| d.child(div().absolute().left(px(24.)).bottom(px(30.))
-                .child(crate::settings::link_button_hover("onb-back", tr("‹ 上一步", "‹ Back"), veil_hover).text_size(px(13.)).text_color(soft).when(over, |d| d.bg(hsla(0., 0., 0., 0.28)))
-                    .on_click(cx.listener(|w, _, _, cx| w.go(Page::Setup, cx))))))
+                .child(lesser(over, true, "onb-back", tr("‹ 上一步", "‹ Back"), cx.listener(|w, _, _, cx| w.go(Page::Setup, cx))))))
             .child(div().absolute().right(px(24.)).bottom(px(28.)).child(match self.importing {
                 // The label stays (transparent) so the button keeps its width.
-                Some(t) => pill("onb-done", label).cursor_default().text_color(transparent_white())
+                Some(t) => pill("onb-done", label).relative().cursor_default().text_color(transparent_white())
                     .child(div().absolute().inset_0().flex().items_center().justify_center().child(ui::spinner(t.elapsed().as_secs_f32(), Theme::bg_body()))),
                 None => pill(if self.page == Page::Setup { "onb-next" } else { "onb-done" }, label).on_click(cx.listener(|w, _, window, cx| w.advance(window, cx))),
             }))
@@ -833,13 +826,6 @@ fn lifted(over: bool, size: f32, line: f32, title: bool, soft: bool, text: impl 
     d.child(word(gpui::white()).relative())
 }
 
-/// A tick box in the pages' one dark colour, no outline.
-fn tick(on: bool) -> Div {
-    div().size(px(18.)).flex_none().flex().items_center().justify_center().rounded(px(5.))
-        .bg(if on { Theme::text() } else { Theme::fill_hover_strong() })
-        .when(on, |d| d.child(ui::icon("todo-check", 12., Theme::bg_body())))
-}
-
 /// One row of a group: title and description on the left, a control on the right.
 /// Keep `lang` in the library's preferences (a replay's, or the new one's).
 fn save_lang(lang: crate::settings::Lang) {
@@ -849,28 +835,25 @@ fn save_lang(lang: crate::settings::Lang) {
     if let Err(e) = crate::settings::save(&p) { log::warn!("onboarding: language not saved: {e:#}"); }
 }
 
+/// A line on a card: `design::Item`.
 fn row(title: impl Into<SharedString>, desc: Option<SharedString>, control: impl IntoElement) -> Div {
-    div().w_full().min_h(px(48.)).px(px(16.)).py(px(10.)).flex().items_center().justify_between().gap(px(16.))
-        .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.))
-            .child(div().text_size(px(13.)).line_height(px(20.)).text_color(Theme::text()).truncate().child(title.into()))
-            .children(desc.map(|d| div().text_size(px(12.)).line_height(px(17.)).text_color(Theme::text_caption()).child(d))))
-        .child(div().flex_none().flex().items_center().child(control))
+    div().w_full().child(crate::design::Item::new(title).description(desc).child(control))
 }
 
-/// A plain white card floating over the backdrop, no outline.
-fn card() -> Div {
-    div().w_full()
-        .px(px(16.)).py(px(14.)).flex().items_center().gap(px(14.))
-        .rounded(px(16.)).bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_card())
+/// A card floating over the backdrop: icon, text, control in a line.
+fn card(id: &'static str) -> Card {
+    Card::new(id).w_full().px(px(16.)).py(px(14.)).flex_row().items_center().gap(px(14.))
 }
 
-/// Rows on one borderless card, divided by hairlines (the import page).
-fn sheet(head: Option<AnyElement>, rows: Vec<AnyElement>) -> Div {
+/// Rows on one card, split by `Separator`s (the import page).
+fn sheet(id: &'static str, head: Option<AnyElement>, rows: Vec<AnyElement>) -> Div {
     let n = rows.len();
-    div().w_full().flex().flex_col().gap(px(8.))
-        .children(head)
-        .child(div().w_full().flex().flex_col().rounded(px(16.)).overflow_hidden().bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_card())
-            .children(rows.into_iter().enumerate().map(move |(i, r)| div().w_full().when(i + 1 < n, |d| d.border_b_1().border_color(ui::list_line())).child(r))))
+    let mut card = Card::new(id).w_full().overflow_hidden();
+    for (i, r) in rows.into_iter().enumerate() {
+        card = card.child(div().w_full().child(r));
+        if i + 1 < n { card = card.child(Separator::new()); }
+    }
+    div().w_full().flex().flex_col().gap(px(8.)).children(head).child(card)
 }
 
 fn card_icon(name: &str) -> Div {
@@ -884,23 +867,27 @@ fn card_text(title: SharedString, desc: SharedString, error: bool) -> Div {
         .child(div().text_size(px(12.)).line_height(px(17.)).text_color(if error { Theme::danger() } else { Theme::text_caption() }).child(desc))
 }
 
-/// Every lesser action on these pages: no outline, a grey tint that deepens
-/// under the pointer. The one main action is the dark pill.
-fn soft_button(id: impl Into<ElementId>, label: &'static str) -> Stateful<Div> { soft_button_hover(id, label, Theme::fill_hover_strong()) }
-
-/// `soft_button` with its own hover fill (one `.hover()` per element, see `link_button_hover`).
-fn soft_button_hover(id: impl Into<ElementId>, label: &'static str, hover: Hsla) -> Stateful<Div> {
-    div().id(id).flex_none().h(px(28.)).px(px(12.)).flex().items_center().justify_center().rounded(px(8.)).cursor_pointer()
-        .bg(Theme::fill_hover()).hover(move |s| s.bg(hover))
-        .text_size(px(13.)).line_height(px(18.)).text_color(Theme::text()).child(crate::settings::label(label))
+/// Every lesser action on these pages: a secondary button.
+fn soft_button(id: impl Into<ElementId>, label: &'static str) -> Button {
+    Button::secondary(id).sized(ButtonSize::Sm).label(crate::settings::label(label))
 }
 
-/// The main button: a dark pill with the ↩ that also presses it.
-fn pill(id: &'static str, label: &'static str) -> Stateful<Div> {
-    div().id(id).relative().flex_none().h(px(32.)).pl(px(14.)).pr(px(12.)).flex().items_center().gap(px(8.)).rounded(px(9.)).cursor_pointer()
-        .bg(Theme::text()).hover(|s| s.opacity(0.88)).shadow(theme::shadow_button())
-        .text_size(px(13.)).line_height(px(20.)).font_weight(FontWeight::MEDIUM).text_color(Theme::bg_body())
-        .child(crate::settings::label(label))
+/// 跳过, 上一步 and 全选, which sit straight on the backdrop (`quiet`: a ghost
+/// button rather than a secondary one). Over the film the design's buttons,
+/// drawn for a flat ground, would vanish into the grass: there they stay a
+/// dark translucent chip in white.
+fn lesser(over: bool, quiet: bool, id: &'static str, label: &'static str, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> AnyElement {
+    if !over { return if quiet { Button::ghost(id).label(crate::settings::label(label)) } else { soft_button(id, label) }.on_click(on_click).into_any_element() }
+    div().id(id).flex_none().h(px(28.)).px(px(10.)).flex().items_center().rounded(px(8.)).cursor_pointer()
+        .bg(hsla(0., 0., 0., 0.28)).hover(|s| s.bg(hsla(0., 0., 0., 0.4)))
+        .text_size(px(13.)).line_height(px(18.)).text_color(hsla(0., 0., 1., 0.95)).child(crate::settings::label(label))
+        .on_click(on_click).into_any_element()
+}
+
+/// The main button: a primary one with the ↩ that also presses it, after its label.
+fn pill(id: &'static str, label: &'static str) -> Button {
+    Button::primary(id).w_auto().pl(px(14.)).pr(px(12.))
+        .child(ui::ui_text(crate::settings::label(label)))
         .child(div().text_size(px(12.)).opacity(0.55).child("↩"))
 }
 

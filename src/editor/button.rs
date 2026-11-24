@@ -107,8 +107,9 @@ use super::view::{Editor, EditorEvent, Menu};
 use crate::model::{ButtonAction, InlineButton};
 use crate::input::{TextField, TextFieldEvent};
 use crate::model::BlockId;
-use crate::editor_theme::{self as theme, Theme};
-use crate::editor_ui::{MENU_INSET, MENU_PAD_Y, MENU_ROW_H, ROW_RADIUS, TipExt, ToastKind, icon, menu, panel, popover};
+use crate::editor_theme::Theme;
+use crate::editor_ui::{TipExt, ToastKind};
+use crate::design::{Button, ButtonSize, Field, FieldSize, MenuItem, MenuLabel, Popover, menu as dmenu};
 use gpui::prelude::FluentBuilder;
 use std::{cell::Cell, rc::Rc, time::Duration};
 
@@ -118,11 +119,9 @@ const SHOW_DELAY: Duration = Duration::from_millis(200);
 const HIDE_DELAY: Duration = Duration::from_millis(300);
 const PANEL_W: f32 = 270.;
 const MAX_TEXT: usize = 200;
-/// The type submenu of the slash / "+" menu, built like the insert panel it
-/// hangs off: 8 + its 32pt title + two 32pt rows + 8.
-pub const TYPE_MENU_H: f32 = MENU_PAD_Y + 32. + 32. * 2. + MENU_PAD_Y;
-/// Rows of the 执行操作 list.
-const ACTION_ROW_H: f32 = 26.;
+/// The type submenu of the slash / "+" menu: the menu's padding, its
+/// label and two rows (`design::menu`).
+pub const TYPE_MENU_H: f32 = dmenu::PAD + dmenu::LABEL_H + dmenu::ROW_H * 2. + dmenu::PAD;
 /// The actions a new button can take (关注文档更新 needs the cloud).
 pub const ACTIONS: [ButtonAction; 2] = [ButtonAction::OpenLink, ButtonAction::DuplicatePage];
 
@@ -331,29 +330,18 @@ impl Editor {
         }
         self.core.button_at(at_)?;
         let r = self.probed(Probe::Button(at_))?;
-        let w = 1. + 8. + 24. + 8. + 1.;
-        let el = popover()
-            .id("btn-card")
-            .occlude()
-            .p(px(8.))
+        let w = 4. + 28. + 4.;
+        let el = Popover::new("btn-card")
+            .p(px(4.))
             .on_hover(cx.listener(|e, h: &bool, _, cx| {
                 e.btn.card_over = *h;
                 e.sync_button_card(cx);
             }))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
-                div()
-                    .id("btn-edit")
-                    .size(px(24.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(ROW_RADIUS))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(Theme::fill_hover_strong()))
-                    .active(|s| s.bg(Theme::fill_pressed()))
+                Button::ghost("btn-edit")
+                    .icon("pen-line")
                     .tip_above(crate::settings::text("编辑"), None)
-                    .child(icon("pen-line", 18., Theme::icon()))
                     .on_click(cx.listener(move |e, _, window, cx| e.open_button_panel(at_, window, cx))),
             );
         Some(at(self.rel(point(r.center().x - px(w / 2.), r.top() - px(4.))), Anchor::BottomLeft, el))
@@ -498,27 +486,10 @@ impl Editor {
         let above = f32::from(r.top()) - view_top;
         let up = below < 400. && above > below;
         let red = Theme::danger();
-        // The input: 30 tall, radius 9, white, hairline; the accent while
-        // focused, red on an error.
-        let input = |field: &Entity<TextField>, err: bool| {
+        // The input: a small field, red on an error.
+        let input = |id: &'static str, field: &Entity<TextField>, err: bool| {
             let focused = field.read(cx).is_focused(window);
-            div()
-                .h(px(30.))
-                .px(px(10.))
-                .flex()
-                .items_center()
-                .rounded(px(9.))
-                .bg(crate::theme::raised(Theme::bg_body()))
-                .border_1()
-                .border_color(if err {
-                    red
-                } else if focused {
-                    Theme::primary()
-                } else {
-                    Theme::line_border()
-                })
-                .when(!err && !focused, |d| d.hover(|s| s.border_color(theme::ca(craft::N1000, 0.16))))
-                .child(field.clone())
+            Field::new(id).sized(FieldSize::Sm).focused(focused).when(err, |d| d.border_color(red)).child(field.clone())
         };
         let label = |t: &'static str| div().pb(px(6.)).text_size(px(13.)).line_height(px(20.)).child(crate::settings::text(t));
         let error = |t: &'static str| div().pt(px(4.)).text_size(px(12.)).line_height(px(18.)).text_color(red).child(crate::settings::text(t));
@@ -557,22 +528,12 @@ impl Editor {
         }
 
         let select_cell = self.btn.select.clone();
-        let select = div()
-            .id("btn-action")
+        let select = Field::select("btn-action")
+            .sized(FieldSize::Sm)
+            .open(p.drop)
             .relative()
-            .h(px(30.))
-            .px(px(10.))
-            .flex()
-            .items_center()
-            .rounded(px(9.))
-            .bg(crate::theme::raised(Theme::bg_body()))
-            .border_1()
-            .border_color(if p.drop { Theme::primary() } else { Theme::line_border() })
-            .when(!p.drop, |d| d.hover(|s| s.border_color(theme::ca(craft::N1000, 0.16))))
-            .cursor_pointer()
             .child(canvas(move |b, _, _| select_cell.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
-            .child(div().flex_1().text_size(px(13.)).line_height(px(20.)).child(crate::settings::text(p.preview.action.label())))
-            .child(div().ml(px(8.)).child(icon("chevron-down", 12., Theme::icon())))
+            .child(div().flex_1().child(crate::settings::text(p.preview.action.label())))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|e, _, _, cx| {
@@ -591,41 +552,12 @@ impl Editor {
             .overflow_y_scroll()
             .pt(px(12.))
             .px(px(12.))
-            .child(item(false).child(label(crate::settings::text("按钮文字"))).child(input(&self.btn.text, p.text_err.is_some())).children(p.text_err.map(error)))
+            .child(item(false).child(label(crate::settings::text("按钮文字"))).child(input("btn-text", &self.btn.text, p.text_err.is_some())).children(p.text_err.map(error)))
             .child(item(false).child(label(crate::settings::text("按钮颜色"))).child(swatches))
             .child(item(!link).child(label(crate::settings::text("执行操作"))).child(select))
             .when(link, |d| {
-                d.child(item(true).child(label(crate::settings::text("超链接地址"))).child(input(&self.btn.url, p.link_err)).when(p.link_err, |d| d.child(error(crate::settings::text("超链接不合法，请重新输入")))))
+                d.child(item(true).child(label(crate::settings::text("超链接地址"))).child(input("btn-url", &self.btn.url, p.link_err)).when(p.link_err, |d| d.child(error(crate::settings::text("超链接不合法，请重新输入")))))
             });
-        // Buttons: 30 tall, radius 9; primary the accent in white
-        // semibold, secondary white with a hairline and a 1px drop.
-        let button = |id: &'static str, t: &'static str, primary: bool| {
-            div()
-                .id(id)
-                .ml(px(8.))
-                .h(px(30.))
-                .px(px(14.))
-                .flex()
-                .items_center()
-                .rounded(px(9.))
-                .border_1()
-                .cursor_pointer()
-                .text_size(px(13.))
-                .line_height(px(20.))
-                .when(primary, |d| {
-                    d.bg(Theme::primary())
-                        .shadow(theme::shadow_button())
-                        .border_color(Theme::primary())
-                        .text_color(Theme::on_primary())
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .hover(|s| s.bg(Theme::primary()).opacity(0.9))
-                        .active(|s| s.bg(Theme::primary()).opacity(0.8))
-                })
-                .when(!primary, |d| {
-                    d.bg(crate::theme::raised(Theme::bg_body())).border_color(Theme::button_border()).shadow(theme::shadow_button()).hover(|s| s.bg(c(craft::N100))).active(|s| s.bg(c(craft::N200)))
-                })
-                .child(crate::settings::text(t))
-        };
         let footer = div()
             .flex_none()
             .pt(px(16.))
@@ -633,12 +565,10 @@ impl Editor {
             .pb(px(12.))
             .flex()
             .justify_end()
-            .child(button("btn-cancel", "取消", false).on_click(cx.listener(|e, _, window, cx| e.close_button_panel(window, cx))))
-            .child(button("btn-ok", "确定", true).on_click(cx.listener(|e, _, window, cx| e.submit_button(window, cx))));
-        let el = panel()
-            .id("btn-panel")
+            .child(Button::outline("btn-cancel").sized(ButtonSize::Sm).label(crate::settings::text("取消")).on_click(cx.listener(|e, _, window, cx| e.close_button_panel(window, cx))))
+            .child(Button::primary("btn-ok").sized(ButtonSize::Sm).ml(px(8.)).label(crate::settings::text("确定")).on_click(cx.listener(|e, _, window, cx| e.submit_button(window, cx))));
+        let el = Popover::new("btn-panel")
             .key_context("ButtonPanel")
-            .occlude()
             .w(px(PANEL_W))
             .max_h(px(500.))
             .flex()
@@ -671,26 +601,13 @@ impl Editor {
         let Some(p) = self.btn.panel.as_ref().filter(|p| p.drop && matches!(self.menu, Some(Menu::Button { .. }))) else { return out };
         let Some(a) = self.btn.select.get() else { return out };
         let cur = p.preview.action;
-        // The select's list: a popover with 26pt rows, a grey hover,
-        // the current choice in the accent with a check.
-        let mut list = menu().w(a.size.width).py(px(MENU_PAD_Y)).text_size(px(13.)).occlude();
+        // The select's list: a menu, the current choice checked.
+        let mut list = Popover::new("btn-action-list").menu().w(a.size.width);
         for (i, act) in ACTIONS.into_iter().enumerate() {
-            let on = act == cur;
             list = list.child(
-                div()
-                    .id(("btn-action-opt", i))
-                    .mx(px(MENU_INSET))
-                    .h(px(ACTION_ROW_H))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(crate::ui::ROW_RADIUS))
-                    .line_height(px(20.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(Theme::fill_hover()))
-                    .when(on, |d| d.text_color(Theme::primary()))
-                    .child(div().flex_1().child(crate::settings::text(act.label())))
-                    .when(on, |d| d.child(icon("check", 12., Theme::primary())))
+                MenuItem::new(("btn-action-opt", i))
+                    .label(crate::settings::text(act.label()))
+                    .checked(act == cur)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |e, _, window, cx| {
@@ -700,7 +617,7 @@ impl Editor {
                     ),
             );
         }
-        let h = 2. * MENU_PAD_Y + 2. + ACTION_ROW_H * ACTIONS.len() as f32;
+        let h = 2. * dmenu::PAD + dmenu::ROW_H * ACTIONS.len() as f32;
         let vh = f32::from(window.viewport_size().height);
         let below = f32::from(a.bottom()) + 4.;
         let y = if below + h > vh - 8. { f32::from(a.top()) - 4. - h } else { below };
@@ -714,30 +631,18 @@ impl Editor {
 
     /// 选择按钮类型: the slash / "+" menu's submenu of 按钮.
     pub(super) fn button_type_menu(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        // An editor list popover, like the insert panel: the menu shell,
-        // a small secondary title, 32pt rows with a grey hover, 16pt glyphs.
-        let mut el = menu()
-            .id("btn-type-menu")
-            .occlude()
+        // A menu with a small title; kept in a plain box so it pairs with
+        // the size picker in the slash menu.
+        let mut el = Popover::new("btn-type-menu")
+            .menu()
             .w(px(200.))
-            .py(px(MENU_PAD_Y))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().h(px(32.)).px(px(MENU_INSET + 8.)).flex().items_center().text_size(px(12.)).text_color(Theme::text_caption()).child(crate::settings::text("选择按钮类型")));
+            .child(MenuLabel::new(crate::settings::text("选择按钮类型")));
         for (i, act) in ACTIONS.into_iter().enumerate() {
             el = el.child(
-                div()
-                    .id(("btn-type", i))
-                    .h(px(MENU_ROW_H))
-                    .mx(px(MENU_INSET))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .rounded(px(crate::ui::ROW_RADIUS))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(Theme::fill_hover()))
-                    .child(icon(action_icon(act), 16., Theme::icon()))
-                    .child(div().text_size(px(13.)).line_height(px(20.)).child(crate::settings::text(act.label())))
+                MenuItem::new(("btn-type", i))
+                    .icon(action_icon(act))
+                    .label(crate::settings::text(act.label()))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |e, _, window, cx| {
@@ -747,7 +652,7 @@ impl Editor {
                     ),
             );
         }
-        el
+        div().id("btn-type-menu-box").child(el)
     }
 }
 

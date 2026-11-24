@@ -126,7 +126,7 @@ impl Store {
     pub(super) fn follow_note_title(&mut self, id: &str, folder: &str, base: &str) -> Result<()> {
         let frel = self.index[folder].rel.clone();
         let dir = parent_rel(&frel).to_string();
-        // Its own name counts as free (`free_name`'s `own`), so 「方案 2」 renamed back to 「方案」 goes back when that is free.
+        // Its own name counts as free (`free_name`'s `own`), so 「方案 (2)」 renamed back to 「方案」 goes back when that is free.
         let name = self.free_name(&dir, base, None, Some(folder));
         let ext = ext_of(&self.index[id]).to_string();
         let want = format!("{name}.{ext}");

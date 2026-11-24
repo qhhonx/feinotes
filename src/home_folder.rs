@@ -374,15 +374,14 @@ impl Workspace {
                 .child(div().text_size(px(12.)).line_height(px(18.)).text_color(Theme::text_caption())
                     .child(crate::localized_count!(count, "{} 项", "{} item", "{} items", count))))
             .when(self.batch.is_none(), |d| d.when(!id.starts_with("collection-"), |d| d
-                .child(div().id(SharedString::from(format!("home-fnew-{id}"))).flex_none().size(px(28.)).rounded_full().flex().items_center().justify_center()
-                    .bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_button()).opacity(reveal).cursor_pointer()
-                    .hover(|s| s.bg(Theme::fill_hover_strong()))
+                // Outline buttons floating on the tile, round.
+                .child(crate::design::Button::outline(SharedString::from(format!("home-fnew-{id}"))).sized(crate::design::ButtonSize::Tool).rounded_full().opacity(reveal)
                     .tip(crate::settings::tr("新建文档", "New document"), None)
-                    .child(icon("plus", 15., Theme::icon()).with_transformation(Transformation::scale(size(0.7 + 0.3 * reveal, 0.7 + 0.3 * reveal))))
+                    .child(crate::design::icon("plus", 16., crate::design::color::muted_foreground()).with_transformation(Transformation::scale(size(0.7 + 0.3 * reveal, 0.7 + 0.3 * reveal))))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |w, _, window, cx| { cx.stop_propagation();
                         w.new_child(&new_id, window, cx); }))))
-                .child(self.home_more(e, format!("home-fmore-{id}"), cx).size(px(28.)).rounded_full().bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_button()).opacity(reveal)));
+                .child(self.home_more(e, format!("home-fmore-{id}"), cx).variant(crate::design::ButtonVariant::Outline).sized(crate::design::ButtonSize::Tool).rounded_full().opacity(reveal)));
         div().id(SharedString::from(format!("home-folder-{id}"))).relative().w_full().min_w_0().h(px(h)).cursor_pointer()
             .when(self.batch.is_some(), |d| d.opacity(0.45))
             .when(self.home_dragging(&id), |d| d.opacity(0.45))

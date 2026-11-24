@@ -6,7 +6,7 @@ use super::*;
 
 /// Characters no file name may hold on macOS or Windows, and what stands in for them.
 const ILLEGAL: [(char, char); 9] = [('/', '／'), ('\\', '＼'), (':', '：'), ('*', '＊'), ('?', '？'), ('"', '＂'), ('<', '＜'), ('>', '＞'), ('|', '｜')];
-/// Longest name kept, in bytes, before the ` 2` suffix and the extension.
+/// Longest name kept, in bytes, before the ` (2)` suffix and the extension.
 const NAME_BYTES: usize = 120;
 
 /// A title as a file or folder name (no extension): illegal characters become
@@ -35,12 +35,18 @@ pub fn file_name_for(title: &str) -> String {
     s
 }
 
-/// Whether `stem` is `base`, or `base` numbered (`base 2`, `base 3` …) because the name was taken.
+/// Whether `stem` is `base`, or `base` numbered because the name was taken:
+/// `base (2)`, `base (3)` … as made now, or `base 2` as older versions did.
 pub(super) fn name_fits(stem: &str, base: &str) -> bool {
-    stem == base || stem.strip_prefix(base).and_then(|r| r.strip_prefix(' ')).is_some_and(|n| !n.starts_with('0') && n.parse::<u32>().is_ok_and(|n| n >= 2))
+    let number = |n: &str| !n.starts_with('0') && n.parse::<u32>().is_ok_and(|n| n >= 2);
+    stem == base || stem.strip_prefix(base).and_then(|r| r.strip_prefix(' '))
+        .is_some_and(|r| number(r) || r.strip_prefix('(').and_then(|r| r.strip_suffix(')')).is_some_and(number))
 }
 
-/// `stem` without the ` 2` a clash gave it.
+/// `base` numbered for the `n`th clash (`n` ≥ 2).
+pub(super) fn numbered(base: &str, n: u32) -> String { format!("{base} ({n})") }
+
+/// `stem` without the ` (2)` (or older ` 2`) a clash gave it.
 pub(super) fn unnumbered(stem: &str) -> &str {
     match stem.rsplit_once(' ') {
         Some((head, n)) if !head.is_empty() && name_fits(stem, head) && !n.is_empty() => head,
@@ -80,6 +86,45 @@ pub fn resolve(from: &str, href: &str) -> Option<String> {
         }
     }
     (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// A plain link to a file beside the document (`[报告](附件/报告.pdf)`,
+/// `[周报](../工作/周报.md)`): not a place on the page, a web address or a `[[wiki]]` link.
+pub fn file_link(url: &str) -> bool {
+    !url.starts_with(['#', '?']) && !url.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("www.")) && crate::paste::relative_link(url)
+}
+
+/// `href`, written in a file in folder `from`, as a path from the library's
+/// top (`%20` and friends decoded, `#…` dropped); it starts with `..` when it
+/// leaves the library. `None`: not a file link, or the folder itself.
+pub fn link_path(from: &str, href: &str) -> Option<String> {
+    if !file_link(href) { return None; }
+    let path = crate::markdown::percent_decode(href.split(['#', '?']).next().unwrap_or(""));
+    let mut parts: Vec<&str> = from.split('/').filter(|s| !s.is_empty()).collect();
+    for p in path.split('/') {
+        match p {
+            "" | "." => {}
+            ".." if parts.last().is_some_and(|l| *l != "..") => { parts.pop(); }
+            p => parts.push(p),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// `href` from a file that was in folder `from` and is now in `to`, its
+/// target moved as `moved` says (a path from the library's top to where it
+/// went). `None`: written the same as before.
+pub(super) fn rebase_link(from: &str, to: &str, href: &str, moved: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    let path = link_path(from, href)?;
+    let target = moved(&path).unwrap_or(path);
+    let at = href.find(['#', '?']).unwrap_or(href.len());
+    let mut new = relative(to, &target);
+    if new.is_empty() { return None; }
+    // Written the way it was: `./` kept, escaped when it was.
+    if href.starts_with("./") && !new.starts_with("../") { new.insert_str(0, "./"); }
+    if href[..at].contains('%') { new = new.replace('%', "%25").replace(' ', "%20").replace('(', "%28").replace(')', "%29"); }
+    new.push_str(&href[at..]);
+    (new != href).then_some(new)
 }
 
 /// What a scan found: the folders and documents, relative to the library.
@@ -196,6 +241,9 @@ mod tests {
     #[test]
     fn numbered_names() {
         assert!(name_fits("周报", "周报") && name_fits("周报 2", "周报") && name_fits("周报 12", "周报"));
+        assert!(name_fits("周报 (2)", "周报") && name_fits("周报 (12)", "周报"));
+        assert!(!name_fits("周报 (1)", "周报") && !name_fits("周报 (02)", "周报") && !name_fits("周报 (2", "周报") && !name_fits("周报 2)", "周报") && !name_fits("周报(2)", "周报"));
+        assert_eq!((unnumbered("周报 (2)"), unnumbered("周报 2"), unnumbered("周报 (x)"), unnumbered("(2)")), ("周报", "周报", "周报 (x)", "(2)"));
         assert!(!name_fits("周报 1", "周报") && !name_fits("周报 02", "周报") && !name_fits("周报2", "周报") && !name_fits("周", "周报"));
         assert_eq!(unnumbered("周报 3"), "周报");
         assert_eq!(unnumbered("周报"), "周报");

@@ -6,11 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use gpui::prelude::*;
 use gpui::{div, px, relative, AnyElement, ClickEvent, FontWeight, Window, App};
 
+use crate::design::{Button, ButtonSize, Card};
 use crate::theme::Theme;
-use crate::ui::icon;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const RADIUS: f32 = 12.;
 /// 0.1.11's first note; a library moved this launch says it with its counts instead.
 const REAL_FOLDERS: &str = "文档库改为真实文件夹，以标题命名，和侧栏一致";
 
@@ -170,14 +169,11 @@ pub fn card(on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> 
         if moved.is_some() && zh == REAL_FOLDERS { continue }
         list = list.child(line(crate::settings::tr(zh, en).into()));
     }
-    // A continuous-corner white surface; the faint shadow follows its radius.
-    // At most half the sidebar; a longer list scrolls inside the card.
-    Some(crate::ui::continuous_surface(RADIUS, Theme::bg_body()).id("changelog").flex_none().max_h(relative(0.5)).flex().flex_col().min_w_0().overflow_hidden().mx(px(crate::sidebar::SB_X - 4.)).mb(px(2.)).pl(px(12.)).pr(px(6.)).pt(px(8.)).pb(px(10.))
-        .rounded(px(RADIUS)).shadow(crate::theme::shadow_card())
+    // A card; at most half the sidebar, a longer list scrolls inside it.
+    Some(Card::new("changelog").flex_none().max_h(relative(0.5)).min_w_0().overflow_hidden().mx(px(crate::sidebar::SB_X - 4.)).mb(px(2.)).pl(px(12.)).pr(px(6.)).pt(px(8.)).pb(px(10.))
         .child(div().flex_none().w_full().min_w_0().flex().items_center().justify_between()
             .child(div().text_size(px(13.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).child(title))
-            .child(div().id("changelog-close").size(px(20.)).flex().items_center().justify_center().rounded(px(6.)).cursor_pointer()
-                .hover(|s| s.bg(Theme::fill_hover())).child(icon("x", 12., Theme::icon()))
+            .child(Button::ghost("changelog-close").icon("x").sized(ButtonSize::Xs)
                 .on_click(move |e, w, cx| { PENDING.store(false, Ordering::Relaxed); *MIGRATED.lock().unwrap() = None; on_close(e, w, cx); })))
         .child(div().id("changelog-list").flex_1().min_h_0().overflow_y_scroll().child(list))
         .into_any_element())

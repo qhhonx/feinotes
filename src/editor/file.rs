@@ -11,7 +11,9 @@ use crate::store::image_path_in;
 use crate::model::*;
 use crate::store::Store;
 use crate::editor_theme::{self as theme, Theme, craft};
-use crate::editor_ui::{ROW_RADIUS, TipExt, icon, popover};
+use crate::editor_ui::{ROW_RADIUS, TipExt, icon};
+use crate::design::toolbar::{TOOLBAR_H, toolbar_layout, w as tw};
+use crate::design::{Button, ButtonGroupSeparator, ButtonSize, Toggle, Toolbar};
 use super::image::picture;
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::RefCell;
@@ -332,6 +334,11 @@ fn open_listener(f: FileBlock, cx: &mut Context<Editor>) -> impl Fn(&MouseDownEv
     })
 }
 
+/// A floating toolbar's icon button.
+/// A toolbar action (design::toolbar): a ghost `icon-sm` button.
+fn tool_btn(id: impl Into<ElementId>) -> Button { Button::ghost(id).sized(ButtonSize::Sm) }
+
+/// The audio player's buttons (in the page).
 fn shell_btn(id: impl Into<ElementId>) -> Stateful<Div> {
     div()
         .id(id)
@@ -831,14 +838,16 @@ impl Editor {
                 f(e, id, window, cx);
             })
         };
-        let sep = || div().w(px(1.)).h(px(18.)).bg(Theme::line_divider());
-        let mut bar = div().h(px(40.)).px(px(8.)).flex().items_center().gap(px(8.));
-        let mut w = 16. + 2.;
-        let mut n = 0;
+        let sep = ButtonGroupSeparator::new;
+        let mut bar = Toolbar::new("file-toolbar").on_mouse_down(MouseButton::Left, |_, window, cx| {
+            cx.stop_propagation();
+            window.prevent_default();
+        });
+        let mut widths = vec![];
         if preview.is_some_and(|k| k != Kind::Audio) {
             let f = f.clone();
             bar = bar.child(
-                shell_btn("ftb-full").tip_above(crate::settings::text("全屏"), None).child(icon("maximize", 18., Theme::icon())).on_mouse_down(
+                tool_btn("ftb-full").editor_icon("maximize").tip_above(crate::settings::text("全屏"), None).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |e, _, window, cx| {
                         cx.stop_propagation();
@@ -847,11 +856,10 @@ impl Editor {
                     }),
                 ),
             );
-            w += 24.;
-            n += 1;
+            widths.push(tw::BUTTON);
         }
         bar = bar
-            .child(shell_btn("ftb-download").tip_above(crate::settings::text("下载"), None).child(icon("download", 18., Theme::icon())).on_mouse_down(
+            .child(tool_btn("ftb-download").editor_icon("download").tip_above(crate::settings::text("下载"), None).on_mouse_down(
                 MouseButton::Left,
                 act(|e, id, _, cx| {
                     if let Some(BlockKind::File(f)) = e.core.kind_of(id).cloned() {
@@ -860,15 +868,14 @@ impl Editor {
                 }),
             ))
             .child(sep())
-            .child(shell_btn("ftb-text").tip_above(crate::settings::text("文本视图"), None).child(icon("view-text", 18., Theme::icon())).on_mouse_down(
+            .child(tool_btn("ftb-text").editor_icon("view-text").tip_above(crate::settings::text("文本视图"), None).on_mouse_down(
                 MouseButton::Left,
                 act(|e, id, window, cx| {
                     e.core.file_to_inline(id);
                     e.changed(window, cx);
                 }),
             ));
-        w += 24. + 1. + 24.;
-        n += 3;
+        widths.extend([tw::BUTTON, tw::SEPARATOR, tw::BUTTON]);
         let views: &[(&'static str, &'static str, &'static str, FileView)] = if preview.is_some() {
             &[("ftb-card", "view-card", "卡片视图", FileView::Card), ("ftb-preview", "view-preview", "预览视图", FileView::Preview)]
         } else {
@@ -877,10 +884,10 @@ impl Editor {
         for &(key, ic, tip, v) in views {
             let on = view == v || preview.is_none();
             bar = bar.child(
-                shell_btn(key)
-                    .when(on, |d| d.bg(Theme::fill_turninto_active()))
+                Toggle::new(key)
+                    .editor_icon(ic)
+                    .pressed(on)
                     .tip_above(tip, None)
-                    .child(icon(ic, 18., if on { Theme::primary() } else { Theme::icon() }))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |e, _, window, cx| {
@@ -891,23 +898,13 @@ impl Editor {
                         }),
                     ),
             );
-            w += 24.;
-            n += 1;
+            widths.push(tw::TOGGLE);
         }
-        w += (n - 1) as f32 * 8.;
+        let (_, w) = toolbar_layout(&widths);
         let x = (f32::from(rect.center().x) - w / 2.).clamp(f32::from(viewport.left()) + 8., (f32::from(viewport.right()) - w - 8.).max(f32::from(viewport.left()) + 8.));
-        let h = 42.;
-        let above = f32::from(rect.top()) - 8. - h;
+        let above = f32::from(rect.top()) - 8. - TOOLBAR_H;
         let y = if above >= f32::from(viewport.top()) { above } else { f32::from(rect.bottom()) + 8. };
-        let el = popover()
-            .id("file-toolbar")
-            .occlude()
-            .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                cx.stop_propagation();
-                window.prevent_default();
-            })
-            .child(bar);
-        Some(at(self.rel(point(px(x), px(y))), Anchor::TopLeft, el))
+        Some(at(self.rel(point(px(x), px(y))), Anchor::TopLeft, bar))
     }
 
     /// The hover card of an inline attachment: 下载 | 文本视图 · 卡片视图 ·
@@ -915,17 +912,13 @@ impl Editor {
     pub(super) fn file_card(&self, p: Pos, f: &FileBlock, cx: &mut Context<Self>) -> Option<AnyElement> {
         let r = self.probed(Probe::Button(p))?;
         let preview = previewable(&f.name);
-        let n = if preview { 4 } else { 3 };
-        let w = 2. + 16. + n as f32 * 24. + 1. + n as f32 * 8.;
+        // 下载 | 文本视图 卡片视图 (预览视图): the views are toggles, this one pressed
+        let n = if preview { 3 } else { 2 };
+        let (_, w) = toolbar_layout(&[&[tw::BUTTON, tw::SEPARATOR][..], &vec![tw::TOGGLE; n]].concat());
         let file = f.clone();
-        let sep = div().w(px(1.)).h(px(18.)).bg(Theme::line_divider());
-        let mut bar = div()
-            .h(px(40.))
-            .px(px(8.))
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .child(shell_btn("fcard-download").tip_above(crate::settings::text("下载"), None).child(icon("download", 18., Theme::icon())).on_mouse_down(
+        let sep = ButtonGroupSeparator::new();
+        let mut bar = Toolbar::new("file-card-pop")
+            .child(tool_btn("fcard-download").editor_icon("download").tip_above(crate::settings::text("下载"), None).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |e, _, window, cx| {
                     cx.stop_propagation();
@@ -935,14 +928,14 @@ impl Editor {
                 }),
             ))
             .child(sep)
-            .child(shell_btn("fcard-text").bg(Theme::fill_turninto_active()).tip_above(crate::settings::text("文本视图"), None).child(icon("view-text", 18., Theme::primary())));
+            .child(Toggle::new("fcard-text").editor_icon("view-text").pressed(true).tip_above(crate::settings::text("文本视图"), None));
         let views: &[(&'static str, &'static str, &'static str, FileView)] = if preview {
             &[("fcard-card", "view-card", "卡片视图", FileView::Card), ("fcard-preview", "view-preview", "预览视图", FileView::Preview)]
         } else {
             &[("fcard-card", "view-card", "卡片视图", FileView::Card)]
         };
         for &(key, ic, tip, v) in views {
-            bar = bar.child(shell_btn(key).tip_above(tip, None).child(icon(ic, 18., Theme::icon())).on_mouse_down(
+            bar = bar.child(Toggle::new(key).editor_icon(ic).tip_above(tip, None).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |e, _, window, cx| {
                     cx.stop_propagation();
@@ -955,9 +948,7 @@ impl Editor {
                 }),
             ));
         }
-        let el = popover()
-            .id("file-card-pop")
-            .occlude()
+        let el = bar
             .on_hover(cx.listener(|e, h: &bool, _, cx| {
                 e.btn.card_over = *h;
                 e.sync_button_card(cx);
@@ -965,8 +956,7 @@ impl Editor {
             .on_mouse_down(MouseButton::Left, |_, window, cx| {
                 cx.stop_propagation();
                 window.prevent_default();
-            })
-            .child(bar);
+            });
         Some(at(self.rel(point(r.center().x - px(w / 2.), r.top() - px(4.))), Anchor::BottomLeft, el))
     }
 

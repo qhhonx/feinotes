@@ -2,9 +2,9 @@
 //! "?" help button at the bottom right of the page that opens it.
 
 use crate::app::Workspace;
-use crate::theme::{self, Theme};
-use crate::trash::menu_label;
-use crate::ui::{TipExt, TitleBarExt, ToastKind, icon, menu_glyph, menu_row, popover};
+use crate::theme::Theme;
+use crate::design::{MenuItem, Popover};
+use crate::ui::{TipExt, TitleBarExt, ToastKind, icon};
 use gpui::{prelude::FluentBuilder, *};
 
 actions!(workspace, [EditMode, ReadMode, ToggleShortcuts]);
@@ -60,13 +60,19 @@ fn rows(list: &[Row]) -> Vec<AnyElement> {
                 .items_center()
                 .py(px(10.))
                 .border_b_1()
-                .border_color(Theme::line_divider())
-                .child(div().flex_none().mr(px(8.)).child(icon(ic, 16., Theme::icon())))
+                .border_color(crate::design::color::border())
+                .child(div().flex_none().mr(px(8.)).child(icon(ic, 16., crate::design::color::muted_foreground())))
                 .child(div().flex_none().mr(px(16.)).text_size(px(13.)).line_height(px(18.)).child(crate::settings::text(desc)))
                 .child(div().flex_1().min_w_0().flex().justify_end().text_size(px(12.)).line_height(px(18.)).text_color(Theme::text_caption()).child(crate::shortcuts::keys(crate::settings::text(keys))))
                 .into_any_element(),
         })
         .collect()
+}
+
+/// A shortcut as key caps (`KbdGroup`); 未设置 as text.
+fn caps(key: &str) -> AnyElement {
+    if key.is_empty() { return div().text_color(crate::design::color::muted_foreground()).child(crate::shortcuts::pretty(key)).into_any_element() }
+    crate::design::KbdGroup::new(crate::shortcuts::strokes(key)).into_any_element()
 }
 
 fn section(title: &'static str) -> Div {
@@ -161,30 +167,13 @@ impl Workspace {
         let at = self.mode_btn_bounds.get()?;
         let reading = self.reading();
         let item = |id: &'static str, ic: &'static str, title: &'static str, desc: &'static str, selected: bool, to_reading: bool| {
-            let g = SharedString::from(id);
-            menu_row(id, g.clone())
-                .h(px(42.))
-                .child(menu_glyph(ic, 16., g.clone()))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(menu_label(title, g.clone(), gpui::white()).text_size(px(13.)).line_height(px(18.)))
-                        .child(menu_label(desc, g.clone(), theme::rgbaf(255, 255, 255, 0.85)).text_size(px(11.)).line_height(px(15.)).text_color(Theme::text_caption())),
-                )
-                .when(selected, |d| d.child(menu_glyph("check", 14., g)))
+            MenuItem::new(id).icon(ic).label(crate::settings::label(title)).description(crate::settings::label(desc)).checked(selected)
                 .on_click(cx.listener(move |w, _, window, cx| w.set_mode(to_reading, window, cx)))
         };
         let btn = self.mode_btn_bounds.clone();
-        let menu = popover()
-            .id("doc-mode-menu")
-            .occlude()
-            .w(px(180.))
-            .py(px(crate::ui::MENU_PAD_Y))
-            .flex()
-            .flex_col()
+        let menu = Popover::new("doc-mode-menu")
+            .menu()
+            .w(px(200.))
             .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
                 // The button toggles the menu itself.
                 if btn.get().is_none_or(|b| !b.contains(&ev.position)) {
@@ -211,7 +200,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .border_l_1()
-                .border_color(Theme::line_divider())
+                .border_color(crate::design::color::border())
                 .bg(crate::theme::raised(Theme::bg_body()))
                 .child(
                     div()
@@ -222,9 +211,9 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .border_b_1()
-                        .border_color(Theme::line_divider())
+                        .border_color(crate::design::color::border())
                         .child(div().flex_1().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).child(crate::settings::tr("快捷键", "Keyboard shortcuts")))
-                        .child(crate::trash::close_button("shortcuts-close").mr(px(5.)).on_click(cx.listener(|w, _, _, cx| {
+                        .child(crate::design::Button::ghost("shortcuts-close").sized(crate::design::ButtonSize::Xs).icon("x").on_click(cx.listener(|w, _, _, cx| {
                             w.shortcuts = false;
                             cx.notify();
                         }))),
@@ -240,7 +229,7 @@ impl Workspace {
                         .pb(px(24.))
                         .text_color(Theme::text())
                         .child(section(crate::settings::text("键盘快捷键")))
-                        .children(crate::shortcuts::rows(cx).into_iter().map(|(_, title, key)| div().flex().items_center().justify_between().gap(px(12.)).py(px(10.)).text_size(px(12.)).child(title).child(crate::shortcuts::pretty(&key)).into_any_element()))
+                        .children(crate::shortcuts::rows(cx).into_iter().map(|(_, title, key)| div().flex().items_center().justify_between().gap(px(12.)).py(px(10.)).text_size(px(12.)).child(title).child(caps(&key)).into_any_element()))
                         .children(rows(STANDARD))
                         .child(section("Markdown").mt(px(32.)))
                         .child(

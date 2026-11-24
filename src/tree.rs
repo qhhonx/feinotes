@@ -8,7 +8,7 @@ use crate::editor::view::SubPage;
 use crate::input::{TextField, TextFieldEvent};
 use crate::store::Entry;
 use crate::theme::{self, Theme};
-use crate::trash::{close_button, dialog, primary_button, scrim, secondary_button};
+use crate::design::{Button, Dialog, Field, FieldSize, Separator, scrim};
 use crate::ui::{ROW_RADIUS, icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 use std::collections::{HashMap, HashSet};
@@ -294,28 +294,20 @@ impl Workspace {
         let tree = Tree::new(&self.entries);
         let hidden: HashSet<String> = dlg.ids.iter().flat_map(|id| tree.subtree(id)).collect();
         let q = dlg.search.read(cx).text.trim().to_lowercase();
-        let border = Theme::line_border();
+        let border = crate::design::color::border();
         let library = crate::settings::tr("我的文档", "My documents").to_owned();
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         let library = self.current_room(cx).filter(|room| room.scope.folder).map_or(library, |room| room.title);
         let heading = crate::localized_format!("从「{}」移动到", "Move from “{}” to", library);
 
-        let search = div()
+
+        let search = Field::new("move-search")
+            .sized(FieldSize::Sm)
             .mt(px(12.))
             .mx(px(8.))
             .mb(px(10.))
-            .h(px(30.))
-            .flex_none()
-            .pl(px(10.))
-            .pr(px(8.))
-            .flex()
-            .items_center()
-            .rounded(px(9.))
-            .border_1()
-            .border_color(Theme::line_border())
-            .bg(crate::theme::raised(Theme::bg_body()))
-            .child(icon("search", 15., Theme::icon()))
-            .child(div().flex_1().min_w_0().ml(px(6.)).flex().child(dlg.search.clone()));
+            .child(crate::design::icon("search", 16., crate::design::color::muted_foreground()))
+            .child(div().flex_1().min_w_0().flex().child(dlg.search.clone()));
         // The location column reads like a sidebar: a grey surface and
         // a quiet pill for the selected location.
         let left = div()
@@ -438,38 +430,32 @@ impl Workspace {
         }
 
         let ready = dlg.target.is_some();
-        // 确定 waits for a target: the accent, faded, until one is picked.
-        let ok = primary_button("move-ok", crate::settings::text("确定"))
-            .when(!ready, |d| d.opacity(0.4).cursor_default());
-        let dialog = dialog("move-dialog")
+        // 确定 waits for a target.
+        let ok = Button::primary("move-ok").label(crate::settings::text("确定")).disabled(!ready);
+        let dialog = Dialog::new("move-dialog")
             .relative()
             .w(px(828.))
-            .flex()
-            .flex_col()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().pt(px(24.)).pr(px(56.)).pl(px(24.)).text_size(px(15.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).child(heading))
-            .child(close_button("move-close").absolute().top(px(27.)).right(px(25.)).on_click(cx.listener(|w, _, window, cx| w.close_move(window, cx))))
-            .child(
-                div().px(px(24.)).mt(px(16.)).mb(px(24.)).child(
-                    div()
-                        .h(px(512.))
-                        .flex()
-                        .border_1()
-                        .border_color(border)
-                        .rounded(px(10.))
-                        .child(left)
-                        .child(div().w(px(1.)).h_full().flex_none().bg(border))
-                        .child(list),
-                ),
-            )
+            .title(heading)
+            .closable(cx.listener(|w, _, window, cx| w.close_move(window, cx)))
             .child(
                 div()
-                    .px(px(24.))
-                    .pb(px(24.))
+                    .h(px(512.))
+                    .flex()
+                    .border_1()
+                    .border_color(border)
+                    .rounded(px(crate::design::geo().button_r))
+                    .overflow_hidden()
+                    .child(left)
+                    .child(Separator::new().vertical())
+                    .child(list),
+            )
+            .footer(
+                div()
                     .flex()
                     .justify_end()
                     .gap(px(12.))
-                    .child(secondary_button("move-cancel", crate::settings::text("取消")).on_click(cx.listener(|w, _, window, cx| w.close_move(window, cx))))
+                    .child(Button::outline("move-cancel").label(crate::settings::text("取消")).on_click(cx.listener(|w, _, window, cx| w.close_move(window, cx))))
                     .child(ok.when(cfg!(feature = "devtools"), |d| d.relative().child(self.home.track("qa-move-confirm")))
                         .when(ready, |d| d.on_click(cx.listener(|w, _, window, cx| {
                             let Some(d) = w.move_dlg.as_ref() else { return };
@@ -482,14 +468,8 @@ impl Workspace {
             );
         Some(
             deferred(
-                div()
+                scrim()
                     .id("move-mask")
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(scrim())
                     .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| w.close_move(window, cx)))
                     .child(dialog),
             )

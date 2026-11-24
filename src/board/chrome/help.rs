@@ -155,11 +155,7 @@ pub(crate) fn render(window: &mut Window, cx: &mut Context<BoardView>) -> impl I
 /// `ConfirmDialog` for `actionClearCanvas` ("small", 550): the text, then
 /// Cancel and Confirm (the latter `danger`-filled).
 pub(crate) fn clear_canvas(window: &mut Window, cx: &mut Context<BoardView>) -> impl IntoElement {
-    let button = |id: &'static str, label: &'static str, danger: bool| div().id(id).h(px(40.)).px(px(16.)).flex().items_center().justify_center().rounded(px(style::RADIUS_LG)).cursor_pointer()
-        .text_size(px(14.)).font_weight(FontWeight::SEMIBOLD)
-        .when(danger, |d| d.bg(style::hex(0xdb6965)).text_color(style::hex(0xffffff)).hover(|s| s.bg(style::hex(0xd65550))).active(|s| s.bg(style::hex(0xd1413c))))
-        .when(!danger, |d| d.border_1().border_color(style::border()).hover(|s| s.bg(style::button_hover_bg())))
-        .child(label);
+    let button = |id: &'static str, label: &'static str, danger: bool| crate::design::Button::new(id, if danger { crate::design::ButtonVariant::Destructive } else { crate::design::ButtonVariant::Outline }).label(label);
     let body = div().flex().flex_col().gap(px(24.)).text_size(px(16.)).line_height(style::lh(16.))
         .child(div().child(tr("这将会清除整个画布。您是否要继续?", "This will clear the whole canvas. Are you sure?")))
         .child(div().flex().justify_end().gap(px(12.))

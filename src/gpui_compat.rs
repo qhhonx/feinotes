@@ -30,6 +30,7 @@ pub fn track_scroll(list: gpui::UniformList, scroll: &gpui::UniformListScrollHan
 }
 
 pub fn grid_columns(grid: gpui::Div, widths: Vec<f32>) -> gpui::Div {
+    #[cfg(not(target_os = "ios"))]
     use gpui::Styled;
     #[cfg(target_os = "ios")]
     {

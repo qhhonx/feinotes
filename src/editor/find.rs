@@ -1,13 +1,13 @@
 //! 查找和替换 (⌘F / ⌘⇧H): the floating box at the top right of the page,
 //! match search over every visible text line and the replace commands.
 
-use super::core::{EditKind, Pos, Selection, TITLE};
+use super::core::{Core, EditKind, Pos, Selection, TITLE};
 use super::view::Editor;
 use crate::input::TextField;
 use crate::model::*;
-use crate::feishu_theme::{self as theme, craft};
 use crate::editor_theme::Theme;
-use crate::editor_ui::{ROW_RADIUS, TipExt, TipSide, icon, popover};
+use crate::editor_ui::{TipExt, TipSide};
+use crate::design::{Button, ButtonSize, ButtonVariant, Field, FieldSize, Popover};
 use gpui::{prelude::FluentBuilder, *};
 use regex::Regex;
 use std::ops::Range;
@@ -112,6 +112,12 @@ pub fn find_in(text: &RichText, q: &str) -> Vec<Range<usize>> {
     out
 }
 
+/// The first hit of `q` below the title, on a line the page shows: where a
+/// 搜索 result found in the body opens (#64).
+pub fn first_body_hit(core: &Core, q: &str) -> Option<(BlockId, Range<usize>)> {
+    core.units().iter().filter(|u| u.text && u.id != TITLE).find_map(|u| Some((u.id, find_in(core.text_of(u.id)?, q).into_iter().next()?)))
+}
+
 const BOX_W: f32 = 404.;
 const BTN_W: f32 = 80.;
 
@@ -165,6 +171,23 @@ impl Editor {
         }
         crate::gpui_compat::focus(window, &self.focus, cx);
         cx.notify();
+    }
+
+    /// Select the first body hit of `q` and bring it into view (centred like
+    /// a find hit), instead of the remembered reading position; false when
+    /// the page shows none. 搜索 opens a body hit this way (#64).
+    pub fn reveal_body_hit(&mut self, q: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.board_file || self.table_file { return false; }
+        let Some((id, r)) = first_body_hit(&self.core, q) else { return false };
+        self.core.block_sel = None;
+        self.core.cell_sel = None;
+        self.core.sel = Selection { anchor: Pos::new(id, r.start), head: Pos::new(id, r.end) };
+        self.toolbar_hidden = true;
+        self.restore_top = None;
+        self.reveal = Some((super::render::Reveal::Find(Pos::new(id, r.start)), 0));
+        window.refresh();
+        cx.notify();
+        true
     }
 
     /// Recompute hits. `from_caret` picks the first hit at or after the caret,
@@ -381,19 +404,13 @@ impl Editor {
                     cx.notify();
                 }))
         };
-        // The input: 30 tall, radius 9, white, hairline; accent while focused.
-        let input = |field: &Entity<TextField>, suffix: Option<String>, toggle: Option<AnyElement>| {
+        // The input: a small field.
+        let input = |id: &'static str, field: &Entity<TextField>, suffix: Option<String>, toggle: Option<AnyElement>| {
             let focused = field.read(cx).is_focused(window);
-            div()
-                .h(px(30.))
-                .px(px(10.))
-                .flex()
-                .items_center()
+            Field::new(id)
+                .sized(FieldSize::Sm)
+                .focused(focused)
                 .gap(px(8.))
-                .rounded(px(9.))
-                .bg(crate::theme::raised(Theme::bg_body()))
-                .border_1()
-                .border_color(if focused { Theme::primary() } else { Theme::line_border() })
                 .child(field.clone())
                 .children(suffix.map(|s| {
                     let color = if invalid { Theme::danger() } else { Theme::text_caption() };
@@ -402,59 +419,21 @@ impl Editor {
                 .children(toggle)
         };
         // `.*`: regular expressions, accent-filled while on.
-        let regex_toggle = div()
-            .id("find-regex")
-            .flex_none()
+        let regex_toggle = Button::ghost("find-regex")
+            .sized(ButtonSize::Xs)
+            .selected(regex)
             .mr(px(-6.))
-            .size(px(22.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(ROW_RADIUS))
-            .cursor_pointer()
-            .text_size(px(13.))
+            .w(px(24.))
             .font_weight(FontWeight::SEMIBOLD)
-            .text_color(if regex { Theme::primary() } else { Theme::text_caption() })
-            .when(regex, |d| d.bg(Theme::fill_turninto_active()))
-            .when(!regex, |d| d.hover(|s| s.bg(Theme::fill_hover_strong())))
-            .child(".*")
+            .label(".*")
             .tip_label(crate::settings::text("正则表达式").into(), TipSide::Above)
             .on_click(cx.listener(|e, _, window, cx| e.toggle_regex(window, cx)))
             .into_any_element();
         let label = |s: &'static str| div().text_size(px(13.)).line_height(px(20.)).text_color(Theme::text()).child(s);
         let enabled = n > 0;
-        // Primary: the accent, white semibold; secondary: a white
-        // button (hairline, 1px drop). Both 30 tall, radius 9.
+        // Primary or outline, small; disabled with nothing found.
         let button = |id: &'static str, text: &'static str, primary: bool| {
-            let (bg, border, color) = match (primary, enabled) {
-                (true, true) => (Theme::primary(), Theme::primary(), Theme::on_primary()),
-                (true, false) => (Theme::fill_hover(), gpui::transparent_black(), Theme::text_disabled()),
-                (false, true) => (crate::theme::raised(Theme::bg_body()), Theme::button_border(), Theme::text()),
-                (false, false) => (crate::theme::raised(Theme::bg_body()), Theme::button_border(), Theme::text_disabled()),
-            };
-            div()
-                .id(id)
-                .flex_none()
-                .w(px(BTN_W))
-                .h(px(30.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(9.))
-                .border_1()
-                .border_color(border)
-                .bg(bg)
-                .shadow(theme::shadow_button())
-                .text_size(px(13.))
-                .when(primary, |d| d.font_weight(FontWeight::SEMIBOLD))
-                .text_color(color)
-                .when(enabled, |d| {
-                    d.cursor_pointer().hover(move |s| {
-                        if primary { s.bg(Theme::primary()).border_color(Theme::primary()).opacity(0.9) } else { s.bg(theme::c(craft::N100)) }
-                    })
-                })
-                .when(!enabled, |d| d.cursor(CursorStyle::OperationNotAllowed))
-                .child(text)
+            Button::new(id, if primary { ButtonVariant::Primary } else { ButtonVariant::Outline }).sized(ButtonSize::Sm).w(px(BTN_W)).disabled(!enabled).label(text)
         };
         let prev = button("find-prev", crate::settings::text("上一处"), false)
             .tip_label("Shift + Enter".into(), TipSide::Above)
@@ -473,7 +452,7 @@ impl Editor {
                     .flex()
                     .flex_col()
                     .when(replace, |d| d.child(label(crate::settings::text("查找"))))
-                    .child(div().when(replace, |d| d.mt(px(6.))).child(input(&self.find_field, Some(counter), Some(regex_toggle)))),
+                    .child(div().when(replace, |d| d.mt(px(6.))).child(input("find-field", &self.find_field, Some(counter), Some(regex_toggle)))),
             )
             .when(replace, |d| {
                 d.child(
@@ -482,7 +461,7 @@ impl Editor {
                         .flex()
                         .flex_col()
                         .child(label(crate::settings::text("替换为")))
-                        .child(div().mt(px(6.)).child(input(&self.replace_field, None, None))),
+                        .child(div().mt(px(6.)).child(input("replace-field", &self.replace_field, None, None))),
                 )
             })
             .child(
@@ -504,16 +483,12 @@ impl Editor {
                     .child(prev)
                     .child(next),
             );
-        // The popover: the light menu material, hairline, radius 12, and
-        // the deeper drop of a second-level panel.
-        let el = popover()
-            .id("find-box")
-            .occlude()
+        // The popover.
+        let el = Popover::new("find-box")
             .absolute()
             .top(px(8.))
             .right(px(16.))
             .w(px(BOX_W))
-            .shadow(theme::shadow_panel())
             .cursor(CursorStyle::Arrow)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
@@ -528,20 +503,12 @@ impl Editor {
                     .child(tab("find-tab", crate::settings::text("查找"), !replace, false))
                     .child(tab("replace-tab", crate::settings::text("替换"), replace, true))
                     .child(
-                        div()
-                            .id("find-close")
+                        Button::ghost("find-close")
+                            .sized(ButtonSize::Xs)
+                            .icon("x")
                             .absolute()
                             .top(px(10.))
                             .right(px(10.))
-                            .size(px(24.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(ROW_RADIUS))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(Theme::fill_hover_strong()))
-                            .active(|s| s.bg(Theme::fill_pressed()))
-                            .child(icon("x", 16., Theme::icon()))
                             .on_click(cx.listener(|e, _, window, cx| e.close_find(window, cx))),
                     ),
             )
@@ -552,7 +519,7 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::{compile, expand_all, find_in, find_re, replace_in, MAX_HITS};
+    use super::{compile, expand_all, find_in, find_re, first_body_hit, replace_in, MAX_HITS};
     use crate::model::*;
 
     fn re(q: &str) -> regex::Regex { compile(q).unwrap().unwrap() }
@@ -619,5 +586,18 @@ mod tests {
         assert_eq!(find_in(&t, "中文"), vec![15..21, 21..27]);
         assert!(find_in(&t, "\u{fffc}").is_empty());
         assert_eq!(find_in(&RichText::plain("aaa"), "aa"), vec![0..2]);
+    }
+
+    #[test]
+    fn body_hit_skips_the_title_and_folded_lines() {
+        let doc = crate::docxml::parse("<title>Apple notes</title>\n<h2 folded=\"true\">Fold</h2>\n<p>hidden APPLE</p>\n<h2>Open</h2>\n<p>a <b>red</b> Apple, an apple</p>\n").unwrap();
+        let core = crate::editor::core::Core::new(doc);
+        let (id, r) = first_body_hit(&core, "apple").unwrap();
+        assert_eq!(&core.text_of(id).unwrap().text[r], "Apple");
+        assert_eq!(core.text_of(id).unwrap().text, "a red Apple, an apple");
+        // Only the title or a folded section holds it: no body hit.
+        assert!(first_body_hit(&core, "notes").is_none());
+        assert!(first_body_hit(&core, "hidden").is_none());
+        assert!(first_body_hit(&core, "").is_none());
     }
 }

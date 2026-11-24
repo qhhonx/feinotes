@@ -277,6 +277,10 @@ strong {
   color: inherit;
 }
 
+em {
+  color: inherit;
+}
+
 a {
   color: var(--interactive-accent);
   text-decoration: underline;

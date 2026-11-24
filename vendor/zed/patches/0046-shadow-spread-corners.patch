@@ -1,0 +1,34 @@
+Grow a drop shadow's corner radii with its spread, as CSS does (css-backgrounds-3 §7.1.1), so a ring drawn by a spread shadow, such as a field's focus halo, is as wide at the corners as along the sides.
+
+diff --git a/crates/gpui/src/window.rs b/crates/gpui/src/window.rs
+index bad0b84b728bda77bcc02b47fd664ffd86e40774..5c6dda6cb46abbf79152ff135d6dfdabb8d9733b 100644
+--- a/crates/gpui/src/window.rs
++++ b/crates/gpui/src/window.rs
+@@ -5005,7 +5005,9 @@ impl Window {
+                 corner_radii: Corners::default(),
+                 color: shadow.color.opacity(opacity),
+                 shape_bounds,
+-                shape_corner_radii: corner_radii.scale(scale_factor),
++                // quiet.md: grow the corners with the spread as CSS does, so a ring drawn by a
++                // spread shadow (a focus halo) is as wide at the corners as along the sides.
++                shape_corner_radii: spread_corners(corner_radii, shadow.spread_radius).scale(scale_factor),
+                 inset: false.into(),
+                 pad: 0,
+             });
+@@ -11039,3 +11041,16 @@ mod inspector_tests {
+         .expect("closed inspector has no bookkeeping and no style overrides");
+     }
+ }
++
++/// quiet.md: CSS's outer shadow corner, the radius plus the spread, easing to sharp for a sharp
++/// corner (css-backgrounds-3 §7.1.1) and shrinking to zero for a negative spread.
++fn spread_corners(r: Corners<Pixels>, s: Pixels) -> Corners<Pixels> {
++    let grow = |r: Pixels| {
++        let (r, s) = (f32::from(r), f32::from(s));
++        if s <= 0. { return px((r + s).max(0.)); }
++        if r >= s { return px(r + s); }
++        let t = r / s - 1.;
++        px(r + s * (1. + t * t * t))
++    };
++    Corners { top_left: grow(r.top_left), top_right: grow(r.top_right), bottom_right: grow(r.bottom_right), bottom_left: grow(r.bottom_left) }
++}

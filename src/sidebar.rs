@@ -5,7 +5,8 @@
 use crate::app::{Confirm, RowMenu, View, Workspace};
 use crate::settings::display_title;
 use crate::store::Entry;
-use crate::theme::{self, Theme, craft};
+use crate::theme::{self, Theme};
+use crate::design::{Button, MenuLabel, Popover};
 use crate::ui::{TipExt, TitleBarExt, icon, popover, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 
@@ -122,24 +123,9 @@ pub(crate) enum Check {
     On,
 }
 
-/// 14px checkbox; an unchecked box turns blue when `group` is hovered.
-pub(crate) fn checkbox(state: Check, disabled: bool, group: &'static str) -> Div {
-    let white = Theme::bg_body();
-    div()
-        .size(px(14.))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(4.))
-        .when(state != Check::Off, |d| d.bg(Theme::primary()))
-        .when(state == Check::Off, |d| {
-            d.border_1()
-                .when(disabled, |d| d.border_color(Theme::line_border()).bg(theme::c(craft::N100)))
-                .when(!disabled, |d| d.border_color(theme::c(craft::N500)).bg(white).group_hover(group, |s| s.border_color(Theme::primary())))
-        })
-        .when(state == Check::On, |d| d.child(icon("todo-check", 12., white)))
-        .when(state == Check::Partial, |d| d.child(div().w(px(8.)).h(px(2.)).rounded(px(1.)).bg(white)))
+/// The batch checkbox: `design::Checkbox`, with 部分选中 as its indeterminate state.
+pub(crate) fn checkbox(state: Check, disabled: bool) -> crate::design::Checkbox {
+    crate::design::Checkbox::new(state == Check::On).partial(state == Check::Partial).disabled(disabled)
 }
 
 pub(crate) fn batch_check_slot() -> Div {
@@ -193,18 +179,11 @@ impl Workspace {
             .pr(px(12.))
             .title_bar()
             .child(
-                crate::ui::toolbar_control(div()
-                    .id("collapse-sidebar")
+                Button::ghost("collapse-sidebar")
                     .no_drag()
-                    .flex_none()
                     .ml(px(4.))
-                    .size(px(28.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer(), 8., hover, None)
+                    .icon("panel-left-close")
                     .tip(crate::settings::tr("收起侧栏", "Hide sidebar"), Some(crate::shortcuts::hint("workspace::ToggleSidebar", "⌘ + ]")))
-                    .child(crate::ui::toolbar_icon("panel-left-close", 17.))
                     .on_click(cx.listener(|w, _, _, cx| {
                         w.sidebar_open = false;
                         cx.notify();
@@ -291,32 +270,9 @@ impl Workspace {
         }
 
         // The footer holds one row: 设置 (存储管理 and 回收站 live in 设置).
-        // The 批量操作 toolbar keeps the footer glyphs: bare on the sidebar, a rounded fill on hover.
+        // The 批量操作 toolbar: ghost icon buttons.
         let footer_btn = |id: &'static str, name: &'static str, tip: &'static str, enabled: bool, on: bool| {
-            let group = SharedString::from(format!("{id}-slot"));
-            div()
-                .id(id)
-                .flex_none()
-                .w(px(36.))
-                .h(px(32.))
-                .group(group.clone())
-                .when(enabled, |d| d.cursor_pointer())
-                .tip(tip, None)
-                .child(
-                    div()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(8.))
-                        .when(on, |d| d.bg(selection_fill()))
-                        .when(enabled && !on, |d| d.group_hover(group, |s| s.bg(hover())))
-                        .child(match (on, enabled) {
-                            (true, _) => icon(&format!("{name}-filled"), 17., Theme::icon()),
-                            (false, true) => icon(name, 17., Theme::icon()),
-                            (false, false) => icon(name, 17., Theme::text_disabled()),
-                        }),
-                )
+            Button::ghost(id).w(px(36.)).h(px(32.)).icon(if on { format!("{name}-filled") } else { name.to_string() }).selected(on).disabled(!enabled).tip(tip, None)
         };
         let some = self.batch.as_ref().is_some_and(|b| !b.is_empty());
         // 设置; in 设置 the same row reads 返回 (`settings.rs`), so one spot toggles.
@@ -912,7 +868,7 @@ impl Workspace {
                         .id(SharedString::from(format!("check-{}", e.id)))
                         .mr(px(4.))
                         .when(blocked, |d| d.tip(crate::settings::text("无法选中，选择的页面数已到达上限"), None))
-                        .child(checkbox(if checked { Check::On } else { Check::Off }, blocked, "doc-row")),
+                        .child(checkbox(if checked { Check::On } else { Check::Off }, blocked)),
                 )
             })
             .child({
@@ -1045,17 +1001,14 @@ impl Workspace {
         if m.batch {
             // Right-click in 批量操作: the batch menu minus 添加快捷方式到, 转移所有权.
             let n = self.batch.as_ref().map_or(0, |b| b.len());
-            let menu = popover()
-                .id("batch-menu")
-                .occlude()
+            let menu = Popover::new("batch-menu")
+                .menu()
                 .min_w(px(ROW_MENU_W))
-                .px(px(5.))
-                .py(px(crate::ui::MENU_PAD_Y))
                 .on_mouse_down_out(cx.listener(|w, _, _, cx| {
                     w.row_menu = None;
                     cx.notify();
                 }))
-                .child(div().h(px(ROW_ITEM)).px(px(8.)).flex().items_center().text_size(px(theme::ui_font_small())).text_color(Theme::text_placeholder()).child(crate::localized_format!("已选 {n} 项", "Selected: {n}")))
+                .child(MenuLabel::new(crate::localized_format!("已选 {n} 项", "Selected: {n}")))
                 .child(item("bm-copy", "copy", crate::settings::text("创建副本")).on_click(cx.listener(|w, _, _, cx| w.batch_copy(cx))))
                 .when(!self.batch_contains_shared(cx), |d| d.child(item("bm-move", "folder-input", crate::settings::text("移动到")).on_click(cx.listener(|w, _, window, cx| w.batch_move(window, cx)))))
                 .child(item("bm-delete", "bin", crate::settings::text("删除")).on_click(cx.listener(|w, _, window, cx| w.ask_batch_delete(window, cx))));
@@ -1435,7 +1388,7 @@ impl Workspace {
         let id = if shared { "shared-batch-all" } else { "batch-all" };
         let row = div().h(px(SECTION_H)).pl(px(6.)).pt(px(SECTION_TOP)).flex().items_center()
             .child(batch_check_slot().id(id).cursor_pointer().group(id)
-                .child(checkbox(if all { Check::On } else if n > 0 { Check::Partial } else { Check::Off }, false, id))
+                .child(checkbox(if all { Check::On } else if n > 0 { Check::Partial } else { Check::Off }, false))
                 .on_click(cx.listener(move |w, _, _, cx| { w.batch = Some(if all { vec![] } else { ids.clone() }); cx.notify(); })))
             .child(div().flex_1().min_w_0().ml(px(6.)).text_size(px(theme::ui_font())).text_color(Theme::text()).child(crate::localized_format!("已选 {n} 项", "Selected: {n}")));
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]

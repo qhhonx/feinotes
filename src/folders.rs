@@ -1,7 +1,7 @@
 use crate::app::{View, Workspace};
 use crate::settings::{display_title, tr};
 use crate::theme::Theme;
-use crate::ui::{TipExt, TitleBarExt, icon, popover, ui_text};
+use crate::ui::{TipExt, TitleBarExt, icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 
 #[derive(Clone, PartialEq)]
@@ -295,8 +295,8 @@ impl Workspace {
         let can_create_folder = self.can_create_folder(&target, cx);
         let folder_target = target.clone();
         let personal = matches!(target, CreateTarget::PersonalSidebar(_));
-        let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::ui::menu_row(id, SharedString::from(id)).child(icon(glyph, 16., Theme::icon())).child(label);
-        let menu = popover().id("create-items").occlude().min_w(px(180.)).py(px(crate::ui::MENU_PAD_Y))
+        let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::design::MenuItem::new(id).icon(glyph).label(label);
+        let menu = crate::design::Popover::new("create-items").menu().min_w(px(180.))
             .on_mouse_down_out(cx.listener(move |w, event: &MouseDownEvent, _, cx| {
                 let row_slot = match &w.create_menu {
                     Some((CreateTarget::PersonalSidebar(Some(id)), _)) => Some(format!("add-doc-false-{id}")),
@@ -432,11 +432,11 @@ impl Workspace {
             .child(self.import_button("folder-import", Some(id.clone()), cx))
             .child(crate::ui::header_icon("folder-new", "plus")
                 .child(self.home.track("create-folder"))
-                .when(self.create_menu.as_ref().is_some_and(|(_, pos)| self.home.anchor("create-folder").is_some_and(|b| point(b.left(), b.bottom() + px(4.)) == *pos)), |d| d.bg(Theme::fill_hover()))
+                .selected(self.create_menu.as_ref().is_some_and(|(_, pos)| self.home.anchor("create-folder").is_some_and(|b| point(b.left(), b.bottom() + px(4.)) == *pos)))
                 .tip(tr("新建", "New"), Some(crate::shortcuts::hint("workspace::NewDoc", "⌘ + N")))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |w, ev: &ClickEvent, _, cx| { let pos = w.home.anchor("create-folder").map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.))); let p = Some(doc.clone()); w.create_menu = if w.create_menu.is_some() { None } else { Some((CreateTarget::Library(p), pos)) }; cx.notify(); }))))
-            .child(self.view_switch(cx).no_drag().ml(px(12.)));
+            .child(div().id("folder-view-switch").no_drag().ml(px(12.)).child(self.view_switch(cx)));
         let children = self.level_entries(Some(&id));
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let children = children.into_iter().map(|mut entry| {
@@ -460,9 +460,9 @@ impl Workspace {
         let (doc, folder, rename, mv, del) = (m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone());
         let personal = !self.is_shared() || !self.entries.iter().any(|e| e.id == m.id && e.meta.folder.is_some());
         let folder = if personal { CreateTarget::PersonalSidebar(Some(folder)) } else { CreateTarget::Library(Some(folder)) };
-        let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::ui::menu_row(id, SharedString::from(id)).child(icon(glyph, 16., Theme::icon())).child(label);
+        let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::design::MenuItem::new(id).icon(glyph).label(label);
         let pos = if m.pos.x < px(0.) { point(-m.pos.x, m.pos.y + px(22.)) } else { m.pos };
-        vec![deferred(anchored().anchor(m.corner).position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("folder-row-menu").occlude().min_w(px(190.)).py(px(crate::ui::MENU_PAD_Y))
+        vec![deferred(anchored().anchor(m.corner).position(pos).snap_to_window_with_margin(px(8.)).child(crate::design::Popover::new("folder-row-menu").menu().min_w(px(190.))
             .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }))
             .child(row("fr-new-doc", "doc", tr("新建文档", "New document")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None;
                 let doc = doc.clone();
@@ -486,7 +486,7 @@ impl Workspace {
                         let target = target.clone();
                         w.personal_action(window, cx, move |w, window, cx| w.create_shared_note(&target, window, cx)); }))) }
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-                { None::<Stateful<Div>> }
+                { None::<crate::design::MenuItem> }
             })
             .children({
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -496,9 +496,9 @@ impl Workspace {
                         .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&target, None, personal, cx))))
                 }
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-                { None::<Stateful<Div>> }
+                { None::<crate::design::MenuItem> }
             })
-            .child(row("fr-delete", "bin", tr("删除", "Delete")).text_color(Theme::danger())
+            .child(row("fr-delete", "bin", tr("删除", "Delete")).destructive(true)
                 .on_click(cx.listener(move |w, _, window, cx| {
                     let id = del.clone();
                     if personal { w.personal_action(window, cx, move |w, _, cx| w.ask_delete(&id, cx)); }

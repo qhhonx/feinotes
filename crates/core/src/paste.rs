@@ -1376,7 +1376,8 @@ pub fn is_numeric_math(src: &str) -> bool {
 }
 
 /// Inline Markdown: code spans, equations, links, bare URLs and the emphasis
-/// rules of the live shortcuts (`~x~` is underline). Paste turns escapes,
+/// rules of the live shortcuts (`~x~` is underline), and paired `<u>…</u>`
+/// (how Markdown export writes underline; no other HTML). Paste turns escapes,
 /// images and `<…>` autolinks off.
 pub fn md_inline(s: &str) -> RichText {
     let mut out = RichText::default();
@@ -1509,6 +1510,15 @@ pub fn md_inline(s: &str) -> RichText {
                 }
             }
         }
+        if let Some(body) = rest.strip_prefix("<u>") && let Some(end) = find_u_close(body).filter(|&e| e > 0) {
+            flush(&mut plain, &mut out);
+            let mut t = md_inline(&body[..end]);
+            let len = t.len();
+            t.update_marks(0..len, |m| m.underline = true);
+            out.append(&t);
+            i += 3 + end + 4;
+            continue;
+        }
         // `＊强调＊` / `＊＊加粗＊＊`: only a closed pair is emphasis; a lone `＊` stays itself.
         if c == '＊' {
             let n = rest.chars().take_while(|&x| x == '＊').count();
@@ -1570,6 +1580,31 @@ pub fn md_inline(s: &str) -> RichText {
     }
     flush(&mut plain, &mut out);
     out
+}
+
+/// Offset of the `</u>` closing an opened `<u>`: nested pairs count, escapes
+/// and code spans are skipped (a tag inside code is text).
+fn find_u_close(s: &str) -> Option<usize> {
+    let mut depth = 0;
+    let mut i = 0;
+    while i < s.len() {
+        let rest = &s[i..];
+        if rest.starts_with('\\') && rest[1..].starts_with(|c: char| c.is_ascii_punctuation()) { i += 2; continue; }
+        if rest.starts_with('`') {
+            let n = rest.bytes().take_while(|&b| b == b'`').count();
+            i += find_run(&rest[n..], &rest[..n], b'`').map_or(n, |end| n + end + n);
+            continue;
+        }
+        if rest.starts_with("<u>") { depth += 1; i += 3; continue; }
+        if rest.starts_with("</u>") {
+            if depth == 0 { return Some(i); }
+            depth -= 1;
+            i += 4;
+            continue;
+        }
+        i += rest.chars().next().unwrap().len_utf8();
+    }
+    None
 }
 
 /// `find_run` for a run of `＊` (not part of a longer one), non-empty match only.
@@ -1771,6 +1806,25 @@ mod tests {
         assert!(x.contains("<hr/>"), "{x}");
         assert!(x.contains("fn main() {}"), "{x}");
         assert!(x.contains("<table"), "{x}");
+    }
+
+    #[test]
+    fn markdown_underline_tags() {
+        let under = |s: &str| { let t = super::md_inline(s); t.spans().filter(|(_, m)| m.underline).map(|(r, _)| t.text[r].to_string()).collect::<Vec<_>>().join("|") };
+        assert_eq!(under("a <u>b</u> c"), "b");
+        assert_eq!(under("<u>a <u>b</u> c</u>"), "a b c");
+        assert_eq!(under("<u>a `</u>` b</u>"), "a |</u>| b");
+        // Unpaired, empty, escaped or other tags stay text.
+        for s in ["a <u>b", "b</u> c", "<u></u>", "\\<u>b\\</u>", "<U>b</U>", "<b>x</b>", "`<u>b</u>`"] {
+            assert_eq!(under(s), "", "{s}");
+        }
+        assert_eq!(super::md_inline("a <u>b").text, "a <u>b");
+        assert_eq!(super::md_inline("\\<u>b\\</u>").text, "<u>b</u>");
+        // Opening a Markdown file and pasting read it the same.
+        for off in [super::Off::default(), super::Off { file: true, ..Default::default() }] {
+            let b = super::markdown_to_blocks("# <u>t</u>\n\n- <u>x</u>\n", off);
+            assert!(b.iter().all(|b| b.text.spans().all(|(_, m)| m.underline)), "{b:?}");
+        }
     }
 
     #[test]

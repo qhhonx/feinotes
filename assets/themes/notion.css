@@ -275,6 +275,10 @@ strong {
   color: inherit;
 }
 
+em {
+  color: inherit;
+}
+
 a {
   color: var(--notion-text);
   text-decoration: underline;

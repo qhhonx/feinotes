@@ -7,7 +7,7 @@
 use crate::store::*;
 use crate::model::Document;
 use anyhow::Result;
-use fdl_core::workspace::{AddError, Root, Workspace};
+use fdl_core::workspace::{AddError, RenameError, Root, Workspace};
 use std::{cell::RefCell, path::{Path, PathBuf}, rc::Rc, sync::{atomic::{AtomicBool, Ordering}, Arc}};
 
 struct Shared {
@@ -106,6 +106,22 @@ impl SharedStore {
         Ok(())
     }
     pub fn retry_root(&self, key: &str) { self.state.borrow_mut().ws.retry(key) }
+    /// 重命名 a root: its folder on disk (2.11). Ids and the key stay.
+    pub fn rename_root(&self, key: &str, name: &str) -> std::result::Result<PathBuf, RenameError> {
+        if self.is_session() { return Err(RenameError::Fixed); }
+        let mut sh = self.state.borrow_mut();
+        let r = sh.ws.rename(key, name);
+        // Writing `roots.json` points `root_dir` at the first root; the one in front stays in front.
+        let front = sh.active.clone().and_then(|k| sh.ws.root(&k).filter(|r| r.store.is_some()).map(|r| r.path.clone())).or_else(|| sh.ws.first().map(|r| r.path.clone()));
+        if let Some(p) = front { Store::set_active_root(&p); }
+        r
+    }
+    pub fn can_rename_root(&self, key: &str) -> bool { !self.is_session() && self.state.borrow().ws.can_rename(key) }
+    /// Where a 快速笔记 goes: the root picked in Settings while it is open, else the first open one.
+    pub fn quick_note_root(&self) -> Option<String> {
+        if self.is_session() { return None; }
+        self.state.borrow().ws.quick_note_root(&crate::settings::prefs().quick_note_root).map(|r| r.key.clone())
+    }
     pub fn root_path(&self, key: &str) -> Option<PathBuf> { self.state.borrow().ws.root(key).map(|r| r.path.clone()) }
     /// The root `id` is in (a root's row: that root).
     pub fn root_of(&self, id: &str) -> Option<String> {
@@ -204,6 +220,15 @@ impl SharedStore {
         }
         entries
     }
+    /// A `Meta` a library hands back for `id`, as the window's rows hold it
+    /// (`with_root_rows`): at a root's top level, under that root's row.
+    pub fn as_row(&self, id: &str, mut m: Meta) -> Meta {
+        if m.parent.is_none() && !m.local() && self.root_rows() && let Some(k) = self.root_of(id) {
+            m.parent = Some(root_row(&k));
+            m.order = m.root_order.unwrap_or(0);
+        }
+        m
+    }
     /// `parent` as its library sees it: a root's row is that root's top level.
     pub fn real_parent<'a>(&self, parent: Option<&'a str>) -> Option<&'a str> { parent.filter(|p| root_of_row(p).is_none()) }
     /// Every root's entries, root `key`'s replaced by `fresh` (a background
@@ -234,7 +259,7 @@ impl SharedStore {
     pub fn load_for_edit(&self, id: &str, shared: bool) -> Result<Document> { self.on_res(id, |s| s.load_for_edit(id, shared)) }
     pub fn forget_loaded(&self, id: &str) { self.on(id, |s| s.forget_loaded(id)); }
     pub fn recover_later(&self, doc: &Document) -> Result<()> { self.put(None, |s, _| s.recover_later(doc)) }
-    pub fn save(&mut self, id: &str, doc: &Document) -> Result<Meta> { self.on_res(id, |s| s.save(id, doc)) }
+    pub fn save(&mut self, id: &str, doc: &Document) -> Result<Meta> { self.on_res(id, |s| s.save(id, doc)).map(|m| self.as_row(id, m)) }
     pub fn create_from(&mut self, doc: &Document) -> Result<String> { self.put(None, |s, _| s.create_from(doc)) }
     pub fn size_of(&self, id: &str, doc: &Document) -> u64 { self.on(id, |s| s.size_of(id, doc)).unwrap_or(0) }
     pub fn list_trash(&mut self) -> Vec<TrashEntry> {
@@ -278,8 +303,8 @@ impl SharedStore {
     pub fn delete_version(&self, id: &str, name: &str) -> Result<()> { self.on_res(id, |s| s.delete_version(id, name)) }
     pub fn restore_version(&self, id: &str, name: &str) -> Result<Document> { self.on_res(id, |s| s.restore_version(id, name)) }
     pub fn save_version_now(&self, id: &str) -> Result<bool> { self.on_res(id, |s| s.save_version_now(id)) }
-    pub fn rename(&mut self, id: &str, title: &str) -> Result<Meta> { self.on_res(id, |s| s.rename(id, title)) }
-    pub fn touch(&mut self, id: &str) -> Option<Meta> { self.on(id, |s| s.touch(id)).flatten() }
+    pub fn rename(&mut self, id: &str, title: &str) -> Result<Meta> { self.on_res(id, |s| s.rename(id, title)).map(|m| self.as_row(id, m)) }
+    pub fn touch(&mut self, id: &str) -> Option<Meta> { self.on(id, |s| s.touch(id)).flatten().map(|m| self.as_row(id, m)) }
     pub fn create_folder(&mut self, title: &str, parent: Option<&str>) -> Result<String> { self.put(parent, |s, parent| s.create_folder(title, parent)) }
     pub fn accept_file_title(&self, id: &str, title: &str) -> Result<()> { self.on_res(id, |s| s.accept_file_title(id, title)) }
     pub fn initialize_manual_order(&mut self) -> Result<()> {
@@ -311,7 +336,7 @@ impl SharedStore {
     pub fn set_parent(&mut self, id: &str, parent: Option<&str>) -> Result<Meta> {
         self.same_root(id, parent)?;
         let parent = self.real_parent(parent);
-        self.on_res(id, |s| s.set_parent(id, parent))
+        self.on_res(id, |s| s.set_parent(id, parent)).map(|m| self.as_row(id, m))
     }
     /// A drop in the tree, inside one root.
     pub fn move_in_tree(&mut self, id: &str, parent: Option<&str>, before: Option<&str>) -> Result<()> {
