@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' blob: data:; font-src 'self' data:; media-src blob:; object-src blob:; base-uri 'none'; form-action 'none'">
+  <title>飞记 · 备份预览</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div id="loading" role="status">正在打开备份…</div>
+  <dialog id="attachment-preview" aria-labelledby="attachment-preview-title">
+    <form method="dialog">
+      <h2 id="attachment-preview-title"></h2>
+      <div id="attachment-preview-content"></div>
+      <div class="actions">
+        <button id="attachment-preview-download" type="button">下载</button>
+        <button value="close">关闭</button>
+      </div>
+    </form>
+  </dialog>
+  <script type="module" src="./backup-view.js"></script>
+</body>
+</html>

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-CN" data-cloud-access="read-only">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>飞记 · Web</title>
+  <link rel="icon" type="image/png" href="./fei-notes.png">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div id="message" role="alert" hidden></div>
+  <div id="loading" role="status">正在打开文档库…</div>
+  <input id="import-files" type="file" multiple hidden>
+  <input id="import-folder" type="file" webkitdirectory multiple hidden>
+  <dialog id="drop-import" aria-labelledby="drop-import-title">
+    <form method="dialog">
+      <h2 id="drop-import-title">导入文档？</h2>
+      <p id="drop-import-destination"></p>
+      <div class="actions">
+        <button value="cancel" autofocus>取消</button>
+        <button id="drop-import-confirm" class="primary-action" type="button">导入</button>
+      </div>
+    </form>
+  </dialog>
+  <input id="board-pictures" type="file" accept=".jpg,.jpeg,.png,.gif,.webp,.bmp" multiple hidden>
+  <input id="attachment-files" type="file" multiple hidden>
+  <input id="backup-file" type="file" accept=".feinotesbackup" hidden>
+  <dialog id="library-backup-export" aria-labelledby="library-backup-export-title">
+    <form method="dialog">
+      <h2 id="library-backup-export-title">创建整库备份</h2>
+      <p id="library-backup-export-status" role="status"></p>
+      <div class="actions">
+        <button id="library-backup-export-download" type="button" hidden>下载备份</button>
+        <button value="close">关闭</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="backup-check" aria-labelledby="backup-check-title">
+    <form method="dialog">
+      <h2 id="backup-check-title">检查飞记备份</h2>
+      <p id="backup-name"></p>
+      <p id="backup-result" role="status"></p>
+      <dl id="backup-summary" hidden></dl>
+      <div class="actions">
+        <button id="open-backup-preview" type="button" hidden>预览个人文档库</button>
+        <button value="close">关闭</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="backup-preview" aria-labelledby="backup-preview-title">
+    <form method="dialog" class="backup-toolbar">
+      <h2 id="backup-preview-title">备份预览 · 只读</h2>
+      <div class="backup-toolbar-actions">
+        <button id="restore-backup" type="button" hidden>恢复到新文档库…</button>
+        <button value="close">返回当前文档库</button>
+      </div>
+    </form>
+    <p id="backup-preview-status" role="status" hidden></p>
+  </dialog>
+  <dialog id="backup-restore" aria-labelledby="backup-restore-title">
+    <form method="dialog">
+      <h2 id="backup-restore-title">恢复到新文档库</h2>
+      <p>飞记将在此浏览器创建独立的本地文档库。当前文档库会保留。</p>
+      <dl id="backup-restore-summary"></dl>
+      <p id="backup-restore-status" role="status"></p>
+      <div class="actions">
+        <button id="backup-restore-cancel" value="close" autofocus>关闭</button>
+        <button id="backup-restore-confirm" class="primary-action" type="button">恢复</button>
+        <a id="backup-restore-open" target="_blank" rel="noopener" hidden>打开恢复的文档库</a>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="browser-libraries" aria-labelledby="browser-libraries-title">
+    <form method="dialog">
+      <h2 id="browser-libraries-title">打开文档库</h2>
+      <ul id="browser-library-list"></ul>
+      <p id="browser-library-status" role="status"></p>
+      <div class="actions"><button value="close">关闭</button></div>
+    </form>
+  </dialog>
+  <dialog id="share-members" aria-labelledby="share-members-title">
+    <form method="dialog">
+      <h2 id="share-members-title">成员与权限</h2>
+      <p id="share-members-document"></p>
+      <p id="share-members-status" role="status"></p>
+      <ul id="share-members-list" hidden></ul>
+      <div class="actions">
+        <button id="share-members-leave" type="button" hidden>离开共享…</button>
+        <button id="share-members-refresh" type="button">刷新成员</button>
+        <button value="close">关闭</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="leave-share" aria-labelledby="leave-share-title" aria-describedby="leave-share-detail">
+    <form method="dialog">
+      <h2 id="leave-share-title">离开共享？</h2>
+      <p id="leave-share-item"></p>
+      <ul id="leave-share-items" hidden></ul>
+      <p id="leave-share-detail">退出后，你将无法访问这项共享。其他成员仍可继续使用。</p>
+      <p id="leave-share-status" role="status"></p>
+      <div class="actions">
+        <button id="leave-share-cancel" value="cancel" autofocus>取消</button>
+        <button id="leave-share-confirm" type="button">离开共享</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="attachment-preview" aria-labelledby="attachment-preview-title">
+    <form method="dialog">
+      <h2 id="attachment-preview-title"></h2>
+      <div id="attachment-preview-content"></div>
+      <div class="actions">
+        <button value="close">关闭</button>
+        <button id="attachment-preview-download" class="primary-action" type="button">下载</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="settings" aria-labelledby="cloud-title" aria-describedby="cloud-status">
+    <form method="dialog">
+      <h2 id="cloud-title">iCloud 同步</h2>
+      <p id="cloud-environment"></p>
+      <p id="account-label">此浏览器</p>
+      <p id="cloud-status"></p>
+      <p id="shared-check-status" role="status" hidden></p>
+      <output id="status" role="status">正在打开文档库…</output>
+      <div class="actions">
+        <button id="cloud-back" value="close">返回</button>
+        <button id="sync" type="button" hidden>立即同步</button>
+        <button id="shared-check" type="button" hidden>检查共享区</button>
+        <button id="signout" type="button" hidden>退出 iCloud</button>
+        <button id="apple-sign-in-button" class="primary-action" type="button" disabled>在 Apple 窗口登录</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="switch-local" aria-labelledby="switch-local-title" aria-describedby="switch-local-detail">
+    <form method="dialog">
+      <h2 id="switch-local-title">关闭 iCloud 同步？</h2>
+      <p id="switch-local-detail">飞记将打开此浏览器的本机文档库。iCloud 文档和待同步的修改仍保留在当前账号的文档库里。</p>
+      <p id="switch-local-status" role="status"></p>
+      <div class="actions">
+        <button id="switch-local-cancel" value="cancel" autofocus>取消</button>
+        <button id="switch-local-confirm" class="primary-action" type="button">切换到本机</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="recovery">
+    <form method="dialog">
+      <h2>导出恢复副本</h2>
+      <details><summary>查看文档内容</summary><textarea id="recovery-content" aria-label="文档内容" readonly></textarea></details>
+      <div class="actions">
+        <button id="download-recovery" type="button">下载副本</button>
+        <button value="close">返回</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="invitation" aria-labelledby="invitation-title">
+    <form id="invitation-form">
+      <h2 id="invitation-title">打开共享邀请</h2>
+      <p id="invitation-demo" hidden>演示邀请使用合成文档。</p>
+      <label for="invitation-link">共享邀请链接</label>
+      <input id="invitation-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" maxlength="4096" required>
+      <p id="invitation-details" hidden></p>
+      <p id="invitation-status" role="status"></p>
+      <div class="actions">
+        <button id="invitation-cancel" type="button">取消</button>
+        <button id="invitation-check" type="submit">检查邀请</button>
+        <button id="invitation-accept" type="button" hidden>接受并打开</button>
+        <button id="invitation-switch-account" type="button" hidden>切换 Apple 账号</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="object-link" aria-labelledby="object-link-title">
+    <form method="dialog">
+      <h2 id="object-link-title">打开文档链接</h2>
+      <p id="object-link-status" role="status"></p>
+      <div class="actions">
+        <button id="object-link-close" value="close">关闭</button>
+        <button id="object-link-retry" type="button">重试</button>
+        <button id="object-link-sign-in" type="button">登录 Apple 账号</button>
+      </div>
+    </form>
+  </dialog>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

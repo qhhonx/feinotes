@@ -54,6 +54,30 @@ jobs:
         env:
           SITE_PATH: ${{ steps.site.outputs.path }}
         run: python3 -B packaging/macos/website-status.py stage "$SITE_PATH"
+      - name: Configure the read-only Web workspace
+        if: github.ref_name == 'product/quiet-sync'
+        env:
+          SITE_PATH: ${{ steps.site.outputs.path }}
+          FEINOTES_WEB_CLOUDKIT_API_TOKEN: ${{ secrets.FEINOTES_WEB_CLOUDKIT_API_TOKEN }}
+        run: |
+          python3 -B - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          token = os.environ['FEINOTES_WEB_CLOUDKIT_API_TOKEN']
+          if not re.fullmatch(r'[A-Za-z0-9_-]+', token):
+              raise SystemExit('A valid Fei Notes CloudKit browser API token is required')
+          workspace = Path(os.environ['SITE_PATH']) / 'w'
+          config = {
+              'containerIdentifier': 'iCloud.app.feinotes.mac',
+              'environment': 'production',
+              'zoneName': 'QuietLibraryEdits-v4',
+              'apiToken': token,
+          }
+          (workspace / 'config.json').write_text(json.dumps(config) + '\n', encoding='utf-8')
+          PY
       - name: Archive public website including app association
         env:
           SITE_PATH: ${{ steps.site.outputs.path }}
