@@ -23,12 +23,17 @@ for(const dialog of document.querySelectorAll('dialog')){
   });
 }
 const englishCloudCopy=new Map([
+  ['正在打开文档库…','Opening the library…'],
+  ['正在连接 iCloud…','Connecting to iCloud…'],
+  ['正在下载文档…','Downloading document…'],
+  ['无法打开文档库，请刷新后重试。','Could not open the library. Refresh to try again.'],
   ['此浏览器','This browser'],
   ['iCloud 离线缓存','iCloud offline cache'],
   ['iCloud 文档库 · 只读预览','iCloud Library · Read-only preview'],
   ['iCloud 文档库','iCloud Library'],
   ['iCloud · 只读预览','iCloud · Read-only preview'],
   ['正在打开文档库…','Opening the library…'],
+  ['正在连接 iCloud…','Connecting to iCloud…'],
   ['使用 Apple 账号登录','Sign in with Apple'],
   ['立即同步','Sync now'],
   ['退出 iCloud','Sign out of iCloud'],
@@ -50,7 +55,6 @@ const englishCloudCopy=new Map([
   ['已连接 iCloud，可查看文档。','Connected to iCloud. You can view your documents.'],
   ['已登录 Apple 账号。','Signed in to your Apple Account.'],
   ['尚未登录 Apple 账号。','Signed out of your Apple Account.'],
-  ['正在验证此浏览器的 iCloud 会话…','Verifying this browser’s iCloud session…'],
   ['iCloud 账号已变化，请重新登录。','Your iCloud account changed. Sign in again.'],
   ['无法恢复 iCloud 会话，请重试。','Could not restore your iCloud session. Try again.'],
   ['暂时无法恢复 iCloud 会话。','Could not restore your iCloud session.'],
@@ -197,6 +201,20 @@ function status(text,phase='saved'){
   saveStatusText=text;
   saveStatusPhase=phase;
   if(ready)queueMicrotask(()=>wasm.set_save_status(cloudText(saveStatusText),saveStatusPhase));
+}
+let downloadNotice;
+function beginDownloadProgress(text){
+  downloadNotice?.();
+  const timer=setTimeout(()=>wasm.set_download_progress(text),160);
+  const finish=()=>{
+    clearTimeout(timer);
+    if(downloadNotice===finish){
+      downloadNotice=null;
+      wasm.set_download_progress('');
+    }
+  };
+  downloadNotice=finish;
+  return finish;
 }
 function message(text){$('message').hidden=!text;$('message').textContent=text;}
 function fail(error){
@@ -566,10 +584,9 @@ async function requestCloudAttachment({path,name,route,download}){
   const operation=Symbol(),paths=new Set([path]);
   const current=()=>attachmentRead===operation&&cloud===transport&&started===epoch&&navigator.onLine&&
     (route?sharedVersion===sharedRevision&&wasm.active_shared_route()===route:wasm.active_personal_document()===note);
-  const loading=english?'Downloading attachment…':'正在下载附件…';
+  const finishProgress=beginDownloadProgress(english?'Downloading attachment…':'正在下载附件…');
   const failure=english?'Could not download this attachment. Try again.':'附件未能下载，请重试。';
   attachmentRead=operation;
-  message(loading);
   try{
     if(route){
       while(sharedTask){await sharedTask;if(!current())return;}
@@ -591,10 +608,8 @@ async function requestCloudAttachment({path,name,route,download}){
     else if(error?.code==='SHARED_ACCESS_CHANGED')void refreshShared({validateOnly:true});
     else message(failure);
   }finally{
-    if(attachmentRead===operation){
-      attachmentRead=null;
-      if($('message').textContent===loading)message('');
-    }
+    finishProgress();
+    if(attachmentRead===operation)attachmentRead=null;
   }
 }
 
@@ -609,16 +624,17 @@ async function loadDocumentBody(target,action){
   const current=()=>revision===bodyRequest&&started===epoch&&cloud===transport&&navigator.onLine;
   const inView=()=>target.scope?wasm.active_shared_route()===target.id:wasm.active_personal_document()===target.id;
   let opened=false;
+  const finishProgress=requested?beginDownloadProgress(cloudText('正在下载文档…')):()=>{};
   const finishOpen=()=>{
     if(!current())return false;
     openingBody=target.id;
     try{
       opened=wasm.finish_body_open(target.id,target.location);
-      message(opened?'':'暂时无法打开此文档，请刷新目录或重试。');
+      finishProgress();
+      if(!opened)message('暂时无法打开此文档，请刷新目录或重试。');
       return opened;
     }finally{openingBody=null;}
   };
-  if(requested)message('正在下载文档…');
   try{
     if(target.scope){
       while(sharedTask){await sharedTask;if(!current())return;}
@@ -654,13 +670,12 @@ async function loadDocumentBody(target,action){
     }
     if(exportBody&&current()){
       wasm.finish_body_export(target.id,target.location,printing);
-      if($('message').textContent==='正在下载文档…')message('');
     }
   }catch(error){
     if(!current())return;
     if(isExpiredSession(error)){requireSignIn('Apple 会话已失效，请重新登录。');return;}
     if(requested&&(!opened||inView()))message(opened?'部分附件尚未下载，请重试。':'文档下载未完成，请重试。');
-  }
+  }finally{finishProgress();}
 }
 async function syncSharedWrites(cloud,active){
   if(!cloud.writeShare)return;
@@ -931,7 +946,7 @@ function setupCloud({restoreOnly=false}={}){
       if(pendingObject)void openPendingObject();
     }
     if(saved?.scope===scope){
-      showConnection('正在验证此浏览器的 iCloud 会话…');
+      showConnection('正在连接 iCloud…');
       try{await connect(saved);return;}
       catch(error){
         if(!active())return;
@@ -1872,11 +1887,17 @@ function applyAppearance(preferences){
     document.documentElement.style.colorScheme=appearance==='dark'||appearance==='light'?appearance:'';
   }catch{}
 }
+let tabItemTitle='', restoredLibraryTitle='';
+function updateTabTitle(){
+  const app=document.documentElement.lang==='en'?'Fei Notes':'飞记';
+  const title=tabItemTitle||restoredLibraryTitle;
+  document.title=title?title+' · '+app:app;
+}
 function applyLanguage(language){
   const lang=language==='zh'?'zh-CN':language;
   if(document.documentElement.lang===lang)return;
   document.documentElement.lang=lang;
-  document.title=lang==='en'?'Fei Notes · Web':'飞记 · Web';
+  updateTabTitle();
   for(const [id,label] of Object.entries(cloudLabels)){
     if(id!=='apple-sign-in-button'||!authorization)$(id).textContent=cloudText(label);
   }
@@ -1925,11 +1946,12 @@ window.addEventListener('feinotes',({detail:{type,data}})=>{
     updateConnectionState();
     const loading=$('loading'),restoring=restoreCloud();
     if(restoring&&loading){
-      loading.textContent=cloudText('正在验证此浏览器的 iCloud 会话…');
+      $('loading-label').textContent=cloudText('正在打开文档库…');
       void restoring.finally(()=>loading.remove());
     }else loading?.remove();
     if(pendingObject)queueMicrotask(openPendingObject);
   }
+  else if(type==='tab-item-title'){tabItemTitle=data;updateTabTitle();}
   else if(type==='changed'&&canEdit())scheduleSave();
   else if(type==='trash-opened'&&canEdit())queueMicrotask(()=>{
     if(account){void sync();return;}
@@ -2031,8 +2053,7 @@ const switchLocalText=(zh,en)=>switchLocalDialog.lang==='en'?en:zh;
 function confirmSwitchToLocal(language){
   if(!account||restoredWorkspace||switchLocalDialog.open)return;
   switchLocalDialog.lang=language==='en'?'en':'zh-CN';
-  $('switch-local-title').textContent=cloudReadOnly?switchLocalText('退出 iCloud？','Sign out of iCloud?'):
-    switchLocalText('关闭 iCloud 同步？','Turn off iCloud sync?');
+  $('switch-local-title').textContent=switchLocalText('关闭 iCloud 同步？','Turn off iCloud sync?');
   $('switch-local-detail').textContent=cloudReadOnly?switchLocalText(
     '此浏览器的其他飞记标签页也会退出。你的 iCloud 文档仍可在飞记 App 中查看。',
     'Other Fei Notes tabs in this browser will also be signed out. Your iCloud documents are still available in the Fei Notes app.'):
@@ -2116,7 +2137,8 @@ try{
     key=restoredPrefix+restoredId;
     recovery=await readLibrary(db,'metadata:'+key);
     if(!recovery||recovery.id!==restoredId)throw new Error('此浏览器中找不到恢复的文档库。');
-    document.title=`飞记 · ${recovery.title}`;
+    restoredLibraryTitle=recovery.title;
+    updateTabTitle();
   }else{
     const last=demo?'':await readLibrary(db,lastLibraryKey);
     if(last){
@@ -2156,4 +2178,9 @@ try{
     showInvitation(incomingInvitation);
     void inspectInvitation();
   }
-}catch(e){if($('loading'))$('loading').textContent='无法打开文档库';fail(e);}
+}catch(e){
+  if($('loading')){
+    $('loading').dataset.error='';
+    $('loading-label').textContent=cloudText('无法打开文档库，请刷新后重试。');
+  }else fail(e);
+}

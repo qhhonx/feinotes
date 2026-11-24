@@ -8,9 +8,21 @@ html, body { width: 100%; height: 100%; overflow: hidden; }
 body { margin: 0; }
 canvas { outline: none; }
 #loading {
-  position: fixed; inset: 0; z-index: 1; display: grid;
-  place-items: center; color: GrayText; background: Canvas;
+  position: fixed; inset: 0; z-index: 1; display: flex;
+  flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 24px; text-align: center;
+  color: light-dark(#626469, #b0b3ba);
+  background: light-dark(#fff, #1b1c1f);
 }
+.loading-status { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.loading-spinner {
+  width: 12px; height: 12px; box-sizing: border-box;
+  border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  animation: loading-spin 850ms linear infinite;
+}
+#loading[data-error] .loading-spinner { display: none; }
+@keyframes loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .loading-spinner { animation: none; } }
 .account-switching canvas { visibility: hidden; }
 #backup-preview { width: min(1440px, calc(100vw - 32px)); height: calc(100dvh - 32px); padding: 0; }
 #backup-preview[open] { display: flex; flex-direction: column; }

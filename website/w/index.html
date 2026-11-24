@@ -5,13 +5,19 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex">
-  <title>飞记 · Web</title>
+  <title>飞记</title>
   <link rel="icon" type="image/png" href="./fei-notes.png">
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
   <div id="message" role="alert" hidden></div>
-  <div id="loading" role="status">正在打开文档库…</div>
+  <div id="loading" role="status">
+    <img src="./fei-notes.png" width="48" height="48" alt="">
+    <div class="loading-status">
+      <span class="loading-spinner" aria-hidden="true"></span>
+      <span id="loading-label">正在打开文档库…</span>
+    </div>
+  </div>
   <input id="import-files" type="file" multiple hidden>
   <input id="import-folder" type="file" webkitdirectory multiple hidden>
   <dialog id="drop-import" aria-labelledby="drop-import-title">
