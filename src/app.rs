@@ -350,9 +350,9 @@ pub enum View {
 pub enum Confirm {
     /// 删除 (to the 回收站); `batch` for the 批量操作 selection.
     Delete { ids: Vec<String>, batch: bool },
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     DeleteSharedFolder { room: crate::cloud_sync::shared::Room, id: String, title: String },
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     DeleteSharedDocument { room: crate::cloud_sync::shared::Room, id: String, title: String },
     /// 回收站 → 恢复.
     Restore(String),
@@ -1337,6 +1337,13 @@ impl Workspace {
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         if let Some(room) = self.shared_child_room(id, cx) {
             self.ask_delete_shared_descendant(&room, id, false, cx);
+            return;
+        }
+        #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+        if let Some(room) = self.current_room(cx).filter(|room| room.scope.folder) {
+            if let Some(folder) = self.entries.iter().find(|entry| entry.id == id).map(|entry| entry.meta.folder.is_some()) {
+                self.ask_delete_shared_descendant(&room, id, folder, cx);
+            }
             return;
         }
         self.confirm = Some(Confirm::Delete { ids: vec![self.row_of(id)], batch: false });

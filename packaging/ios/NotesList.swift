@@ -823,7 +823,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             let item = coordinator?.rowItem(id,in: listing)
             let labelKey: String
             switch key {
-            case "delete" where item?.shared == true: labelKey = item?.share_end ?? "leave-shared"
+            case "delete" where item?.menu_root == id: labelKey = item?.share_end ?? "leave-shared"
+            case "delete" where item?.folder == true && item?.menu_root != nil: labelKey = "delete-child-folder"
             case "delete","restore","purge": labelKey = item?.folder == true ? key + "-folder" : key
             case "pin" where item?.pinned == true: labelKey = "unpin"
             case "star" where item?.starred == true: labelKey = "unstar"
@@ -848,8 +849,10 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         let item = coordinator?.rowItem(id,in: listing)
         if item?.offline_recovery == true { return swipe([("discard-recovery","trash",.systemRed)],id: id) }
         if listing.kind == "trash" { return swipe([("purge","trash",.systemRed)],id: id) }
-        guard coordinator?.canModifyFolderContents(browser: browsesWorkspace) == true else { return nil }
-        return swipe(item?.shared == true ? [("delete","trash",.systemRed)] : [("delete","trash",.systemRed),("move","folder",.systemBlue)],id: id)
+        guard let item,!id.hasPrefix("collection-") else { return nil }
+        if item.menu_root == id { return item.share_end == nil ? nil : swipe([("delete","trash",.systemRed)],id: id) }
+        if (item.menu_root != nil || item.inherited_share) && !item.menu_writable { return nil }
+        return swipe([("move","folder",.systemBlue),("delete","trash",.systemRed)],id: id)
     }
     private func draggableRow(_ path: IndexPath) -> Bool {
         guard let id = source.itemIdentifier(for: path) else { return false }

@@ -249,6 +249,7 @@ struct NavigationRoute { key: String, title: String }
 struct NavigationItem {
     id: String, title: String, parent: Option<String>, folder: bool, pinned: bool, starred: bool, trashed: bool, shared: bool, owned: bool,
     offline_recovery: bool, personal: bool, inherited_share: bool, share_end: Option<&'static str>,
+    menu_root: Option<String>, menu_writable: bool, menu_shareable: bool, menu_copyable: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -447,7 +448,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         ("more",tr("更多","More")),("note-more",tr("文档更多操作","Document actions")),("folder-more",tr("文件夹更多操作","Folder actions")),("end-typing",tr("结束输入","End typing")),("cancel",tr("取消","Cancel")),("rename",tr("重命名","Rename")),
         ("objects",tr("内容设置","Content settings")),("find",tr("文档内查找","Find in document")),("export",tr("导出 Markdown","Export Markdown")),
         ("pdf",tr("导出 PDF","Export PDF")),("print",tr("打印","Print")),
-        ("delete",tr("删除文档","Delete document")),("delete-folder",tr("删除文件夹","Delete folder")),("delete-shared-folder",tr("删除共享文件夹","Delete shared folder")),("import",tr("导入文档","Import documents")),
+        ("delete",tr("删除文档","Delete document")),("delete-child-folder",tr("删除子文件夹","Delete subfolder")),("delete-folder",tr("删除文件夹","Delete folder")),("delete-shared-folder",tr("删除共享文件夹","Delete shared folder")),("import",tr("导入文档","Import documents")),
         ("new-document",tr("新建文档","New document")),("new-markdown",tr("新建 Markdown","New Markdown")),("batch",tr("选择文档","Select documents")),("sort",tr("排序规则","Sort by")),("manual",tr("手动排序","Manual order")),
         ("visited",tr("最近访问时间","Recently opened")),("modified",tr("最近修改时间","Recently modified")),
         ("created",tr("创建时间（最新优先）","Recently created")),("title",tr("标题（升序）","Title ascending")),
@@ -486,9 +487,27 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
     if workspace.object_link_available(cx) { labels.insert("copy-object-link",tr("复制链接","Copy Link")); }
     let mut navigation_entries = workspace.personal_navigation_entries(cx);
     let personal_ids: std::collections::HashSet<_> = navigation_entries.iter().map(|entry| entry.id.clone()).collect();
+    let personal_by_id: std::collections::HashMap<_,_> = navigation_entries.iter().map(|entry| (entry.id.clone(),entry.meta.parent.clone())).collect();
+    let mut restricted_folders = std::collections::HashSet::new();
+    for entry in navigation_entries.iter().filter(|entry| entry.meta.share_root.is_some() || entry.meta.kind == crate::store::DocKind::Table) {
+        let mut parent=entry.meta.parent.as_ref();
+        while let Some(id)=parent {
+            if !restricted_folders.insert(id.clone()) { break; }
+            parent=personal_by_id.get(id).and_then(Option::as_ref);
+        }
+    }
+    let projected=workspace.shared_sidebar_entries(cx);
+    let projected_roots: std::collections::HashMap<_,_> = projected.iter()
+        .filter_map(|entry| entry.meta.share_root.as_ref().map(|root|(entry.id.as_str(),root.as_str()))).collect();
+    let active=workspace.current_room(cx);
+    let active_ids: std::collections::HashSet<_> = workspace.entries.iter().map(|entry|entry.id.as_str()).collect();
+    let mut menu_permissions=std::collections::HashMap::new();
+
     if workspace.home.tab == crate::home::HomeTab::Starred { navigation_entries.extend(workspace.favorite_entries(cx)); }
     navigation_entries.extend(workspace.shared_entries(cx));
     navigation_entries.extend(workspace.mobile_collection_entries(cx));
+    // The native destination picker needs shared folders even when the editor still hosts a different library.
+    navigation_entries.extend(projected.iter().filter(|entry| entry.meta.folder.is_some() && entry.meta.share_root.is_some()).cloned());
     if workspace.is_shared() { for entry in &workspace.entries { if !navigation_entries.iter().any(|e|e.id==entry.id) { navigation_entries.push(entry.clone()); } } }
     let mut nav_ids = std::collections::HashSet::new();
     let mut items: Vec<_> = navigation_entries.iter().filter(|entry| nav_ids.insert(&entry.id)).map(|entry| {
@@ -496,11 +515,28 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         let owned=room.as_ref().is_some_and(|room|room.scope.owner.is_none());
         let share_end=room.as_ref().map(|room|if workspace.stopping_original(room,cx) { "stop-sharing" } else if !owned { "leave-shared" } else if room.scope.folder { "delete-shared-folder" } else { "delete-shared" });
         let marks = workspace.shared_child_marks(&entry.id,cx);
-        let inherited_share = marks.is_some() || entry.meta.share_root.as_deref().is_some_and(|root| root != entry.id);
+        let active_room=active.as_ref().filter(|room| (room.scope.folder || room.scope.note == entry.id) && active_ids.contains(entry.id.as_str()));
+        let root=entry.meta.share_root.as_deref().or_else(||projected_roots.get(entry.id.as_str()).copied());
+        let parent_room=root.filter(|root| *root != entry.id).and_then(|root|workspace.shared_list_room(root,cx));
+        let menu_room=room.as_ref().or(active_room).or(parent_room.as_ref());
+        let inherited_share = menu_room.is_some_and(|room| room.scope.note != entry.id)
+            || entry.meta.share_root.as_deref().is_some_and(|root| root != entry.id);
+        let menu_writable=menu_room.is_some_and(|room|*menu_permissions.entry(room.scope.note.clone()).or_insert_with(||
+            workspace.mobile_menu_room_writable(room,cx)));
+        let pending_original=menu_room.is_none() && entry.meta.share_root.as_deref()==Some(entry.id.as_str())
+            && personal_ids.contains(&entry.id) && crate::cloud_sync::shared::original::awaiting_publication(
+                &crate::store::Store::root_dir(), &crate::cloud_sync::shared::Room {
+                    scope: crate::cloud_sync::shared::Scope { note: entry.id.clone(), owner: None, folder: entry.meta.folder.is_some() },
+                    title: entry.title.clone(),
+                });
+        let ordinary=menu_room.is_none() && entry.meta.share_root.is_none() && !entry.meta.local()
+            && entry.meta.kind != crate::store::DocKind::Table && !restricted_folders.contains(&entry.id);
         NavigationItem {
             id: entry.id.clone(), title: display_title(&entry.title), parent: entry.meta.parent.clone(),
             folder: entry.meta.folder.is_some(), pinned: marks.map_or(entry.meta.pinned, |(pin,_)| pin), starred: marks.map_or(entry.meta.starred, |(_,star)| star) > 0, trashed: false,
             shared:room.is_some() && (workspace.home.tab==crate::home::HomeTab::Shared || !personal_ids.contains(&entry.id)), owned, offline_recovery: false, personal: personal_ids.contains(&entry.id), inherited_share, share_end,
+            menu_root: menu_room.map(|room|room.scope.note.clone()), menu_writable,
+            menu_shareable: (ordinary || pending_original) && !crate::cloud_restore::local_only(), menu_copyable: ordinary,
         }
     }).collect();
     #[cfg(feature = "cloudkit-sync")]
@@ -512,11 +548,11 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
     if workspace.view == View::Trash {
         items.extend(workspace.trash.iter().map(|entry| NavigationItem {
             id: entry.id.clone(), title: display_title(&entry.title), parent: entry.parent.clone(),
-            folder: entry.folder, pinned: false, starred: false, trashed: true, shared:false, owned:false, offline_recovery: false, personal: true, inherited_share: false, share_end: None,
+            folder: entry.folder, pinned: false, starred: false, trashed: true, shared:false, owned:false, offline_recovery: false, personal: true, inherited_share: false, share_end: None, menu_root: None, menu_writable: false, menu_shareable: false, menu_copyable: false,
         }));
         items.extend(recoveries.iter().map(|(id, title)| NavigationItem {
             id: id.clone(), title: display_title(title), parent: None, folder: false, pinned: false, starred: false,
-            trashed: false, shared: false, owned: false, offline_recovery: true, personal: true, inherited_share: false, share_end: None,
+            trashed: false, shared: false, owned: false, offline_recovery: true, personal: true, inherited_share: false, share_end: None, menu_root: None, menu_writable: false, menu_shareable: false, menu_copyable: false,
         }));
     }
     let confirmation = workspace.confirmation_text().map(|(title,message,action,danger)| {
@@ -635,6 +671,19 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                             let _=std::io::Write::write_all(&mut file,format!("{} view={:?} current={:?}\n",command.action,workspace.view,workspace.current).as_bytes());
                         }
                         let id = command.id.clone().or_else(|| workspace.current.clone());
+                        if command.action == "item-menu" {
+                            let expected=command.scope.as_deref();
+                            let browser=expected==Some(crate::ipad_browser::scope(workspace,cx).as_str());
+                            if !workspace.library_switching && !workspace.sharing_request_busy() && workspace.confirm.is_none()
+                                && (browser || expected==Some(listing_scope(workspace).as_str()))
+                                && let (Some(id),Some(value))=(command.id.as_deref(),command.value.as_deref())
+                            {
+                                workspace.mobile_item_menu(id,value,window,cx);
+                                publish_navigation(workspace,cx);
+                            }
+                            return;
+                        }
+
 
                         if workspace.is_shared() && matches!(command.action.as_str(),"pin" | "star")
                             && workspace.mobile_personal_browser(cx) && workspace.home.tab != crate::home::HomeTab::Shared

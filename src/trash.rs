@@ -517,9 +517,9 @@ impl Workspace {
                     self.personal_action(window, cx, move |w, window, cx| w.delete_docs(&ids, window, cx));
                 } else { self.delete_docs(&ids, window, cx); }
             }
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::DeleteSharedFolder { room, id, .. } => self.delete_shared_folder(room, id, window, cx),
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::DeleteSharedDocument { room, id, .. } =>
                 self.change_shared_trash(room, id, crate::sharing::SharedTrashAction::DeleteDocument, window, cx),
             Confirm::Restore(id) => {
@@ -578,7 +578,7 @@ impl Workspace {
                 .unwrap_or_default()
         };
         Some(match c {
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::DeleteSharedFolder { room, id, title } => (
                 crate::localized_format!("是否删除： {}？", "Delete {}?", display_title(title)),
                 if id == &room.scope.note {
@@ -589,7 +589,7 @@ impl Workspace {
                 crate::settings::text("删除"),
                 true,
             ),
-            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::DeleteSharedDocument { title, .. } => (
                 crate::localized_format!("是否删除： {}？", "Delete {}?", display_title(title)),
                 crate::settings::tr("此文档将从协作成员的列表移除，并进入回收站。", "The document will be removed for collaborators and moved to Trash.").into(),

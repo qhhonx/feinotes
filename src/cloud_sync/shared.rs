@@ -905,7 +905,6 @@ pub(crate) fn editing_paused(store: &crate::shared_store::SharedStore, cx: &gpui
         || matches!(status.phase, super::SyncPhase::AccountChecking | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn live_room_writable(room: &Room, cx: &gpui::App) -> Option<bool> {
     let root = room_root(&Store::root_dir(), &room.scope.note).ok()?;
     let session = super::session(&root, cx)?;

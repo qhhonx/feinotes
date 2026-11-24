@@ -196,7 +196,6 @@ impl Workspace {
         self.with_sidebar(true, |w| w.render_folder_rows(window, cx))
     }
 
-    #[cfg(target_os = "macos")]
     pub(crate) fn shared_sidebar_folder_writable(&self, room: &Room, cx: &App) -> bool {
         if !room.scope.folder { return false; }
         if let Some(writable) = shared::live_room_writable(room, cx) { return writable; }

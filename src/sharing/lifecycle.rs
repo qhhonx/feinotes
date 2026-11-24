@@ -3,9 +3,7 @@ use super::*;
 
 #[derive(Clone, Copy)]
 pub(crate) enum SharedTrashAction {
-    #[cfg(target_os = "macos")]
     DeleteFolder,
-    #[cfg(target_os = "macos")]
     DeleteDocument,
     Restore,
     Purge,
@@ -15,9 +13,7 @@ impl SharedTrashAction {
     fn apply(self, writer: &mut crate::store::Store, ids: &[String]) -> anyhow::Result<()> {
         let id = ids.first().ok_or_else(|| anyhow::anyhow!("No Trash item selected"))?;
         match self {
-            #[cfg(target_os = "macos")]
             Self::DeleteFolder => writer.trash_sqlite_folder(id),
-            #[cfg(target_os = "macos")]
             Self::DeleteDocument => writer.delete(id, None),
             Self::Restore => {
                 let item = writer.list_trash().into_iter().find(|entry| &entry.id == id)
@@ -32,7 +28,6 @@ impl SharedTrashAction {
 
     fn label(self) -> &'static str {
         match self {
-            #[cfg(target_os = "macos")]
             Self::DeleteFolder | Self::DeleteDocument => tr("删除成功", "Moved to Trash"),
             Self::Restore => tr("恢复成功", "Restored"),
             Self::Purge => tr("已彻底删除", "Permanently deleted"),
@@ -41,7 +36,6 @@ impl SharedTrashAction {
 }
 
 impl Workspace {
-    #[cfg(target_os = "macos")]
     pub(crate) fn delete_shared_folder(&mut self, room: Room, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if id == room.scope.note {
             if room.scope.owner.is_none() && self.stopping_original(&room, cx) {
@@ -52,7 +46,6 @@ impl Workspace {
         }
     }
 
-    #[cfg(target_os = "macos")]
     pub(crate) fn ask_delete_shared_descendant(&mut self, room: &Room, id: &str, folder: bool, cx: &mut Context<Self>) {
         self.row_menu = None;
         if id == room.scope.note || !self.shared_sidebar_folder_writable(room, cx) { cx.notify(); return; }
@@ -109,7 +102,6 @@ impl Workspace {
             let store = shared::check_opened_store(store, &room, cx)?;
             anyhow::ensure!(shared::access(&store, cx).is_some_and(Access::can_write) && !shared::editing_paused(&store, cx),
                 "{}", tr("此共享文件夹当前不可写入。", "You cannot write to this shared folder right now."));
-            #[cfg(target_os = "macos")]
             if matches!(action, SharedTrashAction::DeleteFolder | SharedTrashAction::DeleteDocument) {
                 let listing = store.clone().list();
                 let tree = crate::tree::Tree::new(&listing);

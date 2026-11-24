@@ -151,3 +151,128 @@ impl Workspace {
     }
 
 }
+
+impl Workspace {
+    pub(crate) fn mobile_menu_room_writable(&self, room: &Room, cx: &App) -> bool {
+        if let Some(writable) = shared::live_room_writable(room, cx) { return writable; }
+        cx.try_global::<cloud_sync::activity::ActivityView>().and_then(|view| view.0.iter().find(|row| row.room.scope == room.scope))
+            .is_some_and(|row| row.access.map_or(room.scope.owner.is_none(), Access::can_write))
+    }
+
+    fn mobile_item_room(&self, entry: &crate::store::Entry, cx: &App) -> Option<Room> {
+        self.shared_list_room(&entry.id, cx).or_else(|| {
+            self.current_room(cx).filter(|room| (room.scope.folder || room.scope.note == entry.id)
+                && self.entries.iter().any(|row| row.id == entry.id))
+        }).or_else(|| {
+            let root = entry.meta.share_root.clone().or_else(|| self.shared_sidebar_entries(cx).into_iter()
+                .find(|row| row.id == entry.id).and_then(|row| row.meta.share_root))?;
+            self.shared_list_room(&root, cx).filter(|room| room.scope.folder || room.scope.note == entry.id)
+        })
+    }
+
+    pub(crate) fn mobile_item_menu(&mut self, id: &str, command: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.mobile_visible_entries(cx).into_iter().find(|row| row.id == id) else { return; };
+        if id.starts_with("collection-") || entry.meta.local() { return; }
+        let (verb, value) = command.split_once(':').unwrap_or((command, ""));
+        let folder = entry.meta.folder.is_some();
+        let item = id.to_owned();
+        let value = value.trim().to_owned();
+        let Some(room) = self.mobile_item_room(&entry, cx) else {
+            if !self.personal_navigation_entries(cx).iter().any(|row| row.id == id) { return; }
+            if verb == "share" {
+                if self.personal_row_can_share(id, cx) { self.mobile_share_personal_item(id, window, cx); }
+                return;
+            }
+            if entry.meta.share_root.is_some() { return; }
+            if matches!(verb, "pin" | "star") && !folder {
+                self.toggle_personal_organization(id, verb == "pin", false, cx);
+                return;
+            }
+            let verb = verb.to_owned();
+            self.personal_action(window, cx, move |w, window, cx| {
+                if !w.entries.iter().any(|row| row.id == item && row.meta.share_root.is_none()) { return; }
+                if folder && verb == "duplicate" {
+                    let tree = crate::tree::Tree::new(&w.entries);
+                    let subtree = tree.subtree(&item);
+                    if w.entries.iter().any(|row| subtree.contains(&row.id) && (row.meta.share_root.is_some()
+                        || row.meta.kind == crate::store::DocKind::Table || row.meta.local())) { return; }
+                }
+                w.apply_mobile_menu_item(&item, folder, &verb, &value, None, window, cx);
+            });
+            return;
+        };
+        let root = room.scope.note == id;
+        match verb {
+            "access" => self.mobile_open_room_access(room, window, cx),
+            "end" if root => self.open_end_shared(room, window, cx),
+            "copy" if root && !folder => self.copy_shared_documents(vec![item], cx),
+            "link" => self.copy_object_link(id, Some(room), false, cx),
+            "pin" | "star" if !folder => {
+                if root { self.toggle_shared_organization(id, verb == "pin", cx); }
+                else { self.toggle_shared_child_organization(id, verb == "pin", cx); }
+            }
+            "delete" if root && folder && self.stopping_original(&room, cx) && self.mobile_menu_room_writable(&room, cx) => {
+                self.confirm = Some(crate::app::Confirm::DeleteSharedFolder { title: room.title.clone(), room, id: item });
+                cx.notify();
+            }
+            "delete" if !root => self.ask_delete_shared_descendant(&room, id, folder, cx),
+            "export" | "pdf" | "print" | "rename" | "duplicate" | "move" | "new-document" | "new-folder" => {
+                let write = !matches!(verb,"export" | "pdf" | "print");
+                if write && !self.mobile_menu_room_writable(&room, cx) { return; }
+                let scope = room.scope.clone();
+                let verb = verb.to_owned();
+                let already_open = shared::scope(&self.store, cx) == Some(&scope);
+                let action = move |w: &mut Workspace, id: &str, window: &mut Window, cx: &mut Context<Workspace>| {
+                    if shared::scope(&w.store, cx) != Some(&scope) || (write && shared::editing_paused(&w.store, cx))
+                        || !w.sharing_access(cx).is_some_and(|access| if write { access.can_write() } else { access != Access::Revoked })
+                        || !w.entries.iter().any(|entry| entry.id == id && entry.meta.folder.is_some() == folder) { return; }
+                    w.apply_mobile_menu_item(id, folder, &verb, &value, Some(&scope), window, cx);
+                };
+                if already_open { action(self, &item, window, cx); }
+                else {
+                    let callback: super::actions::SharedAction = std::rc::Rc::new(std::cell::RefCell::new(Some(Box::new(action))));
+                    self.open_shared_item_for_action(room, item, None, callback, window, cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_mobile_menu_item(&mut self, id: &str, folder: bool, verb: &str, value: &str, scope: Option<&shared::Scope>,
+        window: &mut Window, cx: &mut Context<Self>) {
+        match verb {
+            "rename" if !value.is_empty() => {
+                self.start_rename(id, window, cx);
+                if let Some(rename) = &self.rename {
+                    if rename.id != id { return; }
+                    rename.field.update(cx, |field,cx| field.set_text(value,cx));
+                    self.finish_rename(true,window,cx);
+                }
+            }
+            "new-document" if folder => self.create_doc(false, Some(id.into()), window, cx),
+            "new-folder" if folder && !value.is_empty() => self.new_folder(
+                crate::folders::CreateTarget::Library(Some(id.into())), Some(value.into()), window, cx),
+            "duplicate" if scope.is_none_or(|scope| scope.folder && !folder && scope.note != id) => self.duplicate_doc(id, window, cx),
+            "move" => {
+                let mut destination = (!value.is_empty()).then(||value.to_owned());
+                if let Some(scope) = scope {
+                    let tree = crate::tree::Tree::new(&self.entries);
+                    let members = tree.subtree(&scope.note);
+                    let target = destination.get_or_insert_with(|| scope.note.clone());
+                    if !scope.folder || scope.note == id || !members.iter().any(|id_in_room| id_in_room == id)
+                        || !members.contains(target) || tree.subtree(id).contains(target)
+                        || !self.entries.iter().any(|entry| &entry.id == target && entry.meta.folder.is_some()) { return; }
+                }
+                self.move_docs(&[id.into()], destination, cx);
+            }
+            "delete" if scope.is_none() => self.ask_delete(id, cx),
+            "pin" if !folder => self.toggle_pin(id, cx),
+            "star" if !folder => self.toggle_star(id, cx),
+            "link" if scope.is_none() => self.copy_object_link(id, None, true, cx),
+            "export" if !folder => self.mobile_export(id, value == "all", cx),
+            "pdf" if !folder => self.export_pdf(id, window, cx),
+            "print" if !folder => self.print_doc(id, window, cx),
+            _ => {}
+        }
+    }
+}
