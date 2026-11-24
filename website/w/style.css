@@ -31,11 +31,10 @@ canvas { outline: none; }
 .backup-toolbar-actions { display: flex; justify-content: end; gap: 6px; flex-wrap: wrap; }
 #backup-preview iframe { flex: 1; min-height: 0; width: 100%; border: 0; }
 #backup-preview-status { margin: 16px; }
+/* The workspace draws this notice; the DOM mirrors it for screen readers. */
 #message {
-  position: fixed; z-index: 3; right: 24px; bottom: 20px;
-  max-width: min(460px, calc(100vw - 48px));
-  padding: 12px 16px; border: 1px solid ButtonBorder; border-radius: 12px;
-  background: Canvas; color: CanvasText; box-shadow: 0 8px 28px #0002;
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none;
 }
 dialog {
   /* Keep the HTML shell in step with ui::dialog and trash::render_confirm. */

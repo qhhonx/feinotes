@@ -205,6 +205,7 @@ function status(text,phase='saved'){
 let downloadNotice;
 function beginDownloadProgress(text){
   downloadNotice?.();
+  message('');
   const timer=setTimeout(()=>wasm.set_download_progress(text),160);
   const finish=()=>{
     clearTimeout(timer);
@@ -216,13 +217,25 @@ function beginDownloadProgress(text){
   downloadNotice=finish;
   return finish;
 }
-function message(text){$('message').hidden=!text;$('message').textContent=text;}
+let messageTimer,messageKind='info';
+function drawMessage(){
+  // Some notices come from workspace events dispatched during a WASM update.
+  queueMicrotask(()=>wasm.set_browser_notice($('message').textContent,messageKind));
+}
+function message(text,kind='info'){
+  const liveRegion=$('message');
+  clearTimeout(messageTimer);
+  messageKind=kind;
+  liveRegion.textContent=text;
+  if(ready)drawMessage();
+  if(text&&kind!=='info')messageTimer=setTimeout(()=>message(''),3000);
+}
 function fail(error){
   if(error?.localSaveFailed){
     const text='本地保存失败 · 可导出恢复副本';
-    message(cloudText(text));
+    message(cloudText(text),'error');
     status(text,'failed');
-  }else message(cloudText('操作未完成，请重试。'));
+  }else message(cloudText('操作未完成，请重试。'),'error');
 }
 function acquire(key){
   return new Promise((resolve,reject)=>{
@@ -574,7 +587,7 @@ async function requestCloudAttachment({path,name,route,download}){
   if(!cloudReadOnly||!path?.startsWith('assets/'))return;
   const english=document.documentElement.lang.startsWith('en');
   if(!transport||!navigator.onLine){
-    message(english?'Connect to iCloud to download this attachment.':'请联网并连接 iCloud 后下载附件。');
+    message(english?'Connect to iCloud to download this attachment.':'请联网并连接 iCloud 后下载附件。','error');
     return;
   }
   const cloud=transport,owner=account,started=epoch,sharedVersion=sharedRevision;
@@ -601,12 +614,12 @@ async function requestCloudAttachment({path,name,route,download}){
       const edits=await cloud.readDocumentScope(assetScope,current,received,paths);
       await applyPersonalBody(edits,current);
     }
-    if(current()&&!wasm.finish_cloud_attachment(path,name,route??undefined,download))message(failure);
+    if(current()&&!wasm.finish_cloud_attachment(path,name,route??undefined,download))message(failure,'error');
   }catch(error){
     if(!current())return;
     if(isExpiredSession(error))requireSignIn('Apple 会话已失效，请重新登录。');
     else if(error?.code==='SHARED_ACCESS_CHANGED')void refreshShared({validateOnly:true});
-    else message(failure);
+    else message(failure,'error');
   }finally{
     finishProgress();
     if(attachmentRead===operation)attachmentRead=null;
@@ -617,7 +630,7 @@ async function loadDocumentBody(target,action){
   const open=action==='open',printing=action==='print',exportBody=action==='export'||printing,requested=open||exportBody;
   if(!requested&&openingBody===target.id)return;
   if(!transport||!navigator.onLine){
-    if(requested)message('这篇文档尚未下载，请联网并连接 iCloud 后重试。');
+    if(requested)message('这篇文档尚未下载，请联网并连接 iCloud 后重试。','error');
     return;
   }
   const revision=++bodyRequest,started=epoch,cloud=transport,owner=account;
@@ -631,7 +644,7 @@ async function loadDocumentBody(target,action){
     try{
       opened=wasm.finish_body_open(target.id,target.location);
       finishProgress();
-      if(!opened)message('暂时无法打开此文档，请刷新目录或重试。');
+      if(!opened)message('暂时无法打开此文档，请刷新目录或重试。','error');
       return opened;
     }finally{openingBody=null;}
   };
@@ -674,7 +687,7 @@ async function loadDocumentBody(target,action){
   }catch(error){
     if(!current())return;
     if(isExpiredSession(error)){requireSignIn('Apple 会话已失效，请重新登录。');return;}
-    if(requested&&(!opened||inView()))message(opened?'部分附件尚未下载，请重试。':'文档下载未完成，请重试。');
+    if(requested&&(!opened||inView()))message(opened?'部分附件尚未下载，请重试。':'文档下载未完成，请重试。','error');
   }finally{finishProgress();}
 }
 async function syncSharedWrites(cloud,active){
@@ -1061,17 +1074,17 @@ async function resolveObjectLink({object,scope}){
   return new URL('./#object='+id,location.href).href;
 }
 function copyObjectLink(target){
-  if(!account||!transport||!navigator.clipboard){message('暂时无法复制链接，请登录 iCloud 后重试。');return;}
+  if(!account||!transport||!navigator.clipboard){message('暂时无法复制链接，请登录 iCloud 后重试。','error');return;}
   const text=resolveObjectLink(target).then(link=>new Blob([link],{type:'text/plain'}));
   navigator.clipboard.write([new ClipboardItem({'text/plain':text})]).then(
-    ()=>message('已复制链接。'),()=>message('暂时无法复制链接，请重试。'));
+    ()=>message('已复制链接。','success'),()=>message('暂时无法复制链接，请重试。','error'));
 }
 function openObjectTab(target){
   const tab=window.open('about:blank','_blank');
-  if(!tab){message(cloudText('浏览器未打开新标签页。'));return;}
+  if(!tab){message(cloudText('浏览器未打开新标签页。'),'error');return;}
   tab.opener=null;
   resolveObjectLink(target).then(link=>tab.location.replace(link))
-    .catch(()=>{tab.close();message(cloudText('暂时无法打开此文档，请重试。'));});
+    .catch(()=>{tab.close();message(cloudText('暂时无法打开此文档，请重试。'),'error');});
 }
 function invalidateInvitation(){
   invitationRevision++;
@@ -1919,7 +1932,7 @@ function printDocument(html){
     frame.remove();
     if(closePrintFrame===close)closePrintFrame=undefined;
   };
-  const timeout=setTimeout(()=>{close();message(errorText());},20000);
+  const timeout=setTimeout(()=>{close();message(errorText(),'error');},20000);
   closePrintFrame=close;
   frame.addEventListener('load',async()=>{
     try{
@@ -1931,7 +1944,7 @@ function printDocument(html){
       target.addEventListener('afterprint',close,{once:true});
       target.print();
     }catch{
-      if(closePrintFrame===close){close();message(errorText());}
+      if(closePrintFrame===close){close();message(errorText(),'error');}
     }
   },{once:true});
   frame.srcdoc=html;
@@ -1941,6 +1954,7 @@ function printDocument(html){
 window.addEventListener('feinotes',({detail:{type,data}})=>{
   if(type==='ready'){
     ready=true;applyLanguage(data);
+    drawMessage();
     if(account)status('iCloud 离线缓存','offline');
     else status('已保存到此浏览器');
     updateConnectionState();
@@ -1994,7 +2008,7 @@ window.addEventListener('feinotes',({detail:{type,data}})=>{
   else if(type==='recovery')queueMicrotask(openRecovery);
   else if(type==='copy-object-link')copyObjectLink(JSON.parse(data));
   else if(type==='open-object-tab')openObjectTab(JSON.parse(data));
-  else if(type==='object-link-unavailable')message('暂时无法确认此对象的共享范围，请同步后重试。');
+  else if(type==='object-link-unavailable')message('暂时无法确认此对象的共享范围，请同步后重试。','error');
   else if(type==='share-members')queueMicrotask(()=>openShareMembers(JSON.parse(data)));
   else if(type==='leave-shares')queueMicrotask(()=>confirmLeaveShares(JSON.parse(data)));
   else if(type==='check-backup')$('backup-file').click();
