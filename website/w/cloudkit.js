@@ -36,7 +36,7 @@ export function bindAccountContainer(container,CloudKit=window.CloudKit){
   CloudKit.configure({locale:'zh-cn',containers:[{...config,apiTokenAuth:{...auth,persist:false}}]});
   return CloudKit.getDefaultContainer();
 }
-export function createPrivateTransport(config,CloudKit,session,clientId,guard,{checkShared=false,readShared=false,previewInvitations=false,allowInvitationAcceptance=false,previewLeaveShares=false,previewPresence=false,previewPresenceWrites=false,previewSharedWrites=false,lazyBodies=false,readOnly=false,sessionRequest}={}){
+export function createPrivateTransport(config,CloudKit,session,clientId,guard,{readShared=false,previewInvitations=false,allowInvitationAcceptance=false,previewLeaveShares=false,previewPresence=false,previewPresenceWrites=false,previewSharedWrites=false,lazyBodies=false,readOnly=false,sessionRequest}={}){
   if(!readOnly||!isProductionLibrary(config))throw new Error('此 Web 版本仅支持读取飞记正式 iCloud 文档库');
   const origin='https://api.apple-cloudkit.com';
   const root=`/database/1/${encodeURIComponent(config.containerIdentifier)}/${config.environment}/`;
@@ -44,7 +44,6 @@ export function createPrivateTransport(config,CloudKit,session,clientId,guard,{c
   const invitations=previewInvitations&&sharedReading;
   const leaving=!readOnly&&previewLeaveShares&&sharedReading;
   const sharedWriting=!readOnly&&previewSharedWrites&&sharedReading;
-  const sharedDiscovery=checkShared||sharedReading;
   let allowedSharedZones=new Set();
   let ownedSharedZones=new Map();
   let invitationRequest;
@@ -102,7 +101,7 @@ export function createPrivateTransport(config,CloudKit,session,clientId,guard,{c
       allowedInvitation=Object.keys(body).length===1&&body.shortGUIDs?.length===1&&
         Object.keys(body.shortGUIDs[0]).length===1&&body.shortGUIDs[0].value===invitationRequest.guid;
     }
-    const sharedZoneList=sharedDiscovery&&url.pathname===root+'shared/zones/list'&&method==='GET'&&options?.body==null;
+    const sharedZoneList=sharedReading&&url.pathname===root+'shared/zones/list'&&method==='GET'&&options?.body==null;
     let sharedMembers=false;
     if(sharedReading&&url.pathname===root+'shared/records/lookup'&&method==='POST'&&typeof options?.body==='string'){
       const {zoneID,records}=JSON.parse(options.body);
@@ -206,10 +205,6 @@ export function createPrivateTransport(config,CloudKit,session,clientId,guard,{c
       }};
     };
   }
-  if(checkShared&&sharedDiscovery)transport.inspectSharedZones=async()=>{
-    const zones=await acceptedSharedZones(container,guard,transport.timeoutMs);
-    return {documents:zones.filter(zone=>!zone.folder).length,folders:zones.filter(zone=>zone.folder).length};
-  };
   async function currentGuestZones(){
     const zones=(await acceptedSharedZones(container,guard,transport.timeoutMs))
       .filter(zone=>!leftSharedZones.has(zoneKey(zone.zoneID)));
@@ -588,7 +583,7 @@ function shareInfo(info,config,guid){
      (info.shortGUID?.value??info.shortGUID)!==guid||share?.recordType?.toLowerCase()!=='cloudkit.share'||
      share.recordName?.toLowerCase()!=='cloudkit.zoneshare'||
      (share.zoneID&&zoneKey(share.zoneID)!==zoneKey(zone.zoneID))){
-    throw new Error('此邀请与当前飞记开发环境的共享文档不匹配');
+    throw new Error('无法找到此邀请对应的共享文档');
   }
   const {participantStatus:status,participantPermission:permission}=info;
   if(info.participantType==='OWNER')throw new Error('这是你创建的共享，请在所有者的文档库中打开');

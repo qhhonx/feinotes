@@ -60,7 +60,6 @@ dialog p:empty { display: none; }
 #backup-summary dd { margin: 0 0 8px; }
 #backup-restore-summary { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; }
 #backup-restore-summary dd { margin: 0; overflow-wrap: anywhere; }
-#status { display: block; margin-block: 8px 12px; color: GrayText; }
 .actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 12px; margin-top: 24px; }
 #backup-restore-open { padding: 6px 10px; border: 1px solid ButtonBorder; border-radius: 7px; }
 #browser-library-list { list-style: none; padding: 0; margin: 0; max-height: 45vh; overflow: auto; }

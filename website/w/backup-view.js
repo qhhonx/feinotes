@@ -1,4 +1,5 @@
-import init,* as wasm from './wasm/feinotes.js';
+import * as wasm from './wasm/feinotes.js';
+import {loadWorkspaceEngine} from './workspace-engine.js';
 import {b64Bytes} from './storage.js';
 import {createAttachmentPreview,download} from './attachment-preview.js';
 
@@ -7,7 +8,7 @@ if(window.parent===window)loading.textContent='请从飞记的文档库设置打
 
 window.openBackupPreview=async state=>{
   delete window.openBackupPreview;
-  await init();
+  await loadWorkspaceEngine();
   const preview=createAttachmentPreview(document.getElementById('attachment-preview'));
   addEventListener('feinotes',({detail})=>{
     if(detail.type==='ready')loading.remove();

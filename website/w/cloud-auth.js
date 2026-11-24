@@ -18,13 +18,22 @@ export class AppleSignIn {
     window.addEventListener('focus',this.refresh);
   }
 
+  setLabel(label){
+    this.label=label;
+    this.refreshLabel();
+  }
+
+  refreshLabel(){
+    if(this.label)this.button.textContent=this.text(this.label);
+  }
+
   async prepare() {
     if(this.disposed||this.connecting||this.popup||this.preparing)return;
     if(this.challenge&&Date.now()-this.challengeAt<challengeAge)return;
     this.challenge=null;
     this.preparing=true;
     this.button.disabled=true;
-    this.button.textContent=this.text('正在准备 Apple 授权…');
+    this.setLabel('正在准备 Apple 授权…');
     try{
       // This request only obtains Apple's challenge. The signed-in session
       // will be consumed by the private database, not an identity probe.
@@ -40,10 +49,10 @@ export class AppleSignIn {
       if(this.disposed)return;
       this.challenge=challenge;
       this.challengeAt=Date.now();
-      this.button.textContent=this.text('在 Apple 窗口登录');
+      this.setLabel('使用 Apple 账号登录');
     }catch{
       if(!this.disposed){
-        this.button.textContent=this.text('重试 Apple 授权');
+        this.setLabel('重试 Apple 授权');
         this.onStatus('暂时无法打开 Apple 登录。');
       }
     }finally{
@@ -103,7 +112,7 @@ export class AppleSignIn {
     catch(error){
       if(!this.disposed){
         this.onStatus(error?.userMessage||'无法读取 iCloud 私有文档库，请重试。');
-        this.button.textContent=this.text('重新登录 Apple');
+        this.setLabel('重新登录 Apple');
         this.button.disabled=false;
       }
     }finally{

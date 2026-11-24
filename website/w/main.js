@@ -1,10 +1,11 @@
-import init,* as wasm from './wasm/feinotes.js';
+import * as wasm from './wasm/feinotes.js';
+import {loadWorkspaceEngine} from './workspace-engine.js';
 import {openDatabase,readLibrary,writeLibrary,saveRestoredLibrary,listRestoredLibraries,bytesB64,b64Bytes} from './storage.js';
 import {loadCloudKit,createPrivateTransport,isExpiredSession,isProductionLibrary,parseInvitation} from './cloudkit.js';
 import {AppleSignIn} from './cloud-auth.js';
 import {createCloudSessionVault,sessionScope} from './cloud-session.js';
 import {decodeObjectId, encodeObjectLink, personalScope, scopeMatches, sharedScope} from './object-link.js';
-import {inspectMacBackup} from './backup-check.js';
+import {BackupValidationError,inspectMacBackup} from './backup-check.js';
 import {createAttachmentPreview,download} from './attachment-preview.js';
 import {createPresencePublisher,createPresenceReader} from './shared-presence.js';
 const $=id=>document.getElementById(id);
@@ -22,18 +23,14 @@ for(const dialog of document.querySelectorAll('dialog')){
   });
 }
 const englishCloudCopy=new Map([
-  ['iCloud 同步','iCloud Sync'],
-  ['开发环境','Development'],
-  ['正式环境','Production'],
   ['此浏览器','This browser'],
   ['iCloud 离线缓存','iCloud offline cache'],
   ['iCloud 文档库 · 只读预览','iCloud Library · Read-only preview'],
   ['iCloud 文档库','iCloud Library'],
   ['iCloud · 只读预览','iCloud · Read-only preview'],
   ['正在打开文档库…','Opening the library…'],
-  ['在 Apple 窗口登录','Sign in with Apple'],
+  ['使用 Apple 账号登录','Sign in with Apple'],
   ['立即同步','Sync now'],
-  ['检查共享区','Check shared zones'],
   ['退出 iCloud','Sign out of iCloud'],
   ['返回','Back'],
   ['连接 Apple 账号，查看 iCloud 文档。','Connect your Apple Account to view iCloud documents.'],
@@ -63,16 +60,21 @@ const englishCloudCopy=new Map([
   ['找不到飞记的 iCloud 文档库。请先在 Mac 打开飞记并同步。','Could not find your Fei Notes iCloud library. Open Fei Notes on your Mac and sync first.'],
   ['此浏览器的 iCloud 会话已结束，请重新连接。','This browser’s iCloud session ended. Reconnect to continue.'],
   ['已退出 iCloud。','Signed out of iCloud.'],
-  ['尚未配置 CloudKit Web 授权','CloudKit Web authorization is not configured.'],
-  ['CloudKit Web 配置无效','The CloudKit Web configuration is invalid.'],
+  ['暂时无法连接 iCloud，请稍后重试。','Unable to connect to iCloud. Try again later.'],
+  ['操作未完成，请重试。','Couldn’t complete the action. Try again.'],
+  ['本地保存失败 · 可导出恢复副本','Couldn’t save locally · Export a recovery copy'],
+  ['正在保存…','Saving…'],
+  ['已保存到此浏览器','Saved in this browser'],
+  ['有文档需要处理','Some documents need attention'],
+  ['离线 · 已保存到此浏览器','Offline · Saved in this browser'],
   ['同步中…','Syncing…'],
 ]);
 const cloudText=text=>document.documentElement.lang==='en'?(englishCloudCopy.get(text)??text):text;
 const cloudLabels={
-  'cloud-title':'iCloud 同步','apple-sign-in-button':'在 Apple 窗口登录',sync:'立即同步',
-  'shared-check':'检查共享区',signout:'退出 iCloud','cloud-back':'返回',
+  'apple-sign-in-button':'使用 Apple 账号登录',sync:'立即同步',
+  signout:'退出 iCloud','cloud-back':'返回',
 };
-let saveStatusText='正在打开文档库…',accountLabel='此浏览器',connectionText='';
+let saveStatusText='正在打开文档库…',saveStatusPhase='saving',connectionText='';
 let ready=false,db,config,transport,authorization,setupPromise,account=null,epoch=0,serial=Promise.resolve(),timer,syncing=false,dirty=false;
 let key='local',writer=false,releaseLock,authGeneration=0;
 let saveRevision=0;
@@ -92,8 +94,9 @@ const parameters = new URLSearchParams(location.search);
 const cloudReadOnly=document.documentElement.dataset.cloudAccess==='read-only';
 const lastLibraryKey=cloudReadOnly?'last-library:cloud-read-only':'last-library';
 const canEdit=()=>writer&&!(cloudReadOnly&&account);
-const demo = parameters.get('demo') === '1';
-const presencePreview=parameters.get('presence-preview')==='1';
+const localPreview=['localhost','127.0.0.1','[::1]'].includes(location.hostname);
+const demo=localPreview&&parameters.get('demo')==='1';
+const presencePreview=localPreview&&parameters.get('presence-preview')==='1';
 const publishPresence=createPresencePublisher();
 let presenceSession;
 const ownedDemo=demo&&parameters.get('owned-preview')==='1';
@@ -104,9 +107,7 @@ const restoredWorkspace=restoredId!==null;
 const restoredPrefix='restored:'+(sharedConflictPreview?'demo-share-conflict':sharedEditPreview?'demo-edit':ownedDemo?'demo-owned':demo?'demo':'live')+':';
 const libraryIdPattern=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 let demoShares;
-const checkShared = !demo&&parameters.get('check-shared')==='1';
-const invitationPreview = parameters.get('invite-preview')!=='0';
-const localPreview=['localhost','127.0.0.1','[::1]'].includes(location.hostname);
+const invitationPreview=!localPreview||parameters.get('invite-preview')!=='0';
 const canAcceptInvitation=demo||(!cloudReadOnly&&localPreview&&parameters.get('invite-preview')==='1');
 const openInvitationInApp='请先在飞记 App 接受邀请，加入后可回到网页版打开共享。';
 const shareFragment=/^#[cg]=[A-Za-z0-9_-]{1,256}$/;
@@ -192,17 +193,19 @@ function pollPresence(){
   }).finally(()=>{session.pending=false;});
 }
 
-function status(text){
+function status(text,phase='saved'){
   saveStatusText=text;
-  $('status').textContent=cloudText(text);
-  if(ready)queueMicrotask(()=>wasm.set_save_status($('status').textContent));
-}
-function setAccountLabel(text){
-  accountLabel=text;
-  $('account-label').textContent=cloudText(text);
+  saveStatusPhase=phase;
+  if(ready)queueMicrotask(()=>wasm.set_save_status(cloudText(saveStatusText),saveStatusPhase));
 }
 function message(text){$('message').hidden=!text;$('message').textContent=text;}
-function fail(e){message(e?.userMessage||e?.message||(typeof e==='string'?e:'iCloud 操作未完成，请重试。'));status(e?.localSaveFailed?'本地保存失败 · 可导出恢复副本':'尚未同步 · 请重试');}
+function fail(error){
+  if(error?.localSaveFailed){
+    const text='本地保存失败 · 可导出恢复副本';
+    message(cloudText(text));
+    status(text,'failed');
+  }else message(cloudText('操作未完成，请重试。'));
+}
 function acquire(key){
   return new Promise((resolve,reject)=>{
     navigator.locks.request('feinotes:'+libraryScope+key,{ifAvailable:true},lock=>{
@@ -232,10 +235,11 @@ async function persist(){
   if(revision!==saveRevision||wasm.has_pending_document_save())return false;
   dirty=false;
   const pending=pendingUploadCount(JSON.parse(state));
-  status(account&&cloudReadOnly?'iCloud · 只读预览':account&&pending?'已保存到此浏览器 · 待同步':'已保存到此浏览器');
+  if(account&&cloudReadOnly)status('iCloud · 只读预览','read-only');
+  else status(account&&pending?'已保存到此浏览器 · 待同步':'已保存到此浏览器');
   return true;
 }
-function markUnsaved(){saveRevision++;dirty=true;status('正在保存…');}
+function markUnsaved(){saveRevision++;dirty=true;status('正在保存…','saving');}
 function scheduleSave(){markUnsaved();clearTimeout(timer);timer=setTimeout(()=>run(async()=>{if(await persist()&&account)void sync({afterCurrent:true});}),400);}
 function hasUnsavedChanges(){return ready&&writer&&(dirty||wasm.has_pending_document_save());}
 function updateConnectionState(){
@@ -282,8 +286,6 @@ function showConnection(text){
   $('apple-sign-in-button').hidden=!!transport||!online;
   $('signout').hidden=!account;
   $('sync').hidden=!transport||!online;
-  $('shared-check').hidden=!transport?.inspectSharedZones||!online;
-  if(!transport){$('shared-check-status').hidden=true;$('shared-check-status').textContent='';}
   updateConnectionState();
 }
 async function changeAccount(nextAccount,cloud=null,firstPage=null){
@@ -320,7 +322,6 @@ async function changeAccount(nextAccount,cloud=null,firstPage=null){
       account=nextAccount;key=nextKey;transport=null;lastSuccessfulSync=syncTime;cloudSyncPhase='';
       if(switchLock)useLock(nextLock);
       wasm.set_shared_write_preview(!!cloud?.writeShare&&canEdit());
-      setAccountLabel(account?'iCloud 离线缓存':'此浏览器');
       if(firstPage&&(writer||cloudReadOnly)){
         const cached=JSON.parse(wasm.export_state());
         wasm.import_changes(JSON.stringify({edits:firstPage.edits,uploaded:[],cursor:cached.cursor??firstPage.cursor??null}));
@@ -328,7 +329,7 @@ async function changeAccount(nextAccount,cloud=null,firstPage=null){
       }
       await writeLibrary(db,lastLibraryKey,JSON.stringify({key,account}));
       transport=cloud;
-      setAccountLabel(account?(cloudReadOnly?'iCloud 文档库 · 只读预览':'iCloud 文档库'):'此浏览器');
+      if(!account)status('已保存到此浏览器');
       showConnection(account?(cloudReadOnly?'已连接 iCloud，可查看文档。':'已登录 Apple 账号。'):'尚未登录 Apple 账号。');
       if(cloud)void refreshTrial();
       if(!writer&&!cloudReadOnly)message('文档库已在另一个标签页打开。此标签页可以查看文档。');
@@ -354,7 +355,6 @@ function requireSignIn(text,reconnect=true){
     }).catch(fail);
     return;
   }
-  if(account)setAccountLabel('iCloud 离线缓存');
   showConnection(text);
   if(reconnect&&$('settings').open)setupCloud().catch(fail);
 }
@@ -765,7 +765,7 @@ async function sync({afterCurrent=false}={}){
   const active=()=>startEpoch===epoch&&cloud===transport&&network===networkRevision&&navigator.onLine;
   try{
     if(!await run(()=>active()&&(!writer||persist()))||dirty||!active())return;
-    status('同步中…');
+    if(!cloudReadOnly)status('同步中…','syncing');
     if(!cloudReadOnly)await cloud.ensureZone(active);
     const previousOwners=wasm.owned_share_roots();
     // Pull before upload so a remote deletion cannot resurrect a note.
@@ -780,7 +780,7 @@ async function sync({afterCurrent=false}={}){
     }
     if(cloudReadOnly){
       if(active()){
-        status('iCloud · 只读预览');
+        status('iCloud · 只读预览','read-only');
         await markSynced();
         if(active())setCloudSyncPhase('up-to-date');
       }
@@ -834,7 +834,10 @@ async function sync({afterCurrent=false}={}){
       const receiving=Object.keys(pending??{}).length>0;
       const conflicted=Object.keys(conflicts??{}).length>0;
       message('');
-      status(dirty?'正在保存…':pausedMove?'有移动需要处理':conflicted?'有文档需要处理':held?.length?'有待处理的恢复副本':uploading?'已保存到此浏览器 · 待同步':receiving?'等待应用同步记录':'已同步');
+      if(dirty)status('正在保存…','saving');
+      else if(pausedMove||conflicted||held?.length)status('有文档需要处理','attention');
+      else if(uploading||receiving)status('同步中…','syncing');
+      else status('已同步');
       if(!dirty&&!pausedMove&&!conflicted&&!held?.length&&!uploading&&!receiving){
         await markSynced();
         if(active())setCloudSyncPhase('up-to-date');
@@ -843,13 +846,13 @@ async function sync({afterCurrent=false}={}){
   }catch(e){if(active()){
     if(isExpiredSession(e)){
       requireSignIn('Apple 会话已失效，请重新登录。');
-      if(!cloudReadOnly){status('待同步 · 请重新登录');message('已缓存文档和待同步修改都保留在此浏览器。');}
+      if(!cloudReadOnly){status('待同步 · 请重新登录','attention');message('已缓存文档和待同步修改都保留在此浏览器。');}
     }
     else{
       const quota=[e?.ckErrorCode,e?.serverErrorCode].includes('QUOTA_EXCEEDED');
       setCloudSyncPhase(e?.localSaveFailed?'local-save-failed':quota?'quota':'retry');
       fail(e);
-      if(!e?.localSaveFailed&&!dirty)status('同步未完成 · 已保存在此浏览器');
+      if(!cloudReadOnly&&!e?.localSaveFailed&&!dirty)status('同步未完成 · 已保存在此浏览器','attention');
     }
   }}
   finally{
@@ -880,7 +883,6 @@ function setupCloud({restoreOnly=false}={}){
     ]);
     if(generation!==authGeneration)return;
     config=profile;
-    $('cloud-environment').textContent=cloudText(config.environment==='development'?'开发环境':'正式环境');
     const saved=sessionVault?.read();
     const scope=sessionScope(config);
     const active=()=>generation===authGeneration;
@@ -888,7 +890,7 @@ function setupCloud({restoreOnly=false}={}){
       const {session,clientId}=entry;
       const browserSession=sessionVault?.connect(entry,previous,active);
       const cloud=createPrivateTransport(config,CloudKit,session,clientId,active,
-        {checkShared,readShared:true,previewInvitations:invitationPreview,previewLeaveShares:config.previewLeaveShares===true,
+        {readShared:true,previewInvitations:invitationPreview,previewLeaveShares:config.previewLeaveShares===true,
           allowInvitationAcceptance:canAcceptInvitation,
           previewPresence:presencePreview,previewPresenceWrites:config.previewPresenceWrites===true,
           previewSharedWrites:localPreview&&config.previewSharedWrites===true,lazyBodies:true,readOnly:cloudReadOnly,
@@ -956,7 +958,7 @@ function openAccount(){
   }
   showConnection(transport?(cloudReadOnly?'已连接 iCloud，可查看文档。':'已登录 Apple 账号。'):
     (cloudReadOnly?'连接 Apple 账号，查看 iCloud 文档。':'使用 Apple 账号读取和同步文档。'));
-  if(navigator.onLine)setupCloud().catch(e=>showConnection(e.message));
+  if(navigator.onLine)setupCloud().catch(()=>showConnection('暂时无法连接 iCloud，请稍后重试。'));
 }
 function objectStatus(text,canSignIn=false){
   $('object-link-status').textContent=text;
@@ -1088,7 +1090,7 @@ function invitationError(error,fallback){
   }
   if(['NOT_FOUND','UNKNOWN_ITEM','ZONE_NOT_FOUND','ZONE_DELETED'].includes(code))
     return '找不到这项共享。请向邀请者确认链接是否有效。';
-  return code?fallback+'（'+code+'）':fallback;
+  return fallback;
 }
 $('invitation-form').onsubmit=event=>{
   event.preventDefault();
@@ -1101,7 +1103,7 @@ async function inspectInvitation(){
   const value=$('invitation-link').value.trim();
   let parsed;
   try{parsed=parseInvitation(value);}
-  catch(error){$('invitation-status').textContent=error.message;return;}
+  catch{$('invitation-status').textContent='请粘贴完整的飞记或 iCloud 共享邀请链接。';return;}
   if(!demo&&!navigator.onLine){
     $('invitation-status').textContent='联网后可检查邀请。';
     return;
@@ -1129,7 +1131,7 @@ async function inspectInvitation(){
     const title=info.title||(info.scope.folder?'共享文件夹':'共享文档');
     const permission=info.permission==='READ_WRITE'?'可编辑':'只读';
     inspectedInvitation={info};
-    $('invitation-details').textContent=title+' · '+permission+(info.region==='china'?' · 中国大陆链接':' · 国际链接');
+    $('invitation-details').textContent=title+' · '+permission;
     $('invitation-details').hidden=false;
     const accepted=info.status==='ACCEPTED';
     $('invitation-status').textContent=accepted?'此账号已接受邀请。':canAcceptInvitation?'确认后将在飞记中打开。':openInvitationInApp;
@@ -1412,8 +1414,8 @@ async function exportLibraryBackup(){
     request.blob=blob;
     status.textContent='备份已准备好，可用于恢复飞记 Mac 的本地文档库。';
     libraryBackupDownload.hidden=false;
-  }catch(error){
-    if(current())status.textContent=typeof error==='string'?error:error?.message||'无法创建文档库备份，请重试。';
+  }catch{
+    if(current())status.textContent='无法创建文档库备份，请重试。';
   }
 }
 libraryBackupDialog.addEventListener('close',()=>{
@@ -1440,7 +1442,7 @@ $('backup-file').addEventListener('change',async event=>{
   try{
     const value=await inspectMacBackup(file,wasm,current);
     if(!current())return;
-    const rows=[['文档库',value.kind],['备份格式',`版本 ${value.version}`],['文件',value.files],
+    const rows=[['文档库',value.kind],['文件',value.files],
       ['附件文件',value.assets],['历史版本文件',value.history],['共享文档库',value.shared]];
     for(const [term,value] of rows){
       const label=document.createElement('dt'),detail=document.createElement('dd');
@@ -1450,7 +1452,9 @@ $('backup-file').addEventListener('change',async event=>{
     result.textContent='备份文件及文件清单校验通过。';
     verifiedBackup={file,archive:value,current};
     $('open-backup-preview').hidden=false;
-  }catch(error){if(current())result.textContent='无法校验此备份。'+(error?.message||'');}
+  }catch(error){
+    if(current())result.textContent=error instanceof BackupValidationError?error.message:'无法校验此备份，请重试。';
+  }
 });
 
 const backupPreview=$('backup-preview'),restoreButton=$('restore-backup');
@@ -1553,7 +1557,7 @@ $('open-backup-preview').onclick=async event=>{
     backupPreview.append(frame);
     backupPreview.showModal();
     result.textContent='备份文件及文件清单校验通过。';
-  }catch(error){if(selection.current())result.textContent='无法预览此备份。'+(error?.message||'');}
+  }catch{if(selection.current())result.textContent='无法预览此备份，请重试。';}
   finally{if(selection.current())button.disabled=false;}
 };
 function showRestoreState(item){
@@ -1876,10 +1880,9 @@ function applyLanguage(language){
   for(const [id,label] of Object.entries(cloudLabels)){
     if(id!=='apple-sign-in-button'||!authorization)$(id).textContent=cloudText(label);
   }
-  setAccountLabel(accountLabel);
-  status(saveStatusText);
+  authorization?.refreshLabel();
+  status(saveStatusText,saveStatusPhase);
   $('cloud-status').textContent=cloudText(navigator.onLine?connectionText:'当前离线，请联网后重新连接 iCloud。');
-  if(config)$('cloud-environment').textContent=cloudText(config.environment==='development'?'开发环境':'正式环境');
   updateConnectionState();
 }
 function printDocument(html){
@@ -1916,7 +1919,10 @@ function printDocument(html){
 
 window.addEventListener('feinotes',({detail:{type,data}})=>{
   if(type==='ready'){
-    ready=true;applyLanguage(data);status(demo?'演示文档库':account?'iCloud 离线缓存':'此浏览器');updateConnectionState();
+    ready=true;applyLanguage(data);
+    if(account)status('iCloud 离线缓存','offline');
+    else status('已保存到此浏览器');
+    updateConnectionState();
     const loading=$('loading'),restoring=restoreCloud();
     if(restoring&&loading){
       loading.textContent=cloudText('正在验证此浏览器的 iCloud 会话…');
@@ -2052,17 +2058,6 @@ switchLocalConfirm.onclick=async()=>{
   }finally{switchLocalConfirm.disabled=cancel.disabled=false;}
 };
 $('sync').onclick=syncNow;
-$('shared-check').onclick=async()=>{
-  const cloud=transport,button=$('shared-check'),result=$('shared-check-status');
-  if(!cloud?.inspectSharedZones||button.disabled)return;
-  button.disabled=true;result.hidden=false;result.textContent='正在检查共享区…';
-  try{
-    const {documents,folders}=await cloud.inspectSharedZones();
-    if(transport===cloud)result.textContent=`共享区可访问。文档 ${documents} 个，文件夹 ${folders} 个。`;
-  }catch(error){
-    if(transport===cloud)result.textContent=isExpiredSession(error)?'共享区请求需要重新授权。':'无法确认共享区访问，请重试。';
-  }finally{button.disabled=false;}
-};
 $('download-recovery').onclick=()=>download('飞记恢复副本.xml',$('recovery-content').value,'application/xml;charset=utf-8');
 function restoreCloud(){
   if(!transport&&navigator.onLine&&sessionVault?.read())
@@ -2074,6 +2069,7 @@ window.addEventListener('storage',event=>{
     requireSignIn('此浏览器的 iCloud 会话已结束，请重新连接。',false);
 });
 window.addEventListener('online',()=>{
+  if(!account&&!dirty&&saveStatusPhase==='offline')status('已保存到此浏览器');
   if($('settings').open)openAccount();else updateConnectionState();
   restoreCloud();
   if(transport)void refreshTrial();
@@ -2084,7 +2080,8 @@ window.addEventListener('offline',()=>{
   cloudSyncPhase='';
   if(ready)wasm.set_cloud_trial('unavailable');
   if($('settings').open)openAccount();else updateConnectionState();
-  status(account?'离线待同步':'离线 · 已保存到此浏览器');resetShared(true);
+  if(!dirty&&saveStatusPhase!=='failed')status(account?'离线待同步':'离线 · 已保存到此浏览器','offline');
+  resetShared(true);
 });
 function checkVisible(){
   if(document.hidden)return;
@@ -2134,10 +2131,7 @@ try{
   let preferences=recovery?.preferences||'';
   try{preferences=localStorage.getItem(preferencesKey)||preferences;}catch{}
   applyAppearance(preferences);
-  const moduleFile=await fetch(new URL('./wasm/feinotes_bg.wasm.gz',import.meta.url));
-  if(!moduleFile.ok||!moduleFile.body)throw new Error('无法下载飞记编辑器');
-  const moduleStream=moduleFile.body.pipeThrough(new DecompressionStream('gzip'));
-  await init({module_or_path:new Response(moduleStream,{headers:{'Content-Type':'application/wasm'}})});
+  await loadWorkspaceEngine();
   const ownedFixture=ownedDemo&&!recovery?JSON.parse(wasm.demo_owned_shares(sharedEditPreview,sharedConflictPreview)):null;
   demoShares=demo&&!recovery?(ownedFixture?JSON.stringify(ownedFixture.rooms):wasm.demo_shares()):undefined;
   if(sharedEditPreview&&!recovery){
@@ -2155,7 +2149,6 @@ try{
   wasm.start(state,canEdit(),preferences,invitationPreview&&!recovery,demoShares,sharedEditPreview&&!recovery,recovery?.title,!!reloadDestination);
   if(account){
     lastSuccessfulSync=await readSyncTime(key);
-    setAccountLabel('iCloud 离线缓存');
     showConnection('请登录 Apple 账号恢复 iCloud 同步。');
   }
   if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(console.warn);
