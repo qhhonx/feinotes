@@ -12,6 +12,9 @@ import UIKit
 private final class CloudSubscriptionSheetModel: NSObject, ObservableObject {
     let chinese: Bool
     let dark: Bool
+    #if os(iOS)
+    var themeAccent = UIColor.systemBlue
+    #endif
     private let store: CloudSubscriptionStore?
     @Published private(set) var offers: [CloudOffer] = []
     @Published private(set) var active: CloudPlan?
@@ -177,89 +180,128 @@ private final class CloudSubscriptionSheetModel: NSObject, ObservableObject {
 
 private struct CloudSubscriptionSheet: View {
     @ObservedObject var model: CloudSubscriptionSheetModel
-    @Environment(\.dynamicTypeSize) private var typeSize
+    private var title: String { model.text("飞记云功能", "Fei Notes Cloud") }
+    private var intro: String {
+        #if os(macOS)
+        model.text("在 Mac、iPhone 和 iPad 上接着写，也可以邀请他人一起编辑文档。",
+                   "Keep writing on Mac, iPhone, and iPad. Invite others to edit with you.")
+        #else
+        model.text("在 Mac、iPhone 和 iPad 间同步文档，并邀请他人共同编辑。",
+                   "Sync documents across Mac, iPhone, and iPad and invite others to edit together.")
+        #endif
+    }
 
     var body: some View {
         #if os(macOS)
-        content
-            .frame(width: 512)
-            .fixedSize(horizontal: false, vertical: true)
-            .onExitCommand { if model.canDismiss { model.close?() } }
-            .environment(\.colorScheme, model.dark ? .dark : .light)
-            .task { await model.initialLoadIfNeeded() }
-        #else
-        ScrollView {
-            content
-                .frame(maxWidth: 480)
-                .frame(maxWidth: .infinity)
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title).font(.title2.weight(.semibold))
+                .accessibilityIdentifier("fei.subscription.title")
+            Text(intro).foregroundStyle(.secondary)
+            if let active = model.active { accountStatus(active) }
+            if model.offers.isEmpty {
+                availability
+            } else {
+                GroupBox {
+                    VStack(spacing: 0) {
+                        ForEach(model.offers, id: \.plan) { offer in
+                            if offer.plan != model.offers.first?.plan { Divider() }
+                            planRow(offer).buttonStyle(.plain)
+                        }
+                    }
+                } label: {
+                    Text(model.text("订阅方案", "Subscription plans"))
+                }
+                billing
+            }
+            feedback
+            Divider()
+            HStack {
+                Button(model.text("关闭", "Close")) { model.close?() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(!model.canDismiss)
+                    .accessibilityIdentifier("fei.subscription.close")
+                Spacer()
+                if !model.offers.isEmpty { purchaseButton }
+            }
+            HStack { purchaseLinks; Spacer(minLength: 10); legalLinks }
+                .font(.footnote)
+            if model.preview { previewNotice }
         }
-        .background(Color(uiColor: .systemBackground))
+        .padding(24)
+        .frame(width: 500)
+        .fixedSize(horizontal: false, vertical: true)
         .environment(\.colorScheme, model.dark ? .dark : .light)
+        .task { await model.initialLoadIfNeeded() }
+        #else
+        NavigationStack {
+            Form {
+                Section {
+                    Text(intro).foregroundStyle(.secondary)
+                    if let active = model.active { accountStatus(active) }
+                }
+                if model.offers.isEmpty {
+                    Section { availability }
+                } else {
+                    Section(model.text("订阅方案", "Subscription plans")) {
+                        ForEach(model.offers, id: \.plan) { offer in
+                            planRow(offer).buttonStyle(.plain)
+                        }
+                    }
+                    Section {
+                        purchaseButton
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                    } footer: {
+                        billing
+                    }
+                }
+                if model.message != nil { Section { feedback } }
+                Section {
+                    purchaseLinks
+                    legalLinks
+                } footer: {
+                    if model.preview { previewNotice }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(model.text("关闭", "Close")) { model.close?() }
+                        .disabled(!model.canDismiss)
+                        .tint(.primary)
+                        .accessibilityIdentifier("fei.subscription.close")
+                }
+            }
+        }
+        .environment(\.colorScheme, model.dark ? .dark : .light)
+        .tint(Color(uiColor: model.themeAccent))
         .task { await model.initialLoadIfNeeded() }
         #endif
     }
 
-    private var content: some View {
-        VStack(spacing: 16) {
-            heading
-            if let active = model.active { accountStatus(active) }
-            if model.offers.isEmpty {
-                if model.working {
-                    ProgressView(model.text("正在查询 App Store…", "Checking the App Store…"))
-                        .frame(minHeight: 65)
-                } else {
-                    Button(model.text("重试加载方案", "Reload plans")) { Task { await model.load() } }
-                        .frame(minHeight: 44)
-                }
-            } else {
-                planChoices
-                payment
-            }
-            if let message = model.message {
-                Text(message)
-                    .font(.footnote)
-                    .foregroundStyle(model.messageIsError ? Color.red : Color.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("fei.subscription.message")
-            }
-            footer
+    @ViewBuilder private var availability: some View {
+        if model.working {
+            ProgressView(model.text("正在查询 App Store…", "Checking the App Store…"))
+        } else {
+            Button(model.text("重试加载方案", "Reload plans")) { Task { await model.load() } }
         }
-        .padding(24)
     }
 
-    private var heading: some View {
-        VStack(spacing: 7) {
-            Image(systemName: "icloud")
-                .font(.system(size: 23, weight: .medium))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 43, height: 43)
-                .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
-                .accessibilityHidden(true)
-            Text(model.text("飞记云功能", "Fei Notes Cloud"))
-                .font(.title2.weight(.semibold))
-                .accessibilityAddTraits(.isHeader)
-                .accessibilityIdentifier("fei.subscription.title")
-            Text(model.text("在 Mac、iPhone 和 iPad 上接着写，也可以邀请他人一起编辑文档。",
-                            "Keep writing on Mac, iPhone, and iPad. Invite others to edit with you."))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 330)
+    @ViewBuilder private var feedback: some View {
+        if let message = model.message {
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(model.messageIsError ? Color.red : Color.secondary)
+                .accessibilityIdentifier("fei.subscription.message")
         }
-        .frame(maxWidth: .infinity)
-        .overlay(alignment: .topTrailing) {
-            Button { model.close?() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 36, height: 36)
-                    .background(Color.primary.opacity(0.065), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!model.canDismiss)
-            .accessibilityLabel(model.text("关闭订阅弹窗", "Close subscription sheet"))
-            .accessibilityIdentifier("fei.subscription.close")
-        }
+    }
+
+    private var previewNotice: some View {
+        Text(model.text("本地预览 · 不会产生购买", "Local preview · No purchases"))
+            .foregroundStyle(.secondary)
+            .font(.caption)
     }
 
     private func accountStatus(_ active: CloudPlan) -> some View {
@@ -271,102 +313,145 @@ private struct CloudSubscriptionSheet: View {
         }
         return Label(status, systemImage: model.next == nil ? "checkmark.circle" : "calendar")
             .font(.footnote.weight(.medium))
-            .foregroundStyle(Color.accentColor)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
-            .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+            .foregroundStyle(.secondary)
             .accessibilityIdentifier("fei.subscription.status")
     }
 
-    @ViewBuilder private var planChoices: some View {
-        if typeSize.isAccessibilitySize {
-            VStack(spacing: 9) {
-                ForEach(model.offers, id: \.plan) { offer in planCard(offer) }
-            }
-        } else {
-            HStack(alignment: .top, spacing: 9) {
-                ForEach(model.offers, id: \.plan) { offer in planCard(offer) }
-            }
-        }
-    }
-
-    private func planCard(_ offer: CloudOffer) -> some View {
+    #if os(macOS)
+    private func planRow(_ offer: CloudOffer) -> some View {
         let isSelected = model.selected == offer.plan
-        let isAnnual = offer.plan == .annual
-        let badge = model.active == offer.plan ? model.text("当前方案", "Current plan")
-            : model.next == offer.plan ? model.text("下次续订生效", "Starts at next renewal") : nil
+        let annual = offer.plan == .annual
+        let price = annual ? model.text("\(offer.price) / 年", "\(offer.price) / year")
+            : model.text("\(offer.price) / 月", "\(offer.price) / month")
+        var details: [String] = []
+        if offer.plan == model.active { details.append(model.text("当前方案", "Current plan")) }
+        if offer.plan == model.next { details.append(model.text("下次续订生效", "Starts at next renewal")) }
+        if let saving = offer.savingPercent { details.append(model.text("省 \(saving)%", "Save \(saving)%")) }
+
         return Button {
             model.select(offer.plan)
         } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text(model.name(offer.plan)).font(.subheadline.weight(.semibold))
-                    Spacer(minLength: 2)
-                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                        .accessibilityHidden(true)
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.name(offer.plan)).fontWeight(.medium)
+                    if !details.isEmpty {
+                        Text(details.joined(separator: " · "))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                (
-                    Text(offer.price).font(.title3.weight(.semibold))
-                    + Text(isAnnual ? model.text(" / 年", " / year") : model.text(" / 月", " / month")).font(.footnote)
-                )
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                if let saving = offer.savingPercent {
-                    Text(model.text("省 \(saving)%", "Save \(saving)%"))
-                        .foregroundStyle(Color.accentColor)
-                        .font(.footnote.weight(.medium))
-                } else {
-                    Text(isAnnual ? model.text("每年付款", "Billed yearly") : model.text("每月付款", "Billed monthly"))
-                        .foregroundStyle(.secondary)
-                        .font(.footnote)
-                }
-                if model.active != nil && !typeSize.isAccessibilitySize || badge != nil {
-                    Text(badge ?? " ")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                        .accessibilityHidden(badge == nil)
-                }
+                Spacer(minLength: 4)
+                Text(price)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                Image(systemName: "checkmark")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .opacity(isSelected ? 1 : 0)
+                    .accessibilityHidden(true)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
-            .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 11))
-            .overlay {
-                RoundedRectangle(cornerRadius: 11)
-                    .strokeBorder(isSelected ? Color.accentColor : Color.secondary.opacity(0.28), lineWidth: 1)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 11))
+            .padding(.vertical, 5)
+            .frame(minHeight: 34)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
         .disabled(model.working)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("fei.subscription.plan.\(offer.plan.rawValue)")
     }
 
-    private var payment: some View {
-        VStack(spacing: 6) {
-            Button {
-                Task { await model.purchase() }
-            } label: {
-                Group {
-                    if model.working { ProgressView().controlSize(.small) }
-                    else { Text(purchaseLabel).fontWeight(.semibold) }
+    #else
+    private func planRow(_ offer: CloudOffer) -> some View {
+        let isSelected = model.selected == offer.plan
+        let annual = offer.plan == .annual
+        let price = annual ? model.text("\(offer.price) / 年", "\(offer.price) / year")
+            : model.text("\(offer.price) / 月", "\(offer.price) / month")
+        return Button {
+            model.select(offer.plan)
+        } label: {
+            HStack(alignment: .firstTextBaseline) {
+                Text(model.name(offer.plan))
+                if let saving = offer.savingPercent {
+                    Text(model.text("省 \(saving)%", "Save \(saving)%"))
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 5)
+                        .background(Color(uiColor: model.themeAccent).opacity(0.20), in: Capsule())
                 }
-                .frame(maxWidth: .infinity, minHeight: 30)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(!model.canPurchase)
-            .accessibilityIdentifier("fei.subscription.purchase")
-
-            if let offer = model.selectedOffer {
-                Text(billingDescription(offer))
-                    .font(.footnote)
+                Spacer(minLength: 4)
+                Text(price)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .accessibilityIdentifier("fei.subscription.billing")
+                    .multilineTextAlignment(.trailing)
+                Image(systemName: "checkmark")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .opacity(isSelected ? 1 : 0)
+                    .accessibilityHidden(true)
             }
+            .contentShape(Rectangle())
+        }
+        .disabled(model.working)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("fei.subscription.plan.\(offer.plan.rawValue)")
+    }
+
+    private var purchaseForeground: Color {
+        let style = UITraitCollection(userInterfaceStyle: model.dark ? .dark : .light)
+        let accent = model.themeAccent.resolvedColor(with: style)
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0
+        guard accent.getRed(&red, green: &green, blue: &blue, alpha: nil) else { return .white }
+        func linear(_ value: CGFloat) -> CGFloat {
+            value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+        return luminance > 0.179 ? .black : .white
+    }
+
+    private func settingsRow(_ title: String, opensAnotherPage: Bool = false) -> some View {
+        HStack {
+            Text(title).foregroundStyle(.primary)
+            Spacer()
+            if opensAnotherPage {
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+    #endif
+
+    private var purchaseButton: some View {
+        Button {
+            Task { await model.purchase() }
+        } label: {
+            #if os(iOS)
+            purchaseLabelView
+                .foregroundStyle(model.canPurchase ? purchaseForeground : .secondary)
+                .frame(maxWidth: .infinity)
+            #else
+            purchaseLabelView
+            #endif
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .disabled(!model.canPurchase)
+        .accessibilityIdentifier("fei.subscription.purchase")
+    }
+
+    @ViewBuilder private var purchaseLabelView: some View {
+        if model.working { ProgressView().controlSize(.small) }
+        else { Text(purchaseLabel).fontWeight(.semibold) }
+    }
+
+    @ViewBuilder private var billing: some View {
+        if let offer = model.selectedOffer {
+            Text(billingDescription(offer))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("fei.subscription.billing")
         }
     }
 
@@ -375,11 +460,17 @@ private struct CloudSubscriptionSheet: View {
             return model.text("可在 App Store 查看续订状态或管理订阅。",
                               "Check renewal status or manage your plan in the App Store.")
         }
-        return offer.plan == .annual
+        let renewal = offer.plan == .annual
             ? model.text("\(offer.price) 每年自动续订，可在 App Store 管理或取消。",
                          "\(offer.price) per year, auto-renewing. Manage or cancel in the App Store.")
             : model.text("\(offer.price) 每月自动续订，可在 App Store 管理或取消。",
                          "\(offer.price) per month, auto-renewing. Manage or cancel in the App Store.")
+        if model.active == .monthly && offer.plan == .annual && model.next != .annual {
+            return model.text("当前月付继续有效，年付预计在下次续订时生效。以 App Store 确认为准。",
+                              "Monthly stays active. Annual is expected to start at your next renewal, as confirmed by the App Store.")
+                + "\n" + renewal
+        }
+        return renewal
     }
 
     private var purchaseLabel: String {
@@ -392,55 +483,55 @@ private struct CloudSubscriptionSheet: View {
         return model.text("通过 App Store 继续", "Continue with the App Store")
     }
 
-    private var footer: some View {
-        VStack(spacing: 8) {
-            Divider()
-            ViewThatFits(in: .horizontal) {
-                HStack { purchaseLinks; Spacer(minLength: 10); legalLinks }
-                VStack(spacing: 8) { purchaseLinks; legalLinks }
-            }
-            if model.preview {
-                Text(model.text("本地预览 · 不会产生购买", "Local preview · No purchases"))
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-            }
+    @ViewBuilder private var purchaseLinks: some View {
+        Button {
+            Task { await model.restore() }
+        } label: {
+            let title = model.text("恢复购买", "Restore purchases")
+            #if os(iOS)
+            settingsRow(title)
+            #else
+            Text(title)
+            #endif
         }
-        .font(.footnote)
-    }
-
-    private var purchaseLinks: some View {
-        HStack(spacing: 12) {
-            Button(model.text("恢复购买", "Restore purchases")) { Task { await model.restore() } }
-                .accessibilityIdentifier("fei.subscription.restore")
-                .foregroundStyle(Color.accentColor)
-            if model.active != nil {
-                if model.preview {
-                    Button(model.text("管理订阅", "Manage subscriptions")) { model.previewManage() }
-                        .foregroundStyle(Color.accentColor)
-                } else if let url = URL(string: "https://apps.apple.com/account/subscriptions") {
-                    Link(model.text("管理订阅", "Manage subscriptions"), destination: url)
-                }
-            }
-        }
-        .buttonStyle(.borderless)
+        #if os(iOS)
+        .buttonStyle(.plain)
+        #endif
         .disabled(model.working)
+        .accessibilityIdentifier("fei.subscription.restore")
+        if model.active != nil {
+            let title = model.text("管理订阅", "Manage subscriptions")
+            if model.preview {
+                Button(title) { model.previewManage() }
+                    .disabled(model.working)
+            } else if let url = URL(string: "https://apps.apple.com/account/subscriptions") {
+                subscriptionLink(title, destination: url)
+            }
+        }
     }
 
-    private var legalLinks: some View {
-        HStack(spacing: 12) {
-            legalLink("FeiPrivacyURL", model.text("隐私政策", "Privacy policy"),
-                      previewURL: "https://feinotes.app/privacy/")
-            legalLink("FeiTermsURL", model.text("使用条款", "Terms of use"),
-                      previewURL: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")
-        }
-        .buttonStyle(.borderless)
+    private func subscriptionLink(_ title: String, destination: URL) -> some View {
+        #if os(iOS)
+        Link(destination: destination) { settingsRow(title, opensAnotherPage: true) }
+            .buttonStyle(.plain)
+        #else
+        Link(title, destination: destination)
+        #endif
+    }
+
+    @ViewBuilder private var legalLinks: some View {
+        legalLink("FeiPrivacyURL", model.text("隐私政策", "Privacy policy"),
+                  previewURL: "https://feinotes.app/privacy/")
+        legalLink("FeiTermsURL", model.text("使用条款", "Terms of use"),
+                  previewURL: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")
     }
 
     @ViewBuilder private func legalLink(_ key: String, _ label: String, previewURL: String) -> some View {
         let configured = Bundle.main.object(forInfoDictionaryKey: key) as? String
         let valid = configured.flatMap { URL(string: $0) }.flatMap { $0.scheme == "https" ? $0 : nil }
         if let url = valid ?? (model.preview ? URL(string: previewURL) : nil) {
-            Link(label, destination: url)
+            subscriptionLink(label, destination: url)
+                .accessibilityIdentifier("fei.subscription.legal.\(key)")
         }
     }
 }
@@ -459,12 +550,12 @@ public func quietCloudSubscriptionSheetAvailable() -> Bool {
 }
 
 @_cdecl("quiet_cloud_show_subscription_sheet")
-public func quietCloudShowSubscriptionSheet(_ chinese: Bool, _ dark: Bool) {
+public func quietCloudShowSubscriptionSheet(_ chinese: Bool, _ dark: Bool, _ red: Float, _ green: Float, _ blue: Float) {
     Task { @MainActor in
         guard quietCloudSubscriptionSheetAvailable(), presentedCloudSubscriptionSheet == nil else { return }
         let model = CloudSubscriptionSheetModel(chinese: chinese, dark: dark)
-        let view = CloudSubscriptionSheet(model: model)
         #if os(macOS)
+        let view = CloudSubscriptionSheet(model: model)
         guard let owner = NSApp.keyWindow, owner.attachedSheet == nil else { return }
         let host = NSHostingController(rootView: view)
         let sheet = NSWindow(contentViewController: host)
@@ -478,6 +569,8 @@ public func quietCloudShowSubscriptionSheet(_ chinese: Bool, _ dark: Bool) {
         presentedCloudSubscriptionSheet = model
         owner.beginSheet(sheet) { _ in model.finish() }
         #elseif os(iOS)
+        model.themeAccent = UIColor(red: CGFloat(red), green: CGFloat(green), blue: CGFloat(blue), alpha: 1)
+        let view = CloudSubscriptionSheet(model: model)
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive && $0.keyWindow != nil }
         var owner = scene?.keyWindow?.rootViewController

@@ -25,7 +25,7 @@ private final class FeiNoticesIndex: UITableViewController, UISearchResultsUpdat
         search.searchBar.searchTextField.accessibilityIdentifier = "fei.notices.search"
         navigationItem.searchController = search; navigationItem.hidesSearchBarWhenScrolling = false
         definesPresentationContext = true
-        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done,target: self,action: #selector(close))
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: noticeText("关闭","Close"),style: .plain,target: self,action: #selector(close))
         navigationItem.leftBarButtonItem?.accessibilityIdentifier = "fei.notices.done"
     }
     override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); navigationController?.setToolbarHidden(true,animated: animated) }
@@ -76,8 +76,8 @@ private final class FeiNoticeReader: UIViewController {
     }
     override func viewDidLoad() {
         super.viewDidLoad()
-        let done = UIBarButtonItem(barButtonSystemItem: .done,target: self,action: #selector(close)); done.accessibilityIdentifier = "fei.notices.done"
-        let find = UIBarButtonItem(barButtonSystemItem: .search,target: self,action: #selector(showFind)); find.accessibilityIdentifier = "fei.notices.find"
+        let done = UIBarButtonItem(title: noticeText("关闭","Close"),style: .plain,target: self,action: #selector(close)); done.accessibilityIdentifier = "fei.notices.done"
+        let find = UIBarButtonItem(title: noticeText("查找","Find"),style: .plain,target: self,action: #selector(showFind)); find.accessibilityIdentifier = "fei.notices.find"
         find.accessibilityLabel = noticeText("在本页查找","Find on this page"); navigationItem.rightBarButtonItems = [done,find]
         previousPageButton = UIBarButtonItem(image: UIImage(systemName: "chevron.left"),style: .plain,target: self,action: #selector(previousPage))
         nextPageButton = UIBarButtonItem(image: UIImage(systemName: "chevron.right"),style: .plain,target: self,action: #selector(nextPage))

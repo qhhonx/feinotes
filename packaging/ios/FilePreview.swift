@@ -57,9 +57,12 @@ final class FeiFilePreview: UIViewController {
             preview.view.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),preview.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
         preview.didMove(toParent: self)
-        navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .close,target: self,action: #selector(close))
+        let coordinator = EditorHost.active?.navigationCoordinator
+        navigationItem.leftBarButtonItem = UIBarButtonItem(title: coordinator?.localized("关闭","Close") ?? "Close",
+            style: .plain,target: self,action: #selector(close))
         navigationItem.leftBarButtonItem?.accessibilityIdentifier = "fei.file.done"
-        navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .action,target: self,action: #selector(share(_:)))
+        navigationItem.rightBarButtonItem = UIBarButtonItem(title: coordinator?.localized("共享","Share") ?? "Share",
+            style: .plain,target: self,action: #selector(share(_:)))
         navigationItem.rightBarButtonItem?.accessibilityIdentifier = "fei.file.share"
     }
     @objc private func close() { dismiss(animated: true) }

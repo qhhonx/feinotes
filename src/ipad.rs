@@ -334,19 +334,28 @@ unsafe extern "C" { pub(crate) fn fei_ios_is_phone() -> bool; }
 
 unsafe extern "C" { fn fei_ios_navigation_changed(json: *const c_char); }
 
+pub(crate) fn mobile_accent() -> gpui::Hsla {
+    let style = crate::themes::interface();
+    style.color("mobile.accent").unwrap_or_else(|| style.token("primary_500"))
+}
+
+pub(crate) fn mobile_sharing_accent() -> gpui::Hsla {
+    if settings::interface_feishu() { gpui::rgb(crate::feishu_theme::ud::B600).into() }
+    else { mobile_accent() }
+}
+
 fn native_theme() -> serde_json::Value {
     let document = crate::themes::active();
     let style = crate::themes::interface();
     let rgba = |color:gpui::Hsla| { let c = color.to_rgb(); [c.r,c.g,c.b,c.a] };
     let optional = |key:&str| style.color(key).map(rgba);
     let (warning, warning_ink) = settings::sync_status::marker_colors();
-    let accent = style.color("mobile.accent").unwrap_or_else(||style.token("primary_500"));
-    let sharing_accent = if settings::interface_feishu() { gpui::rgb(crate::feishu_theme::ud::B600).into() } else { accent };
+    let accent = mobile_accent();
     serde_json::json!({
         "sync_warning": rgba(warning), "sync_warning_ink": rgba(warning_ink),
         "id":crate::settings::prefs().theme_id(),
         "accent":rgba(accent),
-        "sharing_accent":rgba(sharing_accent),
+        "sharing_accent":rgba(mobile_sharing_accent()),
         "paper":rgba(document.color("page.bg").unwrap_or_else(||document.token("bg_body"))),
         "workspace_list":rgba(style.token("bg_overlay")),
         "folder":rgba(style.color("sidebar.folder").unwrap_or_else(||style.token("primary_500"))),

@@ -150,9 +150,25 @@ private extension UITableViewCell {
     }
 }
 
-// Keep the sheet content opaque independently of the system presentation material.
-let feiSharingSurface = UIColor { traits in
-    UIColor.secondarySystemBackground.resolvedColor(with: traits)
+extension UITableViewCell {
+    func installFormRow(_ row: UIView) {
+        selectionStyle = .none
+        let padding = defaultContentConfiguration().directionalLayoutMargins
+        if let button = row as? UIButton {
+            button.configuration?.contentInsets = padding
+            installContent(button)
+            return
+        }
+        row.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(row)
+        let margins = contentView.layoutMarginsGuide
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: margins.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
+            row.topAnchor.constraint(equalTo: contentView.topAnchor,constant: padding.top),
+            row.bottomAnchor.constraint(equalTo: contentView.bottomAnchor,constant: -padding.bottom),
+        ])
+    }
 }
 
 private func sharingButtonInk(on accent: UIColor,traits: UITraitCollection) -> UIColor {
@@ -166,27 +182,27 @@ private func sharingButtonInk(on accent: UIColor,traits: UITraitCollection) -> U
 }
 
 @MainActor
-final class FeiShareAcceptController: UIViewController {
+final class FeiShareAcceptController: UITableViewController {
     private weak var coordinator: FeiNavigationCoordinator?
     private let link = UITextField()
-    private let submit = UIButton(type: .system)
-    private let notice = UILabel()
+    private lazy var submit = UIBarButtonItem(title: nil,style: .done,target: self,action: #selector(accept))
     private var scope: String?
     private var busy = false
     private var projectedLink: String?
     private var canAccept = false
+    private var notice: String?
+    private var noticeIsError = false
 
     init(coordinator: FeiNavigationCoordinator) {
         self.coordinator = coordinator
-        super.init(nibName: nil,bundle: nil)
+        super.init(style: .insetGrouped)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = feiSharingSurface
-        link.borderStyle = .roundedRect
-        link.backgroundColor = .tertiarySystemBackground
+        tableView.backgroundColor = .systemGroupedBackground
+        tableView.keyboardDismissMode = .interactive
         link.font = .preferredFont(forTextStyle: .body)
         link.adjustsFontForContentSizeCategory = true
         link.keyboardType = .URL
@@ -197,43 +213,36 @@ final class FeiShareAcceptController: UIViewController {
         link.accessibilityIdentifier = "fei.share.invitation-link"
         link.addTarget(self,action: #selector(updateSubmit),for: .editingChanged)
         link.addTarget(self,action: #selector(accept),for: .editingDidEndOnExit)
-        submit.configuration = .filled()
         submit.accessibilityIdentifier = "fei.share.accept"
-        submit.addTarget(self,action: #selector(accept),for: .touchUpInside)
-        notice.numberOfLines = 0
-        notice.font = .preferredFont(forTextStyle: .footnote)
-        notice.adjustsFontForContentSizeCategory = true
-        notice.accessibilityIdentifier = "fei.share.invitation-status"
-
-        let scroll = UIScrollView()
-        scroll.keyboardDismissMode = .interactive
-        let form = UIStackView(arrangedSubviews: [link,notice,submit])
-        form.axis = .vertical
-        form.spacing = 12
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        form.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(scroll)
-        scroll.addSubview(form)
-        let safe = view.safeAreaLayoutGuide
-        NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: safe.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
-            form.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor,constant: 20),
-            form.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor,constant: -20),
-            form.leadingAnchor.constraint(equalTo: scroll.frameLayoutGuide.leadingAnchor,constant: 20),
-            form.trailingAnchor.constraint(equalTo: scroll.frameLayoutGuide.trailingAnchor,constant: -20),
-            form.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor,constant: 20),
-            form.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor,constant: -20),
-            link.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
-            submit.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
-        ])
+        navigationItem.rightBarButtonItem = submit
     }
 
-    func update(_ state: FeiSettingsState,busy: Bool,theme: FeiMobileTheme) {
+    override func tableView(_ tableView: UITableView,numberOfRowsInSection section: Int) -> Int { 1 }
+
+    override func tableView(_ tableView: UITableView,cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell()
+        cell.installFormRow(link)
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView,viewForFooterInSection section: Int) -> UIView? {
+        guard let notice else { return nil }
+        let footer = UITableViewHeaderFooterView(reuseIdentifier: nil)
+        var content = UIListContentConfiguration.groupedFooter()
+        content.text = notice
+        content.textProperties.numberOfLines = 0
+        if noticeIsError { content.textProperties.color = .systemRed }
+        footer.contentConfiguration = content
+        footer.isAccessibilityElement = true
+        footer.accessibilityLabel = notice
+        footer.accessibilityIdentifier = "fei.share.invitation-status"
+        footer.accessibilityTraits = .staticText
+        return footer
+    }
+
+    func update(_ state: FeiSettingsState,busy: Bool) {
         loadViewIfNeeded()
-        let rows = state.sections.flatMap { $0.rows }
+        let rows = state.sections.flatMap(\.rows)
         guard let field = rows.first(where: { $0.kind == "invitation-link" }) else { return }
         self.busy = busy
         canAccept = field.enabled
@@ -245,13 +254,18 @@ final class FeiShareAcceptController: UIViewController {
         link.isEnabled = !busy
         link.placeholder = field.detail
         link.accessibilityLabel = field.detail
-        submit.configuration?.title = field.title
-        submit.configuration?.baseBackgroundColor = theme.sharingAccentColor
-        submit.configuration?.baseForegroundColor = sharingButtonInk(on: theme.sharingAccentColor,traits: traitCollection)
+
+        submit.title = coordinator?.localized("接受","Accept")
+        submit.accessibilityLabel = field.title
         let status = rows.first(where: { $0.id == "share-message" || $0.id == "share-busy" || $0.id == "share-unavailable" })
-        notice.text = status?.title ?? rows.first(where: { $0.id == "share-account-requirements" })?.title
-        notice.textColor = status == nil || busy || !canAccept ? .secondaryLabel : .systemRed
-        notice.isHidden = notice.text?.isEmpty != false
+        let message = status?.title ?? rows.first(where: { $0.id == "share-account-requirements" })?.title
+        let isError = status != nil && !busy && canAccept
+        if notice != message || noticeIsError != isError {
+            notice = message
+            noticeIsError = isError
+            tableView.reloadData()
+            if isError,let message { UIAccessibility.post(notification: .announcement,argument: message) }
+        }
         updateSubmit()
     }
 
@@ -266,84 +280,43 @@ final class FeiShareAcceptController: UIViewController {
 }
 
 @MainActor
-private final class FeiPublicLinkActions: UIStackView {
-    private let closeButton: UIButton
-    private let copyButton: UIButton
-    private let divider = UIView()
-
-    init(close: UIButton,copy: UIButton) {
-        closeButton = close
-        copyButton = copy
-        super.init(frame: .zero)
-        axis = .horizontal
-        distribution = .fillEqually
-        copyButton.contentHorizontalAlignment = .trailing
-        addArrangedSubview(closeButton)
-        addArrangedSubview(copyButton)
-        divider.backgroundColor = .separator
-        divider.translatesAutoresizingMaskIntoConstraints = false
-        divider.isUserInteractionEnabled = false
-        addSubview(divider)
-        NSLayoutConstraint.activate([
-            divider.centerXAnchor.constraint(equalTo: centerXAnchor),
-            divider.centerYAnchor.constraint(equalTo: centerYAnchor),
-            divider.widthAnchor.constraint(equalToConstant: 0.5),
-            divider.heightAnchor.constraint(equalToConstant: 20)
-        ])
+final class FeiSharingPanelController: UIViewController, UITextFieldDelegate, UITableViewDataSource, UITableViewDelegate {
+    private enum AccessActionStyle { case add, copy, enable, invite, closeLink, end, retry, refresh }
+    private final class SharingRowButton: UIButton {
+        var rowAccessory: UITableViewCell.AccessoryType = .none
     }
-
-    required init(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
-
-    override func layoutSubviews() {
-        if bounds.width > 0 {
-            let minimumWidth = 2 * max(requiredWidth(of: closeButton),requiredWidth(of: copyButton))
-            let inline = !traitCollection.preferredContentSizeCategory.isAccessibilityCategory && bounds.width >= minimumWidth
-            let targetAxis: NSLayoutConstraint.Axis = inline ? .horizontal : .vertical
-            if axis != targetAxis {
-                axis = targetAxis
-                distribution = inline ? .fillEqually : .fill
-                copyButton.contentHorizontalAlignment = inline ? .trailing : .leading
-                divider.isHidden = !inline
-            }
-        }
-        super.layoutSubviews()
-    }
-
-    private func requiredWidth(of button: UIButton) -> CGFloat {
-        guard let config = button.configuration else { return 0 }
-        let font = UIFont.preferredFont(forTextStyle: .subheadline,compatibleWith: traitCollection)
-        let title = (config.title ?? "") as NSString
-        let imageWidth = max(config.image?.size.width ?? 0,config.showsActivityIndicator ? 20 : 0)
-        return ceil(title.size(withAttributes: [.font: font]).width + imageWidth + config.imagePadding
-            + config.contentInsets.leading + config.contentInsets.trailing)
-    }
-}
-
-@MainActor
-final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
-    private enum AccessActionStyle { case add, copy, enable, invite, closeLink, end, retry }
 
     private weak var coordinator: FeiNavigationCoordinator?
-    private let targetIcon = UIImageView()
-    private let targetTitle = UILabel()
-    private let targetDetail = UILabel()
-    private let audienceTitle = UILabel()
-    private let audienceChoices = UIStackView()
+    private let targetRow = UIListContentView(configuration: .subtitleCell())
+    private struct Section {
+        var title: String? = nil
+        var footer: String? = nil
+        var rows: [UIView]
+    }
+    private var sections: [Section] = []
+    private var accessSections: [Section] = []
+    private var audienceButtons: [UIButton] = []
+    private var renderedAudience: FeiSettingsState.Row?
+    private var renderedAudienceBusy = false
+    private var renderedAudienceScope: String?
+    private let permissionLabel = UILabel()
+    private let permissionRow = UIStackView()
     private let permission = UIButton(type: .system)
-    private let nameLabel = UILabel()
     private let name = UITextField()
-    private let emailLabel = UILabel()
     private let email = UITextField()
-    private let help = UILabel()
     private let formError = UILabel()
     private let status = UILabel()
     private let statusBanner = UIStackView()
     private let resultTitle = UILabel()
-    private let accessPanel = UIStackView()
-    private let accessActions = UIStackView()
-    private let accessFooter = UIStackView()
+    private var usesNavigationSubmit = false
+    private lazy var createItem: UIBarButtonItem = {
+        let item = UIBarButtonItem(title: nil,style: .done,target: self,action: #selector(submitInvitation))
+        item.accessibilityIdentifier = "fei.share.create"
+        return item
+    }()
+    var invitationSubmitItem: UIBarButtonItem? { usesNavigationSubmit ? createItem : nil }
     private let accessRefresh = UIRefreshControl()
-    private let scroll = UIScrollView()
+    private let scroll = UITableView(frame: .zero,style: .insetGrouped)
     private var renderedAccess: FeiSettingsState?
     private var renderedAccessBusy = false
     private var renderedAccent: UIColor?
@@ -360,6 +333,7 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
     private var secondary: FeiSettingsState.Row?
     private var busy = false
     private var nameEditable = false
+    private var hasRecipient = false
 
     init(coordinator: FeiNavigationCoordinator) {
         self.coordinator = coordinator
@@ -369,50 +343,37 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = feiSharingSurface
+        view.backgroundColor = .systemGroupedBackground
 
-        targetIcon.contentMode = .center
-        targetIcon.accessibilityElementsHidden = true
-        targetTitle.font = .preferredFont(forTextStyle: .headline)
-        let target = UIStackView(arrangedSubviews: [targetIcon,stack([targetTitle,targetDetail],spacing: 2)])
-        target.alignment = .center
-        target.spacing = 8
-        NSLayoutConstraint.activate([
-            targetIcon.widthAnchor.constraint(equalToConstant: 24),
-            targetIcon.heightAnchor.constraint(equalToConstant: 24),
-        ])
-
-        for label in [targetDetail,audienceTitle,nameLabel,emailLabel,help,formError,status] {
+        for label in [formError,status] {
             label.font = .preferredFont(forTextStyle: .footnote)
             label.textColor = .secondaryLabel
         }
         resultTitle.font = .preferredFont(forTextStyle: .title2)
-        for label in [targetTitle,targetDetail,audienceTitle,nameLabel,emailLabel,help,formError,status,resultTitle] {
+        for label in [permissionLabel,formError,status,resultTitle] {
             label.adjustsFontForContentSizeCategory = true
             label.numberOfLines = 0
         }
-        audienceTitle.accessibilityTraits.insert(.header)
         status.accessibilityIdentifier = "fei.share.invitation-status"
         formError.accessibilityIdentifier = "fei.share.form-error"
         formError.textColor = .systemRed
         resultTitle.accessibilityIdentifier = "fei.share.invitation-result"
-        help.accessibilityIdentifier = "fei.share.invitation-help"
 
-        audienceChoices.axis = .vertical
-        audienceChoices.backgroundColor = .tertiarySystemBackground
-        audienceChoices.layer.cornerRadius = 12
+        permissionLabel.font = .preferredFont(forTextStyle: .body)
+        permissionLabel.setContentHuggingPriority(.required,for: .horizontal)
+        permissionRow.addArrangedSubview(permissionLabel)
+        permissionRow.addArrangedSubview(permission)
+        permissionRow.alignment = .center
+        permissionRow.spacing = 8
         permission.showsMenuAsPrimaryAction = true
-        applyTouchHeight(permission)
         let fields = [(name,"fei.setting.share-new-name"),(email,"fei.setting.share-invite")]
         for (field,identifier) in fields {
-            field.borderStyle = .roundedRect
-            field.backgroundColor = .tertiarySystemBackground
+            field.borderStyle = .none
             field.font = .preferredFont(forTextStyle: .body)
             field.adjustsFontForContentSizeCategory = true
             field.clearButtonMode = .whileEditing
             field.delegate = self
             field.accessibilityIdentifier = identifier
-            applyTouchHeight(field)
             field.addTarget(self,action: #selector(fieldChanged(_:)),for: .editingChanged)
         }
         email.keyboardType = .emailAddress
@@ -428,31 +389,24 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
         alternate.addTarget(self,action: #selector(secondaryAction),for: .touchUpInside)
         for button in [submit,alternate] { applyTouchHeight(button) }
 
-        accessPanel.axis = .vertical
-        accessPanel.spacing = 12
-        accessPanel.accessibilityIdentifier = "fei.share.access-panel"
-        accessActions.axis = .vertical
-        accessFooter.axis = .vertical
-        accessFooter.addArrangedSubview(accessActions)
         accessRefresh.addTarget(self,action: #selector(refreshAccess),for: .valueChanged)
         statusBanner.axis = .vertical
         statusBanner.addArrangedSubview(status)
-        statusBanner.layer.cornerRadius = 10
         statusBanner.isLayoutMarginsRelativeArrangement = true
-        statusBanner.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8,leading: 12,bottom: 8,trailing: 12)
+        statusBanner.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 6,leading: 0,bottom: 6,trailing: 0)
         let statusSlot = stack([statusBanner],spacing: 0)
-        let form = stack([target,stack([nameLabel,name],spacing: 4),stack([audienceTitle,audienceChoices],spacing: 4),
-            permission,stack([emailLabel,email],spacing: 4),formError,help,resultTitle,accessPanel],spacing: 8)
-        let footer = stack([accessFooter,submit,alternate],spacing: 4)
+        let footer = stack([submit,alternate],spacing: 4)
+        scroll.backgroundColor = .systemGroupedBackground
+        scroll.dataSource = self
+        scroll.delegate = self
+        scroll.rowHeight = UITableView.automaticDimension
         scroll.keyboardDismissMode = .interactive
         scroll.accessibilityIdentifier = "fei.share.panel-scroll"
-        for child in [statusSlot,scroll,form,footer] { child.translatesAutoresizingMaskIntoConstraints = false }
+        for child in [statusSlot,scroll,footer] { child.translatesAutoresizingMaskIntoConstraints = false }
         view.addSubview(statusSlot)
         view.addSubview(scroll)
         view.addSubview(footer)
-        scroll.addSubview(form)
         let safe = view.safeAreaLayoutGuide
-        let footerBottom = footer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor,constant: -12)
         NSLayoutConstraint.activate([
             statusSlot.topAnchor.constraint(equalTo: safe.topAnchor),
             statusSlot.leadingAnchor.constraint(equalTo: safe.leadingAnchor,constant: 20),
@@ -460,16 +414,49 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
             scroll.topAnchor.constraint(equalTo: statusSlot.bottomAnchor),
             scroll.leadingAnchor.constraint(equalTo: safe.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: safe.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: footer.topAnchor,constant: -8),
+            scroll.bottomAnchor.constraint(equalTo: footer.topAnchor),
             footer.leadingAnchor.constraint(equalTo: safe.leadingAnchor,constant: 20),
             footer.trailingAnchor.constraint(equalTo: safe.trailingAnchor,constant: -20),
-            footerBottom,
-            form.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor,constant: 10),
-            form.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor,constant: -12),
-            form.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor,constant: 20),
-            form.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor,constant: -20),
-            form.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor,constant: -40),
+            footer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
         ])
+    }
+
+    private func showSections(_ next: [Section]) {
+        let same = sections.count == next.count && zip(sections,next).allSatisfy { old,new in
+            old.title == new.title && old.footer == new.footer
+                && old.rows.map(ObjectIdentifier.init) == new.rows.map(ObjectIdentifier.init)
+        }
+        guard !same else { return }
+        sections = next
+        scroll.reloadData()
+    }
+
+    func numberOfSections(in tableView: UITableView) -> Int { sections.count }
+    func tableView(_ tableView: UITableView,numberOfRowsInSection section: Int) -> Int { sections[section].rows.count }
+    func tableView(_ tableView: UITableView,titleForHeaderInSection section: Int) -> String? { sections[section].title }
+    func tableView(_ tableView: UITableView,titleForFooterInSection section: Int) -> String? { sections[section].footer }
+
+    func tableView(_ tableView: UITableView,cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .default,reuseIdentifier: nil)
+        let row = sections[indexPath.section].rows[indexPath.row]
+        if let list = row as? UIListContentView {
+            cell.contentConfiguration = list.configuration
+            cell.accessibilityIdentifier = list.accessibilityIdentifier
+            cell.selectionStyle = .none
+        } else {
+            if let button = row as? SharingRowButton { cell.accessoryType = button.rowAccessory }
+            cell.installFormRow(row)
+        }
+        return cell
+    }
+
+    private func revealRow(_ row: UIView) {
+        for (index,section) in sections.enumerated() {
+            if let item = section.rows.firstIndex(where: { $0 === row }) {
+                scroll.scrollToRow(at: IndexPath(row: item,section: index),at: .middle,animated: false)
+                return
+            }
+        }
     }
 
     private func applyTouchHeight(_ view: UIView) {
@@ -497,7 +484,6 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
         let restoreOffset = pageChanged && managing && displayedStage == "invitation" ? accessOffsetBeforeInvitation : nil
         if pageChanged {
             if stage != "invitation" { accessOffsetBeforeInvitation = nil }
-            scroll.setContentOffset(.zero,animated: false)
             displayedStage = stage
         }
         let target = row("share-target")
@@ -516,24 +502,28 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
         scope = model.scope
         self.busy = busy
         let kind = result?.value ?? accessMode?.value ?? row("share-create-form")?.value
-        let symbol = kind == "folder" ? "folder" : "doc.text"
-        targetIcon.image = UIImage(systemName: symbol,withConfiguration: UIImage.SymbolConfiguration(pointSize: 16,weight: .medium))
-        targetIcon.tintColor = .secondaryLabel
-        targetTitle.text = target?.title ?? (draftName?.kind == "info" ? draftName?.value : nil) ?? title
-        targetDetail.text = target?.detail ?? row("share-effect")?.title
-        targetDetail.isHidden = targetDetail.text?.isEmpty != false
+        var object = UIListContentConfiguration.subtitleCell()
+        object.image = UIImage(systemName: kind == "folder" ? "folder" : "doc.text")
+        object.text = target?.title ?? (draftName?.kind == "info" ? draftName?.value : nil) ?? title
+        object.secondaryText = (kind == "folder" ? target?.detail : nil) ?? row("share-effect")?.title
+        object.textProperties.font = .preferredFont(forTextStyle: .headline,compatibleWith: traitCollection)
+        object.textProperties.adjustsFontForContentSizeCategory = true
+        object.textProperties.numberOfLines = 0
+        object.secondaryTextProperties.numberOfLines = 0
+        targetRow.configuration = object
+        if let index = sections.firstIndex(where: { $0.rows.first === targetRow }),
+           let visible = scroll.cellForRow(at: IndexPath(row: 0,section: index)) {
+            visible.contentConfiguration = object
+        }
 
         nameEditable = draftName?.kind == "input"
-        name.superview?.isHidden = !nameEditable
-        nameLabel.text = draftName?.title
         name.placeholder = draftName?.title
         name.accessibilityLabel = draftName?.title
         name.isEnabled = !busy && draftName?.enabled == true
         name.returnKeyType = recipient != nil ? .next : .go
         if !hasEditedName, name.text != draftName?.value { name.text = draftName?.value }
-        email.superview?.isHidden = recipient == nil
-        emailLabel.text = recipient?.detail
-        email.placeholder = "name@example.com"
+        hasRecipient = recipient != nil
+        email.placeholder = recipient?.detail
         email.accessibilityLabel = recipient?.detail
         email.isEnabled = !busy && (recipient?.enabled == true || nameEditable)
         if let recipient, projectedEmail != recipient.value {
@@ -541,17 +531,15 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
             email.text = recipient.value
         }
 
-        audienceTitle.superview?.isHidden = audience == nil
-        updateAudience(audience,scope: model.scope,accent: theme.accentColor)
-        updatePermission(access,scope: model.scope,accent: theme.accentColor)
+        updateAudience(audience,scope: model.scope)
+        updatePermission(access,scope: model.scope)
+        let help: String?
         if let requirements = row("share-link-details")?.title,!managing {
-            help.text = [row("public-edit-warning")?.title,requirements].compactMap { $0 }.joined(separator: "\n")
+            help = [row("public-edit-warning")?.title,requirements].compactMap { $0 }.joined(separator: "\n")
         } else {
-            help.text = recipient == nil ? nil : model.sections.compactMap(\.footer).first
+            help = recipient == nil ? nil : model.sections.compactMap(\.footer).first
         }
-        help.isHidden = help.text?.isEmpty != false
         resultTitle.text = result?.title
-        resultTitle.isHidden = result == nil
         navigationItem.leftBarButtonItem = nil
         updateAccess(managing ? model : nil,accent: theme.sharingAccentColor)
         if let back = row("share-back") {
@@ -570,22 +558,22 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
         formError.isHidden = !inlineError
         status.text = inlineError ? nil : message
         status.textColor = error ? .systemRed : .secondaryLabel
-        statusBanner.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8,leading: managing ? 0 : 12,bottom: 8,trailing: managing ? 0 : 12)
-        statusBanner.backgroundColor = managing ? .clear : error ? UIColor.systemRed.withAlphaComponent(0.09) : .secondarySystemGroupedBackground
         statusBanner.isHidden = status.text?.isEmpty != false
         if announceError {
             UIAccessibility.post(notification: .announcement,argument: message)
             if inlineError {
                 DispatchQueue.main.async { [weak self] in
                     guard let self,!self.formError.isHidden else { return }
-                    self.view.layoutIfNeeded()
-                    self.scroll.scrollRectToVisible(self.scroll.convert(self.formError.bounds,from: self.formError),animated: false)
+                    self.revealRow(self.formError)
                 }
             }
         }
 
         primary = row("share-show-members") ?? recipient ?? row("share-submit")
         secondary = result == nil ? nil : row("share-copy")
+        usesNavigationSubmit = stage == "invitation" && primary != nil && primary?.danger != true
+        createItem.title = row("share-create-form") == nil ? primary?.title : coordinator?.localized("创建","Create")
+        createItem.accessibilityLabel = primary?.title
         submit.configuration?.title = primary?.title
         let submitPending = pendingAction.map { primary?.id == $0 || ($0 == "share-end" && primary?.id == "share-submit") } ?? false
         submit.accessibilityValue = submitPending ? actionProgress : nil
@@ -602,6 +590,22 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
         alternate.isHidden = secondary == nil
         alternate.isEnabled = !busy && secondary?.enabled == true
         updateSubmit()
+        var body = [Section(rows: [targetRow])]
+        if managing {
+            body += accessSections
+        } else if result != nil {
+            body.append(Section(rows: [resultTitle]))
+        } else {
+            if nameEditable { body.append(Section(title: draftName?.title,rows: [name])) }
+            if let audience,!audienceButtons.isEmpty { body.append(Section(title: audience.title,rows: audienceButtons)) }
+            var fields: [UIView] = []
+            if access != nil { fields.append(permissionRow) }
+            if hasRecipient { fields.append(email) }
+            if inlineError { fields.append(formError) }
+            if !fields.isEmpty { body.append(Section(footer: help,rows: fields)) }
+        }
+        showSections(body)
+        if pageChanged { scroll.setContentOffset(CGPoint(x: 0,y: -scroll.adjustedContentInset.top),animated: false) }
         if let restoreOffset,restoreOffset > 0 {
             view.layoutIfNeeded()
             let maximum = max(0,scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
@@ -609,59 +613,48 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
         }
     }
 
-    private func updateAudience(_ row: FeiSettingsState.Row?,scope: String,accent: UIColor) {
-        for view in audienceChoices.arrangedSubviews { audienceChoices.removeArrangedSubview(view); view.removeFromSuperview() }
-        audienceTitle.text = row?.title
+    private func updateAudience(_ row: FeiSettingsState.Row?,scope: String) {
+        guard row != renderedAudience || renderedAudienceBusy != busy || renderedAudienceScope != scope else { return }
+        renderedAudience = row
+        renderedAudienceBusy = busy
+        renderedAudienceScope = scope
+        audienceButtons = []
         guard let row else { return }
-        for choice in row.choices {
+        audienceButtons = row.choices.map { choice in
             let selected = choice.value == row.value
             var config = UIButton.Configuration.plain()
             config.title = choice.title
-            config.baseForegroundColor = selected ? accent : .label
-            config.image = UIImage(systemName: selected ? "checkmark.circle.fill" : "circle",
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 16,weight: .medium))?
-                .withTintColor(selected ? accent : .tertiaryLabel,renderingMode: .alwaysOriginal)
-            config.imagePadding = 9
+            config.baseForegroundColor = .label
             config.titleAlignment = .leading
-            if choice.value == "link" {
-                config.subtitle = coordinator?.localized("公开邀请","Public invitation")
-                config.subtitleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-                    var attributes = incoming
-                    attributes.foregroundColor = .secondaryLabel
-                    return attributes
-                }
-            }
-            let button = UIButton(configuration: config,primaryAction: UIAction { [weak self] _ in
+            config.titleLineBreakMode = .byWordWrapping
+            let button = SharingRowButton(configuration: config,primaryAction: UIAction { [weak self] _ in
                 self?.send(row,value: choice.value,scope: scope)
             })
             button.contentHorizontalAlignment = .leading
+            if selected {
+                button.rowAccessory = .checkmark
+                button.accessibilityTraits.insert(.selected)
+            }
             button.isEnabled = row.enabled && !busy
             button.accessibilityIdentifier = "fei.setting.option." + row.id + "." + choice.value
-            if selected { button.accessibilityTraits.insert(.selected) }
-            applyTouchHeight(button)
-            audienceChoices.addArrangedSubview(button)
+            return button
         }
     }
 
-    private func updatePermission(_ row: FeiSettingsState.Row?,scope: String,accent: UIColor) {
-        permission.isHidden = row == nil
+    private func updatePermission(_ row: FeiSettingsState.Row?,scope: String) {
         guard let row else { return }
+        permissionLabel.text = row.title
         var config = UIButton.Configuration.plain()
-        config.background.backgroundColor = .tertiarySystemBackground
-        config.background.cornerRadius = 12
-        config.baseForegroundColor = .label
-        var label = AttributedString(row.title + " · ")
-        var value = AttributedString(row.selectedTitle)
-        value.foregroundColor = accent
-        label += value
-        config.attributedTitle = label
-        config.image = UIImage(systemName: "chevron.down",withConfiguration: UIImage.SymbolConfiguration(pointSize: 10,weight: .semibold))?
-            .withTintColor(accent,renderingMode: .alwaysOriginal)
+        config.title = row.selectedTitle
+        config.baseForegroundColor = .secondaryLabel
+        config.image = UIImage(systemName: "chevron.up.chevron.down",withConfiguration: UIImage.SymbolConfiguration(textStyle: .caption1))
         config.imagePlacement = .trailing
-        config.imagePadding = 7
+        config.imagePadding = 6
+        config.contentInsets = .zero
         permission.configuration = config
-        permission.contentHorizontalAlignment = .leading
+        permission.contentHorizontalAlignment = .trailing
         permission.isEnabled = !busy && row.enabled
+        permission.accessibilityLabel = row.title + " · " + row.selectedTitle
         permission.accessibilityIdentifier = "fei.setting." + row.id
         permission.menu = UIMenu(title: row.title,children: row.choices.map { choice in
             UIAction(title: choice.title,state: choice.value == row.value ? .on : .off) { [weak self] _ in
@@ -671,15 +664,11 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
     }
 
     private func updateAccess(_ model: FeiSettingsState?,accent: UIColor) {
-        accessPanel.isHidden = model == nil
         let sameInputs = renderedAccess == model && renderedAccessBusy == busy && renderedAccent?.isEqual(accent) == true
         guard !sameInputs else { return }
         let previousLinkError = renderedAccess?.sections.lazy.flatMap(\.rows).first { $0.id == "share-link-error" }?.title
         renderedAccess = model; renderedAccessBusy = busy; renderedAccent = accent
-        for stack in [accessPanel,accessActions] {
-            for view in stack.arrangedSubviews { stack.removeArrangedSubview(view); view.removeFromSuperview() }
-        }
-        accessFooter.isHidden = true
+        accessSections = []
         let rows = model?.sections.flatMap(\.rows) ?? []
         func row(_ id: String) -> FeiSettingsState.Row? { rows.first { $0.id == id } }
         let refresh = row("share-refresh")
@@ -690,18 +679,16 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
         guard let model else { return }
 
         if let effect = row("share-effect") {
-            accessPanel.addArrangedSubview(accessLabel(effect.title))
+            accessSections.append(Section(rows: [accessLabel(effect.title)]))
             return
         }
         if let access = row("access"),let source = row("share-source") {
-            if source.value.isEmpty {
-                accessPanel.addArrangedSubview(accessLabel(source.title,style: .subheadline,color: .secondaryLabel))
-            } else {
-                accessPanel.addArrangedSubview(accessFact(source.title,value: source.value,id: source.id))
-            }
-            accessPanel.addArrangedSubview(accessFact(access.title,value: access.value,id: access.id))
+            var facts = [source.value.isEmpty ? accessLabel(source.title,color: .secondaryLabel)
+                : accessFact(source.title,value: source.value,id: source.id)]
+            facts.append(accessFact(access.title,value: access.value,id: access.id))
+            accessSections.append(Section(rows: facts))
             if let retry = row("share-access-retry") {
-                showAccessFooter(accessAction(retry,scope: model.scope,accent: accent,style: .retry))
+                accessSections.append(Section(rows: [accessAction(retry,scope: model.scope,accent: accent,style: .retry)]))
             }
             return
         }
@@ -711,20 +698,11 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
         let peopleTitle = members?.title ?? coordinator?.localized("参与者","Participants") ?? ""
         let peopleRows = members?.rows.filter { $0.id == "access" || $0.id.hasPrefix("member:") } ?? []
         var people = peopleRows.map { accessInfo($0,scope: model.scope) }
-        if let add = row("share-add") {
-            people.append(accessAction(add,scope: model.scope,accent: accent,style: .add))
+        if let refresh { people.append(accessAction(refresh,scope: model.scope,accent: accent,style: .refresh)) }
+        if let add = row("share-add") { people.append(accessAction(add,scope: model.scope,accent: accent,style: .add)) }
+        if !people.isEmpty {
+            accessSections.append(Section(title: peopleTitle,rows: people))
         }
-        let peopleHeading = accessSectionHeader(peopleTitle,identifier: "fei.share.participants-heading")
-        let header: UIView
-        if let refresh {
-            let button = accessRefreshButton(refresh,scope: model.scope)
-            button.setContentHuggingPriority(.required,for: .horizontal)
-            let headerRow = UIStackView(arrangedSubviews: [peopleHeading,button])
-            headerRow.spacing = 8
-            headerRow.alignment = .center
-            header = headerRow
-        } else { header = peopleHeading }
-        accessPanel.addArrangedSubview(stack([header,accessGroup(people)],spacing: 2))
 
         let enable = row("share-retry-link")
         let linkError = row("share-link-error")
@@ -732,82 +710,39 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
         var linkRows: [UIView] = []
         if let audience = row("share-audience-info") {
             let scopeLabel = coordinator?.localized("访问范围","Access scope") ?? ""
-            let value = accessLabel(audience.title,style: .subheadline)
-            value.accessibilityIdentifier = "fei.setting.share-audience-info"
-            var details = [value]
+            linkRows.append(accessFact(scopeLabel,value: audience.title,id: audience.id))
             if let permission = row("share-link-permission") {
-                let subtitle = accessLabel(permission.value,style: .footnote,color: .secondaryLabel)
-                subtitle.accessibilityIdentifier = "fei.setting.share-link-permission"
-                details.append(subtitle)
+                linkRows.append(accessFact(permission.title,value: permission.value,id: permission.id))
             }
-            let status = stack(details,spacing: 1)
-            let line = UIStackView(arrangedSubviews: [accessLabel(scopeLabel,style: .subheadline,color: .secondaryLabel),status])
-            let largeText = traitCollection.preferredContentSizeCategory.isAccessibilityCategory
-            line.axis = largeText ? .vertical : .horizontal
-            line.alignment = largeText ? .fill : .center
-            line.spacing = largeText ? 4 : 10
-            if !largeText {
-                line.arrangedSubviews[0].setContentHuggingPriority(.required,for: .horizontal)
-                let direction = view.effectiveUserInterfaceLayoutDirection
-                for label in details { label.textAlignment = direction == .rightToLeft ? .left : .right }
-            }
-            line.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-            linkRows.append(accessInset(line,vertical: 5))
         } else {
             let checking = coordinator?.localized("正在读取访问范围…","Checking who can access…") ?? ""
-            linkRows.append(accessInset(accessLabel(checking,style: .footnote,color: .secondaryLabel),vertical: 10))
+            linkRows.append(accessLabel(checking,style: .footnote,color: .secondaryLabel))
         }
         if let error = linkError {
             let notice = accessLabel(error.title,style: .footnote,color: .systemRed)
             notice.accessibilityIdentifier = "fei.share.link-error"
-            linkRows.append(accessInset(notice,vertical: 8))
+            linkRows.append(notice)
             if previousLinkError != error.title {
                 UIAccessibility.post(notification: .announcement,argument: error.title)
                 DispatchQueue.main.async { [weak self,weak notice] in
-                    guard let self,let notice,notice.isDescendant(of: self.accessPanel) else { return }
-                    self.view.layoutIfNeeded()
-                    let rect = self.scroll.convert(notice.bounds,from: notice).insetBy(dx: 0,dy: -5)
-                    self.scroll.scrollRectToVisible(rect,animated: false)
+                    guard let self,let notice else { return }
+                    self.revealRow(notice)
                 }
             }
         }
         let copy = row("share-copy")
         let close = row("share-close-link")
-        if let close,let copy {
-            let closeButton = accessAction(close,scope: model.scope,accent: accent,style: .closeLink)
-            let copyButton = accessAction(copy,scope: model.scope,accent: accent,style: .copy)
-            linkRows.append(FeiPublicLinkActions(close: closeButton,copy: copyButton))
-        } else if let action = enable ?? copy ?? close {
-            let style: AccessActionStyle = enable != nil ? .enable : copy != nil ? .copy : .closeLink
-            linkRows.append(accessAction(action,scope: model.scope,accent: accent,style: style))
-        }
+        if let enable { linkRows.append(accessAction(enable,scope: model.scope,accent: accent,style: .enable)) }
+        if let copy { linkRows.append(accessAction(copy,scope: model.scope,accent: accent,style: .copy)) }
+        if let close { linkRows.append(accessAction(close,scope: model.scope,accent: accent,style: .closeLink)) }
         if linkError != nil,let invite = row("share-link-invite") {
             linkRows.append(accessAction(invite,scope: model.scope,accent: accent,style: .invite))
         }
-        let linkBlock = stack([
-            accessSectionHeader(linkTitle,identifier: "fei.share.link-heading"),
-            accessGroup(linkRows)
-        ],spacing: 5)
-        if linkError == nil,row("share-link-permission") == nil,let detail = row("share-link-details")?.title {
-            let label = accessLabel(detail,style: .footnote,color: .secondaryLabel)
-            label.accessibilityIdentifier = "fei.setting.share-link-details"
-            linkBlock.addArrangedSubview(accessInset(label,vertical: 0))
-        }
-        accessPanel.addArrangedSubview(linkBlock)
+        let details = linkError == nil && row("share-link-permission") == nil ? row("share-link-details")?.title : nil
+        accessSections.append(Section(title: linkTitle,footer: details,rows: linkRows))
         if let end = row("share-end") {
-            showAccessFooter(accessAction(end,scope: model.scope,accent: accent,style: .end))
+            accessSections.append(Section(rows: [accessAction(end,scope: model.scope,accent: accent,style: .end)]))
         }
-    }
-
-    private func accessSectionHeader(_ title: String,identifier: String) -> UIView {
-        let heading = accessLabel(title,style: .subheadline)
-        let descriptor = UIFont.preferredFont(forTextStyle: .subheadline).fontDescriptor.addingAttributes([
-            .traits: [UIFontDescriptor.TraitKey.weight: UIFont.Weight.semibold],
-        ])
-        heading.font = UIFont(descriptor: descriptor,size: 0)
-        heading.accessibilityIdentifier = identifier
-        heading.accessibilityTraits.insert(.header)
-        return heading
     }
 
     private func accessLabel(_ text: String,style: UIFont.TextStyle = .body,color: UIColor = .label) -> UILabel {
@@ -820,128 +755,52 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
         return label
     }
 
-    private func accessDivider() -> UIView {
-        let line = UIView()
-        line.backgroundColor = .separator
-        line.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
-        return line
-    }
-
-    private func accessGroup(_ rows: [UIView]) -> UIStackView {
-        let group = stack([],spacing: 0)
-        group.backgroundColor = .tertiarySystemBackground
-        group.layer.cornerRadius = 12
-        group.clipsToBounds = true
-        for (index,row) in rows.enumerated() {
-            if index > 0 { group.addArrangedSubview(accessInset(accessDivider(),vertical: 0)) }
-            group.addArrangedSubview(row)
-        }
-        return group
-    }
-
-    private func accessInset(_ content: UIView,vertical: CGFloat) -> UIStackView {
-        let inset = stack([content],spacing: 0)
-        inset.isLayoutMarginsRelativeArrangement = true
-        inset.directionalLayoutMargins = NSDirectionalEdgeInsets(top: vertical,leading: 12,bottom: vertical,trailing: 12)
-        return inset
-    }
-
     private func accessFact(_ title: String,value: String,id: String) -> UIView {
-        let label = accessLabel(title,color: .secondaryLabel)
-        let detail = accessLabel(value)
-        detail.accessibilityIdentifier = "fei.setting." + id
-        detail.textAlignment = view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? .left : .right
-        let line = UIStackView(arrangedSubviews: [label,detail])
-        line.alignment = .center
-        line.spacing = 8
-        detail.widthAnchor.constraint(equalTo: line.widthAnchor,multiplier: 0.56).isActive = true
-        line.heightAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
-        return line
-    }
-
-    private func accessRefreshButton(_ row: FeiSettingsState.Row,scope: String) -> UIButton {
-        var config = UIButton.Configuration.plain()
-        config.title = row.title
-        config.baseForegroundColor = .label
-        config.background.backgroundColor = .tertiarySystemBackground
-        config.background.cornerRadius = 8
-        config.background.backgroundInsets = NSDirectionalEdgeInsets(top: 8,leading: 0,bottom: 8,trailing: 0)
-        config.contentInsets = NSDirectionalEdgeInsets(top: 8,leading: 10,bottom: 8,trailing: 10)
-        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var attributes = incoming
-            attributes.font = .preferredFont(forTextStyle: .footnote)
-            return attributes
-        }
-        config.showsActivityIndicator = busy && pendingAction == row.id
-        let button = UIButton(configuration: config,primaryAction: UIAction { [weak self] _ in
-            self?.send(row,scope: scope)
-        })
-        button.accessibilityIdentifier = "fei.setting." + row.id
-        button.isEnabled = row.enabled && !busy
-        applyTouchHeight(button)
-        return button
+        let largeText = traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+        var content: UIListContentConfiguration = largeText ? .subtitleCell() : .valueCell()
+        let body = UIFont.preferredFont(forTextStyle: .body,compatibleWith: traitCollection)
+        content.text = title
+        content.secondaryText = value
+        content.textProperties.font = body
+        content.secondaryTextProperties.font = body
+        content.textProperties.adjustsFontForContentSizeCategory = true
+        content.secondaryTextProperties.adjustsFontForContentSizeCategory = true
+        content.textProperties.numberOfLines = 0
+        content.secondaryTextProperties.numberOfLines = 0
+        let view = UIListContentView(configuration: content)
+        view.accessibilityIdentifier = "fei.setting." + id
+        return view
     }
 
     private func accessAction(_ row: FeiSettingsState.Row,scope: String,accent: UIColor,style: AccessActionStyle) -> UIButton {
         var config = UIButton.Configuration.plain()
-        let standalone = style == .end || style == .retry
-        if standalone { config.background.backgroundColor = .tertiarySystemBackground }
-        config.background.cornerRadius = 12
-        config.baseForegroundColor = style == .end ? UIColor { traits in
-            traits.userInterfaceStyle == .dark ? UIColor(red: 1,green: 0.47,blue: 0.43,alpha: 1)
-                : UIColor(red: 0.63,green: 0.10,blue: 0.13,alpha: 1)
-        } : style == .closeLink ? .label : accent
+        config.baseForegroundColor = style == .end ? .systemRed : style == .closeLink || style == .refresh ? .label : accent
         let symbol: String?
         switch style {
-        case .add: symbol = "person.badge.plus"
+        case .add,.invite: symbol = "plus"
         case .copy: symbol = "doc.on.doc"
         case .enable: symbol = "link"
-        case .invite: symbol = "person.badge.plus"
-        case .closeLink: symbol = "link"
-        case .end,.retry: symbol = nil
+        case .closeLink,.end,.retry,.refresh: symbol = nil
         }
         config.title = row.title
+        config.titleAlignment = .leading
+        config.titleLineBreakMode = .byWordWrapping
         config.showsActivityIndicator = actionProgress != nil && pendingAction == row.id
-        let navigates = style == .add || style == .invite
-        config.contentInsets = NSDirectionalEdgeInsets(top: 6,leading: 12,bottom: 6,trailing: navigates ? 32 : 12)
-        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var attributes = incoming
-            attributes.font = .preferredFont(forTextStyle: .subheadline)
-            return attributes
-        }
-        if let symbol {
-            let pointSize = UIFontMetrics(forTextStyle: .subheadline).scaledValue(for: 12,compatibleWith: traitCollection)
-            config.image = UIImage(systemName: symbol,withConfiguration: UIImage.SymbolConfiguration(pointSize: pointSize,weight: .medium))
-            config.imagePadding = 7
-        }
-        let button = UIButton(configuration: config,primaryAction: UIAction { [weak self] _ in
+        config.image = symbol.flatMap { UIImage(systemName: $0) }
+        config.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(textStyle: .body,scale: .small)
+        config.imagePadding = UIListContentConfiguration.cell().imageToTextPadding
+        let button = SharingRowButton(configuration: config,primaryAction: UIAction { [weak self] _ in
             guard let self else { return }
             if style == .closeLink {
                 self.confirm(row.title,detail: row.detail) { self.send(row,value: "confirm",scope: scope) }
             } else { self.send(row,scope: scope) }
         })
-        button.contentHorizontalAlignment = standalone ? .center : .leading
-        if navigates {
-            let image = UIImage(systemName: "chevron.forward",withConfiguration: UIImage.SymbolConfiguration(pointSize: 10,weight: .semibold))
-            let chevron = UIImageView(image: image)
-            chevron.tintColor = .tertiaryLabel
-            chevron.translatesAutoresizingMaskIntoConstraints = false
-            button.addSubview(chevron)
-            NSLayoutConstraint.activate([
-                chevron.trailingAnchor.constraint(equalTo: button.trailingAnchor,constant: -12),
-                chevron.centerYAnchor.constraint(equalTo: button.centerYAnchor)
-            ])
-        }
+        button.contentHorizontalAlignment = .leading
+        if style == .add || style == .invite { button.rowAccessory = .disclosureIndicator }
         button.accessibilityIdentifier = "fei.setting." + row.id
         button.isEnabled = row.enabled && !busy
         button.accessibilityValue = config.showsActivityIndicator ? actionProgress : nil
-        applyTouchHeight(button)
         return button
-    }
-
-    private func showAccessFooter(_ button: UIButton) {
-        accessActions.addArrangedSubview(button)
-        accessFooter.isHidden = false
     }
 
     @objc private func refreshAccess() {
@@ -952,13 +811,15 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
     }
 
     private func accessBackButton(_ identifier: String,action: @escaping () -> Void) -> UIBarButtonItem {
-        let item = UIBarButtonItem(image: UIImage(systemName: "chevron.backward"),primaryAction: UIAction { _ in action() })
-        item.accessibilityLabel = coordinator?.localized("返回","Back")
+        let item = UIBarButtonItem(title: coordinator?.localized("返回","Back"),image: nil,primaryAction: UIAction { _ in action() })
         item.accessibilityIdentifier = identifier
         return item
     }
 
     private func accessInfo(_ row: FeiSettingsState.Row,scope: String) -> UIView {
+        if row.kind != "choice",row.detail.isEmpty,!row.value.isEmpty {
+            return accessFact(row.title,value: row.value,id: row.id)
+        }
         let label = UILabel()
         label.text = row.title
         label.font = .preferredFont(forTextStyle: .body)
@@ -976,27 +837,20 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
         let line = UIStackView(arrangedSubviews: [labels])
         line.alignment = .center
         line.spacing = 8
-        line.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         switch row.kind {
         case "choice":
             var config = UIButton.Configuration.plain()
             config.title = row.selectedTitle
             config.baseForegroundColor = .label
-            config.image = UIImage(systemName: "chevron.down",withConfiguration: UIImage.SymbolConfiguration(pointSize: 10,weight: .semibold))
+            config.image = UIImage(systemName: "chevron.down",withConfiguration: UIImage.SymbolConfiguration(textStyle: .footnote))
             config.imagePlacement = .trailing
             config.imagePadding = 5
             config.contentInsets = .zero
-            config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-                var text = incoming
-                text.font = .preferredFont(forTextStyle: .subheadline)
-                return text
-            }
             let button = UIButton(configuration: config)
             button.showsMenuAsPrimaryAction = true
             button.isEnabled = row.enabled && !busy
             button.accessibilityLabel = row.title + " · " + row.selectedTitle
             button.accessibilityIdentifier = "fei.setting." + row.id
-            applyTouchHeight(button)
             let changes = row.choices.filter { $0.value != "revoke" }.map { choice in
                 UIAction(title: choice.title,state: choice.value == row.value ? .on : .off) { [weak self] _ in
                     if choice.value != row.value { self?.send(row,value: choice.value,scope: scope) }
@@ -1019,18 +873,13 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
             line.addArrangedSubview(button)
         default:
             if !row.value.isEmpty {
-                let value = UILabel()
-                value.text = row.value
-                value.font = .preferredFont(forTextStyle: .subheadline)
-                value.textColor = .secondaryLabel
-                value.adjustsFontForContentSizeCategory = true
-                value.numberOfLines = 0
+                let value = accessLabel(row.value,color: .secondaryLabel)
                 value.textAlignment = view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? .left : .right
                 value.setContentHuggingPriority(.required,for: .horizontal)
                 line.addArrangedSubview(value)
             }
         }
-        return accessInset(line,vertical: 2)
+        return line
     }
 
     private func confirm(_ title: String,detail: String,action: @escaping () -> Void) {
@@ -1059,8 +908,9 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
 
     private func updateSubmit() {
         let hasEmail = !(email.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        submit.isHidden = primary == nil
+        submit.isHidden = primary == nil || usesNavigationSubmit
         submit.isEnabled = !busy && primary?.enabled == true && (primary?.id != "share-invite" || hasEmail)
+        createItem.isEnabled = submit.isEnabled
     }
 
     @objc private func submitInvitation() {
@@ -1074,7 +924,7 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate {
     }
 
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-        if textField === name, email.superview?.isHidden == false { email.becomeFirstResponder() }
+        if textField === name, hasRecipient { email.becomeFirstResponder() }
         else { submitInvitation() }
         return false
     }

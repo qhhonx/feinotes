@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 unsafe extern "C" {
     fn quiet_cloud_subscription_available() -> bool;
     fn quiet_cloud_subscription_sheet_available() -> bool;
-    fn quiet_cloud_show_subscription_sheet(chinese: bool, dark: bool);
+    fn quiet_cloud_show_subscription_sheet(chinese: bool, dark: bool, red: f32, green: f32, blue: f32);
     fn quiet_cloud_watch_subscription(on_change: extern "C" fn());
     fn quiet_cloud_subscription(action: i32, context: usize, complete: extern "C" fn(usize, *const c_char));
 }
@@ -45,7 +45,14 @@ pub(crate) fn sheet_available() -> bool { unsafe { quiet_cloud_subscription_shee
 
 pub(crate) fn show_sheet() {
     let chinese = crate::settings::lang() == crate::settings::Lang::Zh;
-    unsafe { quiet_cloud_show_subscription_sheet(chinese, crate::theme::dark()) };
+    #[cfg(target_os = "ios")]
+    let (red,green,blue) = {
+        let accent = crate::ipad::mobile_sharing_accent().to_rgb();
+        (accent.r, accent.g, accent.b)
+    };
+    #[cfg(not(target_os = "ios"))]
+    let (red,green,blue) = (0., 0., 0.);
+    unsafe { quiet_cloud_show_subscription_sheet(chinese, crate::theme::dark(), red, green, blue) };
 }
 
 pub(crate) struct PurchaseChanged;

@@ -589,7 +589,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     private var documentSheet: UINavigationController?
     private var documentSheetKey: DocumentSheet?
     private var documentSheetChanging = false
-    private static let sharingFormSize = CGSize(width: 520,height: 420)
+    private static let sharingFormSize = CGSize(width: 520,height: 500)
     private let sharingToast = FeiToastView(id: "fei.share.toast")
     private var announcedSharingToast: UUID?
     private var pendingDrainScheduled = false
@@ -883,11 +883,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         guard let desired, let presenter = host?.navigationController?.topViewController else { return }
         let sheet: UINavigationController
         let needsPresentation = documentSheet == nil
-        let folderAccessDetent = UISheetPresentationController.Detent.Identifier("fei.folder-sharing")
-        let sharingRows = state.settings?.sections.flatMap(\.rows) ?? []
-        let folderAccess = sharingRows.contains {
-            ($0.id == "share-access-panel" || $0.id == "share-create-form") && $0.value == "folder"
-        } && sharingRows.contains { $0.id == "share-end" || $0.id == "share-back" }
         if let existing = documentSheet { sheet = existing }
         else {
             guard presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { return }
@@ -905,36 +900,22 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             case .history: content = FeiLocalHistoryController(coordinator: self)
             }
             sheet = UINavigationController(rootViewController: content)
-            if content is FeiSharingPanelController || content is FeiShareAcceptController {
-                sheet.view.backgroundColor = feiSharingSurface
-                let bar = UINavigationBarAppearance()
-                bar.configureWithOpaqueBackground()
-                bar.backgroundColor = feiSharingSurface
-                sheet.navigationBar.standardAppearance = bar
-                sheet.navigationBar.scrollEdgeAppearance = bar
-                sheet.navigationBar.compactAppearance = bar
-            }
             if case .history = desired { sheet.setToolbarHidden(false,animated: false) }
             let isInvitation: Bool
             if case .invitation = desired { isInvitation = true } else { isInvitation = false }
+            if isInvitation || content is FeiSharingPanelController {
+                sheet.view.backgroundColor = .systemGroupedBackground
+            }
             if (content is FeiSettingsController || content is FeiSharingPanelController || isInvitation) && presenter.traitCollection.horizontalSizeClass == .regular {
                 sheet.modalPresentationStyle = .formSheet
                 sheet.preferredContentSize = content is FeiSharingPanelController
                     ? Self.sharingFormSize : CGSize(width: 520,height: isInvitation ? 320 : 600)
             } else {
                 sheet.modalPresentationStyle = .pageSheet
-                let startsMedium = isInvitation || (content is FeiSharingPanelController && presenter.traitCollection.userInterfaceIdiom == .phone)
+                let startsMedium = isInvitation && !presenter.traitCollection.preferredContentSizeCategory.isAccessibilityCategory
                 if let presentation = sheet.sheetPresentationController {
-                    if content is FeiSharingPanelController && startsMedium {
-                        presentation.detents = [.medium(),.custom(identifier: folderAccessDetent) { context in
-                            min(context.maximumDetentValue * 0.5 + 112,context.maximumDetentValue * 0.72)
-                        },.large()]
-                        presentation.selectedDetentIdentifier = folderAccess ? folderAccessDetent : .medium
-                        presentation.prefersScrollingExpandsWhenScrolledToEdge = false
-                    } else {
-                        presentation.detents = startsMedium ? [.medium(),.large()] : [.large()]
-                        presentation.selectedDetentIdentifier = startsMedium ? .medium : .large
-                    }
+                    presentation.detents = startsMedium ? [.medium(),.large()] : [.large()]
+                    presentation.selectedDetentIdentifier = startsMedium ? .medium : .large
                     presentation.prefersGrabberVisible = true
                 }
             }
@@ -973,12 +954,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                     var size = Self.sharingFormSize
                     if viewing { size.height = 240 }
                     if size != sheet.preferredContentSize { sheet.preferredContentSize = size }
-                } else if presenter.traitCollection.userInterfaceIdiom == .phone,let presentation = sheet.sheetPresentationController {
-                    if folderAccess && presentation.selectedDetentIdentifier == .medium {
-                        presentation.animateChanges { presentation.selectedDetentIdentifier = folderAccessDetent }
-                    } else if !folderAccess && presentation.selectedDetentIdentifier == folderAccessDetent {
-                        presentation.animateChanges { presentation.selectedDetentIdentifier = .medium }
-                    }
                 }
                 (content as? FeiSharingPanelController)?.update(settings,busy: state.busy,theme: theme)
             }
@@ -987,14 +962,24 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             done.style = .plain
             done.title = state.labels["cancel"]
             done.accessibilityIdentifier = "fei.share.done"
-            if let settings = state.settings { (content as? FeiShareAcceptController)?.update(settings,busy: state.busy,theme: theme) }
+            if let accept = content as? FeiShareAcceptController {
+                accept.navigationItem.leftBarButtonItem = done
+                if let settings = state.settings { accept.update(settings,busy: state.busy) }
+            }
         case .history:
             content.title = state.labels["history"]
             done.accessibilityIdentifier = "fei.history.close"
             if let history = state.local_history { (content as? FeiLocalHistoryController)?.update(history,labels: state.labels,busy: state.busy) }
         }
-        content.navigationItem.rightBarButtonItem = content is FeiSharingPanelController &&
-            content.navigationItem.leftBarButtonItem?.accessibilityIdentifier == "fei.share.invitation-back" ? nil : done
+        if let panel = content as? FeiSharingPanelController,let create = panel.invitationSubmitItem {
+            if panel.navigationItem.leftBarButtonItem == nil {
+                done.title = state.labels["cancel"]
+                panel.navigationItem.leftBarButtonItem = done
+            }
+            panel.navigationItem.rightBarButtonItem = create
+        } else if !(content is FeiShareAcceptController) {
+            content.navigationItem.rightBarButtonItem = done
+        }
         if needsPresentation {
             presenter.view.endEditing(true)
             documentSheetChanging = true
@@ -2022,7 +2007,8 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     }
 
     private func presentNewFolder(action: String, parentID: String?, scope: String) {
-        let form = FeiRenameController(title: label("new-folder"),value: "",save: label("save"),cancel: label("cancel")) { [weak self] name in
+        let form = FeiRenameController(title: label("new-folder"),placeholder: localized("文件夹名称","Folder name"),
+            value: "",save: localized("创建","Create"),cancel: label("cancel")) { [weak self] name in
             self?.send(action,value: action == "item-menu" ? "new-folder:" + name : name,id: parentID,scope: scope)
         }
         let navigation = UINavigationController(rootViewController: form)
@@ -2080,7 +2066,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     }
 
     private func rename(id: String?, title: String,browserScope: String? = nil,itemScope: String? = nil) {
-        let form = FeiRenameController(title: label("rename"),
+        let form = FeiRenameController(title: label("rename"),placeholder: localized("名称","Name"),
             value: title, save: label("save"), cancel: label("cancel")) { [weak self] value in
             if let itemScope { self?.send("item-menu",value: "rename:" + value,id: id,scope: itemScope) }
             else { self?.send("rename",value: value,id: id,scope: browserScope) }
@@ -2143,38 +2129,43 @@ private final class FeiFolderPicker: UITableViewController, UIAdaptivePresentati
 }
 
 @MainActor
-private final class FeiRenameController: UIViewController, UITextFieldDelegate {
+private final class FeiRenameController: UITableViewController, UITextFieldDelegate {
     private let field = UITextField()
     private let selected: (String) -> Void
 
-    init(title: String, value: String, save: String, cancel: String, selected: @escaping (String) -> Void) {
+    init(title: String, placeholder: String, value: String, save: String, cancel: String, selected: @escaping (String) -> Void) {
         self.selected = selected
-        super.init(nibName: nil, bundle: nil)
+        super.init(style: .insetGrouped)
         self.title = title
         field.text = value
+        field.placeholder = placeholder
+        field.accessibilityLabel = placeholder
         field.accessibilityIdentifier = "fei.rename.title"
         navigationItem.leftBarButtonItem = UIBarButtonItem(title: cancel, style: .plain, target: self, action: #selector(close))
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: save, style: .done, target: self, action: #selector(saveTitle))
         navigationItem.rightBarButtonItem?.accessibilityIdentifier = "fei.rename.save"
+        updateSave()
     }
-    required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemGroupedBackground
-        field.translatesAutoresizingMaskIntoConstraints = false
-        field.borderStyle = .roundedRect
+        tableView.backgroundColor = .systemGroupedBackground
+        tableView.keyboardDismissMode = .interactive
         field.font = .preferredFont(forTextStyle: .body)
         field.adjustsFontForContentSizeCategory = true
         field.returnKeyType = .done
         field.clearButtonMode = .whileEditing
         field.delegate = self
-        view.addSubview(field)
-        NSLayoutConstraint.activate([
-            field.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 24),
-            field.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 20),
-            field.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -20),
-            field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
-        ])
+        field.addTarget(self,action: #selector(updateSave),for: .editingChanged)
+    }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { 1 }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell()
+        cell.installFormRow(field)
+        return cell
+    }
+    @objc private func updateSave() {
+        navigationItem.rightBarButtonItem?.isEnabled = field.text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
