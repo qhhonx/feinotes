@@ -143,9 +143,12 @@ pub(crate) fn render(me: &BoardView, window: &Window, cx: &mut Context<BoardView
         let tools: Vec<_> = COMPACT_EXTRA.into_iter().chain(COMPACT_MAIN.into_iter().filter(|tool| !main.contains(tool))).collect();
         let mut row = div().flex().items_center().gap(px(style::SPACE));
         for &tool in main { row = row.child(tool_button(me, tool, true, cx)); }
-        let menu_height = web_compact.then(|| (canvas.height as f32 - style::TOP_PADDING - style::LG_BUTTON - 22.).max(100.));
+        let below_menu = web_compact && (canvas.width as f32) < MENU_CLEARANCE + EDGE + style::LG_BUTTON + 2. * style::SPACE;
+        let top = style::TOP_PADDING + if below_menu { style::LG_BUTTON + 2. * style::SPACE } else { 0. };
+        let left = if below_menu { EDGE } else { MENU_CLEARANCE };
+        let menu_height = web_compact.then(|| (canvas.height as f32 - top - style::LG_BUTTON - 22.).max(100.));
         let bar = island("board-toolbar", 1.).child(row.child(extra_tools(me, &tools, true, menu_height, cx)));
-        return div().absolute().top(px(style::TOP_PADDING)).left(px(MENU_CLEARANCE)).right(px(EDGE)).flex().justify_center().child(bar);
+        return div().absolute().top(px(top)).left(px(left)).right(px(EDGE)).flex().justify_center().child(bar);
     }
     let locked = me.tool_locked();
     let lock = tool_icon("board-tool-lock", style::LG_BUTTON, locked)

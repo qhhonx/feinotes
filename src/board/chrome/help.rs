@@ -100,11 +100,11 @@ fn key(k: &str) -> Div {
 }
 
 /// `ShortcutIsland`: the 16px bold caption 10 above the bordered rows.
-fn island_rows(caption: &'static str, rows: Vec<Row>) -> Div {
+fn island_rows(caption: &'static str, rows: Vec<Row>, compact: bool) -> Div {
     let mut list = div().flex().flex_col().rounded(px(style::RADIUS_LG)).border_1().border_color(style::dialog_border());
     let n = rows.len();
     for (i, Row(label, alts, and)) in rows.into_iter().enumerate() {
-        let mut keys = div().flex_none().flex().items_center().gap(px(4.));
+        let mut keys = div().flex_none().flex().items_center().gap(px(4.)).when(compact, |d| d.w_full().flex_wrap());
         for (j, alt) in alts.iter().enumerate() {
             if j > 0 && !and { keys = keys.child(div().child(tr("或", "or"))); }
             // `split("+")`, keeping a trailing "+" key ("Cmd++")
@@ -112,6 +112,7 @@ fn island_rows(caption: &'static str, rows: Vec<Row>) -> Div {
             for p in parts { keys = keys.child(key(&p)); }
         }
         list = list.child(div().flex().items_center().justify_between().gap(px(8.)).px(px(12.)).py(px(6.)).text_size(px(14.)).line_height(style::lh(14.))
+            .when(compact, |d| d.flex_col().items_start())
             .when(i + 1 < n, |d| d.border_b_1().border_color(style::dialog_border()))
             .child(div().child(label)).child(keys));
     }
@@ -119,47 +120,54 @@ fn island_rows(caption: &'static str, rows: Vec<Row>) -> Div {
 }
 
 /// `Modal` + `Dialog`: the scrim, and the island (`max_w`) with its title.
-fn modal(id: &'static str, max_w: f32, title: &'static str, body: impl IntoElement, on_close: impl Fn(&mut BoardView, &mut Context<BoardView>) + Clone + 'static, window: &mut Window, cx: &mut Context<BoardView>) -> impl IntoElement {
-    let _ = window;
+fn modal(id: &'static str, narrow_board: bool, max_w: f32, title: &'static str, body: impl IntoElement, on_close: impl Fn(&mut BoardView, &mut Context<BoardView>) + Clone + 'static, window: &mut Window, cx: &mut Context<BoardView>) -> impl IntoElement {
     let close = on_close.clone();
+    let padding = px(if narrow_board { 12. } else { 40. });
     // the scrim covers the board (upstream: the Excalidraw container)
     let dialog = div().id(id).occlude().w_full().max_w(px(max_w)).max_h(relative(1.)).overflow_y_scroll()
-        .bg(style::island_bg()).border_1().border_color(style::dialog_border()).shadow(style::shadow_modal()).rounded(px(12.)).p(px(40.)).text_color(style::text())
+        .bg(style::island_bg()).border_1().border_color(style::dialog_border()).shadow(style::shadow_modal()).rounded(px(12.)).p(padding).text_color(style::text())
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_scroll(|_, _, cx| cx.stop_propagation())
         .child(div().pb(px(12.)).mb(px(24.)).border_b_1().border_color(style::dialog_border()).text_size(px(20.)).line_height(style::lh(20.)).font_weight(FontWeight::BOLD).child(title))
         .child(body);
-    deferred(div().id((id, 1usize)).occlude().absolute().top_0().left_0().size_full().p(px(40.)).bg(style::overlay_bg()).flex().items_center().justify_center()
+    let scrim = div().id((id, 1usize)).occlude().p(padding).bg(style::overlay_bg()).flex().items_center().justify_center()
         .font_family(style::UI_FONT)
         .on_mouse_down(MouseButton::Left, cx.listener(move |me, _, _, cx| close(me, cx)))
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .on_scroll(|_, _, cx| cx.stop_propagation())
-        .child(dialog)).with_priority(5)
+        .child(dialog);
+    if narrow_board {
+        let size = window.viewport_size();
+        return deferred(anchored().position_mode(AnchoredPositionMode::Window).position(point(px(0.), px(0.)))
+            .child(scrim.w(size.width).h(size.height))).with_priority(5).into_any_element();
+    }
+    deferred(scrim.absolute().top_0().left_0().size_full()).with_priority(5).into_any_element()
 }
 
-pub(crate) fn render(window: &mut Window, cx: &mut Context<BoardView>) -> impl IntoElement {
+pub(crate) fn render(narrow_board: bool, window: &mut Window, cx: &mut Context<BoardView>) -> impl IntoElement {
     let wide = window.viewport_size().width >= px(1024.);
+    let compact = narrow_board && window.viewport_size().width < px(560.);
     let islands = if wide {
         div().flex().items_start().gap(px(24.))
-            .child(div().flex_1().min_w_0().flex().flex_col().gap(px(32.)).child(island_rows(tr("工具", "Tools"), tools())).child(island_rows(tr("视图", "View"), view())))
-            .child(div().flex_1().min_w_0().child(island_rows(tr("编辑器", "Editor"), editor())))
+            .child(div().flex_1().min_w_0().flex().flex_col().gap(px(32.)).child(island_rows(tr("工具", "Tools"), tools(), compact)).child(island_rows(tr("视图", "View"), view(), compact)))
+            .child(div().flex_1().min_w_0().child(island_rows(tr("编辑器", "Editor"), editor(), compact)))
     } else {
-        div().flex().flex_col().gap(px(32.)).child(island_rows(tr("工具", "Tools"), tools())).child(island_rows(tr("视图", "View"), view())).child(island_rows(tr("编辑器", "Editor"), editor()))
+        div().flex().flex_col().gap(px(32.)).child(island_rows(tr("工具", "Tools"), tools(), compact)).child(island_rows(tr("视图", "View"), view(), compact)).child(island_rows(tr("编辑器", "Editor"), editor(), compact))
     };
     let body = div().flex().flex_col()
         .child(div().mt(px(24.)).mb(px(24.)).text_size(px(18.)).line_height(style::lh(18.)).font_weight(FontWeight::BOLD).child(tr("快捷键列表", "Keyboard shortcuts")))
         .child(islands);
-    modal("board-help-dialog", 960., tr("帮助", "Help"), body, |me, cx| me.set_help_open(false, cx), window, cx)
+    modal("board-help-dialog", narrow_board, 960., tr("帮助", "Help"), body, |me, cx| me.set_help_open(false, cx), window, cx)
 }
 
 /// `ConfirmDialog` for `actionClearCanvas` ("small", 550): the text, then
 /// Cancel and Confirm (the latter `danger`-filled).
-pub(crate) fn clear_canvas(window: &mut Window, cx: &mut Context<BoardView>) -> impl IntoElement {
+pub(crate) fn clear_canvas(narrow_board: bool, window: &mut Window, cx: &mut Context<BoardView>) -> impl IntoElement {
     let button = |id: &'static str, label: &'static str, danger: bool| crate::design::Button::new(id, if danger { crate::design::ButtonVariant::Destructive } else { crate::design::ButtonVariant::Outline }).label(label);
     let body = div().flex().flex_col().gap(px(24.)).text_size(px(16.)).line_height(style::lh(16.))
         .child(div().child(tr("这将会清除整个画布。您是否要继续?", "This will clear the whole canvas. Are you sure?")))
-        .child(div().flex().justify_end().gap(px(12.))
+        .child(div().flex().justify_end().gap(px(12.)).when(narrow_board, |d| d.flex_wrap())
             .child(button("board-clear-cancel", tr("取消", "Cancel"), false).on_click(cx.listener(|_, _, _, cx| set_pop(None, cx))))
             .child(button("board-clear-confirm", tr("确定", "Confirm"), true).on_click(cx.listener(|me, _, window, cx| { set_pop(None, cx); me.run(BoardAction::ClearCanvas, window, cx) }))));
-    modal("board-clear-dialog", 550., tr("清除画布", "Clear canvas"), body, |_, cx| set_pop(None, cx), window, cx)
+    modal("board-clear-dialog", narrow_board, 550., tr("清除画布", "Clear canvas"), body, |_, cx| set_pop(None, cx), window, cx)
 }
