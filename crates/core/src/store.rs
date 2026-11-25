@@ -3324,7 +3324,6 @@ impl Store {
 
     /// A 数据表's file kept as a version: `force` is 保存当前版本 (no interval;
     /// the same file as the newest version still adds nothing).
-    #[cfg(not(target_family = "wasm"))]
     pub fn snapshot_table(&self, id: &str, force: bool) -> Result<bool> {
         anyhow::ensure!(self.kind(id) == DocKind::Table, "不是数据表");
         let bytes = crate::vfs::read(self.path(id))?;

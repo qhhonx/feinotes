@@ -144,7 +144,7 @@ impl Folder for Dir {
                 if kind.fs_is_dir() {
                     if !skipped_dir(&path) { walk(root, &path, out)? }
                 } else if let Ok(m) = e.metadata() {
-                    let modified = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+                    let modified = m.modified().ok().and_then(|t| t.duration_since(web_time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
                     out.push(Local { path, size: m.len(), modified });
                 }
             }
