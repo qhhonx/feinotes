@@ -224,8 +224,8 @@ mod tests {
         let (t, p) = (&b.tables[0], &b.tables[1]);
         assert_eq!((t.name.as_str(), t.records.len(), t.fields.len(), p.name.as_str(), p.records.len()), ("项目任务", 40, 18, "项目", 6));
         assert_eq!(t.views.iter().map(|v| v.kind).collect::<Vec<_>>(), [ViewKind::Grid, ViewKind::Grid, ViewKind::Kanban]);
-        // every type the picker has but 附件
-        for ty in FieldType::ALL.iter().filter(|ty| !matches!(ty, FieldType::Attachment | FieldType::Phone | FieldType::Email | FieldType::Location | FieldType::Barcode | FieldType::ModifiedTime)) {
+        // every type the picker has but 附件 and 笔记 (which need files beside the table)
+        for ty in FieldType::ALL.iter().filter(|ty| !matches!(ty, FieldType::Attachment | FieldType::Phone | FieldType::Email | FieldType::Location | FieldType::Barcode | FieldType::ModifiedTime | FieldType::Note)) {
             assert!(t.fields.iter().chain(&p.fields).any(|f| f.ty == *ty), "{ty:?}");
         }
         // names the file can carry, ids all different

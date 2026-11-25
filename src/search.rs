@@ -309,7 +309,10 @@ pub(crate) fn extra_line(e: &Entry) -> Div {
     if e.meta.opened > 0 {
         extra.push(extra_segment(Some("eye"), crate::localized_format!("你在 {}打开过", "Opened {}", format_visit(e.meta.opened))));
     }
-    extra.push(extra_segment(Some("pen-line"), crate::localized_format!("我在 {}修改过", "Modified {}", format_visit(e.meta.modified))));
+    // a row with no modified time (a folder never written) says nothing rather than 1970
+    if e.meta.modified > 0 {
+        extra.push(extra_segment(Some("pen-line"), crate::localized_format!("我在 {}修改过", "Modified {}", format_visit(e.meta.modified))));
+    }
     let last = extra.len() - 1;
     let extra = extra.into_iter().enumerate().flat_map(|(i, seg)| {
         let seg = if i == last { seg.flex_shrink_1().min_w_0().overflow_hidden() } else { seg };

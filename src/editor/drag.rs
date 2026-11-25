@@ -23,6 +23,10 @@ const MAX_DEPTH: usize = 16;
 /// Children sit this far right of their parent.
 const INDENT: f32 = 25.;
 const FLASH: Duration = Duration::from_millis(2000);
+/// The slot and the card over it reach this far past the blocks either side.
+const PAD: f32 = 4.;
+/// A taller card is cut here (the slot keeps the blocks' height).
+const CARD_MAX_H: f32 = 360.;
 
 /// What moved blocks are drawn in: the page's rows, or the blocks of one
 /// block drawn inside it (a quote, callout or column, a list nested there).
@@ -169,6 +173,10 @@ pub struct BlockDrag {
     scrolled: Option<Instant>,
     /// Size of the moved blocks on the page when the drag started.
     size: Size<Pixels>,
+    /// The pointer from the card's top-left, as pressed: the card keeps it.
+    grab: Point<Pixels>,
+    /// The handle pressed, and where it sits on the card.
+    handle: (BlockId, Point<Pixels>),
     /// The window was active at the press (losing focus cancels).
     active: Option<bool>,
     /// Where the blocks are taken from (None: from several containers), and
@@ -348,8 +356,12 @@ impl Editor {
         let empty = HashSet::new();
         let w = Walk { bb: &bb, ids: &empty, p: at };
         let index = super::core::block_index(&self.core.doc);
-        let size = ids_union(&w, &index, &ids).map_or(size(px(0.), px(0.)), |b| b.size);
+        let union = ids_union(&w, &index, &ids);
         drop(bb);
+        let size = union.map_or(size(px(0.), px(0.)), |b| b.size);
+        // The card starts as the blocks' slot: where they are, PAD wider.
+        let card = union.map_or(at, |b| point(b.left() - px(PAD), b.top()));
+        let handle = self.handle_rect(id, false).map_or(point(px(-48. - PAD), px(0.)), |h| h.origin - card);
         let run = self.run_of(&ids);
         // The margin that goes with them: below them (above the block
         // after), or above them when they end their list.
@@ -362,7 +374,7 @@ impl Editor {
             None => 0.,
         };
         let pitch = f32::from(size.height) + gap;
-        self.block_drag = Some(BlockDrag { ids, sel, from: at, at, started: false, drop: None, scrolled: None, size, active: None, from_run: run, pitch, land: None });
+        self.block_drag = Some(BlockDrag { ids, sel, from: at, at, started: false, drop: None, scrolled: None, size, grab: at - card, handle: (id, handle), active: None, from_run: run, pitch, land: None });
     }
 
     pub(super) fn block_drag_move(&mut self, at: Point<Pixels>, pressed: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -412,7 +424,8 @@ impl Editor {
             fx.moves.clear();
             fx.slot = None;
             if let Some(slot) = slot.filter(|_| drop.side.is_none()) {
-                let by = [f32::from(d.at.x - slot.x), f32::from(d.at.y + px(28.) - slot.y)];
+                let card = d.at - d.grab;
+                let by = [f32::from(card.x - slot.x), f32::from(card.y - slot.y)];
                 for id in &d.ids {
                     fx.moves.insert(*id, (Spring { p: by, v: [0.; 2], target: [0.; 2] }, fx.frame, true));
                 }
@@ -430,12 +443,16 @@ impl Editor {
         if !d.started {
             return;
         }
+        // The card finds the drop: the left of the blocks on it (for the
+        // column and nesting) at its middle.
+        let card = d.at - d.grab;
+        let p = point(card.x + px(PAD), card.y + d.size.height.min(px(CARD_MAX_H)) / 2.);
         // Over the slot, it stays: the blocks around it moved for it.
         let slot = d.land.as_ref().and_then(|l| l.rect.or_else(|| self.drag_fx.borrow().spacer.as_ref().and_then(|(_, r)| r.get())));
-        if d.drop.is_some() && slot.is_some_and(|r| r.contains(&d.at)) {
+        if d.drop.is_some() && slot.is_some_and(|r| r.contains(&p)) {
             return;
         }
-        let drop = self.find_drop(d.at, &d.ids);
+        let drop = self.find_drop(p, &d.ids);
         let key = drop.as_ref().filter(|d| d.side.is_none()).map(|d| (d.target, d.place));
         let land = match (key, &d.land) {
             (Some(k), Some(l)) if l.key == k => Some(l.clone()),
@@ -471,7 +488,18 @@ impl Editor {
         let above = if drop.place == DropPlace::Before { l.top() - gap } else { l.top() };
         let down = d.from_run.is_some_and(|f| f.flow == run.flow && run.at >= f.end);
         let top = if down { above - h } else { above + gap };
-        Bounds { origin: point(left, top), size: size((l.right() - left).max(px(INDENT * 2.)), h) }
+        Bounds { origin: point(left - px(PAD), top), size: size((l.right() - left).max(px(INDENT * 2.)) + px(2. * PAD), h) }
+    }
+
+    /// The slot's size, which the card over it shares: as wide as where the
+    /// blocks land (or came from) and PAD either side, as tall as they are.
+    fn drag_box(&self, d: &BlockDrag) -> Size<Pixels> {
+        let w = match &d.land {
+            Some(Land { rect: Some(r), .. }) => Some(r.size.width),
+            Some(_) => self.drag_fx.borrow().spacer.as_ref().and_then(|(_, r)| r.get()).map(|r| r.size.width),
+            None => None,
+        };
+        size(w.unwrap_or(d.size.width + px(2. * PAD)), d.size.height)
     }
 
     /// The flow block `id` is drawn in, and its index there.
@@ -641,12 +669,17 @@ impl Editor {
         div()
             .pt(px(d.pitch) - h)
             .child(
-                div()
-                    .h(h)
-                    .w_full()
-                    .rounded(px(crate::sidebar::ROW_R))
-                    .bg(crate::theme::Theme::sidebar_drop_slot().opacity(a.unit()))
-                    .child(canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {}).size_full()),
+                div().h(h).relative().child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(px(-PAD))
+                        .right(px(-PAD))
+                        .rounded(px(crate::sidebar::ROW_R))
+                        .bg(crate::theme::Theme::sidebar_drop_slot().opacity(a.unit()))
+                        .child(canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {}).size_full()),
+                ),
             )
             .into_any_element()
     }
@@ -662,7 +695,7 @@ impl Editor {
                 let bb = self.block_bounds.borrow();
                 let w = Walk { bb: &bb, ids: &HashSet::new(), p: d.at };
                 let index: rustc_hash::FxHashMap<BlockId, &Block> = d.ids.iter().filter_map(|id| Some((*id, self.core.block(*id)?))).collect();
-                ids_union(&w, &index, &d.ids)
+                ids_union(&w, &index, &d.ids).map(|b| Bounds { origin: point(b.left() - px(PAD), b.top()), size: size(b.size.width + px(2. * PAD), b.size.height) })
             }
             None => None,
         });
@@ -919,7 +952,9 @@ impl Editor {
                     .bg(crate::theme::Theme::sidebar_drop_slot().opacity(a.unit())),
             );
         }
-        Some(deferred(layer.child(self.drag_ghost(d, cx)?.left(d.at.x - o.x).top(d.at.y - o.y + px(28.)))).with_priority(4).into_any_element())
+        // The card keeps the pointer where it grabbed the handle.
+        let card = d.at - d.grab - o;
+        Some(deferred(layer.child(self.drag_ghost(d, cx)?.left(card.x).top(card.y))).with_priority(4).into_any_element())
     }
 
     /// How far the top and the bottom of block `id` (with any rows under it)
@@ -934,15 +969,15 @@ impl Editor {
         (self.room(flow, ix).0, self.room(flow, last).0 + grown)
     }
 
-    /// The moved blocks, drawn again on a card. Large ones are shown at a
-    /// smaller size: the card is `s` times as wide and is cut at `s` times
-    /// the height (GPUI can't scale, so the text rewraps instead).
+    /// The moved blocks, drawn again on a card the slot's size and shape,
+    /// lifted (the page's colour and a soft shadow), with the handle beside
+    /// them as on the page. A tall card is cut at `CARD_MAX_H`.
     fn drag_ghost(&self, d: &BlockDrag, cx: &mut Context<Self>) -> Option<Div> {
-        let (w, h) = (f32::from(d.size.width), f32::from(d.size.height));
-        if w <= 0. {
+        let b = self.drag_box(d);
+        let w = f32::from(b.width) - 2. * PAD;
+        if d.size.width <= px(0.) {
             return None;
         }
-        let s = if h <= 78. || w <= 78. { 1. } else { (365. / w.max(h)).max(78. / w.min(h)).min(1.) };
         let r = R {
             ed: self,
             units: Rc::new(vec![]),
@@ -956,31 +991,35 @@ impl Editor {
             ghost: true,
         };
         let core = &self.core;
-        let mut col = div().flex().flex_col();
+        let mut col = div().flex().flex_col().pl(px(PAD)).w(b.width);
         let mut prev_mb: Option<f32> = None;
         for id in &d.ids {
             let Some(path) = core.path(*id) else { continue };
             let Some((list, ix)) = siblings_at(&core.doc.blocks, &path) else { continue };
             let b = &list[ix];
             let depth = path.len() - 1;
-            let env = Env { depth, root: depth == 0, width: w * s - 4., ..TOP };
+            let env = Env { depth, root: depth == 0, width: w, ..TOP };
             let (mt, mb) = margins(b, env);
-            col = col.child(div().pl(px(2.)).mt(px(prev_mb.map_or(0., |p| p.max(mt)))).child(r.block(b, list, ix, env, cx)));
+            col = col.child(div().w(px(w)).mt(px(prev_mb.map_or(0., |p| p.max(mt)))).child(r.block(b, list, ix, env, cx)));
             prev_mb = Some(mb);
         }
-        // A lifted copy of the blocks: white, hairline, crisp radius 5, the panel drop.
+        let h = b.height.min(px(CARD_MAX_H));
+        let card = div()
+            .absolute()
+            .size_full()
+            .overflow_hidden()
+            .rounded(px(crate::sidebar::ROW_R))
+            .bg(crate::theme::raised(Theme::bg_body()))
+            .shadow(theme::shadow_panel())
+            .child(col);
+        let (id, at) = d.handle;
         Some(
             div()
                 .absolute()
-                .w(px(w * s))
-                .max_h(px(h * s))
-                .overflow_hidden()
-                .rounded(px(5.))
-                .border_1()
-                .border_color(Theme::line_border())
-                .bg(crate::theme::raised(Theme::bg_body()))
-                .shadow(theme::shadow_panel())
-                .child(col),
+                .w(b.width)
+                .h(h)
+                .child(card)
+                .children(self.handle_face(id).map(|f| div().absolute().left(at.x).top(at.y).child(f))),
         )
     }
 }

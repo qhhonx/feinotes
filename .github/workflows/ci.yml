@@ -34,9 +34,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Check the demo binary
-        run: |
-          cargo check --locked --target wasm32-unknown-unknown --bin quiet_md
-          cargo check --locked --target wasm32-unknown-unknown --features datatable --bin quiet_md
+        run: cargo check --locked --target wasm32-unknown-unknown --bin quiet_md
 
   check:
     name: test + clippy

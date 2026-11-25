@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 // The shared look (`design::scroll`, shadcn's ScrollArea): a 7pt `border` thumb 1pt in, shown while
 // the pointer is on the bar, while the page scrolls and while held, fading out after.
-use crate::design::scroll::{PAD as INSET, THUMB as W, thumb_color};
+use crate::design::scroll::{HELD, HOVER, PAD as INSET, THUMB as W, thumb_tone};
 const MIN_H: f32 = 32.;
 /// The grab zone is wider than the thumb.
 const HIT_W: f32 = 12.;
@@ -24,6 +24,7 @@ pub struct Scrollbar {
     /// its width (the middle is unused).
     grab: Cell<Option<(Pixels, Pixels, Pixels)>>,
     fade: crate::design::scroll::Fade,
+    tone: crate::design::scroll::Tone,
     /// The pointer was over the table last paint (a wide table's bar).
     over: Cell<bool>,
 }
@@ -131,8 +132,9 @@ impl Editor {
                 sb.hot.set(hovered);
                 let dragging = sb.held.get().is_some_and(|g| g.down);
                 let a = sb.fade.step(hovered || dragging, f32::from(top), window, cx);
+                let tone = sb.tone.step(if dragging { HELD } else if hovered { HOVER } else { 0. }, window, cx);
                 let thumb = Bounds::new(point(bounds.right() - px(INSET + W), top), size(px(W), h));
-                if a > 0. { window.paint_quad(fill(thumb, thumb_color(a)).corner_radii(px(W / 2.))); }
+                if a > 0. { window.paint_quad(fill(thumb, thumb_tone(tone, a)).corner_radii(px(W / 2.))); }
 
                 window.on_mouse_event({
                     let (sb, hitbox, list) = (sb.clone(), hitbox.clone(), list2.clone());
@@ -237,8 +239,9 @@ pub(super) fn table_scrollbar(handle: ScrollHandle, sb: std::rc::Rc<Scrollbar>) 
                 }
             });
             let a = sb.fade.step(over || hovered || dragging, f32::from(left), window, cx);
+            let tone = sb.tone.step(if dragging { HELD } else if hovered { HOVER } else { 0. }, window, cx);
             let thumb = Bounds::new(point(left, bounds.top() + px(INSET)), size(w, px(W)));
-            if a > 0. { window.paint_quad(fill(thumb, thumb_color(a)).corner_radii(px(W / 2.))); }
+            if a > 0. { window.paint_quad(fill(thumb, thumb_tone(tone, a)).corner_radii(px(W / 2.))); }
 
             window.on_mouse_event({
                 let (sb, hitbox) = (sb.clone(), hitbox.clone());

@@ -291,7 +291,6 @@ impl Workspace {
         // a 数据表 writes as it is edited: nothing of the present may be pending when its file is replaced
         let table = self.is_table(&id);
         // a build without 数据表 leaves its file as it is
-        if table && !crate::DATATABLE { return self.set_history_error(crate::settings::tr("此版本不支持数据表", "Data tables aren't supported in this version").to_string(), cx); }
         if table { if let Some(ed) = self.editor.clone() { ed.update(cx, |e, cx| e.commit_tables(cx)); } crate::table::flush_all(cx); }
         let doc = match self.store.restore_version(&id, &name) {
             Ok(d) => d,
@@ -312,7 +311,7 @@ impl Workspace {
         self.unsaved = false;
         self.status = crate::app::SaveStatus::Saved;
         self.sync_document(window, cx);
-        self.entries = self.store.list();
+        self.entries.set(self.store.list());
         self.sort();
         self.show_toast_kind(crate::editor_ui::ToastKind::Success, crate::settings::tr("已恢复到所选版本", "Restored that version"), cx);
     }
@@ -327,7 +326,7 @@ impl Workspace {
             let title = if tag.is_empty() { base } else { crate::localized_format!("{}（{}）", "{} ({})", base, tag) };
             match self.store.copy_table_version(&id, &name, &title) {
                 Ok(new) => {
-                    self.entries = self.store.list();
+                    self.entries.set(self.store.list());
                     self.sort();
                     self.close_history(cx);
                     self.open(&new, window, cx);
@@ -347,7 +346,7 @@ impl Workspace {
                 doc.title = crate::model::RichText::plain(title);
                 match self.store.create_from(&doc) {
                     Ok(new) => {
-                        self.entries = self.store.list();
+                        self.entries.set(self.store.list());
                         self.sort();
                         self.close_history(cx);
                         self.open(&new, window, cx);

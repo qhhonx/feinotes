@@ -800,7 +800,9 @@ impl R<'_> {
             let (top, bottom) = (t.top().max(b.top()), t.bottom().min(b.bottom()));
             if bottom <= top { return }
             let h = bottom - top;
-            let shade = |deg| linear_gradient(deg, linear_color_stop(theme::rgbaf(0, 0, 0, 0.05), 0.), linear_color_stop(theme::rgbaf(0, 0, 0, 0.), 1.));
+            // the edge shade deepens in the dark, as the other shadows do (5% black is lost on the dark page)
+            let edge = if crate::theme::dark() { 0.35 } else { 0.05 };
+            let shade = |deg| linear_gradient(deg, linear_color_stop(theme::rgbaf(0, 0, 0, edge), 0.), linear_color_stop(theme::rgbaf(0, 0, 0, 0.), 1.));
             if t.left() < b.left() - px(0.5) {
                 window.paint_quad(fill(Bounds::new(point(b.left() + px(1.), top), size(px(10.), h)), shade(90.)));
                 window.paint_quad(fill(Bounds::new(point(b.left(), top), size(px(1.), h)), Theme::table_line()));

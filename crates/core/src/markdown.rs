@@ -38,6 +38,9 @@ pub struct Options<'a> {
     /// there): its pictures and files are written relative to it, as `base`'s
     /// are, and the original's relative sources read from it (`resolve_present`).
     pub dir: Option<&'a Path>,
+    /// Writing the file itself (not a copy to paste): what a reader would
+    /// lose stays (`BLANK` for an empty paragraph, `hold_end`).
+    pub file: bool,
 }
 
 pub struct Export {
@@ -159,6 +162,7 @@ impl Writer<'_> {
 
     fn block(&mut self, b: &Block, seq: u32) -> String {
         let text = inline(&b.text, &mut |f| self.file_link(f));
+        let text = if !self.opts.file { text } else if b.kind == BlockKind::Text && b.text.is_empty() { BLANK.into() } else if text == BLANK { format!("\\{BLANK}") } else { hold_end(text) };
         let nested = |w: &mut Self, head: String| -> String {
             if b.children.is_empty() {
                 return head;
@@ -653,9 +657,11 @@ pub fn write_file(doc: &Document, front: &str, base: Option<&Path>) -> String {
 /// `write_file` with the copies to make beside a 本机文件 (`Export::files`,
 /// relative to the file's folder).
 pub fn write_file_with(doc: &Document, front: &str, opts: &Options) -> Export {
-    let opts = Options { in_place: true, library_dir: opts.library_dir, base: opts.base, name: opts.name, copied: opts.copied, original: opts.original, wiki: opts.wiki, dir: opts.dir, ..Default::default() };
+    let opts = Options { in_place: true, file: true, library_dir: opts.library_dir, base: opts.base, name: opts.name, copied: opts.copied, original: opts.original, wiki: opts.wiki, dir: opts.dir, ..Default::default() };
     let mut w = Writer { opts: &opts, files: vec![], generated: vec![], missing: 0 };
-    let pieces = w.pieces(&doc.blocks);
+    let mut pieces = w.pieces(&doc.blocks);
+    // Empty lines at the very end show nothing (the editor adds one for a click below the text).
+    while pieces.last().is_some_and(|p| p.text == BLANK) { pieces.pop(); }
     let canonical = joined(&pieces);
     // Kept lines must still read back as the document; if a kept spacing
     // changes what a neighbour means, try again more strictly, then give up
@@ -852,10 +858,24 @@ fn indent(s: &str, prefix: &str) -> String {
         .join("\n")
 }
 
+/// An empty paragraph in a Markdown file: a line a reader would skip shows
+/// as a blank line everywhere (Obsidian, Typora, GitHub) written this way.
+pub const BLANK: &str = "&nbsp;";
+
+/// `s` with its last character as a character reference when it is a space
+/// (a no-break space, a tab): a reader drops the end of a line's spaces, and
+/// a line of only spaces is a blank one.
+fn hold_end(s: String) -> String {
+    match s.chars().next_back().filter(|c| c.is_whitespace()) {
+        Some(c) => format!("{}&#{};", &s[..s.len() - c.len_utf8()], c as u32),
+        None => s,
+    }
+}
+
 fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        if matches!(c, '\\' | '*' | '_' | '`' | '[' | ']' | '<' | '~') {
+    for (i, c) in s.char_indices() {
+        if matches!(c, '\\' | '*' | '_' | '`' | '[' | ']' | '<' | '~') || c == '&' && crate::paste::char_ref(&s[i..]).is_some() {
             out.push('\\');
         }
         out.push(c);
@@ -980,6 +1000,32 @@ fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) ->
 
 #[cfg(test)]
 mod tests {
+    /// What a page holds, as typed: an empty paragraph, a row of them, one of
+    /// only spaces, spaces at the start, in the middle and at the end, a line
+    /// break (and a blank line) inside a paragraph.
+    #[test]
+    fn blank_lines_and_spaces_read_back_as_typed() {
+        use super::*;
+        let doc = |t: &[&str]| Document { blocks: t.iter().map(|t| Block::text(t)).collect(), ..Default::default() };
+        let texts = |d: &Document| d.blocks.iter().map(|b| b.text.text.clone()).collect::<Vec<_>>();
+        let page = ["", "a", "", "", "", "   ", "   lead", "mid   space   ", "\u{a0}", "\t", "x\ny", "x\n\ny", "x   \ny", "&nbsp;", "&#32; and &#x20;", "<br>", "z"];
+        let md = write_file(&doc(&page), "", None);
+        assert_eq!(md, "&nbsp;\n\na\n\n&nbsp;\n\n&nbsp;\n\n&nbsp;\n\n  &#32;\n\n   lead\n\nmid   space  &#32;\n\n&#160;\n\n&#9;\n\nx<br>y\n\nx<br><br>y\n\nx   <br>y\n\n\\&nbsp;\n\n\\&#32; and \\&#x20;\n\n\\<br>\n\nz\n");
+        assert_eq!(texts(&parse_file(&md, "t", None)), page);
+        // Written again (kept lines and all) it is the same file.
+        assert_eq!(write_file_with(&parse_file(&md, "t", None), "", &Options { original: Some(&md), ..Default::default() }).text, md);
+        // Empty lines at the very end are not written: they show nothing.
+        assert_eq!(write_file(&doc(&["a", "", "b", "", ""]), "", None), "a\n\n&nbsp;\n\nb\n");
+        assert_eq!(write_file(&doc(&["", ""]), "", None), "");
+        // Inside a quote too.
+        let mut q = Block::new(BlockKind::Quote, RichText::default());
+        q.children = doc(&["a", "", "b  "]).blocks;
+        let md = write_file(&Document { blocks: vec![q.clone()], ..Default::default() }, "", None);
+        assert_eq!(parse_file(&md, "t", None).blocks[0].children.iter().map(|b| b.text.text.as_str()).collect::<Vec<_>>(), ["a", "", "b  "], "{md}");
+        // Another editor's spacer lines are empty paragraphs too; a paste, a copy are as before.
+        assert_eq!(texts(&parse_file("a\n\n&nbsp;\n\nb\n", "t", None)), ["a", "", "b"]);
+        assert_eq!(clipboard(None, &doc(&["a", "", "b "]).blocks, Path::new("/")), "a\n\nb\n");
+    }
     #[test]
     fn front_matter_says_when_a_page_was_made_and_changed() {
         use super::front_matter_times as times;

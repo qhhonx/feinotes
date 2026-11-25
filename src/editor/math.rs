@@ -460,8 +460,10 @@ fn css_color(v: &str) -> Option<Hsla> {
     Some(rgb_u32(rgb))
 }
 
+/// A colour the formula names (`\color{navy}`), written for a light page: in the dark it is
+/// mirrored like the page's own colours and lifted until it reads (black would vanish otherwise).
 fn rgb_u32(n: u32) -> Hsla {
-    rgb(n).into()
+    crate::theme::lift(crate::theme::adapt(rgb(n).into()), 4.5)
 }
 
 struct Engine<'a> {

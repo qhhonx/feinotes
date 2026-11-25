@@ -65,7 +65,7 @@ impl Workspace {
                 Err(e) => self.show_toast_kind(ToastKind::Error, &crate::localized_format!("无法打开文件：{}", "Could not open file: {}", crate::settings::diagnostic(&e.to_string())), cx),
             }
         }
-        self.entries = self.store.list();
+        self.entries.set(self.store.list());
         self.sort();
         if let Some(id) = last {
             self.folded[2] = false;
@@ -109,7 +109,7 @@ impl Workspace {
         }
         let id = existing.or_else(|| self.store.open_local(&path).ok());
         let Some(id) = id else { return };
-        self.entries = self.store.list();
+        self.entries.set(self.store.list());
         self.sort();
         if self.try_open(&id, window, cx) && !anchor.is_empty() && let Some(ed) = &self.editor {
             let key = anchor.to_lowercase();
@@ -139,7 +139,7 @@ impl Workspace {
         match self.store.create_markdown(&doc, &front) {
             Ok(new) => {
                 if let Some(src) = self.store.local_path(id) { self.keep_times(&new, &src); }
-                self.entries = self.store.list();
+                self.entries.set(self.store.list());
                 self.sort();
                 self.open(&new, window, cx);
                 self.show_toast_kind(ToastKind::Info, tr("已导入到文档库，原文件未改动", "Imported into the library; the original file is unchanged"), cx);

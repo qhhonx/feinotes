@@ -142,7 +142,10 @@ pub fn card(on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> 
     let moved = *MIGRATED.lock().unwrap();
     if notes.is_none() && moved.is_none() { return None }
     let title: String = if notes.is_some() { crate::localized_format!("已更新到 {}", "Updated to {}", VERSION) } else { crate::settings::tr("文档库已改为真实文件夹", "Your library now uses real folders").into() };
-    let line = |text: String| div().w_full().min_w_0().flex().gap(px(6.)).text_size(px(12.)).line_height(px(18.)).text_color(Theme::text_caption())
+    // the notes are the card's body: in the dark `muted-foreground` (#a3a3a3, about 6:1 on the card)
+    // rather than the caption grey, which sank to 3.7:1 there
+    let body = if crate::theme::dark() { crate::design::color::muted_foreground() } else { Theme::text_caption() };
+    let line = |text: String| div().w_full().min_w_0().flex().gap(px(6.)).text_size(px(12.)).line_height(px(18.)).text_color(body)
         .child(div().flex_none().child("·")).child(div().flex_1().min_w_0().child(text));
     // Padding, not margin: the scroll area's extent leaves a child's margin
     // out, so scrolled to the end the last line lost its bottom 6pt.
@@ -173,7 +176,7 @@ pub fn card(on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> 
     thread_local! { static SCROLL: ScrollHandle = ScrollHandle::new(); }
     let scroll = SCROLL.with(|h| h.clone());
     let more = scroll.max_offset().y > px(0.5) && scroll.offset().y > -scroll.max_offset().y + px(0.5);
-    let face = crate::theme::raised(crate::design::color::card());
+    let face = crate::design::color::card();
     // A card; at most half the sidebar, a longer list scrolls inside it.
     Some(Card::new("changelog").flex_none().max_h(relative(0.5)).min_w_0().overflow_hidden().mx(px(crate::sidebar::SB_X - 4.)).mb(px(2.)).pl(px(12.)).pr(px(6.)).pt(px(8.)).pb(px(10.))
         .child(div().flex_none().w_full().min_w_0().flex().items_center().justify_between()

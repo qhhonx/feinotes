@@ -9,7 +9,7 @@ use super::view::{BlockAct, BlockSub, CtxKind, Editor, Mark, Menu};
 use crate::model::*;
 use crate::feishu_theme::{self as theme, Theme};
 use crate::editor_ui::{TipExt, icon};
-use crate::design::{Button, ButtonSize, Field, FieldSize, MenuItem, MenuLabel, MenuSeparator, Popover, Switch, Textarea, color};
+use crate::design::{Button, ButtonSize, Field, FieldSize, MenuItem, MenuLabel, MenuSeparator, Popover, Textarea, color};
 use crate::design::menu::{LABEL_H, PAD, ROW_H, SEP_H};
 use crate::design::toolbar::{TOOLBAR_H, TOOLBAR_PAD, toolbar_layout};
 use crate::design::{ButtonGroup, ButtonGroupSeparator, Toggle, Toolbar};
@@ -80,7 +80,7 @@ pub fn kind_icon(k: &BlockKind) -> &'static str {
             4 => "heading-4",
             5 => "heading-5",
             6 => "heading-6",
-            _ => "heading",
+            _ => "heading-6",
         },
         BlockKind::Bullet => "list",
         BlockKind::Ordered { .. } => "list-ordered",
@@ -95,8 +95,8 @@ pub fn kind_icon(k: &BlockKind) -> &'static str {
         BlockKind::Raw { .. } => "file-text",
         BlockKind::SubPageList => "list-tree",
         BlockKind::Countdown(_) => "timer",
-        BlockKind::Board(_) => "palette",
-        BlockKind::DataTable(_) => "table",
+        BlockKind::Board(_) => "board",
+        BlockKind::DataTable(_) => "doc-table",
         BlockKind::File(_) => "paperclip",
     }
 }
@@ -254,7 +254,7 @@ impl Editor {
     }
 
     /// Handle bounds (window coords) for a block: centered on its first line.
-    fn handle_rect(&self, id: BlockId, add: bool) -> Option<Bounds<Pixels>> {
+    pub(super) fn handle_rect(&self, id: BlockId, add: bool) -> Option<Bounds<Pixels>> {
         let b = self.block_rect(id)?;
         let (top, lh) = {
             let first = self.probed(Probe::Point(Pos::new(id, 0)));
@@ -385,6 +385,15 @@ impl Editor {
                 }),
             );
         Some(at(point(px(left), px(top)), Anchor::TopLeft, el))
+    }
+
+    /// The handle as the drag card carries it, white as the card, under the pointer
+    /// that grabbed it (the closed hand stays over its open-hand segments).
+    pub(super) fn handle_face(&self, id: BlockId) -> Option<AnyElement> {
+        let kind = self.core.kind_of(id)?;
+        let glyph = icon(kind_icon(kind), 12., kind_color(kind));
+        let face = crate::design::toolbar::block_handle(id.0, Some(glyph), 42., false);
+        Some(div().relative().child(face).child(div().absolute().inset_0().cursor(CursorStyle::ClosedHand)).into_any_element())
     }
 
     // ---- slash / add menu
@@ -1108,7 +1117,7 @@ impl Editor {
                     .child(icon("search", 14., color::muted_foreground()))
                     .child(self.lang_field.clone()),
             )
-            .child(list.child(crate::design::scroll::bar("lang-list", &lang_scroll, crate::design::geo().menu_r)));
+            .child(list.child(crate::design::scroll::bar("lang-list", &lang_scroll, 0.)));
         // Under the language button, which sits ~267px left of the block's right
         // edge; above it when the list wouldn't fit below.
         let h = px(2. * PAD + 38. + (langs.len().max(1) as f32 * ROW_H).min(288.));
@@ -1715,7 +1724,7 @@ impl Editor {
         let plain = |id: &'static str, ic: &'static str, label: &'static str, a: BlockAct| {
             row(id, ic, label, false, false).on_mouse_move(set_sub(None)).on_mouse_down(MouseButton::Left, act(a))
         };
-        let toggle = |id: &'static str, ic: &'static str, label: &'static str, on: bool, a: BlockAct| plain(id, ic, label, a).child(Switch::new(on));
+        let toggle = |id: &'static str, ic: &'static str, label: &'static str, on: bool, a: BlockAct| plain(id, ic, label, a).switch(on);
         let m = Popover::new("block-menu")
             .menu()
             .w(px(MENU_W))

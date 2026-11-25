@@ -4,7 +4,6 @@
 //! along. ⌘⌥⇧O and Settings › About replay it without touching the library. Nothing is written until 开始使用;
 //! closing the window before that quits without a library.
 
-use fdl_core::vfs::{PathExt as _, KindExt as _};
 use crate::settings::tr;
 use crate::theme::{self, Theme};
 use crate::ui;
@@ -12,6 +11,7 @@ use crate::design::{Button, ButtonSize, Card, Checkbox, Field, FieldSize, Separa
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 use std::path::{Path, PathBuf};
+use crate::import_sources::{discover, Found};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use web_time::Instant;
@@ -188,100 +188,13 @@ static GRAIN: std::sync::LazyLock<std::sync::Arc<RenderImage>> = std::sync::Lazy
     std::sync::Arc::new(RenderImage::new(vec![image::Frame::new(buf)]))
 });
 
-// ---- where notes already are
-
-#[derive(Clone)]
-struct Found {
-    app: &'static str,
-    name: String,
-    path: PathBuf,
-    /// Markdown files inside.
-    count: usize,
-}
-
-/// Markdown files under `dir`, without hidden folders, up to a budget of entries.
-fn count_md(dir: &Path, depth: usize, budget: &mut usize) -> usize {
-    let Ok(rd) = fdl_core::vfs::read_dir(dir) else { return 0 };
-    let mut n = 0;
-    for e in rd.flatten() {
-        if *budget == 0 { break }
-        *budget -= 1;
-        let name = e.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with('.') || name == "node_modules" { continue }
-        let Ok(ft) = e.file_type() else { continue };
-        if ft.fs_is_dir() && depth > 0 { n += count_md(&e.path(), depth - 1, budget); }
-        else if ft.fs_is_file() && crate::local_files::is_markdown_path(&e.path()) { n += 1; }
-    }
-    n
-}
-
-fn subdirs(dir: &Path) -> Vec<PathBuf> {
-    fdl_core::vfs::read_dir(dir).map(|rd| rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.fs_is_dir()) && !e.file_name().to_string_lossy().starts_with('.')).map(|e| e.path()).collect()).unwrap_or_default()
-}
-
-/// Notes other apps keep on this computer, read only and off the main
-/// thread. Only an app's own places are looked at (never the user's other
-/// folders), and an app shows only when its place really holds notes.
-/// Only folders that already hold Markdown: apps that keep notes in their
-/// own format (Bear, Ulysses…) are not offered.
-fn discover(library: PathBuf) -> Vec<Found> {
-    let home = dirs::home_dir().unwrap_or_default();
-    let mobile = home.join("Library/Mobile Documents");
-    let mut candidates: Vec<(&'static str, PathBuf)> = vec![];
-    // Obsidian lists its vaults in obsidian.json (macOS, Windows and Linux alike), and keeps iCloud vaults in its container.
-    if let Some(cfg) = dirs::config_dir().and_then(|d| fdl_core::vfs::read(d.join("obsidian/obsidian.json")).ok())
-        && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&cfg)
-        && let Some(vaults) = v.get("vaults").and_then(|v| v.as_object()) {
-        for vault in vaults.values() {
-            if let Some(p) = vault.get("path").and_then(|p| p.as_str()) { candidates.push(("Obsidian", PathBuf::from(p))); }
-        }
-    }
-    for d in subdirs(&mobile.join("iCloud~md~obsidian/Documents")) { candidates.push(("Obsidian", d)); }
-    // Logseq names each graph's folder in ~/.logseq/graphs: `logseq_local_++Users++me++notes.transit`.
-    for g in fdl_core::vfs::read_dir(home.join(".logseq/graphs")).into_iter().flatten().flatten() {
-        let name = g.file_name().to_string_lossy().into_owned();
-        if let Some(p) = name.strip_prefix("logseq_local_").and_then(|n| n.strip_suffix(".transit")) { candidates.push(("Logseq", PathBuf::from(p.replace("++", "/")))); }
-    }
-    for d in subdirs(&mobile.join("iCloud~com~logseq~logseq/Documents")) { candidates.push(("Logseq", d)); }
-    candidates.push(("iA Writer", mobile.join("27N4MQEA55~pro~writer/Documents")));
-    candidates.push(("Typora", mobile.join("iCloud~abnerworks~Typora/Documents")));
-    // 思源笔记's workspaces: the default one, and those its workspace.json lists. Not Markdown: always imported as copies.
-    candidates.push((SIYUAN, home.join("SiYuan")));
-    if let Ok(list) = fdl_core::vfs::read(home.join(".config/siyuan/workspace.json")) && let Ok(v) = serde_json::from_slice::<Vec<String>>(&list) {
-        for p in v { candidates.push((SIYUAN, PathBuf::from(p))); }
-    }
-    let mut out: Vec<Found> = vec![];
-    for (app, path) in candidates {
-        if !path.fs_is_dir() || path.starts_with(&library) || library.starts_with(&path) { continue }
-        let key = fdl_core::vfs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        if out.iter().any(|f| fdl_core::vfs::canonicalize(&f.path).unwrap_or_else(|_| f.path.clone()) == key) { continue }
-        let mut budget = 20_000;
-        let count = if app == SIYUAN { if fdl_core::siyuan::recognizes(&path) { fdl_core::siyuan::count_docs(&path, budget) } else { 0 } } else { count_md(&path, 6, &mut budget) };
-        if count == 0 { continue }
-        let name = found_name(app, &path, &mobile);
-        out.push(Found { app, name, path, count });
-    }
-    out.sort_by_key(|a| std::cmp::Reverse(a.count));
-    out
-}
-
-/// `Found::app` for a 思源笔记 workspace, shown as 思源笔记.
-const SIYUAN: &str = "SiYuan";
-
-/// The name a found folder shows and is imported under: its own, except an
-/// app's iCloud folder, which is just "Documents" and goes by the app's name.
-fn found_name(app: &str, path: &Path, mobile: &Path) -> String {
-    if path.starts_with(mobile) && path.file_name().is_some_and(|n| n == "Documents") { return app.to_string() }
-    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-}
-
 // ---- syncing
 
 /// Whether macOS keeps `path` (or the nearest folder above it that exists)
 /// in iCloud; this also covers Documents with 桌面与文稿 syncing on.
 #[cfg(target_os = "macos")]
 pub(crate) fn ubiquitous(path: &Path) -> bool {
+    use fdl_core::vfs::PathExt as _;
     use objc::runtime::{BOOL, NO, Object};
     use objc::{class, msg_send, sel, sel_impl};
     #[link(name = "Foundation", kind = "framework")]
@@ -304,14 +217,7 @@ pub(crate) fn ubiquitous(path: &Path) -> bool {
 
 /// A path as people know it: 文稿 › Quiet.md, iCloud 云盘 › Notes, Dropbox › …;
 /// deep ones keep their first and last two names.
-/// Where a found folder lives, in a few words: its app's iCloud container
-/// reads as iCloud 云盘, anything else as its short path.
-fn where_short(p: &Path) -> String {
-    let mobile = dirs::home_dir().unwrap_or_default().join("Library/Mobile Documents");
-    if p.starts_with(&mobile) { tr("iCloud 云盘", "iCloud Drive").to_string() } else { short_path(p) }
-}
-
-fn short_path(p: &Path) -> String {
+pub(crate) fn short_path(p: &Path) -> String {
     let home = dirs::home_dir().unwrap_or_default();
     let places: [(PathBuf, &str); 5] = [
         (home.join("Library/Mobile Documents/com~apple~CloudDocs"), tr("iCloud 云盘", "iCloud Drive")),
@@ -421,7 +327,7 @@ impl Onboarding {
         let root = crate::store::Store::active_dir();
         let lib = root.clone();
         cx.spawn(async move |this, cx| {
-            let found = cx.background_executor().spawn(async move { discover(lib) }).await;
+            let found = cx.background_executor().spawn(async move { discover(&[lib]) }).await;
             let _ = this.update(cx, |w, cx| { w.chosen = vec![true; found.len()]; w.found = Some(found); cx.notify(); });
         }).detach();
         let now = Instant::now();
@@ -609,6 +515,8 @@ impl Onboarding {
         self._ticker = Task::ready(());
         if let Some((_, t)) = self.film_tex.take() { let _ = window.drop_image(t); }
         let ws = crate::start(existed, self.scripted, Some(window), self.incoming.take().unwrap_or_default(), cx);
+        // The first look is the folder the notes are in, not 主页: its page, with its "+" to make the first one.
+        if let Some(ws) = &ws { ws.update(cx, |w, cx| w.show_first_folder(cx)); }
         let hotkey_error = (cfg!(target_os = "macos") && self.hotkey != crate::shortcuts::global_key())
             .then(|| crate::shortcuts::set_global(&self.hotkey, cx).err()).flatten().map(|e| e.to_string());
         if let Some(e) = hotkey_error.or(import_error) && let Some(ws) = ws {
@@ -719,10 +627,7 @@ impl Onboarding {
             let shown = if self.show_all || found.len() <= FOUND_SHOWN + 1 { found.len() } else { FOUND_SHOWN };
             let mut rows: Vec<AnyElement> = found.iter().take(shown).enumerate().map(|(i, f)| {
                 let on = self.chosen.get(i).copied().unwrap_or(false);
-                let app = if f.app == SIYUAN { tr("思源笔记", "SiYuan") } else { f.app };
-                let title = if f.app == "Markdown" || f.name == f.app { app.to_string() } else { format!("{} · {}", app, f.name) };
-                let desc = if f.app == SIYUAN { crate::localized_count!(f.count, "{} · {} 篇思源笔记文档", "{} · {} SiYuan document", "{} · {} SiYuan documents", where_short(&f.path), f.count) }
-                    else { crate::localized_count!(f.count, "{} · {} 篇 Markdown", "{} · {} Markdown file", "{} · {} Markdown files", where_short(&f.path), f.count) };
+                let (title, desc) = (f.title(), f.desc());
                 div().id(("onb-found", i)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
                     .on_click(cx.listener(move |w, _, _, cx| { if let Some(c) = w.chosen.get_mut(i) { *c = !*c; } cx.notify(); }))
                     .child(row(title, Some(desc.into()), Checkbox::new(on))).into_any_element()
@@ -945,17 +850,7 @@ impl Render for Onboarding {
 
 #[cfg(test)]
 mod tests {
-    use super::found_name;
     use std::path::Path;
-
-    #[test]
-    fn icloud_app_folders_go_by_the_app() {
-        let m = Path::new("/Users/me/Library/Mobile Documents");
-        assert_eq!(found_name("iA Writer", &m.join("27N4MQEA55~pro~writer/Documents"), m), "iA Writer");
-        assert_eq!(found_name("Typora", &m.join("iCloud~abnerworks~Typora/Documents"), m), "Typora");
-        assert_eq!(found_name("Obsidian", &m.join("iCloud~md~obsidian/Documents/Thesis"), m), "Thesis");
-        assert_eq!(found_name("Obsidian", Path::new("/Users/me/Documents"), m), "Documents");
-    }
 
     #[test]
     fn a_picked_folder_is_the_library_itself() {

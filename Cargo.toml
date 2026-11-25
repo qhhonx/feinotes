@@ -11,16 +11,12 @@ categories = ["text-editors"]
 
 # `devtools`: the FDL_SCRIPT driver for tools/harness (`cargo build --release
 # --features devtools`). Off in release builds: shipped apps cannot be scripted.
-# `datatable`: 数据表 (`.sqlite` tables, `BlockKind::DataTable`) while it is
-# still being polished. Off: no way to make one; existing ones show a read-only
-# placeholder and are left as they are (`crate::DATATABLE`).
 [features]
 devtools = ["embed-xiaolai"]
 # `embed-xiaolai`: the board's CJK font (14 MB) compiled in instead of fetched
 # when first needed (src/font_downloads.rs). On with `devtools`, so harness
 # screenshots never depend on the network; off in shipped builds.
 embed-xiaolai = []
-datatable = []
 
 # `fdl_core` is the GPUI-free document engine; plain `cargo test` covers both.
 [workspace]

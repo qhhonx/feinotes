@@ -198,14 +198,11 @@ impl RenderOnce for Toolbar {
 /// tint is content) and the ⋮⋮ grip in `muted-foreground`, with no rule between them (maintainer
 /// 2026-11-24: it is one control, not a `ButtonGroup`); with no glyph, the empty line's + alone. `open` while its menu is: `aria-expanded`, `muted`. 26 tall and
 /// `w` (42 / 28) wide rather than icon-xs's 24 square: the editor places the handle by those sizes
-/// (DESIGN_SYSTEM.md, deviation C). It is one control, so the pointer anywhere on it lights both
-/// halves.
+/// (DESIGN_SYSTEM.md, deviation C). It keeps its face under the pointer (`Button::still`): white,
+/// as the card a drag lifts beside it.
 pub fn block_handle(key: u64, glyph: Option<Svg>, w: f32, open: bool) -> Stateful<Div> {
-    let group = SharedString::from(format!("handle-{key}"));
     let add = glyph.is_none();
-    let hover_bg = if crate::theme::dark() { color::field_hover() } else { color::muted() };
     let seg = |k: u64, w: f32| {
-        let g = group.clone();
         super::Button::outline(("handle-seg", key * 2 + k)).px(px(0.)).gap(px(0.))
             .sized(super::ButtonSize::Xs)
             .selected(open)
@@ -214,9 +211,9 @@ pub fn block_handle(key: u64, glyph: Option<Svg>, w: f32, open: bool) -> Statefu
             // still when pressed (it is dragged from): a set top inset turns the press nudge off
             .top(px(0.))
             .cursor(if add { CursorStyle::PointingHand } else { CursorStyle::OpenHand })
-            .group_hover(g, move |s| s.bg(hover_bg))
+            .still()
     };
-    let d = div().id(("handle", key)).group(group.clone()).occlude().flex();
+    let d = div().id(("handle", key)).occlude().flex();
     match glyph {
         None => d.child(seg(0, w).child(icon("plus", 12., color::foreground()))),
         Some(g) => d.child(seg(0, w)

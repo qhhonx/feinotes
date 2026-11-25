@@ -433,6 +433,17 @@ pub fn start(window: &mut Window, cx: &mut App) {
             // Let the frame settle before the next step.
             cx.background_executor().timer(Duration::from_millis(120)).await;
         }
+        // A script that ends without `quit` quits anyway, so no scripted
+        // window is left behind; `FDL_KEEP_OPEN` keeps it to look at.
+        if std::env::var_os("FDL_KEEP_OPEN").is_none() {
+            if let Some(stop) = recording.take() {
+                stop.set(true);
+                RECORDING.with(|r| *r.borrow_mut() = None);
+                *CURSOR_LOG.lock().unwrap() = None;
+                cx.background_executor().timer(Duration::from_millis(300)).await;
+            }
+            cx.update(|cx| cx.quit());
+        }
     })
     .detach();
 }
@@ -539,8 +550,10 @@ mod native {
     /// Places scripted windows almost entirely past a screen edge that has no
     /// neighbouring display, so they neither cover the user's windows nor get
     /// covered (fully occluded windows stop rendering). Returns the candidate
-    /// origins, best first; the caller tries them until one stays visible
-    /// (a sliver behind the Dock counts as occluded).
+    /// origins, best first: the rightmost spot first, so with several displays
+    /// the sliver sits on the outer edge of the rightmost one rather than under
+    /// the windows on the main display. The caller tries them until one stays
+    /// visible (a sliver behind the Dock counts as occluded).
     pub fn park_candidates(ns_view: usize) -> Vec<CGPoint> {
         use core_graphics::geometry::CGSize;
         const SLIVER: f64 = 24.;
@@ -582,6 +595,7 @@ mod native {
                     }
                 }
             }
+            out.sort_by(|a, b| b.x.total_cmp(&a.x));
             out
         }
     }

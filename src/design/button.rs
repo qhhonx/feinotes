@@ -68,12 +68,13 @@ pub struct Button {
     selected: bool,
     disabled: bool,
     on_wash: bool,
+    still: bool,
 }
 element!(Button, parent);
 
 impl Button {
     pub fn new(id: impl Into<ElementId>, variant: ButtonVariant) -> Self {
-        Button { base: div().id(id), variant, size: ButtonSize::Default, icon: None, editor: false, icon_end: None, label: None, selected: false, disabled: false, on_wash: false }
+        Button { base: div().id(id), variant, size: ButtonSize::Default, icon: None, editor: false, icon_end: None, label: None, selected: false, disabled: false, on_wash: false, still: false }
     }
     pub fn primary(id: impl Into<ElementId>) -> Self { Self::new(id, ButtonVariant::Primary) }
     pub fn outline(id: impl Into<ElementId>) -> Self { Self::new(id, ButtonVariant::Outline) }
@@ -100,6 +101,9 @@ impl Button {
     /// `background` instead of `muted`, which on the wash over the glass sidebar reads as no step at
     /// all (docs/design/SHADCN_AUDIT.md).
     pub fn on_wash(mut self) -> Self { self.on_wash = true; self }
+    /// Keeps its face under the pointer: the editor's block handle, white beside the white card
+    /// it lifts (maintainer 2026-11-25: the hover grey read as a different control).
+    pub fn still(mut self) -> Self { self.still = true; self }
     /// Not available: the whole button at 50% (`disabled:opacity-50`), no pointer.
     pub fn disabled(mut self, on: bool) -> Self { self.disabled = on; self }
 }
@@ -120,6 +124,7 @@ impl RenderOnce for Button {
         // `rounded-md`; `rounded-[min(var(--radius-md),8px)]` at xs and `…10px` at sm: 8 either way at R = 10
         let r = g.button_r.min(if sz == ButtonSize::Xs { 8. } else { 10. });
         let (icon_l, icon_r, label_s, disabled, selected, editor) = (self.icon, self.icon_end, self.label, self.disabled, self.selected, self.editor);
+        let still = self.still;
         // a ghost's fills: `muted` (`muted/50` under the pointer in the dark); on a raised surface in the dark, a step up
         let (ghost_hover, ghost_on) = if self.on_wash { (color::background(), color::background()) } else { super::toolbar::ghost_fills(false) };
         under(self.base, |d| {
@@ -132,7 +137,7 @@ impl RenderOnce for Button {
                 ButtonVariant::Primary => d.bg(color::primary()).when(!disabled, |d| d.hover(|s| s.bg(color::primary_hover()))),
                 ButtonVariant::Outline => d.border_1().border_color(if dark { color::input() } else { color::border() })
                     .bg(if selected { color::muted() } else if dark { color::field() } else { color::background() }).shadow(shadow::xs())
-                    .when(!disabled, |d| d.hover(|s| s.bg(if dark { color::field_hover() } else { color::muted() }))),
+                    .when(!disabled && !still, |d| d.hover(|s| s.bg(if dark { color::field_hover() } else { color::muted() }))),
                 ButtonVariant::Secondary => d.bg(color::secondary()).when(!disabled, |d| d.hover(|s| s.bg(color::secondary_hover()))),
                 ButtonVariant::Ghost => d.when(selected, |d| d.bg(ghost_on))
                     .when(!disabled, |d| d.hover(move |s| s.bg(if selected { ghost_on } else { ghost_hover }))),

@@ -228,6 +228,22 @@ impl Style {
     }
     /// A colour property: its own value, its token's, or `None` (inherit).
     pub fn color(&self, key: &str) -> Option<Hsla> {
+        // a link and the list markers are coloured text on the page: lifted until they read in the
+        // dark (`theme::lift`; 4.5:1 for the link, 3:1 for a marker and the checkbox edge)
+        let min = match key { "a.color" => Some(4.5), "bullet.color" | "number.color" | "task.border" => Some(3.), _ => None };
+        // the check mark sits on the checkbox's vivid fill, which keeps its lightness in the dark: it
+        // stays the colour the theme gives (white), not mirrored to near-black (the home cards draw it white)
+        if key == "task.check" {
+            return match self.values.get(key) {
+                Some(Val::C(c)) => Some(*c),
+                Some(Val::Inherit) => None,
+                _ => match self.def(key) { Def::Rgb(v) => Some(gpui::rgb(v).into()), _ => self.color_raw(key) },
+            };
+        }
+        let c = self.color_raw(key);
+        match min { Some(m) => c.map(|c| crate::theme::lift(c, m)), None => c }
+    }
+    fn color_raw(&self, key: &str) -> Option<Hsla> {
         match self.values.get(key) {
             Some(Val::C(c)) => Some(crate::theme::adapt(*c)),
             Some(Val::Inherit) => None,
@@ -313,7 +329,11 @@ pub fn active() -> &'static Style {
     let p = ACTIVE.load(Ordering::Relaxed);
     if p.is_null() { &PLAIN } else { unsafe { &*p } }
 }
-pub fn color(i: usize) -> Option<Hsla> { active().tokens.get(i).copied().flatten().map(crate::theme::adapt) }
+pub fn color(i: usize) -> Option<Hsla> {
+    let c = active().tokens.get(i).copied().flatten().map(crate::theme::adapt)?;
+    // a link is coloured text on the page: lifted until it reads in the dark, like `a.color`
+    Some(if TOKENS[i].starts_with("link") { crate::theme::lift(c, 4.5) } else { c })
+}
 
 /// 设置 › 文档字体: a family every piece of body text and every heading is
 /// drawn in, overriding the theme's `font-family` for them. `None` follows
@@ -348,16 +368,36 @@ static DOC_STEP: AtomicI32 = AtomicI32::new(0);
 /// The `Preferences::doc_size` choices and their step: 小 / 标准 / 大 / 特大,
 /// like 界面字号's −1 / +2 with one more step up.
 pub fn doc_step(pref: &str) -> i32 { match pref { "small" => -1, "large" => 2, "xlarge" => 4, _ => 0 } }
+/// The presets in 外观's order (小 / 标准 / 大 / 特大) as `doc_size` stores them.
+pub const DOC_PRESETS: [&str; 4] = ["small", "", "large", "xlarge"];
+/// A custom 正文字号's range, in pt.
+pub const DOC_MIN: f32 = 12.;
+pub const DOC_MAX: f32 = 24.;
+/// A custom 正文字号 (自定义): `doc_size` holds the size in pt ("17") where a preset holds its name.
+/// An older version reads the number as no preset, 标准, and carries on.
+pub fn custom_size(pref: &str) -> Option<f32> { pref.trim().parse::<f32>().ok().filter(|n| (DOC_MIN..=DOC_MAX).contains(n)).map(f32::round) }
+/// A custom 正文字号 in force, in pt (0: a preset, `DOC_STEP`).
+static DOC_ABS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 pub fn set_doc_size(pref: &str) {
-    if DOC_STEP.swap(doc_step(pref), Ordering::Relaxed) != doc_step(pref) { touch(); }
+    let abs = custom_size(pref).unwrap_or(0.).to_bits();
+    let step = DOC_STEP.swap(doc_step(pref), Ordering::Relaxed) != doc_step(pref);
+    if step | (DOC_ABS.swap(abs, Ordering::Relaxed) != abs) { touch(); }
 }
+/// The body size `pref` gives in a theme whose own is `body`: a preset's step from it, or the custom size.
+pub fn doc_size_pt(pref: &str, body: f32) -> f32 { custom_size(pref).unwrap_or(body + doc_step(pref) as f32) }
 
 /// A type metric of the note (font size or line height) at the reader's
 /// 正文字号, for the active theme.
 pub fn doc_len(n: f32) -> f32 { doc_len_in(active(), n) }
 
 /// `doc_len` for a theme that need not be the active one (外观's sample).
-pub fn doc_len_in(st: &Style, n: f32) -> f32 { scale_len(n, st.num("page.size"), DOC_STEP.load(Ordering::Relaxed)) }
+pub fn doc_len_in(st: &Style, n: f32) -> f32 {
+    let body = st.num("page.size");
+    // a custom size is absolute: its step is from this theme's body, so every theme lands on it
+    let abs = f32::from_bits(DOC_ABS.load(Ordering::Relaxed));
+    let step = if abs > 0. { (abs - body).round() as i32 } else { DOC_STEP.load(Ordering::Relaxed) };
+    scale_len(n, body, step)
+}
 
 /// Whole pixels keep baselines crisp; step 0 returns `n` untouched.
 fn scale_len(n: f32, body: f32, step: i32) -> f32 {
@@ -578,6 +618,11 @@ fn parse_with_fonts<'a>(css: &str, fonts: &mut dyn FnMut() -> &'a [String]) -> R
     let meta = Meta { name: var("--theme-name"), name_en: var("--theme-name-en"), author: var("--theme-author"), description: var("--theme-description") };
     let mut st = Style::plain(feishu);
     let mut warn = vec![];
+    // At-rules are skipped whole; a `@media (prefers-color-scheme: dark)` block is the one people
+    // write, and it never applies: the dark look is worked out from the light colours. Say so.
+    if css.contains("@media") {
+        warn.push(format!("@media … — {}", crate::settings::tr("深色效果由浅色配色推算，主题不能单独写深色值", "the dark look is worked out from the light colours; a theme can't set its own")));
+    }
     for (n, v) in &vars {
         let v = subst(v, &vars, 0);
         for kind in ["color", "background", "callout", "highlight", "border"] {
@@ -897,6 +942,17 @@ const FEISHU_DESCRIPTION: &str = "飞书文档的正文样式：16 / 26，标题
 #[cfg(test)]
 mod tests {
     #[test]
+    fn doc_size_presets_and_custom() {
+        // the presets keep their names (and an older library's values); a number is a custom size
+        for (pref, pt) in [("small", 15.), ("", 16.), ("large", 18.), ("xlarge", 20.), ("17", 17.), ("12", 12.), ("24", 24.)] {
+            assert_eq!(super::doc_size_pt(pref, 16.), pt, "{pref:?}");
+        }
+        assert_eq!(super::custom_size("small"), None);
+        assert_eq!(super::custom_size("30"), None);
+        assert_eq!(super::custom_size(" 18 "), Some(18.));
+    }
+
+    #[test]
     fn document_size_scales_by_the_body_step() {
         // Empty (and anything unknown) is the theme's size, untouched.
         assert_eq!((doc_step(""), doc_step("huge")), (0, 0));
@@ -1001,7 +1057,9 @@ mod tests {
         assert_eq!((st.num("callout.pad-y"), st.num("callout.pad-x")), (16., 12.));
         assert!(st.palette("color", "red").is_some());
         assert!(st.tokens[TOKENS.iter().position(|t| *t == "block_hover").unwrap()].is_some());
-        assert_eq!(warn, vec![".made-up { color }".to_string()]);
+        assert_eq!(warn.len(), 2, "{warn:?}");
+        assert!(warn.iter().any(|w| w.starts_with("@media")), "{warn:?}");
+        assert!(warn.iter().any(|w| w == ".made-up { color }"), "{warn:?}");
     }
 
     #[test]

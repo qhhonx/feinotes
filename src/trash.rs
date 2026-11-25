@@ -63,6 +63,16 @@ pub(crate) fn page_header_with(ws: &Workspace, title: impl IntoElement, left: f3
 }
 
 /// Centred empty-state illustration and caption.
+/// An illustration in the app's look: `illus/dark/…` beside `illus/…` holds the dark one (light greys
+/// mirrored to deep ones), so a white bin doesn't glow on a dark page.
+pub(crate) fn illus_for(path: &'static str) -> SharedString {
+    if crate::theme::dark() && let Some(name) = path.strip_prefix("illus/") {
+        let dark = format!("illus/dark/{name}");
+        if crate::assets::get(&dark).is_some() { return dark.into() }
+    }
+    path.into()
+}
+
 pub(crate) fn empty_state(illus: &'static str, text: &'static str) -> Div {
     div()
         .flex_1()
@@ -71,7 +81,7 @@ pub(crate) fn empty_state(illus: &'static str, text: &'static str) -> Div {
         .items_center()
         .justify_center()
         .pb(px(64.))
-        .child(img(illus).size(px(120.)))
+        .child(img(illus_for(illus)).size(px(120.)))
         .child(div().mt(px(16.)).text_size(px(13.)).line_height(px(20.)).text_color(Theme::text_caption()).child(text))
 }
 
@@ -233,7 +243,7 @@ impl Workspace {
                 self.status = crate::app::SaveStatus::Failed(msg);
             }
         }
-        self.entries = self.store.list();
+        self.entries.set(self.store.list());
         self.sort();
         self.sync_sub_pages(cx);
         self.trash = self.store.list_trash();
@@ -254,7 +264,9 @@ impl Workspace {
     }
 
     fn purge_trash(&mut self, ids: Vec<String>, success: &'static str, cx: &mut Context<Self>) {
-        if self.store.file_task_busy() || self.file_history.busy || self.tree_writes_pending() || ids.is_empty() { return; }
+        if self.store.file_task_busy() || self.file_history.busy || ids.is_empty() { return; }
+        let later = ids.clone();
+        if self.after_tree_writes(move |w, _, cx| w.purge_trash(later, success, cx)) { return; }
         let Some(task_guard) = self.store.begin_file_task() else { return };
         // Each top-level folder's 回收站 is its own: one writer, and one write, per top-level folder.
         let mut writers: Vec<(String, crate::store::Store, Vec<String>)> = vec![];

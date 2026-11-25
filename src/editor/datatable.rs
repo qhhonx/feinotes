@@ -35,7 +35,7 @@ impl R<'_> {
         let Some(view) = self.ed.datatables.views.get(&id).map(|v| v.0.clone()).filter(|_| !self.ghost) else {
             return frame().h(px(t.height.min(160.))).border_1().border_color(Theme::line_border()).flex().items_center().justify_center()
                 .text_size(px(13.)).text_color(Theme::text_placeholder())
-                .child(if crate::DATATABLE { crate::settings::label("数据表") } else { crate::settings::tr("此版本不支持数据表", "Data tables aren't supported in this version").to_string() }).into_any_element();
+                .child(crate::settings::label("数据表")).into_any_element();
         };
         let covered = self.ed.datatables.open == Some(id);
         // the view is as tall as its rows (`TableView::render`); while it is full-pane, a gap of its height stays
@@ -83,7 +83,6 @@ impl Editor {
     /// A view for every 数据表 block of the page; views of blocks that are gone are dropped.
     pub(super) fn sync_tables(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // a build without 数据表: no view ever opens its file; the block stays a placeholder
-        if !crate::DATATABLE { return; }
         let mut blocks: Vec<(BlockId, TableRef)> = vec![];
         self.core.doc.for_each_block(|b| if let BlockKind::DataTable(t) = &b.kind { blocks.push((b.id, t.clone())) });
         if blocks.is_empty() && self.datatables.views.is_empty() { return; }
@@ -108,6 +107,10 @@ impl Editor {
                     let new = TableRef { src: old.src.clone(), table, view: shown, height: view.read(cx).height, width: old.width };
                     if !e.table_file && e.core.set_table_ref(id, new) { e.changed_preserving_viewport(window, cx); }
                 }
+                // 笔记 cells: the workspace opens, lists and keeps the notes
+                TableEvent::OpenNote(doc) => cx.emit(EditorEvent::OpenDoc(doc.clone())),
+                TableEvent::LibraryChanged => cx.emit(EditorEvent::LibraryChanged),
+                TableEvent::NoteSaved(n) => cx.emit(EditorEvent::NoteSaved(n.clone())),
             });
             self.datatables.views.insert(id, (view, sub));
         }

@@ -95,12 +95,22 @@ pub struct TextField {
     pub mono: bool,
     /// Fonts by run (`TextSpec::font_runs`).
     pub font_runs: Option<crate::editor::text::FontRuns>,
+    /// A family of its own instead of the UI's (a table's cell: the text where the cell draws it).
+    pub font: Option<&'static str>,
+    /// Lines' ascent and descent (`TextSpec::metrics`).
+    pub metrics: Option<(f32, f32)>,
+    /// Where rows break (`TextSpec::breaks`).
+    pub breaks: Option<crate::editor::text::Breaks>,
+    /// `TextSpec::shift`.
+    pub shift: Point<Pixels>,
     /// Longest text in chars (longer input is cut off).
     pub max_len: Option<usize>,
     /// Only ASCII digits get in (number inputs).
     pub digits: bool,
     /// Tab / Shift+Tab emit events instead of reaching the parent.
     pub tab_events: bool,
+    /// Shift+Enter breaks the line in a field whose Enter submits (a table's text cell).
+    pub shift_newline: bool,
     /// Draw no caret even when focused (a field that takes keys before it
     /// looks focused, like the emoji search).
     pub hide_caret: bool,
@@ -140,9 +150,14 @@ impl TextField {
             multiline: false,
             mono: false,
             font_runs: None,
+            font: None,
+            metrics: None,
+            breaks: None,
+            shift: Point::default(),
             max_len: None,
             digits: false,
             tab_events: false,
+            shift_newline: false,
             hide_caret: false,
             selecting: false,
             pointer_hidden: false,
@@ -354,6 +369,12 @@ impl TextField {
         if self.multiline {
             return self.replace(self.sel.clone(), "\n", cx);
         }
+        if self.shift_newline {
+            self.multiline = true;
+            self.replace(self.sel.clone(), "\n", cx);
+            self.multiline = false;
+            return;
+        }
         cx.emit(TextFieldEvent::ShiftSubmit);
     }
 
@@ -561,6 +582,10 @@ impl Render for TextField {
         spec.wrap = self.wrap;
         spec.mono = self.mono;
         spec.font_runs = self.font_runs.clone();
+        spec.font = self.font;
+        spec.metrics = self.metrics;
+        spec.breaks = self.breaks.clone();
+        spec.shift = self.shift;
         let el = RichTextElement {
             id: self.id,
             text: RichText::plain(self.text.clone()),

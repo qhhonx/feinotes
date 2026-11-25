@@ -32,10 +32,10 @@
 | `base.rs` | `under()`（组件样式垫在调用方样式下面）、`element!` 宏、`icon()` | — |
 | `button.rs` | `Button` + `ButtonVariant`（Primary / Outline / Secondary / Ghost / Destructive / Link）+ `ButtonSize`（Lg 40 / Default 36 / Sm 32 / Tool 28 / Xs 24）；`icon`、`icon_end`、`label`、`selected`、`disabled`、`variant` | Button |
 | `card.rs` | `Card`、`Item`、`Separator`、`Toast` + `ToastTone` | Card、Item、Separator、Sonner |
-| `menu.rs` | `Popover`（`.menu()`、`.padded()`）、`MenuItem`、`MenuLabel`、`MenuSeparator`；常量 `menu::PAD`、`ROW_H`、`SEP_H`、`LABEL_H` 给算子菜单位置用 ；`hang`（按钮菜单挂在量到的按钮下 4、`Align::Start / End`、放不下翻上去）、`room` + `Popover::fit`（放不下时限高、滚动） | DropdownMenu、Popover |
-| `scroll.rs` | `ScrollBar`（`render(&handle)`，`rounded(r)`）、`scroll::bar(key, &handle, r)`（给任何 `overflow_y_scroll` 框挂上，放在框的最后一个子元素）、`Fade`、`THUMB` / `PAD` / `thumb_color`（页面和宽表格自己的滚动条也用） | ScrollArea、ScrollBar |
+| `menu.rs` | `Popover`（`.menu()`、`.padded()`）、`MenuItem`、`MenuLabel`、`MenuSeparator`；常量 `menu::PAD`、`ROW_H`、`SEP_H`、`LABEL_H` 给算子菜单位置用 ；`MenuItem::switch(on)`（带开关的行：点了只切换，菜单留着，Esc 和点外面才关）；`hang`（按钮菜单挂在量到的按钮下 4、`Align::Start / End`、放不下翻上去）、`room` + `Popover::fit`（放不下时限高、滚动） | DropdownMenu、Popover |
+| `scroll.rs` | `ScrollBar`（`render(&handle)`，`rounded(r)`：框铺满一个圆角 r 的面时，上下让出 `ends_for(r)`，圆头不碰圆角）、`scroll::bar(key, &handle, r)`（给任何 `overflow_y_scroll` 框挂上，放在框的最后一个子元素）、`Fade`、`THUMB` / `PAD` / `thumb_color`（页面和宽表格自己的滚动条也用） | ScrollArea、ScrollBar |
 | `field.rs` | `Field`（`Field::select`、`Field::select_value`，`FieldSize`）、`Textarea`、`Label` | Input、SelectTrigger、Textarea、Label |
-| `control.rs` | `Checkbox`（含半选）、`Radio`、`Switch`、`Segmented` + `Segment`（可带图标） | Checkbox、RadioGroupItem、Switch、Tabs |
+| `control.rs` | `Checkbox`（含半选）、`Radio`、`Switch`（`.keyed(id)`：切换时滑过去）、`Segmented` + `Segment`（可带图标） | Checkbox、RadioGroupItem、Switch、Tabs |
 | `badge.rs` | `Badge`（`new` / `primary` / `outline` / `destructive`、`chip(i)`、`colored`、`closable`）、`Kbd`、`KbdGroup` | Badge、Kbd、KbdGroup |
 | `dialog.rs` | `Dialog`（`title`、`description`、`footer`、`closable`、`keys`；`Dialog::alert`）、`DialogFocus`、`scrim()` | Dialog、AlertDialog |
 | `toolbar.rs` | `Toggle`（`ToggleSize`）、`ButtonGroup`、`ButtonGroupSeparator`、`Toolbar`、`block_handle()`；常量 `TOOLBAR_H`、`TOOLBAR_PAD`、`TOOLBAR_GAP`、`toolbar::w::*` 和 `toolbar_layout()` 给算下拉位置用 | Toggle、ToggleGroup、ButtonGroup（Toolbar 是这几样拼的） |

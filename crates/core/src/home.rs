@@ -246,6 +246,13 @@ impl Home {
         self.save()
     }
 
+    /// Top-level folder `key`'s folder is gone from the disk: its library closes, so nothing is
+    /// written there again (writing would make the folder anew, empty); it stays on the list,
+    /// unopened, until it is back (`retry`) or removed.
+    pub fn lose(&mut self, key: &str, why: String) {
+        if let Some(r) = self.folders.iter_mut().find(|r| r.key == key) { r.store = None; r.error = Some(why); }
+    }
+
     /// Try a top-level folder that could not be opened again (the disk is back).
     pub fn retry(&mut self, key: &str) {
         let Some(r) = self.folders.iter_mut().find(|r| r.key == key && r.store.is_none()) else { return };
@@ -389,6 +396,32 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_gone_from_the_disk_is_never_written_again() {
+        let (a, b) = (dir("gone"), dir("stays"));
+        let mut ws = Home { fixed: true, ..Default::default() };
+        let ka = ws.add(&a).unwrap();
+        let kb = ws.add(&b).unwrap();
+        let made = ws.store(&ka).unwrap().create_from(&doc("in a")).unwrap();
+        // Moved away while open (in the Finder): the window finds it gone and closes its library.
+        let moved = a.with_file_name(format!("{}-moved", a.file_name().unwrap().to_string_lossy()));
+        crate::vfs::rename(&a, &moved).unwrap();
+        ws.lose(&ka, "gone".into());
+        assert!(ws.store(&ka).is_none(), "no library left to write with");
+        // Whatever the app does meanwhile, nothing appears at the old path, not even an empty .quiet/.
+        let _ = ws.list();
+        ws.save().unwrap();
+        ws.store(&kb).unwrap().create_from(&doc("in b")).unwrap();
+        ws.retry(&ka);
+        assert!(ws.store(&ka).is_none() && !a.fs_exists(), "the folder is not made anew at its old path");
+        assert!(!ws.list().iter().any(|e| e.top == ka), "its documents are not listed");
+        // Back where it was: it opens again, as it was.
+        crate::vfs::rename(&moved, &a).unwrap();
+        ws.retry(&ka);
+        assert!(ws.store(&ka).is_some());
+        assert!(ws.list().iter().any(|e| e.id == made && e.top == ka));
+    }
+
+    #[test]
     fn a_copied_folder_gets_ids_of_its_own() {
         let a = dir("orig");
         let mut s = Store::open_top_folder(&a).unwrap();
@@ -397,9 +430,10 @@ mod tests {
         drop(s);
         let b = dir("copy");
         crate::vfs::copy(a.join("one.xml"), b.join("one.xml")).unwrap();
-        crate::vfs::create_dir_all(b.join(".quiet/meta")).unwrap();
-        let own = format!("meta/{}.json", crate::store::device().id);
-        for name in ["format.json", own.as_str()] { crate::vfs::copy(a.join(".quiet").join(name), b.join(".quiet").join(name)).unwrap(); }
+        let own = format!("meta/{}", crate::store::device().id);
+        crate::vfs::create_dir_all(b.join(".quiet").join(&own)).unwrap();
+        crate::vfs::copy(a.join(".quiet/format.json"), b.join(".quiet/format.json")).unwrap();
+        for e in crate::vfs::read_dir(a.join(".quiet").join(&own)).unwrap().flatten() { crate::vfs::copy(e.path(), b.join(".quiet").join(&own).join(e.file_name())).unwrap(); }
         let mut ws = Home { fixed: true, ..Default::default() };
         ws.add(&a).unwrap();
         ws.add(&b).unwrap();

@@ -27,15 +27,17 @@ pub(crate) struct Panel {
     inputs: Vec<(Entity<TextField>, Subscription)>,
     /// 填色: the rule whose colours are laid out under it.
     palette: Option<usize>,
+    /// 字段配置, a row being dragged: it and the place among the others it would land at.
+    drop_at: Option<(FieldId, usize)>,
 }
 
 /// A 字段配置 row being carried to another place: GPUI's drag payload, drawn as the row lifted.
 #[derive(Clone)]
-struct FieldDrag { id: FieldId, at: usize, name: String, glyph: &'static str }
+struct FieldDrag { id: FieldId, name: String, glyph: &'static str }
 
 impl Render for FieldDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().h(px(34.)).w(px(236.)).px(px(8.)).flex().items_center().gap(px(6.)).rounded(px(crate::design::geo().tool_r))
+        div().h(px(34.)).w(px(FIELD_ROW_W)).px(px(8.)).flex().items_center().gap(px(6.)).rounded(px(crate::design::geo().menu_row_r))
             .bg(crate::theme::raised(Theme::bg_body())).shadow(crate::theme::shadow_menu()).opacity(0.96)
             .font_family(crate::theme::ui_family()).text_size(px(text_sm())).text_color(Theme::text())
             .child(icon(self.glyph, 15., Theme::icon()))
@@ -55,17 +57,43 @@ pub(crate) fn open(v: &mut TableView, kind: Kind, pos: Point<Pixels>, window: &m
         window.focus(&input.focus_handle(cx), cx);
         (input, sub)
     });
-    v.open_popup(pos, Popup::Panel(Panel { kind, search, inputs: vec![], palette: None }), cx);
+    v.open_popup(pos, Popup::Panel(Panel { kind, search, inputs: vec![], palette: None, drop_at: None }), cx);
     sync_inputs(v, window, cx);
+    // 填色 with no rule opens on one, ready to fill in (left empty, it goes again as the panel closes)
+    if kind == Kind::Color && peek(v, cx, |_, view| view.opts.colors.is_empty()).unwrap_or(false) { add_color_rule(v, window, cx); }
 }
 
-pub(crate) fn render(_v: &TableView, _base: &Base, t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) -> AnyElement {
+/// A 填色 rule more: the first field, nothing yet, the next colour no rule has; its value box focused.
+fn add_color_rule(v: &mut TableView, window: &mut Window, cx: &mut Context<TableView>) {
+    let Some(c) = new_cond(v, cx) else { return };
+    v.edit_view(cx, |view| {
+        // 飞书 starts on yellow; then whichever colour no rule has yet
+        let color = (0..10u8).map(|k| (k + 2) % 10).find(|s| !view.opts.colors.iter().any(|r| r.color == *s)).unwrap_or(2);
+        view.opts.colors.push(ColorRule { filter: Filter { all: true, conds: vec![c] }, color });
+    });
+    sync_inputs(v, window, cx);
+    if let Some(input) = panel_mut(v).and_then(|p| p.inputs.last()).map(|(e, _)| e.clone()) { window.focus(&input.focus_handle(cx), cx); }
+}
+
+/// The 填色 panel closing: its rules that say nothing go (one opened on and left empty, as 飞书 drops it).
+pub(crate) fn closing(v: &mut TableView, cx: &mut Context<TableView>) {
+    if !matches!(v.popup.as_ref(), Some((_, Popup::Panel(p))) if p.kind == Kind::Color) { return }
+    let today = field::today();
+    let empty: Vec<usize> = { let st = v.state.read(cx); let base = &st.doc.base; base.table(v.table).and_then(|t| t.view(v.view).map(|view| view.opts.colors.iter().enumerate()
+        .filter(|(_, r)| !r.filter.conds.iter().any(|c| query::cond_active(base, t, c, today))).map(|(i, _)| i).collect())).unwrap_or_default() };
+    if empty.is_empty() { return }
+    v.edit_view(cx, |view| { for i in empty.into_iter().rev() { if i < view.opts.colors.len() { view.opts.colors.remove(i); } } });
+}
+
+pub(crate) fn render(v: &TableView, _base: &Base, t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) -> AnyElement {
+    // the panel's height kept to the window's room under (or over) its button
+    let room = v.popup_room();
     match panel.kind {
-        Kind::Fields => field_list(t, view, panel, cx),
-        Kind::Filter => filter_panel(t, view, panel, cx),
-        Kind::Group | Kind::Sort => order_panel(t, view, panel.kind, cx),
-        Kind::RowHeight => height_panel(view, cx),
-        Kind::Color => color_panel(t, view, panel, cx),
+        Kind::Fields => field_list(t, view, panel, room, cx),
+        Kind::Filter => filter_panel(t, view, panel, room, cx),
+        Kind::Group | Kind::Sort => order_panel(t, view, panel.kind, room, cx),
+        Kind::RowHeight => height_panel(view, room, cx),
+        Kind::Color => color_panel(t, view, panel, room, cx),
     }
 }
 
@@ -163,14 +191,18 @@ fn sorts(view: &View, kind: Kind) -> &Vec<SortBy> { if kind == Kind::Group { &vi
 fn sorts_mut(view: &mut View, kind: Kind) -> &mut Vec<SortBy> { if kind == Kind::Group { &mut view.opts.groups } else { &mut view.opts.sorts } }
 
 /// A 字段配置 row dropped on another: it takes that row's place (the title stays first).
-fn move_field(v: &mut TableView, src: FieldId, dst: FieldId, cx: &mut Context<TableView>) {
+/// 字段配置: `src` to place `to` among the other fields (the title column staying first).
+fn move_field(v: &mut TableView, src: FieldId, to: usize, cx: &mut Context<TableView>) {
     let Some(mut ids) = peek(v, cx, |t, view| t.ordered_fields(view).iter().skip(1).map(|f| f.id).collect::<Vec<_>>()) else { return };
-    let (Some(a), Some(b)) = (ids.iter().position(|f| *f == src), ids.iter().position(|f| *f == dst)) else { return };
-    if a == b { return; }
+    let Some(a) = ids.iter().position(|f| *f == src) else { return };
+    if a == to { return; }
     let id = ids.remove(a);
-    ids.insert(b, id);
+    ids.insert(to.min(ids.len()), id);
     v.edit_view(cx, |view| view.opts.order = ids);
 }
+
+/// A 字段配置 row's width: the panel's, less the rows' inset (its drag and its gap the same).
+const FIELD_ROW_W: f32 = 272.;
 
 // ---- pickers ----
 
@@ -206,8 +238,8 @@ fn pick_options(v: &mut TableView, kind: Kind, i: usize, pos: Point<Pixels>, cx:
 
 // ---- parts ----
 
-fn shell(id: &'static str, w: f32, cx: &Context<TableView>) -> crate::design::Popover {
-    crate::design::Popover::new(id).occlude().w(px(w)).flex().flex_col().text_size(px(text_sm()))
+fn shell(id: &'static str, w: f32, room: f32, cx: &Context<TableView>) -> crate::design::Popover {
+    crate::design::Popover::new(id).occlude().w(px(w)).fit(room).flex().flex_col().text_size(px(text_sm()))
         .on_mouse_down_out(cx.listener(|v, _, window, cx| if v.dropdown.is_none() { v.close_popup(window, cx) }))
 }
 
@@ -291,15 +323,29 @@ fn cond_controls(t: &Table, kind: Kind, i: usize, c: &Cond, panel: &Panel, field
 
 // ---- 字段配置 ----
 
-fn field_list(t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) -> AnyElement {
+fn field_list(t: &Table, view: &View, panel: &Panel, room: f32, cx: &Context<TableView>) -> AnyElement {
     let query = panel.search.as_ref().map(|(e, _)| e.read(cx).text.trim().to_lowercase()).unwrap_or_default();
     let primary = t.fields.first().map(|f| f.id);
-    let mut list = div().id("tb-pl-list").max_h(px(420.)).overflow_y_scroll().flex().flex_col();
+    let mut list = div().id("tb-pl-list").max_h(px(420.)).overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-pl-list")).flex().flex_col()
+        // let go anywhere over the list: where the gap is
+        .on_drop(cx.listener(|v, d: &FieldDrag, _, cx| {
+            let to = panel_mut(v).and_then(|p| p.drop_at.take()).filter(|(id, _)| *id == d.id).map(|(_, to)| to);
+            if let Some(to) = to { move_field(v, d.id, to, cx); } else { cx.notify(); }
+        }));
     let mut any = false;
-    for (at, f) in t.ordered_fields(view).into_iter().enumerate() {
+    let fields = t.ordered_fields(view);
+    // a row being dragged (only with no search): taken out, a gap of its size where it would land
+    let carried = panel.drop_at.filter(|_| cx.has_active_drag() && query.is_empty());
+    let others: Vec<&&Field> = fields.iter().filter(|f| Some(f.id) != primary && carried.is_none_or(|(id, _)| f.id != id)).collect();
+    let gap = || div().flex_none().h(px(34.)).mx(px(4.)).rounded(px(crate::design::geo().menu_row_r)).bg(Theme::fill_hover());
+    for f in fields.iter() {
         if !query.is_empty() && !f.name.to_lowercase().contains(&query) { continue; }
         any = true;
         let (fid, first, hidden) = (f.id, Some(f.id) == primary, view.opts.hidden.contains(&f.id));
+        if carried.is_some_and(|(id, _)| id == fid) { continue; }
+        // its place among the rest (the title column and the carried row left out)
+        let place = others.iter().position(|o| o.id == fid).unwrap_or(0);
+        if let Some((_, to)) = carried && !first && to == place { list = list.child(gap()); }
         let row = div().id(("tb-pl", fid)).flex_none().h(px(34.)).mx(px(4.)).px(px(8.)).flex().items_center().gap(px(6.)).rounded(px(crate::design::geo().menu_row_r)).hover(|s| s.bg(Theme::fill_hover()))
             .when(!first, |d| d.child(icon("grip-vertical", 14., Theme::text_placeholder())))
             .child(icon(field_glyph(f.ty), 15., if hidden { Theme::text_disabled() } else { Theme::icon() }))
@@ -314,21 +360,26 @@ fn field_list(t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) ->
                     v.edit_view(cx, |view| if !view.opts.hidden.remove(&fid) { view.opts.hidden.insert(fid); });
                     v.col_sel.retain(|f| *f != fid);
                 })))
-            .on_drag(FieldDrag { id: fid, at, name: f.name.clone(), glyph: field_glyph(f.ty) }, |d, _, _, cx| cx.new(|_| d.clone()))
-            // the line it would land on: under a row below where it came from, over one above
-            .drag_over::<FieldDrag>(move |s, d, _, _| if d.id == fid { s } else if d.at < at { s.border_b_2().border_color(Theme::primary()) } else { s.border_t_2().border_color(Theme::primary()) })
-            .on_drop(cx.listener(move |v, d: &FieldDrag, _, cx| move_field(v, d.id, fid, cx))));
+            .on_drag(FieldDrag { id: fid, name: f.name.clone(), glyph: field_glyph(f.ty) }, |d, _, _, cx| cx.new(|_| d.clone()))
+            // over a row, the gap goes before it (its upper half) or after it: the rest make room
+            .on_drag_move(cx.listener(move |v, ev: &DragMoveEvent<FieldDrag>, _, cx| {
+                if !ev.bounds.contains(&ev.event.position) { return }
+                let carried = ev.drag(cx).id;
+                let to = if carried == fid { place } else { place + usize::from(ev.event.position.y > ev.bounds.center().y) };
+                if let Some(p) = panel_mut(v) && p.drop_at != Some((carried, to)) { p.drop_at = Some((carried, to)); cx.notify(); }
+            })));
     }
+    if let Some((_, to)) = carried && to >= others.len() { list = list.child(gap()); }
     if !any { list = list.child(div().px(px(12.)).py(px(10.)).text_color(Theme::text_placeholder()).child(label("无结果"))); }
     let every = |id: &'static str, text: &str, hide: bool| text_btn(id, "", text).on_click(cx.listener(move |v, _, _, cx| {
         let ids: Vec<FieldId> = if hide { peek(v, cx, |t, _| t.fields.iter().skip(1).map(|f| f.id).collect()).unwrap_or_default() } else { vec![] };
         v.edit_view(cx, |view| view.opts.hidden = ids.into_iter().collect());
         if hide { v.col_sel.clear(); }
     }));
-    shell("tb-panel-fields", 280., cx).py(px(6.))
+    shell("tb-panel-fields", 280., room, cx).py(px(6.))
         .children(panel.search.as_ref().map(|(e, _)| div().flex_none().h(px(36.)).px(px(12.)).mb(px(4.)).flex().items_center().gap(px(6.)).border_b_1().border_color(Theme::line_divider())
             .child(icon("search", 14., Theme::text_placeholder())).child(div().flex_1().min_w_0().child(e.clone()))))
-        .child(list)
+        .child(list.child(crate::design::scroll::bar("tb-pl-list", &crate::design::scroll::handle("tb-pl-list"), 0.)))
         .child(menu_rule())
         .child(div().flex_none().px(px(6.)).flex().items_center().gap(px(4.)).child(every("tb-pl-all", "全部显示", false)).child(every("tb-pl-none", "全部隐藏", true)))
         .child(menu_rule())
@@ -345,18 +396,22 @@ fn field_list(t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) ->
 /// A condition panel with nothing in it yet: only its title and an add button, so narrow.
 const EMPTY_W: f32 = 280.;
 
-fn filter_panel(t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) -> AnyElement {
+fn filter_panel(t: &Table, view: &View, panel: &Panel, room: f32, cx: &Context<TableView>) -> AnyElement {
     let f = &view.opts.filter;
-    let mut p = shell("tb-panel-filter", if f.conds.is_empty() { EMPTY_W } else { 560. }, cx).p(px(crate::design::geo().popover_pad)).gap(px(crate::design::geo().panel_gap)).child(title("设置筛选条件"));
+    let mut p = shell("tb-panel-filter", if f.conds.is_empty() { EMPTY_W } else { 560. }, room, cx).p(px(crate::design::geo().popover_pad)).gap(px(crate::design::geo().panel_gap)).child(title("设置筛选条件"));
     if f.conds.len() >= 2 {
         let all = f.all;
+        // One sentence with the 所有/任一 box where its placeholder falls.
+        let sentence = crate::localized_format!("符合以下{}条件", "Match {} of the following conditions", '\u{1}');
+        let (before, after) = sentence.split_once('\u{1}').unwrap_or((sentence.as_str(), ""));
+        let (before, after) = (before.trim().to_string(), after.trim().to_string());
         p = p.child(div().flex().items_center().gap(px(8.)).text_color(Theme::text_caption())
-            .child(label("符合以下"))
+            .when(!before.is_empty(), |d| d.child(before))
             .child(select_box("tb-pf-all", label(if all { "所有" } else { "任一" })).flex_none().w(px(76.)).on_click(cx.listener(move |v, ev: &ClickEvent, _, cx| {
                 let items = vec![DropItem::new(label("所有")).on(all), DropItem::new(label("任一")).on(!all)];
                 v.open_dropdown(below(ev), 96., items, |v, k, _, cx| v.edit_view(cx, |view| view.opts.filter.all = k == 0), cx);
             })))
-            .child(label("条件")));
+            .when(!after.is_empty(), |d| d.child(after)));
     }
     for (i, c) in f.conds.iter().enumerate() {
         p = p.child(div().flex().items_center().gap(px(8.))
@@ -377,9 +432,9 @@ fn filter_panel(t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) 
 /// 分组 nests this deep.
 const GROUP_LEVELS: usize = 3;
 
-fn order_panel(t: &Table, view: &View, kind: Kind, cx: &Context<TableView>) -> AnyElement {
+fn order_panel(t: &Table, view: &View, kind: Kind, room: f32, cx: &Context<TableView>) -> AnyElement {
     let (list, group) = (sorts(view, kind), kind == Kind::Group);
-    let mut p = shell(if group { "tb-panel-group" } else { "tb-panel-sort" }, if list.is_empty() { EMPTY_W } else { 400. }, cx).p(px(crate::design::geo().popover_pad)).gap(px(crate::design::geo().panel_gap)).child(title(if group { "设置分组条件" } else { "设置排序条件" }));
+    let mut p = shell(if group { "tb-panel-group" } else { "tb-panel-sort" }, if list.is_empty() { EMPTY_W } else { 400. }, room, cx).p(px(crate::design::geo().popover_pad)).gap(px(crate::design::geo().panel_gap)).child(title(if group { "设置分组条件" } else { "设置排序条件" }));
     for (i, s) in list.iter().enumerate() {
         let f = t.field(s.field);
         let (asc, desc) = order_words(f.map(|f| f.ty));
@@ -425,11 +480,12 @@ fn order_panel(t: &Table, view: &View, kind: Kind, cx: &Context<TableView>) -> A
 
 // ---- 行高 ----
 
-fn height_panel(view: &View, cx: &Context<TableView>) -> AnyElement {
+fn height_panel(view: &View, room: f32, cx: &Context<TableView>) -> AnyElement {
     let cur = view.opts.row_height;
-    let mut p = shell("tb-panel-height", 140., cx).py(px(8.)).child(div().px(px(12.)).pb(px(4.)).child(title("设置行高")));
+    // the menu's heading, not one of its rows: shadcn's DropdownMenuLabel (text-xs, muted)
+    let mut p = shell("tb-panel-height", 140., room, cx).py(px(8.)).child(crate::design::MenuLabel::new(label("设置行高")));
     for (i, h) in RowHeight::ALL.iter().copied().enumerate() {
-        p = p.child(menu_item(("tb-ph", i), "", label(h.label()), false).when(h == cur, |d| d.text_color(Theme::primary()).child(icon("check", 14., Theme::primary())))
+        p = p.child(menu_item(("tb-ph", i), "", label(h.label()), false).when(h == cur, |d| d.text_color(crate::design::color::foreground()).child(icon("check", 14., crate::design::color::foreground())))
             .on_click(cx.listener(move |v, _, window, cx| { v.edit_view(cx, |view| view.opts.row_height = h); v.close_popup(window, cx); })));
     }
     p.into_any_element()
@@ -437,8 +493,8 @@ fn height_panel(view: &View, cx: &Context<TableView>) -> AnyElement {
 
 // ---- 填色 ----
 
-fn color_panel(t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) -> AnyElement {
-    let mut p = shell("tb-panel-color", if view.opts.colors.is_empty() { EMPTY_W } else { 560. }, cx).p(px(crate::design::geo().popover_pad)).gap(px(crate::design::geo().panel_gap)).child(title("设置填色条件"));
+fn color_panel(t: &Table, view: &View, panel: &Panel, room: f32, cx: &Context<TableView>) -> AnyElement {
+    let mut p = shell("tb-panel-color", 560., room, cx).p(px(crate::design::geo().popover_pad)).gap(px(crate::design::geo().panel_gap)).child(title("设置填色条件"));
     for (i, rule) in view.opts.colors.iter().enumerate() {
         let cur = rule.color % 10;
         p = p.child(div().flex().items_center().gap(px(8.))
@@ -463,14 +519,5 @@ fn color_panel(t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) -
         }
         p = p.child(row);
     }
-    p.child(div().flex().child(text_btn("tb-pk-add", "plus", "添加条件").on_click(cx.listener(|v, _, window, cx| {
-        let Some(c) = new_cond(v, cx) else { return };
-        v.edit_view(cx, |view| {
-            // 飞书 starts on yellow; then whichever colour no rule has yet
-            let color = (0..10u8).map(|k| (k + 2) % 10).find(|s| !view.opts.colors.iter().any(|r| r.color == *s)).unwrap_or(2);
-            view.opts.colors.push(ColorRule { filter: Filter { all: true, conds: vec![c] }, color });
-        });
-        sync_inputs(v, window, cx);
-        if let Some(input) = panel_mut(v).and_then(|p| p.inputs.last()).map(|(e, _)| e.clone()) { window.focus(&input.focus_handle(cx), cx); }
-    })))).into_any_element()
+    p.child(div().flex().child(text_btn("tb-pk-add", "plus", "添加条件").on_click(cx.listener(|v, _, window, cx| add_color_rule(v, window, cx))))).into_any_element()
 }

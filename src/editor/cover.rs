@@ -8,7 +8,7 @@ use super::emoji_picker::EmojiTarget;
 use super::overlays::at;
 use super::view::{Editor, EditorEvent, Menu};
 use crate::model::Cover;
-use crate::editor_theme::{self as theme, Theme, craft};
+use crate::editor_theme::{self as theme, Theme};
 use crate::editor_ui::{TipExt, icon};
 use crate::design::{Button, ButtonSize, ButtonVariant, MenuItem, Popover, Separator, color};
 use super::image::picture;
@@ -353,13 +353,13 @@ impl Editor {
                 ),
             });
         let tip = drag.filter(|d| !d.moved).map(|_| {
-            // A dark tip: near-black glass, white 12pt.
+            // A dark tip: near-black glass, white 12pt, in either look (a literal colour, as over a photo).
             div().absolute().inset_0().flex().items_center().justify_center().child(
                 div()
                     .px(px(12.))
                     .py(px(6.))
                     .rounded(px(8.))
-                    .bg(theme::ca(craft::N950, 0.72))
+                    .bg(theme::rgbaf(0x14, 0x15, 0x17, 0.72))
                     .text_size(px(12.))
                     .line_height(px(18.))
                     .text_color(gpui::white())
@@ -535,8 +535,8 @@ impl Editor {
                                     .rounded(px(6.))
                                     .border_1()
                                     .border_color(Theme::swatch_border())
-                                    .hover(|s| s.bg(theme::ca(craft::N1000, 0.15)))
-                                    .active(|s| s.bg(theme::ca(craft::N1000, 0.2))),
+                                    .hover(|s| s.bg(theme::rgbaf(0, 0, 0, 0.15)))
+                                    .active(|s| s.bg(theme::rgbaf(0, 0, 0, 0.2))),
                             )
                             .on_click(cx.listener(move |e, _, _, cx| e.apply_preset(&name, cx))),
                     );

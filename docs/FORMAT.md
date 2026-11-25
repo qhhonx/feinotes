@@ -15,8 +15,10 @@ Quiet.md/
 ├── .assets/                Pasted or inserted images and attachments, with previews in .assets/thumbs
 └── .quiet/                 Application data
     ├── format.json         {"format": 6}, the layout version (store::FORMAT)
-    ├── meta/<device id>.json  Attached metadata, one file per device (below)
-    ├── meta/<device id>.json.bak  That device's previous file
+    ├── meta/<device id>/   Attached metadata, a folder per device (below): device.json and shards 00.json … 3f.json
+    ├── meta/<device id>/<nn>.json.bak  That shard's previous version
+    ├── meta/<device id>.json  FORMAT 5: the device's metadata in one file (another device not yet on shards)
+    ├── meta/<device id>.json.single  A development FORMAT 6 file, kept 30 days after its move to shards
     ├── index.json.v4       The FORMAT 4 index, kept after the move to 5
     ├── settings.json       Window UI settings, including sidebar width
     ├── preferences.json, shortcuts.json, emoji.json, themes/
@@ -57,11 +59,12 @@ Quiet.md/
         └── Week 1.xml
 ```
 
-- **The rule reads only the disk.** The folder `X/` and the file `X/X.xml` must have the same name (exact, after the escaping of `layout::file_name_for`). Only a document (`.xml`) is ever the folder's document: `X/X.md` is an ordinary Markdown file in an ordinary folder `X/`, and a `.excalidraw` or `.sqlite` file never is it either. Markdown files take no child pages, so 新建子文档 is not offered on them. `index.json` has no field for this and `store::FORMAT` is unchanged, so older builds read the same files as a folder holding a document.
+- **The rule reads only the disk.** The folder `X/` and the file `X/X.xml` must have the same name (exact, after the escaping of `layout::file_name_for`). Only a document (`.xml`) is ever the folder's document: `X/X.md` is an ordinary Markdown file in an ordinary folder `X/`, and a `.excalidraw` file never is it either. One other file is its folder's own: a data table that has note columns lives with its notes as `X/X.sqlite` (see below); where a folder holds both `X/X.xml` and `X/X.sqlite`, the document is the one and the table is a child. Markdown files take no child pages, so 新建子文档 is not offered on them. `index.json` has no field for this and `store::FORMAT` is unchanged, so older builds read the same files as a folder holding a document.
 - **Shown as a document.** The sidebar and Home show the folder as one document row or card with the document's title and icon, and an expand arrow when there are other entries in it. Opening it opens `X/X.xml`. The document is not repeated among the children, search and @-mentions list it once (as the document), and its breadcrumbs stop above the folder.
 - **Adding the first child page** (新建子文档 in the row and document "…" menus; document rows have no hover "+") creates `X/` where `X.xml` was, moves the document into it as `X/X.xml` (first in the folder's order, the folder taking the document's place), then creates the new page last in the folder. Links to the moved document and from it are rewritten as for any move. The steps are one entry in the file-operation undo history. A document already in its folder gets the new page directly. The folder is named after the file (`Plan (2).xml` gives `Plan (2)/Plan (2).xml`), numbered when the name is taken.
 - **The pair keeps one name.** Renaming the document (in the editor or the sidebar) renames the folder and then the file after the folder. A child page that already holds that name inside the folder is numbered first. Moving, dragging and deleting the row act on the whole folder, and dropping something on the row puts it in the folder.
 - **Without children the folder stays.** When the last child page is moved out or deleted, `X/X.xml` is left as it is and still shows as a plain document. Undoing 新建子文档 moves the document back out and removes the empty folder.
+- **A data table with its notes.** A data table's note cells each point at a document (`docs/design/DATA_TABLE_DIRECTION.md` 3.5). A table has no child pages, as a Markdown file has none: it stays where it is, and a note made from one of its empty note cells is created in a plain folder beside it, `Books · Notes/` (`书单 · 笔记/` in Chinese), made when the first note is. The folder is an ordinary folder: renaming the table leaves its name as it is (the notes already there keep being used), and it can be renamed, moved or emptied like any other. A note cell holds the note's path relative to the table's file (`Books · Notes/Three-Body.xml`, `Elsewhere/Note.xml`), written like a document link; renaming or moving a note, the table or a folder holding either rewrites those cells as it rewrites links. A table an earlier build moved into a folder of its name (`Books/Books.sqlite`, the folder's own file) is left there and keeps making its notes in that folder.
 - **Existing libraries.** The FORMAT 2 and FORMAT 4 migrations turned pages with child pages into exactly this shape (`migrate::pages_to_folders`), so those pages have their children again.
 
 The same mapping (a page with children ⇄ a folder with its own document) is meant for importing and exporting Feishu wikis and for the command line.
@@ -83,7 +86,7 @@ The same mapping (a page with children ⇄ a folder with its own document) is me
 
 ### Metadata by device (.quiet/meta/, FORMAT 5 and 6)
 
-What the files cannot say is split by device so a synced library never has two computers writing one file ([sync design](design/sync.md) 3.3, `crates/core/src/meta.rs`). Each device writes only `meta/<device id>.json`; the device id is made once per computer and kept in the local application data folder (`quiet-md/device.json`), shared by every root.
+What the files cannot say is split by device so a synced library never has two computers writing one file ([sync design](design/sync.md) 3.3, `crates/core/src/meta.rs`). Each device writes only its own files: FORMAT 5 one file, `meta/<device id>.json`; FORMAT 6 a folder of shards, `meta/<device id>/` (below). The device id is made once per computer and kept in the local application data folder (`quiet-md/device.json`), shared by every top-level folder. A FORMAT 5 file:
 
 ```json
 { "v": 1, "device": { "id": "9b2f…", "name": "", "platform": "macos" },
@@ -99,14 +102,39 @@ What the files cannot say is split by device so a synced library never has two c
 - **Files found on disk** with no entry get the id derived from their NFC relative path (`meta::path_id`), the same on every device. Two ids claiming one path merge into the older one.
 - **`_root`** holds the folder's own settings (one top-level folder on 主页; the name is from before the rename and stays on disk; `meta::FOLDER_ITEM` in code): `history_limit` and the folder's look (`look.theme`, `look.feishu`, `look.doc_family`, …), each field on its own. `scroll` (the reading position) is a field of its document. Fields this build does not know are kept.
 - **Moving from FORMAT 4.** `Store::open_at` writes `index.json` and the folder-level parts of `settings.json` as this device's file, every field stamped at that moment, then `format.json` (last, so a crash redoes it), and renames `index.json` to `index.json.v4`. A library in a synced folder (`migrate::sync_of`) stays FORMAT 4 for now, since another computer may still run a build that cannot open 5; asking first is left to the sync work. A FORMAT 4 store still open when another copy moves the library to 5 stops writing.
-- **The merged view is cached** in memory with each device file's name, size, modification time and a mark of each write (inode and change time on Unix, a hash of the contents on Windows: a sync can put back the time a file had where it was written); a write or a listing re-reads only when one of them changed. A change time moves in ticks (a few milliseconds on Linux, a second on HFS+, two on FAT), so a second write in the same tick may leave all of them as they were: a file seen within two seconds of its change time (or with one ahead of this computer's clock) also keeps a hash of its contents, and is unchanged only while they hash the same (`meta::unchanged`). Once it is seen two seconds after its change, its metadata alone is trusted again. While none did, and memory is as this device last read or wrote it, the index is not rebuilt either.
+- **The merged view is cached** in memory with each device file's name, size, modification time and a mark of each write (inode and change time on Unix, a hash of the contents on Windows: a sync can put back the time a file had where it was written); a write or a listing re-reads only when one of them changed, and in FORMAT 6 only the shards that changed (every device's file of those shards). A change time moves in ticks (a few milliseconds on Linux, a second on HFS+, two on FAT), so a second write in the same tick may leave all of them as they were: a file seen within two seconds of its change time (or with one ahead of this computer's clock) also keeps a hash of its contents, and is unchanged only while they hash the same (`meta::unchanged`). Once it is seen two seconds after its change, its metadata alone is trusted again. While none did, and memory is as this device last read or wrote it, the index is not rebuilt either.
+
+### Shards (FORMAT 6)
+
+A device's metadata is a folder, so a change writes about 1/64 of it instead of the whole (4.5 MB for 15,000 entries).
+
+```text
+.quiet/meta/9b2f…/device.json   { "id": "9b2f…", "name": "", "platform": "macos" }
+.quiet/meta/9b2f…/2b.json       { "v": 1, "items": { "3e5c…": { "path": ["Work/Weekly report.xml", 1763800000123] } } }
+```
+
+- **Which shard**: `nn` is the first byte of the SHA-1 of the item id (its UTF-8 bytes), low six bits (`& 0x3f`), as two lowercase hex digits `00` … `3f` (`meta::shard_of`). Every device puts an item in the same shard. `_root` is an item like any other.
+- **A shard** is the `items` part of a FORMAT 5 file, unchanged: `{ "v": 1, "items": { id: { field: [value, stamp] } } }`. An empty shard has no file.
+- **Writing** rewrites only the shards holding a changed item, each through a temporary file and a rename, its previous version kept as `<nn>.json.bak` (not synced to the disk: a backup costs a shard no second sync), the folder synced once. A shard is cleaned as it is written (below), keeping only the fields this device still wins.
+- **Reading** merges every device's shards, and the whole files of devices still on FORMAT 5's layout. When one device has both, its folder counts. `<id>.tmp/`, `.single`, `.bak`, `.corrupt-` and temporary files are not read. A shard named `<nn> 2.json` (a sync's copy) is read as that device's shard `nn`.
+- **From the development builds' single file.** Libraries made by development builds of FORMAT 6 have `meta/<device id>.json`; the format stays 6. On opening, under the write lock, a device converts its own file only (never another's, so a synced folder stays readable throughout): it copies it to `<id>.json.single`, writes `device.json` and the shards to `<id>.tmp/` (each synced), renames that to `<id>/` and removes `<id>.json` and its backup `<id>.json.bak` (the `.single` copy is one now). Values and stamps are unchanged. A crash leaves a state the next opening finishes: a `<id>.tmp/` is made again; with `<id>/` and `<id>.json` both there only the removal is left. To go back within 30 days: remove `<id>/` and rename the `.single` copy to `<id>.json`. The day's clean-up (below) removes the copy 30 days after the conversion. A new top-level folder writes shards from the start, and the folder appears with the device's first field.
+- **This computer's own record** (`meta::Here`, in the application data folder as `libraries/<key>.<device id>.meta.json`, never synced): the path each item's file was seen at here, for `gone`, when the shards were last cleaned, and when this device's file became shards (while its `.single` copy is kept).
+
+### Deletions outside the app and clean-up (FORMAT 6)
+
+- **`gone`**: `{"at": <seconds>, "from": "<the path it was at>"}`, written when a file is deleted outside the app. Only a device that saw the file here (its record above, at the path the item still has) writes it, when a whole scan (`list`, no folder unreadable) finds it missing and no iCloud placeholder is there; a device that never had the file writes nothing, since "not here yet" is not a deletion. It is stamped later than every field of the item, and `path: null` goes with it at the same stamp.
+- **Deleted**: an item whose latest `purged` or `gone` is later than its latest `path` (or whose `path` is `null` at that stamp) is not listed and not waited for. A `path` written later (the file added back) brings it back.
+- **Put back where it was**: a file found with no entry at the `from` of a `gone` stamped in the last 30 days (a git branch switched back, a folder moved back) is that item again: `list` writes its `path`, later than the tombstone, and it keeps its id and every field (pins, order …) instead of getting a new one from `meta::path_id`. Of several, the latest tombstone; one in the 回收站 is not brought back.
+- **Clean-up**, each device of its own fields only, when it writes a shard and once a day for all its shards (about 30 ms for 15,000 entries, so not on opening: with the second `list` after it, the first one drawn already):
+  - an item deleted as above goes once its tombstone is 30 days old and every active device (one that wrote any shard in the last 90 days) has a latest stamp later than the tombstone, so has seen it; a device silent for more than 90 days holds nothing back. An item whose every field is `null` (`meta::has_user_data`) goes by the same rule, by its latest field;
+  - an item with no tombstone goes when none of its fields changed for 30 days and its file is not here (it never arrived), unless it is in the 回收站.
 
 ### Deletions and hand order (FORMAT 6)
 
 FORMAT 6 moves the last shared files into the device files, so two computers deleting or reordering at once no longer write one file ([sync design](design/sync.md) 3.3).
 
 - **`trashed`**: `{"from": "Work/Plan.xml", "at": <seconds>, "parent"?: <folder id>, "root"?: <id>, "meta": {…}}`. `from` is where it was (a folder's ends in `/`), `at` when it was deleted, `parent` the folder it goes back into, `root` the page it was deleted with (a folder's contents), `meta` the shared index fields it had (pins, order …; nothing of this computer's own, like 最近打开). Restoring writes `trashed: null`; the later write wins when one device deletes and another restores.
-- **`purged`**: seconds, written by 彻底删除 and 30-day expiry. It hides the item everywhere. Thirty days after its stamp, the device that wrote it drops all its own fields for that item on its next write; the other devices drop theirs as they stop winning them.
+- **`purged`**: seconds, written by 彻底删除 and 30-day expiry. It hides the item everywhere. It goes by the clean-up rules above (in FORMAT 5's single files: thirty days after its stamp, the device that wrote it drops all its own fields for that item on its next write; the other devices drop theirs as they stop winning them).
 - **The 回收站** lists items with `trashed` set and no `purged`, whose file (or folder) is in `.quiet/trash/`. A record whose file has not synced yet is kept and not shown; a file with no record waits for it (FORMAT 5 adopted such files into the index).
 - **`order` and `root_order`** (`Meta::top_order` in code; the name on disk stays) are fractional index strings (`a0`, `a0V`, `a1` …, `board::fractional_index`), compared as bytes, equal keys by id. A move writes a new key for the moved item only, between its new neighbours; siblings are not renumbered. If nothing fits between two equal keys, that folder gets fresh keys throughout. The store works with ranks (1, 2 …) in memory: keys become ranks on reading (`meta::to_ranks`), and on writing the longest run of siblings still in their read order keeps its keys (`meta::to_keys`). FORMAT 5 numbers are read as before.
 - **Moving from FORMAT 5** (`meta::upgrade6`, opened under the write locks, the format checked again inside): order numbers become keys in the same order and `trash/index.json` becomes this device's `trashed` fields, written to this device's file first; then `format.json` says 6; then `trash/index.json` is renamed `index.json.v5`. A crash midway redoes it from the files left and gives the same keys. A FORMAT 4 library moves 4 → 5 → 6 in one opening. As before, a library in a synced folder stays at its format. A store opened as 5 stops writing once another copy moves the library to 6, and builds that know only 5 refuse 6 (`format > FORMAT`). `Store::restore_backup` moves the whole `trash/` folder, `.v5` included.
@@ -151,6 +179,17 @@ Older versions refuse to open FORMAT 4, builds that know only 4 refuse 5, and bu
 - **Version checks.** If `format.json` specifies a newer format, refuse to open the library and prompt for an upgrade. Recheck after acquiring the lock for every write. Increment `FORMAT` whenever older versions would misinterpret a layout change.
 - **Files added externally.** Markdown and XML files copied into the library appear in the document list, including DocxXML exported from Feishu.
 - **Save errors.** Report failures to the user.
+
+## Markdown files
+
+A Markdown page is written as standard Markdown (`markdown::write_file`): one block after another, a blank line between them. A file is not rewritten while what it says is unchanged, and blocks that did not change keep their lines as they are on disk. Some things a reader drops are written so that they read back as typed:
+
+- **An empty paragraph** is a line holding only `&nbsp;` (`markdown::BLANK`): a blank line only separates blocks, and Obsidian, Typora and GitHub show this line as an empty one. A file's own `&nbsp;` lines read as empty paragraphs too. Empty paragraphs at the very end are not written: they show nothing, and the editor adds one when you click below the text.
+- **Spaces at the end of a line** (and a paragraph of only spaces, a no-break space, a tab) keep the last one as a character reference: `  &#32;` for three spaces, `&#160;`. Spaces at the start of a line are written as they are and read as they are.
+- **A line break inside a block** (Shift + Enter) is `<br>`; `<br/>` and `<br />` read the same.
+- **Text that would read as one of these** is escaped: a paragraph saying `&nbsp;` is `\&nbsp;`, `&#32;` in text is `\&#32;`, `<br>` is `\<br>`.
+
+Reading, `&#…;` and `&#x…;` anywhere in a line are the characters they name. Older builds read these lines as the text they spell (`&nbsp;`, `&#32;`, `<br>`); the library layout is unchanged, so `store::FORMAT` is too.
 
 ## DocxXML
 

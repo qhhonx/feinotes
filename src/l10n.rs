@@ -165,6 +165,9 @@ mod tests {
         assert_eq!(refill(Lang::Ar, "{} 分钟前", "2 分钟前").as_deref(), Some("قبل دقيقتين"));
         assert_eq!(refill(Lang::Ar, "文件夹里有 {} 个文件，一次最多导入 {} 个", "文件夹里有 5 个文件，一次最多导入 500 个").as_deref(),
             Some("يحتوي المجلد على 5 ملفات، ويمكن استيراد 500 كحد أقصى في المرة الواحدة"), "positions count past a plural");
+        assert_eq!(refill(Lang::Ar, "已选 {n} 条记录", "已选 2 条记录").as_deref(), Some("سجلان محددان"), "a named count");
+        // The filter's 所有/任一 box sits where the sentence's placeholder falls (src/table/panels.rs).
+        assert_eq!(refill(Lang::Ko, "符合以下{}条件", "符合以下\u{1}条件").as_deref(), Some("다음 조건을 \u{1} 충족"));
     }
 
     /// Plural forms name real CLDR categories and always have `other`.

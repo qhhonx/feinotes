@@ -233,7 +233,24 @@
 | 出现 | 内容超高才有；`type="hover"`：指针在框上、滚动中显示，离开 600ms（`scrollHideDelay`）后藏 | 同，拖动中也显示 | 一致 |
 | 显隐 | 直接切换 | 150ms 淡入淡出 | 有意不同（总控 2026-11-25 要的淡入淡出） |
 | 宽度 | 条 w-2.5（10），p-px，透明 border-l：滑块 7 | 滑块 7，条 10 接指针 | 一致；shadcn 没有悬停加粗，也不加 |
-| 留白 | p-px：四周 1 | 方框四周 1；圆角面板里四周一样多，刚好让开圆角（`inset_for`，圆角 12 时 2.5） | 有意不同：GPUI 不按圆角裁子元素，四周 1 的滑块会戳出圆角 |
+| 留白 | p-px：四周 1；它的菜单圆角小（rounded-md 约 8），圆头不碰圆角 | 侧边 1，贴边；上下只让出刚好让圆头完整躲开圆角的距离（`ends_for`：圆角 12 时 4.5，方框 1），滑块不被裁 | 一致的效果；我们的圆角 12 比 shadcn 大，上下 1 会让圆头戳进圆角（2026-11-25 先试过按圆角裁两头，用户指出 shadcn 一点不被遮） |
 | 颜色 | thumb `bg-border`，rounded-full | 同（`thumb_color`） | 一致；页面、宽表格原来的 22% 黑和悬停加深去掉 |
+| 悬停 / 拖动 | 没有变化（thumb 一直是 `bg-border`） | 悬停变深一档，按住拖动最深（浅色 `border` → `ring`，深色前景色 10% → 22% → 35%），150ms 过渡；拖动中指针移出滑块也保持最深，松手才回 | 有意不同：照浏览器滚动条（用户 2026-11-25：「拖住滚动的时候，它颜色会变深一点」） |
 | 限高 | — | 按钮菜单上下都放不下时 `room` 限高、`Popover::fit` 滚动 | 新增 |
 | 子面板 | — | 贴菜单右边（`pos.x + SLASH_W`） | 改 |
+
+## 面包屑（文档页顶栏 `src/app.rs`，文件夹页 `src/folders.rs`）
+
+| 属性 | shadcn | 我们 | 处理 |
+|---|---|---|---|
+| 链接 | BreadcrumbLink：`muted-foreground`，hover `foreground` | 同（原来悬停变蓝 `primary_500`） | 改 |
+| 当前页 | BreadcrumbPage：`foreground`、常规字重 | `muted-foreground`、常规字重，和前面几段一样，不响应点击 | 有意不同：用户 2026-11-25 要求整条路径同色同字重（「这里不用加黑吧，感觉有点不太统一」）；原来是加粗黑色 |
+| 分隔符 | `>` 图标，随列表 `muted-foreground` | 同（原来是图标色，比文字深） | 改 |
+
+## 菜单里的开关行（`MenuItem::switch`）
+
+| 属性 | shadcn / Radix | 我们 | 处理 |
+|---|---|---|---|
+| 切换后 | DropdownMenuCheckboxItem 默认选中后关菜单，`onSelect` 里 `preventDefault` 才留住 | 固定留住：点行或开关只切换，Esc、点外面才关 | 按留住做（用户 2026-11-25：「开关开启或者关闭完之后，能不能不要自动关闭菜单」，和页宽选择一致） |
+| 开关动画 | Switch 的 thumb `transition-transform`，track `transition-all` | `Switch::keyed`：150ms ease-out 滑动，轨道和滑块颜色同步过渡 | 一致 |
+| Esc | 关菜单 | 关菜单；编辑器把 Esc 绑成自己的动作，在窗口根部用 `capture_action` 先截住 | 一致（原来编辑器有焦点时 Esc 被拿去选块，菜单关不掉） |

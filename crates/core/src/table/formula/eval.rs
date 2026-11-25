@@ -60,6 +60,7 @@ fn field_value(ctx: &Ctx, id: FieldId) -> Value {
         Value::Select(ids) => many(ids.iter().filter_map(|i| f.option(*i)).map(|o| Value::Text(o.name.clone())).collect()),
         Value::Links(ids) => many(ids.iter().map(|i| Value::Text(field::display_in(ctx.base, f, &Value::Links(vec![*i])))).collect()),
         Value::Files(fs) => many(fs.iter().map(|a| Value::Text(a.name.clone())).collect()),
+        Value::Text(s) if f.ty == FieldType::Note => Value::Text(field::note_title(s).to_string()),
         v => v.clone(),
     }
 }

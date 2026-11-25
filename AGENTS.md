@@ -54,6 +54,7 @@ See tools/harness/README.md for the full rules.
 - Avoid `activate`, which takes focus.
 - Do not click Show in Finder under Settings › Library, Open in Finder in the home or folder menu, links, Web Search, Print or Quick Look.
 - Do not use the `open` command. Use `pick` for file selection.
+- Leave no test app running. A script quits the app when it ends (`FDL_KEEP_OPEN` keeps it); after a run, check that none of your own `quiet_md` processes are left.
 
 ## Environment
 

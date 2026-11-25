@@ -2,7 +2,8 @@
 //! everything gives the starting base back, redoing gives the end again,
 //! and the base stays well-formed (unique ids below 2^53, sort keys rising
 //! along the rows, no cell of a missing field, views that only name fields
-//! that exist). `FDL_FUZZ_SEEDS` runs more seeds; each seeds the ids too.
+//! that exist, records made before they were changed and stamped with who
+//! changed them). `FDL_FUZZ_SEEDS` runs more seeds; each seeds the ids too.
 
 use super::*;
 
@@ -14,10 +15,12 @@ impl Rng {
 }
 
 const TYPES: &[FieldType] = &[FieldType::Text, FieldType::Number, FieldType::SingleSelect, FieldType::MultiSelect, FieldType::Date, FieldType::Checkbox,
-    FieldType::Rating, FieldType::Currency, FieldType::Progress, FieldType::Url, FieldType::Formula, FieldType::Link, FieldType::Lookup, FieldType::AutoNumber, FieldType::CreatedTime];
+    FieldType::Rating, FieldType::Currency, FieldType::Progress, FieldType::Url, FieldType::Formula, FieldType::Link, FieldType::Lookup, FieldType::AutoNumber, FieldType::CreatedTime, FieldType::Note];
+const NOTES: &[&str] = &["", "三体.xml", "子/读书 笔记 2.xml", "../别处/a.xml"];
 const TEXTS: &[&str] = &["", "苹果", "12", "3.5", "2026-01-30", "true", "红, 蓝", "https://a.b", "50%", "x"];
 
-fn step(d: &mut Doc, r: &mut Rng) {
+/// One random edit. True: it was an undo or redo (which puts stamps back rather than making them).
+fn step(d: &mut Doc, r: &mut Rng) -> bool {
     let tids: Vec<TableId> = d.base.tables.iter().map(|t| t.id).collect();
     let tid = *r.pick(&tids).unwrap();
     let t = d.base.table(tid).unwrap();
@@ -25,12 +28,14 @@ fn step(d: &mut Doc, r: &mut Rng) {
     let fids: Vec<FieldId> = t.fields.iter().map(|f| f.id).collect();
     let vids: Vec<ViewId> = t.views.iter().map(|v| v.id).collect();
     let some_recs = |r: &mut Rng| -> Vec<RecId> { (0..r.below(3) + 1).filter_map(|_| r.pick(&recs).copied()).collect() };
-    match r.below(22) {
+    match r.below(23) {
         0..=2 => {
-            let (Some(rid), Some(fid)) = (r.pick(&recs).copied(), r.pick(&fids).copied()) else { return };
+            let (Some(rid), Some(fid)) = (r.pick(&recs).copied(), r.pick(&fids).copied()) else { return false };
             let f = t.field(fid).unwrap().clone();
             let v = match f.ty {
                 FieldType::Link => Value::Links(f.opts.link_table.and_then(|o| d.base.table(o)).map(|o| o.records.iter().map(|x| x.id).filter(|_| r.below(3) == 0).collect()).unwrap_or_default()),
+                // a note cell is given a path (made, pointed elsewhere) or emptied
+                FieldType::Note => Value::Text(r.pick(NOTES).unwrap().to_string()),
                 _ => { let mut f = f; let mut n = d.base.ids.clone(); let v = field::parse_new(&mut f, r.pick(TEXTS).unwrap(), &mut n); if f.ty.select() { Value::Empty } else { v } }
             };
             d.set_cells(tid, vec![(rid, fid, v)]);
@@ -58,7 +63,7 @@ fn step(d: &mut Doc, r: &mut Rng) {
         },
         11 => { if let Some(f) = r.pick(&fids) { d.duplicate_field(tid, *f); } }
         12 | 13 => {
-            let Some(mut f) = r.pick(&fids).and_then(|f| t.field(*f)).cloned() else { return };
+            let Some(mut f) = r.pick(&fids).and_then(|f| t.field(*f)).cloned() else { return false };
             match r.below(4) {
                 0 => f.name = (*r.pick(&["改名", "文本", "A", "数量 2"]).unwrap()).to_string(),
                 1 => { f.ty = *r.pick(TYPES).unwrap(); f.opts = FieldOpts { options: f.opts.options.clone(), ..field::default_opts(f.ty) }; if f.ty == FieldType::Link { f.opts.link_table = r.pick(&tids).copied(); } }
@@ -71,7 +76,7 @@ fn step(d: &mut Doc, r: &mut Rng) {
         15 => { if let Some(v) = r.pick(&vids) { d.duplicate_view(tid, *v); } }
         16 => { if let Some(v) = r.pick(&vids) { d.run_in(tid, vec![Op::RemoveView(*v)]); } }
         17 => {
-            let (Some(v), Some(f)) = (r.pick(&vids).copied(), r.pick(&fids).copied()) else { return };
+            let (Some(v), Some(f)) = (r.pick(&vids).copied(), r.pick(&fids).copied()) else { return false };
             let k = r.below(7);
             d.edit_view(tid, v, |v| match k {
                 0 => { v.opts.hidden.insert(f); }
@@ -86,7 +91,25 @@ fn step(d: &mut Doc, r: &mut Rng) {
         18 => { d.add_table(r.pick(&["", "任务", "数据表"]).unwrap()); }
         19 => { d.remove_table(tid); }
         20 => { d.rename_table(tid, r.pick(&["项目", "A b", "数据表"]).unwrap()); }
-        _ => { if r.below(2) == 0 { d.undo(); } else { d.redo(); } }
+        21 => { if let Some(f) = r.pick(&fids) { d.set_unique(tid, *f, r.below(3) != 0); } }
+        _ => { if r.below(2) == 0 { d.undo(); } else { d.redo(); } return true; }
+    }
+    false
+}
+
+/// After an edit by `writer` (not an undo or redo): the records it made are the writer's,
+/// and so are those it stamped.
+fn check_stamps(before: &Base, after: &Base, writer: &str) {
+    for t in &after.tables {
+        let old = before.table(t.id);
+        for r in &t.records {
+            match old.and_then(|o| o.record(r.id)) {
+                None if old.is_some() => assert!(r.created_by.as_deref() == Some(writer) && r.updated_by.as_deref() == Some(writer), "a new record isn't the writer's"),
+                Some(o) if (o.modified, &o.updated_by) != (r.modified, &r.updated_by) => assert!(r.updated_by.as_deref() == Some(writer) && r.modified >= o.modified, "a stamp that isn't the writer's"),
+                Some(o) => assert_eq!((o.created, &o.created_by), (r.created, &r.created_by), "made anew"),
+                None => {}
+            }
+        }
     }
 }
 
@@ -107,7 +130,12 @@ fn check(b: &Base) {
         let mut recs = std::collections::HashSet::new();
         for r in &t.records {
             assert!(recs.insert(r.id) && (1..ID_LIMIT).contains(&r.id), "record id");
-            for (f, v) in &r.cells { assert!(t.field(*f).is_some(), "a cell of a field that is gone"); assert!(!v.is_empty(), "an empty cell is stored"); }
+            assert!(r.created <= r.modified, "changed before it was made");
+            for (f, v) in &r.cells {
+                assert!(t.field(*f).is_some(), "a cell of a field that is gone");
+                assert!(!v.is_empty(), "an empty cell is stored");
+                assert!(t.field(*f).unwrap().ty != FieldType::Note || matches!(v, Value::Text(_)), "a note cell that isn't a path");
+            }
         }
         for v in &t.views {
             assert!(ids.insert(v.id), "view id twice");
@@ -129,9 +157,12 @@ fn random_table_edits() {
         let mut d = Doc::new(Base::blank_seeded(0, seed));
         let start = d.base.clone();
         for i in 0..120 {
-            step(&mut d, &mut r);
+            // the app and an agent take turns
+            d.base.writer = Writer(r.pick(&["user", "agent:fuzz"]).unwrap().to_string());
+            let before = d.base.clone();
+            let history = step(&mut d, &mut r);
             let b = d.base.clone();
-            std::panic::catch_unwind(|| check(&b)).unwrap_or_else(|_| panic!("seed {seed} step {i}"));
+            std::panic::catch_unwind(|| { check(&b); if !history { check_stamps(&before, &b, &b.writer.0); } }).unwrap_or_else(|_| panic!("seed {seed} step {i}"));
         }
         // everything undone is the start again (ids handed out aside); redone, the end
         // steps undone by the run itself are redone first: the end is the top of the history
@@ -139,13 +170,12 @@ fn random_table_edits() {
         let end = d.base.clone();
         let mut n = 0;
         while d.undo() { n += 1; assert!(n < 10_000); }
+        // stamps included: undo puts back who changed a record last and when
         let mut back = d.base.clone();
-        for (t, s) in back.tables.iter_mut().zip(&start.tables) { t.next_auto = s.next_auto; for (r, sr) in t.records.iter_mut().zip(&s.records) { r.modified = sr.modified; } }
+        for (t, s) in back.tables.iter_mut().zip(&start.tables) { t.next_auto = s.next_auto; }
         assert_eq!(back, start, "seed {seed}: undo does not return to the start");
         while d.redo() {}
-        let mut again = d.base.clone();
-        for (t, e) in again.tables.iter_mut().zip(&end.tables) { for (r, er) in t.records.iter_mut().zip(&e.records) { r.modified = er.modified; r.created = er.created; } }
-        assert_eq!(again, end, "seed {seed}: redo does not return to the end");
+        assert_eq!(d.base, end, "seed {seed}: redo does not return to the end");
     }
 }
 
