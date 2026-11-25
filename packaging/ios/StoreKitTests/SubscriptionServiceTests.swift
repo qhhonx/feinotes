@@ -50,6 +50,17 @@ final class SubscriptionServiceTests: XCTestCase {
         XCTFail("The hosted app did not become active")
     }
 
+    func testLocalStoreKitCannotStartAnICloudTrial() throws {
+        for start in [false, true] {
+            let response = try XCTUnwrap(quietCloudTrial(start, nil))
+            defer { free(response) }
+            let data = Data(String(cString: response).utf8)
+            let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertNil(reply["trial"])
+            if start { XCTAssertNotNil(reply["error"]) } else { XCTAssertNil(reply["error"]) }
+        }
+    }
+
     func testAnnualPurchaseStatusAndRestoreUseTheSharedBridge() async throws {
         continueAfterFailure = false
         let session = try session()

@@ -29,6 +29,11 @@ private enum CloudTrialError: LocalizedError {
 }
 
 private func readTrial(start: Bool, channel: String?, expectedAccount: String? = nil) async throws -> CloudTrial? {
+    #if FEI_STOREKIT_TESTING
+    // Local StoreKit transactions must never read or create real CloudKit trial records.
+    guard !start else { throw CloudTrialError.invalid }
+    return nil
+    #else
     let revision = quietCloudAccountRevision()
     let zoneName: String
     if let channel {
@@ -79,6 +84,7 @@ private func readTrial(start: Bool, channel: String?, expectedAccount: String? =
           creator == account || creator == CKCurrentUserDefaultName else { throw CloudTrialError.invalid }
     let startedAt = UInt64(created.timeIntervalSince1970 * 1_000)
     return CloudTrial(startedAt: startedAt, expiresAt: startedAt + 7 * 24 * 60 * 60 * 1_000)
+    #endif
 }
 
 enum CloudAccessError: LocalizedError {
