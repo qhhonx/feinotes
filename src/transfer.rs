@@ -407,7 +407,17 @@ impl Workspace {
     /// 下载为 → Markdown: the 导出 Markdown 设置 first.
     pub fn open_export_md(&mut self, id: &str, cx: &mut Context<Self>) {
         self.close_menus();
-        self.export_md = Some(ExportMd { id: id.to_string(), all: false });
+        #[cfg(target_family = "wasm")]
+        {
+            let Some(doc) = self.doc_of(id, cx) else { return };
+            let subs = self.sub_page_titles(id);
+            let out = crate::markdown::export(&doc, &crate::markdown::Options { sub_pages: &subs, ..Default::default() });
+            if crate::web::download_text(&format!("{}.md", file_name(&doc)), &out.text, "text/markdown;charset=utf-8").is_err() {
+                self.show_toast_kind(ToastKind::Error, crate::settings::text("导出失败，请重试"), cx);
+            }
+        }
+        #[cfg(not(target_family = "wasm"))]
+        { self.export_md = Some(ExportMd { id: id.to_string(), all: false }); }
         cx.notify();
     }
 

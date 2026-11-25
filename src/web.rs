@@ -9,6 +9,29 @@ use std::borrow::Cow;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
+/// Save a text export through the browser's download manager.
+pub(crate) fn download_text(name: &str, text: &str, mime: &str) -> Result<(), wasm_bindgen::JsValue> {
+    use wasm_bindgen::{JsValue, closure::Closure};
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("missing browser window"))?;
+    let document = window.document().ok_or_else(|| JsValue::from_str("missing browser document"))?;
+    let anchor = document.create_element("a")?.dyn_into::<web_sys::HtmlAnchorElement>()?;
+    let text_parts = js_sys::Array::of1(&JsValue::from_str(text));
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type(mime);
+    let blob = web_sys::Blob::new_with_str_sequence_and_options(&text_parts, &options)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob)?;
+    anchor.set_href(&url);
+    anchor.set_download(name);
+    anchor.click();
+    // Let the browser begin consuming the object URL before revoking it.
+    let later = url.clone();
+    let revoke = Closure::once_into_js(move || { let _ = web_sys::Url::revoke_object_url(&later); });
+    if window.set_timeout_with_callback_and_timeout_and_arguments_0(revoke.unchecked_ref(), 1000).is_err() {
+        let _ = web_sys::Url::revoke_object_url(&url);
+    }
+    Ok(())
+}
+
 /// Fonts next to the page, in `fonts/`: what the first screen draws with
 /// (web/index.html preloads these, alongside the wasm)…
 const FONTS: &[&str] = &["Inter-Regular.ttf", "Inter-Medium.ttf", "Inter-SemiBold.ttf", "Inter-Bold.ttf", "JetBrainsMono-Regular.ttf"];
