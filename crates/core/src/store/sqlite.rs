@@ -392,8 +392,10 @@ impl Store {
         else { Self::ensure_sqlite_wal(&db)?; }
         let index = read_map(&db, "library_entries")?;
         let trash = read_map(&db, "library_trash")?;
+        let key = library_key(&root);
         let mut store = Self { sqlite: Some(sqlite), flat: true, migrated: None, batch: Default::default(), file_changes: vec![], root, index, foreign: Default::default(), trash, warnings: vec![],
-            loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), view: Default::default() };
+            loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), view: Default::default(),
+            v5: false, me: Default::default(), clock: Default::default(), seen: Default::default(), merged: Default::default(), key };
         store.restore_recoveries();
         Ok(store)
     }
@@ -414,8 +416,9 @@ impl Store {
         let source = source.canonicalize()?;
         let root = root.canonicalize()?;
         anyhow::ensure!(!root.starts_with(&source) && !source.starts_with(&root), "请选择单独存放的 Quiet.md 文档库");
-        let format4 = source.join(INTERNAL).join("format.json").is_file();
-        anyhow::ensure!(format4 || (source.join("format.json").is_file() && source.join("index.json").is_file()),
+        Self::check_file_root(&source)?;
+        let named_files = source.join(INTERNAL).join("format.json").is_file();
+        anyhow::ensure!(named_files || (source.join("format.json").is_file() && source.join("index.json").is_file()),
             "所选文件夹不是 Quiet.md 文档库");
         let batch = uuid::Uuid::new_v4().to_string();
         let stage = root.join(format!(".legacy-import-{batch}"));
@@ -423,7 +426,7 @@ impl Store {
         let prefix = Path::new("assets").join(format!("legacy-{batch}"));
         let assets = root.join(&prefix);
         let result = (|| {
-            if format4 {
+            if named_files {
                 for e in std::fs::read_dir(&source)? {
                     let e = e?;
                     let name = e.file_name();
@@ -437,7 +440,7 @@ impl Store {
                 }
                 let _: FormatMarker = serde_json::from_slice(&std::fs::read(stage.join("format.json"))?)?;
             }
-            let mut snapshot = Self::open_at(stage.clone())?;
+            let mut snapshot = Self::open_at_as(stage.clone(), &library_key(&stage))?;
             snapshot.index.retain(|_, meta| !meta.local());
             snapshot.save_index()?;
             let entries = snapshot.list();
@@ -1120,9 +1123,24 @@ mod tests {
 
     #[test]
     fn format4_import_preserves_source_links_tree_trash_and_assets() -> Result<()> {
-        let temp = isolated_sqlite("format4-import")?;
-        let input = Temp(std::env::temp_dir().join(format!("quiet-format4-source-{}", uuid::Uuid::new_v4())));
-        let mut source = Store::open_at(input.0.clone())?;
+        check_file_import(4)
+    }
+
+    #[test]
+    fn format5_import_preserves_source_links_tree_trash_and_assets() -> Result<()> {
+        check_file_import(5)
+    }
+
+    fn check_file_import(format: u32) -> Result<()> {
+        let temp = isolated_sqlite("file-import")?;
+        let input = Temp(std::env::temp_dir().join(format!("quiet-file-source-{}", uuid::Uuid::new_v4())));
+        let mut source = super::super::tests::STAY_4.with(|flag| {
+            let old = flag.replace(format == 4);
+            let result = Store::open_at(input.0.clone());
+            flag.set(old);
+            result
+        })?;
+        assert_eq!(Store::format_at(&input.0), format);
         let folder = source.create_folder("目录", None)?;
         let target = source.create_from(&docxml::parse("<title>目标</title><p>target</p>")?)?;
         let xml = format!("<title>链接和附件</title><p><cite type=\"doc\" doc-id=\"{target}\">目标</cite></p><figure><source path=\".assets/files/test.txt\" name=\"附件\"/></figure>");
@@ -1131,11 +1149,14 @@ mod tests {
         source.delete(&deleted, None)?;
         std::fs::create_dir_all(input.0.join(".assets/files"))?;
         std::fs::write(input.0.join(".assets/files/test.txt"), "合成附件")?;
-        let index = std::fs::read(input.0.join(".quiet/index.json"))?;
+        let index_path = if format == 4 { input.0.join(".quiet/index.json") }
+            else { meta::dir(&input.0).join(format!("{}.json", source.me.id)) };
+        let index = std::fs::read(&index_path)?;
         let body = std::fs::read(source.file_path(&id).unwrap())?;
         assert_eq!(Store::import_legacy_copy(&temp.0, &input.0)?, 4);
         assert!(Store::import_legacy_copy(&temp.0, &input.0).is_err());
-        assert_eq!(std::fs::read(input.0.join(".quiet/index.json"))?, index);
+        assert_eq!(Store::format_at(&input.0), format);
+        assert_eq!(std::fs::read(&index_path)?, index);
         assert_eq!(std::fs::read(source.file_path(&id).unwrap())?, body);
         let mut store = Store::open_sqlite_at(temp.0.clone())?;
         assert_eq!(store.list().len(), 3);

@@ -5,8 +5,8 @@ use super::core::{EditKind, Pos, Selection, TITLE};
 use super::overlays::at;
 use super::view::{Editor, Menu};
 use crate::model::*;
-use crate::editor_theme::{self as theme, Theme, craft};
-use crate::editor_ui::{ROW_RADIUS, TipExt, ToastKind, icon, menu, menu_glyph, menu_row, panel, popover};
+use crate::editor_ui::{TipExt, ToastKind, icon};
+use crate::design::{Button, ButtonSize, Field, FieldSize, MenuItem, Popover, Separator, color};
 use gpui::{prelude::FluentBuilder, *};
 use regex::Regex;
 use std::ops::Range;
@@ -134,10 +134,10 @@ type LinkRef = (BlockId, Range<usize>);
 
 /// Show / hide delay of the hover card.
 const CARD_DELAY: Duration = Duration::from_millis(1000);
-const CARD_W: f32 = 1. + 8. + 184. + 8. + 32. + 32. + 9. + 32. + 8. + 1.;
-const CARD_H: f32 = 42.;
+const CARD_W: f32 = 8. + 184. + 8. + 32. + 32. + 9. + 32. + 8.;
+const CARD_H: f32 = 40.;
 /// The 更多 button's left edge in the card.
-const CARD_MORE_X: f32 = CARD_W - 1. - 8. - 24.;
+const CARD_MORE_X: f32 = CARD_W - 8. - 24.;
 /// The 更多 menus: native-style, 200 wide.
 const SUBMENU_W: f32 = 200.;
 
@@ -226,13 +226,22 @@ impl Editor {
     }
 
     pub(super) fn link_input_ok(&self, cx: &App) -> bool {
-        is_link_input(self.link_field.read(cx).text.trim())
+        let link = self.link_field.read(cx).text.trim();
+        is_link_input(link) || self.keeps_file_link(link)
+    }
+
+    /// A link to a file beside the document stays as written: `./` or `../`
+    /// typed, or the one the link already had (a Markdown file's `报告.pdf`),
+    /// not made into `http://`.
+    fn keeps_file_link(&self, link: &str) -> bool {
+        (link.starts_with("./") || link.starts_with("../") || link == self.link_ui.orig.1) && crate::store::file_link(link)
     }
 
     pub(super) fn submit_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Menu::Link { block, range, only_link }) = self.menu.clone() else { return };
         let link = self.link_field.read(cx).text.trim().to_string();
-        if !is_link_input(&link) {
+        let file = self.keeps_file_link(&link);
+        if !is_link_input(&link) && !file {
             return;
         }
         let (orig_text, orig_link) = self.link_ui.orig.clone();
@@ -244,8 +253,8 @@ impl Editor {
         if text == orig_text && link == orig_link {
             return;
         }
-        let url = normalize(&link);
-        if !contains_url(&url) {
+        let url = if file { link.clone() } else { normalize(&link) };
+        if !file && !contains_url(&url) {
             return self.toast(crate::settings::text("请输入有效的链接。"), cx);
         }
         self.core.sel = Selection { anchor: Pos::new(block, range.start), head: Pos::new(block, range.end) };
@@ -288,43 +297,24 @@ impl Editor {
             (p.x, bottom)
         };
         self.probed(super::overlays::Probe::Point(Pos::new(block, range.start)));
-        let input = |field: &Entity<TextField>| TextField::framed(field, px(280.), window, cx);
-        let label = |t: &'static str| div().h(px(30.)).mr(px(8.)).flex().items_center().text_size(px(13.)).child(t);
+        // The input: a small field, ringed while focused.
+        let input = |id: &'static str, field: &Entity<TextField>| {
+            let focused = field.read(cx).is_focused(window);
+            Field::new(id).sized(FieldSize::Sm).focused(focused).w(px(280.)).child(field.clone())
+        };
+        let label = |t: &'static str| div().h(px(32.)).mr(px(8.)).flex().items_center().child(t);
         let ok = self.link_input_ok(cx);
-        // The primary button: accent, white 13pt semibold, radius 9.
-        let button = div()
-            .id("link-ok")
-            .ml(px(16.))
-            .min_w(px(72.))
-            .h(px(30.))
-            .px(px(14.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(9.))
-            .text_size(px(13.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(gpui::white())
-            .bg(if ok { Theme::primary() } else { theme::ca(craft::B500, 0.4) })
-            .when(ok, |d| {
-                d.cursor_pointer()
-                    .hover(|s| s.bg(theme::c(craft::B600)))
-                    .active(|s| s.bg(theme::c(craft::B700)))
-                    .on_click(cx.listener(|e, _, window, cx| e.submit_link(window, cx)))
-            })
-            .when(!ok, |d| d.cursor(CursorStyle::OperationNotAllowed))
-            .child(crate::settings::text("确认"));
+        let button = Button::primary("link-ok").sized(ButtonSize::Sm).label(crate::settings::text("确认")).ml(px(16.)).min_w(px(72.)).disabled(!ok)
+            .when(ok, |d| d.on_click(cx.listener(|e, _, window, cx| e.submit_link(window, cx))));
         let rows = if only_link {
-            div().child(input(&self.link_field))
+            div().child(input("link-url-input", &self.link_field))
         } else {
             div()
                 .flex()
                 .child(div().flex().flex_col().gap(px(10.)).child(label(crate::settings::text("文本"))).child(label(crate::settings::text("链接"))))
-                .child(div().flex().flex_col().gap(px(10.)).child(input(&self.link_text_field)).child(input(&self.link_field)))
+                .child(div().flex().flex_col().gap(px(10.)).child(input("link-text-input", &self.link_text_field)).child(input("link-url-input", &self.link_field)))
         };
-        let el = panel()
-            .id("link-panel")
-            .occlude()
+        let el = Popover::new("link-panel")
             .p(px(16.))
             .flex()
             .items_end()
@@ -467,33 +457,21 @@ impl Editor {
         let x = union.center().x - px(CARD_W / 2.);
         let above = first.top() - px(7. + CARD_H) >= view_top;
         let (pos, corner) = if above { (point(x, first.top() - px(7.)), Anchor::BottomLeft) } else { (point(x, union.bottom() + px(7.)), Anchor::TopLeft) };
-        let btn = |id: &'static str| {
-            div()
-                .id(id)
-                .ml(px(8.))
-                .size(px(24.))
-                .flex()
-                .flex_none()
-                .items_center()
-                .justify_center()
-                .rounded(px(ROW_RADIUS))
-                .cursor_pointer()
-                .hover(|s| s.bg(Theme::fill_hover_strong()))
-                .active(|s| s.bg(Theme::fill_pressed()))
+        let btn = |id: &'static str, ic: &'static str, on: bool| {
+            Button::ghost(id).sized(ButtonSize::Xs).ml(px(8.)).selected(on).when(on, |d| d.bg(color::accent()))
+                .child(icon(ic, 18., if on { color::foreground() } else { color::muted_foreground() }))
         };
         let edit = lr.clone();
         let remove = lr.clone();
         let more = self.link_ui.more;
         let submenu = more.then(|| {
             let u = url.clone();
-            menu()
-                .id("link-card-more")
-                .occlude()
+            Popover::new("link-card-more")
+                .menu()
                 .absolute()
-                .left(px(CARD_MORE_X - 9. - 1.))
-                .top(px(1. + 8. + 24. + 2. - 1.))
+                .left(px(CARD_MORE_X - 9.))
+                .top(px(8. + 24. + 2.))
                 .min_w(px(SUBMENU_W))
-                .py(px(crate::editor_ui::MENU_PAD_Y))
                 .on_hover(cx.listener(|e, h: &bool, _, cx| e.card_over(2, *h, cx)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(menu_item("lc-copy", "globe", crate::settings::text("复制原始网页链接")).on_click(cx.listener(move |e, _, _, cx| {
@@ -502,9 +480,7 @@ impl Editor {
                     e.toast_kind(ToastKind::Success, crate::settings::text("链接已复制到剪贴板"), cx);
                 })))
         });
-        let el = popover()
-            .id("link-card")
-            .occlude()
+        let el = Popover::new("link-card")
             .relative()
             .h(px(CARD_H))
             .w(px(CARD_W))
@@ -521,28 +497,24 @@ impl Editor {
                     .px(px(6.))
                     .flex()
                     .items_center()
-                    .child(div().ml(px(4.)).pr(px(4.)).flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_size(px(13.)).text_color(Theme::text_caption()).child(crate::editor_ui::ui_text(url))),
+                    .child(div().ml(px(4.)).pr(px(4.)).flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_color(color::muted_foreground()).child(crate::editor_ui::ui_text(url))),
             )
             .child(
-                btn("lc-edit")
+                btn("lc-edit", "pen-line", false)
                     .tip_above(crate::settings::text("编辑链接"), None)
-                    .child(icon("pen-line", 18., Theme::icon()))
                     .on_click(cx.listener(move |e, _, window, cx| {
                         let (b, r) = edit.clone();
                         e.open_link_panel(b, r, false, window, cx);
                     })),
             )
             .child(
-                btn("lc-remove")
+                btn("lc-remove", "unlink", false)
                     .tip_above(crate::settings::text("移除链接"), None)
-                    .child(icon("unlink", 18., Theme::icon()))
                     .on_click(cx.listener(move |e, _, window, cx| e.remove_link(remove.clone(), window, cx))),
             )
-            .child(div().ml(px(8.)).w(px(1.)).h(px(18.)).flex_none().bg(Theme::line_divider()))
+            .child(Separator::new().vertical().ml(px(8.)).h(px(18.)))
             .child(
-                btn("lc-more")
-                    .when(more, |d| d.bg(Theme::fill_hover_strong()))
-                    .child(icon("layout-grid", 18., Theme::icon()))
+                btn("lc-more", "layout-grid", more)
                     .on_hover(cx.listener(|e, h: &bool, _, cx| e.card_over(1, *h, cx)))
                     .on_click(cx.listener(|e, _, _, cx| {
                         e.link_ui.more = true;
@@ -589,12 +561,10 @@ impl Editor {
     }
 
     /// The toolbar's 更多 menu: 文档库内搜索, 网页搜索.
-    pub(super) fn tb_more_menu(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        menu()
-            .id("tb-more-menu")
-            .occlude()
+    pub(super) fn tb_more_menu(&self, cx: &mut Context<Self>) -> Popover {
+        Popover::new("tb-more-menu")
+            .menu()
             .min_w(px(SUBMENU_W))
-            .py(px(crate::editor_ui::MENU_PAD_Y))
             .on_hover(cx.listener(|e, h: &bool, _, cx| e.tb_drop_over(Menu::TbMore, 1, *h, cx)))
             .child(menu_item("tm-search", "search", crate::settings::text("文档库内搜索")).on_click(cx.listener(|e, _, _, cx| {
                 e.menu = None;
@@ -634,10 +604,9 @@ fn web_search_url(s: &str) -> String {
     format!("{base}{}", encode_query(s))
 }
 
-/// The app's menu row (`ui::menu_row`): 16pt glyph, 13pt label, a quiet hover.
-fn menu_item(id: &'static str, ic: &'static str, label: &'static str) -> Stateful<Div> {
-    let g = SharedString::from(id);
-    menu_row(id, g.clone()).child(menu_glyph(ic, 16., g)).child(div().whitespace_nowrap().child(label))
+/// A menu row: glyph and label.
+fn menu_item(id: &'static str, ic: &'static str, label: &'static str) -> MenuItem {
+    MenuItem::new(id).icon(ic).label(label)
 }
 
 use crate::input::TextField;

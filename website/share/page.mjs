@@ -1,4 +1,4 @@
-import {invitation} from './links.mjs?v=share3';
+import {invitation} from './links.mjs?v=share6';
 const english = !navigator.language.toLowerCase().startsWith('zh');
 if (english) {
   document.documentElement.lang = 'en';

@@ -3,8 +3,8 @@ use super::*;
 
 #[derive(Clone, Copy)]
 pub(crate) enum SharedTrashAction {
-    #[cfg(target_os = "macos")]
     DeleteFolder,
+    DeleteDocument,
     Restore,
     Purge,
 }
@@ -13,8 +13,8 @@ impl SharedTrashAction {
     fn apply(self, writer: &mut crate::store::Store, ids: &[String]) -> anyhow::Result<()> {
         let id = ids.first().ok_or_else(|| anyhow::anyhow!("No Trash item selected"))?;
         match self {
-            #[cfg(target_os = "macos")]
             Self::DeleteFolder => writer.trash_sqlite_folder(id),
+            Self::DeleteDocument => writer.delete(id, None),
             Self::Restore => {
                 let item = writer.list_trash().into_iter().find(|entry| &entry.id == id)
                     .ok_or_else(|| anyhow::anyhow!("The item is no longer in Trash"))?;
@@ -28,8 +28,7 @@ impl SharedTrashAction {
 
     fn label(self) -> &'static str {
         match self {
-            #[cfg(target_os = "macos")]
-            Self::DeleteFolder => tr("删除成功", "Moved to Trash"),
+            Self::DeleteFolder | Self::DeleteDocument => tr("删除成功", "Moved to Trash"),
             Self::Restore => tr("恢复成功", "Restored"),
             Self::Purge => tr("已彻底删除", "Permanently deleted"),
         }
@@ -37,7 +36,6 @@ impl SharedTrashAction {
 }
 
 impl Workspace {
-    #[cfg(target_os = "macos")]
     pub(crate) fn delete_shared_folder(&mut self, room: Room, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if id == room.scope.note {
             if room.scope.owner.is_none() && self.stopping_original(&room, cx) {
@@ -46,6 +44,20 @@ impl Workspace {
         } else {
             self.change_shared_trash(room, id, SharedTrashAction::DeleteFolder, window, cx);
         }
+    }
+
+    pub(crate) fn ask_delete_shared_descendant(&mut self, room: &Room, id: &str, folder: bool, cx: &mut Context<Self>) {
+        self.row_menu = None;
+        if id == room.scope.note || !self.shared_sidebar_folder_writable(room, cx) { cx.notify(); return; }
+        let entries = if shared::scope(&self.store, cx) == Some(&room.scope) { self.entries.clone() }
+            else { self.shared_sidebar_entries(cx) };
+        let tree = crate::tree::Tree::new(&entries);
+        let Some(entry) = entries.iter().find(|entry| entry.id == id && entry.meta.folder.is_some() == folder
+            && tree.subtree(&room.scope.note).iter().any(|child| child == id)) else { cx.notify(); return; };
+        let confirm = if folder { crate::app::Confirm::DeleteSharedFolder { room: room.clone(), id: id.into(), title: entry.title.clone() } }
+            else { crate::app::Confirm::DeleteSharedDocument { room: room.clone(), id: id.into(), title: entry.title.clone() } };
+        self.confirm = Some(confirm);
+        cx.notify();
     }
 
     pub(crate) fn change_shared_trash(&mut self, room: Room, id: String, action: SharedTrashAction, window: &mut Window, cx: &mut Context<Self>) {
@@ -90,12 +102,15 @@ impl Workspace {
             let store = shared::check_opened_store(store, &room, cx)?;
             anyhow::ensure!(shared::access(&store, cx).is_some_and(Access::can_write) && !shared::editing_paused(&store, cx),
                 "{}", tr("此共享文件夹当前不可写入。", "You cannot write to this shared folder right now."));
-            #[cfg(target_os = "macos")]
-            if matches!(action, SharedTrashAction::DeleteFolder) {
+            if matches!(action, SharedTrashAction::DeleteFolder | SharedTrashAction::DeleteDocument) {
                 let listing = store.clone().list();
-                let id = ids.first().filter(|id| listing.iter().any(|entry| &entry.id == *id && entry.meta.folder.is_some()))
-                    .ok_or_else(|| anyhow::anyhow!("Folder no longer exists"))?;
-                let affected = crate::tree::Tree::new(&listing).subtree(id);
+                let tree = crate::tree::Tree::new(&listing);
+                let folder = matches!(action, SharedTrashAction::DeleteFolder);
+                let room_items = tree.subtree(&room.scope.note);
+                let id = ids.first().filter(|id| room_items.contains(id) && listing.iter()
+                    .any(|entry| &entry.id == *id && entry.meta.folder.is_some() == folder))
+                    .ok_or_else(|| anyhow::anyhow!("The shared item no longer exists"))?;
+                let affected = tree.subtree(id);
                 if self.store.root() == store.root() && self.current.as_ref().is_some_and(|id| affected.contains(id)) {
                     anyhow::ensure!(self.flush(cx), "{}", tr("请先保存正在编辑的文档。", "Save the open document before deleting."));
                 }
@@ -150,10 +165,19 @@ impl Workspace {
     }
 
     pub(crate) fn open_end_shared(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "ios")]
+        { let _ = window; self.ask_end_shared(room, cx); }
+        #[cfg(not(target_os = "ios"))]
         self.sharing_sheet(Sheet::End(room), window, cx);
     }
 
-    pub(super) fn end_shared_document(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn ask_end_shared(&mut self, room: Room, cx: &mut Context<Self>) {
+        if self.sharing.busy || !self.sharing_account_ready(cx) { return; }
+        self.confirm = Some(crate::app::Confirm::EndSharing { room });
+        cx.notify();
+    }
+
+    pub(crate) fn end_shared_document(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>) {
         self.end_shared_documents(vec![room], vec![], window, cx);
     }
 
@@ -162,6 +186,8 @@ impl Workspace {
         let retry = rooms.clone(); let retry_personal = personal_ids.clone();
         if !self.save_before(cx, move |w, window, cx| w.end_shared_documents(retry, retry_personal, window, cx)) { return; }
         let bulk = matches!(self.sharing.sheet, Some(Sheet::EndMany(..)));
+        let original = rooms.first().filter(|room| !bulk && !room.scope.folder && self.stopping_original(room,cx))
+            .map(|room| room.scope.note.clone());
         let epoch = self.begin_sharing_request(cx);
         let personal = crate::store::Store::root_dir();
         let rooms: Vec<_> = rooms.into_iter().map(|room| {
@@ -196,11 +222,30 @@ impl Workspace {
                         });
                     } else {
                         if bulk { w.batch = Some(failed); w.sharing.batch = true; w.sharing.sheet = Some(Sheet::EndMany(failed_rooms, personal_ids)); }
-                        w.sharing.message = Some((true, errors.join("；"))); cx.notify();
+                        let message = errors.join("；");
+                        if w.sharing.sheet.is_none() { w.show_sharing_toast(ui::ToastKind::Error, &message, cx); }
+                        else { w.sharing.message = Some((true, message)); cx.notify(); }
                     }
                     return;
                 }
-                w.batch = None; w.close_sharing(window, cx); cloud_sync::retry(&personal, cx);
+                w.batch = None; cloud_sync::retry(&personal, cx);
+                if let Some(original) = original.filter(|_| personal_ids.is_empty()) {
+                    if removed_current && w.current.as_ref() == Some(&original)
+                        && w.restore_stopped_original(original, window, cx) { return; }
+                    if !removed_current && !w.is_shared() && !w.home.shared() {
+                        w.entries = w.store.list();
+                        w.sort();
+                        w.close_sharing(window,cx);
+                        return;
+                    }
+                }
+                #[cfg(target_os = "ios")]
+                if personal_ids.is_empty() {
+                    if removed_current { w.mobile_finish_share_exit(window,cx); }
+                    else { w.close_sharing(window,cx); }
+                    return;
+                }
+                w.close_sharing(window, cx);
                 if personal_ids.is_empty() { w.navigate_personal(View::Shared, None, window, cx); }
                 else { w.personal_action(window, cx, move |w, window, cx| {
                     w.entries = w.store.list();

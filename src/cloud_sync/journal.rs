@@ -574,6 +574,15 @@ fn revision(db: &Connection, id: &str) -> Result<(i64, String)> {
         [id], |row| Ok((row.get(0)?, row.get(1)?)))?)
 }
 
+pub(super) fn has_materialized_item(db: &Connection, id: &str) -> Result<bool> {
+    let row = db.query_row("SELECT meta,
+        EXISTS(SELECT 1 FROM library_documents WHERE id = ?1 AND trashed = 0)
+        FROM library_entries WHERE id = ?1", [id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))).optional()?;
+    let Some((meta, has_body)) = row else { return Ok(false); };
+    Ok(has_body || serde_json::from_str::<crate::store::Meta>(&meta)?.folder.is_some())
+}
+
 impl Journal {
     pub fn open(root: &Path, channel: Option<String>) -> Result<Self> {
         let lock = OpenOptions::new().write(true).create(true).truncate(false).open(root.join("sync.lock"))?;
@@ -1065,12 +1074,7 @@ impl Journal {
     }
 
     pub(super) fn has_materialized_item(&self, id: &str) -> Result<bool> {
-        let row = self.db.query_row("SELECT meta,
-            EXISTS(SELECT 1 FROM library_documents WHERE id = ?1 AND trashed = 0)
-            FROM library_entries WHERE id = ?1", [id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))).optional()?;
-        let Some((meta, has_body)) = row else { return Ok(false); };
-        Ok(has_body || serde_json::from_str::<crate::store::Meta>(&meta)?.folder.is_some())
+        has_materialized_item(&self.db, id)
     }
 
     pub(super) fn has_queued_catalogue(&self) -> Result<bool> {

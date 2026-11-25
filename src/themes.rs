@@ -110,23 +110,24 @@ pub static PROPS: LazyLock<Vec<Prop>> = LazyLock::new(|| {
             p(h, "font-size", &format!("{h}.size"), Len, N(c.size), N(f.size)),
             p(h, "line-height", &format!("{h}.line"), Len, N(c.line_height), N(f.line_height)),
             p(h, "font-weight", &format!("{h}.weight"), Weight, N(crate::theme::heading_weight(l).0), N(500.)),
-            p(h, "color", &format!("{h}.color"), Color, Inherit, Unused),
+            p(h, "color", &format!("{h}.color"), Color, Inherit, Inherit),
             p(h, "margin-top", &format!("{h}.mt"), Len, N(c.mt), N(f.mt)),
             p(h, "margin-bottom", &format!("{h}.mb"), Len, N(c.mb), N(f.mb)),
         ]);
     }
     v.extend([
         p("strong", "font-weight", "strong.weight", Weight, N(700.), Unused),
-        p("strong", "color", "strong.color", Color, Inherit, Unused),
+        p("strong", "color", "strong.color", Color, Inherit, Inherit),
+        p("em", "color", "em.color", Color, Inherit, Inherit),
         p("a", "color", "a.color", Color, Tok("link"), Tok("link")),
         p("a", "text-decoration", "a.underline", Underline, B(false), Unused),
         p("a", "text-decoration-color", "a.underline-color", Color, Inherit, Unused),
         p("a:hover", "color", "a.hover", Color, Tok("link_hover"), Tok("link_hover")),
-        p("code", "color", "code.color", Color, Inherit, Unused),
+        p("code", "color", "code.color", Color, Inherit, Inherit),
         p("code", "background-color", "code.bg", Color, Tok("code_chip"), Unused),
         p("code", "border-color", "code.border", Color, Tok("code_chip_border"), Unused),
-        p("code", "border-radius", "code.radius", Len, N(3.), Unused),
-        p("code", "padding-left", "code.pad", Len, N(4.), Unused),
+        p("code", "border-radius", "code.radius", Len, N(3.), N(4.)),
+        p("code", "padding-left", "code.pad", Len, N(4.), N(2.)),
         p("pre", "font-family", "pre.font", Font, Family(SYSTEM_MONO), Family(crate::feishu_theme::MONO_FONT)),
         p("pre", "font-size", "pre.size", Len, N(13.), Unused),
         p("pre", "line-height", "pre.line", Len, N(20.), Unused),
@@ -238,6 +239,7 @@ fn canon_sel(s: &str) -> String {
     match s.as_str() {
         "body" | ".markdown" | ".editor" => ".page".into(),
         "b" => "strong".into(),
+        "i" => "em".into(),
         ".inline-code" | "p code" | ":not(pre) > code" => "code".into(),
         ".code-block" | "pre code" => "pre".into(),
         ".quote" => "blockquote".into(),
@@ -794,7 +796,7 @@ fn parse_with_fonts<'a>(css: &str, fonts: &mut dyn FnMut() -> &'a [String]) -> R
     };
     for (p, v) in &raw {
         let el = p.key.split('.').next().unwrap_or("");
-        let em = match el { "page" | "p" | "list" | "quote" | "task" | "code" | "callout" | "hr" | "strong" | "a" | "done" | "bullet" | "number" | "selection" | "th" => body, e => size_of(e) };
+        let em = match el { "page" | "p" | "list" | "quote" | "task" | "code" | "callout" | "hr" | "strong" | "em" | "a" | "done" | "bullet" | "number" | "selection" | "th" => body, e => size_of(e) };
         let unitless = (p.prop == "line-height").then_some(em);
         let val = match p.kind {
             Kind::Len | Kind::Weight if matches!(p.craft, Def::Inherit) && v.eq_ignore_ascii_case("inherit") => Some(Val::Inherit),
@@ -1131,6 +1133,25 @@ mod tests {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/themes");
         fdl_core::vfs::write(format!("{dir}/craft.css"), base_css(false, "Craft", "Craft", CRAFT_DESCRIPTION)).unwrap();
         fdl_core::vfs::write(format!("{dir}/feishu.css"), base_css(true, "飞书", "Feishu", FEISHU_DESCRIPTION)).unwrap();
+    }
+
+    /// #255: text colours work on the feishu base too; left out, nothing changes.
+    #[test]
+    fn text_colors_on_either_base() {
+        for base in ["craft", "feishu"] {
+            let plain = parse(&format!(":root {{ --theme-base: {base}; }}"), &[]).unwrap().0;
+            assert!(["h1.color", "h6.color", "strong.color", "em.color", "code.color"].iter().all(|k| plain.color(k).is_none()), "{base}");
+            let css = format!(":root {{ --theme-base: {base}; }} h1 {{ color: #c00; }} h3 {{ color: #0c0; }} b {{ color: #00c; }} i {{ color: #c0c; }} code {{ color: #cc0; padding-left: 6px; border-radius: 2px; }}");
+            let (st, _, warn) = parse(&css, &[]).unwrap();
+            assert!(warn.is_empty(), "{base}: {warn:?}");
+            for (k, v) in [("h1.color", 0xcc0000), ("h3.color", 0x00cc00), ("strong.color", 0x0000cc), ("em.color", 0xcc00cc), ("code.color", 0xcccc00)] {
+                assert_eq!(st.color(k), Some(crate::theme::adapt(crate::theme::c(v))), "{base} {k}");
+            }
+            assert!(st.color("h2.color").is_none());
+            assert_eq!((st.num("code.pad"), st.num("code.radius")), (6., 2.));
+        }
+        // The feishu chip keeps its own default padding and radius.
+        assert_eq!((Style::plain(true).num("code.pad"), Style::plain(true).num("code.radius")), (2., 4.));
     }
 
     #[test]

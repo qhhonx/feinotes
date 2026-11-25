@@ -14,8 +14,7 @@
 
 use super::style::*;
 use super::*;
-use crate::feishu_theme::{c, ud};
-use crate::ui::{popover, ui_text};
+use crate::ui::{ui_text};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind { Fields, Filter, Group, Sort, RowHeight, Color }
@@ -36,9 +35,9 @@ struct FieldDrag { id: FieldId, at: usize, name: String, glyph: &'static str }
 
 impl Render for FieldDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().h(px(34.)).w(px(236.)).px(px(8.)).flex().items_center().gap(px(6.)).rounded(px(6.))
+        div().h(px(34.)).w(px(236.)).px(px(8.)).flex().items_center().gap(px(6.)).rounded(px(crate::design::geo().tool_r))
             .bg(crate::theme::raised(Theme::bg_body())).shadow(crate::theme::shadow_menu()).opacity(0.96)
-            .font_family(crate::theme::ui_family()).text_size(px(TEXT)).text_color(Theme::text())
+            .font_family(crate::theme::ui_family()).text_size(px(text_sm())).text_color(Theme::text())
             .child(icon(self.glyph, 15., Theme::icon()))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(self.name.clone())))
     }
@@ -48,7 +47,7 @@ fn label(s: &str) -> String { crate::settings::label(s) }
 
 pub(crate) fn open(v: &mut TableView, kind: Kind, pos: Point<Pixels>, window: &mut Window, cx: &mut Context<TableView>) {
     let search = (kind == Kind::Fields).then(|| {
-        let input = cx.new(|cx| { let mut t = TextField::new("搜索", cx); t.size = TEXT; t });
+        let input = cx.new(|cx| { let mut t = TextField::new("搜索", cx); t.size = text_sm(); t });
         let sub = cx.subscribe_in(&input, window, |v, _, ev: &TextFieldEvent, window, cx| match ev {
             TextFieldEvent::Cancel => v.close_popup(window, cx),
             _ => cx.notify(),
@@ -135,7 +134,7 @@ fn sync_inputs(v: &mut TableView, window: &mut Window, cx: &mut Context<TableVie
     let mut inputs = panel_mut(v).map(|p| std::mem::take(&mut p.inputs)).unwrap_or_default();
     inputs.truncate(want.len());
     while inputs.len() < want.len() {
-        let input = cx.new(|cx| { let mut t = TextField::new("", cx); t.size = TEXT; t });
+        let input = cx.new(|cx| { let mut t = TextField::new("", cx); t.size = text_sm(); t });
         let sub = cx.subscribe_in(&input, window, input_event);
         inputs.push((input, sub));
     }
@@ -207,20 +206,12 @@ fn pick_options(v: &mut TableView, kind: Kind, i: usize, pos: Point<Pixels>, cx:
 
 // ---- parts ----
 
-fn shell(id: &'static str, w: f32, cx: &Context<TableView>) -> Stateful<Div> {
-    popover().id(id).occlude().w(px(w)).flex().flex_col().text_size(px(TEXT))
+fn shell(id: &'static str, w: f32, cx: &Context<TableView>) -> crate::design::Popover {
+    crate::design::Popover::new(id).occlude().w(px(w)).flex().flex_col().text_size(px(text_sm()))
         .on_mouse_down_out(cx.listener(|v, _, window, cx| if v.dropdown.is_none() { v.close_popup(window, cx) }))
 }
 
-fn title(s: &str) -> Div { div().flex_none().text_size(px(14.)).font_weight(FontWeight::MEDIUM).text_color(Theme::text()).child(label(s)) }
-
-/// `select_box` around anything (a glyph and a name, tags).
-fn pick_box(id: impl Into<ElementId>, body: Div) -> Stateful<Div> {
-    div().id(id).h(px(32.)).px(px(10.)).flex().items_center().gap(px(6.)).rounded(px(6.)).border_1().border_color(c(ud::N400)).bg(Theme::bg_body())
-        .cursor_pointer().hover(|s| s.border_color(Theme::primary()))
-        .child(body.flex_1().min_w_0().overflow_hidden())
-        .child(icon("chevron-down", 13., Theme::text_caption()))
-}
+fn title(s: &str) -> crate::design::Label { panel_title(label(s)) }
 
 /// A field in a `pick_box`: its type's glyph and its name (a field since deleted: pick another).
 fn field_body(f: Option<&Field>) -> Div {
@@ -230,22 +221,10 @@ fn field_body(f: Option<&Field>) -> Div {
         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(Theme::text()).child(ui_text(f.name.clone())))
 }
 
-fn x_btn(id: impl Into<ElementId>) -> Stateful<Div> {
-    div().id(id).flex_none().size(px(24.)).rounded(px(6.)).flex().items_center().justify_center().cursor_pointer().hover(|s| s.bg(Theme::fill_hover())).child(icon("x", 14., Theme::icon()))
-}
+fn x_btn(id: impl Into<ElementId>) -> crate::design::Button { close_btn(id) }
 
 /// A text button (`+ 添加条件`, 全部折叠).
-fn text_btn(id: impl Into<ElementId>, glyph: &str, text: &str) -> Stateful<Div> {
-    div().id(id).flex_none().h(px(28.)).px(px(6.)).flex().items_center().gap(px(4.)).rounded(px(6.)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
-        .when(!glyph.is_empty(), |d| d.child(icon(glyph, 14., Theme::icon())))
-        .child(div().text_color(Theme::text()).whitespace_nowrap().child(label(text)))
-}
-
-/// 飞书's small switch.
-fn switch(on: bool) -> Div {
-    div().flex_none().w(px(28.)).h(px(16.)).p(px(2.)).rounded_full().flex().items_center().bg(if on { Theme::primary() } else { c(ud::N400) })
-        .when(on, |d| d.justify_end()).child(div().size(px(12.)).rounded_full().bg(Theme::bg_body()))
-}
+fn text_btn(id: impl Into<ElementId>, glyph: &str, text: &str) -> crate::design::Button { ghost_btn(id, glyph, label(text)) }
 
 /// 飞书 spells the comparisons out.
 fn op_label(op: FilterOp) -> String {
@@ -271,7 +250,7 @@ fn cond_controls(t: &Table, kind: Kind, i: usize, c: &Cond, panel: &Panel, field
             pick_field(v, below(ev), cur, vec![], cx, move |v, fid, window, cx| set_cond_field(v, kind, i, fid, window, cx));
         })));
     let Some(f) = f else { return row };
-    let typed = |row: Div| row.child(input_box().flex_1().min_w_0().children(panel.inputs.get(i).map(|(e, _)| div().flex_1().min_w_0().child(e.clone()))));
+    let typed = |row: Div| row.child(input_box(("tb-pc-input", i)).flex_1().min_w_0().children(panel.inputs.get(i).map(|(e, _)| div().flex_1().min_w_0().child(e.clone()))));
     if f.ty == FieldType::Checkbox {
         let on = !field::parse(f, &c.value).is_empty();
         return row.child(select_box(("tb-pc-check", i), label(if on { "已勾选" } else { "未勾选" })).flex_1().min_w_0().on_click(cx.listener(move |v, ev: &ClickEvent, _, cx| {
@@ -321,7 +300,7 @@ fn field_list(t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) ->
         if !query.is_empty() && !f.name.to_lowercase().contains(&query) { continue; }
         any = true;
         let (fid, first, hidden) = (f.id, Some(f.id) == primary, view.opts.hidden.contains(&f.id));
-        let row = div().id(("tb-pl", fid)).flex_none().h(px(34.)).mx(px(4.)).px(px(8.)).flex().items_center().gap(px(6.)).rounded(px(6.)).hover(|s| s.bg(Theme::fill_hover()))
+        let row = div().id(("tb-pl", fid)).flex_none().h(px(34.)).mx(px(4.)).px(px(8.)).flex().items_center().gap(px(6.)).rounded(px(crate::design::geo().menu_row_r)).hover(|s| s.bg(Theme::fill_hover()))
             .when(!first, |d| d.child(icon("grip-vertical", 14., Theme::text_placeholder())))
             .child(icon(field_glyph(f.ty), 15., if hidden { Theme::text_disabled() } else { Theme::icon() }))
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if hidden { Theme::text_disabled() } else { Theme::text() }).child(ui_text(f.name.clone())))
@@ -330,7 +309,7 @@ fn field_list(t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) ->
             .child(div().flex_1());
         if first { list = list.child(row).when(query.is_empty(), |d| d.child(menu_rule())); continue; }
         list = list.child(row
-            .child(div().id(("tb-pl-show", fid)).flex_none().h(px(24.)).px(px(4.)).flex().items_center().cursor_pointer().child(switch(!hidden))
+            .child(div().id(("tb-pl-show", fid)).flex_none().h(px(24.)).px(px(4.)).flex().items_center().cursor_pointer().child(switch(!hidden, true))
                 .on_click(cx.listener(move |v, _, _, cx| {
                     v.edit_view(cx, |view| if !view.opts.hidden.remove(&fid) { view.opts.hidden.insert(fid); });
                     v.col_sel.retain(|f| *f != fid);
@@ -368,7 +347,7 @@ const EMPTY_W: f32 = 280.;
 
 fn filter_panel(t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) -> AnyElement {
     let f = &view.opts.filter;
-    let mut p = shell("tb-panel-filter", if f.conds.is_empty() { EMPTY_W } else { 560. }, cx).p(px(16.)).gap(px(10.)).child(title("设置筛选条件"));
+    let mut p = shell("tb-panel-filter", if f.conds.is_empty() { EMPTY_W } else { 560. }, cx).p(px(crate::design::geo().popover_pad)).gap(px(crate::design::geo().panel_gap)).child(title("设置筛选条件"));
     if f.conds.len() >= 2 {
         let all = f.all;
         p = p.child(div().flex().items_center().gap(px(8.)).text_color(Theme::text_caption())
@@ -400,14 +379,11 @@ const GROUP_LEVELS: usize = 3;
 
 fn order_panel(t: &Table, view: &View, kind: Kind, cx: &Context<TableView>) -> AnyElement {
     let (list, group) = (sorts(view, kind), kind == Kind::Group);
-    let mut p = shell(if group { "tb-panel-group" } else { "tb-panel-sort" }, if list.is_empty() { EMPTY_W } else { 400. }, cx).p(px(16.)).gap(px(10.)).child(title(if group { "设置分组条件" } else { "设置排序条件" }));
+    let mut p = shell(if group { "tb-panel-group" } else { "tb-panel-sort" }, if list.is_empty() { EMPTY_W } else { 400. }, cx).p(px(crate::design::geo().popover_pad)).gap(px(crate::design::geo().panel_gap)).child(title(if group { "设置分组条件" } else { "设置排序条件" }));
     for (i, s) in list.iter().enumerate() {
         let f = t.field(s.field);
         let (asc, desc) = order_words(f.map(|f| f.ty));
-        let seg = |k: usize, text: &str, on: bool| div().id(("tb-po-seg", i * 2 + k)).flex_1().h(px(26.)).rounded(px(5.)).flex().items_center().justify_center().cursor_pointer().whitespace_nowrap()
-            .when(on, |d| d.bg(Theme::bg_body()).border_1().border_color(Theme::line_border()).text_color(Theme::primary()).font_weight(FontWeight::MEDIUM))
-            .when(!on, |d| d.text_color(Theme::text_caption()))
-            .child(label(text))
+        let seg = |k: usize, text: &str, on: bool| segment(("tb-po-seg", i * 2 + k), on, label(text))
             .on_click(cx.listener(move |v, _, _, cx| v.edit_view(cx, |view| if let Some(s) = sorts_mut(view, kind).get_mut(i) { s.desc = k == 1; })));
         p = p.child(div().flex().items_center().gap(px(8.))
             .child(pick_box(("tb-po-field", i), field_body(f)).flex_none().w(px(140.)).on_click(cx.listener(move |v, ev: &ClickEvent, _, cx| {
@@ -418,7 +394,7 @@ fn order_panel(t: &Table, view: &View, kind: Kind, cx: &Context<TableView>) -> A
                     if kind == Kind::Group { view.opts.folded.clear(); }
                 }));
             })))
-            .child(div().flex_1().min_w_0().h(px(32.)).p(px(3.)).rounded(px(6.)).bg(c(ud::N100)).flex().items_center().child(seg(0, asc, !s.desc)).child(seg(1, desc, s.desc)))
+            .child(seg_track().flex_1().min_w_0().child(seg(0, asc, !s.desc)).child(seg(1, desc, s.desc)))
             .child(x_btn(("tb-po-del", i)).on_click(cx.listener(move |v, _, _, cx| v.edit_view(cx, |view| {
                 let l = sorts_mut(view, kind);
                 if i < l.len() { l.remove(i); }
@@ -462,11 +438,11 @@ fn height_panel(view: &View, cx: &Context<TableView>) -> AnyElement {
 // ---- 填色 ----
 
 fn color_panel(t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) -> AnyElement {
-    let mut p = shell("tb-panel-color", if view.opts.colors.is_empty() { EMPTY_W } else { 560. }, cx).p(px(16.)).gap(px(10.)).child(title("设置填色条件"));
+    let mut p = shell("tb-panel-color", if view.opts.colors.is_empty() { EMPTY_W } else { 560. }, cx).p(px(crate::design::geo().popover_pad)).gap(px(crate::design::geo().panel_gap)).child(title("设置填色条件"));
     for (i, rule) in view.opts.colors.iter().enumerate() {
         let cur = rule.color % 10;
         p = p.child(div().flex().items_center().gap(px(8.))
-            .child(div().id(("tb-pk-swatch", i)).flex_none().size(px(32.)).rounded(px(6.)).border_1().border_color(if panel.palette == Some(i) { Theme::primary() } else { c(ud::N400) }).bg(tag_colors(cur).0).cursor_pointer()
+            .child(swatch(("tb-pk-swatch", i), tag_colors(cur).0, crate::design::geo().field_sm_h, panel.palette == Some(i))
                 .on_click(cx.listener(move |v, _, _, cx| {
                     if let Some(p) = panel_mut(v) { p.palette = if p.palette == Some(i) { None } else { Some(i) }; }
                     cx.notify();
@@ -477,8 +453,8 @@ fn color_panel(t: &Table, view: &View, panel: &Panel, cx: &Context<TableView>) -
         let mut row = div().flex().items_center().gap(px(8.));
         for slot in 0..10u8 {
             let (bg, fg) = tag_colors(slot);
-            row = row.child(div().id(("tb-pk-color", slot as usize)).flex_none().size(px(22.)).rounded(px(4.)).bg(bg).flex().items_center().justify_center().cursor_pointer()
-                .when(slot == cur, |d| d.border_2().border_color(Theme::primary()).child(icon("check", 12., fg)))
+            row = row.child(swatch(("tb-pk-color", slot as usize), bg, 22., slot == cur).flex().items_center().justify_center()
+                .when(slot == cur, |d| d.child(icon("check", 12., fg)))
                 .on_click(cx.listener(move |v, _, _, cx| {
                     v.edit_view(cx, |view| if let Some(r) = view.opts.colors.get_mut(i) { r.color = slot; });
                     if let Some(p) = panel_mut(v) { p.palette = None; }

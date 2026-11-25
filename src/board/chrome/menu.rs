@@ -1,8 +1,8 @@
 //! The main menu and the dropdown pieces, after Excalidraw
 //! `main-menu/MainMenu.tsx`, `main-menu/DefaultItems.tsx` and
-//! `dropdownMenu/*` (`DropdownMenu.scss`) @ 3a317b5: the hamburger
-//! (`.main-menu-trigger`) opens an island (padding 8) of 32px items (icon,
-//! 14px text, faded shortcut). The default items we support: 帮助 and 重置画布
+//! `dropdownMenu/*` @ 3a317b5: the hamburger (`.main-menu-trigger`) opens a
+//! menu in the app's look (`design::Popover`, `MenuItem`: icon, text,
+//! shortcut). The default items we support: 帮助 and 重置画布
 //! (with its confirm dialog) and the canvas background (`ChangeCanvasBackground`).
 //! Differs: no open / save / export / search / socials / theme items (the
 //! app's header, above the board, has the way back and the document menu).
@@ -10,30 +10,24 @@
 use super::*;
 use crate::board::action::BoardAction;
 use crate::settings::tr;
+use crate::design::{self, MenuItem, MenuSeparator, Popover};
 
-/// `DropdownMenuContent`: an island (padding 2), items 1px apart.
-pub(crate) fn dropdown(id: impl Into<ElementId>) -> Stateful<Div> {
-    island(id, 2.).flex().flex_col().gap(px(1.)).max_w(px(320.))
-        .when(crate::theme::dark(), |d| d.shadow({ let mut s = style::shadow_island(); s.extend(style::ring(style::hexa(0, 0.15))); s }))
+/// `DropdownMenuContent`: the app's menu (`design::Popover`).
+pub(crate) fn dropdown(id: impl Into<ElementId>) -> Popover {
+    eat(Popover::new(id).menu().max_w(px(320.)))
 }
 
-/// `DropdownMenuItem`: 32px, padding 0 8, radius 6, icon 16 and 14px text 10
-/// apart, the shortcut at the end at half opacity; hover
-/// `--button-hover-bg`, selected `--color-primary-light` (icon
-/// `--color-primary-darker`).
-pub(crate) fn dropdown_item(id: impl Into<ElementId>, icon_name: Option<&str>, label: impl Into<SharedString>, shortcut: Option<String>, selected: bool) -> Stateful<Div> {
-    div().id(id).flex_none().w_full().h(px(32.)).px(px(8.)).flex().items_center().gap(px(10.)).rounded(px(style::RADIUS_MD)).cursor_pointer()
-        .text_size(px(14.)).text_color(style::on_surface())
-        .when(selected, |d| d.bg(style::primary_light()))
-        .when(!selected, |d| d.hover(|s| s.bg(style::button_hover_bg())))
-        .active(|s| s.bg(style::button_hover_bg()).shadow(style::ring(style::brand_active())))
-        .when_some(icon_name, |d, n| d.child(icon(n, style::ICON, if selected { style::primary_darker() } else { style::text() })))
-        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label.into()))
-        .when_some(shortcut, |d, k| d.child(div().flex_none().ml(px(8.)).opacity(0.5).child(k)))
+/// `DropdownMenuItem`: a menu row with the upstream icon and the shortcut at
+/// the end; the current choice selected.
+pub(crate) fn dropdown_item(id: impl Into<ElementId>, icon_name: Option<&str>, label: impl Into<SharedString>, shortcut: Option<String>, selected: bool) -> MenuItem {
+    MenuItem::new(id).selected(selected)
+        .when_some(icon_name, |d, n| d.leading(icon(n, 16., if selected { design::color::foreground() } else { design::color::muted_foreground() })))
+        .label(label)
+        .when_some(shortcut, |d, k| d.shortcut(k))
 }
 
-/// `DropdownMenuSeparator`: 1px `--default-border-color`, 6px above and below.
-pub(crate) fn dropdown_separator() -> Div { div().flex_none().h(px(1.)).my(px(6.)).bg(style::border()) }
+/// `DropdownMenuSeparator`.
+pub(crate) fn dropdown_separator() -> MenuSeparator { MenuSeparator::new() }
 
 /// Top left (`.excalidraw-ui-top-left`): the hamburger and its menu.
 pub(crate) fn main_menu(me: &BoardView, window: &mut Window, cx: &mut Context<BoardView>) -> impl IntoElement {

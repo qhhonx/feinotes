@@ -9,35 +9,46 @@ use super::view::{BlockAct, BlockSub, CtxKind, Editor, Mark, Menu};
 use crate::model::*;
 use crate::feishu_theme as theme;
 use crate::editor_theme::Theme;
-use crate::editor_ui::{MENU_INSET, MENU_PAD_Y, MENU_ROW_H, TipExt, icon, menu, panel, popover};
+use crate::editor_ui::{TipExt, icon};
+use crate::design::{Button, ButtonSize, Field, FieldSize, MenuItem, MenuLabel, MenuSeparator, Popover, Switch, Textarea, color};
+use crate::design::menu::{LABEL_H, PAD, ROW_H, SEP_H};
+use crate::design::toolbar::{TOOLBAR_H, TOOLBAR_PAD, toolbar_layout};
+use crate::design::{ButtonGroup, ButtonGroupSeparator, Toggle, Toolbar};
 use gpui::{prelude::FluentBuilder, *};
 
 const SLASH_W: f32 = 247.;
 const SLASH_MAX_H: f32 = 351.;
-const SCROLLBAR_GUTTER: f32 = 15.;
 pub(super) const MENU_W: f32 = 247.;
-/// Text toolbar: 1px border, padding 8, T▾ 44, sep, ≡▾ 44, sep, six 24px
-/// marks, A▾ 44 (gap 8), a full-height divider 12px either side, 更多 24.
 /// Table handle: 44.5 left of the grid, centred on the column-dot row 16.5 above it.
 const TABLE_HANDLE_DX: f32 = 44.5;
 const TABLE_HANDLE_DY: f32 = 16.5 + 13.;
-const TOOLBAR_W: f32 = 1. + 8. + 44. + 17. + 44. + 17. + 6. * 32. + 44. + 25. + 24. + 8. + 1.;
-/// Callout hover bar: one 24px palette button in 10px padding, 1px border;
-/// it floats 9px above the callout, centred on it.
-const CALLOUT_BAR_W: f32 = 10. + 24. + 10. + 2.;
-const CALLOUT_BAR_H: f32 = 40. + 2.;
+/// The selection toolbar's items (design::toolbar): T▾, |, ≡▾, |, six marks and 转为公式, A▾, |, 更多; Markdown
+/// documents drop ≡▾ and A▾ (and the rule after ≡▾).
+fn toolbar_widths(md: bool) -> Vec<f32> {
+    use crate::design::toolbar::w;
+    let mut v = vec![w::DROPDOWN, w::SEPARATOR];
+    if !md { v.extend([w::DROPDOWN, w::SEPARATOR]) }
+    v.extend([w::TOGGLE; 7]);
+    if !md { v.push(w::SPLIT) }
+    v.extend([w::SEPARATOR, w::BUTTON]);
+    v
+}
+/// Callout hover bar: a toolbar with the palette button; it floats 9px
+/// above the callout, centred on it.
+const CALLOUT_BAR_W: f32 = TOOLBAR_PAD + crate::design::toolbar::w::BUTTON + TOOLBAR_PAD;
+const CALLOUT_BAR_H: f32 = TOOLBAR_H;
 const CALLOUT_PANEL_W: f32 = 230.;
 
 /// Size picker: 24px cells 6 apart in 12px insets, inside a 1px box with 12px
-/// margins and a 1px border, capped at `max-width: 314px` (cells then shrink).
+/// margins, capped at `max-width: 312px` (cells then shrink).
 fn picker_width(cols: usize) -> f32 {
-    (2. + 24. + 2. + 24. + cols as f32 * 24. + (cols - 1) as f32 * 6.).min(314.)
+    (12. + cols as f32 * 24. + (cols - 1) as f32 * 6. + 12.).min(312.)
 }
 
-/// Header 12 + 20 + 12, grid box (1 + 12 + rows + 12 + 1), 12 below, 1px borders.
+/// Header 12 + 20 + 12, the grid (no box round it), 12 below.
 fn picker_height(kind: menus::SlashKind) -> f32 {
     let rows = if kind == menus::SlashKind::Table { 9. * 24. + 8. * 6. } else { 80. };
-    1. + 44. + 1. + 12. + rows + 12. + 1. + 12. + 1.
+    44. + rows + 12.
 }
 
 /// Place `el` at `rel` (content-column coordinates), above everything else.
@@ -108,56 +119,25 @@ pub fn kind_color(k: &BlockKind) -> Hsla {
     })
 }
 
-/// Match the document's task shape without changing menu labels or hit areas.
-fn block_icon(name: &str, size: f32, color: Hsla) -> AnyElement {
-    let st = crate::editor_theme::style();
-    if name == "todo" && !st.feishu && st.num("task.radius") >= st.num("task.size") / 2. {
-        div().size(px(size)).flex_none().flex().items_center().justify_center()
-            .child(div().size(px(size - 2.)).rounded_full().border_1().border_color(color).flex().items_center().justify_center()
-                .child(icon("check", size - 6., color))).into_any_element()
-    } else { icon(name, size, color).into_any_element() }
+/// A menu row: the editor's glyph (most aren't in the shell's set), the
+/// label, a chevron when it opens a submenu (lit while that is open).
+pub(super) fn row(id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, sub: bool, open: bool) -> MenuItem {
+    MenuItem::new(id).editor_icon(icon_name.to_string()).label(crate::settings::label(label.into())).submenu(sub).open(open)
 }
 
-/// 32-tall menu row: icon, label, optional right hint.
-pub(super) fn row(id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>, right: Option<&str>, highlighted: bool) -> Stateful<Div> {
-    row_tinted(id, icon_name, label, right, highlighted, Theme::text(), Theme::icon())
+/// A row that wouldn't apply: greyed, no hover.
+pub(super) fn row_off(id: impl Into<ElementId>, icon_name: &str, label: impl Into<SharedString>) -> MenuItem {
+    MenuItem::new(id).editor_icon(icon_name.to_string()).label(crate::settings::label(label.into())).disabled(true)
 }
 
-/// `row` with explicit label / icon colours (active and disabled items).
-pub(super) fn row_tinted(
-    id: impl Into<ElementId>,
-    icon_name: &str,
-    label: impl Into<SharedString>,
-    right: Option<&str>,
-    highlighted: bool,
-    text: Hsla,
-    icon_color: Hsla,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex_none()
-        .h(px(MENU_ROW_H))
-        .mx(px(MENU_INSET))
-        .px(px(8.))
-        .flex()
-        .items_center()
-        .rounded(px(crate::ui::ROW_RADIUS))
-        .text_size(px(13.))
-        .line_height(px(20.))
-        .text_color(text)
-        .when(highlighted, |d| d.bg(Theme::fill_hover()))
-        // Disabled items (drawn in text_disabled) neither hover nor point.
-        .when(text != Theme::text_disabled(), |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover())))
-        // The app's menu row: 16px glyph, the label 8 after it.
-        .child(icon(icon_name, 16., icon_color))
-        .child(div().ml(px(8.)).flex_1().whitespace_nowrap().child(crate::settings::label(label.into())))
-        .when_some(right, |d, r| {
-            if r == "›" {
-                d.child(icon("chevron-right", 14., Theme::icon()))
-            } else {
-                d.child(div().text_size(px(12.)).text_color(Theme::text_caption()).child(r.to_string()))
-            }
-        })
+/// A 24pt tool with an 18pt editor glyph: the menus' icon grids (the
+/// toolbars use design::toolbar). The glyph is `foreground` (shadcn's
+/// ghost and Toggle glyphs take the text's colour); on shows only in the
+/// fill: they sit on a popover, whose ground hides ghost's `muted` pressed
+/// fill in the dark, so a pressed or keyboard-picked tool takes `accent`.
+fn tool(id: impl Into<ElementId>, ic: &str, on: bool) -> Button {
+    Button::ghost(id).sized(ButtonSize::Xs).selected(on).when(on, |d| d.bg(color::accent()))
+        .child(icon(ic, 18., color::foreground()))
 }
 
 /// Color-panel swatch: 26 outer with a 2px ring (blue when selected), 22 inner.
@@ -188,8 +168,8 @@ fn color_title(t: &'static str) -> Div {
 }
 
 /// 在下方添加 ›: hovering opens the insert panel next to the handle menu.
-fn add_below_row(open: bool, cx: &Context<Editor>) -> Stateful<Div> {
-    row("bm-add", "square-plus", "在下方添加", Some("›"), open)
+fn add_below_row(open: bool, cx: &Context<Editor>) -> MenuItem {
+    row("bm-add", "square-plus", "在下方添加", true, open)
         .on_mouse_move(cx.listener(|e: &mut Editor, _: &MouseMoveEvent, _, cx| {
             if let Some(Menu::Block { sub, .. }) = &mut e.menu
                 && !matches!(sub, Some(BlockSub::Add(_)))
@@ -216,20 +196,13 @@ fn grid_rows<T>(cells: Vec<(menus::SlashKind, T)>) -> Vec<Vec<T>> {
     rows
 }
 
+/// A menu separator that can take the pointer (leaving a submenu's row).
 pub(super) fn separator_h() -> Div {
-    div().flex_none().mx(px(MENU_INSET + 8.)).my(px(4.)).h(px(1.)).bg(Theme::line_border())
+    div().flex_none().child(MenuSeparator::new())
 }
 
-fn group_title(t: &str) -> Div {
-    div()
-        .flex_none()
-        .h(px(32.))
-        .px(px(MENU_INSET + 8.))
-        .flex()
-        .items_center()
-        .text_size(px(12.))
-        .text_color(Theme::text_caption())
-        .child(crate::settings::label(t))
+fn group_title(t: &str) -> MenuLabel {
+    MenuLabel::new(crate::settings::label(t))
 }
 
 /// A layout lookup an overlay depends on; re-checked after paint so an
@@ -465,27 +438,9 @@ impl Editor {
         // Tables put the handle on the row of column dots above the grid.
         let top = if matches!(kind, BlockKind::Table(_)) { -TABLE_HANDLE_DY } else { (first_line - 26.) / 2. };
         let active = matches!(&self.menu, Some(Menu::Block { block, .. }) | Some(Menu::Add { block, .. }) if *block == id);
-        let el = div()
-            .id(("handle", id.0))
-            .occlude()
-            .w(px(w))
-            .h(px(26.))
-            .flex()
-            .items_center()
-            .when(add, |d| d.justify_center())
-            .rounded(px(6.))
-            .border_1()
-            .border_color(Theme::line_border())
-            .bg(if active { Theme::handle_active() } else { Theme::bg_body() })
-            .hover(|s| s.bg(Theme::handle_active()))
-            .cursor(if add { CursorStyle::PointingHand } else { CursorStyle::OpenHand })
-            .when(add, |d| d.child(icon("plus", 14., Theme::icon())))
-            .when(!add, |d| {
-                // 1px padding, 24px type-icon box (14px glyph, family tint), 14px grip (#8f959e).
-                d.pl(px(1.))
-                    .child(div().size(px(24.)).flex().items_center().justify_center().child(block_icon(kind_icon(&kind), 14., kind_color(&kind))))
-                    .child(icon("grip-vertical", 14., Theme::icon()))
-            })
+        // design::toolbar::block_handle: an outline ButtonGroup
+        let glyph = (!add).then(|| icon(kind_icon(&kind), 12., kind_color(&kind)));
+        let el = crate::design::toolbar::block_handle(id.0, glyph, w, active)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |e, ev: &MouseDownEvent, window, cx| {
@@ -523,7 +478,6 @@ impl Editor {
         let viewport=self.list.viewport_bounds();
         let slash_w=if native { SLASH_W.min(f32::from(viewport.size.width)-16.).max(120.) } else { SLASH_W };
         let max_h=if native { (f32::from(viewport.size.height)-16.).clamp(44.,SLASH_MAX_H) } else { SLASH_MAX_H };
-        let row_h=if native { 44. } else { MENU_ROW_H };
         // `beside`: the handle menu's 在下方添加 row (its top-left in window
         // coordinates); the panel opens right next to the menu.
         let (anchor_top, anchor_bottom, selected, beside) = match (&self.slash, &self.menu) {
@@ -545,17 +499,17 @@ impl Editor {
                 let p = point(r.left() + px(MENU_W), r.bottom() + px(4. + self.block_menu_add_y(*block)));
                 (p, p, *selected, Some(p))
             }
-            _ => return None,
+            _ => { self.slash_bar.set(None); return None }
         };
         let results = self.slash_results();
         let grid_basic = self.slash_grid() && !native;
         let mut list = div()
             .id("slash-list")
-            .w(px(slash_w - SCROLLBAR_GUTTER - 2.))
-            .max_h(px(max_h - 2.))
+            .w(px(SLASH_W))
+            .max_h(px(SLASH_MAX_H))
             .overflow_y_scroll()
             .track_scroll(&self.slash_scroll)
-            .py(px(MENU_PAD_Y))
+            .py(px(PAD))
             .flex()
             .flex_col();
         let hover_sel = |n: usize| {
@@ -587,14 +541,14 @@ impl Editor {
             })
         };
         let mut last_group = usize::MAX;
-        let mut content_h: f32 = 2. * MENU_PAD_Y;
+        let mut content_h: f32 = 2. * PAD;
         // Basic group as one 6-per-row grid of 24px icon buttons
         // (spread across the 214px row, 12px between rows, 8px under the grid).
         let mut grid: Option<Vec<(menus::SlashKind, AnyElement)>> = None;
         // Rows hold 6 and 分隔线 always starts a new one; short rows are padded
         // so every row keeps the same columns.
         let grid_el = |cells: Vec<(menus::SlashKind, AnyElement)>| {
-            let mut rows = div().flex_none().mb(px(8.)).px(px(MENU_INSET + 4.)).flex().flex_col().gap(px(12.));
+            let mut rows = div().flex_none().mb(px(8.)).px(px(PAD + 4.)).flex().flex_col().gap(px(12.));
             for r in grid_rows(cells) {
                 let pad = 6 - r.len();
                 rows = rows.child(div().flex().justify_between().children(r).children((0..pad).map(|_| div().size(px(24.)))));
@@ -613,7 +567,7 @@ impl Editor {
                     list = list.child(grid_el(g));
                 }
                 list = list.child(group_title(menus::GROUPS[it.group].title));
-                content_h += 32.;
+                content_h += LABEL_H;
                 if grid_basic && it.group == 0 {
                     grid = Some(vec![]);
                     let kinds: Vec<menus::SlashKind> =
@@ -626,44 +580,26 @@ impl Editor {
                 let (keys, md) = menus::basic_tip(kind);
                 g.push((
                     kind,
-                        div()
-                            .id(("slash", n))
-                            .size(px(24.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(4.))
-                            .cursor_pointer()
-                            .when(n == selected, |d| d.bg(Theme::fill_hover()))
-                            .tip_md(it.label, keys, md)
-                            .child(block_icon(it.icon, 18., Theme::icon()))
-                            .on_mouse_move(hover_sel(n))
-                            .on_mouse_down(MouseButton::Left, run(kind))
-                            .into_any_element(),
+                    tool(("slash", n), it.icon, n == selected)
+                        .tip_md(it.label, keys, md)
+                        .on_mouse_move(hover_sel(n))
+                        .on_mouse_down(MouseButton::Left, run(kind))
+                        .into_any_element(),
                 ));
                 continue;
             }
             let sub = has_picker(kind);
             if sub && n == selected {
-                picker_at = Some((kind, content_h - MENU_PAD_Y));
+                picker_at = Some((kind, content_h - PAD));
             }
-            content_h += row_h;
+            content_h += ROW_H;
             list = list.child(
-                div()
-                    .id(("slash", n))
-                    // The list is height-capped; rows must not shrink to fit it.
-                    .flex_none()
-                    .h(px(row_h))
-                    .mx(px(MENU_INSET))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .rounded(px(crate::ui::ROW_RADIUS))
-                    .cursor_pointer()
-                    .when(n == selected, |d| d.bg(Theme::fill_hover()))
-                    .child(block_icon(it.icon, 16., crate::editor_theme::style().color("block.icon").unwrap_or_else(|| theme::c(it.color))))
-                    .child(div().ml(px(8.)).flex_1().text_size(px(if native { 16. } else { 13. })).line_height(px(if native { 24. } else { 20. })).child(crate::settings::label(it.label)))
-                    .when(sub, |d| d.child(icon("chevron-right", 14., Theme::icon())))
+                MenuItem::new(("slash", n))
+                    .leading(icon(it.icon, 16., crate::feishu_theme::c(it.color)))
+                    .label(crate::settings::label(it.label))
+                    .submenu(sub)
+                    .selected(n == selected)
+                    .open(sub && n == selected)
                     .on_mouse_move(hover_sel(n))
                     .when(!sub, |d| d.on_mouse_down(MouseButton::Left, run(kind)))
                     .when(sub, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())),
@@ -673,23 +609,16 @@ impl Editor {
             list = list.child(grid_el(g));
         }
         if results.is_empty() {
-            content_h += 32.;
+            content_h += ROW_H;
             list = list.child(
-                div().flex_none().h(px(32.)).px(px(MENU_INSET + 8.)).flex().items_center().text_size(px(13.)).text_color(Theme::text_caption()).child(crate::settings::text("未能找到相关结果")),
+                div().flex_none().h(px(ROW_H)).px(px(PAD + 8.)).flex().items_center().text_color(color::muted_foreground()).child(crate::settings::text("未能找到相关结果")),
             );
         }
-        // An always-visible 8px thumb, rgba(31,35,41,.3), 3px in
-        // from the right border and 2px from the top/bottom.
-        let view_h = content_h.min(max_h - 2.);
+        let view_h = content_h.min(max_h);
         let vh = f32::from(window.viewport_size().height);
-        let (pos, corner) = if native {
-            let y=if anchor_bottom.y+px(view_h+2.)<=viewport.bottom()-px(8.) { anchor_bottom.y } else { anchor_top.y-px(view_h+2.) };
-            let x=anchor_bottom.x.max(viewport.left()+px(8.)).min((viewport.right()-px(slash_w+8.)).max(viewport.left()+px(8.)));
-            let y=y.max(viewport.top()+px(8.)).min((viewport.bottom()-px(view_h+10.)).max(viewport.top()+px(8.)));
-            (point(x,y),Anchor::TopLeft)
-        } else if let Some(p) = beside {
-            // The panel lines up 8px above the row, inside the window.
-            let top = (f32::from(p.y) - 8.).min(vh - 8. - view_h - 2.).max(8.);
+        let (pos, corner) = if let Some(p) = beside {
+            // The panel's padding lines up with the row's top, inside the window.
+            let top = (f32::from(p.y) - PAD).min(vh - 8. - view_h).max(8.);
             (point(p.x, px(top)), Anchor::TopLeft)
         } else if vh - f32::from(anchor_bottom.y) < 240. {
             (anchor_top, Anchor::BottomLeft)
@@ -697,16 +626,36 @@ impl Editor {
             // The menu hangs right off the line box, no gap.
             (anchor_bottom, Anchor::TopLeft)
         };
-        let thumb = (content_h > view_h).then(|| {
-            let track = view_h - 4.;
-            let h = (track * view_h / content_h).max(20.);
-            let off = -f32::from(self.slash_scroll.offset().y);
-            let top = 2. + (track - h) * (off / (content_h - view_h)).clamp(0., 1.);
-            div().absolute().right(px(3.)).top(px(top)).w(px(8.)).h(px(h)).rounded_full().bg(Theme::scrollbar_thumb())
+        // An overlay scrollbar, as macOS draws one (and the page's): a 4pt thumb with no
+        // track, 3pt in from the edge and clear of the rounded corners, over the rows
+        // rather than in a gutter. It shows when the menu opens and while the list
+        // scrolls (pointer or keyboard), and goes a second after the last move: one
+        // timer redraws then, rather than animating a fade frame by frame.
+        const SHOWN: std::time::Duration = std::time::Duration::from_millis(1000);
+        let off = -f32::from(self.slash_scroll.offset().y);
+        let now = std::time::Instant::now();
+        let shown = match self.slash_bar.get() {
+            Some((t, o)) if (o - off).abs() < 0.5 => now.duration_since(t) < SHOWN,
+            _ => {
+                self.slash_bar.set(Some((now, off)));
+                if content_h > content_h.min(max_h) {
+                    cx.spawn(async move |e, cx| {
+                        cx.background_executor().timer(SHOWN).await;
+                        let _ = e.update(cx, |_, cx| cx.notify());
+                    }).detach();
+                }
+                true
+            }
+        };
+        let fade = if shown { 1. } else { 0. };
+        let thumb = (content_h > view_h && fade > 0.).then(|| {
+            let inset = crate::design::geo().menu_r;
+            let track = view_h - 2. * inset;
+            let h = (track * view_h / content_h).max(24.);
+            let top = inset + (track - h) * (off / (content_h - view_h)).clamp(0., 1.);
+            div().absolute().right(px(3.)).top(px(top)).w(px(4.)).h(px(h)).rounded_full().bg(crate::design::alpha(color::foreground(), 0.22 * fade))
         });
-        let el = menu()
-            .id("slash-menu")
-            .occlude()
+        let el = Popover::new("slash-menu")
             .relative()
             .w(px(slash_w))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -715,17 +664,17 @@ impl Editor {
             .children(thumb);
         out.push(at(self.rel(pos), corner, el));
         let (kind, row_top) = picker_at?;
-        // The picker hangs off the list's right edge (over the scrollbar
-        // gutter), centred on its row and kept inside the window.
+        // The picker hangs 4pt off the menu's right edge (as submenus do), centred on its row and
+        // kept inside the window.
         let (picker, ph) = if kind == menus::SlashKind::Button {
-            (self.button_type_menu(cx), super::button::TYPE_MENU_H)
+            (self.button_type_menu(cx).into_any_element(), super::button::TYPE_MENU_H)
         } else {
-            (self.size_picker(kind, cx), picker_height(kind))
+            (self.size_picker(kind, cx).into_any_element(), picker_height(kind))
         };
-        let menu_top = if corner == Anchor::TopLeft { pos.y } else { pos.y - px(view_h + 2.) };
+        let menu_top = if corner == Anchor::TopLeft { pos.y } else { pos.y - px(view_h) };
         let off = -f32::from(self.slash_scroll.offset().y);
-        let top = (f32::from(menu_top) + 1. + row_top - off + 16. - ph / 2.).min(vh - 8. - ph).max(8.);
-        let left = pos.x + px(1. + slash_w - SCROLLBAR_GUTTER - 2.);
+        let top = (f32::from(menu_top) + row_top - off + ROW_H / 2. - ph / 2.).min(vh - 8. - ph).max(8.);
+        let left = pos.x + px(SLASH_W + 4.);
         out.push(at(self.rel(point(left, px(top))), Anchor::TopLeft, picker));
         Some(())
     }
@@ -733,7 +682,7 @@ impl Editor {
     /// The insert-size picker: 9×9 for 表格, 1×5 for 分栏.
     /// Hovering a cell picks rows × cols; leaving the grid resets to 0 × 0;
     /// a click inserts unless the pick is within the default counts.
-    fn size_picker(&self, kind: menus::SlashKind, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn size_picker(&self, kind: menus::SlashKind, cx: &mut Context<Self>) -> Popover {
         let table = kind == menus::SlashKind::Table;
         let (title, rows, cols, def) = if table { (crate::settings::text("插入支持富文本的表格"), 9, 9, (0, 0)) } else { (crate::settings::text("选择栏数"), 1, 5, (1, 1)) };
         let (r, c) = self.size_pick;
@@ -743,10 +692,6 @@ impl Editor {
             .id("size-grid")
             .mx(px(12.))
             .mb(px(12.))
-            .border_1()
-            .border_color(Theme::line_border())
-            .rounded(px(2.))
-            .overflow_hidden()
             .cursor_pointer()
             .on_hover(cx.listener(|e, hovered: &bool, _, cx| {
                 if !*hovered && e.size_pick != (0, 0) {
@@ -762,7 +707,7 @@ impl Editor {
                 }
             }));
         for i in 0..rows {
-            let mut line = div().flex().h(px(cell_h)).mt(px(if i == 0 { 12. } else { 6. })).when(i + 1 == rows, |d| d.mb(px(12.)));
+            let mut line = div().flex().h(px(cell_h)).when(i > 0, |d| d.mt(px(6.)));
             for j in 0..cols {
                 let (ri, cj) = (i + 1, j + 1);
                 let (bg, border) = if ri <= def.0 && cj <= def.1 {
@@ -777,8 +722,7 @@ impl Editor {
                         .id(("size-cell", i * cols + j))
                         .flex_1()
                         .h(px(cell_h))
-                        .when(j == 0, |d| d.ml(px(12.)))
-                        .mr(px(if j + 1 == cols { 12. } else { 6. }))
+                        .when(j + 1 < cols, |d| d.mr(px(6.)))
                         .bg(bg)
                         .border_2()
                         .border_color(border)
@@ -794,16 +738,8 @@ impl Editor {
             grid = grid.child(line);
         }
         let count = if table { format!("{c} x {r}") } else { c.to_string() };
-        div()
-            .id("size-picker")
-            .occlude()
+        Popover::new("size-picker")
             .w(px(picker_width(cols)))
-            .bg(crate::theme::raised(Theme::bg_body()))
-            .border_1()
-            .border_color(Theme::line_border())
-            .rounded(px(6.))
-            .shadow(theme::shadow_panel())
-            .font_family(theme::ui_family())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
@@ -814,9 +750,9 @@ impl Editor {
                     .justify_between()
                     .text_size(px(12.))
                     .line_height(px(20.))
-                    .text_color(Theme::text_caption())
+                    .text_color(color::muted_foreground())
                     .child(title)
-                    .child(div().flex_none().w(px(36.)).ml(px(8.)).text_color(Theme::text()).when(disabled, |d| d.opacity(0.)).child(count)),
+                    .child(div().flex_none().w(px(36.)).ml(px(8.)).text_color(color::foreground()).when(disabled, |d| d.opacity(0.)).child(count)),
             )
             .child(grid)
     }
@@ -847,7 +783,7 @@ impl Editor {
                 }
             })
         };
-        let mut m = menu().id("block-menu").occlude().w(px(MENU_W)).py(px(MENU_PAD_Y)).flex().flex_col();
+        let mut m = Popover::new("block-menu").menu().w(px(MENU_W));
         let mut turn = shape.turn_items();
         if self.markdown { turn.retain(|t| !matches!((t.kind)(), BlockKind::Callout { .. })); }
         if !turn.is_empty() {
@@ -864,44 +800,34 @@ impl Editor {
                 let active = current(&k);
                 let (tip, keys, md) = (it.tip, it.keys.map(|k| crate::shortcuts::hint(it.action, k)), it.md);
                 grid = grid.child(
-                    div()
-                        .id(("turn", i))
-                        .size(px(24.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(4.))
-                        .cursor_pointer()
-                        .when(active, |d| d.bg(Theme::fill_turninto_active()))
-                        .hover(|s| s.bg(Theme::fill_hover()))
+                    tool(("turn", i), it.icon, active)
                         .tip_md(tip, keys, md)
-                        .child(block_icon(it.icon, 18., if active { Theme::primary_500() } else { Theme::icon() }))
                         .on_mouse_down(MouseButton::Left, act(BlockAct::Turn(k))),
                 );
             }
             m = m.child(grid).child(separator_h().on_mouse_move(set_sub(None)));
         }
-        // Grid: 2 rows of 24 + 12 gap + 4+4 padding, then a 9px separator.
-        let indent_y = MENU_PAD_Y + if turn.is_empty() { 0. } else { 4. + 24. * 2. + 12. + 4. + 9. };
+        // Grid: 2 rows of 24 + 12 gap + 4+4 padding, then a separator.
+        let indent_y = PAD + if turn.is_empty() { 0. } else { 4. + 24. * 2. + 12. + 4. + SEP_H };
         // Text blocks get 缩进和对齐 and 颜色; the rest only indent.
         let (indent_icon, indent_label) = if shape == menus::MenuShape::Text && !self.markdown { ("indent-align", crate::settings::text("缩进和对齐")) } else { ("indent-increase", crate::settings::text("缩进")) };
         m = m.child(
-            row("bm-indent", indent_icon, indent_label, Some("›"), sub == Some(BlockSub::Indent))
+            row("bm-indent", indent_icon, indent_label, true, sub == Some(BlockSub::Indent))
                 .on_mouse_move(set_sub(Some(BlockSub::Indent))),
         );
         let colorable = shape == menus::MenuShape::Text && !self.markdown;
         if colorable {
-            m = m.child(row("bm-color", "palette", crate::settings::text("颜色"), Some("›"), sub == Some(BlockSub::Color)).on_mouse_move(set_sub(Some(BlockSub::Color))));
+            m = m.child(row("bm-color", "palette", crate::settings::text("颜色"), true, sub == Some(BlockSub::Color)).on_mouse_move(set_sub(Some(BlockSub::Color))));
         }
         let adding = matches!(sub, Some(BlockSub::Add(_)));
         m = m
             .child(separator_h().on_mouse_move(set_sub(None)))
-            .child(row("bm-cut", "scissors", crate::settings::text("剪切"), None, false).on_mouse_move(set_sub(None)).on_mouse_down(MouseButton::Left, act(BlockAct::Cut)))
-            .child(row("bm-copy", "copy", crate::settings::text("复制"), None, false).on_mouse_move(set_sub(None)).on_mouse_down(MouseButton::Left, act(BlockAct::Copy)))
-            .child(row("bm-del", "trash-2", crate::settings::text("删除"), None, false).on_mouse_move(set_sub(None)).on_mouse_down(MouseButton::Left, act(BlockAct::Delete)))
+            .child(row("bm-cut", "scissors", crate::settings::text("剪切"), false, false).on_mouse_move(set_sub(None)).on_mouse_down(MouseButton::Left, act(BlockAct::Cut)))
+            .child(row("bm-copy", "copy", crate::settings::text("复制"), false, false).on_mouse_move(set_sub(None)).on_mouse_down(MouseButton::Left, act(BlockAct::Copy)))
+            .child(row("bm-del", "trash-2", crate::settings::text("删除"), false, false).on_mouse_move(set_sub(None)).on_mouse_down(MouseButton::Left, act(BlockAct::Delete)))
             .child(separator_h().on_mouse_move(set_sub(None)))
             .child(add_below_row(adding, cx));
-        let color_y = indent_y + 32.;
+        let color_y = indent_y + ROW_H;
         let sub_el: Option<AnyElement> = match sub {
             Some(BlockSub::Indent) => {
                 // Order: the three alignments, a divider, then indent /
@@ -911,33 +837,29 @@ impl Editor {
                 let can_in = self.core.can_indent(block);
                 let can_out = self.core.can_outdent(block);
                 let align_row = |id: &'static str, ic: &'static str, label: &'static str, keys: &'static str, a: Align| {
-                    let (t, i) = if align == a { (Theme::primary_500(), Theme::primary_500()) } else { (Theme::text(), Theme::icon()) };
-                    row_tinted(id, ic, label, None, false, t, i)
+                    row(id, ic, label, false, false)
+                        .checked(align == a)
                         .tip_right(label, Some(keys))
                         .on_mouse_down(MouseButton::Left, act(BlockAct::Align(a)))
                 };
                 let indent_row = |id: &'static str, ic: &'static str, label: &'static str, keys: Option<&'static str>, enabled: bool, a: BlockAct| {
                     if enabled {
-                        let r = row(id, ic, label, None, false).on_mouse_down(MouseButton::Left, act(a));
+                        let r = row(id, ic, label, false, false).on_mouse_down(MouseButton::Left, act(a));
                         match keys {
                             Some(k) => r.tip_right(label, Some(k)),
                             None => r,
                         }
                     } else {
-                        let d = Theme::text_disabled();
-                        row_tinted(id, ic, label, None, false, d, d)
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        row_off(id, ic, label).on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     }
                 };
                 Some(
-                    menu()
-                        .id("bm-indent-sub")
-                        .occlude()
+                    Popover::new("bm-indent-sub")
+                        .menu()
                         .absolute()
                         .left(px(MENU_W + 4.))
-                        .top(px(indent_y - MENU_PAD_Y))
+                        .top(px(indent_y - PAD))
                         .w(px(MENU_W))
-                        .py(px(MENU_PAD_Y))
                         .when(shape == menus::MenuShape::Text && !self.markdown, |d| {
                             d.child(align_row("al-l", "align-left", crate::settings::text("左对齐"), crate::shortcuts::hint("editor::AlignLeft", "⌘ + Shift + L"), Align::Left))
                                 .child(align_row("al-c", "align-center", crate::settings::text("居中对齐"), crate::shortcuts::hint("editor::AlignCenter", "⌘ + Shift + E"), Align::Center))
@@ -955,7 +877,7 @@ impl Editor {
                 } else {
                     self.color_panel(Some(block), cx).into_any_element()
                 };
-                Some(div().absolute().left(px(MENU_W + 4.)).top(px(color_y - MENU_PAD_Y)).child(p).into_any_element())
+                Some(div().absolute().left(px(MENU_W + 4.)).top(px(color_y - PAD)).child(p).into_any_element())
             }
             _ => None,
         };
@@ -970,15 +892,15 @@ impl Editor {
     /// Top of the 在下方添加 row inside the handle menu (mirrors its layout).
     fn block_menu_add_y(&self, block: BlockId) -> f32 {
         let Some(b) = self.core.block(block) else { return 0. };
-        // separators are 9 tall, rows 32; 剪切 / 复制 / 删除 sit between two.
-        let tail = 9. + 32. * 3. + 9.;
+        // 剪切 / 复制 / 删除 sit between two separators.
+        let tail = SEP_H + ROW_H * 3. + SEP_H;
         if matches!(b.kind, BlockKind::Table(_)) {
-            return MENU_PAD_Y + 32. + tail + 32. * 3. + 9.;
+            return PAD + ROW_H + tail + ROW_H * 3. + SEP_H;
         }
         let shape = menus::MenuShape::of(&b.kind);
-        let grid = if shape.turn_items().is_empty() { 0. } else { 4. + 24. * 2. + 12. + 4. + 9. };
-        let color = if shape == menus::MenuShape::Text { 32. } else { 0. };
-        MENU_PAD_Y + grid + 32. + color + tail
+        let grid = if shape.turn_items().is_empty() { 0. } else { 4. + 24. * 2. + 12. + 4. + SEP_H };
+        let color = if shape == menus::MenuShape::Text { ROW_H } else { 0. };
+        PAD + grid + ROW_H + color + tail
     }
 
     // ---- color panels
@@ -1027,9 +949,7 @@ impl Editor {
             ));
         }
         let title = color_title;
-        panel()
-            .id("color-panel")
-            .occlude()
+        Popover::new("color-panel")
             .w(px(CALLOUT_PANEL_W))
             .pt(px(4.))
             .px(px(10.))
@@ -1040,20 +960,11 @@ impl Editor {
             .child(title(crate::settings::text("背景颜色")))
             .child(bgs)
             .child(
-                div()
-                    .id("color-reset")
+                Button::outline("color-reset")
+                    .sized(ButtonSize::Xs)
                     .mt(px(12.))
-                    .h(px(24.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(Theme::line_border())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(12.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(Theme::fill_hover()))
-                    .child(crate::settings::text("恢复默认"))
+                    .w_full()
+                    .label(crate::settings::text("恢复默认"))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |e, _, window, cx| {
@@ -1089,17 +1000,7 @@ impl Editor {
         }
         let b = self.block_rect(block)?;
         let pos = point(b.center().x - px(CALLOUT_BAR_W / 2.), b.top() - px(9. + CALLOUT_BAR_H));
-        let palette = div()
-            .id("callout-palette")
-            .size(px(24.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(4.))
-            .cursor_pointer()
-            .when(open, |d| d.bg(Theme::fill_hover_strong()))
-            .hover(|s| s.bg(Theme::fill_hover_strong()))
-            .child(icon("palette", 18., Theme::icon()))
+        let palette = Button::ghost("callout-palette").sized(ButtonSize::Sm).editor_icon("palette").selected(open)
             .on_hover(cx.listener(move |e, hovered: &bool, _, cx| {
                 if *hovered && e.menu.is_none() {
                     e.menu = Some(Menu::CalloutColor { block, section: 0 });
@@ -1118,22 +1019,19 @@ impl Editor {
             div()
                 .absolute()
                 .top(px(CALLOUT_BAR_H + 4.))
-                .left(px((CALLOUT_BAR_W - CALLOUT_PANEL_W) / 2. - 1.))
+                .left(px((CALLOUT_BAR_W - CALLOUT_PANEL_W) / 2.))
                 .child(self.callout_panel(block, cx).relative().child(self.zone_probe()))
         });
-        let el = popover()
-            .id("callout-bar")
-            .occlude()
-            .relative()
+        let el = Toolbar::new("callout-bar")
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().h(px(40.)).px(px(10.)).flex().items_center().child(palette))
-            .child(self.zone_probe())
-            .children(drop);
+            .child(palette)
+            .overlay(self.zone_probe())
+            .overlays(drop);
         Some(at(self.rel(pos), Anchor::TopLeft, el))
     }
 
     /// Callout panel: 字体颜色 8 / 边框颜色 8 / 填充颜色 16, 随机, 恢复默认.
-    fn callout_panel(&self, block: BlockId, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn callout_panel(&self, block: BlockId, cx: &mut Context<Self>) -> Popover {
         let (cur_bg, cur_border, cur_text) = match self.core.kind_of(block) {
             Some(BlockKind::Callout { bg, border, text_color, .. }) => (bg.clone(), border.clone(), text_color.clone()),
             _ => (None, None, None),
@@ -1193,25 +1091,8 @@ impl Editor {
             ));
         }
         let title = color_title;
-        let button = |id: &'static str, label: &'static str| {
-            div()
-                .id(id)
-                .flex_1()
-                .h(px(24.))
-                .rounded(px(6.))
-                .border_1()
-                .border_color(Theme::line_border())
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(12.))
-                .cursor_pointer()
-                .hover(|s| s.bg(Theme::fill_hover()))
-                .child(crate::settings::label(label))
-        };
-        panel()
-            .id("callout-panel")
-            .occlude()
+        let button = |id: &'static str, label: &'static str| Button::outline(id).sized(ButtonSize::Xs).flex_1().label(crate::settings::label(label));
+        Popover::new("callout-panel")
             .w(px(CALLOUT_PANEL_W))
             .pt(px(4.))
             .px(px(10.))
@@ -1272,24 +1153,15 @@ impl Editor {
             return None;
         };
         let focused = self.eq_field.read(cx).is_focused(window);
-        let primary = Theme::primary_500();
-        let el = panel()
-            .id("equation-editor")
-            .occlude()
+        let el = Popover::new("equation-editor")
             .w(px(400.))
             .pt(px(16.))
             .px(px(16.))
             .pb(px(8.))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
-                div()
-                    .id("equation-input")
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(if focused { primary } else { theme::ta(0xd0, 0xd3, 0xd6, 1.) })
-                    .hover(move |s| s.border_color(primary))
-                    .py(px(8.))
-                    .px(px(12.))
+                Textarea::new("equation-input")
+                    .focused(focused)
                     .max_h(px(500.))
                     .overflow_hidden()
                     .flex()
@@ -1300,7 +1172,7 @@ impl Editor {
                     .mt(px(8.))
                     .text_size(px(12.))
                     .line_height(px(20.))
-                    .text_color(Theme::text_placeholder())
+                    .text_color(color::muted_foreground())
                     .child(crate::settings::text("按 ESC 完成输入")),
             );
         Some(at(self.rel(point(b.left(), b.bottom() + px(4.))), Anchor::TopLeft, el))
@@ -1319,7 +1191,7 @@ impl Editor {
                 .child(div().flex_1().min_w_0().overflow_hidden().child(crate::ui::menu_label(label, g, gpui::white())))
         };
         let el = crate::ui::popover().id("code-tools-menu").occlude().w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
-            .flex().flex_col().shadow(crate::theme::shadow_s4_down())
+            .flex().flex_col().shadow(theme::shadow_s4_down())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(row("code-action-language", "braces", lang).child(crate::ui::icon("chevron-right", 10., crate::theme::Theme::icon())).on_mouse_down(MouseButton::Left, cx.listener(move |e, _, window, cx| {
                 cx.stop_propagation(); e.open_lang_menu(block, window, cx);
@@ -1348,22 +1220,10 @@ impl Editor {
             let l: &'static str = l;
             let is_cur = current.eq_ignore_ascii_case(l);
             list = list.child(
-                div()
-                    .id(("lang", i))
-                    .flex_none()
-                    .h(px(MENU_ROW_H))
-                    .mx(px(MENU_INSET))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .rounded(px(crate::ui::ROW_RADIUS))
-                    .cursor_pointer()
-                    .text_size(px(13.))
-                    .when(i == selected, |d| d.bg(Theme::fill_hover()))
-                    .hover(|s| s.bg(Theme::fill_hover()))
-                    .child(l)
-                    .when(is_cur, |d| d.child(icon("check", 14., Theme::primary())))
+                MenuItem::new(("lang", i))
+                    .label(l)
+                    .checked(is_cur)
+                    .selected(i == selected)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |e, _, window, cx| {
@@ -1374,33 +1234,24 @@ impl Editor {
             );
         }
         if langs.is_empty() {
-            list = list.child(div().h(px(MENU_ROW_H)).px(px(MENU_INSET + 8.)).flex().items_center().text_size(px(13.)).text_color(Theme::text_caption()).child(crate::settings::text("无匹配结果")));
+            list = list.child(div().h(px(ROW_H)).px(px(PAD + 8.)).flex().items_center().text_color(color::muted_foreground()).child(crate::settings::text("无匹配结果")));
         }
-        let el = menu()
-            .id("lang-menu")
-            .occlude()
+        let el = Popover::new("lang-menu")
+            .menu()
             .w(px(240.))
-            .py(px(MENU_PAD_Y))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
-                div()
-                    .mx(px(MENU_INSET))
+                Field::new("lang-search")
+                    .sized(FieldSize::Sm)
+                    .mx(px(PAD))
                     .mb(px(6.))
-                    .h(px(32.))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(Theme::line_border())
-                    .child(icon("search", 14., Theme::icon()))
+                    .child(icon("search", 14., color::muted_foreground()))
                     .child(self.lang_field.clone()),
             )
             .child(list);
         // Under the language button, which sits ~267px left of the block's right
         // edge; above it when the list wouldn't fit below.
-        let h = px(2. * MENU_PAD_Y + 38. + (langs.len().max(1) as f32 * MENU_ROW_H).min(288.) + 2.);
+        let h = px(2. * PAD + 38. + (langs.len().max(1) as f32 * ROW_H).min(288.));
         let x = b.right() - px(267.);
         let below = b.top() + px(34.);
         let (pos, corner) = if below + h > window.viewport_size().height - px(8.) && b.top() + px(4.) - h >= px(8.) {
@@ -1442,35 +1293,17 @@ impl Editor {
         let pane_right = self.rel(point(viewport.right() - px(8.), px(0.))).x;
         // Keep the bar inside the pane on both sides: a selection near the right
         // edge used to push it, and its dropdowns, past the window (#95).
-        let mobile = cfg!(target_os = "ios");
-        let toolbar_w = if mobile { (f32::from(pane_right-pane_left)).min(TOOLBAR_W+120.) } else { TOOLBAR_W };
-        let bar_h = if mobile { if toolbar_w < TOOLBAR_W+100. { 104. } else { 48. } } else { 40. };
-        let x = (hp.x - px(toolbar_w / 2.)).max(pane_left).min((pane_right - px(toolbar_w)).max(pane_left));
-        let above = sp.y - px(bar_h+5.) >= view_top;
-        let pos = if above { point(x, sp.y - px(bar_h+5.)) } else { point(x, ep.y + elh + px(5.)) };
+        let (at_x, tw) = toolbar_layout(&toolbar_widths(self.markdown));
+        let x = (hp.x - px(tw / 2.)).max(pane_left).min((pane_right - px(tw)).max(pane_left));
+        let above = sp.y - px(45.) >= view_top;
+        let pos = if above { point(x, sp.y - px(45.)) } else { point(x, ep.y + elh + px(5.)) };
 
         let head_kind = self.core.kind_of(s.block).cloned().unwrap_or(BlockKind::Text);
         let align = self.current_align();
-        let btn = |id: &'static str| {
-            div()
-                .id(id)
-                .h(px(if mobile { 44. } else { 24. }))
-                .min_w(px(if mobile { 44. } else { 24. }))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(4.))
-                .cursor_pointer()
-                .hover(|s| s.bg(Theme::fill_hover_strong()))
-        };
-        let sep = || div().w(px(1.)).h(px(20.)).bg(Theme::line_border());
         let mark_btn = |id: &'static str, ic: &'static str, tip: &'static str, keys: &'static str, md: Option<&'static str>, mark: Mark, get: fn(&Marks) -> bool| {
             let active = self.mark_active(get);
-            btn(id)
-                .w(px(24.))
-                .when(active, |d| d.bg(Theme::fill_turninto_active()))
+            Toggle::new(id).editor_icon(ic).pressed(active)
                 .tip_md(tip, Some(keys), md)
-                .child(icon(ic, 18., if active { Theme::primary_500() } else { Theme::icon() }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |e, _, window, cx| {
@@ -1489,77 +1322,57 @@ impl Editor {
             })
         };
         let hover = |m: Menu| cx.listener(move |e: &mut Editor, h: &bool, _, cx| e.tb_drop_over(m.clone(), 0, *h, cx));
-        let turn_below = (window.viewport_size().height - pos.y - px(bar_h+12.)).max(px(0.));
+        let turn_below = (window.viewport_size().height - pos.y - px(TOOLBAR_H + 12.)).max(px(0.));
         let turn_above = (pos.y - px(8.)).max(px(0.));
         let turn_up = turn_below < px(338.) && turn_above > turn_below;
         let turn_height = if turn_up { turn_above } else { turn_below }.min(px(338.));
-        let more_height = px(2. + 2. * crate::editor_ui::MENU_PAD_Y + 2. * crate::editor_ui::MENU_ROW_H);
+        let more_height = px(2. * PAD + 2. * ROW_H);
         let more_above = (pos.y - px(10.)).max(px(0.));
-        let more_below = (window.viewport_size().height - pos.y - px(bar_h+12.)).max(px(0.));
+        let more_below = (window.viewport_size().height - pos.y - px(TOOLBAR_H + 12.)).max(px(0.));
         // Down unless it doesn't fit there, like the other dropdowns.
         let more_up = more_below < more_height && more_above > more_below;
         let drop = |m: Menu, x: f32| {
             div()
                 .id("tb-drop")
                 .absolute()
-                .when(matches!(m, Menu::TurnInto) && turn_up, |d| d.bottom(px(bar_h+4.)))
-                .when(!matches!(m, Menu::TurnInto) || !turn_up, |d| d.top(px(bar_h+4.)))
+                .when(matches!(m, Menu::TurnInto) && turn_up, |d| d.bottom(px(TOOLBAR_H + 4.)))
+                .when(!matches!(m, Menu::TurnInto) || !turn_up, |d| d.top(px(TOOLBAR_H + 4.)))
                 .left(px(x))
                 .on_hover(cx.listener(move |e: &mut Editor, h: &bool, _, cx| e.tb_drop_over(m.clone(), 1, *h, cx)))
         };
-        // The chevron flips while its dropdown is open.
-        let chevron = |m: Menu| icon(if dropdown.as_ref() == Some(&m) { "caret-up" } else { "caret-down" }, 12., Theme::icon());
+        // A menu's trigger: its glyph and a chevron, `muted` while the menu is open.
+        let trigger = |id: &'static str, ic: &str, m: Menu| {
+            Button::ghost(id).sized(ButtonSize::Sm).editor_icon(ic.to_string()).icon_end("chevron-down").selected(dropdown.as_ref() == Some(&m))
+        };
         let align_icon = match align {
             Align::Left => "align-left",
             Align::Center => "align-center",
             Align::Right => "align-right",
         };
-        let color_btn = self.color_split("tb-color", matches!(dropdown, Some(Menu::Color)), cx);
 
-        // x offsets of the dropdown buttons (padding 8, gap 8, separators 1).
-        let x_turn = 8.;
-        let x_align = x_turn + 44. + 8. + 1. + 8.;
-        // The colour panel is wider than the bar's right-hand section, so it is
-        // right-aligned inside the bar instead of hanging past its edge (#95).
-        let x_color = f32::min(x_align + 44. + 8. + 1. + 8. + 6. * (24. + 8.), toolbar_w - CALLOUT_PANEL_W - 2.).max(0.);
-        let bar = div()
-            .h(px(bar_h))
-            .when(mobile, |d| d.w(px(toolbar_w)).flex_wrap())
-            .px(px(8.))
-            .flex()
-            .items_center()
-            .gap(px(if mobile { 4. } else { 8. }))
-            .child(
-                btn("tb-turn")
-                    .w(px(44.))
-                    .gap(px(6.))
-                    .when(matches!(dropdown, Some(Menu::TurnInto)), |d| d.bg(Theme::fill_hover_strong()))
-                    .child(block_icon(kind_icon(&head_kind), 18., Theme::icon()))
-                    .child(chevron(Menu::TurnInto))
-                    .on_hover(hover(Menu::TurnInto))
-                    .on_mouse_down(MouseButton::Left, open(Menu::TurnInto)),
-            )
+        // Where the dropdowns' buttons start; the colour panel is wider than the
+        // bar's right-hand section, so it is right-aligned inside the bar
+        // instead of hanging past its edge (#95).
+        let x_turn = at_x[0];
+        let x_align = at_x[2];
+        let x_color = f32::min(at_x[11], tw - CALLOUT_PANEL_W).max(0.);
+        let sep = ButtonGroupSeparator::new;
+        let bar = Toolbar::new("toolbar")
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(trigger("tb-turn", kind_icon(&head_kind), Menu::TurnInto).on_hover(hover(Menu::TurnInto)).on_mouse_down(MouseButton::Left, open(Menu::TurnInto)))
             .child(sep())
-            .when(!self.markdown, |d| d.child(
-                btn("tb-align")
-                    .w(px(44.))
-                    .gap(px(6.))
-                    .when(matches!(dropdown, Some(Menu::Align)), |d| d.bg(Theme::fill_hover_strong()))
-                    .child(icon(align_icon, 18., Theme::icon()))
-                    .child(chevron(Menu::Align))
-                    .on_hover(hover(Menu::Align))
-                    .on_mouse_down(MouseButton::Left, open(Menu::Align)),
-            )
-            .child(sep()))
+            .when(!self.markdown, |d| d
+                .child(trigger("tb-align", align_icon, Menu::Align).on_hover(hover(Menu::Align)).on_mouse_down(MouseButton::Left, open(Menu::Align)))
+                .child(sep()))
             .child(mark_btn("tb-b", "bold", crate::settings::text("粗体"), crate::shortcuts::hint("editor::Bold", "⌘ + B"), Some(crate::settings::text("**文本** 空格")), Mark::Bold, |m| m.bold))
             .child(mark_btn("tb-s", "strikethrough", crate::settings::text("删除线"), crate::shortcuts::hint("editor::Strike", "⌘ + Shift + X"), Some(crate::settings::text("~~文本~~ 空格")), Mark::Strike, |m| m.strike))
             .child(mark_btn("tb-i", "italic", crate::settings::text("斜体"), crate::shortcuts::hint("editor::Italic", "⌘ + I"), Some(crate::settings::text("*文本* 空格")), Mark::Italic, |m| m.italic))
             .child(mark_btn("tb-u", "underline", crate::settings::text("下划线"), crate::shortcuts::hint("editor::Underline", "⌘ + U"), Some(crate::settings::text("~文本~ 空格")), Mark::Underline, |m| m.underline))
             .child(
-                btn("tb-link")
-                    .w(px(24.))
+                // 链接 makes one, so it is never pressed; a toggle for its size
+                Toggle::new("tb-link")
+                    .editor_icon("link")
                     .tip_above(crate::settings::text("链接"), Some(crate::shortcuts::hint("editor::Link", "⌘ + K")))
-                    .child(icon("link", 18., Theme::icon()))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|e, _, window, cx| {
@@ -1569,14 +1382,27 @@ impl Editor {
                     ),
             )
             .child(mark_btn("tb-code", "code", crate::settings::text("代码"), crate::shortcuts::hint("editor::InlineCode", "⌘ + Control + C"), Some(crate::settings::text("`代码`")), Mark::Code, |m| m.code))
-            .when(!self.markdown, |d| d.child(color_btn))
-            .child(div().mx(px(4.)).w(px(1.)).h(px(40.)).bg(Theme::line_border()))
             .child(
-                btn("tb-more")
-                    .w(px(if mobile { 80. } else { 24. }))
-                    .when(matches!(dropdown, Some(Menu::TbMore)), |d| d.bg(Theme::fill_hover_strong()))
-                    .child(icon(if mobile { "plus" } else { "layout-grid" }, 18., Theme::icon()))
-                    .when(mobile,|d|d.gap(px(6.)).child(crate::settings::tr("插入","Insert")))
+                // 转为公式 acts, it is never pressed; a toggle for its size, as 链接
+                Toggle::new("tb-equation")
+                    .editor_icon("sigma")
+                    .tip_md(crate::settings::text("转为公式"), None, Some(crate::settings::text("$$文字$$")))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|e, _, window, cx| {
+                            cx.stop_propagation();
+                            e.menu = None;
+                            e.selection_to_equation(window, cx);
+                        }),
+                    ),
+            )
+            .when(!self.markdown, |d| d.child(self.color_split("tb-color", matches!(dropdown, Some(Menu::Color)), cx)))
+            .child(sep())
+            .child(
+                Button::ghost("tb-more")
+                    .sized(ButtonSize::Sm)
+                    .editor_icon("layout-grid")
+                    .selected(matches!(dropdown, Some(Menu::TbMore)))
                     .on_hover(hover(Menu::TbMore))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -1594,7 +1420,7 @@ impl Editor {
 
         let drop_el: Option<AnyElement> = match dropdown {
             Some(Menu::TurnInto) => {
-                let mut list = menu().id("tb-turn-menu").occlude().min_w(px(200.)).py(px(MENU_PAD_Y)).max_h(turn_height).overflow_y_scroll().on_scroll(|_, _, cx| cx.stop_propagation());
+                let mut list = Popover::new("tb-turn-menu").menu().min_w(px(200.)).max_h(turn_height).overflow_y_scroll().on_scroll(|_, _, cx| cx.stop_propagation());
                 for (i, it) in TURN_ITEMS.iter().enumerate() {
                     let k = (it.kind)();
                     if self.markdown && matches!(k, BlockKind::Callout { .. }) {
@@ -1602,8 +1428,8 @@ impl Editor {
                     }
                     let active = menus::same_kind(&head_kind, &k);
                     list = list.child(
-                        row(("tt", i), it.icon, it.label, None, false)
-                            .when(active, |d| d.child(icon("check", 14., Theme::primary())))
+                        row(("tt", i), it.icon, it.label, false, false)
+                            .checked(active)
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |e, _, window, cx| {
@@ -1618,8 +1444,7 @@ impl Editor {
             }
             Some(Menu::Align) => {
                 let item = |id: &'static str, ic: &'static str, label: &'static str, keys: &'static str, a: Align| {
-                    let (t, i) = if align == a { (Theme::primary_500(), Theme::primary_500()) } else { (Theme::text(), Theme::icon()) };
-                    row_tinted(id, ic, label, None, false, t, i).tip_above(label, Some(keys)).on_mouse_down(
+                    row(id, ic, label, false, false).checked(align == a).tip_above(label, Some(keys)).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |e, _, window, cx| {
                             cx.stop_propagation();
@@ -1628,74 +1453,46 @@ impl Editor {
                         }),
                     )
                 };
-                let list = menu()
-                    .id("tb-align-menu")
-                    .occlude()
+                let list = Popover::new("tb-align-menu")
+                    .menu()
                     .w(px(180.))
-                    .py(px(MENU_PAD_Y))
                     .child(item("ta-l", "align-left", crate::settings::text("左对齐"), crate::shortcuts::hint("editor::AlignLeft", "⌘ + Shift + L"), Align::Left))
                     .child(item("ta-c", "align-center", crate::settings::text("居中对齐"), crate::shortcuts::hint("editor::AlignCenter", "⌘ + Shift + E"), Align::Center))
                     .child(item("ta-r", "align-right", crate::settings::text("右对齐"), crate::shortcuts::hint("editor::AlignRight", "⌘ + Shift + R"), Align::Right));
                 Some(drop(Menu::Align, x_align).child(list).into_any_element())
             }
             Some(Menu::Color) => Some(drop(Menu::Color, x_color).child(self.color_panel(None, cx)).into_any_element()),
-            Some(Menu::TbMore) => Some(div().absolute().when(more_up, |d| d.bottom(px(bar_h+4.))).when(!more_up, |d| d.top(px(bar_h+4.))).right_0().child(self.tb_more_menu(cx)).into_any_element()),
+            Some(Menu::TbMore) => Some(div().absolute().when(more_up, |d| d.bottom(px(TOOLBAR_H + 4.))).when(!more_up, |d| d.top(px(TOOLBAR_H + 4.))).right_0().child(self.tb_more_menu(cx)).into_any_element()),
             _ => None,
         };
-        let el = popover()
-            .id("toolbar")
-            .occlude()
-            .relative()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(bar)
-            .children(drop_el);
-        Some(at(self.rel(pos), Anchor::TopLeft, el))
+        Some(at(self.rel(pos), Anchor::TopLeft, bar.overlays(drop_el)))
     }
 }
 
-/// Table toolbar: padding 8, merge 24, sep, palette 24, sep, T▾ 44, sep,
-/// ≡▾ 44, sep, five 24px marks, A▾ 44 (gap 8); + sep, delete 24 for whole
-/// rows / columns.
-const TABLE_TB_W: f32 = 8. + 24. + 17. + 24. + 17. + 44. + 17. + 44. + 17. + 5. * 32. + 44. + 8.;
-const TABLE_TB_H: f32 = 40. + 2.;
-
-/// 28 × 16 switch (menu rows).
-fn switch(on: bool) -> Div {
-    div()
-        .flex_none()
-        .w(px(28.))
-        .h(px(16.))
-        .rounded_full()
-        .p(px(2.))
-        .flex()
-        .when(on, |d| d.justify_end())
-        .bg(if on { Theme::primary_500() } else { Theme::block_placeholder() })
-        .child(div().size(px(12.)).rounded_full().bg(crate::theme::raised(Theme::bg_body())))
+/// The table toolbar's items: merge, |, palette, |, T▾, |, ≡▾, |, five marks,
+/// A▾; + |, delete for whole rows / columns. Markdown drops the palette and A▾.
+fn table_toolbar_widths(md: bool, whole: bool) -> Vec<f32> {
+    use crate::design::toolbar::w;
+    let mut v = vec![w::BUTTON, w::SEPARATOR];
+    if !md { v.extend([w::BUTTON, w::SEPARATOR]) }
+    v.extend([w::DROPDOWN, w::SEPARATOR, w::DROPDOWN, w::SEPARATOR]);
+    v.extend([w::TOGGLE; 5]);
+    if !md { v.push(w::SPLIT) }
+    if whole { v.extend([w::SEPARATOR, w::BUTTON]) }
+    v
 }
 
 impl Editor {
-    /// The toolbars' A▾. The A applies the last used colors at once (by
-    /// default the yellow highlight); the chevron opens the panel on
-    /// hover. Each half darkens over the button's own hover fill.
-    fn color_split(&self, id: &'static str, open: bool, cx: &Context<Self>) -> Stateful<Div> {
+    /// The toolbars' A▾: a split button (`ButtonGroup` of two ghost
+    /// `icon-sm` buttons). The A applies the last used colors at once (by
+    /// default the yellow highlight); the chevron opens the panel on hover.
+    /// The A's colours are content and stay.
+    fn color_split(&self, id: &'static str, open: bool, cx: &Context<Self>) -> ButtonGroup {
         let (lt, lb) = self.last_color.clone();
-        let fill = || crate::theme::adapt(rgba(0x1f23290d).into());
-        div()
-            .id(id)
-            .h(px(24.))
-            .flex()
-            .rounded(px(4.))
-            .overflow_hidden()
-            .cursor_pointer()
-            .hover(|s| s.bg(fill()))
+        ButtonGroup::new()
             .child(
-                div()
-                    .id((id, 0usize))
-                    .size(px(24.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .hover(|s| s.bg(fill()))
+                Button::ghost((id, 0usize))
+                    .sized(ButtonSize::Sm)
                     .child(
                         div()
                             .size(px(20.))
@@ -1722,16 +1519,10 @@ impl Editor {
                     ),
             )
             .child(
-                div()
-                    .id((id, 1usize))
-                    .w(px(20.))
-                    .h(px(24.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .hover(|s| s.bg(fill()))
-                    .when(open, |d| d.bg(fill()))
-                    .child(icon(if open { "caret-up" } else { "caret-down" }, 12., Theme::icon()))
+                Button::ghost((id, 1usize))
+                    .sized(ButtonSize::Sm)
+                    .icon("chevron-down")
+                    .selected(open)
                     .on_hover(cx.listener(|e, h: &bool, _, cx| e.tb_drop_over(Menu::Color, 0, *h, cx)))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -1777,16 +1568,15 @@ impl Editor {
         // A Markdown file keeps only a column's alignment, no colours or
         // vertical alignment, so those are left out (as on the text toolbar).
         let md = self.markdown;
-        let natural_w = TABLE_TB_W + if whole { 17. + 24. } else { 0. } - if md { 24. + 17. + 8. + 44. } else { 0. };
+        let (at_x, natural_w) = toolbar_layout(&table_toolbar_widths(md, whole));
         let viewport = self.list.viewport_bounds();
         let pane_left = viewport.left() + px(12.);
         let pane_right = viewport.right() - px(12.);
         let w = if mobile { natural_w.min(f32::from(pane_right-pane_left).max(1.)) } else { natural_w };
-        let bar_h = if mobile { if w < natural_w { 144. } else { 96. } } else { TABLE_TB_H };
         // Same two-sided clamp as the text toolbar (#95).
         let x = (rect.center().x - px(w / 2.)).max(pane_left).min((pane_right - px(w)).max(pane_left));
         let bottom = if range_top == 0 { table_top - px(22.) } else { rect.top() - px(15.) };
-        let y = if bottom - px(bar_h) >= viewport.top() { bottom - px(bar_h) } else { rect.bottom() + px(15.) };
+        let y = if bottom - px(TOOLBAR_H) >= viewport.top() { bottom - px(TOOLBAR_H) } else { rect.bottom() + px(15.) };
 
         let cell = self.core.first_selected_cell();
         let valign = cell.and_then(|c| c.valign.clone());
@@ -1801,19 +1591,7 @@ impl Editor {
             .unwrap_or(BlockKind::Text);
         let align = self.current_align();
 
-        let btn = |id: &'static str| {
-            div()
-                .id(id)
-                .h(px(if mobile { 44. } else { 24. }))
-                .min_w(px(if mobile { 44. } else { 24. }))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(4.))
-                .cursor_pointer()
-                .hover(|s| s.bg(Theme::fill_hover_strong()))
-        };
-        let sep = || div().w(px(1.)).h(px(20.)).bg(Theme::line_border());
+        let sep = ButtonGroupSeparator::new;
         let toggle = |m: Menu| {
             cx.listener(move |e: &mut Editor, _: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
@@ -1830,7 +1608,7 @@ impl Editor {
             })
         };
         let hover = |m: Menu| cx.listener(move |e: &mut Editor, h: &bool, _, cx| e.tb_drop_over(m.clone(), 0, *h, cx));
-        let turn_below = (window.viewport_size().height - y - px(bar_h+12.)).max(px(0.));
+        let turn_below = (window.viewport_size().height - y - px(TOOLBAR_H + 12.)).max(px(0.));
         let turn_above = (y - px(8.)).max(px(0.));
         let turn_up = turn_below < px(338.) && turn_above > turn_below;
         let turn_height = if turn_up { turn_above } else { turn_below }.min(px(338.));
@@ -1838,20 +1616,19 @@ impl Editor {
             div()
                 .id("ttb-drop")
                 .absolute()
-                .when(matches!(m, Menu::TurnInto) && turn_up, |d| d.bottom(px(bar_h+4.)))
-                .when(!matches!(m, Menu::TurnInto) || !turn_up, |d| d.top(px(bar_h+4.)))
-                .left(px(if mobile { x.clamp(0.,(w-CALLOUT_PANEL_W-2.).max(0.)) } else { x }))
+                .when(matches!(m, Menu::TurnInto) && turn_up, |d| d.bottom(px(TOOLBAR_H + 4.)))
+                .when(!matches!(m, Menu::TurnInto) || !turn_up, |d| d.top(px(TOOLBAR_H + 4.)))
+                .left(px(x))
                 .on_hover(cx.listener(move |e: &mut Editor, h: &bool, _, cx| e.tb_drop_over(m.clone(), 1, *h, cx)))
         };
-        // The chevron flips while its dropdown is open.
-        let chevron = |m: Menu| icon(if dropdown.as_ref() == Some(&m) { "caret-up" } else { "caret-down" }, 12., Theme::icon());
+        // A menu's trigger: its glyph and a chevron, `muted` while the menu is open.
+        let trigger = |id: &'static str, ic: &str, m: Menu| {
+            Button::ghost(id).sized(ButtonSize::Sm).editor_icon(ic.to_string()).icon_end("chevron-down").selected(dropdown.as_ref() == Some(&m))
+        };
         let mark_btn = |id: &'static str, ic: &'static str, tip: &'static str, keys: &'static str, md: Option<&'static str>, mark: Mark, get: fn(&Marks) -> bool| {
             let active = self.mark_active(get);
-            btn(id)
-                .w(px(24.))
-                .when(active, |d| d.bg(Theme::fill_turninto_active()))
+            Toggle::new(id).editor_icon(ic).pressed(active)
                 .tip_md(tip, Some(keys), md)
-                .child(icon(ic, 18., if active { Theme::primary_500() } else { Theme::icon() }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |e, _, window, cx| {
@@ -1863,10 +1640,8 @@ impl Editor {
         };
 
         let merge_btn = if merged {
-            btn("ttb-merge")
-                .w(px(24.))
+            Button::ghost("ttb-merge").sized(ButtonSize::Sm).editor_icon("split-cells")
                 .tip_above(crate::settings::text("拆分单元格"), None)
-                .child(icon("split-cells", 18., Theme::icon()))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|e, _, window, cx| {
@@ -1876,10 +1651,8 @@ impl Editor {
                     }),
                 )
         } else if n_cells >= 2 {
-            btn("ttb-merge")
-                .w(px(24.))
+            Button::ghost("ttb-merge").sized(ButtonSize::Sm).editor_icon("merge-cells")
                 .tip_above(crate::settings::text("合并单元格"), None)
-                .child(icon("merge-cells", 18., Theme::icon()))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|e, _, window, cx| {
@@ -1889,54 +1662,30 @@ impl Editor {
                     }),
                 )
         } else {
-            div()
-                .id("ttb-merge")
-                .size(px(24.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon("merge-cells", 18., Theme::text_disabled()))
+            Button::ghost("ttb-merge").sized(ButtonSize::Sm).editor_icon("merge-cells").disabled(true)
         };
         let align_icon = match align {
             Align::Left => "align-left",
             Align::Center => "align-center",
             Align::Right => "align-right",
         };
-        let mut bar = div()
-            .h(px(bar_h))
-            .when(mobile, |d| d.w(px(w)).flex_wrap())
-            .px(px(8.))
-            .flex()
-            .items_center()
-            .gap(px(if mobile { 4. } else { 8. }))
+        let mut bar = Toolbar::new("table-toolbar")
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(merge_btn)
             .when(!md, |d| d.child(sep()).child(
-                btn("ttb-bg")
-                    .w(px(24.))
-                    .when(matches!(dropdown, Some(Menu::CellBg)), |d| d.bg(Theme::fill_hover_strong()))
+                Button::ghost("ttb-bg").sized(ButtonSize::Sm).editor_icon("palette").selected(matches!(dropdown, Some(Menu::CellBg)))
                     .when(!matches!(dropdown, Some(Menu::CellBg)), |d| d.tip_above(crate::settings::text("单元格背景颜色"), None))
-                    .child(icon("palette", 18., Theme::icon()))
                     .on_mouse_down(MouseButton::Left, toggle(Menu::CellBg)),
             ))
             .child(sep())
             .child(
-                btn("ttb-turn")
-                    .w(px(44.))
-                    .gap(px(6.))
-                    .when(matches!(dropdown, Some(Menu::TurnInto)), |d| d.bg(Theme::fill_hover_strong()))
-                    .child(block_icon(kind_icon(&head_kind), 18., Theme::icon()))
-                    .child(chevron(Menu::TurnInto))
+                trigger("ttb-turn", kind_icon(&head_kind), Menu::TurnInto)
                     .on_hover(hover(Menu::TurnInto))
                     .on_mouse_down(MouseButton::Left, open(Menu::TurnInto)),
             )
             .child(sep())
             .child(
-                btn("ttb-align")
-                    .w(px(44.))
-                    .gap(px(6.))
-                    .when(matches!(dropdown, Some(Menu::Align)), |d| d.bg(Theme::fill_hover_strong()))
-                    .child(icon(align_icon, 18., Theme::icon()))
-                    .child(chevron(Menu::Align))
+                trigger("ttb-align", align_icon, Menu::Align)
                     .on_hover(hover(Menu::Align))
                     .on_mouse_down(MouseButton::Left, open(Menu::Align)),
             )
@@ -1950,10 +1699,10 @@ impl Editor {
         if whole {
             let label = if s.kind == CellSelKind::Cols { crate::settings::text("删除列") } else { crate::settings::text("删除行") };
             bar = bar.child(sep()).child(
-                btn("ttb-del")
-                    .w(px(24.))
+                Button::ghost("ttb-del")
+                    .sized(ButtonSize::Sm)
                     .tip_above(label, None)
-                    .child(icon("bin", 18., if self.tables.danger { Theme::danger() } else { Theme::icon() }))
+                    .child(icon("bin", 16., if self.tables.danger { color::destructive() } else { color::foreground() }))
                     .on_hover(cx.listener(|e, hovered: &bool, _, cx| {
                         if e.tables.danger != *hovered {
                             e.tables.danger = *hovered;
@@ -1972,13 +1721,14 @@ impl Editor {
             );
         }
 
-        let x_bg = 8. + 24. + 17.;
-        let x_turn = if md { x_bg } else { x_bg + 24. + 17. };
-        let x_align = x_turn + 44. + 17.;
-        let x_color = f32::min(x_align + 44. + 17. + 5. * 32., w - CALLOUT_PANEL_W - 2.).max(0.);
+        // merge, |, (palette, |,) T▾, |, ≡▾, |, five marks, (A▾)
+        let x_bg = at_x[2];
+        let x_turn = if md { at_x[2] } else { at_x[4] };
+        let x_align = if md { at_x[4] } else { at_x[6] };
+        let x_color = if md { 0. } else { f32::min(at_x[13], w - CALLOUT_PANEL_W).max(0.) };
         let drop_el: Option<AnyElement> = match dropdown {
             Some(Menu::TurnInto) => {
-                let mut list = menu().id("ttb-turn-menu").occlude().min_w(px(200.)).py(px(MENU_PAD_Y)).max_h(turn_height).overflow_y_scroll().on_scroll(|_, _, cx| cx.stop_propagation());
+                let mut list = Popover::new("ttb-turn-menu").menu().min_w(px(200.)).max_h(turn_height).overflow_y_scroll().on_scroll(|_, _, cx| cx.stop_propagation());
                 for (i, it) in TURN_ITEMS.iter().enumerate() {
                     let k = (it.kind)();
                     if matches!(k, BlockKind::Callout { .. }) {
@@ -1986,8 +1736,8 @@ impl Editor {
                     }
                     let active = menus::same_kind(&head_kind, &k);
                     list = list.child(
-                        row(("ttt", i), it.icon, it.label, None, false)
-                            .when(active, |d| d.child(icon("check", 14., Theme::primary())))
+                        row(("ttt", i), it.icon, it.label, false, false)
+                            .checked(active)
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |e, _, window, cx| {
@@ -2002,8 +1752,7 @@ impl Editor {
             }
             Some(Menu::Align) => {
                 let item = |id: &'static str, ic: &'static str, label: &'static str, active: bool, keys: Option<&'static str>| {
-                    let (t, i) = if active { (Theme::primary_500(), Theme::primary_500()) } else { (Theme::text(), Theme::icon()) };
-                    let r = row_tinted(id, ic, label, None, false, t, i).when(active, |d| d.child(icon("check", 14., Theme::primary())));
+                    let r = row(id, ic, label, false, false).checked(active);
                     match keys {
                         Some(k) => r.tip_right(label, Some(k)),
                         None => r,
@@ -2029,11 +1778,9 @@ impl Editor {
                         }),
                     )
                 };
-                let list = menu()
-                    .id("ttb-align-menu")
-                    .occlude()
+                let list = Popover::new("ttb-align-menu")
+                    .menu()
                     .w(px(232.))
-                    .py(px(MENU_PAD_Y))
                     .child(h("tta-l", "align-left", crate::settings::text("左对齐"), crate::shortcuts::hint("editor::AlignLeft", "⌘ + Shift + L"), Align::Left))
                     .child(h("tta-c", "align-center", crate::settings::text("居中对齐"), crate::shortcuts::hint("editor::AlignCenter", "⌘ + Shift + E"), Align::Center))
                     .child(h("tta-r", "align-right", crate::settings::text("右对齐"), crate::shortcuts::hint("editor::AlignRight", "⌘ + Shift + R"), Align::Right))
@@ -2045,17 +1792,10 @@ impl Editor {
                 Some(drop(Menu::Align, x_align).child(list).into_any_element())
             }
             Some(Menu::Color) => Some(drop(Menu::Color, x_color).child(self.color_panel(None, cx)).into_any_element()),
-            Some(Menu::CellBg) => Some(div().absolute().top(px(44.)).left(px(x_bg)).child(self.cell_bg_panel(cur_bg, cx)).into_any_element()),
+            Some(Menu::CellBg) => Some(div().absolute().top(px(TOOLBAR_H + 4.)).left(px(x_bg)).child(self.cell_bg_panel(cur_bg, cx)).into_any_element()),
             _ => None,
         };
-        let el = popover()
-            .id("table-toolbar")
-            .occlude()
-            .relative()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(bar)
-            .children(drop_el);
-        Some(at(self.rel(point(x, y)), Anchor::TopLeft, el))
+        Some(at(self.rel(point(x, y)), Anchor::TopLeft, bar.overlays(drop_el)))
     }
 
     /// 单元格背景颜色 (230 × 142): 2 × 8 swatches and 恢复默认.
@@ -2078,9 +1818,7 @@ impl Editor {
                 swatch(("cbg", i), sel, name.is_none(), inner).on_mouse_down(MouseButton::Left, set(name.map(|n| ColorName(n.to_string())))),
             );
         }
-        panel()
-            .id("cell-bg-panel")
-            .occlude()
+        Popover::new("cell-bg-panel")
             .w(px(CALLOUT_PANEL_W))
             .pt(px(4.))
             .px(px(10.))
@@ -2089,20 +1827,11 @@ impl Editor {
             .child(color_title(crate::settings::text("单元格背景颜色")))
             .child(grid)
             .child(
-                div()
-                    .id("cell-bg-reset")
+                Button::outline("cell-bg-reset")
+                    .sized(ButtonSize::Xs)
                     .mt(px(12.))
-                    .h(px(24.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(Theme::line_border())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(12.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(Theme::fill_hover()))
-                    .child(crate::settings::text("恢复默认"))
+                    .w_full()
+                    .label(crate::settings::text("恢复默认"))
                     .on_mouse_down(MouseButton::Left, set(None)),
             )
     }
@@ -2127,17 +1856,13 @@ impl Editor {
             })
         };
         let plain = |id: &'static str, ic: &'static str, label: &'static str, a: BlockAct| {
-            row(id, ic, label, None, false).on_mouse_move(set_sub(None)).on_mouse_down(MouseButton::Left, act(a))
+            row(id, ic, label, false, false).on_mouse_move(set_sub(None)).on_mouse_down(MouseButton::Left, act(a))
         };
-        let toggle = |id: &'static str, ic: &'static str, label: &'static str, on: bool, a: BlockAct| plain(id, ic, label, a).child(switch(on));
-        let m = menu()
-            .id("block-menu")
-            .occlude()
+        let toggle = |id: &'static str, ic: &'static str, label: &'static str, on: bool, a: BlockAct| plain(id, ic, label, a).child(Switch::new(on));
+        let m = Popover::new("block-menu")
+            .menu()
             .w(px(MENU_W))
-            .py(px(MENU_PAD_Y))
-            .flex()
-            .flex_col()
-            .child(row("bm-indent", "indent-align", crate::settings::text("缩进"), Some("›"), sub == Some(BlockSub::Indent)).on_mouse_move(set_sub(Some(BlockSub::Indent))))
+            .child(row("bm-indent", "indent-align", crate::settings::text("缩进"), true, sub == Some(BlockSub::Indent)).on_mouse_move(set_sub(Some(BlockSub::Indent))))
             .child(separator_h().on_mouse_move(set_sub(None)))
             .child(plain("bm-cut", "scissors", crate::settings::text("剪切"), BlockAct::Cut))
             .child(plain("bm-copy", "copy", crate::settings::text("复制"), BlockAct::Copy))
@@ -2151,24 +1876,21 @@ impl Editor {
         let sub_el = (sub == Some(BlockSub::Indent)).then(|| {
             let indent_row = |id: &'static str, ic: &'static str, label: &'static str, keys: Option<&'static str>, enabled: bool, a: BlockAct| {
                 if enabled {
-                    let r = row(id, ic, label, None, false).on_mouse_down(MouseButton::Left, act(a));
+                    let r = row(id, ic, label, false, false).on_mouse_down(MouseButton::Left, act(a));
                     match keys {
                         Some(k) => r.tip_right(label, Some(k)),
                         None => r,
                     }
                 } else {
-                    let d = Theme::text_disabled();
-                    row_tinted(id, ic, label, None, false, d, d).on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    row_off(id, ic, label).on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 }
             };
-            menu()
-                .id("bm-indent-sub")
-                .occlude()
+            Popover::new("bm-indent-sub")
+                .menu()
                 .absolute()
                 .left(px(MENU_W + 4.))
                 .top_0()
                 .w(px(MENU_W))
-                .py(px(MENU_PAD_Y))
                 .child(indent_row("in-inc", "indent-increase", crate::settings::text("增加缩进"), None, self.core.can_indent(block), BlockAct::Indent))
                 .child(indent_row("in-dec", "indent-decrease", crate::settings::text("减少缩进"), Some("Shift + Tab"), self.core.can_outdent(block), BlockAct::Outdent))
                 .into_any_element()

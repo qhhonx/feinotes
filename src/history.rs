@@ -11,6 +11,7 @@ use crate::editor::core::Core;
 use crate::input::{TextField, TextFieldEvent};
 use crate::theme::{self, Theme};
 use crate::ui::{format_date, format_time};
+use crate::design::{Button, ButtonSize, Popover, Segment, Segmented, menu as dmenu};
 use fdl_core::changes::Change;
 use fdl_core::model::BlockId;
 use fdl_core::versions::Version;
@@ -485,14 +486,11 @@ impl Workspace {
                     .child(crate::localized_format!("+{} 行 −{} 行", "+{} −{} lines", added, removed)))
                 .child(div().flex_1())
                 .child(
-                    div().id("history-marks").flex_none().h(px(24.)).px(px(10.)).flex().items_center().rounded(px(6.))
-                        .when(on, |d| d.bg(Theme::primary_fill_1()).text_color(Theme::primary()))
-                        .when(!on, |d| d.text_color(Theme::text_caption()))
-                        .when(has_marks, |d| d.cursor_pointer().on_click(cx.listener(|w, _, _, cx| w.toggle_history_marks(cx))))
-                        .text_size(px(12.))
-                        .child(crate::settings::tr("显示改动", "Show changes")),
+                    Button::ghost("history-marks").selected(on).disabled(!has_marks)
+                        .when(has_marks, |d| d.on_click(cx.listener(|w, _, _, cx| w.toggle_history_marks(cx))))
+                        .label(crate::settings::tr("显示改动", "Show changes")),
                 )
-                .child(crate::ui::secondary_button("history-back", crate::settings::tr("返回当前", "Back to now"))
+                .child(Button::outline("history-back").sized(ButtonSize::Tool).label(crate::settings::tr("返回当前", "Back to now"))
                     .on_click(cx.listener(|w, _, _, cx| w.exit_preview(cx))))
                 .child(crate::ui::primary_button("history-restore", crate::settings::tr("恢复此版本", "Restore this version"))
                     .when(writable, |b| b.on_click(cx.listener(|w, _, window, cx| w.restore_selected(window, cx))))
@@ -529,9 +527,9 @@ impl Workspace {
             let field = renaming.as_ref().filter(|(n, _)| n == &name).map(|(_, f)| f.clone());
             let click_name = name.clone();
             rows.push(
-                div().id(("history-row", i)).group(group.clone()).flex_none().mx(px(crate::ui::MENU_INSET))
+                div().id(("history-row", i)).group(group.clone()).flex_none().mx(px(dmenu::PAD))
                     .h(px(if label.is_some() { 48. } else { 36. })).px(px(8.))
-                    .flex().flex_row().items_center().gap(px(10.)).rounded(px(crate::ui::ROW_RADIUS))
+                    .flex().flex_row().items_center().gap(px(10.)).rounded(px(crate::design::G.menu_row_r))
                     .when(on, |d| d.bg(Theme::primary_fill_1()))
                     .when(!editing && !on, |d| d.hover(|s| s.bg(Theme::fill_hover())))
                     .when(!editing, |d| d.cursor_pointer().on_click(cx.listener(move |w: &mut Workspace, _, window, cx| w.preview_version(&click_name, window, cx))))
@@ -548,10 +546,8 @@ impl Workspace {
                             .into_any_element(),
                     })
                     .when(!editing, |d| d.child(
-                        div().id(("history-rename", i)).flex_none().size(px(24.)).flex().items_center().justify_center().rounded(px(5.))
+                        Button::ghost(("history-rename", i)).sized(ButtonSize::Xs).icon("pen-line")
                             .invisible().group_hover(group.clone(), |s| s.visible())
-                            .hover(|s| s.bg(Theme::fill_hover_strong()))
-                            .child(crate::ui::icon("pen-line", 14., Theme::icon()))
                             .on_click(cx.listener(move |w: &mut Workspace, _, window, cx| w.start_version_rename(&name, window, cx))),
                     ))
                     .into_any_element(),
@@ -559,15 +555,13 @@ impl Workspace {
         }
         let count = h.versions.iter().filter(|v| v.label.is_some()).count();
         let has_sel = selected.is_some();
-        // 全部 / 已命名: two tabs, the one shown filled
-        let tab = |id: &'static str, text: String, on: bool| div().id(id).flex_none().h(px(26.)).px(px(10.)).flex().items_center().rounded(px(6.)).text_size(px(13.)).cursor_pointer()
-            .when(on, |d| d.bg(Theme::fill_hover()).text_color(Theme::text()).font_weight(FontWeight::MEDIUM))
-            .when(!on, |d| d.text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::text()))).child(text);
+        // 全部 / 已命名: a segmented control
+        let tab = |id: &'static str, text: String, on: bool| Segment::new(id, text).selected(on);
         let header = div().flex_none().pt(px(14.)).pb(px(8.)).px(px(14.)).flex().flex_col().gap(px(10.))
             .child(div().flex().items_center().gap(px(8.))
                 .child(div().flex_1().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).child(crate::settings::tr("版本历史", "Version history")))
-                .child(crate::trash::close_button("history-close").on_click(cx.listener(|w, _, _, cx| w.close_history(cx)))))
-            .child(div().flex().items_center().gap(px(2.)).ml(px(-4.))
+                .child(Button::close("history-close").on_click(cx.listener(|w, _, _, cx| w.close_history(cx)))))
+            .child(Segmented::new()
                 .child(tab("history-all", crate::localized_format!("全部 {}", "All {}", h.versions.len()), !h.named_only)
                     .on_click(cx.listener(|w, _, _, cx| if w.history.as_ref().is_some_and(|h| h.named_only) { w.toggle_history_named(cx) })))
                 .child(tab("history-named", crate::localized_format!("已命名 {}", "Named {}", count), h.named_only)
@@ -588,7 +582,7 @@ impl Workspace {
         let act = |id: &'static str, text: &'static str, hover_color: Hsla| div().id(id).flex_none().h(px(28.)).px(px(8.)).flex().items_center().rounded(px(6.)).text_size(px(13.)).cursor_pointer()
             .text_color(Theme::text_caption()).hover(|s| s.bg(Theme::fill_hover()).text_color(hover_color)).child(text);
         let footer = div().flex_none().border_t_1().border_color(Theme::line_divider()).p(px(12.)).flex().items_center().gap(px(4.))
-            .child(crate::ui::secondary_button("history-snapshot", crate::settings::tr("保存当前版本", "Save a version"))
+            .child(Button::outline("history-snapshot").sized(ButtonSize::Tool).label(crate::settings::tr("保存当前版本", "Save a version"))
                 .on_click(cx.listener(|w, _, window, cx| w.save_version_now(window, cx))))
             .child(div().flex_1())
             // these act on the version being previewed: shown only while there is one
@@ -597,9 +591,8 @@ impl Workspace {
                 .child(act("history-delete", crate::settings::tr("删除", "Delete"), Theme::danger())
                     .on_click(cx.listener(|w, _, window, cx| w.delete_selected_version(window, cx)))));
         Some(
-            crate::ui::popover().id("history-drawer").absolute().top(px(HEADER_H + 8.)).right(px(8.)).bottom(px(8.)).w(px(DRAWER_W))
-                .flex().flex_col().overflow_hidden().shadow(theme::shadow_panel())
-                .occlude()
+            Popover::new("history-drawer").absolute().top(px(HEADER_H + 8.)).right(px(8.)).bottom(px(8.)).w(px(DRAWER_W))
+                .flex().flex_col().overflow_hidden()
                 .child(header)
                 .children(h.error.clone().map(|e| div().flex_none().mx(px(14.)).mb(px(6.)).text_size(px(12.)).line_height(px(18.)).text_color(Theme::danger()).child(e)))
                 .child(list)

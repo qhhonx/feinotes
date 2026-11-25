@@ -7,8 +7,7 @@
 
 use super::style::*;
 use super::*;
-use crate::feishu_theme::{c, ud};
-use crate::ui::{popover, ui_text};
+use crate::ui::{ui_text};
 
 /// The「icon + name」column.
 const LABEL_W: f32 = 160.;
@@ -32,7 +31,7 @@ pub(crate) fn open(v: &mut TableView, rec: RecId, window: &mut Window, cx: &mut 
     v.commit_edit(true, window, cx);
     commit(v, true, window, cx);
     if v.record.input.is_none() {
-        let input = cx.new(|cx| { let mut t = TextField::new("", cx); t.size = TEXT; t.wrap = true; t });
+        let input = cx.new(|cx| { let mut t = TextField::new("", cx); t.size = text_sm(); t.wrap = true; t });
         v.record._subs = vec![
             cx.subscribe_in(&input, window, |v, _, ev: &TextFieldEvent, window, cx| match ev {
                 TextFieldEvent::Submit => commit(v, true, window, cx),
@@ -67,7 +66,7 @@ fn begin(v: &mut TableView, cell: CellId, window: &mut Window, cx: &mut Context<
     let Some((text, title, long)) = got else { return };
     input.update(cx, |t, cx| {
         t.multiline = long && !title;
-        (t.size, t.line_height) = if title { (20., 28.) } else { (TEXT, 20.) };
+        (t.size, t.line_height) = if title { (20., 28.) } else { (text_sm(), 20.) };
         t.set_text(&text, cx);
     });
     window.focus(&input.focus_handle(cx), cx);
@@ -131,10 +130,10 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
     let place = v.order.get(&rid).copied();
     let id_at = |p: Option<usize>| p.and_then(|p| v.result.records.get(p)).and_then(|i| t.records.get(*i)).map(|r| r.id);
     let (prev, next) = (id_at(place.and_then(|p| p.checked_sub(1))), id_at(place.map(|p| p + 1)));
-    let button = |id: &'static str, glyph: Svg, on: bool| div().id(id).flex_none().size(px(28.)).rounded(px(6.)).flex().items_center().justify_center()
+    let button = |id: &'static str, glyph: Svg, on: bool| div().id(id).flex_none().size(px(28.)).rounded(px(crate::design::geo().tool_r)).flex().items_center().justify_center()
         .when(on, |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))).child(glyph);
     let nav = |id: &'static str, up: bool, to: Option<RecId>| {
-        let glyph = icon("chevron-down", 16., if to.is_some() { Theme::icon() } else { c(ud::N400) });
+        let glyph = icon("chevron-down", 16., if to.is_some() { Theme::icon() } else { Theme::text_disabled() });
         button(id, if up { glyph.with_transformation(Transformation::rotate(percentage(0.5))) } else { glyph }, to.is_some())
             .on_click(cx.listener(move |v, _, window, cx| if let Some(to) = to { open(v, to, window, cx) }))
     };
@@ -152,7 +151,7 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
         .child(button("tb-rec-close", icon("x", 16., Theme::icon()), true).on_click(cx.listener(|v, _, window, cx| close(v, window, cx))));
 
     // a value's box: a hairline while it is typed in, a tint under the pointer when a click would edit it
-    let value_box = |id: ElementId, editing: bool, clickable: bool| div().id(id).flex_1().min_w_0().min_h(px(36.)).px(px(8.)).py(px(7.)).flex().items_center().rounded(px(6.)).border_1()
+    let value_box = |id: ElementId, editing: bool, clickable: bool| div().id(id).flex_1().min_w_0().min_h(px(crate::design::geo().field_h)).px(px(8.)).py(px(6.)).flex().items_center().rounded(px(crate::design::geo().tool_r)).border_1()
         .border_color(if editing { Theme::primary() } else { transparent_black() })
         .when(clickable && !editing, |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover())));
     let input = |d: Stateful<Div>| d.children(ui.input.clone().map(|i| div().flex_1().min_w_0().child(i)));
@@ -177,7 +176,7 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
             FieldType::Rating => {
                 let n = val.as_number().unwrap_or(0.);
                 Some(div().flex().items_center().gap(px(2.)).children((1..=f.stars()).map(|s| div().id(("tb-rec-star", (fid as usize) << 4 | s as usize)).cursor_pointer()
-                    .child(icon("star", 16., if (s as f64) <= n { star() } else { c(ud::N300) }))
+                    .child(icon("star", 16., if (s as f64) <= n { star() } else { crate::design::color::border() }))
                     .on_click(cx.listener(move |v, _, window, cx| {
                         commit(v, true, window, cx);
                         let tid = v.table;
@@ -204,7 +203,7 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
     let (shown, hidden): (Vec<&Field>, Vec<&Field>) = fields.into_iter().skip(1).partition(|f| !view.opts.hidden.contains(&f.id));
     let mut list = div().w_full().flex().flex_col().gap(px(2.)).child(title_el).children(shown.into_iter().map(row));
     if !hidden.is_empty() {
-        list = list.child(div().px(px(16.)).pt(px(8.)).flex().child(div().id("tb-rec-hidden").h(px(28.)).px(px(8.)).flex().items_center().gap(px(4.)).rounded(px(6.)).cursor_pointer()
+        list = list.child(div().px(px(16.)).pt(px(8.)).flex().child(div().id("tb-rec-hidden").h(px(28.)).px(px(8.)).flex().items_center().gap(px(4.)).rounded(px(crate::design::geo().tool_r)).cursor_pointer()
             .text_size(px(12.)).text_color(Theme::text_caption()).hover(|s| s.bg(Theme::fill_hover()))
             .child(icon(if ui.show_hidden { "triangle-down" } else { "triangle-right" }, 10., Theme::text_caption()))
             .child(format!("{} {}", hidden.len(), label("个隐藏字段")))
@@ -212,7 +211,7 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
         if ui.show_hidden { list = list.children(hidden.into_iter().map(row)); }
     }
     list = list
-        .child(div().px(px(16.)).pt(px(8.)).flex().child(div().id("tb-rec-add").h(px(32.)).px(px(8.)).flex().items_center().gap(px(6.)).rounded(px(6.)).cursor_pointer()
+        .child(div().px(px(16.)).pt(px(8.)).flex().child(div().id("tb-rec-add").h(px(32.)).px(px(8.)).flex().items_center().gap(px(6.)).rounded(px(crate::design::geo().tool_r)).cursor_pointer()
             .text_color(Theme::text_caption()).hover(|s| s.bg(Theme::fill_hover()))
             .child(icon("plus", 14., Theme::icon())).child(label("新增字段"))
             .on_click(cx.listener(|v, ev: &ClickEvent, window, cx| {
@@ -225,7 +224,7 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
             .child(format!("{} {}", label("最后更新于"), field::format_date(r.modified, DateFmt::Dash, true))));
 
     let menu = ui.menu.map(|pos| deferred(anchored().position(pos).snap_to_window_with_margin(px(8.)).child(
-        popover().id("tb-rec-menu").occlude().w(px(180.)).py(px(4.)).on_mouse_down_out(cx.listener(|v, _, _, cx| { v.record.menu = None; cx.notify(); }))
+        crate::design::Popover::new("tb-rec-menu").occlude().w(px(180.)).py(px(4.)).on_mouse_down_out(cx.listener(|v, _, _, cx| { v.record.menu = None; cx.notify(); }))
             .child(menu_item("tb-rec-dup", "copy", label("创建副本"), false).on_click(cx.listener(move |v, _, _, cx| {
                 v.record.menu = None;
                 let tid = v.table;
@@ -244,9 +243,9 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
         let vp = window.viewport_size();
         let (w, h) = ((f32::from(vp.width) * 0.86).min(1200.), (f32::from(vp.height) * 0.86).min(900.));
         return deferred(anchored().position(point(px(0.), px(0.))).child(
-            div().id("tb-record-scrim").occlude().w(vp.width).h(vp.height).bg(crate::ui::scrim()).flex().items_center().justify_center()
+            crate::design::scrim().id("tb-record-scrim").occlude().relative().w(vp.width).h(vp.height)
                 .on_mouse_down(MouseButton::Left, cx.listener(|v, _, window, cx| close(v, window, cx)))
-                .child(crate::ui::dialog("tb-record").w(px(w)).h(px(h)).flex().flex_col().overflow_hidden().text_size(px(TEXT))
+                .child(crate::design::Dialog::new("tb-record").w(px(w)).h(px(h)).p_0().gap_0().overflow_hidden().text_size(px(text_sm()))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(head)
                     .child(div().id("tb-rec-body").flex_1().min_h_0().overflow_y_scroll().px(px(40.)).pb(px(24.)).child(list))

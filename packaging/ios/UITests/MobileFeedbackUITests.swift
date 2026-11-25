@@ -383,7 +383,7 @@ final class MobileFeedbackUITests: XCTestCase {
         app.launchEnvironment["FEI_NOTES_MODE"]="cloud"; app.launchEnvironment["FEI_MOBILE_QA_SEED"]="1"
         app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"]=UUID().uuidString
         app.launchEnvironment["FEI_QA_SLOW_SIGN_OUT"]="1"
-        app.launchEnvironment["FEI_MOBILE_QA_INVITATION_URL"]="feinotes://share/?c=QAStartupPendingInvitation"
+        app.launchEnvironment["FEI_MOBILE_QA_INVITATION_URL"]="feinotes://share/?v=2&u=aHR0cHM6Ly93d3cuaWNsb3VkLmNvbS5jbi9zaGFyZS9RQVN0YXJ0dXBQZW5kaW5nSW52aXRhdGlvbg"
         XCUIDevice.shared.orientation = .portrait; app.launch()
         XCTAssertTrue(list.waitForExistence(timeout: 6))
         XCTAssertTrue((list.value as? String)?.contains("cloudPending=true") == true)
@@ -399,7 +399,7 @@ final class MobileFeedbackUITests: XCTestCase {
     }
     func testPhoneColdInvitationUsesNativeConfirmation() {
         start(); app.terminate()
-        app.launchEnvironment["FEI_MOBILE_QA_INVITATION_URL"] = "feinotes://share/?c=QA46SyntheticInvitation"
+        app.launchEnvironment["FEI_MOBILE_QA_INVITATION_URL"] = "feinotes://share/?v=2&u=aHR0cHM6Ly93d3cuaWNsb3VkLmNvbS5jbi9zaGFyZS9RQTQ2U3ludGhldGljSW52aXRhdGlvbg"
         app.launch()
         XCTAssertTrue(app.cells["fei.setting.cloud-required"].waitForExistence(timeout: 20))
         XCTAssertTrue(app.navigationBars["Shared Notes"].exists)

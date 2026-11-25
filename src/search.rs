@@ -1,13 +1,13 @@
 //! 搜索 dialog: a 540-wide white dialog with the input row, 最近浏览 / hit
 //! rows and a gray footer. Locally there is one owner and no sessions or
 //! spaces, so each row's extra line is just 所有者 + the opened / modified
-//! times. Radius 16, quiet row fills, monochrome page glyphs.
+//! times. The design's `Dialog` shell, quiet row fills, monochrome page glyphs.
 
 use crate::app::Workspace;
 use crate::settings::display_title;
 use crate::store::Entry;
+use crate::design::{Button, ButtonSize, Dialog, Separator, scrim};
 use crate::theme::{self, Theme};
-use crate::trash::scrim;
 use crate::ui::{ROW_RADIUS, format_visit, icon, ui_runs, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 use std::collections::HashMap;
@@ -256,6 +256,9 @@ fn min_width(ascii: &mut Option<(&'static str, [f32; 128])>, s: &str, style: &Te
         .sum()
 }
 
+/// `e` is a result for `q` through its body, not its title (see `SearchCache::rows`).
+fn body_hit(e: &Entry, q: &str) -> bool { !q.is_empty() && !e.title.to_lowercase().contains(q) }
+
 /// The glyph of a file titled by its name: Markdown, a 画板; else a page.
 pub(crate) fn file_glyph(m: &crate::store::Meta) -> &'static str {
     match m.kind {
@@ -290,21 +293,6 @@ pub(crate) fn doc_icon_named(name: &str) -> Div {
         .items_center()
         .justify_center()
         .child(icon(name, 18., Theme::icon()))
-}
-
-/// The 24px square buttons at the right of the input row.
-fn input_button(id: &'static str, glyph: &'static str, size: f32, color: Hsla) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex_none()
-        .size(px(24.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(ROW_RADIUS))
-        .cursor_pointer()
-        .hover(|s| s.bg(Theme::fill_hover()))
-        .child(icon(glyph, size, color))
 }
 
 /// One `·`-separated part of a row's extra line.
@@ -409,14 +397,20 @@ impl Workspace {
     }
 
     pub(crate) fn pick_search(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.search_results(cx).get(row).map(|e| e.id.clone()) else { return };
+        let q = self.query(cx);
+        let Some((id, body_hit)) = self.search_results(cx).get(row).map(|e| (e.id.clone(), body_hit(e, &q))) else { return };
         self.close_search(window, cx);
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if let Some(room) = self.shared_list_room(&id, cx) { self.open_shared_note(&room, window, cx); return; }
-        self.personal_action(window, cx, move |w, window, cx| w.open(&id, window, cx));
-        if let Some(ed) = &self.editor {
-            crate::gpui_compat::focus(window, &ed.read(cx).focus_handle(cx), cx);
-        }
+        self.personal_action(window, cx, move |w, window, cx| {
+            if w.try_open(&id, window, cx) && w.current.as_deref() == Some(id.as_str())
+                && let Some(ed) = &w.editor {
+                if body_hit {
+                    ed.update(cx, |e, cx| e.reveal_body_hit(&q, window, cx));
+                }
+                crate::gpui_compat::focus(window, &ed.read(cx).focus_handle(cx), cx);
+            }
+        });
     }
 
     pub(crate) fn move_search_sel(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -568,7 +562,7 @@ impl Workspace {
             )
             .child(div().flex_1().min_w_0().pl(px(2.)).flex().child(self.search.clone()))
             .when(has_text, |d| {
-                d.child(input_button("search-clear", "search-clear", 18., Theme::icon()).ml(px(8.)).on_click(cx.listener(
+                d.child(Button::ghost("search-clear").icon("search-clear").sized(ButtonSize::Xs).ml(px(8.)).on_click(cx.listener(
                     |w, _, window, cx| {
                         w.search.update(cx, |s, cx| s.set_text("", cx));
                         crate::gpui_compat::focus(window, &w.search.focus_handle(cx), cx);
@@ -654,7 +648,7 @@ impl Workspace {
             .flex()
             .items_center()
             // GPUI clips children to the dialog's rect, not its rounded corners.
-            .rounded_b(px(16.))
+            .rounded_b(px(crate::design::geo().dialog_r))
             .border_t_1()
             .border_color(Theme::line_divider())
             .bg(Theme::bg_overlay())
@@ -665,34 +659,22 @@ impl Workspace {
             .overflow_hidden()
             .child(ui_text(crate::settings::tr("支持 ↑↓ 键选择、Enter 键打开", "Use ↑↓ to select, Enter to open")));
 
-        let modal = div()
-            .id("search-dialog")
-            .occlude()
+        let modal = Dialog::new("search-dialog")
             .w(width)
             .h(px(dialog_h))
-            .flex()
-            .flex_col()
-            .rounded(px(16.))
-            .bg(crate::theme::raised(Theme::bg_body()))
-            .shadow(theme::shadow_dialog())
+            .p_0()
+            .gap_0()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(input)
-            .child(div().flex_none().h(px(1.)).bg(Theme::line_divider()))
+            .child(Separator::new())
             // The thumb sits in the list's right padding, over no row.
             .child(div().flex_1().min_h_0().relative().flex().flex_col().child(list).child(self.home.search_scrollbar.render(&self.search_scroll)))
             .child(footer);
 
         Some(
             deferred(
-                div()
+                scrim()
                     .id("search-mask")
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .bg(scrim())
                     .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| w.close_search(window, cx)))
                     .child(modal),
             )
@@ -704,7 +686,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{SearchCache, snippet};
+    use super::{SearchCache, body_hit, snippet};
     use crate::store::Entry;
 
     fn entry(id: &str, title: &str, body: &str) -> Entry {
@@ -767,6 +749,14 @@ mod tests {
         entries.reverse();
         assert_eq!(cache.rows(&entries, "gamma").rows, [1]);
         assert_eq!(cache.rows(&[], "gamma").rows, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn body_hits_open_at_the_hit() {
+        // `rows` puts a document whose title holds the query with the title hits.
+        assert!(!body_hit(&entry("a", "APPLE harvest", "apple"), "apple"));
+        assert!(body_hit(&entry("b", "Notes", "the Apple pie"), "apple"));
+        assert!(!body_hit(&entry("c", "Notes", "x"), ""));
     }
 
     #[test]

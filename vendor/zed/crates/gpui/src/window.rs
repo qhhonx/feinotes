@@ -5005,7 +5005,9 @@ impl Window {
                 corner_radii: Corners::default(),
                 color: shadow.color.opacity(opacity),
                 shape_bounds,
-                shape_corner_radii: corner_radii.scale(scale_factor),
+                // quiet.md: grow the corners with the spread as CSS does, so a ring drawn by a
+                // spread shadow (a focus halo) is as wide at the corners as along the sides.
+                shape_corner_radii: spread_corners(corner_radii, shadow.spread_radius).scale(scale_factor),
                 inset: false.into(),
                 pad: 0,
             });
@@ -11038,4 +11040,17 @@ mod inspector_tests {
         })
         .expect("closed inspector has no bookkeeping and no style overrides");
     }
+}
+
+/// quiet.md: CSS's outer shadow corner, the radius plus the spread, easing to sharp for a sharp
+/// corner (css-backgrounds-3 §7.1.1) and shrinking to zero for a negative spread.
+fn spread_corners(r: Corners<Pixels>, s: Pixels) -> Corners<Pixels> {
+    let grow = |r: Pixels| {
+        let (r, s) = (f32::from(r), f32::from(s));
+        if s <= 0. { return px((r + s).max(0.)); }
+        if r >= s { return px(r + s); }
+        let t = r / s - 1.;
+        px(r + s * (1. + t * t * t))
+    };
+    Corners { top_left: grow(r.top_left), top_right: grow(r.top_right), bottom_right: grow(r.bottom_right), bottom_left: grow(r.bottom_left) }
 }

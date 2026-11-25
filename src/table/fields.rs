@@ -4,8 +4,7 @@
 
 use super::style::*;
 use super::*;
-use crate::feishu_theme::{c, ud};
-use crate::ui::{popover, ui_text};
+use crate::ui::{ui_text};
 
 fn label(s: &str) -> String { crate::settings::label(s) }
 
@@ -50,7 +49,7 @@ fn with(v: &mut TableView, cx: &mut Context<TableView>, f: impl FnOnce(&mut Fiel
 
 /// A single-line input: Enter is 确定 (in an option's name: the next option), Esc is 取消.
 fn input(hint: &str, text: &str, window: &mut Window, cx: &mut Context<TableView>) -> Input {
-    let e = cx.new(|cx| { let mut t = TextField::new(hint.to_string(), cx); t.size = TEXT; t.set_text(text, cx); t });
+    let e = cx.new(|cx| { let mut t = TextField::new(hint.to_string(), cx); t.size = text_sm(); t.set_text(text, cx); t });
     let sub = cx.subscribe_in(&e, window, |v, e, ev: &TextFieldEvent, window, cx| match ev {
         TextFieldEvent::Submit => if form(v).is_some_and(|f| f.rows.iter().any(|r| r.0 == *e)) { add_option(v, window, cx) } else { confirm(v, window, cx) },
         TextFieldEvent::Cancel => v.close_popup(window, cx),
@@ -208,19 +207,13 @@ fn confirm(v: &mut TableView, window: &mut Window, cx: &mut Context<TableView>) 
 
 // ---- pieces ----
 
-fn caption(s: &str) -> Div { div().flex_none().text_size(px(12.)).text_color(Theme::text_caption()).child(label(s)) }
+fn caption(s: &str) -> crate::design::Label { field_label(label(s)) }
 
 /// A labelled control.
-fn block(name: &str, el: impl IntoElement) -> Div { div().flex_none().flex().flex_col().gap(px(6.)).child(caption(name)).child(el) }
+fn block(name: &str, el: impl IntoElement) -> Div { div().flex_none().flex().flex_col().gap(px(8.)).child(caption(name)).child(el) }
 
-fn text_input(i: &Input) -> Div { input_box().child(div().flex_1().min_w_0().flex().child(i.0.clone())) }
+fn text_input(i: &Input) -> crate::design::Field { field_box(("tb-ff-input", i.0.entity_id())).child(div().flex_1().min_w_0().flex().child(i.0.clone())) }
 
-/// 飞书's small switch (28×16).
-fn switch(on: bool, enabled: bool) -> Div {
-    div().flex_none().w(px(28.)).h(px(16.)).px(px(2.)).rounded(px(8.)).flex().items_center().bg(if on { Theme::primary() } else { c(ud::N400) })
-        .when(on, |d| d.justify_end()).when(!enabled, |d| d.opacity(0.5))
-        .child(div().size(px(12.)).rounded_full().bg(Theme::bg_body()))
-}
 
 /// A setting that is on or off: its name, then the switch.
 fn switch_row(id: &'static str, name: &str, on: bool, enabled: bool, cx: &Context<TableView>, set: impl Fn(&mut FieldForm, bool) + 'static) -> Div {
@@ -231,7 +224,7 @@ fn switch_row(id: &'static str, name: &str, on: bool, enabled: bool, cx: &Contex
 }
 
 /// A select box whose choices drop down under the pointer, the form's width.
-fn select(id: &'static str, cur: impl Into<SharedString>, items: Vec<(String, Option<&'static str>)>, on: Option<usize>, cx: &Context<TableView>, pick: impl Fn(&mut FieldForm, usize) + 'static) -> Stateful<Div> {
+fn select(id: &'static str, cur: impl Into<SharedString>, items: Vec<(String, Option<&'static str>)>, on: Option<usize>, cx: &Context<TableView>, pick: impl Fn(&mut FieldForm, usize) + 'static) -> crate::design::Field {
     let pick: Rc<dyn Fn(&mut FieldForm, usize)> = Rc::new(pick);
     select_box(id, cur).on_click(cx.listener(move |v, ev: &ClickEvent, _, cx| {
         let Some(f) = form(v) else { return };
@@ -287,22 +280,21 @@ fn date_format(o: &FieldOpts, cx: &Context<TableView>) -> Div {
 /// 字段类型: the current type; the grouped list opens under it.
 fn type_box(f: &FieldForm, cx: &Context<TableView>) -> Div {
     let open = f.types_open;
-    let head = div().id("tb-ff-type").h(px(32.)).px(px(10.)).flex().items_center().gap(px(8.)).rounded(px(6.)).border_1().border_color(if open { Theme::primary() } else { c(ud::N400) })
-        .cursor_pointer().hover(|s| s.border_color(Theme::primary()))
+    let head = crate::design::Field::new("tb-ff-type").focused(open).cursor_pointer()
         .child(icon(field_glyph(f.ty), 15., Theme::icon()))
         .child(div().flex_1().min_w_0().child(label(f.ty.label())))
-        .child(icon(if open { "chevron-down" } else { "chevron-right" }, 13., Theme::text_caption()))
+        .child(icon(if open { "chevron-up" } else { "chevron-down" }, 13., Theme::icon()))
         .on_click(cx.listener(|v, _, _, cx| with(v, cx, |f| f.types_open = !f.types_open)));
     let mut out = div().flex().flex_col().gap(px(4.)).child(head);
     if open {
-        let mut list = div().id("tb-ff-types").max_h(px(300.)).overflow_y_scroll().py(px(4.)).rounded(px(6.)).border_1().border_color(line()).flex().flex_col();
+        let mut list = inset_list("tb-ff-types").max_h(px(300.)).overflow_y_scroll();
         for g in [FieldGroup::General, FieldGroup::Business, FieldGroup::Advanced] {
-            list = list.child(div().flex_none().h(px(28.)).px(px(12.)).flex().items_center().text_size(px(12.)).text_color(Theme::text_caption()).child(label(g.label())));
+            list = list.child(menu_title(label(g.label())));
             // a file is one table: 关联 and 查找引用 (which reach into another) are not offered, only kept where a file has them
             let other_table = |ty: FieldType| matches!(ty, FieldType::Link | FieldType::Lookup) && ty != f.ty;
             for (i, ty) in FieldType::ALL.iter().copied().enumerate().filter(|(_, ty)| ty.group() == g && !other_table(*ty)) {
                 let ok = !f.primary || title_ok(ty);
-                list = list.child(div().id(("tb-ff-ty", i)).flex_none().h(px(32.)).mx(px(4.)).px(px(8.)).flex().items_center().gap(px(8.)).rounded(px(4.))
+                list = list.child(menu_row(("tb-ff-ty", i))
                     .child(icon(field_glyph(ty), 15., if ok { Theme::icon() } else { Theme::text_disabled() }))
                     .child(div().flex_1().min_w_0().text_color(if ok { Theme::text() } else { Theme::text_disabled() }).child(label(ty.label())))
                     .when(ty == f.ty, |d| d.child(icon("check", 14., Theme::primary())))
@@ -325,24 +317,24 @@ fn options(f: &FieldForm, cx: &Context<TableView>) -> Div {
                 .child(icon("triangle-down", 8., fg))
                 .on_click(cx.listener(move |v, _, _, cx| with(v, cx, |f| f.palette = if f.palette == Some(i) { None } else { Some(i) })))))
             .child(text_input(row).flex_1().min_w_0())
-            .child(div().id(("tb-ff-opt-del", i)).flex_none().size(px(24.)).rounded(px(4.)).flex().items_center().justify_center().cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+            .child(div().id(("tb-ff-opt-del", i)).flex_none().size(px(24.)).rounded(px(crate::design::geo().tool_r)).flex().items_center().justify_center().cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
                 .child(icon("x", 13., Theme::icon()))
                 .on_click(cx.listener(move |v, _, _, cx| with(v, cx, |f| if i < f.rows.len() && i < f.opts.options.len() { f.opts.options.remove(i); drop(f.rows.remove(i)); f.palette = None; })))));
         if f.palette == Some(i) && !person {
-            let mut swatches = div().flex_none().p(px(8.)).rounded(px(6.)).bg(Theme::bg_body()).border_1().border_color(line()).flex().flex_wrap().gap(px(6.));
-            for slot in 0..PALETTE.len() as u8 {
+            let mut swatches = div().flex_none().p(px(8.)).rounded(px(crate::design::geo().menu_row_r)).bg(Theme::bg_body()).border_1().border_color(Theme::line_border()).flex().flex_wrap().gap(px(6.));
+            for slot in 0..SLOTS as u8 {
                 let (bg, fg) = tag_colors(slot);
-                swatches = swatches.child(div().id(("tb-ff-swatch", slot as usize)).size(px(20.)).rounded(px(4.)).bg(bg).flex().items_center().justify_center().cursor_pointer()
+                swatches = swatches.child(div().id(("tb-ff-swatch", slot as usize)).size(px(20.)).rounded(px(crate::design::geo().tool_r)).bg(bg).flex().items_center().justify_center().cursor_pointer()
                     .when(o.color == slot, |d| d.child(icon("check", 12., fg)))
                     .on_click(cx.listener(move |v, _, _, cx| with(v, cx, |f| { if let Some(o) = f.opts.options.get_mut(i) { o.color = slot; } f.palette = None; }))));
             }
             list = list.child(swatches);
         }
     }
-    let add = div().id("tb-ff-opt-add").flex_none().h(px(26.)).px(px(6.)).flex().items_center().gap(px(4.)).rounded(px(6.)).cursor_pointer().text_color(Theme::primary()).hover(|s| s.bg(Theme::primary_fill_1()))
+    let add = div().id("tb-ff-opt-add").flex_none().h(px(28.)).px(px(8.)).flex().items_center().gap(px(4.)).rounded(px(crate::design::geo().tool_r)).cursor_pointer().text_color(Theme::primary()).hover(|s| s.bg(Theme::fill_hover()))
         .child(icon("plus", 13., Theme::primary())).child(label(if person { "添加成员" } else { "添加选项" }))
         .on_click(cx.listener(|v, _, window, cx| add_option(v, window, cx)));
-    block(if person { "成员" } else { "选项内容" }, div().p(px(8.)).rounded(px(6.)).bg(c(ud::N50)).flex().flex_col().gap(px(6.))
+    block(if person { "成员" } else { "选项内容" }, div().p(px(8.)).rounded(px(crate::design::geo().menu_row_r)).bg(Theme::primary_fill_1()).flex().flex_col().gap(px(6.))
         .when(!f.rows.is_empty(), |d| d.child(list))
         .child(div().flex().child(add)))
 }
@@ -357,7 +349,7 @@ fn formula_blocks(f: &FieldForm, t: &Table, problem: &Option<String>, cx: &Conte
         cx.notify();
     };
     let focus = entity.clone();
-    let editor = div().id("tb-ff-formula").min_h(px(80.)).p(px(8.)).rounded(px(6.)).border_1().border_color(c(ud::N400)).bg(Theme::bg_body()).flex().items_start().cursor(CursorStyle::IBeam)
+    let editor = crate::design::Textarea::new("tb-ff-formula").min_h(px(80.)).flex().items_start().cursor(CursorStyle::IBeam)
         .child(entity)
         .on_click(cx.listener(move |_, _, window, cx| window.focus(&focus.focus_handle(cx), cx)));
     let status = match problem {
@@ -366,11 +358,11 @@ fn formula_blocks(f: &FieldForm, t: &Table, problem: &Option<String>, cx: &Conte
     };
     let fns = formula::functions();
     let head = |s: String| div().flex_none().h(px(26.)).px(px(8.)).flex().items_center().text_size(px(12.)).text_color(Theme::text_caption()).child(s);
-    let mut list = div().id("tb-ff-ref").max_h(px(180.)).overflow_y_scroll().py(px(4.)).rounded(px(6.)).bg(c(ud::N50)).flex().flex_col();
+    let mut list = inset_list("tb-ff-ref").max_h(px(180.)).overflow_y_scroll();
     list = list.child(head(label("字段引用")));
     for (i, fld) in t.fields.iter().enumerate().filter(|(_, fld)| f.orig.as_ref().is_none_or(|o| o.id != fld.id)) {
         let (name, add) = (fld.name.clone(), append);
-        list = list.child(div().id(("tb-ff-ref-field", i)).flex_none().h(px(28.)).mx(px(4.)).px(px(6.)).flex().items_center().gap(px(6.)).rounded(px(4.)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+        list = list.child(div().id(("tb-ff-ref-field", i)).flex_none().h(px(28.)).mx(px(4.)).px(px(6.)).flex().items_center().gap(px(6.)).rounded(px(crate::design::geo().menu_row_r)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
             .child(icon(field_glyph(fld.ty), 14., Theme::icon()))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(fld.name.clone())))
             .on_click(cx.listener(move |v, _, window, cx| add(v, format!("{{{name}}}"), window, cx))));
@@ -379,8 +371,8 @@ fn formula_blocks(f: &FieldForm, t: &Table, problem: &Option<String>, cx: &Conte
     for (i, d) in fns.iter().enumerate() {
         if d.group != group { group = d.group; list = list.child(head(format!("{}{}", label(d.group), label("函数")))); }
         let add = append;
-        list = list.child(div().id(("tb-ff-ref-fn", i)).flex_none().h(px(28.)).mx(px(4.)).px(px(6.)).flex().items_center().gap(px(8.)).rounded(px(4.)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
-            .when(f.hint == Some(i), |x| x.bg(Theme::fill_active()))
+        list = list.child(div().id(("tb-ff-ref-fn", i)).flex_none().h(px(28.)).mx(px(4.)).px(px(6.)).flex().items_center().gap(px(8.)).rounded(px(crate::design::geo().menu_row_r)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+            .when(f.hint == Some(i), |x| x.bg(Theme::primary_fill_1()))
             .child(div().flex_none().font_family(crate::feishu_theme::MONO_FONT).text_size(px(12.)).child(d.name))
             .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(Theme::text_caption()).overflow_hidden().whitespace_nowrap().text_ellipsis().child(d.sig))
             .on_click(cx.listener(move |v, _, window, cx| { if let Some(f) = form(v) { f.hint = Some(i); } add(v, format!("{}(", fns[i].name), window, cx); })));
@@ -443,8 +435,8 @@ fn settings(f: &FieldForm, base: &Base, t: &Table, problem: &Option<String>, cx:
 }
 
 /// A setting that can no longer be changed, as text in a quiet box.
-fn fixed(value: String) -> Div {
-    div().flex_none().h(px(32.)).px(px(10.)).flex().items_center().rounded(px(6.)).bg(c(ud::N50)).text_color(Theme::text_caption()).overflow_hidden().whitespace_nowrap().text_ellipsis().child(value)
+fn fixed(value: String) -> crate::design::Field {
+    field_box(ElementId::Name(value.clone().into())).px(px(10.)).text_color(Theme::text_caption()).overflow_hidden().whitespace_nowrap().text_ellipsis().child(value)
 }
 
 fn legacy_note() -> Div {
@@ -454,16 +446,16 @@ fn legacy_note() -> Div {
 pub(crate) fn render(_v: &TableView, base: &Base, t: &Table, form: &FieldForm, cx: &Context<TableView>) -> AnyElement {
     let problem = form.problem(base, t, cx);
     let bounds = form.bounds.clone();
-    let body = div().id("tb-ff-body").max_h(px(560.)).overflow_y_scroll().px(px(PAD)).pb(px(4.)).flex().flex_col().gap(px(12.))
+    let body = div().id("tb-ff-body").max_h(px(560.)).overflow_y_scroll().px(px(PAD)).pb(px(4.)).flex().flex_col().gap(px(crate::design::geo().popover_gap))
         .child(block("标题", text_input(&form.name)))
         .child(type_box(form, cx))
         .children(settings(form, base, t, &problem, cx));
     let ok = problem.is_none();
-    popover().id("tb-field-form").occlude().relative().w(px(W)).pt(px(PAD - 4.)).flex().flex_col().text_size(px(TEXT))
+    crate::design::Popover::new("tb-field-form").occlude().relative().w(px(W)).pt(px(PAD)).flex().flex_col().text_size(px(text_sm()))
         .on_mouse_down_out(cx.listener(|v, _, window, cx| if v.dropdown.is_none() { v.close_popup(window, cx) }))
         .child(canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {}).absolute().size_full())
         .child(body)
-        .child(div().flex_none().p(px(PAD)).pt(px(12.)).flex().justify_end().gap(px(12.))
+        .child(div().flex_none().p(px(PAD)).flex().justify_end().gap(px(8.))
             .child(plain_btn("tb-ff-cancel", label("取消")).on_click(cx.listener(|v, _, window, cx| v.close_popup(window, cx))))
             .child(primary_btn("tb-ff-ok", label("确定")).when(!ok, |d| d.opacity(0.5).cursor_default()).when(ok, |d| d.on_click(cx.listener(|v, _, window, cx| confirm(v, window, cx))))))
         .into_any_element()

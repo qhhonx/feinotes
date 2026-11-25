@@ -22,11 +22,12 @@ struct OpenSource {
     entry: Option<SidebarEntry>,
     verified_access: Option<shared::VerifiedRoomAccess>,
     action: Option<SharedAction>,
+    standalone_checked: bool,
 }
 
 impl OpenSource {
     fn new(entry: Option<SidebarEntry>, action: Option<SharedAction>) -> Self {
-        Self { started: std::time::Instant::now(), entry, verified_access: None, action }
+        Self { started: std::time::Instant::now(), entry, verified_access: None, action, standalone_checked: false }
     }
 }
 
@@ -64,7 +65,9 @@ fn shared_item_ready(store: &crate::shared_store::SharedStore, target: &str, cx:
 impl Workspace {
     #[cfg(target_os = "ios")]
     pub(crate) fn mobile_personal_browser(&self, cx: &App) -> bool {
-        self.sharing.personal_route.is_some() && shared::scope(&self.store,cx).is_some_and(|scope| !scope.folder)
+        self.store.is_shared() && self.sharing.personal_route.is_some() && shared::scope(&self.store,cx)
+            .map_or_else(|| shared::descriptor(self.store.root()).ok().flatten().is_some_and(|room| !room.scope.folder),
+                |scope| !scope.folder)
     }
 
     #[cfg(target_os = "ios")]
@@ -92,6 +95,24 @@ impl Workspace {
         self.navigate_personal(view, None, window, cx);
     }
 
+    pub(super) fn restore_stopped_original(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        #[cfg(target_os = "ios")]
+        if crate::in_shared_note() { return false; }
+        let origin = self.sidebar_entry.clone().filter(|entry| entry.section != crate::sidebar::SidebarSection::Shared);
+        if (origin.is_none() && !self.sharing.personal_route.as_ref().is_some_and(|route| !route.home.shared()))
+            || !self.personal_navigation_entries(cx).iter().any(|entry| entry.id == id && entry.meta.share_root.is_none()) {
+            return false;
+        }
+        self.navigate_personal_from(View::Home, Some(id), origin, window, cx);
+        true
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn mobile_finish_share_exit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_view(View::Home,cx);
+        self.mobile_return_from_share(window,cx);
+    }
+
     #[cfg(target_os = "ios")]
     pub(crate) fn remember_personal_browser(&mut self, cx: &App) {
         if let Some(route) = &mut self.sharing.personal_route {
@@ -116,6 +137,7 @@ impl Workspace {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     pub(super) fn navigate_new_shared_item(&mut self, room: Room, reply: Reply, window: &mut Window, cx: &mut Context<Self>) {
         let target = room.scope.note.clone();
         let sidebar = SidebarNavigation {
@@ -131,6 +153,7 @@ impl Workspace {
         self.navigate_shared_item_using(room, target, None, Some(sidebar), window, cx);
     }
 
+    #[cfg(not(target_os = "ios"))]
     pub(super) fn navigate_published_invitation(&mut self, room: Room, text: String, window: &mut Window, cx: &mut Context<Self>) {
         let target = room.scope.note.clone();
         let sidebar = SidebarNavigation {
@@ -195,13 +218,63 @@ impl Workspace {
         self.open_shared_item(room, target, source, window, cx);
     }
 
+    #[cfg(target_os = "ios")]
     pub(super) fn open_shared_room_for_action(&mut self, room: Room, action: SharedAction, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sharing.busy { return; }
-        let retry_room = room.clone();
-        let retry_action = action.clone();
-        if !self.save_before(cx, move |ws, window, cx| ws.open_shared_room_for_action(retry_room, retry_action, window, cx)) { return; }
         let target = room.scope.note.clone();
-        self.open_shared_item(room, target, OpenSource::new(None, Some(action)), window, cx);
+        self.open_shared_item_for_action(room, target, None, action, window, cx);
+    }
+
+    pub(super) fn open_shared_item_for_action(&mut self, room: Room, target: String, entry: Option<SidebarEntry>, action: SharedAction,
+        window: &mut Window, cx: &mut Context<Self>) {
+        if self.sharing.busy { return; }
+        let (retry_room, retry_target, retry_entry, retry_action) = (room.clone(), target.clone(), entry.clone(), action.clone());
+        if !self.save_before(cx, move |ws, window, cx| ws.open_shared_item_for_action(retry_room, retry_target, retry_entry, retry_action, window, cx)) { return; }
+        self.open_shared_item(room, target, OpenSource::new(entry, Some(action)), window, cx);
+    }
+
+    pub(super) fn reconcile_standalone_original(&mut self, room: Room, window: &mut Window, cx: &mut Context<Self>,
+        complete: impl FnOnce(&mut Self, bool, &mut Window, &mut Context<Self>) + 'static) {
+        self.cancel_shared_open();
+        let personal = crate::store::Store::root_dir();
+        if shared::room_account(&personal, cx) != shared::RoomAccount::Ready {
+            self.show_sharing_toast(ui::ToastKind::Error, shared::sharing_unavailable(), cx);
+            return;
+        }
+        let request = uuid::Uuid::new_v4();
+        let route = self.shared_open_origin(cx);
+        let revision = cloud_sync::account_revision();
+        self.begin_sidebar_loading(request, tr("正在确认共享状态…", "Checking sharing status…"), std::time::Instant::now(), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let read = personal.clone();
+            let probe = room.clone();
+            let result = cx.background_executor().spawn(async move { shared::original::reconcile_standalone(&read, &probe) }).await;
+            let _ = this.update_in(cx, |ws, window, cx| {
+                if crate::store::Store::root_dir() != personal || cloud_sync::account_revision() != revision {
+                    if ws.sharing.sidebar_load == Some(request) { ws.cancel_sidebar_open(); cx.notify(); }
+                    return;
+                }
+                if matches!(result, Ok(true)) {
+                    if cx.has_global::<cloud_sync::activity::ActivityView>() { cloud_sync::activity::remove_room(&room.scope.note,cx); }
+                    if !ws.is_shared() { ws.entries = ws.store.list(); ws.sort(); }
+                    cloud_sync::retry(&personal,cx);
+                    let root = personal.clone();
+                    cx.defer(move |cx| crate::app::cloud_notes_changed(&root, &[], false, cx));
+                }
+                if ws.sharing.sidebar_load != Some(request) { return; }
+                ws.cancel_sidebar_open();
+                cx.notify();
+                if ws.shared_open_origin(cx) != route || ws.sharing.sheet.is_some() || ws.confirm.is_some()
+                    || !window.root::<Workspace>().flatten().is_some_and(|root| root.entity_id() == cx.entity_id()) { return; }
+                match result {
+                    Ok(restored) => complete(ws, restored, window, cx),
+                    Err(error) => {
+                        crate::logging::write(&format!("Check stopped sharing: {error:#}"));
+                        ws.show_sharing_toast(ui::ToastKind::Error, tr("暂时无法确认共享是否已结束。请联网后重试。",
+                            "Could not confirm whether sharing has ended. Try again when online."), cx);
+                    }
+                }
+            });
+        }).detach();
     }
 
     fn open_shared_item(&mut self, room: Room, target: String, source: OpenSource, window: &mut Window, cx: &mut Context<Self>) {
@@ -210,6 +283,18 @@ impl Workspace {
         if self.sharing.busy { return; }
         if !self.is_shared() && shared::original::awaiting_publication(self.store.root(), &room) {
             self.create_shared_note(&room.scope.note, window, cx);
+            return;
+        }
+        let personal = crate::store::Store::root_dir();
+        if !source.standalone_checked && target == room.scope.note
+            && shared::original::needs_standalone_check(&personal, &room)
+            && self.stopping_original(&room, cx)
+            && shared::room_account(&personal, cx) == shared::RoomAccount::Ready {
+            let original = room.clone();
+            self.reconcile_standalone_original(room, window, cx, move |ws, restored, window, cx| {
+                if restored { ws.navigate_personal_from(View::Doc, Some(target), source.entry, window, cx); }
+                else { ws.open_shared_item(original, target, OpenSource { standalone_checked: true, ..source }, window, cx); }
+            });
             return;
         }
         if self.defer_shared_open(&room, &target, &source, window, cx) { return; }
@@ -394,7 +479,8 @@ impl Workspace {
 
     #[cfg(target_os = "macos")]
     fn finish_shared_folder_edit(&mut self, entry: SidebarEntry, edit: SharedFolderEdit, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.entries.iter().any(|row| row.id == entry.id && row.meta.folder.is_some()) { return; }
+        if !self.sharing_access(cx).is_some_and(Access::can_write) || shared::editing_paused(&self.store, cx)
+            || !self.entries.iter().any(|row| row.id == entry.id && row.meta.folder.is_some()) { return; }
         match edit {
             SharedFolderEdit::Rename => {
                 self.start_rename_in_sidebar(&entry.id, Some(entry.section), window, cx);
@@ -534,7 +620,7 @@ impl Workspace {
         self.delay_shared_open_notice(request, tr("正在确认 iCloud 账户…", "Checking your iCloud account…"), source.started, cx);
         cloud_sync::recheck_account(&personal, cx);
         cx.spawn_in(window, async move |this, cx| {
-            let checkpoint = |ws: &Workspace, window: &Window, cx: &Context<Workspace>| {
+            let checkpoint = |ws: &Workspace, window: &Window, cx: &Context<Workspace>, request| {
                 ws.sharing.account_open == Some(request)
                     && window.root::<Workspace>().flatten().is_some_and(|root| root.entity_id() == cx.entity_id())
                     && crate::store::Store::root_dir() == personal
@@ -544,20 +630,26 @@ impl Workspace {
             let start = std::time::Instant::now();
             loop {
                 let state = this.update_in(cx, |ws, window, cx| {
-                    if !checkpoint(ws, window, cx) {
+                    if !checkpoint(ws, window, cx, request) {
                         if ws.sharing.account_open == Some(request) { ws.cancel_shared_open(); cx.notify(); }
                         return None;
                     }
-                    Some(shared::room_account(&personal, cx))
+                    let offline = cloud_sync::status(&personal, cx).is_some_and(|status| status.phase == cloud_sync::SyncPhase::Offline);
+                    Some((shared::room_account(&personal, cx), offline))
                 }).ok().flatten();
                 match state {
-                    Some(Ready) if cloud_sync::account_revision() == revision => break,
-                    Some(Verifying) if cloud_sync::account_revision() == revision && start.elapsed().as_secs() < 30 => {}
-                    Some(issue) => {
+                    Some((Ready, _)) if cloud_sync::account_revision() == revision => break,
+                    Some((Verifying, false)) if cloud_sync::account_revision() == revision && start.elapsed().as_secs() < 30 => {}
+                    Some((issue, offline)) => {
                         let _ = this.update_in(cx, |ws, _, cx| {
                             if ws.sharing.account_open != Some(request) { return; }
                             ws.cancel_shared_open();
-                            ws.shared_account_message(if matches!(issue, Ready | Verifying) { Unavailable } else { issue }, cx);
+                            if issue == Verifying && offline {
+                                ws.show_toast_kind(ui::ToastKind::Error, tr("无法连接 iCloud。联网后重新打开共享文档。",
+                                    "Could not connect to iCloud. Reopen the shared document when online."), cx);
+                            } else {
+                                ws.shared_account_message(if matches!(issue, Ready | Verifying) { Unavailable } else { issue }, cx);
+                            }
                         });
                         return;
                     }
@@ -566,13 +658,29 @@ impl Workspace {
                 cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
             }
 
-            // A fresh CloudKit permission check is required before exposing the cached room.
+            // Account readiness and the separate CloudKit permission check have different outcomes.
+            let permission_request = uuid::Uuid::new_v4();
+            if !this.update_in(cx, |ws, window, cx| {
+                if !checkpoint(ws, window, cx, request) {
+                    if ws.sharing.account_open == Some(request) { ws.cancel_shared_open(); cx.notify(); }
+                    return false;
+                }
+                let progress = tr("正在读取共享权限…", "Checking sharing access…");
+                ws.sharing.account_open = Some(permission_request);
+                if ws.sharing.open_notice.is_some() {
+                    ws.sharing.open_notice = Some(progress);
+                    cx.notify();
+                } else {
+                    ws.delay_shared_open_notice(permission_request, progress, open_source.started, cx);
+                }
+                true
+            }).unwrap_or(false) { return; }
             let source = personal.clone();
             let requested = room.clone();
             let allowed = cx.background_executor().spawn(async move { shared::verify_room_access(&source, &requested) }).await;
             let _ = this.update_in(cx, |ws, window, cx| {
-                let current = checkpoint(ws, window, cx);
-                if ws.sharing.account_open == Some(request) { ws.cancel_shared_open(); cx.notify(); }
+                let current = checkpoint(ws, window, cx, permission_request);
+                if ws.sharing.account_open == Some(permission_request) { ws.cancel_shared_open(); cx.notify(); }
                 if !current { return; }
                 if cloud_sync::account_revision() != revision || shared::room_account(&personal, cx) != Ready {
                     ws.shared_account_message(Unavailable, cx); return;

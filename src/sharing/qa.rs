@@ -81,6 +81,24 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             ensure!(ws.sharing.account_open.is_some() && !ws.is_shared(), "The share opened before account verification");
             Ok(())
         })??,
+        "account-open-notice" | "account-open-access-notice" => primary.update(cx, |ws,_,_| -> Result<()> {
+            let message = if name == "account-open-notice" {
+                tr("正在确认 iCloud 账户…", "Checking your iCloud account…")
+            } else {
+                tr("正在读取共享权限…", "Checking sharing access…")
+            };
+            ensure!(!ws.is_shared() && ws.sharing_status_notice() == Some(message), "Unexpected deferred share status");
+            Ok(())
+        })??,
+        "account-open-delay-access" => std::fs::write(root.join("qa-delay-room-access-once"),[])?,
+        "account-open-offline" => cloud_sync::fixture_status(&personal,cloud_sync::SyncPhase::Offline,cx),
+        "account-open-offline-cleared" => primary.update(cx, |ws,_,_| -> Result<()> {
+            ensure!(!ws.is_shared() && ws.sharing.account_open.is_none() && ws.sharing_status_notice().is_none()
+                && ws.toast.as_ref().is_some_and(|(kind, text, _)| *kind == ui::ToastKind::Error && text.contains("iCloud")),
+                "Offline account check kept a progress notice");
+            eprintln!("ACCOUNT_OPEN_OFFLINE_OK");
+            Ok(())
+        })??,
         "account-open-verify" => shared::session_qa::confirm_account_check(cx)?,
         "account-open-cancel" => primary.update(cx, |ws,_,cx| ws.show_view(View::Trash,cx))?,
         "account-open-kept-route" => primary.update(cx, |ws,_,_| -> Result<()> {
@@ -96,6 +114,15 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             eprintln!("ACCOUNT_OPEN_RESUMED_OK");
             Ok(())
         })??,
+        "review-panel-closed" => primary.update(cx, |ws, _, _| -> Result<()> {
+            ensure!(ws.sharing.sheet.is_none() && !ws.sharing.panel_open && !ws.sharing.sync_panel_open,
+                "The sharing panel did not dismiss");
+            eprintln!("SHARING_PANEL_DISMISSED");
+            Ok(())
+        })??,
+        "review-english" => primary.update(cx, |ws,_,cx| {
+            ws.set_pref(|p| { p.english = true; p.language = "en".into(); },cx);
+        })?,
         "sync-badge-open" => primary.update(cx, |ws,window,cx| -> Result<()> {
             let [id,_,_]: [String;3] = serde_json::from_slice(&std::fs::read(root.join("qa-sidebar-original-ids"))?)?;
             ws.open(&id,window,cx);
@@ -640,7 +667,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
         })??,
         "public-link-retry-reply" => primary.update(cx, |ws, window, cx| -> Result<()> {
             let room = ws.sheet_room().context("Missing access management")?;
-            ensure!(ws.can_retry_public_link(room, cx) && ws.sharing.reply.as_ref().is_some_and(|reply| reply.audience.can_invite()),
+            ensure!(ws.public_link_retry_access(room, cx).is_some() && ws.sharing.reply.as_ref().is_some_and(|reply| reply.audience.can_invite()),
                 "Missing explicit retry or account invitation");
             ensure!(ws.sharing.message.as_ref().is_some_and(|(error, message)| *error && message.contains("请刷新")
                 && !message.contains("Conflicting share")) && ws.sharing.copied_text.is_none(), "The sharing conflict was not localized or copied an invitation");
@@ -649,6 +676,11 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             Ok(())
         })??,
         "public-link-retry-conflict" => primary.update(cx, |ws, window, cx| -> Result<()> {
+            let room = ws.sheet_room().context("Missing access management")?;
+            let cache = shared::room_root(&personal, &room.scope.note)?;
+            std::fs::remove_file(cache.join("public-link-pending"))?;
+            ensure!(ws.public_link_retry_access(room, cx) == Some(Access::ReadOnly),
+                "A draft from another owner device did not offer public activation");
             std::fs::write(root.join("fail-link-conflict-once"), b"fault")?;
             ws.retry_public_link(window, cx);
             Ok(())
@@ -657,7 +689,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let id = std::fs::read_to_string(root.join("qa-public-note"))?;
             let room = ws.current_room(cx).context("Public share did not stay open")?;
             ensure!(ws.current.as_deref() == Some(id.as_str()) && room.scope.note == id && !shared::public_link_pending(&personal, &room), "Public share did not retain the original document");
-            ensure!(ws.sharing.copied_text.as_deref() == Some("邀请你在飞记中协作《Personal fixture》\nhttps://feinotes.app/share/?g=synthetic-fei-ui")
+            ensure!(ws.sharing.copied_text.as_deref() == Some("邀请你在飞记中协作《Personal fixture》\nhttps://feinotes.app/share/?v=2&u=aHR0cHM6Ly93d3cuaWNsb3VkLmNvbS9zaGFyZS9zeW50aGV0aWMtZmVpLXVp")
                 && ws.sharing.message.is_none(), "Readback did not recover the lost acknowledgement");
             Ok(())
         })??,
@@ -671,7 +703,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
         "public-link-close" => primary.update(cx, |ws, window, cx| -> Result<()> {
             let reply = ws.sharing.reply.as_ref().context("Missing public share state")?;
             ensure!(reply.audience == Audience::LinkReadOnly && reply.members.is_empty() && reply.url.is_some(), "Link must be read-only");
-            ensure!(ws.sharing.copied_text.as_deref() == Some("Join me in Fei Notes: Personal fixture\nhttps://feinotes.app/share/?g=synthetic-fei-ui"),
+            ensure!(ws.sharing.copied_text.as_deref() == Some("Join me in Fei Notes: Personal fixture\nhttps://feinotes.app/share/?v=2&u=aHR0cHM6Ly93d3cuaWNsb3VkLmNvbS9zaGFyZS9zeW50aGV0aWMtZmVpLXVp"),
                 "Copying an existing invitation did not include its English message");
             ws.confirm_close_link(window, cx);
             ensure!(!ws.sharing.busy && ws.sharing.close_link_confirm, "Closing must ask for confirmation");
@@ -698,7 +730,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let room = shared::original::prepare(&personal, &id, doc.title.text.clone(), Some(Access::ReadOnly))?;
             shared::ensure_created(&personal, &room)?;
             std::fs::write(root.join("fail-link-write-once"), b"fault")?;
-            let failed = shared::publish_link(&personal, &room);
+            let failed = shared::publish_link(&personal, &room, None);
             ensure!(failed.result.is_err() && failed.reply.is_some_and(|reply| reply.members.is_empty() && reply.audience == Audience::LinkDraft),
                 "Failed public sharing granted automatic access");
             let invite = shared::manage(&personal, &room, "invite", "owner-approved@example.test", Some(Access::ReadOnly))?;
@@ -708,6 +740,55 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
                 && shared::manage(&personal, &room, "members", "", None)?.members.len() == 1,
                 "A public-link retry changed an existing private invitation");
             eprintln!("PUBLIC_LINK_UI_OK default=invited rejection=private open=original lost-reply=confirmed closure=owner-retained copy=denied invite=explicit");
+            Ok(())
+        })??,
+        "public-link-stop-return" => primary.update(cx, |ws, window, cx| {
+            ws.close_sharing(window, cx);
+            ws.navigate_personal_home_tab(crate::home::HomeTab::Recent, window, cx);
+        })?,
+        "public-link-stop-open" => primary.update(cx, |ws, window, cx| -> Result<()> {
+            let id = std::fs::read_to_string(root.join("qa-public-note"))?;
+            ensure!(!ws.is_shared() && !ws.home.shared() && ws.view == View::Home, "Expected My documents");
+            ws.home_click(&id, window, cx);
+            Ok(())
+        })??,
+        "public-link-stop-original" => primary.update(cx, |ws, window, cx| -> Result<()> {
+            let id = std::fs::read_to_string(root.join("qa-public-note"))?;
+            let room = ws.current_room(cx).context("Missing original's owning share")?;
+            ensure!(ws.current.as_ref() == Some(&id) && ws.stopping_original(&room, cx),
+                "Stop did not start from the shared original");
+            ws.open_end_shared(room, window, cx);
+            ws.submit_sharing(window, cx);
+            Ok(())
+        })??,
+        "public-link-original-stopped" => primary.update(cx, |ws, _, cx| -> Result<()> {
+            let id = std::fs::read_to_string(root.join("qa-public-note"))?;
+            ensure!(!ws.is_shared() && !ws.home.shared() && ws.current.as_ref() == Some(&id) && ws.view == View::Doc,
+                "Stopping jumped away from the personal editor");
+            ensure!(ws.entries.iter().any(|entry| entry.title == "Private fallback")
+                && ws.entries.iter().any(|entry| entry.id == id && entry.meta.share_root.is_none()),
+                "The personal list lost the original or another document");
+            ensure!(ws.editor.as_ref().is_some_and(|editor| editor.read(cx).core.doc.plain_text().contains("private body")),
+                "The restored editor lost the shared content");
+            eprintln!("PUBLIC_LINK_STOP_ORIGINAL_OK");
+            Ok(())
+        })??,
+        "public-link-open-reattached-original" => primary.update(cx, |ws, window, cx| -> Result<()> {
+            let id = std::fs::read_to_string(root.join("qa-public-note"))?;
+            ws.store.update_meta(&id, |meta| meta.share_root = Some(id.clone()))?;
+            ws.entries = ws.store.list();
+            ws.show_view(View::Home, cx);
+            ws.home_click(&id, window, cx);
+            Ok(())
+        })??,
+        "public-link-repaired-original" => primary.update(cx, |ws, _, cx| -> Result<()> {
+            let id = std::fs::read_to_string(root.join("qa-public-note"))?;
+            ensure!(!ws.is_shared() && ws.view == View::Doc && ws.current.as_ref() == Some(&id)
+                && ws.entries.iter().any(|entry| entry.id == id && entry.meta.share_root.is_none()),
+                "Opening the stale entry did not recover the personal original");
+            ensure!(ws.editor.as_ref().is_some_and(|editor| editor.read(cx).core.doc.plain_text().contains("private body")),
+                "Recovery changed the original content");
+            eprintln!("PUBLIC_LINK_STALE_ORIGINAL_RECOVERED");
             Ok(())
         })??,
         "public-link-new-editor" => primary.update(cx, |ws, window, cx| -> Result<()> {
@@ -726,7 +807,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let reply = shared::manage(&personal, &room, "members", "", None)?;
             ensure!(reply.audience == Audience::LinkReadWrite && reply.members.is_empty()
                 && !shared::public_link_pending(&personal, &room)
-                && ws.sharing.copied_text.as_deref() == Some("Join me in Fei Notes: Public editing fixture\nhttps://feinotes.app/share/?g=synthetic-fei-ui"),
+                && ws.sharing.copied_text.as_deref() == Some("Join me in Fei Notes: Public editing fixture\nhttps://feinotes.app/share/?v=2&u=aHR0cHM6Ly93d3cuaWNsb3VkLmNvbS9zaGFyZS9zeW50aGV0aWMtZmVpLXVp"),
                 "New public editing invitation did not match confirmed access or include its English message");
             eprintln!("PUBLIC_LINK_EDIT_UI_OK selection=explicit creation=new-document copy=confirmed");
             Ok(())
@@ -764,7 +845,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             ws.submit_sharing(window, cx);
             Ok(())
         })??,
-        "failed-invite" | "retry-invite" | "narrow" | "wide" | "members-compact" | "members-overflow" | "members-scroll-bottom" | "members-restore" | "reopen-members" | "members" | "readonly" | "revoke" | "remove-confirm" | "revoked" | "collaboration" => {
+        "failed-invite" | "retry-invite" | "narrow" | "wide" | "members-compact" | "members-overflow" | "members-scroll-bottom" | "members-restore" | "reopen-members" | "members" | "readonly" | "revoke" | "remove-confirm" | "revoked" | "collaboration" | "review-invite" | "review-back" => {
             let room: Room = serde_json::from_slice(&std::fs::read(root.join("qa-created-room.json"))?)?;
             let shared = handles.into_iter().find(|h| h.read(cx).is_ok_and(|ws| shared::scope(&ws.store, cx) == Some(&room.scope))).context("Missing newly created shared window")?;
             shared.update(cx, |ws, window, cx| -> Result<()> {
@@ -776,6 +857,20 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
                         ensure!(ws.sharing.email.read(cx).text == "person@example.test", "Invitation failure lost its recipient");
                         ensure!(shared::rooms(&personal)?.len() == 3, "Invite failure created another note");
                         if name == "retry-invite" { ws.submit_sharing(window, cx); }
+                    }
+                    "review-invite" => {
+                        ensure!(matches!(ws.sharing.sheet, Some(Sheet::Members(_))), "Expected member management");
+                        let anchor = ws.sharing_sheet_anchor(ws.sharing.sheet.as_ref().unwrap(), cx);
+                        ensure!(anchor.is_some(), "Member management must be under the Share control");
+                        ws.open_invitation(room.clone(), window, cx);
+                        ensure!(matches!(ws.sharing.sheet, Some(Sheet::Invite(_))), "Expected invitation form");
+                        ensure!(ws.sharing_sheet_anchor(ws.sharing.sheet.as_ref().unwrap(), cx) == anchor, "The invitation changed the sharing anchor");
+                    }
+                    "review-back" => {
+                        let anchor = ws.sharing_sheet_anchor(ws.sharing.sheet.as_ref().context("Missing invitation")?, cx);
+                        ws.return_to_member_management(window, cx);
+                        ensure!(anchor.is_some() && ws.sharing_sheet_anchor(ws.sharing.sheet.as_ref().context("Missing member management")?, cx) == anchor
+                            && ws.sharing.reply.is_some() && !ws.sharing.busy, "Returning to members moved the panel or discarded the roster");
                     }
                     "members-compact" => {
                         ensure!(ws.sharing.scroll.max_offset().y <= px(2.), "A single invite requires scrolling the members sheet");
@@ -800,7 +895,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
                         ws.sharing.scroll.set_offset(point(px(0.), px(0.))); cx.notify();
                     }
                     "narrow" => {
-                        ensure!(ws.sharing.message.as_ref().is_some_and(|(error, _)| !*error), "Invitation success did not keep the next step visible");
+                        ensure!(ws.sharing.copied_text.is_some(), "Invitation success did not keep the next step available");
                         ws.set_pref(|p| { p.appearance="dark".into(); }, cx);
                         window.resize(size(px(480.), px(600.)));
                     }
@@ -813,7 +908,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
                         ws.open_member_management(room.clone(), window, cx);
                     }
                     "members" => {
-                        ensure!(ws.sharing.copied_text.as_ref().is_some_and(|text| text.contains("https://feinotes.app/share/?g=") && text.lines().count() == 2 && !text.contains("Apple")), "Creation did not copy an invitation message");
+                        ensure!(ws.sharing.copied_text.as_ref().is_some_and(|text| text.contains("https://feinotes.app/share/?v=2&u=") && text.lines().count() == 2 && !text.contains("Apple")), "Creation did not copy an invitation message");
                         ensure!(ws.sharing.message.as_ref().is_none_or(|(error, _)| *error), "Success text still occupies sheet feedback");
                         ensure!(ws.sharing.original.is_some(), "Creation lost original cleanup option");
                         ensure!(matches!(ws.sharing.sheet, Some(Sheet::Members(_))), "Invitation did not open contextual management");
@@ -838,7 +933,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
                     "remove-confirm" => {
                         ensure!(ws.sharing.revoke_confirm, "Removal confirmation was lost");
                         let id = ws.sharing.reply.as_ref().context("Missing members")?.members[0].id.clone();
-                        ws.confirm_shared_removal(id, window, cx);
+                        ws.resolve_shared_removal(id, true, window, cx);
                     }
                     "revoked" => {
                         ensure!(ws.sharing.reply.as_ref().context("Missing members")?.members.is_empty(), "Revocation was not reflected");

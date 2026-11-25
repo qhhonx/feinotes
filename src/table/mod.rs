@@ -29,7 +29,6 @@ pub use fdl_core::table::*;
 pub fn blank_base() -> Base { Base::blank_named(field::now(), crate::settings::text("未命名数据表"), crate::settings::text("文本")) }
 pub use fdl_core::table::View;
 
-use crate::feishu_theme::Theme;
 use crate::input::{TextField, TextFieldEvent};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -280,7 +279,7 @@ impl Focusable for TableView {
 
 impl TableView {
     pub fn new(state: Entity<BaseState>, shown: &TableRef, full: bool, standalone: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let field = |hint: &str, cx: &mut Context<Self>| cx.new(|cx| { let mut t = TextField::new(crate::settings::label(hint), cx); t.size = TEXT; t });
+        let field = |hint: &str, cx: &mut Context<Self>| cx.new(|cx| { let mut t = TextField::new(crate::settings::label(hint), cx); t.size = text_sm(); t });
         let input = field("", cx);
         input.update(cx, |t, _| t.tab_events = true);
         let aux = field("", cx);
@@ -363,10 +362,10 @@ impl TableView {
         if key != self.result_key {
             let result = query::run(base, t, v);
             let mut tops = Vec::with_capacity(result.rows.len() + 1);
-            let (mut y, h) = (0., v.opts.row_height.px());
+            let (mut y, h) = (0., row_px(v.opts.row_height));
             for r in &result.rows {
                 tops.push(y);
-                y += match r { query::Row::Group(_) => GROUP_H, query::Row::Record(_) => h };
+                y += match r { query::Row::Group(_) => group_h(), query::Row::Record(_) => h };
             }
             tops.push(y);
             let order: HashMap<RecId, usize> = result.records.iter().enumerate().map(|(p, i)| (t.records[*i].id, p)).collect();
@@ -529,7 +528,7 @@ impl Render for TableView {
         let state = self.state.clone();
         let st = state.read(cx);
         let root = div().id("table-view").key_context("Table").track_focus(&self.focus).relative().w_full().when(self.full, |d| d.h_full()).flex().flex_col()
-            .bg(Theme::bg_body()).font_family(crate::theme::DOC_UI_FONT).text_size(px(TEXT)).text_color(Theme::text())
+            .bg(Theme::bg_body()).font_family(crate::theme::DOC_UI_FONT).text_size(px(text_sm())).text_color(Theme::text())
             .on_key_down(cx.listener(keys::key_down))
             // a selected cell takes typed text (keys.rs, EntityInputHandler)
             .when(self.sel.is_some() && self.editing.is_none() && self.focus.is_focused(window), |d| {
@@ -555,7 +554,7 @@ impl Render for TableView {
         // A row added (and revealed) while the block was still the old height left the rows scrolled up,
         // a blank under them, once the block grew.
         if !self.full {
-            let rows = self.tops.last().copied().unwrap_or(0.) + ADD_ROW_H;
+            let rows = self.tops.last().copied().unwrap_or(0.) + add_row_h();
             self.scroll.y = self.scroll.y.min((rows - rows.min(INLINE_MAX_ROWS_H)).max(0.));
         }
         // one view, a 表格 (a file's old 看板 or other kinds show as one too)
@@ -570,8 +569,8 @@ impl Render for TableView {
         let root = if self.full {
             root.child(menus::bar(self, t, v, cx)).child(body)
         } else {
-            let rows = self.tops.last().copied().unwrap_or(0.) + ADD_ROW_H;
-            let h = INLINE_HEAD_H + HEADER_H + rows.min(INLINE_MAX_ROWS_H) + FOOTER_H + 2.;
+            let rows = self.tops.last().copied().unwrap_or(0.) + add_row_h();
+            let h = INLINE_HEAD_H + header_h() + rows.min(INLINE_MAX_ROWS_H) + footer_h() + 2.;
             self.height = h;
             root.group("tb-block").h(px(h))
                 .child(menus::inline_header(self, t, v, cx))

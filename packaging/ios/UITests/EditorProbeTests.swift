@@ -233,6 +233,59 @@ final class EditorProbeTests: XCTestCase {
 
     func testSharedSessionSelectionRoundTrip() { checkSharedMenu(folder: false) }
 
+    func testRemoteRevocationDismissesPermissionsAndRestoresSharedList() {
+        checkRemoteRevocation(noteTitle: "FEI_SHARED_READONLY")
+    }
+
+    func testRemoteRevocationDismissesOwnerPermissionsAndRestoresSharedList() {
+        checkRemoteRevocation(noteTitle: "FEI_SHARED_WRITABLE")
+    }
+
+    private func checkRemoteRevocation(noteTitle: String) {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = UIDevice.current.userInterfaceIdiom == .pad ? .landscapeLeft : .portrait
+        app.launchArguments += ["-AppleLanguages","(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_PERSONAL_SYNC_STATE"] = "ready"
+        app.launchEnvironment["FEI_QA_OFFLINE_INVITATION"] = "1"
+        app.launchEnvironment["FEI_QA_REVOKE_OPEN_SHARE"] = "1"
+        app.launch()
+
+        let tab = app.segmentedControls["fei.notes.tabs"].buttons["Shared documents"]
+        let list = app.tables["fei.notes.list"].firstMatch
+        let note = list.staticTexts[noteTitle].firstMatch
+        let folder = list.staticTexts["FEI_SHARED_FOLDER"]
+        let editorTitle = app.navigationBars[noteTitle]
+        let permissions = app.navigationBars["Document sharing access"]
+        let done = app.buttons["fei.share.done"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 12))
+        tab.tap()
+        XCTAssertTrue(note.waitForExistence(timeout: 8))
+        note.tap()
+        XCTAssertTrue(editorTitle.waitForExistence(timeout: 8))
+        app.buttons["fei.share"].tap()
+        let openPermissions = app.buttons["fei.share.permissions"]
+        if !permissions.exists && openPermissions.waitForExistence(timeout: 2) { openPermissions.tap() }
+        XCTAssertTrue(permissions.waitForExistence(timeout: 5))
+        XCTAssertTrue(done.waitForExistence(timeout: 2))
+        shot("remote-revocation-before")
+
+        let recovered = XCTNSPredicateExpectation(predicate: NSPredicate { _,_ in
+            tab.exists && tab.isSelected && folder.isHittable && !note.exists &&
+                !editorTitle.exists && !permissions.exists && !done.exists
+        },object: nil)
+        let result = XCTWaiter.wait(for: [recovered],timeout: 12)
+        shot("remote-revocation-after")
+        XCTAssertEqual(result,.completed,"Expected the shared list and no old permissions panel")
+        let rebound = XCTNSPredicateExpectation(predicate: NSPredicate { _,_ in permissions.exists || done.exists },object: nil)
+        rebound.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [rebound],timeout: 2),.completed)
+        XCTAssertTrue(folder.isHittable)
+    }
+
     func testSharedSyncBadgeAndStableEditor() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -614,6 +667,211 @@ final class EditorProbeTests: XCTestCase {
         shot("feedback-attachment-source")
     }
 
+    func testStopSharingKeepsPersonalBrowserAndOriginalOpen() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
+        XCUIDevice.shared.orientation = pad ? .landscapeLeft : .portrait
+        app.launchArguments += ["-AppleLanguages","(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_PERSONAL_SYNC_STATE"] = "ready"
+        app.launchEnvironment["FEI_QA_OFFLINE_INVITATION"] = "1"
+        app.launchEnvironment["FEI_QA_STOP_SHARE_DELAY"] = "1"
+        app.launchEnvironment["FEI_QA_SHARE_URL_FRAGMENT"] = "1"
+        app.launchEnvironment["FEI_QA_SLOW_SHARE_MEMBERS"] = "1"
+        app.launch()
+
+        let tabs = app.segmentedControls["fei.notes.tabs"]
+        let personal = tabs.buttons["My documents"]
+        let shared = tabs.buttons["Shared documents"]
+        let list = app.tables["fei.notes.list"]
+        let note = list.staticTexts["FEI_PERSONAL_SESSION"].firstMatch
+        XCTAssertTrue(note.waitForExistence(timeout: 12))
+        XCTAssertGreaterThan(list.cells.count, 1)
+
+        note.press(forDuration: 0.8)
+        let share = app.buttons["Share"]
+        let manage = app.buttons["Members and access"]
+        if share.waitForExistence(timeout: 3) {
+            share.tap()
+            let publicLink = app.buttons["fei.setting.option.share-audience.link"]
+            XCTAssertTrue(publicLink.waitForExistence(timeout: 8)); publicLink.tap()
+            app.buttons["fei.share.create"].tap()
+            XCTAssertTrue(app.buttons["fei.share.show-members"].waitForExistence(timeout: 12))
+            app.buttons["fei.share.done"].tap()
+        } else {
+            XCTAssertTrue(manage.exists)
+            manage.tap()
+            let done = app.buttons["fei.share.done"]
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"),object: done)
+            XCTAssertEqual(XCTWaiter.wait(for: [ready],timeout: 8),.completed)
+            done.tap()
+            XCTAssertTrue(done.waitForNonExistence(timeout: 5))
+        }
+        XCTAssertTrue(note.waitForExistence(timeout: 8) && personal.isSelected)
+        for _ in 0..<3 where !note.isHittable { list.swipeUp() }
+        XCTAssertTrue(note.isHittable)
+        note.press(forDuration: 0.8)
+        app.buttons["Stop sharing"].tap()
+        let listConfirmation = app.alerts["Stop sharing"]
+        XCTAssertTrue(listConfirmation.waitForExistence(timeout: 5))
+        shot("stop-original-list-confirmation")
+        listConfirmation.buttons["fei.confirm.cancel"].firstMatch.tap()
+        XCTAssertTrue(note.waitForExistence(timeout: 8) && personal.isSelected)
+        note.tap()
+
+        let editor = app.navigationBars["FEI_PERSONAL_SESSION"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 8))
+        app.buttons["fei.share"].tap()
+        let openPermissions = app.buttons["fei.share.permissions"]
+        if openPermissions.waitForExistence(timeout: 2) { openPermissions.tap() }
+        let stop = app.buttons["fei.setting.share-end"]
+        let close = app.buttons["fei.setting.share-close-link"]
+        let linkDetails = app.staticTexts["fei.setting.share-link-permission"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 8))
+        XCTAssertEqual(stop.label,"Stop sharing")
+        XCTAssertTrue(stop.isHittable && close.exists && linkDetails.exists)
+        XCTAssertTrue(linkDetails.isHittable)
+
+        let copy = app.buttons["fei.setting.share-copy"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 8))
+        XCTAssertLessThanOrEqual(linkDetails.frame.maxY,copy.frame.minY)
+        XCTAssertEqual(close.frame.midY,copy.frame.midY,accuracy: 1)
+        XCTAssertLessThanOrEqual(close.frame.maxX,copy.frame.minX + 1)
+        XCTAssertEqual(close.frame.minX,stop.frame.minX,accuracy: 1)
+        XCTAssertEqual(copy.frame.maxX,stop.frame.maxX,accuracy: 1)
+        let people = app.staticTexts["fei.share.participants-heading"]
+        let peopleTop = people.frame.minY
+        copy.tap()
+        let loading = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS[c] %@", "iCloud"),object: copy)
+        XCTAssertEqual(XCTWaiter.wait(for: [loading],timeout: 2),.completed)
+        XCTAssertFalse(app.staticTexts["fei.share.invitation-status"].exists)
+        XCTAssertEqual(people.frame.minY,peopleTop,accuracy: 1)
+        shot("sharing-copy-in-progress")
+        let toast = app.otherElements["fei.share.toast"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 5))
+        XCTAssertTrue(toast.label.contains("invitation copied"))
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "fei.share.toast").count, 1)
+        XCTAssertFalse(app.otherElements["fei.notes.notice"].exists)
+        shot("sharing-copy-toast")
+        XCTAssertTrue(toast.waitForNonExistence(timeout: 5))
+
+        shot("stop-original-before")
+        if !close.isHittable { app.scrollViews["fei.share.panel-scroll"].swipeUp() }
+        close.tap()
+        let closeConfirmation = app.alerts["Close public link"]
+        XCTAssertTrue(closeConfirmation.waitForExistence(timeout: 5))
+        shot("close-link-only-confirmation")
+        closeConfirmation.buttons["Cancel"].firstMatch.tap()
+        XCTAssertTrue(copy.waitForExistence(timeout: 5) && stop.isHittable)
+        stop.tap()
+        let confirmation = app.alerts["Stop sharing"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        let effect = confirmation.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Any public link stops working.")).firstMatch
+        XCTAssertTrue(effect.exists && effect.label.contains("keep the original document"))
+        shot("stop-original-permissions-confirmation")
+        confirmation.buttons["fei.confirm.cancel"].firstMatch.tap()
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        stop.tap()
+        confirmation.buttons["fei.confirm.ok"].firstMatch.tap()
+        if pad {
+            let working = XCTNSPredicateExpectation(predicate: NSPredicate { _,_ in
+                personal.exists && personal.isSelected && list.cells.count > 1
+            },object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [working],timeout: 4),.completed)
+            shot("stop-original-during")
+        }
+
+        let restored = XCTNSPredicateExpectation(predicate: NSPredicate { _,_ in
+            editor.exists && app.buttons["fei.share"].label == "Share" && !stop.exists
+                && (!pad || personal.isSelected && list.cells.count > 1)
+        },object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [restored],timeout: 12),.completed)
+        shot("stop-original-after")
+        if !pad { editor.buttons.firstMatch.tap() }
+        XCTAssertTrue(list.waitForExistence(timeout: 8))
+        XCTAssertTrue(personal.isSelected && !shared.isSelected && note.exists)
+        XCTAssertGreaterThan(list.cells.count, 1)
+    }
+
+    func testEndedSharedOriginalOpensAndOffersPersonalDeletion() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
+        XCUIDevice.shared.orientation = pad ? .landscapeLeft : .portrait
+        app.launchArguments += ["-AppleLanguages","(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_PERSONAL_SYNC_STATE"] = "ready"
+        app.launchEnvironment["FEI_QA_OFFLINE_INVITATION"] = "1"
+        app.launch()
+
+        let list = app.tables["fei.notes.list"]
+        let title = "FEI_PERSONAL_SESSION"
+        let original = list.staticTexts[title].firstMatch
+        let editor = app.navigationBars[title]
+        XCTAssertTrue(original.waitForExistence(timeout: 12))
+        if !pad {
+            original.tap()
+            XCTAssertTrue(editor.waitForExistence(timeout: 8))
+            XCTAssertEqual(app.buttons["fei.share"].label,"Share")
+            shot("ended-original-open")
+            editor.buttons.firstMatch.tap()
+            XCTAssertTrue(original.waitForExistence(timeout: 8))
+        }
+        original.press(forDuration: 0.8)
+        let delete = app.buttons["Delete document"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        delete.tap()
+        let confirmation = app.alerts["Delete \(title)?"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 8))
+        XCTAssertTrue(confirmation.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "Trash")).firstMatch.exists)
+        shot("ended-original-delete")
+        if pad {
+            confirmation.buttons["fei.confirm.cancel"].firstMatch.tap()
+            XCTAssertTrue(confirmation.waitForNonExistence(timeout: 5))
+            original.tap()
+            XCTAssertTrue(editor.waitForExistence(timeout: 8))
+            XCTAssertEqual(app.buttons["fei.share"].label,"Share")
+            shot("ended-original-open")
+        } else {
+            confirmation.buttons["fei.confirm.ok"].firstMatch.tap()
+            XCTAssertTrue(confirmation.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(original.waitForNonExistence(timeout: 8))
+        }
+    }
+
+    func testVersionedInvitationOpensNativeConfirmation() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = UIDevice.current.userInterfaceIdiom == .pad ? .landscapeLeft : .portrait
+        let apple = "https://www.icloud.com/share/synthetic-fei-ui?source=qa#Document"
+        let token = Data(apple.utf8).base64EncodedString().replacingOccurrences(of: "+",with: "-")
+            .replacingOccurrences(of: "/",with: "_").replacingOccurrences(of: "=",with: "")
+        app.launchArguments += ["-AppleLanguages","(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_PERSONAL_SYNC_STATE"] = "ready"
+        app.launchEnvironment["FEI_QA_OFFLINE_INVITATION"] = "1"
+        app.launchEnvironment["FEI_MOBILE_QA_INVITATION_URL"] = "feinotes://share/?v=2&u=" + token
+        app.launch()
+
+        let field = app.textFields["fei.share.invitation-link"]
+        XCTAssertTrue(field.waitForExistence(timeout: 12))
+        XCTAssertEqual(field.value as? String,"https://feinotes.app/share/?v=2&u=" + token)
+        let accept = app.buttons["fei.share.accept"]
+        XCTAssertTrue(accept.isEnabled)
+        XCTAssertFalse(app.navigationBars["FEI_SHARED_READONLY"].exists)
+        shot("v2-invitation-confirmation")
+        accept.tap()
+        XCTAssertTrue(app.navigationBars["FEI_SHARED_READONLY"].waitForExistence(timeout: 12))
+        shot("v2-invitation-opened")
+    }
+
     func testPersonalDocumentSharingAudienceAndPermissions() {
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -644,39 +902,75 @@ final class EditorProbeTests: XCTestCase {
         personal.press(forDuration: 0.8)
         let share = app.buttons["Share"]
         XCTAssertTrue(share.waitForExistence(timeout: 5)); share.tap()
-        XCTAssertTrue(app.navigationBars["Share document"].waitForExistence(timeout: 8))
+        let invitationBar = app.navigationBars["Share document"]
+        XCTAssertTrue(invitationBar.waitForExistence(timeout: 8))
+        if !pad {
+            XCTAssertGreaterThan(invitationBar.frame.minY, app.frame.height * 0.28, "Invitation should start as a half sheet on iPhone")
+        }
         XCTAssertTrue(app.staticTexts["FEI_PERSONAL_SESSION"].exists)
         shot("personal-share-invited-default")
 
-        func setting(_ id: String) -> XCUIElement { app.cells["fei.setting." + id] }
-        func option(_ id: String, _ value: String) -> XCUIElement { setting("option.\(id).\(value)") }
-        func change(_ id: String, from: String, to: String) {
-            let row = setting(id)
-            XCTAssertTrue(row.waitForExistence(timeout: 5)); row.tap()
-            let current = option(id, from)
-            XCTAssertTrue(current.waitForExistence(timeout: 5)); XCTAssertTrue(current.isSelected)
-            option(id, to).tap()
-            XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let directTop = invitationBar.frame.minY
+        let invited = app.buttons["fei.setting.option.share-audience.invited"]
+        let publicLink = app.buttons["fei.setting.option.share-audience.link"]
+        let email = app.textFields["fei.setting.share-invite"]
+        let create = app.buttons["fei.share.create"]
+        XCTAssertTrue(invited.exists && publicLink.exists && email.exists)
+        XCTAssertTrue(invited.isSelected)
+        XCTAssertFalse(create.isEnabled)
+        let directBottom = create.frame.maxY
+
+        func changePermission(_ id: String, to title: String) {
+            let button = app.buttons["fei.setting." + id]
+            XCTAssertTrue(button.waitForExistence(timeout: 5))
+            button.tap()
+            let option = app.buttons[title]
+            XCTAssertTrue(option.waitForExistence(timeout: 5))
+            option.tap()
+            XCTAssertTrue(button.label.contains(title))
         }
 
-        XCTAssertTrue(setting("share-audience").exists, "Sharing a personal document must show both audiences")
-        XCTAssertTrue(setting("share-invite").staticTexts["Create invitation"].exists)
-        change("share-permission", from: "read", to: "write")
-        change("share-permission", from: "write", to: "read")
-        change("share-audience", from: "invited", to: "link")
-        XCTAssertFalse(setting("share-invite").exists)
-        XCTAssertTrue(setting("share-submit").isEnabled)
-        XCTAssertTrue(setting("share-submit").staticTexts["Create invitation"].exists)
-        change("share-public-permission", from: "read", to: "write")
-        XCTAssertTrue(setting("public-edit-warning").exists)
+        changePermission("share-permission", to: "Can edit")
+        changePermission("share-permission", to: "Can view")
+        publicLink.tap()
+        XCTAssertTrue(publicLink.isSelected)
+        XCTAssertFalse(email.exists)
+        XCTAssertTrue(create.isEnabled)
+        XCTAssertEqual(create.label, "Create invitation")
+        changePermission("share-public-permission", to: "Can edit")
+        XCTAssertTrue(app.staticTexts["fei.share.invitation-help"].label.contains("can edit this document"))
         shot("personal-share-public-editable")
-        change("share-public-permission", from: "write", to: "read")
-        XCTAssertFalse(setting("public-edit-warning").exists)
-        change("share-audience", from: "link", to: "invited")
-        XCTAssertTrue(setting("share-invite").exists)
+        changePermission("share-public-permission", to: "Can view")
+        XCTAssertFalse(app.staticTexts["fei.share.invitation-help"].label.contains("can edit this document"))
+        invited.tap()
+        XCTAssertTrue(email.exists)
+        if pad {
+            XCTAssertTrue(email.isHittable && create.isHittable)
+            email.tap()
+            email.typeText("preview@example.test")
+            XCTAssertTrue(email.isHittable && create.isHittable && create.isEnabled)
+            shot("personal-share-keyboard")
+        }
         app.buttons["fei.share.done"].tap()
         XCTAssertTrue(personal.waitForExistence(timeout: 8))
         XCTAssertEqual(sharedEditor.exists, pad)
+        if pad {
+            tabs.buttons["Shared documents"].tap()
+            let owner = list.staticTexts["FEI_SHARED_WRITABLE"].firstMatch
+            XCTAssertTrue(owner.waitForExistence(timeout: 8))
+            owner.tap()
+            XCTAssertTrue(app.navigationBars["FEI_SHARED_WRITABLE"].waitForExistence(timeout: 8))
+            app.buttons["fei.share"].tap()
+            let accessButton = app.buttons["fei.share.permissions"]
+            if accessButton.exists { accessButton.tap() }
+            let accessBar = app.navigationBars["Document sharing access"]
+            XCTAssertTrue(accessBar.waitForExistence(timeout: 8))
+            let stop = app.buttons["fei.setting.share-end"]
+            XCTAssertTrue(stop.waitForExistence(timeout: 8))
+            XCTAssertEqual(accessBar.frame.minY,directTop,accuracy: 1)
+            XCTAssertEqual(stop.frame.maxY,directBottom,accuracy: 1)
+            shot("personal-share-matching-access")
+        }
     }
 
     func testSharingOverviewInvitationAndCreation() {
@@ -688,6 +982,8 @@ final class EditorProbeTests: XCTestCase {
         app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
         app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
         app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_PERSONAL_SYNC_STATE"] = "ready"
+        app.launchEnvironment["FEI_QA_OFFLINE_INVITATION"] = "1"
         app.launch()
         let tabs = app.segmentedControls["fei.notes.tabs"]
         let more = app.buttons["fei.library-actions"].firstMatch
@@ -695,10 +991,76 @@ final class EditorProbeTests: XCTestCase {
         tabs.buttons["Shared documents"].tap()
         XCTAssertFalse(app.buttons["fei.new"].exists)
         let owner = app.tables["fei.notes.list"].staticTexts["FEI_SHARED_WRITABLE"].firstMatch
+        XCTAssertTrue(owner.waitForExistence(timeout: 8))
         if pad {
-            XCTAssertTrue(owner.waitForExistence(timeout: 8))
             owner.tap()
             XCTAssertTrue(app.navigationBars["FEI_SHARED_WRITABLE"].waitForExistence(timeout: 8))
+            app.buttons["fei.share"].tap()
+            if app.buttons["fei.share.permissions"].exists { app.buttons["fei.share.permissions"].tap() }
+        } else {
+            owner.press(forDuration: 0.8)
+            app.buttons["Members and access"].tap()
+        }
+        let accessTitle = app.navigationBars["Document sharing access"]
+        let participants = app.staticTexts["fei.share.participants-heading"]
+        let links = app.staticTexts["fei.share.link-heading"]
+        XCTAssertTrue(participants.waitForExistence(timeout: 8))
+        XCTAssertTrue(accessTitle.exists)
+        let refresh = app.buttons["fei.setting.share-refresh"]
+        XCTAssertTrue(refresh.isHittable)
+        XCTAssertGreaterThan(refresh.frame.midX,participants.frame.midX)
+        refresh.tap()
+        XCTAssertTrue(app.buttons["fei.setting.share-add"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.tables["fei.settings.list"].exists)
+        XCTAssertTrue(app.staticTexts["Owner"].exists)
+        XCTAssertTrue(links.exists)
+        XCTAssertLessThan(participants.frame.minY,links.frame.minY)
+        XCTAssertFalse(app.buttons["fei.share.members-page"].exists)
+        XCTAssertFalse(app.buttons["fei.share.link-page"].exists)
+        let add = app.buttons["fei.setting.share-add"]
+        let copy = app.buttons["fei.setting.share-copy"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 8))
+        XCTAssertGreaterThan(add.frame.minY,participants.frame.maxY)
+        XCTAssertLessThan(add.frame.maxY,links.frame.minY)
+        XCTAssertEqual(add.frame.minX,participants.frame.minX,accuracy: 1)
+        let accessRange = app.staticTexts["fei.setting.share-audience-info"]
+        XCTAssertTrue(accessRange.isHittable)
+        let accessScroll = app.scrollViews["fei.share.panel-scroll"]
+        XCTAssertLessThanOrEqual(accessRange.frame.maxY,accessScroll.frame.maxY + 1)
+        XCTAssertGreaterThan(copy.frame.minY,accessRange.frame.maxY)
+        XCTAssertEqual(copy.frame.minX,links.frame.minX,accuracy: 1)
+        XCTAssertEqual(add.frame.width,copy.frame.width,accuracy: 1)
+        XCTAssertGreaterThan(accessRange.frame.midX,copy.frame.midX)
+        XCTAssertTrue(app.buttons["fei.setting.share-end"].isHittable)
+        XCTAssertFalse(app.buttons["fei.share.access-more"].exists)
+        shot("sharing-member-access-panel")
+        let addedParticipant = app.buttons["fei.setting.member:visual-review-participant"]
+        if addedParticipant.exists {
+            addedParticipant.tap()
+            app.buttons["Remove participant"].tap()
+            let removal = app.alerts["Remove participant"]
+            XCTAssertTrue(removal.waitForExistence(timeout: 8))
+            XCTAssertTrue(removal.staticTexts["Lin Chen will lose access."].exists)
+            shot("sharing-remove-participant-alert")
+            removal.buttons["Cancel"].tap()
+            XCTAssertTrue(addedParticipant.exists)
+        }
+        XCTAssertTrue(accessTitle.exists)
+        XCTAssertFalse(app.buttons["fei.share.access-back"].exists)
+        let accessFrame = accessTitle.frame
+        add.tap()
+        let invitationBar = app.navigationBars["Invite participant"]
+        let invitationBack = invitationBar.buttons["fei.share.invitation-back"]
+        XCTAssertTrue(invitationBack.waitForExistence(timeout: 8))
+        if pad { XCTAssertEqual(invitationBar.frame.minY,accessFrame.minY,accuracy: 1) }
+        XCTAssertFalse(app.buttons["fei.setting.share-back"].exists)
+        shot("sharing-invite-same-sheet")
+        invitationBack.tap()
+        XCTAssertTrue(accessTitle.waitForExistence(timeout: 8))
+        if pad { XCTAssertEqual(accessTitle.frame.minY,accessFrame.minY,accuracy: 1) }
+        XCTAssertTrue(app.staticTexts["Owner"].exists)
+        app.buttons["fei.share.done"].tap()
+        if pad {
             app.buttons["fei.more"].tap()
             XCTAssertFalse(app.buttons["Accept invitation"].exists)
             app.navigationBars["FEI_SHARED_WRITABLE"].tap()
@@ -715,7 +1077,9 @@ final class EditorProbeTests: XCTestCase {
         link.typeText("invalid")
         XCTAssertTrue(accept.isEnabled)
         accept.tap()
-        XCTAssertTrue(app.staticTexts["fei.share.invitation-status"].waitForExistence(timeout: 8))
+        let invitationStatus = app.staticTexts["fei.share.invitation-status"]
+        XCTAssertTrue(invitationStatus.waitForExistence(timeout: 8))
+        XCTAssertLessThan(invitationStatus.frame.minY, accept.frame.minY)
         XCTAssertEqual(link.value as? String, "invalid")
         shot("sharing-invitation-invalid")
         app.buttons["fei.share.done"].tap()
@@ -728,8 +1092,47 @@ final class EditorProbeTests: XCTestCase {
         app.buttons["Create and share"].tap()
         shot("sharing-overview-create-menu")
         app.buttons["New shared folder"].tap()
-        XCTAssertTrue(app.cells["fei.setting.share-new-name"].waitForExistence(timeout: 8))
+        let name = app.textFields["fei.setting.share-new-name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 8))
+        let publicLink = app.buttons["fei.setting.option.share-audience.link"]
+        XCTAssertTrue(publicLink.exists)
+        publicLink.tap()
+        XCTAssertFalse(app.textFields["fei.setting.share-invite"].exists)
+        XCTAssertFalse(app.buttons["fei.share.create"].isEnabled)
+        name.tap()
+        name.typeText("New public folder")
+        XCTAssertTrue(app.buttons["fei.share.create"].isEnabled)
         shot("sharing-new-folder-form")
+        app.buttons["fei.share.create"].tap()
+        let result = app.buttons["fei.share.show-members"]
+        XCTAssertTrue(result.waitForExistence(timeout: 12))
+        shot("sharing-folder-invitation-result")
+        result.tap()
+        XCTAssertTrue(participants.waitForExistence(timeout: 8))
+        XCTAssertFalse(app.tables["fei.settings.list"].exists)
+        XCTAssertTrue(links.exists)
+        XCTAssertTrue(app.staticTexts["Anyone with the link"].exists)
+        XCTAssertEqual(app.buttons.matching(identifier: "fei.setting.share-copy").count,1)
+        shot("sharing-public-folder-access")
+        let stop = app.buttons["fei.setting.share-end"]
+        let close = app.buttons["fei.setting.share-close-link"]
+        XCTAssertTrue(stop.isHittable && close.exists)
+        stop.tap()
+        let stopAlert = app.alerts["Stop sharing"]
+        XCTAssertTrue(stopAlert.waitForExistence(timeout: 8))
+        shot("sharing-stop-alert")
+        stopAlert.buttons["fei.confirm.cancel"].firstMatch.tap()
+        XCTAssertTrue(stop.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["Anyone with the link"].exists)
+        if !close.isHittable { app.scrollViews["fei.share.panel-scroll"].swipeUp() }
+        close.tap()
+        let closeAlert = app.alerts["Close public link"]
+        XCTAssertTrue(closeAlert.waitForExistence(timeout: 8))
+        closeAlert.buttons["Close public link"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Public link closed"].waitForExistence(timeout: 8))
+        XCTAssertTrue(stop.isHittable)
+        XCTAssertFalse(app.buttons["fei.setting.share-copy"].exists)
+        shot("sharing-public-folder-link-closed")
         app.buttons["fei.share.done"].tap()
         XCTAssertFalse(app.tables["fei.settings.list"].exists)
         tabs.buttons["All Favorites"].tap()
@@ -738,6 +1141,118 @@ final class EditorProbeTests: XCTestCase {
         XCTAssertFalse(app.buttons["Import documents"].exists)
         XCTAssertFalse(app.buttons["Create and share"].exists)
         shot("sharing-favorites-menu")
+    }
+
+    func testColdSharingAccessFromList() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = UIDevice.current.userInterfaceIdiom == .pad ? .landscapeLeft : .portrait
+        app.launchArguments += ["-AppleLanguages","(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_PERSONAL_SYNC_STATE"] = "ready"
+        app.launchEnvironment["FEI_QA_OFFLINE_INVITATION"] = "1"
+        app.launch()
+        let tabs = app.segmentedControls["fei.notes.tabs"]
+        XCTAssertTrue(tabs.waitForExistence(timeout: 12))
+        tabs.buttons["Shared documents"].tap()
+        let list = app.tables["fei.notes.list"]
+        let document = list.staticTexts["FEI_SHARED_READONLY"]
+        XCTAssertTrue(document.waitForExistence(timeout: 8))
+        document.press(forDuration: 0.8)
+        app.buttons["View sharing access"].tap()
+        let retry = app.buttons["fei.setting.share-access-retry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Could not confirm access"].exists)
+        XCTAssertTrue(app.staticTexts["fei.share.invitation-status"].isHittable)
+        retry.tap()
+        XCTAssertTrue(app.staticTexts["Can view"].waitForExistence(timeout: 10))
+        shot("cold-document-sharing-access")
+        app.buttons["fei.share.done"].tap()
+        XCTAssertTrue(document.waitForExistence(timeout: 8))
+        let folder = list.staticTexts["FEI_COLD_SHARED_FOLDER"]
+        XCTAssertTrue(folder.waitForExistence(timeout: 8))
+        folder.press(forDuration: 0.8)
+        app.buttons["Folder sharing access"].tap()
+        XCTAssertTrue(app.staticTexts["Can view"].waitForExistence(timeout: 10))
+        shot("cold-folder-sharing-access")
+        app.buttons["fei.share.done"].tap()
+        XCTAssertTrue(folder.waitForExistence(timeout: 8))
+    }
+
+    func testPublicFolderLinkErrorIsVisible() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = UIDevice.current.userInterfaceIdiom == .pad ? .landscapeLeft : .portrait
+        app.launchArguments += ["-AppleLanguages","(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_PERSONAL_SYNC_STATE"] = "ready"
+        app.launchEnvironment["FEI_QA_OFFLINE_INVITATION"] = "1"
+        app.launchEnvironment["FEI_QA_SHARE_REMOTE_DRAFT"] = "1"
+        app.launch()
+        let tabs = app.segmentedControls["fei.notes.tabs"]
+        XCTAssertTrue(tabs.waitForExistence(timeout: 12))
+        tabs.buttons["Shared documents"].tap()
+        app.buttons["fei.library-actions"].firstMatch.tap()
+        app.buttons["Create and share"].tap()
+        app.buttons["New shared folder"].tap()
+        let publicLink = app.buttons["fei.setting.option.share-audience.link"]
+        XCTAssertTrue(publicLink.waitForExistence(timeout: 8))
+        publicLink.tap()
+        let name = app.textFields["fei.setting.share-new-name"]
+        name.tap()
+        let folderName = "Rejected link \(UUID().uuidString.prefix(6))"
+        name.typeText(folderName)
+        XCTAssertEqual(name.value as? String,folderName)
+        app.buttons["fei.share.create"].tap()
+        let status = app.staticTexts["fei.share.link-error"]
+        let rejected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS[c] %@", "regional restriction"),object: status)
+        XCTAssertEqual(XCTWaiter.wait(for: [rejected],timeout: 12),.completed)
+        XCTAssertTrue(status.isHittable)
+        let participants = app.staticTexts["fei.share.participants-heading"]
+        let links = app.staticTexts["fei.share.link-heading"]
+        XCTAssertTrue(participants.exists)
+        XCTAssertTrue(links.exists)
+        XCTAssertLessThan(participants.frame.minY,links.frame.minY)
+        XCTAssertGreaterThan(status.frame.minY,links.frame.minY)
+        XCTAssertFalse(app.staticTexts["fei.share.invitation-status"].exists)
+        let enable = app.buttons["fei.setting.share-retry-link"]
+        XCTAssertTrue(enable.isEnabled)
+        XCTAssertEqual(enable.label,"Enable public link")
+        XCTAssertTrue(app.buttons["fei.setting.share-link-invite"].exists)
+        shot("sharing-public-folder-error")
+        app.buttons["fei.share.done"].tap()
+        let folder = app.tables["fei.notes.list"].staticTexts[folderName].firstMatch
+        XCTAssertTrue(folder.waitForExistence(timeout: 8))
+        folder.press(forDuration: 0.8)
+        app.buttons["Folder sharing access"].tap()
+        XCTAssertTrue(enable.waitForExistence(timeout: 8))
+        XCTAssertTrue(enable.isHittable)
+        let scroll = app.scrollViews["fei.share.panel-scroll"]
+        XCTAssertLessThanOrEqual(enable.frame.maxY,scroll.frame.maxY + 1)
+        XCTAssertEqual(enable.label,"Enable public link")
+        let pending = app.staticTexts["Only invited Apple Accounts"]
+        XCTAssertTrue(pending.exists)
+        XCTAssertFalse(status.exists)
+        let accessY = pending.frame.minY
+        shot("sharing-public-folder-error-reopened")
+        app.buttons["fei.setting.share-add"].tap()
+        let back = app.buttons["fei.share.invitation-back"]
+        XCTAssertTrue(back.waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["fei.share.done"].exists)
+        back.tap()
+        XCTAssertTrue(pending.waitForExistence(timeout: 8))
+        XCTAssertFalse(status.exists)
+        XCTAssertEqual(pending.frame.minY,accessY,accuracy: 1)
+        shot("sharing-public-folder-error-back-from-invite")
+        enable.tap()
+        XCTAssertTrue(app.staticTexts["Anyone with the link"].waitForExistence(timeout: 12))
+        XCTAssertTrue(participants.exists)
+        XCTAssertTrue(app.buttons["fei.setting.share-copy"].exists)
+        XCTAssertEqual(app.staticTexts["fei.setting.share-link-permission"].label,"Can view")
     }
 
     func testSharedFolderMenuRoundTrip() { checkSharedMenu(folder: true) }

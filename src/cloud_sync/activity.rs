@@ -21,7 +21,6 @@ pub(crate) struct SharedRow {
     pub opened: u64,
     pub icon: Option<String>,
     pub folder_items: Vec<FolderItem>,
-    #[cfg(target_os = "macos")]
     pub access: Option<Access>,
 }
 
@@ -104,7 +103,6 @@ pub(crate) fn update_entry(scope: &shared::Scope, entry: &crate::store::Entry, c
             row.created = entry.meta.created; row.modified = entry.meta.modified; row.opened = entry.meta.opened; row.body = entry.body.clone();
         } else {
             view.0.push(SharedRow { room: shared::Room { scope: scope.clone(), title: entry.title.clone() }, unread: false, summary: String::new(), body: entry.body.clone(), modified: entry.meta.modified, created: entry.meta.created, opened: entry.meta.opened, icon: entry.icon.clone(), folder_items: vec![],
-                #[cfg(target_os = "macos")]
                 access: None,
             });
         }
@@ -262,10 +260,8 @@ pub(crate) fn row(personal: &Path, mut room: Room) -> Result<Option<SharedRow>> 
     if let Some(title) = meta.folder.as_ref() { room.title = title.clone(); }
     let icon = db.query_row("SELECT icon FROM library_documents WHERE id = ?1", [&room.scope.note], |row| row.get::<_, Option<String>>(0)).optional().ok().flatten().flatten();
     let folder_items = if room.scope.folder { cached_folder_items(&db, &room.scope)? } else { vec![] };
-    #[cfg(target_os = "macos")]
-    let access = if room.scope.folder { shared::cached_access(&db) } else { None };
+    let access = shared::cached_access(&db);
     Ok(Some(SharedRow { room, unread, summary, body, modified: meta.modified, created: meta.created, opened: meta.opened, icon, folder_items,
-        #[cfg(target_os = "macos")]
         access,
     }))
 }

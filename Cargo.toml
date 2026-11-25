@@ -139,8 +139,9 @@ panic = "abort"
 
 # `objc`'s msg_send! checks `feature = "cargo-clippy"`, which rustc no longer
 # knows about.
+# The shared sources also check `mobile-qa`, defined in the iOS manifest.
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy", "mobile-qa"))'] }
 
 # Style lints that fight the code's deliberate shape (GPUI closures with
 # long types, pixel tables indexed by column, enums of laid-out lines).

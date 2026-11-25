@@ -8,6 +8,8 @@ import OSLog
 private let sharePrefix = "QuietSharedNote-v1-"
 private let folderPrefix = "QuietSharedFolder-v1-"
 private let linkDraftType = "app.feinotes.document-link.draft"
+private let viewLinkDraftType = linkDraftType + ".readOnly"
+private let editLinkDraftType = linkDraftType + ".readWrite"
 private let linkPublishedType = "app.feinotes.document-link.published"
 #if FEI_CLOUD_QA
 private let qaShareType = "app.feinotes.qa-share."
@@ -41,9 +43,17 @@ private enum ShareAudience: String, Encodable {
         if share.publicPermission == .readOnly { self = .linkReadOnly }
         else if share.publicPermission == .readWrite { self = .linkReadWrite }
         else if share.publicPermission != .none { self = .linkClosed }
-        else if share[CKShare.SystemFieldKey.shareType] as? String == linkDraftType { self = .linkDraft }
+        else if share[CKShare.SystemFieldKey.shareType] as? String == linkDraftType || draftPermission(share) != nil { self = .linkDraft }
         else if share[CKShare.SystemFieldKey.shareType] as? String == linkPublishedType { self = .linkClosed }
         else { self = .invited }
+    }
+}
+
+private func draftPermission(_ share: CKShare) -> ShareAccess? {
+    switch share[CKShare.SystemFieldKey.shareType] as? String {
+    case viewLinkDraftType: .readOnly
+    case editLinkDraftType: .readWrite
+    default: nil
     }
 }
 
@@ -249,6 +259,7 @@ private struct ShareReply: Encodable {
     var title: String?
     var url: String?
     var audience: ShareAudience?
+    var draftPermission: ShareAccess?
     var members: [ShareMember] = []
     var error: String?
     var errorKind: String?
@@ -324,7 +335,8 @@ private func shareReply(_ share: CKShare, scope: ShareScope, revision: UInt64) a
     let audience = ShareAudience(share)
     let available = audience != .linkDraft && audience != .linkClosed
     return ShareReply(scope: scope, title: share[CKShare.SystemFieldKey.title] as? String,
-                      url: available ? share.url?.absoluteString : nil, audience: audience, members: members)
+                      url: available ? share.url?.absoluteString : nil, audience: audience,
+                      draftPermission: audience == .linkDraft ? draftPermission(share) : nil, members: members)
 }
 
 private func readManagedShare(_ db: CKDatabase, in zone: CKRecordZone.ID, trace: ShareTrace?, phase: String) async throws -> CKShare {
@@ -492,7 +504,6 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
     let zone = try scope.zone()
     let db = container.privateCloudDatabase
     if request.action == "create" || request.action == "createLinkDraft" {
-        guard request.action == "create" || scope.folder != true else { throw ShareError.invalid }
         do {
             _ = try await db.recordZone(for: zone)
             trace?.event("draftZone", "reused")
@@ -515,7 +526,14 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
             try checkCloudAccountRevision(revision)
             let share = CKShare(recordZoneID: zone)
             share.publicPermission = .none
-            if request.action == "createLinkDraft" { share[CKShare.SystemFieldKey.shareType] = linkDraftType }
+            if request.action == "createLinkDraft" {
+                switch request.permission {
+                case .readOnly: share[CKShare.SystemFieldKey.shareType] = viewLinkDraftType
+                case .readWrite: share[CKShare.SystemFieldKey.shareType] = editLinkDraftType
+                case nil: share[CKShare.SystemFieldKey.shareType] = linkDraftType
+                default: throw ShareError.invalid
+                }
+            }
             share[CKShare.SystemFieldKey.title] = String((request.title ?? "Shared document").prefix(100))
             do { return await shareReply(try await saveShare(share, to: db, trace: trace, phase: "draftSave"), scope: scope, revision: revision) }
             catch where request.action == "createLinkDraft" { throw publicLinkWriteError(error, id: share.recordID) }
@@ -530,7 +548,6 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
     case "members":
         return await shareReply(share, scope: scope, revision: revision)
     case "publishLink":
-        guard scope.folder != true else { throw ShareError.invalid }
         if share[CKShare.SystemFieldKey.shareType] as? String == linkPublishedType {
             // A retried publication can observe an earlier success or a subsequent closure.
             return await shareReply(share, scope: scope, revision: revision)
@@ -538,10 +555,10 @@ private func manageShare(_ request: ShareRequest, revision: UInt64, trace: Share
         guard audience == .linkDraft, share.participants.allSatisfy({ $0.role == .owner }) else { throw ShareError.invitationOnly }
         let permission = request.permission ?? .readOnly
         guard permission == .readOnly || permission == .readWrite else { throw ShareError.invalid }
+        if let saved = draftPermission(share), saved != permission { throw ShareError.refresh }
         share.publicPermission = permission == .readWrite ? .readWrite : .readOnly
         share[CKShare.SystemFieldKey.shareType] = linkPublishedType
     case "closeLink":
-        guard scope.folder != true else { throw ShareError.invalid }
         if audience == .linkClosed { return await shareReply(share, scope: scope, revision: revision) }
         guard audience == .linkReadOnly || audience == .linkReadWrite else { throw ShareError.linkOnly }
         share.publicPermission = .none
@@ -651,7 +668,8 @@ public func quietCloudShare(_ json: UnsafePointer<CChar>) -> UnsafeMutablePointe
         completion.done.signal()
     }
     let reply: ShareReply
-    if completion.done.wait(timeout: .now() + 45) == .success { reply = completion.reply }
+    let timeout: TimeInterval = (try? request.get().action) == "checkRoomAccess" ? 15 : 45
+    if completion.done.wait(timeout: .now() + timeout) == .success { reply = completion.reply }
     else {
         worker.cancel()
         trace?.event("command", "timeout")

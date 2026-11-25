@@ -12,6 +12,8 @@ const PITCH: f32 = 31.;
 /// dropping an open folder keep their drawers either way.
 fn animate_folding() -> bool { crate::settings::motion_high() }
 const INDENT: f32 = 18.;
+/// Indent guides (#329) run down a folder's rows under the middle of its icon (6 + 20 / 2), centred on a 1pt line.
+const GUIDE_X: f32 = 15.5;
 
 #[derive(Clone)]
 struct Row { entry: Entry, depth: usize }
@@ -870,6 +872,10 @@ impl Workspace {
             if !on_screen(*y) { continue; }
             let el = div().id(SharedString::from(format!("fclose-{}", r.entry.id))).h(row_h).opacity(*a).text_color(crate::sidebar::text_color())
                 .child(row_face(&r.entry, self.expanded.contains(&r.entry.id), shared, cx));
+            for k in 0..r.depth {
+                let g = div().id(SharedString::from(format!("fcguide-{}-{k}", r.entry.id))).h(px(PITCH)).bg(Theme::sidebar_guide()).opacity(*a);
+                container = container.child(clipped(g, k as f32 * INDENT + GUIDE_X, *y - 4. * (1. - a), 1., Some(*band)));
+            }
             container = container.child(clipped(el, *x, *y - 4. * (1. - a), *w, Some(*band)));
         }
         if let Some((s, a)) = &fd.zone {
@@ -914,6 +920,13 @@ impl Workspace {
             if band.is_some_and(|(lo, hi)| hi - lo < 0.5 || y >= hi || y + PITCH <= lo) { continue; }
             if !on_screen(y) { continue; }
             let a = reveal[i];
+            // Indent guides, one per level above the row; they bridge the gap to the next row while it is still inside.
+            for k in 0..r.depth {
+                let on = rows.get(i + 1).is_some_and(|n| n.depth > k) && slot.is_none_or(|(s, _)| s != i + 1);
+                let g = div().id(SharedString::from(format!("fguide-{id}-{k}"))).h(px(if on { PITCH } else { crate::sidebar::ROW_H }))
+                    .bg(Theme::sidebar_guide()).opacity(fx.show.unit() * a);
+                container = container.child(clipped(g, k as f32 * INDENT + GUIDE_X, y - 4. * (1. - a), 1., band));
+            }
             let hid = id.clone();
             let el = div().id(SharedString::from(format!("frow-{id}"))).h(row_h)
                 .opacity(fx.show.unit() * a)

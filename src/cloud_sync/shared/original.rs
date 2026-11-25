@@ -74,7 +74,6 @@ const NEW_INVITED: &str = "new-shared-invited";
 pub(crate) fn prepare_new(personal: &Path, id: String, title: String, folder: bool, public: Option<Access>) -> Result<Room> {
     Command::new(&account(personal)?, "checkAccess", None)?.send()?;
     let room = Room { scope: Scope { note: id, owner: None, folder }, title };
-    ensure!(public.is_none() || !folder, "Public links are only available for documents");
     stage_with(personal, &room, |staged| {
         let mut journal = Journal::open(staged, None)?;
         if folder {
@@ -204,7 +203,6 @@ fn prepare_with_access(personal: &Path, id: &str, title: &str, public_link: Opti
     let root_meta = &all[id];
     ensure!(!root_meta.local(), "External files cannot be shared in place");
     let room = Room { scope: Scope { note: id.into(), owner: None, folder: root_meta.folder.is_some() }, title: title.into() };
-    ensure!(public_link.is_none() || !room.scope.folder, "Public links are only available for documents");
     let root = room_root(personal, id)?;
     if root_meta.share_root.as_deref() == Some(id) {
         ensure!(descriptor(&root)?.is_some_and(|r| r.scope == room.scope), "Shared library unavailable");
@@ -295,6 +293,65 @@ pub(super) fn detach_ended_standalone_trash(personal: &Path, id: &str) -> Result
     tx.execute("UPDATE library_trash SET meta=?2 WHERE id=?1", params![id, serde_json::to_string(&trash)?])?;
     tx.commit()?;
     Ok(true)
+}
+
+/// Restore an ended standalone document's personal catalogue entry in place.
+fn detach_standalone(personal: &Path, id: &str, verify: impl FnOnce() -> Result<()>) -> Result<()> {
+    let mut db = connect(personal)?;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let raw: String = tx.query_row("SELECT meta FROM library_entries WHERE id=?1", [id], |row| row.get(0))?;
+    let mut meta: Meta = serde_json::from_str(&raw)?;
+    let body = tx.query_row("SELECT EXISTS(SELECT 1 FROM library_documents WHERE id=?1 AND trashed=0)", [id], |row| row.get::<_, bool>(0))?;
+    ensure!(meta.folder.is_none() && body && meta.share_root.as_deref().is_none_or(|root| root == id), "{}",
+        crate::settings::tr("本机还没有可恢复的个人文档。请等待同步后再试。", "The personal document is not available on this device yet. Try again after syncing."));
+    verify()?;
+    if meta.share_root.take().is_some() { store_meta(&tx, id, &meta)?; }
+    tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn needs_standalone_check(personal: &Path, room: &Room) -> bool {
+    room.scope.owner.is_none() && !room.scope.folder && room_root(personal, &room.scope.note)
+        .is_ok_and(|root| !root.exists() || root.join("shared-note-ended").is_file())
+}
+
+// A local end marker belongs to an older share. Confirm the current zone before
+// using it to recover the private entry or retiring the old cache.
+pub(crate) fn reconcile_standalone(personal: &Path, room: &Room) -> Result<bool> {
+    reconcile_standalone_with(personal, room, || owned_zone_exists(personal, room))
+}
+
+fn reconcile_standalone_with(personal: &Path, room: &Room, zone_exists: impl FnOnce() -> Result<bool>) -> Result<bool> {
+    ensure!(needs_standalone_check(personal, room), "Expected an ended or uncached standalone share");
+    ensure!(is_original(personal, room)?, "The original document has changed");
+    let revision = super::super::account_revision();
+    let key = account(personal)?;
+    let root = room_root(personal, &room.scope.note)?;
+    let ended = root.join("shared-note-ended");
+    let lock = if root.exists() {
+        let lock = crate::cloud_restore::lock_library(&root)?;
+        ensure!(ended.is_file() && descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope)
+            && account(&root)? == key, "The shared document has changed");
+        Some(lock)
+    } else { None };
+    let active = zone_exists()?;
+    let verify = || -> Result<()> {
+        super::super::check_account_revision(revision)?;
+        ensure!(account(personal)? == key && !personal.join("require-account-verification").exists()
+            && (if lock.is_some() { ended.is_file() } else { !root.exists() }), "The shared document has changed");
+        Ok(())
+    };
+    if !active {
+        detach_standalone(personal, &room.scope.note, verify)?;
+    } else {
+        verify()?;
+        if lock.is_some() {
+            let retired = personal.join("retired-shared-notes");
+            fs::create_dir_all(&retired)?;
+            fs::rename(&root, retired.join(format!("{}-{}", room.scope.note, uuid::Uuid::new_v4())))?;
+        }
+    }
+    Ok(!active)
 }
 
 // Save the latest materialized collaboration before removing anyone's access.
@@ -486,6 +543,34 @@ mod tests {
     use crate::cloud_sync::{Bytes, Changes};
 
     #[test]
+    fn ended_standalone_link_recovers_only_after_a_confirmed_zone_deletion() -> Result<()> {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        let fixture = Fixture(std::env::temp_dir().join(format!("fei-stale-original-{}", uuid::Uuid::new_v4())));
+        let personal = &fixture.0;
+        Store::initialize_local_sqlite(personal)?;
+        fs::write(personal.join(".cloud-restore-ready"), format!("{}\n", "a".repeat(64)))?;
+        let doc = crate::docxml::parse("<title>Personal preserved</title><p>Keep the original</p>")?;
+        let id = Store::open_sqlite_at(personal.clone())?.create_from(&doc)?;
+        let room = prepare_local(personal, &id, doc.title.text.clone(), true)?;
+        let cache = room_root(personal, &id)?;
+        fs::write(cache.join("shared-note-ended"), b"Ended on this device")?;
+        assert!(reconcile_standalone_with(personal, &room, || anyhow::bail!("offline")).is_err());
+        assert!(cache.join("shared-note-ended").is_file() && is_original(personal,&room)?);
+
+        assert!(!reconcile_standalone_with(personal, &room, || Ok(true))?);
+        assert!(!cache.exists() && is_original(personal,&room)?);
+        assert_eq!(fs::read_dir(personal.join("retired-shared-notes"))?.count(), 1);
+
+        assert!(reconcile_standalone_with(personal, &room, || Ok(false))?);
+        assert!(!is_original(personal, &room)?);
+        let mut store = Store::open_sqlite_at(personal.clone())?;
+        assert_eq!(store.load(&id)?.plain_text(), doc.plain_text());
+        assert!(store.list().iter().any(|entry| entry.id == id && entry.meta.share_root.is_none()));
+        Ok(())
+    }
+
+    #[test]
     fn stopped_share_on_one_owner_device_can_be_shared_again_on_another() -> Result<()> {
         struct Fixture(PathBuf);
         impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
@@ -535,6 +620,34 @@ mod tests {
         assert_eq!(Store::open_sqlite_at(stale_root)?.load(&id)?.plain_text(), doc.plain_text());
         assert_eq!(fs::read_dir(second.join("retired-shared-notes"))?.count(), 1);
         assert!(other_cache.join("seed-published").is_file() && is_original(&second, &other_room)?);
+        Ok(())
+    }
+
+    #[test]
+    fn public_folder_prepares_the_entire_tree_before_publishing() -> Result<()> {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        let fixture = Fixture(std::env::temp_dir().join(format!("fei-public-folder-{}", uuid::Uuid::new_v4())));
+        let personal = fixture.0.as_path();
+        Store::initialize_local_sqlite(personal)?;
+        fs::write(personal.join(".cloud-restore-ready"), format!("{}\n", "a".repeat(64)))?;
+        let mut store = Store::open_sqlite_at(personal.to_path_buf())?;
+        let folder = store.create_folder("Public folder", None)?;
+        let nested = store.create_folder("Nested", Some(&folder))?;
+        let doc = crate::docxml::parse("<title>Nested note</title><p>Shared content</p>")?;
+        let note = store.create_from_in(&doc, Some(&nested))?;
+        let private = store.create_from(&Document::default())?;
+
+        let room = prepare_with_access(personal, &folder, "Public folder", Some(Access::ReadWrite), None)?;
+        let cache = room_root(personal, &folder)?;
+        assert!(room.scope.folder && awaiting_publication(personal, &room));
+        assert_eq!(pending_public_access(personal, &room), Some(Access::ReadWrite));
+        let mut shared = Store::open_sqlite_at(cache)?;
+        let entries = shared.list();
+        assert_eq!(entries.len(), 3);
+        assert!(entries.iter().any(|entry| entry.id == note && entry.meta.parent.as_deref() == Some(nested.as_str())));
+        assert_eq!(shared.load(&note)?.plain_text(), doc.plain_text());
+        assert!(owner_room(&store.list(), &private).is_none());
         Ok(())
     }
 

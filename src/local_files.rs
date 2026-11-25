@@ -7,8 +7,7 @@
 use crate::app::{RowMenu, Workspace};
 use crate::settings::tr;
 use crate::store::Entry;
-use crate::theme::Theme;
-use crate::ui::{ToastKind, icon, popover};
+use crate::ui::ToastKind;
 use fdl_core::vfs::PathExt as _;
 use gpui::*;
 use std::path::PathBuf;
@@ -76,9 +75,15 @@ impl Workspace {
         cx.notify();
     }
 
+    /// A relative link (`[周报](../工作/周报.md)`, `[报告](附件/报告.pdf)`,
+    /// `[[page]]`): a document of the library, or a Markdown file, opens
+    /// here; any other file opens in its app, and a folder, or a file that
+    /// would run a program, shows in the Finder.
     pub(crate) fn open_relative(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_shared() { return; }
         let Some(source) = self.current.as_deref().and_then(|id| self.store.file_path(id)) else { return };
+        // A move may have just rewritten the link on disk.
+        let url = &self.follow_moved_links(cx).and_then(|m| m.get(url).cloned()).unwrap_or_else(|| url.to_string());
         let wiki = url.strip_prefix("quiet-wiki:");
         let (path, anchor) = match wiki {
             // `[[page]]`, looked up across the vault the way Obsidian does.
@@ -94,17 +99,16 @@ impl Workspace {
                 (if name.is_empty() { source.clone() } else { dir.join(&name) }, crate::markdown::percent_decode(anchor))
             }
         };
-        let Some(path) = path.fs_canonicalize().ok().filter(|p| p.fs_is_file()) else {
+        let Some(path) = path.fs_canonicalize().ok().filter(|p| p.fs_exists()) else {
             self.show_toast_kind(ToastKind::Error, tr("文件不存在", "File not found"), cx);
             return;
         };
-        if !is_markdown_path(&path) {
-            if matches!(path.extension().and_then(|s| s.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("pdf" | "html" | "htm" | "ppt" | "pptx" | "docx" | "xlsx" | "txt" | "png" | "jpg" | "jpeg")) {
-                cx.open_with_system(&path);
-            } else { cx.reveal_path(&path); }
+        let existing = self.entries.iter().find(|e| self.store.file_path(&e.id)
+            .is_some_and(|p| p.file_name() == path.file_name() && p.fs_canonicalize().is_ok_and(|p| p == path))).map(|e| e.id.clone());
+        if existing.is_none() && !(is_markdown_path(&path) && path.fs_is_file()) {
+            if path.fs_is_file() && !runs_program(&path) { cx.open_with_system(&path); } else { cx.reveal_path(&path); }
             return;
         }
-        let existing = self.entries.iter().find(|e| self.store.file_path(&e.id).is_some_and(|p| p == path)).map(|e| e.id.clone());
         let id = existing.or_else(|| self.store.open_local(&path).ok());
         let Some(id) = id else { return };
         self.entries = self.store.list();
@@ -150,10 +154,10 @@ impl Workspace {
     /// The "…" menu of a 本机文件 row.
     pub(crate) fn local_row_menu(&self, m: RowMenu, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let (import, rename, reveal, forget) = (m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone());
-        let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::ui::menu_row(id, SharedString::from(id)).child(icon(glyph, 16., Theme::icon())).child(label);
+        let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::design::MenuItem::new(id).icon(glyph).label(label);
         let pos = if m.pos.x < px(0.) { point(-m.pos.x, m.pos.y + px(22.)) } else { m.pos };
         let shown = crate::local_folders::show_in_files();
-        vec![deferred(anchored().position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("local-row-menu").occlude().min_w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
+        vec![deferred(anchored().position(pos).snap_to_window_with_margin(px(8.)).child(crate::design::Popover::new("local-row-menu").menu().min_w(px(200.))
             .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }))
             .child(row("lr-import", "folder-input", tr("导入到文档库", "Import into library")).on_click(cx.listener(move |w, _, window, cx| w.import_local(&import, window, cx))))
             .child(row("lr-rename", "square-pen", tr("重命名", "Rename")).on_click(cx.listener(move |w, _, window, cx| w.start_rename(&rename, window, cx))))
@@ -165,6 +169,16 @@ impl Workspace {
             .child(row("lr-forget", "x", tr("从列表中移除", "Remove from list")).on_click(cx.listener(move |w, _, window, cx| w.forget_local(&forget, window, cx))))))
             .with_priority(2).into_any_element()]
     }
+}
+
+/// Opening it would run something (an app, a script, an installer): a link
+/// in a note someone sent must not, so it only shows in the Finder.
+fn runs_program(p: &std::path::Path) -> bool {
+    const RUN: &[&str] = &["app", "command", "tool", "terminal", "sh", "bash", "zsh", "csh", "fish", "py", "pyw", "pl", "rb", "php", "js", "jse",
+        "scpt", "applescript", "workflow", "action", "pkg", "mpkg", "dmg", "jar", "exe", "com", "bat", "cmd", "msi", "msix", "ps1", "vbs", "vbe",
+        "wsf", "wsh", "scr", "pif", "hta", "cpl", "reg", "lnk", "desktop", "appimage", "run", "url", "webloc", "inetloc", "fileloc"];
+    // No extension: it may be a program.
+    p.extension().and_then(|e| e.to_str()).is_none_or(|e| RUN.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 /// Files the system asked us to open (Finder's Open With, a double-click,
@@ -229,5 +243,14 @@ impl Incoming {
             cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn programs_only_show() {
+        for p in ["a/报告.pdf", "幻灯片.PPTX", "页.html", "表.xlsx"] { assert!(!super::runs_program(std::path::Path::new(p)), "{p}"); }
+        for p in ["安装.pkg", "x.command", "run.SH", "a.app", "setup.exe", "无扩展名"] { assert!(super::runs_program(std::path::Path::new(p)), "{p}"); }
     }
 }

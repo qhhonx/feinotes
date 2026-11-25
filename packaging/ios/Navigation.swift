@@ -20,6 +20,12 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
     let local_history: LocalHistory?
     struct SharedOpening: Decodable, Equatable, Sendable { let message: String; let loading: Bool; let retry: String?; let back: String }
     let sharing_title: String?
+    struct SharingToast: Decodable, Equatable, Sendable {
+        let id: UUID
+        let kind: String
+        let message: String
+    }
+    let sharing_toast: SharingToast?
     let folder_access: Bool
     let document_needs_attention: Bool
     let conflict_review: Bool
@@ -61,6 +67,10 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
         let personal: Bool
         let inherited_share: Bool
         let share_end: String?
+        let menu_root: String?
+        let menu_writable: Bool
+        let menu_shareable: Bool
+        let menu_copyable: Bool
     }
     struct Confirmation: Decodable, Equatable, Sendable {
         struct Version: Decodable, Equatable, Sendable { let sequence: Int64; let time: String; let preview: String }
@@ -75,6 +85,7 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
         let choice_on: Bool
         let save_failed: Bool
         let enable_cloud: Bool
+        let above_document_sheet: Bool
     }
     struct Reorder: Decodable, Equatable, Sendable {
         struct Item: Decodable, Equatable, Sendable { let id:String; let title:String; let folder:Bool; let pinned:Bool }
@@ -569,6 +580,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     var readyForInvitation: Bool { state?.cloud_start_pending == false && state?.busy == false && !applying }
     private enum DocumentSheet: Equatable {
         case sharing(String)
+        case collaboration(String)
         case invitation(String)
         case history(UInt64)
     }
@@ -577,6 +589,9 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     private var documentSheet: UINavigationController?
     private var documentSheetKey: DocumentSheet?
     private var documentSheetChanging = false
+    private static let sharingFormSize = CGSize(width: 520,height: 420)
+    private let sharingToast = FeiToastView(id: "fei.share.toast")
+    private var announcedSharingToast: UUID?
     private var pendingDrainScheduled = false
     private var pending: FeiNavigationState?
     private var applying = false
@@ -824,13 +839,34 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             if settings.sections.contains(where: { $0.rows.contains(where: { $0.kind == "invitation-link" }) }) {
                 return .invitation(state.editor_scope)
             }
+            if settings.sections.contains(where: { $0.rows.contains(where: { $0.id == "share-create-form" || $0.id == "share-result" || $0.id == "share-access-panel" }) }) {
+                return .collaboration(state.editor_scope)
+            }
             return .sharing(state.editor_scope)
         }
         if let history = state.local_history, !history.previewing { return .history(history.token) }
         return nil
     }
 
+    private func syncSharingToast() {
+        guard let state, let toast = state.sharing_toast else {
+            sharingToast.update(nil,kind: nil,accent: .tintColor)
+            sharingToast.removeFromSuperview()
+            announcedSharingToast = nil
+            return
+        }
+        let presenter = documentSheet?.topViewController ?? host?.navigationController?.topViewController
+        guard let container = presenter?.viewIfLoaded, container.window != nil else { return }
+        sharingToast.attach(to: container,bottomInset: documentSheet == nil ? nil : 68)
+        sharingToast.update(toast.message,kind: toast.kind,accent: (state.theme ?? .system).sharingAccentColor)
+        if announcedSharingToast != toast.id {
+            announcedSharingToast = toast.id
+            UIAccessibility.post(notification: .announcement,argument: toast.message)
+        }
+    }
+
     private func syncDocumentSheet() {
+        defer { syncSharingToast() }
         guard let state, !documentSheetChanging else { return }
         let desired = desiredDocumentSheet(state)
         if let sheet = documentSheet, documentSheetKey != desired {
@@ -847,6 +883,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         guard let desired, let presenter = host?.navigationController?.topViewController else { return }
         let sheet: UINavigationController
         let needsPresentation = documentSheet == nil
+        let folderAccessDetent = UISheetPresentationController.Detent.Identifier("fei.folder-sharing")
+        let sharingRows = state.settings?.sections.flatMap(\.rows) ?? []
+        let folderAccess = sharingRows.contains {
+            ($0.id == "share-access-panel" || $0.id == "share-create-form") && $0.value == "folder"
+        } && sharingRows.contains { $0.id == "share-end" || $0.id == "share-back" }
         if let existing = documentSheet { sheet = existing }
         else {
             guard presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil else { return }
@@ -859,20 +900,43 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             let content: UIViewController
             switch desired {
             case .sharing: content = FeiSettingsController(coordinator: self)
+            case .collaboration: content = FeiSharingPanelController(coordinator: self)
             case .invitation: content = FeiShareAcceptController(coordinator: self)
             case .history: content = FeiLocalHistoryController(coordinator: self)
             }
             sheet = UINavigationController(rootViewController: content)
+            if content is FeiSharingPanelController || content is FeiShareAcceptController {
+                sheet.view.backgroundColor = feiSharingSurface
+                let bar = UINavigationBarAppearance()
+                bar.configureWithOpaqueBackground()
+                bar.backgroundColor = feiSharingSurface
+                sheet.navigationBar.standardAppearance = bar
+                sheet.navigationBar.scrollEdgeAppearance = bar
+                sheet.navigationBar.compactAppearance = bar
+            }
             if case .history = desired { sheet.setToolbarHidden(false,animated: false) }
             let isInvitation: Bool
             if case .invitation = desired { isInvitation = true } else { isInvitation = false }
-            if (content is FeiSettingsController || isInvitation) && presenter.traitCollection.horizontalSizeClass == .regular {
+            if (content is FeiSettingsController || content is FeiSharingPanelController || isInvitation) && presenter.traitCollection.horizontalSizeClass == .regular {
                 sheet.modalPresentationStyle = .formSheet
-                sheet.preferredContentSize = CGSize(width: 520,height: isInvitation ? 320 : 600)
+                sheet.preferredContentSize = content is FeiSharingPanelController
+                    ? Self.sharingFormSize : CGSize(width: 520,height: isInvitation ? 320 : 600)
             } else {
                 sheet.modalPresentationStyle = .pageSheet
-                sheet.sheetPresentationController?.detents = isInvitation ? [.medium(),.large()] : [.large()]
-                sheet.sheetPresentationController?.prefersGrabberVisible = true
+                let startsMedium = isInvitation || (content is FeiSharingPanelController && presenter.traitCollection.userInterfaceIdiom == .phone)
+                if let presentation = sheet.sheetPresentationController {
+                    if content is FeiSharingPanelController && startsMedium {
+                        presentation.detents = [.medium(),.custom(identifier: folderAccessDetent) { context in
+                            min(context.maximumDetentValue * 0.5 + 112,context.maximumDetentValue * 0.72)
+                        },.large()]
+                        presentation.selectedDetentIdentifier = folderAccess ? folderAccessDetent : .medium
+                        presentation.prefersScrollingExpandsWhenScrolledToEdge = false
+                    } else {
+                        presentation.detents = startsMedium ? [.medium(),.large()] : [.large()]
+                        presentation.selectedDetentIdentifier = startsMedium ? .medium : .large
+                    }
+                    presentation.prefersGrabberVisible = true
+                }
             }
             sheet.presentationController?.delegate = self
             documentSheet = sheet
@@ -896,6 +960,28 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 }
                 (content as? FeiSettingsController)?.update(settings,busy: state.busy,theme: theme)
             }
+        case .collaboration:
+            content.title = state.sharing_title
+            done.accessibilityIdentifier = "fei.share.done"
+            done.style = .plain
+            if let settings = state.settings {
+                let rows = settings.sections.flatMap(\.rows)
+                let cancelling = rows.contains { $0.id == "share-create-form" || $0.kind == "destructive-confirm" }
+                if cancelling { done.title = state.labels["cancel"] }
+                if sheet.modalPresentationStyle == .formSheet {
+                    let viewing = rows.contains { $0.id == "share-source" }
+                    var size = Self.sharingFormSize
+                    if viewing { size.height = 240 }
+                    if size != sheet.preferredContentSize { sheet.preferredContentSize = size }
+                } else if presenter.traitCollection.userInterfaceIdiom == .phone,let presentation = sheet.sheetPresentationController {
+                    if folderAccess && presentation.selectedDetentIdentifier == .medium {
+                        presentation.animateChanges { presentation.selectedDetentIdentifier = folderAccessDetent }
+                    } else if !folderAccess && presentation.selectedDetentIdentifier == folderAccessDetent {
+                        presentation.animateChanges { presentation.selectedDetentIdentifier = .medium }
+                    }
+                }
+                (content as? FeiSharingPanelController)?.update(settings,busy: state.busy,theme: theme)
+            }
         case .invitation:
             content.title = state.sharing_title
             done.style = .plain
@@ -907,13 +993,23 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             done.accessibilityIdentifier = "fei.history.close"
             if let history = state.local_history { (content as? FeiLocalHistoryController)?.update(history,labels: state.labels,busy: state.busy) }
         }
-        content.navigationItem.rightBarButtonItem = done
+        content.navigationItem.rightBarButtonItem = content is FeiSharingPanelController &&
+            content.navigationItem.leftBarButtonItem?.accessibilityIdentifier == "fei.share.invitation-back" ? nil : done
         if needsPresentation {
             presenter.view.endEditing(true)
             documentSheetChanging = true
             presenter.present(sheet,animated: true) { [weak self] in
                 self?.documentSheetChanging = false
                 self?.syncDocumentSheet()
+                #if FEI_MOBILE_QA
+                if case .collaboration(let scope) = desired,
+                   ProcessInfo.processInfo.environment["FEI_QA_REVOKE_OPEN_SHARE"] == "1" {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self,weak sheet] in
+                        guard let self,let sheet,self.documentSheet === sheet,self.documentSheetKey == desired else { return }
+                        self.send("qa-revoke-open-share",scope: scope)
+                    }
+                }
+                #endif
             }
         }
     }
@@ -921,7 +1017,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     @objc private func closeDocumentSheet() {
         guard let state, !state.busy, let key = documentSheetKey, desiredDocumentSheet(state) == key else { return }
         switch key {
-        case .sharing(let scope), .invitation(let scope): send("close-document-sharing",scope: scope)
+        case .sharing(let scope), .collaboration(let scope), .invitation(let scope): send("close-document-sharing",scope: scope)
         case .history: sendHistory("close")
         }
     }
@@ -931,6 +1027,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         closeDocumentSheet()
         documentSheet = nil
         documentSheetKey = nil
+        syncSharingToast()
     }
 
     private func showInformation(_ information: FeiNavigationState.Information?) {
@@ -1065,13 +1162,14 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         }
         action(confirmation.action,"confirm-action",confirmation.danger ? .destructive : .default,"fei.confirm.ok")
         fei_ipad_flush()
-        controller.view.endEditing(true)
+        let presenter = confirmation.above_document_sheet ? documentSheet?.topViewController ?? controller : controller
+        presenter.view.endEditing(true)
         let present = { [weak self] in
             guard let self,self.confirmationGeneration == generation,self.state?.confirmation == confirmation else { return }
             self.confirmationAlert = alert
-            controller.present(alert,animated: true)
+            presenter.present(alert,animated: true)
         }
-        if let previous = controller.presentedViewController { previous.dismiss(animated: true,completion: present) } else { present() }
+        if let previous = presenter.presentedViewController { previous.dismiss(animated: true,completion: present) } else { present() }
     }
 
     func refreshPadButtons() { (host?.navigationController?.topViewController as? FeiRouteController)?.barIdentity = nil; buttonsKind = nil; updateButtons() }
@@ -1659,6 +1757,14 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         let standaloneShare = state.shared_session && !state.folder_access
         let item = state.items.first(where: { $0.id == id })
         var organization: [UIMenuElement] = []
+        if standaloneShare || state.write_allowed {
+            organization.append(menuAction(standaloneShare ? "copy-shared-to-personal" : "duplicate","doc.on.doc") { [weak self] in
+                self?.send(standaloneShare ? "shared-copy" : "duplicate",id: id,scope: standaloneShare ? state.editor_scope : nil)
+            })
+        }
+        if !standaloneShare && state.write_allowed {
+            organization.append(menuAction("move","folder") { [weak self] in self?.showMove(id) })
+        }
         if let item {
             let scope: String? = standaloneShare ? state.editor_scope : nil
             organization += [
@@ -1666,13 +1772,9 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 menuAction(item.starred ? "unstar" : "star","star") { [weak self] in self?.send(standaloneShare ? "shared-star" : "star",id: id,scope: scope) }
             ]
         }
-        organization.append(menuAction("rename","pencil",enabled: state.write_allowed) { [weak self] in self?.rename(id: id,title: self?.state?.title ?? "") })
-        if !standaloneShare {
-            organization.append(menuAction("move","folder",enabled: state.write_allowed) { [weak self] in self?.showMove(id) })
+        if state.write_allowed {
+            organization.append(menuAction("rename","pencil") { [weak self] in self?.rename(id: id,title: self?.state?.title ?? "") })
         }
-        organization.append(menuAction(standaloneShare ? "copy-shared-to-personal" : "duplicate","doc.on.doc",enabled: standaloneShare || state.write_allowed) { [weak self] in
-            self?.send(standaloneShare ? "shared-copy" : "duplicate",id: id,scope: standaloneShare ? state.editor_scope : nil)
-        })
         editing.append(menuAction(state.reading ? "editing" : "reading","book",enabled: state.write_allowed) { [weak self] in self?.send(state.reading ? "editing" : "reading",id: id) })
         let info = UIMenu(title: label("doc-info"),image: UIImage(systemName: "info.circle"),children: [menuAction("doc-info","info.circle") { [weak self] in self?.send("doc-info",id: id) },menuAction("history","clock.arrow.circlepath") { [weak self] in self?.send("history-open",id: id,scope: state.editor_scope) },menuAction("attachments","paperclip") { [weak self] in self?.send("attachments-menu") }])
         var export: [UIMenuElement] = [menuAction("export","square.and.arrow.up") { [weak self] in self?.showExport(id) },menuAction("pdf","doc.richtext") { [weak self] in self?.send("pdf",id: id) },menuAction("print","printer") { [weak self] in self?.send("print",id: id) }]
@@ -1693,8 +1795,8 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             if let end = item?.share_end {
                 groups.append(menuSection([menuAction(end,"trash",destructive: true) { [weak self] in self?.send("shared-end",id: id,scope: state.editor_scope) }]))
             }
-        } else {
-            groups.append(menuSection([menuAction("delete","trash",destructive: true,enabled: state.write_allowed) { [weak self] in self?.send("delete",id: id) }]))
+        } else if state.write_allowed {
+            groups.append(menuSection([menuAction("delete","trash",destructive: true) { [weak self] in self?.send("delete",id: id) }]))
         }
         return UIMenu(children: groups)
     }
@@ -1788,63 +1890,83 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         let fromBrowser = browsingWorkspace
         guard let listing = fromBrowser ? state?.browser?.listing : state?.listing,
               listing.scope == scope,let item = rowItem(id,in: listing) else { return UIMenu() }
-        let inherited = isInsideSharedFolder(browser: fromBrowser) && !item.shared
-        let personalBrowser = fromBrowser && state?.shared_session == true && state?.browser?.personal == true && item.personal
-        func action(_ key: String,_ symbol: String,_ command: String? = nil,danger: Bool = false,perform: (() -> Void)? = nil) -> UIAction {
+        func action(_ key: String,_ symbol: String,_ command: String? = nil,danger: Bool = false,
+                    standard: Bool = false,perform: (() -> Void)? = nil) -> UIAction {
             UIAction(title: label(key),image: UIImage(systemName: symbol),attributes: danger ? .destructive : []) { [weak self] _ in
                 guard let self,self.state?.busy == false,(fromBrowser ? self.state?.browser?.listing.scope : self.state?.listing?.scope) == scope else { return }
                 if let perform { perform() }
-                else if personalBrowser && ["delete","duplicate","pdf","print"].contains(command ?? key) {
-                    self.send("personal-row-action",value: (command ?? key) + ":",id: id,scope: scope)
-                } else { self.send(command ?? key,id: id,scope: scope) }
+                else if standard { self.send(command ?? key,id: id,scope: scope) }
+                else { self.send("item-menu",value: command ?? key,id: id,scope: scope) }
             }
         }
         func group(_ items: [UIMenuElement]) -> UIMenu { UIMenu(options: .displayInline,children: items) }
-        if item.offline_recovery { return UIMenu(children: [group([action("keep-recovery","doc.on.doc")]),group([action("discard-recovery","trash",danger: true)])]) }
+        if item.offline_recovery { return UIMenu(children: [group([action("keep-recovery","doc.on.doc",standard: true)]),group([action("discard-recovery","trash",danger: true,standard: true)])]) }
         if item.trashed {
-            let restore = action(item.folder ? "restore-folder" : "restore","arrow.uturn.backward","restore")
-            let purge = action(item.folder ? "purge-folder" : "purge","trash","purge",danger: true)
+            let restore = action(item.folder ? "restore-folder" : "restore","arrow.uturn.backward","restore",standard: true)
+            let purge = action(item.folder ? "purge-folder" : "purge","trash","purge",danger: true,standard: true)
             return UIMenu(children: [group([restore]),group([purge])])
         }
         if item.id.hasPrefix("collection-") {
-            return UIMenu(children: [action("rename","pencil","collection-rename"),action("organize-shared-entry","folder",perform: { [weak self] in self?.showMove(id) }),action("remove-personal-folder","folder.badge.minus","collection-remove")])
+            return UIMenu(children: [
+                action("rename","pencil","collection-rename",standard: true),
+                action("organize-shared-entry","folder",perform: { [weak self] in self?.showMove(id) }),
+                action("remove-personal-folder","folder.badge.minus","collection-remove",standard: true)])
         }
-        var flags: [UIMenuElement] = item.folder ? [] : [action(item.pinned ? "unpin" : "pin","pin",item.shared ? "shared-pin" : "pin"),action(item.starred ? "unstar" : "star","star",item.shared ? "shared-star" : "star")]
-        if state?.labels["copy-object-link"] != nil { flags.insert(action("copy-object-link","link"),at: 0) }
-        if item.inherited_share && !inherited {
-            return UIMenu(children: [group(flags),group([action("shared-folder-access","person.2","shared-child-access")])])
-        }
-        if item.shared {
-            var organize: [UIMenuElement] = [action("organize-shared-entry","folder",perform: { [weak self] in self?.showMove(id) })]
-            if !item.folder { organize.append(action("copy-shared-to-personal","doc.on.doc","shared-copy")) }
-            let access = action(item.folder ? "shared-folder-access" : item.owned ? "members-and-access" : "view-share-access","person.2","shared-members")
-            let groups = (flags.isEmpty ? [] : [group(flags)]) + [group(organize),group([access])]
-            return UIMenu(children: groups + [group([action(item.share_end ?? "leave-shared","trash","shared-end",danger: true)])])
-        }
-        let row = listing.rows.first { $0.id == id }
-        let shareActions: [UIMenuElement]
-        if inherited {
-            shareActions = [action("shared-folder-access","person.2",perform: { [weak self] in
-                guard let self,let state = self.state,self.isInsideSharedFolder(browser: fromBrowser) else { return }
-                self.send("shared-folder-access",id: state.current,scope: state.editor_scope)
-            })]
-        } else if let row {
-            if item.folder {
-                shareActions = [action(row.shared_folder ? "shared-folder-access" : "share-object",row.shared_folder ? "person.2" : "person.badge.plus","share-folder")]
-            } else {
-                shareActions = [action(row.shared_badge ? "members-and-access" : "share-object",row.shared_badge ? "person.2" : "person.badge.plus",row.shared_badge ? "shared-members" : "share-list-document")]
+        let root = item.menu_root
+        let inherited = root.map { $0 != id } ?? item.inherited_share
+        let shared = root != nil || inherited
+        let writable = shared ? item.menu_writable : true
+        let move = action("move","folder",perform: { [weak self] in
+            self?.showMove([id],serial: nil,personalBrowser: !shared,itemScope: scope,sharedParent: root)
+        })
+        let rename = action("rename","pencil",perform: { [weak self] in
+            self?.rename(id: id,title: item.title,itemScope: scope)
+        })
+        let duplicate = action("duplicate","doc.on.doc")
+        let accessKey = item.folder || inherited ? "shared-folder-access" : item.owned ? "members-and-access" : "view-share-access"
+        var sharing: [UIMenuElement] = []
+        if shared { sharing.append(action(accessKey,"person.2","access")) }
+        else if item.menu_shareable { sharing.append(action("share-object","person.badge.plus","share")) }
+        if state?.labels["copy-object-link"] != nil { sharing.append(action("copy-object-link","link","link")) }
+        var groups: [UIMenuElement] = []
+        if item.folder {
+            if writable {
+                var folderActions: [UIMenuElement] = [
+                    action("new","square.and.pencil","new-document"),
+                    action("new-folder","folder.badge.plus",perform: { [weak self] in self?.presentNewFolder(action: "item-menu",parentID: id,scope: scope) }),
+                    rename,
+                ]
+                if !shared || inherited { folderActions.append(move) }
+                if !shared && item.menu_copyable { folderActions.append(duplicate) }
+                groups.append(group(folderActions))
             }
-        } else { shareActions = [] }
-        var organize: [UIMenuElement] = [action("rename","pencil",perform: { [weak self] in self?.rename(id: id,title: item.title,browserScope: fromBrowser ? scope : nil) }),action("move","folder",perform: { [weak self] in self?.showMove([id],serial: nil,personalBrowser: personalBrowser) }),action("duplicate","doc.on.doc")]
-        if item.folder && !inherited && listing.kind == "notes" {
-            organize.insert(action("new-folder","folder.badge.plus",perform: { [weak self] in if browsingWorkspace { self?.createSidebarFolder(parentID: id) } else { self?.newFolder(parentID: id) } }),at: 0)
+        } else {
+            var organization: [UIMenuElement] = []
+            if shared && !inherited { organization.append(action("copy-shared-to-personal","doc.on.doc","copy")) }
+            else if writable {
+                organization.append(duplicate)
+                organization.append(move)
+            }
+            organization += [action(item.pinned ? "unpin" : "pin","pin","pin"),action(item.starred ? "unstar" : "star","star","star")]
+            groups.append(group(organization))
+            let export = UIMenu(title: label("export-copy"),image: UIImage(systemName: "square.and.arrow.up"),children: [
+                action("export","doc.text",perform: { [weak self] in self?.showExport(id,anchor: .row(id,browser: fromBrowser),itemScope: scope) }),
+                action("pdf","doc.richtext"),action("print","printer"),
+            ])
+            groups.append(group(writable ? [export,rename] : [export]))
         }
-        var groups: [UIMenuElement] = flags.isEmpty ? [] : [group(flags)]
-        let canModify = !inherited || state?.can_create == true
-        if canModify { groups.append(group(organize)) }
-        if !shareActions.isEmpty { groups.append(group(shareActions)) }
-        if !item.folder { groups.append(UIMenu(title: label("export-copy"),image: UIImage(systemName: "square.and.arrow.up"),children: [action("export","doc.text",perform: { [weak self] in self?.showExport(id,anchor: .row(id,browser: browsingWorkspace),personalScope: personalBrowser ? scope : nil) }),action("pdf","doc.richtext"),action("print","printer")])) }
-        if canModify { groups.append(group([action(item.folder ? "delete-folder" : "delete","trash","delete",danger: true)])) }
+        if !sharing.isEmpty { groups.append(group(sharing)) }
+        var removal: [UIMenuElement] = []
+        if let end = item.share_end, shared && !inherited {
+            if item.folder && writable && end == "stop-sharing" {
+                removal.append(action("delete-folder","trash","delete",danger: true))
+            }
+            removal.append(action(end,"trash","end",danger: true))
+        } else if writable && (!shared || inherited) {
+            let label = item.folder ? (shared ? "delete-child-folder" : "delete-folder") : "delete"
+            removal.append(action(label,"trash","delete",danger: true))
+        }
+        if !removal.isEmpty { groups.append(group(removal)) }
         return UIMenu(children: groups)
     }
 
@@ -1859,12 +1981,22 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     func rowAction(_ key: String,id: String,scope: String,browser: Bool) {
         guard state?.busy == false,let listing = browser ? state?.browser?.listing : state?.listing,
               listing.scope == scope,let item = rowItem(id,in: listing) else { return }
-        if ["delete","move"].contains(key) && !canModifyFolderContents(browser: browser) { return }
-        if key=="move" { showMove(id); return }
-        let command = item.shared ? ["pin":"shared-pin","star":"shared-star","delete":"shared-end"][key] ?? key : key
-        send(command,id: id,scope: scope)
+        if item.offline_recovery || item.trashed { send(key,id: id,scope: scope); return }
+        if item.id.hasPrefix("collection-") { return }
+        let root = item.menu_root
+        let inherited = root.map { $0 != id } ?? item.inherited_share
+        if key == "delete", root == id {
+            send("item-menu",value: "end",id: id,scope: scope)
+            return
+        }
+        if ["delete","move"].contains(key) && inherited && !item.menu_writable { return }
+        if key == "move" {
+            guard root != id else { return }
+            showMove([id],serial: nil,personalBrowser: root == nil,itemScope: scope,sharedParent: root)
+            return
+        }
+        send("item-menu",value: key,id: id,scope: scope)
     }
-
 
     func browserActionsItem() -> UIBarButtonItem {
         let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"),primaryAction: nil,menu: deferredActions(note: false,browser: true))
@@ -1883,7 +2015,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
 
     private func presentNewFolder(action: String, parentID: String?, scope: String) {
         let form = FeiRenameController(title: label("new-folder"),value: "",save: label("save"),cancel: label("cancel")) { [weak self] name in
-            self?.send(action,value: name,id: parentID,scope: scope)
+            self?.send(action,value: action == "item-menu" ? "new-folder:" + name : name,id: parentID,scope: scope)
         }
         let navigation = UINavigationController(rootViewController: form)
         navigation.sheetPresentationController?.detents = [.medium(),.large()]
@@ -1892,13 +2024,15 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
 
     private func showMove(_ id: String) { showMove([id],serial: nil) }
 
-    func showMove(_ ids: [String], serial: UInt64?, personalBrowser: Bool = false) {
+    func showMove(_ ids: [String], serial: UInt64?, personalBrowser: Bool = false,
+                  itemScope: String? = nil, sharedParent: String? = nil) {
         guard let state else { return }
         if serial != nil && (state.shared_session || !["notes","folder"].contains(state.kind) && !hasPadWorkspace) { return }
         let selected = Set(ids)
-        let shortcuts = ids.allSatisfy { id in state.items.contains { $0.id == id && ($0.shared || $0.id.hasPrefix("collection-")) } }
+        let shortcuts = itemScope == nil && ids.allSatisfy { id in state.items.contains { $0.id == id && ($0.shared || $0.id.hasPrefix("collection-")) } }
         let rootRoute = hasPadWorkspace ? state.browser?.path.first : state.routes.first { $0.key.hasPrefix("folder:") }
-        let sharedRoot = !shortcuts && isInsideSharedFolder(browser: hasPadWorkspace) ? rootRoute?.key.replacingOccurrences(of: "folder:",with: "") : nil
+        let sharedRoot = itemScope != nil ? sharedParent
+            : !shortcuts && isInsideSharedFolder(browser: hasPadWorkspace) ? rootRoute?.key.replacingOccurrences(of: "folder:",with: "") : nil
         let folders = state.items.filter { item in
             guard item.folder,!item.trashed,item.id != sharedRoot,item.id.hasPrefix("collection-") == shortcuts, !personalBrowser || item.personal else { return false }
             var parent: String? = item.id
@@ -1915,16 +2049,18 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         let picker = FeiFolderPicker(title: label(shortcuts ? "organize-shared-entry" : "move"), cancel: label("cancel"), root: root, folders: folders,cancelled: { [weak self] in if let serial { self?.send("batch-move-cancel",serial: serial) } }) { [weak self] folder in
             if let serial { self?.send("batch-move",value: folder ?? "",serial: serial) }
             else if let id = ids.first {
-                if personalBrowser { self?.send("personal-row-action",value: "move:" + (folder ?? ""),id: id,scope: scope) }
+                if let itemScope { self?.send("item-menu",value: "move:" + (folder ?? sharedRoot ?? ""),id: id,scope: itemScope) }
+                else if personalBrowser { self?.send("personal-row-action",value: "move:" + (folder ?? ""),id: id,scope: scope) }
                 else { self?.send(shortcuts ? "organize-shared-entry" : "move",value: folder ?? sharedRoot ?? "",id: id,scope: scope) }
             }
         }
         present(UINavigationController(rootViewController: picker))
     }
 
-    private func showExport(_ id: String,anchor: SheetAnchor? = nil,personalScope: String? = nil) {
+    private func showExport(_ id: String,anchor: SheetAnchor? = nil,personalScope: String? = nil,itemScope: String? = nil) {
         let scope = state?.editor_scope
         func export(_ mode: String) {
+            if let itemScope { self.send("item-menu",value: "export:" + mode,id: id,scope: itemScope); return }
             guard self.state?.editor_scope == scope else { return }
             if let personalScope { self.send("personal-row-action",value: "export:" + mode,id: id,scope: personalScope) }
             else { self.send("export",value: mode,id: id) }
@@ -1935,10 +2071,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         ],anchor: anchor)
     }
 
-    private func rename(id: String?, title: String,browserScope: String? = nil) {
+    private func rename(id: String?, title: String,browserScope: String? = nil,itemScope: String? = nil) {
         let form = FeiRenameController(title: label("rename"),
             value: title, save: label("save"), cancel: label("cancel")) { [weak self] value in
-            self?.send("rename",value: value,id: id,scope: browserScope)
+            if let itemScope { self?.send("item-menu",value: "rename:" + value,id: id,scope: itemScope) }
+            else { self?.send("rename",value: value,id: id,scope: browserScope) }
         }
         let navigation = UINavigationController(rootViewController: form)
         navigation.sheetPresentationController?.detents = [.medium(), .large()]

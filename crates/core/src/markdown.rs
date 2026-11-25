@@ -981,6 +981,39 @@ mod tests {
         assert!(matches!(&doc.blocks[0].kind, BlockKind::Code { lang, show_code: true, .. } if lang == "Mermaid"));
     }
 
+    /// Underline is written `<u>…</u>` and reads back as underline, nested in
+    /// the other marks too; a `<u>` that was text (written `\<u>`) stays text.
+    #[test]
+    fn underline_round_trips() {
+        let base = Path::new(if cfg!(windows) { "C:/notes" } else { "/notes" });
+        let src = "Plain <u>under</u>, **<u>bold</u>**, *<u>it</u>*, ***<u>both</u>***, [<u>link</u>](https://x.y) and <u>a</u> **<u>b</u>** [<u>c</u>](https://x.y).\n\nOld \\<u>text\\</u> and `<u>code</u>`.\n\n```\n<u>fence</u>\n```\n";
+        let doc = parse_file(src, "page", Some(base));
+        let t = &doc.blocks[0].text;
+        let under: String = t.spans().filter(|(_, m)| m.underline).map(|(r, _)| &t.text[r]).collect();
+        assert_eq!(under, "underbolditbothlinkabc");
+        assert!(t.spans().any(|(r, m)| m.underline && m.bold && m.italic && &t.text[r] == "both"));
+        assert!(t.spans().any(|(r, m)| m.underline && m.link.as_deref() == Some("https://x.y") && &t.text[r] == "link"));
+        let t = &doc.blocks[1].text;
+        assert!(t.text.contains("<u>text</u>") && t.text.contains("<u>code</u>") && t.spans().all(|(_, m)| !m.underline), "{t:?}");
+        assert!(doc.blocks[2].text.text.contains("<u>fence</u>"));
+        // Saved as is, then edited (written fresh): the same text either way, and again after reopening.
+        assert_eq!(write_file(&doc, front_matter(src).0, Some(base)), src);
+        let fresh = to_markdown(&Document { blocks: doc.blocks.clone(), ..Default::default() });
+        assert!(fresh.starts_with(src.lines().next().unwrap()) && fresh.contains("Old \\<u>text\\</u>"), "{fresh}");
+        let again = to_markdown(&Document { blocks: parse_file(&fresh, "page", Some(base)).blocks, ..Default::default() });
+        assert_eq!(again, fresh);
+        // Copy as Markdown writes the same.
+        let copied = clipboard(None, &doc.blocks[..1], base);
+        assert_eq!(copied.trim_end(), src.lines().next().unwrap());
+        // DocxXML keeps it.
+        assert!(crate::docxml::serialize(&doc).contains("<u>under</u>"));
+        // Marks inside one `<u>` (Typora, Obsidian) read the same; saving writes them run by run.
+        let doc = parse_file("<u>a **b** [c](https://x.y)</u>\n", "page", None);
+        let t = &doc.blocks[0].text;
+        assert!(t.spans().all(|(_, m)| m.underline) && t.spans().any(|(r, m)| m.bold && &t.text[r] == "b"), "{t:?}");
+        assert_eq!(to_markdown(&Document { blocks: doc.blocks.clone(), ..Default::default() }), "<u>a</u> **<u>b</u>** [<u>c</u>](https://x.y)\n");
+    }
+
     #[test]
     fn display_math_round_trips() {
         let src = "---\ntitle: x\n---\n\n$$\nV &= I R \\\\\nQ_c &= 2I - I^2\n$$\n";

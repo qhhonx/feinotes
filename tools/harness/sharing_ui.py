@@ -403,7 +403,7 @@ wait 500
 sharing-ui accept
 wait 200
 shot accept-invitation
-type https://feinotes.app/share/?g=synthetic-fei-ui
+type https://feinotes.app/share/?v=2&u=aHR0cHM6Ly93d3cuaWNsb3VkLmNvbS9zaGFyZS9zeW50aGV0aWMtZmVpLXVp
 key enter
 wait 1200
 sharing-ui accepted

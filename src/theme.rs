@@ -42,10 +42,12 @@ static DARK: AtomicBool = AtomicBool::new(false);
 thread_local! {
     /// Exports and printing draw light whatever the window shows.
     static FORCE_LIGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The look a `with_dark` block draws in, over the window's (the component panel's light and dark side by side).
+    static SCHEME: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     static ADAPTED: std::cell::RefCell<std::collections::HashMap<[u32; 4], Hsla>> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-pub fn dark() -> bool { DARK.load(Ordering::Relaxed) && !FORCE_LIGHT.with(|f| f.get()) }
+pub fn dark() -> bool { !FORCE_LIGHT.with(|f| f.get()) && SCHEME.with(|s| s.get()).unwrap_or_else(|| DARK.load(Ordering::Relaxed)) }
 
 /// Full screen: no desktop behind the window, so the sidebar is a solid colour, not glass.
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
@@ -54,6 +56,13 @@ pub fn fullscreen() -> bool { FULLSCREEN.load(Ordering::Relaxed) }
 pub fn set_fullscreen(on: bool) -> bool { FULLSCREEN.swap(on, Ordering::Relaxed) != on }
 /// Switch the look; true when it changed.
 pub fn set_dark(on: bool) -> bool { DARK.swap(on, Ordering::Relaxed) != on }
+/// Run `f` in the dark look (`true`) or the light one, whatever the window shows.
+pub fn with_dark<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    let was = SCHEME.with(|s| s.replace(Some(on)));
+    let r = f();
+    SCHEME.with(|s| s.set(was));
+    r
+}
 /// Run `f` with the light colours (HTML export, printing, copy as rich text).
 pub fn light<R>(f: impl FnOnce() -> R) -> R {
     let was = FORCE_LIGHT.with(|l| l.replace(true));
@@ -289,11 +298,6 @@ pub fn shadow_dialog() -> Vec<BoxShadow> {
     vec![shadow(0.06, 2., 8., 0.), shadow(0.16, 24., 64., 0.)]
 }
 
-/// Larger menus (「…」, home menus, icon picker): same family as menus.
-pub fn shadow_s4_down() -> Vec<BoxShadow> {
-    vec![shadow(0.05, 1., 3., 0.), shadow(0.11, 10., 28., 0.)]
-}
-
 /// Cards resting on the sidebar (更新日志): a faint lift, no border.
 pub fn shadow_card() -> Vec<BoxShadow> {
     vec![shadow(0.04, 1., 2., 0.), shadow(0.06, 4., 14., 0.)]
@@ -431,6 +435,8 @@ impl Theme {
     pub fn sidebar_field_edge() -> Hsla { ca(craft::B500, 0.6) }
     pub fn sidebar_field_ring() -> Hsla { ca(craft::B500, 0.16) }
     pub fn sidebar_landed() -> Hsla { ca(craft::N1000, 0.07) }
+    /// Indent guides in the folder tree (#329): a hairline a shade lighter than table grid lines.
+    pub fn sidebar_guide() -> Hsla { ca(craft::N1000, 0.08) }
     /// Section headers on the sidebar.
     pub fn sidebar_section() -> Hsla { c(0x333739) }
     /// Normal monochrome icons: #191919 measured from the supplied Claude Code screenshot.

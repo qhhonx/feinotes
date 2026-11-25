@@ -8,6 +8,111 @@ final class PersonalSyncUITests: XCTestCase {
         add(screenshot)
     }
 
+    func testSharedItemMenuMatchesBothOrigins() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
+        XCUIDevice.shared.orientation = pad ? .landscapeLeft : .portrait
+        app.launchArguments += ["-AppleLanguages","(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_OFFLINE_INVITATION"] = "1"
+        app.launchEnvironment["FEI_QA_SHARED_BROWSER_REFRESH"] = "1"
+        app.launch()
+        let tabs = app.segmentedControls["fei.notes.tabs"]
+        let my = tabs.buttons["My documents"]
+        let shared = tabs.buttons["Shared documents"]
+        XCTAssertTrue(my.waitForExistence(timeout: 15))
+
+        func dismiss() {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.50,dy: 0.075)).tap()
+        }
+        let allLabels: Set<String> = ["Copy to My Documents","Duplicate","Move to","Pin","Unpin","Favorite","Remove favorite","Copy Link","Export and print",
+            "Rename","Members and access","View sharing access","Organize in personal folder","Stop sharing","Leave share",
+            "New document","New folder","Folder sharing access","Delete document","Delete folder","Delete shared document","Delete shared folder","Delete subfolder"]
+        func menu(_ title: String, expected: [String], name: String) -> [String] {
+            let row = moveRow(title,in: app)
+            XCTAssertTrue(row.waitForExistence(timeout: 8),title)
+            row.press(forDuration: 1)
+            XCTAssertTrue(app.buttons[expected.last!].firstMatch.waitForExistence(timeout: 5),app.debugDescription)
+            let order = app.buttons.allElementsBoundByIndex.filter { allLabels.contains($0.label) && $0.isHittable }
+                .sorted { $0.frame.minY < $1.frame.minY }.map(\.label)
+            XCTAssertEqual(order.filter { $0 != "Copy Link" },expected,name)
+            capture(name)
+            dismiss()
+            return order
+        }
+        if pad {
+            shared.tap()
+            let other = moveRow("Shared owner fixture",in: app)
+            XCTAssertTrue(other.waitForExistence(timeout: 8))
+            other.tap()
+            XCTAssertTrue(app.buttons["fei.share"].waitForExistence(timeout: 8))
+        }
+        my.tap()
+        let folderMenu = ["New document","New folder","Rename","Folder sharing access","Delete folder","Stop sharing"]
+        let rootInMy = menu("Owner",expected: folderMenu,name: "my-shared-folder")
+        let childFolderMenu = ["New document","New folder","Rename","Move to","Folder sharing access","Delete subfolder"]
+        let childDocMenu = ["Duplicate","Move to","Pin","Favorite","Export and print","Rename","Folder sharing access","Delete document"]
+        func childMenus(_ origin: String) -> [[String]] {
+            moveRow("Owner",in: app).tap()
+            let source = moveRow("Owner source",in: app)
+            XCTAssertTrue(source.waitForExistence(timeout: 8))
+            let folderActions = menu("Owner source",expected: childFolderMenu,name: origin + "-child-folder")
+            source.tap()
+            let actions = menu("Owner document",expected: childDocMenu,name: origin + "-child-document")
+            exitMoveFolder(app,pad: pad,title: "Owner source")
+            exitMoveFolder(app,pad: pad,title: "Owner")
+            return [folderActions,actions]
+        }
+        let descendantsInMy = childMenus("my")
+        let directory = moveRow("QA collaboration folder",in: app)
+        XCTAssertTrue(directory.waitForExistence(timeout: 8))
+        directory.tap()
+        let doc = "QA standalone collaboration"
+        let docMenu = ["Copy to My Documents","Pin","Favorite","Export and print","Rename","Members and access","Stop sharing"]
+        let inMy = menu(doc,expected: docMenu,name: "my-shared-document")
+        exitMoveFolder(app,pad: pad,title: "QA collaboration folder")
+        shared.tap()
+        XCTAssertEqual(menu(doc,expected: docMenu,name: "overview-shared-document"),inMy)
+        XCTAssertEqual(menu("Owner",expected: folderMenu,name: "overview-shared-folder"),rootInMy)
+        XCTAssertEqual(childMenus("overview"),descendantsInMy)
+        let reader = moveRow("Reader",in: app)
+        XCTAssertTrue(reader.waitForExistence(timeout: 8))
+        _ = menu("Reader",expected: ["Folder sharing access","Leave share"],name: "overview-read-only-folder")
+        _ = menu("Shared reader fixture",expected: ["Copy to My Documents","Pin","Favorite","Export and print","View sharing access","Leave share"],
+            name: "overview-read-only")
+        for (role, write) in [("Editor",true),("Reader",false)] {
+            moveRow(role,in: app).tap()
+            let source = moveRow(role + " source",in: app)
+            XCTAssertTrue(source.waitForExistence(timeout: 8))
+            source.tap()
+            _ = menu(role + " document",expected: write ? childDocMenu : ["Pin","Favorite","Export and print","Folder sharing access"],
+                name: "overview-" + role.lowercased() + "-child")
+            exitMoveFolder(app,pad: pad,title: role + " source")
+            exitMoveFolder(app,pad: pad,title: role)
+        }
+
+        if pad {
+            moveRow("Shared owner fixture",in: app).tap()
+            XCTAssertTrue(app.navigationBars["Shared owner fixture"].waitForExistence(timeout: 8))
+        }
+        let sameShare = moveRow(doc,in: app)
+        sameShare.press(forDuration: 1)
+        app.buttons["Pin"].firstMatch.tap()
+        if pad { XCTAssertTrue(app.navigationBars["Shared owner fixture"].exists,"Pin targeted the open editor") }
+        my.tap()
+        directory.tap()
+        let pinnedMenu = docMenu.map { $0 == "Pin" ? "Unpin" : $0 }
+        _ = menu(doc,expected: pinnedMenu,name: "pin-shared-to-my")
+        moveRow(doc,in: app).press(forDuration: 1)
+        app.buttons["Unpin"].firstMatch.tap()
+        exitMoveFolder(app,pad: pad,title: "QA collaboration folder")
+        shared.tap()
+        _ = menu(doc,expected: docMenu,name: "unpin-my-to-shared")
+    }
+
     func testPadSharedRefreshRetainsPersonalFolder() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad)
         continueAfterFailure = false

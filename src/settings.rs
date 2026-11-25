@@ -4,7 +4,8 @@
 //! user really needs to change lives here.
 
 use fdl_core::vfs::PathExt as _;
-use crate::{app::{View, Workspace}, theme::{self, craft, Theme}, themes, ui};
+use crate::{app::{View, Workspace}, theme::{self, Theme, craft}, themes, ui};
+use crate::design::{Button, ButtonSize, Field, FieldSize, MenuItem, MenuLabel, Popover, menu};
 use crate::ui::{TitleBarExt, TipExt};
 use crate::input::{TextField, TextFieldEvent};
 use crate::sidebar as sb;
@@ -212,6 +213,10 @@ pub struct Preferences {
     pub recent_doc_fonts: Vec<String>,
     #[serde(default)]
     pub recent_ui_fonts: Vec<String>,
+    /// 文档库 › 快速笔记保存到: the 工作区 root key quick notes go to; empty,
+    /// or a root that is gone, is the first open root (2.8).
+    #[serde(default)]
+    pub quick_note_root: String,
 }
 
 /// A week between asks to move the library to real folders.
@@ -250,7 +255,7 @@ fn system_lang() -> Lang {
 impl Default for Preferences {
     fn default() -> Self {
         let lang = system_lang();
-        Preferences { theme: String::new(), interface_style: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), start_home: false, browser: String::new(), opaque_window: false, ui_font: String::new(), ui_family: String::new(), doc_family: String::new(), doc_size: String::new(), migrate_later: 0, find_regex: false, backspace_to_title: true, cjk_spacing: false, font_favorites: vec![], recent_doc_fonts: vec![], recent_ui_fonts: vec![] }
+        Preferences { theme: String::new(), interface_style: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), start_home: false, browser: String::new(), opaque_window: false, ui_font: String::new(), ui_family: String::new(), doc_family: String::new(), doc_size: String::new(), migrate_later: 0, find_regex: false, backspace_to_title: true, cjk_spacing: false, font_favorites: vec![], recent_doc_fonts: vec![], recent_ui_fonts: vec![], quick_note_root: String::new() }
     }
 }
 
@@ -641,7 +646,7 @@ pub(crate) fn caption(t: &'static str) -> Div {
     div().px(px(4.)).text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 5.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::sidebar_section()).child(t)
 }
 
-/// One setting: title and an optional description on the left, the control on the right.
+/// One setting: `design::Item`, its control on the right.
 fn row(title: impl Into<SharedString>, desc: Option<SharedString>, control: impl IntoElement) -> Div {
     div().w_full().min_h(px(48.)).px(px(16.)).py(px(10.)).flex().flex_wrap().items_center().justify_between().gap_x(px(24.)).gap_y(px(8.))
         .child(div().flex_1().min_w(px(144.)).max_w_full().flex().flex_col().gap(px(2.))
@@ -710,7 +715,7 @@ const THEME_CSS: bool = false;
 /// is picked and which is highlighted, and what picking one does.
 pub struct PrefMenu {
     id: &'static str,
-    labels: Vec<&'static str>,
+    labels: Vec<SharedString>,
     selected: usize,
     focused: usize,
     on: std::rc::Rc<dyn Fn(&mut Workspace, usize, &mut Context<Workspace>)>,
@@ -904,8 +909,8 @@ fn font_row(family: &str, dl: Option<&'static str>, flat: bool, g: SharedString,
     let e = dl.and_then(fd::entry);
     let zh = matches!(lang(), Lang::Zh | Lang::ZhTw);
     let info = font_info(family, e);
-    let small = |t: String| div().flex_none().text_size(px(theme::ui_font_small() - 1.)).line_height(px(theme::ui_font_small() + 3.)).text_color(Theme::text_caption()).child(t);
-    let tag = |t: &str| small(t.to_string()).px(px(5.)).rounded(px(4.)).bg(Theme::fill_hover());
+    let small = |t: String| div().flex_none().text_size(px(crate::design::geo().text_xs)).text_color(crate::design::color::muted_foreground()).child(t);
+    let tag = |t: &str| crate::design::Badge::new(t.to_string());
     let here = e.is_none_or(|e| fd::on_disk(&e.id) || crate::fonts::installed(&e.family, cx) && !fd::registered(&e.id));
     let drawable = e.is_none_or(|e| crate::fonts::installed(&e.family, cx) || fd::fonts(&e.id).is_some() && fd::register(&e.id, cx.text_system()));
     let mut tags: Vec<&str> = vec![];
@@ -918,30 +923,27 @@ fn font_row(family: &str, dl: Option<&'static str>, flat: bool, g: SharedString,
         Some(e) if !here => {
             let mb = e.size() as f64 / 1e6;
             div().flex_none().flex().items_center().gap(px(4.)).child(small(if mb < 10. { format!("{mb:.1} MB") } else { format!("{mb:.0} MB") }))
-                .child(svg().path("editor-icons/download.svg").size(px(13.)).text_color(Theme::icon())).into_any_element()
+                .child(crate::design::icon("download", 14., crate::design::color::muted_foreground())).into_any_element()
         }
-        _ => div().flex_none().w(px(14.)).when(picked, |d| d.child(ui::menu_glyph("check", 14., g.clone()))).into_any_element(),
+        _ => div().flex_none().w(px(16.)).flex().justify_center().when(picked, |d| d.child(crate::design::icon("check", 14., crate::design::color::foreground()))).into_any_element(),
     };
     let fav = prefs().font_favorites.iter().any(|f| f.eq_ignore_ascii_case(family));
     let label: SharedString = e.map_or_else(|| family.to_string(), |e| e.name().to_string()).into();
-    let sample = if drawable { div().font_family(SharedString::from(family.to_string())).text_color(Theme::text_caption()).child(font_sample()) }
-        else { div().text_color(Theme::text_disabled()).child(tr("下载后可预览", "Preview after download")) };
+    let sample = if drawable { div().font_family(SharedString::from(family.to_string())).text_color(crate::design::color::muted_foreground()).child(font_sample()) }
+        else { div().text_color(crate::design::color::disabled()).child(tr("下载后可预览", "Preview after download")) };
     let (del, star) = (dl.map(str::to_string), family.to_string());
     let hover_key = key.clone();
-    div().w_full().flex().flex_col().child(ui::menu_row(g.clone(), g.clone())
-        .when(focused, |d| d.bg(Theme::fill_hover()))
+    div().w_full().flex().flex_col().child(MenuItem::new(g.clone()).selected(focused)
         .on_hover(cx.listener(move |w, hovered: &bool, _, cx| if *hovered { w.preview_font(hover_key.clone(), row, cx) }))
         .on_click(cx.listener(move |w, _, window, cx| w.pick_font(key.clone(), target, window, cx)))
-        .child(div().flex_none().w(px(150.)).overflow_hidden().child(ui::menu_label(label, g.clone(), gpui::white())))
+        .child(div().flex_none().w(px(150.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui::ui_text(label)))
         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_size(px(theme::ui_font())).child(sample))
         .children(tags.into_iter().map(tag))
         .child(status)
-        .when(e.is_some_and(|e| fd::on_disk(&e.id) && !fd::pending(&e.id)), |d| d.child(div().id(SharedString::from(format!("font-del-{}", del.clone().unwrap_or_default()))).flex_none().size(px(20.)).flex().items_center().justify_center().rounded(px(5.))
-            .hover(|s| s.bg(Theme::fill_hover_strong())).child(ui::icon("bin", 13., Theme::icon()))
+        .when(e.is_some_and(|e| fd::on_disk(&e.id) && !fd::pending(&e.id)), |d| d.child(Button::ghost(SharedString::from(format!("font-del-{}", del.clone().unwrap_or_default()))).sized(ButtonSize::Xs).icon("bin")
             .on_click(cx.listener(move |w, _, _, cx| { cx.stop_propagation(); if let Some(id) = &del { w.delete_download(id, cx) } }))))
-        .child(div().id(SharedString::from(format!("{g}-star"))).flex_none().size(px(20.)).flex().items_center().justify_center().rounded(px(5.))
-            .hover(|s| s.bg(Theme::fill_hover_strong()))
-            .child(ui::icon("star", 13., if fav { Theme::primary() } else { Theme::text_disabled() }))
+        .child(Button::ghost(SharedString::from(format!("{g}-star"))).sized(ButtonSize::Xs)
+            .child(crate::design::icon("star", 14., if fav { crate::design::color::primary() } else { crate::design::color::disabled() }))
             .on_click(cx.listener(move |w, _, _, cx| { cx.stop_propagation(); w.toggle_favorite(&star, cx) }))))
 }
 
@@ -1074,8 +1076,8 @@ fn branded_sample_page(st: &themes::Style) -> Div {
 /// masks have no radius), so the page rounds its own bottom corners to the
 /// group's (`SAMPLE_RADIUS`) instead of being clipped.
 const PAGE_S: f32 = 0.9;
-/// The settings group's radius (12) inside its 1px border.
-const SAMPLE_RADIUS: f32 = 11.;
+/// The settings group's radius (the card's).
+const SAMPLE_RADIUS: f32 = crate::design::G.card_r;
 
 /// 外观's sample page: a document with most of what a theme styles (headings,
 /// long paragraphs with bold and italics, mixed Chinese and Latin text, lists,
@@ -1218,13 +1220,8 @@ fn badge(t: &themes::Theme) -> Option<&'static str> {
 }
 
 /// A pop-up button (macOS): the current choice and a chevron on `button`'s white pill.
-fn popup_button(id: impl Into<ElementId>, label: impl Into<SharedString>, open: bool) -> Stateful<Div> {
-    div().id(id).flex_none().max_w(px(220.)).h(px(crate::mobile::control(28.))).pl(px(12.)).pr(px(8.)).flex().items_center().gap(px(6.)).rounded(px(8.)).cursor_pointer()
-        .bg(if open { theme::c(craft::N100) } else { crate::theme::raised(Theme::bg_body()) }).border_1().border_color(Theme::button_border()).shadow(theme::shadow_button())
-        .hover(|s| s.bg(theme::c(craft::N100))).active(|s| s.bg(theme::c(craft::N200)))
-        .text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 5.)).text_color(Theme::text())
-        .child(div().min_w_0().truncate().child(label.into()))
-        .child(ui::icon("chevron-down", 12., Theme::icon()))
+fn popup_button(id: impl Into<ElementId>, label: impl Into<SharedString>, open: bool) -> Field {
+    Field::select(id).sized(FieldSize::Sm).max_w(px(220.)).open(open).child(div().min_w_0().truncate().child(ui::ui_text(label.into())))
 }
 
 fn apply_theme(w: &mut Workspace, id: String, cx: &mut Context<Workspace>) {
@@ -1244,34 +1241,33 @@ impl Workspace {
         let rows: Vec<AnyElement> = list.iter().map(|t| {
             let g = SharedString::from(format!("theme-opt-{}", t.id));
             let (id, hover_id) = (t.id.clone(), t.id.clone());
-            ui::menu_row(g.clone(), g.clone())
-                .when(&t.id == focused, |d| d.bg(Theme::fill_hover()))
-                .child(div().flex_1().min_w_0().overflow_hidden().child(ui::menu_label(t.name().to_string(), g.clone(), gpui::white())))
-                .children(badge(t).map(|b| div().flex_none().text_size(px(11.)).text_color(Theme::text_caption()).child(ui::menu_label(b, g.clone(), gpui::white()))))
-                .child(div().flex_none().w(px(14.)).when(t.id == current, |d| d.child(ui::menu_glyph("check", 14., g.clone()))))
+            MenuItem::new(g).label(t.name().to_string()).selected(&t.id == focused)
+                .children(badge(t).map(|b| crate::design::Badge::new(label(b))))
+                .checked(t.id == current)
                 .on_hover(cx.listener(move |w, hovered: &bool, _, cx| if *hovered && w.theme_menu.as_ref() != Some(&hover_id) { w.theme_menu = Some(hover_id.clone()); cx.notify(); }))
                 .on_click(cx.listener(move |w, _, _, cx| apply_theme(w, id.clone(), cx)))
                 .into_any_element()
         }).collect();
         drop(list);
         let anchor = self.theme_anchor.clone();
-        let menu = ui::popover().id("theme-menu").occlude().flex()
+        let menu = Popover::new("theme-menu")
             .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
                 // A press on the button itself: its click closes the menu.
                 if anchor.get().is_some_and(|b| b.contains(&ev.position)) { return }
                 w.theme_menu = None;
                 cx.notify();
             }))
-            .child(div().id("theme-menu-list").w(px(200.)).max_h(px(302.)).overflow_y_scroll().py(px(ui::MENU_PAD_Y)).flex().flex_col().children(rows));
+            .child(div().id("theme-menu-list").w(px(220.)).max_h(px(302.)).overflow_y_scroll().py(px(menu::PAD)).flex().flex_col().children(rows));
         Some(deferred(anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
     /// A choice as a dropdown button, like 界面语言's: the picked label, a menu of the rest.
-    fn select(&self, id: &'static str, labels: Vec<&'static str>, selected: usize, on: impl Fn(&mut Workspace, usize, &mut Context<Workspace>) + 'static, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn select<L: Into<SharedString>>(&self, id: &'static str, labels: Vec<L>, selected: usize, on: impl Fn(&mut Workspace, usize, &mut Context<Workspace>) + 'static, cx: &mut Context<Self>) -> Field {
+        let labels: Vec<SharedString> = labels.into_iter().map(Into::into).collect();
         let open = self.pref_menu.as_ref().is_some_and(|m| m.id == id);
         let anchors = self.pref_anchors.clone();
         let on: std::rc::Rc<dyn Fn(&mut Workspace, usize, &mut Context<Workspace>)> = std::rc::Rc::new(on);
-        popup_button(id, labels.get(selected).copied().unwrap_or_default(), open)
+        popup_button(id, labels.get(selected).cloned().unwrap_or_default(), open)
             .child(canvas(move |b, _, _| { anchors.borrow_mut().insert(id, b); }, |_, _, _, _| {}).absolute().inset_0())
             .relative()
             .on_click(cx.listener(move |w, _, _, cx| {
@@ -1283,27 +1279,27 @@ impl Workspace {
 
     pub(crate) fn render_pref_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let m = self.pref_menu.as_ref()?;
-        if self.view != View::Settings || self.settings_page != Page::General { return None }
+        if self.view != View::Settings || !matches!(self.settings_page, Page::General | Page::Library) { return None }
         let b = *self.pref_anchors.borrow().get(m.id)?;
         let rows = m.labels.iter().enumerate().map(|(i, label)| {
             let g = SharedString::from(format!("{}-opt-{i}", m.id));
             ui::menu_row(g.clone(), g.clone())
                 .h(px(crate::mobile::control(ui::MENU_ROW_H)))
                 .when(i == m.focused, |d| d.bg(Theme::fill_hover()))
-                .child(div().flex_1().min_w_0().overflow_hidden().child(ui::menu_label(*label, g.clone(), gpui::white())))
+                .child(div().flex_1().min_w_0().overflow_hidden().child(ui::menu_label(label.clone(), g.clone(), gpui::white())))
                 .child(div().flex_none().w(px(14.)).when(i == m.selected, |d| d.child(ui::menu_glyph("check", 14., g.clone()))))
                 .on_hover(cx.listener(move |w, hovered: &bool, _, cx| if *hovered && let Some(m) = &mut w.pref_menu && m.focused != i { m.focused = i; cx.notify(); }))
                 .on_click(cx.listener(move |w, _, _, cx| w.pick_pref(i, cx)))
         }).collect::<Vec<_>>();
         let anchors = self.pref_anchors.clone();
         let id = m.id;
-        let menu = ui::popover().id("pref-menu").occlude().flex()
+        let menu = Popover::new("pref-menu").menu().min_w(px(160.))
             .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
                 if anchors.borrow().get(id).is_some_and(|b| b.contains(&ev.position)) { return }
                 w.pref_menu = None;
                 cx.notify();
             }))
-            .child(div().min_w(px(160.)).py(px(ui::MENU_PAD_Y)).flex().flex_col().children(rows));
+            .children(rows);
         Some(deferred(anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
@@ -1413,36 +1409,32 @@ impl Workspace {
                 range.map(|i| {
                     let g = SharedString::from(format!("font-{}-{i}", target.key()));
                     match &choices[i] {
-                        Choice::Header(label) => div().h(px(ui::MENU_ROW_H)).px(px(14.)).pb(px(4.)).flex().items_end()
-                            .text_size(px(theme::ui_font_small() - 1.)).line_height(px(theme::ui_font_small() + 3.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::text_caption())
-                            .child(label.clone()),
+                        // a virtual list's rows are all one height
+                        Choice::Header(label) => MenuLabel::new(label.clone()).h(px(menu::ROW_H)).into_any_element(),
                         Choice::Others(count, open) => {
                             let open = *open;
-                            div().w_full().flex().flex_col().child(ui::menu_row(g.clone(), g.clone())
-                                .child(ui::icon(if open { "chevron-down" } else { "chevron-right" }, 12., Theme::icon()))
-                                .child(div().flex_1().text_size(px(theme::ui_font_small())).text_color(Theme::text_caption()).child(crate::localized_format!("其他语言和符号（{}）", "Other scripts and symbols ({})", count)))
-                                .on_click(cx.listener(move |w, _, _, cx| { if let Some(m) = &mut w.font_menu { m.others = !open; m.focused = None; } cx.notify(); })))
+                            div().w_full().flex().flex_col().child(MenuItem::new(g.clone()).icon(if open { "chevron-down" } else { "chevron-right" })
+                                .child(div().flex_1().text_color(crate::design::color::muted_foreground()).child(crate::localized_format!("其他语言和符号（{}）", "Other scripts and symbols ({})", count)))
+                                .on_click(cx.listener(move |w, _, _, cx| { if let Some(m) = &mut w.font_menu { m.others = !open; m.focused = None; } cx.notify(); }))).into_any_element()
                         }
                         Choice::Reset => {
                             let picked = current.is_empty();
-                            div().w_full().flex().flex_col().child(ui::menu_row(g.clone(), g.clone())
-                                .when(focused == Some(i), |d| d.bg(Theme::fill_hover()))
-                                .child(div().flex_1().min_w_0().overflow_hidden().child(ui::menu_label(target.reset_label(), g.clone(), gpui::white())))
-                                .child(div().flex_none().w(px(14.)).when(picked, |d| d.child(ui::menu_glyph("check", 14., g.clone()))))
+                            // A virtual list's rows don't stretch on their own.
+                            div().w_full().flex().flex_col().child(MenuItem::new(g.clone()).selected(focused == Some(i)).label(target.reset_label()).checked(picked)
                                 .on_hover(cx.listener(move |w, hovered: &bool, _, cx| if *hovered { w.preview_font(String::new(), i, cx) }))
-                                .on_click(cx.listener(move |w, _, window, cx| w.pick_font(String::new(), target, window, cx))))
+                                .on_click(cx.listener(move |w, _, window, cx| w.pick_font(String::new(), target, window, cx)))).into_any_element()
                         }
-                        c @ Choice::Font { family, dl, flat } => font_row(family, *dl, *flat, g, focused == Some(i), &current, (c.key().unwrap_or_default(), i, target), cx),
+                        c @ Choice::Font { family, dl, flat } => font_row(family, *dl, *flat, g, focused == Some(i), &current, (c.key().unwrap_or_default(), i, target), cx).into_any_element(),
                     }
                 }).collect()
             }))
             .track_scroll(&menu.scroll)
-            .h(px((n as f32 * ui::MENU_ROW_H).min(420.)))
+            .h(px((n as f32 * menu::ROW_H).min(420.)))
             .into_any_element()
         };
         let anchors = self.font_anchors.clone();
         let key = target.key();
-        let popup = ui::popover().id("font-menu").occlude().flex()
+        let popup = Popover::new("font-menu").flex()
             .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, window, cx| {
                 // A press on the button itself: its click closes the list.
                 if anchors.borrow().get(key).is_some_and(|b| b.contains(&ev.position)) { return }
@@ -1450,11 +1442,11 @@ impl Workspace {
                 window.focus(&w.focus, cx);
             }))
             .child(div().w(px(460.)).flex().flex_col()
-                .child(div().px(px(8.)).pt(px(8.)).pb(px(4.))
-                    .child(div().h(px(28.)).px(px(7.)).flex().items_center().gap(px(6.)).rounded(px(7.)).bg(Theme::fill_hover())
-                        .child(ui::icon("search", 13., Theme::icon()))
+                .child(div().p(px(menu::PAD))
+                    .child(Field::new("font-search").sized(FieldSize::Sm)
+                        .child(crate::design::icon("search", 14., crate::design::color::muted_foreground()))
                         .child(div().flex_1().min_w_0().child(menu.field.clone()))))
-                .child(div().pb(px(ui::MENU_PAD_Y)).child(list)));
+                .child(div().pb(px(menu::PAD)).child(list)));
         Some(deferred(anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(popup)).with_priority(2).into_any_element())
     }
 
@@ -1585,7 +1577,7 @@ impl Workspace {
                 .on_click(cx.listener(move |w, _, _, cx| { w.lang_menu = None; w.set_pref(|p| p.set_lang(l), cx) }))
         });
         let anchor = self.lang_anchor.clone();
-        let menu = ui::popover().id("lang-menu").occlude().flex()
+        let menu = Popover::new("lang-menu").menu().w(px(160.))
             .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
                 if anchor.get().is_some_and(|b| b.contains(&ev.position)) { return }
                 w.lang_menu = None;
@@ -2118,6 +2110,18 @@ impl Workspace {
                     // A test run's one root (`QUIET_MD_HOME`) is fixed.
                     .when(std::env::var_os("QUIET_MD_HOME").is_none() || std::env::var_os("QUIET_MD_ROOTS").is_some(), |d| d.child(button(SharedString::from(format!("remove-{key}")), tr("移除", "Remove")).on_click(cx.listener(move |w, _, _, cx| { w.confirm = Some(crate::app::Confirm::RemoveRoot(k.clone(), n.clone())); cx.notify(); }))))).into_any_element()
             }).collect();
+            let open: Vec<(String, String)> = self.store.roots().into_iter()
+                .filter(|root| root.3.is_none()).map(|root| (root.0, root.1)).collect();
+            if open.len() > 1 {
+                let selected = self.store.quick_note_root()
+                    .and_then(|key| open.iter().position(|root| root.0 == key)).unwrap_or(0);
+                let (keys, labels): (Vec<_>, Vec<_>) = open.into_iter().unzip();
+                folders.push(row(tr("快速笔记保存到", "Quick notes go to"),
+                    desc(tr("「新建笔记窗口」和全局快捷键记下的笔记放在这个文件夹里。", "Notes from New Note Window and the global shortcut are saved in this folder.")),
+                    self.select("quick-note-root", labels, selected, move |w, index, cx| {
+                        w.set_pref(|p| p.quick_note_root = keys[index].clone(), cx);
+                    }, cx)).into_any_element());
+            }
             folders.push(row(tr("添加文件夹", "Add a folder"), Some(tr("打开电脑上已有的文件夹，或新建一个，都会显示在侧栏里。", "Open a folder already on your computer, or make a new one; either shows in the sidebar.").into()), div().flex_none().flex().gap(px(8.))
                 .child(button("open-root", tr("打开…", "Open…")).on_click(cx.listener(|w, _, window, cx| w.open_folder_dialog(window, cx))))
                 .child(button("new-root", tr("新建…", "New…")).on_click(cx.listener(|w, _, window, cx| w.new_root_dialog(window, cx))))).into_any_element());
@@ -2838,7 +2842,11 @@ impl Workspace {
             .when(crate::FEI_NOTES, |d| d.child(div().w_full().px(px(4.)).text_size(px(footer_size))
                 .line_height(px(footer_size + 5.)).text_color(Theme::text_caption())
                 .child(upstream_attribution())))
-            .when(!crate::FEI_NOTES, |d| d.child(group(None, vec![update_row(cx).into_any_element()])))
+            .when(!crate::FEI_NOTES, |d| d.child(group(None, vec![
+                row(tr("项目主页", "Project page"), Some(REPO.trim_start_matches("https://").into()),
+                    button("open-repo", tr("打开", "Open")).on_click(|_, _, cx| crate::editor::open_link(cx, REPO))).into_any_element(),
+                update_row(cx).into_any_element(),
+            ])))
             .into_any_element()
     }
 }
@@ -2997,6 +3005,8 @@ fn account_settings_control() -> AnyElement {
     #[cfg(target_os = "ios")]
     setting_status(tr("设置 › Apple 账户","Settings › Apple Account")).into_any_element()
 }
+/// 关于 › 项目主页: the source repository, opened in the 打开链接 browser.
+const REPO: &str = "https://github.com/s1dashu/quiet-md";
 
 /// The sidebar bar's 更新 pill, only while a new version is on offer:
 /// 更新 downloads it (the pill then fills with its progress), 重启更新
@@ -3234,6 +3244,8 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "~文字~ 空格" => "~text~ Space",
         "~~文字~~ 空格" => "~~text~~ Space",
         "$$文字$$" => "$$text$$",
+        "转为公式" => "Convert to equation",
+        "只有同一段里的文字能转为公式" => "Only text within one paragraph can become an equation",
         "--- 或 ***" => "--- or ***",
         "阅读模式" => "Reading mode",
         "已切换为阅读模式" => "Switched to reading mode",

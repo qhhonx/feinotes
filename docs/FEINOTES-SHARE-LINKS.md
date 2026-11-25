@@ -1,24 +1,23 @@
 # Fei Notes invitation links
 
-Public links directly map a CloudKit share identifier to the static invitation
-page. Chinese-region links use `https://feinotes.app/share/?c=<id>` and global
-links use `https://feinotes.app/share/?g=<id>`. The Mac app maps `c` to
-`https://www.icloud.com.cn/share/<id>` and `g` to
-`https://www.icloud.com/share/<id>`. No lookup database, encoded original URL or
-Vercel service is needed. The earlier unreleased v1 transport is intentionally
-not supported. Raw Apple invitation URLs can still be pasted into the app.
+Copied invitations use `https://feinotes.app/share/?v=2&u=<encoded>`. The
+payload is the full Apple HTTPS share address encoded as unpadded Base64URL.
+This preserves the region, parameters and fragment in CloudKit's original
+address. The static page relays the same envelope to the app. Raw Apple
+invitation URLs can also be pasted into the app. Older Fei Notes links use
+`?g=<id>` for global iCloud or `?c=<id>` for iCloud China. Both the website and
+the app accept these links. The website passes the original format to the app;
+new invitations copied from the app use v2.
 
-`src/sharing/links.rs` and `website/share/links.mjs` validate the mapping. The
-identifier is limited to URL-safe ASCII letters, digits, underscores and hyphens.
-Unknown regions, additional parameters, fragments and other destinations are
-rejected. CloudKit still validates the recipient's Apple Account and membership;
-changing the domain grants no new access. Ending the underlying share ends
-access through the Fei Notes link too.
+Both `src/sharing/links.rs` and `website/share/links.mjs` validate the envelope
+and accept only supported iCloud HTTPS share addresses. The envelope grants
+no access by itself. CloudKit verifies the Apple Account and sharing scope.
 
 ## Opening
 
-The Mac app also registers `feinotes://share/?c=<id>` and `?g=<id>`. Both this
-fallback and an HTTPS Universal Link enter the same bounded invitation queue,
+The Mac and mobile apps receive `feinotes://share/?v=2&u=<encoded>` or the
+corresponding legacy custom URL. Custom URLs and HTTPS Universal Links enter
+the same bounded invitation queue,
 reuse the current window and show a confirmation. Opening a link never accepts
 an invitation automatically. Busy requests retain their queued URL.
 
@@ -30,7 +29,7 @@ app does not trigger another attempt. Browsers may require user activation or
 confirmation; the website cannot guarantee automatic launch.
 
 No document content or remote destination is fetched by this page. It has no
-analytics, advertising or external script. The identifier in the requested URL
+analytics, advertising or external script. The encoded invitation in the requested URL
 is visible to the hosting provider. Referrer and indexing restrictions are
 specified in HTML rather than a hosting-specific headers configuration.
 
@@ -58,12 +57,11 @@ of this website change.
 
 The current collaboration client is macOS. iOS must deliver user activities and
 custom URLs to the invitation handler before it is advertised as supported.
-Web editing is not released. A future web client can use the same identifier
-and region without changing the CloudKit access model.
+Web editing is not released. A future web client can use the Apple invitation address without changing the CloudKit access model.
 
 ## Verification
 
-Run `node tools/test-share-links.mjs` for region mapping, invalid URLs, automatic
+Run `node tools/test-share-links.mjs` for both invitation formats, payload fidelity, invalid URLs, automatic
 opening once, blocked-launch fallback, bilingual status and copy behavior. The
 offline `tools/harness/sharing_ui.py` additionally verifies that personal sidebar
 order and expanded children survive shared navigation, shared titles update

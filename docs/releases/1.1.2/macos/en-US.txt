@@ -1,0 +1,9 @@
+Fei Notes 1.1.2 beta
+
+On Mac, the invitation and access panels have a new layout. Manage participants and link access separately, and create public invitations for shared folders.
+
+New invitations use the updated Fei Notes link format. Previously sent Fei Notes invitations still open.
+
+Please test creating and opening invitations, closing a public link, and opening the personal original after stopping sharing.
+
+iCloud sync and real-time collaboration are included during TestFlight testing without a subscription.

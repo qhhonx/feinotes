@@ -3,11 +3,9 @@
 //! `ContextMenu.scss` and `actions/shortcuts.ts` @ 3a317b5: the canvas menu
 //! and the element menu, in upstream order, with the items we have (no
 //! library, links, zen / view / minimap mode, stats). Separators collapse when
-//! the items between them are all hidden, as upstream's. Looks: radius 4,
-//! `--popup-secondary-bg-color`, a 1px `--button-gray-3` border, `0 3px 10px`
-//! shadow, 8px above and below; items 4/16/4/20 padding, the shortcut faded
-//! at 0.7rem; hover `--select-highlight-color` with the text in
-//! `--popup-bg-color`; Delete's label red; toggles get a ✓.
+//! the items between them are all hidden, as upstream's. Looks: the app's
+//! menu (`design::Popover`, `MenuItem`): the shortcut at the end, Delete
+//! destructive, toggles that are on checked.
 
 use super::*;
 use crate::board::action::{BoardAction, Layer};
@@ -15,6 +13,7 @@ use crate::board::text::{can_bind_text, can_unbind_text, can_wrap_text_in_contai
 use crate::board::actions::{can_group, can_toggle_element_lock, can_ungroup, can_unlock_all_elements, can_wrap_selection_in_frame, is_single_frame_selected, should_lock};
 use crate::board::selection::{get_selected_elements, SelectedOpts};
 use crate::settings::tr;
+use crate::design::{MenuItem, MenuSeparator, Popover};
 
 enum Item { Sep, Row(&'static str, Option<String>, BoardAction, bool) }
 
@@ -92,26 +91,19 @@ pub(crate) fn render(me: &BoardView, _window: &mut Window, cx: &mut Context<Boar
         v
     };
 
-    let mut menu = eat(div().id("board-context-menu").occlude().min_w(px(152.)).py(px(8.)).flex().flex_col()
-        .rounded(px(4.)).bg(style::popup_secondary_bg()).border_1().border_color(style::button_gray_3()).shadow(style::shadow_context_menu())
-        .text_size(px(style::BUTTON_TEXT)).line_height(style::lh(style::BUTTON_TEXT)).text_color(style::popup_text()))
+    let mut menu = eat(Popover::new("board-context-menu").menu().min_w(px(152.)))
         .on_mouse_down_out(cx.listener(|me, _, _, cx| me.close_context_menu(cx)));
     let (mut pending_sep, mut any) = (false, false);
     for (i, it) in items.into_iter().enumerate() {
         match it {
             Item::Sep => pending_sep = any,
             Item::Row(label, k, act, checked) => {
-                // `<hr>`: the UA's 8px margins, a 1px `$color-gray-5` top border
-                if pending_sep { menu = menu.child(div().my(px(8.)).h(px(1.)).bg(style::hex(style::GRAY_5))); pending_sep = false; }
+                if pending_sep { menu = menu.child(MenuSeparator::new()); pending_sep = false; }
                 any = true;
                 let danger = act == BoardAction::Delete;
-                let group = SharedString::from(format!("board-cm-{i}"));
-                let hover_text = style::popup_bg();
-                menu = menu.child(div().id(("board-cm", i)).group(group.clone()).relative().w_full().flex().items_center().pl(px(20.)).pr(px(16.)).py(px(4.)).whitespace_nowrap().cursor_default()
-                    .hover(move |s| s.bg(if danger { style::hex(style::RED_6) } else { style::select_highlight() }).text_color(hover_text))
-                    .when(checked, |d| d.child(div().absolute().left(px(6.)).child("✓")))
-                    .child(div().flex_1().mr(px(20.)).when(danger, |d| d.text_color(style::hex(style::RED_7))).group_hover(group.clone(), |s| s.text_color(hover_text)).child(label))
-                    .when_some(k, |d, k| d.child(div().flex_none().text_size(px(11.2)).line_height(style::lh(11.2)).opacity(0.6).child(k)))
+                menu = menu.child(MenuItem::new(("board-cm", i)).label(label).destructive(danger)
+                    .when_some(k, |d, k| d.shortcut(k))
+                    .when(checked, |d| d.checked(true))
                     .on_click(cx.listener(move |me, _, window, cx| { me.close_context_menu(cx); me.run(act.clone(), window, cx) })));
             }
         }

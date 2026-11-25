@@ -5,8 +5,7 @@
 use crate::app::Workspace;
 use crate::settings::display_title;
 use crate::store::PageWidth;
-use crate::theme::{self, Theme, craft};
-use crate::ui::popover;
+use crate::design::{MenuItem, MenuSeparator, Popover, Switch, menu};
 use gpui::{prelude::FluentBuilder, *};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -18,49 +17,27 @@ pub enum DocSub {
 const MENU_W: f32 = 200.;
 /// Gap between the "…" button and the menu.
 const MENU_GAP: f32 = 6.;
-/// Rows: 32 tall; dividers 1px with 5px either side; 6px padding.
-const ROW_H: f32 = crate::ui::MENU_ROW_H;
-const DIV_H: f32 = 11.;
-const PAD: f32 = crate::ui::MENU_PAD_Y;
+/// The menu's padding; a row's and a separator's heights (`design::menu`).
+const ROW_H: f32 = menu::ROW_H;
+const DIV_H: f32 = menu::SEP_H;
+const PAD: f32 = menu::PAD;
 
 /// Offset of item `k`'s row from the menu's top with `dividers` divider rows above it.
 fn item_top(k: usize, dividers: usize) -> f32 {
-    1. + PAD + ROW_H * k as f32 + DIV_H * dividers as f32
+    PAD + ROW_H * k as f32 + DIV_H * dividers as f32
 }
 
-fn menu_item(id: &'static str, ic: &'static str, label: impl Into<SharedString>, sub: bool, open: bool) -> Stateful<Div> {
-    let g = SharedString::from(id);
-    crate::ui::menu_row(id, g.clone())
-        // A row whose submenu is open keeps the hover fill.
-        .when(open, |d| d.bg(Theme::fill_hover()))
-        .child(crate::ui::menu_glyph(ic, 16., g.clone()))
-        .child(div().flex_1().min_w_0().overflow_hidden().child(crate::ui::menu_label(label, g.clone(), gpui::white())))
-        .when(sub, |d| d.child(crate::ui::menu_glyph("chevron-right", 10., g)))
+/// A row; one whose submenu is open stays lit (`open`).
+fn menu_item(id: &'static str, ic: &'static str, label: impl Into<SharedString>, sub: bool, open: bool) -> MenuItem {
+    MenuItem::new(id).icon(ic).label(crate::settings::label(label.into())).submenu(sub).open(open)
 }
 
 /// 下载为's text-only items.
-pub(crate) fn sub_item(id: &'static str, label: &'static str) -> Stateful<Div> {
-    crate::ui::menu_row(id, SharedString::from(id)).mx(px(0.)).child(crate::ui::menu_label(label, SharedString::from(id), gpui::white()))
+pub(crate) fn sub_item(id: &'static str, label: &'static str) -> MenuItem {
+    MenuItem::new(id).label(crate::settings::label(label))
 }
 
-/// A row's on/off switch.
-fn switch(on: bool) -> Div {
-    div()
-        .flex_none()
-        .w(px(28.))
-        .h(px(16.))
-        .rounded_full()
-        .p(px(2.))
-        .flex()
-        .when(on, |d| d.justify_end())
-        .bg(if on { Theme::primary_500() } else { Theme::block_placeholder() })
-        .child(div().size(px(12.)).rounded_full().bg(crate::theme::raised(Theme::bg_body())))
-}
-
-/// Native-menu separator: 1px, 5px either side, inset 13px.
-fn divider() -> Div {
-    div().flex_none().mx(px(13.)).my(px(5.)).h(px(1.)).bg(Theme::line_border())
-}
+fn divider() -> MenuSeparator { MenuSeparator::new() }
 
 impl Workspace {
     fn close_doc_menu(&mut self, cx: &mut Context<Self>) {
@@ -102,6 +79,8 @@ impl Workspace {
             self.entries = self.store.list();
             self.sort();
             self.open(&new, window, cx);
+            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+            if self.is_shared() { self.publish_shared_folder_change(cx); }
         }
         self.remember_files(file_before, crate::settings::tr("创建副本", "Duplicate"));
         cx.notify();
@@ -109,7 +88,22 @@ impl Workspace {
 
     /// Write "<标题> 副本" of `id` to the library; the caller refreshes the list.
     pub(crate) fn copy_doc(&mut self, id: &str, cx: &mut Context<Self>) -> Option<String> {
-        if self.entries.iter().any(|e| e.id == id && e.meta.folder.is_some()) { return self.copy_folder(id, cx); }
+        let entry = self.entries.iter().find(|e| e.id == id);
+        let row = self.row_of(id);
+        let parent = self.entries.iter().find(|e| e.id == row).filter(|e| !e.meta.local()).and_then(|e| e.meta.parent.clone());
+        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+        if self.is_shared() {
+            use crate::cloud_sync::shared;
+            let room = self.current_room(cx)?;
+            let items = crate::tree::Tree::new(&self.entries).subtree(&room.scope.note);
+            if !room.scope.folder || id == room.scope.note || !items.iter().any(|item| item == id)
+                || !parent.as_ref().is_some_and(|parent| items.contains(parent))
+                || !entry.is_some_and(|e| e.meta.folder.is_none() && e.meta.kind != crate::store::DocKind::Table)
+                || !self.sharing_access(cx).is_some_and(shared::Access::can_write)
+                || shared::editing_paused(&self.store, cx) { return None; }
+        }
+        if entry.is_some_and(|e| e.meta.folder.is_some()) { return self.copy_folder(id, cx); }
+        let destination = if self.is_shared() { parent.as_deref() } else { None };
         let mut doc = self.doc_of(id, cx)?;
         let title = crate::localized_format!("{} 副本", "{} copy", display_title(&doc.title.text));
         doc.title = crate::model::RichText::plain(title);
@@ -121,15 +115,14 @@ impl Workspace {
         let table = self.entries.iter().any(|e| e.id == id && e.meta.kind == crate::store::DocKind::Table);
         if table { crate::table::flush_all(cx); }
         let made = if table { self.store.copy_table(id, &doc.title.text) }
-            else if let Some(board) = board { self.store.create_board_in(&doc.title.text, &board, None) }
-            else if self.store.is_markdown(id) { let front = self.store.front_matter_of(id); self.store.create_markdown(&doc, &front) } else { self.store.create_from(&doc) };
+            else if let Some(board) = board { self.store.create_board_in(&doc.title.text, &board, destination) }
+            else if self.store.is_markdown(id) { let front = self.store.front_matter_of(id); self.store.create_markdown_in(&doc, &front, destination) }
+            else { self.store.create_from_in(&doc, destination) };
         match made {
             Ok(new) => {
                 let _ = self.store.set_width(&new, width);
                 // A document with children is copied alone, beside its folder.
-                let row = self.row_of(id);
-                let parent = self.entries.iter().find(|e| e.id == row).filter(|e| !e.meta.local()).and_then(|e| e.meta.parent.clone());
-                if let Some(parent) = parent { let _ = self.store.set_parent(&new, Some(&parent)); }
+                if !self.is_shared() && let Some(parent) = parent { let _ = self.store.set_parent(&new, Some(&parent)); }
                 Some(new)
             }
             Err(e) => {
@@ -270,14 +263,9 @@ impl Workspace {
         // 新建子文档 (#357): under a document of the library.
         let child = !board_file && self.takes_children(&id);
         let child_id = id.clone();
-        let menu = popover()
-            .id("doc-menu")
-            .occlude()
+        let menu = Popover::new("doc-menu")
+            .menu()
             .min_w(px(MENU_W))
-            .py(px(PAD))
-            .flex()
-            .flex_col()
-            .shadow(theme::shadow_s4_down())
             .child(menu_w())
             .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
                 if sub_bounds.get().is_none_or(|b| !b.contains(&ev.position)) {
@@ -363,7 +351,7 @@ impl Workspace {
                         .on_hover(hover_sub(None)).on_click(cx.listener(move |w, _, window, cx| w.copy_to_local_library(note.clone(), window, cx))))
                 }
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-                { None::<Stateful<Div>> }
+                { None::<MenuItem> }
             })
             .children({
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -379,7 +367,7 @@ impl Workspace {
                     })
                 }
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-                { None::<Stateful<Div>> }
+                { None::<MenuItem> }
             })
             .children({
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -391,7 +379,7 @@ impl Workspace {
                         .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&target, None, !w.is_shared(), cx))))
                 }
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-                { None::<Stateful<Div>> }
+                { None::<MenuItem> }
             })
             .child(
                 menu_item("dm-download", "export", crate::settings::text("下载为"), true, sub == Some(DocSub::Download))
@@ -438,13 +426,13 @@ impl Workspace {
                     })
                 }
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-                { None::<Stateful<Div>> }
+                { None::<MenuItem> }
             })
             .child(divider())
             // (a board file has no reading mode or references)
             .when(!board_file && editable, |d| d.child(
                 menu_item("dm-read", "eye-open", crate::settings::text("阅读模式"), false, false)
-                    .child(switch(reading))
+                    .child(Switch::new(reading))
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(move |w, _, window, cx| {
                         w.close_doc_menu(cx);
@@ -452,7 +440,7 @@ impl Workspace {
                     })),
             ).child(
                 menu_item("dm-refs", "list", crate::settings::text("显示引用列表"), false, false)
-                    .child(switch(refs_shown))
+                    .child(Switch::new(refs_shown))
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(move |w, _, _, cx| {
                         w.close_doc_menu(cx);
@@ -498,18 +486,15 @@ impl Workspace {
         // the items and dividers above a submenu's item that aren't shown
         let hidden = if board { (2, 2) } else { (0, 0) };
         let sub_el = match sub {
-            Some(DocSub::Width) => Some((item_top(0, 0) - 1. - PAD, self.width_panel(width, cx).child(recorder()).into_any_element())),
+            Some(DocSub::Width) => Some((item_top(0, 0) - PAD, self.width_panel(width, cx).child(recorder()).into_any_element())),
             // Level the submenu's first item with 下载为.
             Some(DocSub::Download) => Some((
-                item_top(6 + extra_rows + usize::from(child) - hidden.0 - hidden_actions, 3 - hidden.1) - 1. - PAD,
+                item_top(6 + extra_rows + usize::from(child) - hidden.0 - hidden_actions, 3 - hidden.1) - PAD,
                 {
                     let pdf = id.clone();
-                    popover()
-                        .id("dm-download-menu")
-                        .occlude()
+                    Popover::new("dm-download-menu")
+                        .menu()
                         .min_w(px(130.))
-                        .px(px(5.))
-                        .py(px(PAD))
                         .child(recorder())
                         .when(crate::printing::SUPPORTED, |d| d.child(sub_item("dm-pdf", "PDF").on_click(cx.listener(move |w, _, window, cx| w.export_pdf(&pdf, window, cx)))))
                         .child(sub_item("dm-md", "Markdown").on_click(cx.listener(move |w, _, _, cx| w.open_export_md(&id, cx))))
@@ -528,25 +513,31 @@ impl Workspace {
         out
     }
 
-    /// 为当前窗口选择合适页宽: 默认 / 较宽 / 全宽 cards.
-    fn width_panel(&self, current: PageWidth, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// 为当前窗口选择合适页宽: 默认 / 较宽 / 全宽 cards. The panel takes its width from its
+    /// contents (the caption, or three cards each as wide as its longest label) so no
+    /// language wraps; the cards share it equally.
+    fn width_panel(&self, current: PageWidth, cx: &mut Context<Self>) -> Popover {
+        use crate::design::{color, geo};
+        // A choice card: `primary` edge round the picked one, `accent` under the pointer.
         let card = |id: &'static str, label: &'static str, w: PageWidth, line: f32| {
             let on = w == current;
-            let line_color = if on { Theme::primary() } else { theme::c(craft::N400) };
+            let line_color = if on { color::foreground() } else { color::muted_foreground() };
             div()
                 .id(id)
-                .w(px(56.))
+                .flex_1()
+                .min_w(px(64.))
                 .h(px(66.))
-                .p(px(4.))
+                .px(px(8.))
+                .pt(px(4.))
                 .flex()
                 .flex_col()
                 .items_center()
-                .rounded(px(9.))
+                .rounded(px(geo().button_r))
                 .border_1()
-                .border_color(if on { Theme::primary() } else { Theme::line_border() })
-                .bg(crate::theme::raised(Theme::bg_body()))
+                .border_color(if on { color::primary() } else { color::border() })
+                .bg(color::popover())
                 .cursor_pointer()
-                .when(!on, |d| d.hover(|s| s.border_color(Theme::primary())))
+                .when(!on, |d| d.hover(|s| s.bg(color::accent())))
                 .child(
                     div()
                         .w(px(46.))
@@ -557,42 +548,40 @@ impl Workspace {
                         .items_center()
                         .gap(px(2.))
                         .rounded(px(2.))
-                        .bg(if on { theme::c(craft::B100) } else { theme::c(craft::N100) })
+                        .bg(color::muted())
                         .children((0..4).map(move |_| div().w(px(line)).h(px(2.)).flex_none().bg(line_color))),
                 )
                 .child(
                     div()
                         .mt(px(6.))
-                        .text_size(px(12.))
+                        .whitespace_nowrap()
+                        .text_size(px(geo().text_xs))
                         .line_height(px(18.))
-                        .text_color(if on { Theme::primary() } else { Theme::text() })
+                        .text_color(if on { color::foreground() } else { color::muted_foreground() })
                         .child(crate::settings::label(label)),
                 )
                 .on_click(cx.listener(move |ws, _, _, cx| ws.set_page_width(w, cx)))
         };
-        popover()
-            .id("dm-width-panel")
-            .occlude()
+        Popover::new("dm-width-panel")
             .relative()
-            .w(px(238.))
-            .h(px(136.))
+            .min_w(px(238.))
+            .p(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
             .child(
                 div()
-                    .absolute()
-                    .left(px(19.))
-                    .top(px(14.))
-                    .text_size(px(12.))
+                    .whitespace_nowrap()
+                    .text_size(px(geo().text_xs))
                     .line_height(px(18.))
-                    .text_color(Theme::text_caption())
+                    .text_color(color::muted_foreground())
                     .child(crate::settings::text("为当前窗口选择合适页宽")),
             )
             .child(
                 div()
-                    .absolute()
-                    .left(px(19.))
-                    .top(px(47.))
+                    .w_full()
                     .flex()
-                    .gap(px(16.))
+                    .gap(px(12.))
                     .child(card("pw-standard", crate::settings::text("默认"), PageWidth::Standard, 20.))
                     .child(card("pw-wide", crate::settings::text("较宽"), PageWidth::Wide, 28.))
                     .child(card("pw-full", crate::settings::text("全宽"), PageWidth::Full, 38.)),

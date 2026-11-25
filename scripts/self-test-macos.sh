@@ -13,7 +13,8 @@ mkdir -p "$out"
 out=$(cd "$out" && pwd)
 place=$(mktemp -d "${TMPDIR:-/tmp}/quiet-md 自检 安装.XXXXXX")
 trap 'rm -rf "$place"' EXIT
-ditto -x -k "$zip" "$place"
+# unzip, as third-party tools do: stray `._*` entries would break the seal.
+unzip -q "$zip" -d "$place"
 app="$place/quiet.md.app"
 codesign --verify --deep --strict "$app"
 # A notarized package also passes Gatekeeper as downloaded.

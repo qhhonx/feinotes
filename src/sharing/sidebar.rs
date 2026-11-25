@@ -196,7 +196,6 @@ impl Workspace {
         self.with_sidebar(true, |w| w.render_folder_rows(window, cx))
     }
 
-    #[cfg(target_os = "macos")]
     pub(crate) fn shared_sidebar_folder_writable(&self, room: &Room, cx: &App) -> bool {
         if !room.scope.folder { return false; }
         if let Some(writable) = shared::live_room_writable(room, cx) { return writable; }
@@ -336,14 +335,15 @@ impl Workspace {
             .flex().items_center().gap(px(0.)).rounded(px(crate::sidebar::ROW_R)).cursor_pointer()
             .text_size(px(crate::theme::ui_font())).text_color(crate::sidebar::text_color()).group("doc-row")
             .when(batch, |d| d.child(crate::sidebar::batch_check_slot().mr(px(4.)).when(!member, |slot|
-                slot.child(crate::sidebar::checkbox(if checked { crate::sidebar::Check::On } else { crate::sidebar::Check::Off }, blocked, "doc-row")))))
+                slot.child(crate::sidebar::checkbox(if checked { crate::sidebar::Check::On } else { crate::sidebar::Check::Off }, blocked)))))
             .when(batch && !member && checked, |d| d.bg(crate::sidebar::selection_fill()))
             .child(crate::sidebar::entry_icon(entry, false, false, cx))
             .child(self.sidebar_title(entry, SidebarSection::Shared, selected, false, cx))
             .children(end)
-            .when(!member, |d| d.on_mouse_down(MouseButton::Right, cx.listener({ let id = id.clone(); move |w, event: &MouseDownEvent, _, cx| {
+            .when((!member || cfg!(target_os = "macos")) && (!member || !batch), |d| d.on_mouse_down(MouseButton::Right, cx.listener({ let id = id.clone(); move |w, event: &MouseDownEvent, _, cx| {
                 if w.batch.is_some() && !w.batch.as_ref().is_some_and(|ids| ids.contains(&id)) { w.toggle_check(&id); }
                 w.row_menu = Some(crate::app::RowMenu { id: format!("shared:{id}"), pos: event.position, corner: Anchor::TopLeft, sub: false, batch: w.batch.is_some() });
+                w.create_menu = None;
                 cx.stop_propagation(); cx.notify();
             }})))
             .on_mouse_down(MouseButton::Left, cx.listener(move |w, event: &MouseDownEvent, _, cx| {

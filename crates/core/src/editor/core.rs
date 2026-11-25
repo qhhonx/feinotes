@@ -506,6 +506,9 @@ pub struct Core {
     /// Backspace at the start of the body merges the first paragraph into the
     /// title and moves the caret there (设置 › 退格键回到标题).
     pub backspace_to_title: bool,
+    /// Where the caret last typed between a `$` / `$$` pair (#69): the pair
+    /// becomes an equation once the caret leaves it (`equation_on_leave`).
+    typed_in_equation: Option<Pos>,
 }
 
 impl Core {
@@ -534,6 +537,7 @@ impl Core {
             path_misses: Cell::new((0, 1)),
             notice: None,
             backspace_to_title: false,
+            typed_in_equation: None,
         }
     }
 
@@ -792,6 +796,20 @@ impl Core {
         hit
     }
 
+    /// Links to files a move rewrote on disk (`Store::follow_moved_links`:
+    /// `to` gives the new URL of one that changed), in the document and across
+    /// the undo / redo history, outside the edit history, so neither writes the
+    /// old path back. Whether the document changed.
+    pub fn relink_files(&mut self, to: &dyn Fn(&str) -> Option<String>) -> bool {
+        let has = |doc: &Document| doc.links().iter().any(|l| to(l).is_some());
+        for s in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            if has(&s.doc) { std::sync::Arc::make_mut(s).doc.map_links(&mut |l| to(l)); }
+        }
+        let hit = self.doc.map_links(&mut |l| to(l));
+        if hit { self.generation += 1; }
+        hit
+    }
+
     /// Every file source this editor can still bring back: the cover, images,
     /// attachments (inline ones too) and 数据表 files of the open document, and
     /// of the undo and redo snapshots behind it. The unused-asset sweep reads
@@ -849,6 +867,7 @@ impl Core {
     }
 
     pub fn undo(&mut self) -> bool {
+        self.typed_in_equation = None;
         let Some(s) = self.undo.pop_back() else { return false };
         self.generation += 1;
         let mut doc = s.doc.clone();
@@ -864,6 +883,7 @@ impl Core {
     }
 
     pub fn redo(&mut self) -> bool {
+        self.typed_in_equation = None;
         let Some(s) = self.redo.pop() else { return false };
         self.generation += 1;
         let mut doc = s.doc.clone();
@@ -1137,6 +1157,37 @@ impl Core {
     /// Insert an equation at the caret; returns its position.
     pub fn insert_equation(&mut self, src: &str) -> Option<Pos> {
         self.insert_object(InlineKind::Equation(src.to_string()))
+    }
+
+    /// The selected text as LaTeX source, if it can become an equation (#192):
+    /// within one text block (not the title or a code block), not blank, and
+    /// free of inline objects. Inline code and links are dropped.
+    pub fn selection_equation_source(&self) -> Option<String> {
+        let (s, e) = self.ordered();
+        if s.block != e.block || s.offset >= e.offset || s.block == TITLE || self.is_code(s.block) {
+            return None;
+        }
+        let part = self.text_of(s.block)?.slice(s.offset..e.offset);
+        let src = part.plain_text();
+        (!src.trim().is_empty() && part.runs.iter().all(|r| r.marks.inline.is_none())).then_some(src)
+    }
+
+    /// Turn the selected text into an inline equation with it as the source
+    /// (one undo step); returns the equation's position.
+    pub fn selection_to_equation(&mut self) -> Option<Pos> {
+        let src = self.selection_equation_source()?;
+        let (s, e) = self.ordered();
+        let mut marks = self.text_of(s.block)?.slice(s.offset..e.offset).runs.first()?.marks.clone();
+        marks.code = false;
+        marks.link = None;
+        marks.inline = Some(crate::docxml::to_inline(InlineKind::Equation(src)));
+        self.checkpoint(EditKind::Other);
+        self.break_coalescing();
+        let mut ins = RichText::default();
+        ins.push(EQUATION, marks);
+        self.text_mut(s.block)?.replace(s.offset..e.offset, &ins);
+        self.sel = Selection::caret(Pos::new(s.block, s.offset + EQUATION.len()));
+        Some(s)
     }
 
     /// Insert a 按钮 at the caret; returns its position.
@@ -3184,7 +3235,6 @@ impl Core {
             ("~", |m| m.underline = true, true),
             ("`", |m| m.code = true, false),
         ];
-        let boundary = |c: Option<char>| c.is_none_or(|c| c.is_whitespace() || "，。；：！？、）】》”’".contains(c));
         // `$x$` and `$$x$$` become an inline equation.
         for delim in ["$$", "$"] {
             if !before.ends_with(delim) || t.slice(0..p.offset).runs.last().is_some_and(|r| r.marks.code) {
@@ -3192,28 +3242,8 @@ impl Core {
             }
             let inner_end = before.len() - delim.len();
             let Some(open) = before[..inner_end].rfind(delim) else { continue };
-            let inner = &before[open + delim.len()..inner_end];
-            let src = crate::paste::markdown_equation_source(inner);
-            let money = delim == "$" && inner.starts_with(|c: char| c.is_ascii_digit()) && !crate::paste::is_numeric_math(inner);
-            if money || inner.trim().is_empty()
-                || inner.starts_with('$')
-                || inner.ends_with('$')
-                || inner.contains(EQUATION)
-                || before[..open].ends_with('$')
-                || !boundary(before[..open].chars().next_back())
-                || !boundary(after.chars().next())
-                || t.slice(open..p.offset).runs.iter().any(|r| r.marks.code || r.marks.inline.is_some())
-            {
-                continue;
-            }
-            let mut marks = t.marks_at(open + delim.len());
-            marks.inline = Some(crate::docxml::to_inline(InlineKind::Equation(src)));
-            self.checkpoint(EditKind::Other);
-            self.break_coalescing();
-            let mut ins = RichText::default();
-            ins.push(EQUATION, marks);
-            let t = self.text_mut(p.block).unwrap();
-            t.replace(open..p.offset, &ins);
+            let Some(src) = equation_between(t, open, inner_end, delim) else { continue };
+            self.make_equation(p.block, open..p.offset, open + delim.len(), src);
             self.sel = Selection::caret(Pos::new(p.block, open + EQUATION.len()));
             return true;
         }
@@ -3232,7 +3262,7 @@ impl Core {
             if before[..open].ends_with(dc) {
                 continue;
             }
-            if bounded && !(boundary(before[..open].chars().next_back()) && boundary(after.chars().next())) {
+            if bounded && !(md_boundary(before[..open].chars().next_back()) && md_boundary(after.chars().next())) {
                 continue;
             }
             if dc != '`' && t.slice(open..inner_end).runs.iter().any(|r| r.marks.code) {
@@ -3265,7 +3295,47 @@ impl Core {
             self.pending_marks = Some(m);
             return true;
         }
+        if equation_around(t, p.offset).is_some() { self.typed_in_equation = Some(p); }
         false
+    }
+
+    /// `$x$` / `$$x$$` typed delimiters first (#69): the caret typed between
+    /// the pair and has now left it, so it becomes an equation by the rules of
+    /// a typed closing `$`. While the caret stays inside, nothing happens.
+    pub fn equation_on_leave(&mut self) -> bool {
+        let Some(Pos { block, offset }) = self.typed_in_equation.take() else { return false };
+        if !self.markdown_enabled(block) { return false; }
+        let Some(t) = self.text_of(block) else { return false };
+        let at = offset.min(t.len());
+        if !t.text.is_char_boundary(at) { return false; }
+        let Some((range, inner, src)) = equation_around(t, at) else { return false };
+        let head = self.sel.head;
+        if self.sel.is_collapsed() && self.block_sel.is_none() && self.cell_sel.is_none() && head.block == block
+            && equation_around(t, head.offset).is_some_and(|(r, ..)| r.start == range.start) {
+            self.typed_in_equation = Some(head);
+            return false;
+        }
+        let shrink = range.len() - EQUATION.len();
+        self.make_equation(block, range.clone(), inner, src);
+        // The selection stays on the characters it was on.
+        for p in [&mut self.sel.anchor, &mut self.sel.head] {
+            if p.block == block && p.offset >= range.end { p.offset -= shrink; }
+            else if p.block == block && p.offset > range.start { p.offset = range.start + EQUATION.len(); }
+        }
+        true
+    }
+
+    /// `range` of `block` (a `$` pair and what is between, which starts at
+    /// `inner`) becomes an equation of `src`, as one undo step.
+    fn make_equation(&mut self, block: BlockId, range: Range<usize>, inner: usize, src: String) {
+        let t = self.text_of(block).unwrap();
+        let mut marks = t.marks_at(inner);
+        marks.inline = Some(crate::docxml::to_inline(InlineKind::Equation(src)));
+        self.checkpoint(EditKind::Other);
+        self.break_coalescing();
+        let mut ins = RichText::default();
+        ins.push(EQUATION, marks);
+        self.text_mut(block).unwrap().replace(range, &ins);
     }
 
     // ---- paste
@@ -3496,6 +3566,43 @@ impl Core {
 /// marker (`＃＃ `, `－ `, `—— `, `1． `, `＞ `, `···lang`), as the ASCII
 /// `block_trigger` matches. Only the comparison sees it: the prefix is
 /// removed either way, so ⌘Z still brings back what was typed.
+/// Where inline Markdown may open or close: a line edge, whitespace or CJK
+/// punctuation.
+fn md_boundary(c: Option<char>) -> bool { c.is_none_or(|c| c.is_whitespace() || "，。；：！？、）】》”’".contains(c)) }
+
+/// The equation source of `delim` at `open`, the text up to `close` and
+/// `delim` again, when that reads as one: not empty, not an amount
+/// (`$5 and $`), on boundaries, not in code or around an inline object.
+fn equation_between(t: &RichText, open: usize, close: usize, delim: &str) -> Option<String> {
+    let inner = &t.text[open + delim.len()..close];
+    let money = delim == "$" && inner.starts_with(|c: char| c.is_ascii_digit()) && !crate::paste::is_numeric_math(inner);
+    if money || inner.trim().is_empty()
+        || inner.starts_with('$')
+        || inner.ends_with('$')
+        || inner.contains(EQUATION)
+        || t.text[..open].ends_with('$')
+        || !md_boundary(t.text[..open].chars().next_back())
+        || !md_boundary(t.text[close + delim.len()..].chars().next())
+        || t.slice(open..close + delim.len()).runs.iter().any(|r| r.marks.code || r.marks.inline.is_some())
+    {
+        return None;
+    }
+    Some(crate::paste::markdown_equation_source(inner))
+}
+
+/// The `$x$` / `$$x$$` around `offset` (strictly between the pair, on one
+/// line) that `equation_between` reads as an equation: its range, where the
+/// source starts, and the source.
+fn equation_around(t: &RichText, offset: usize) -> Option<(Range<usize>, usize, String)> {
+    let line = t.text[..offset].rfind('\n').map_or(0, |i| i + 1)..t.text[offset..].find('\n').map_or(t.len(), |i| offset + i);
+    ["$$", "$"].into_iter().find_map(|delim| {
+        let open = line.start + t.text[line.start..offset].rfind(delim)?;
+        let close = offset + t.text[offset..line.end].find(delim)?;
+        if open + delim.len() > offset { return None; }
+        Some((open..close + delim.len(), open + delim.len(), equation_between(t, open, close, delim)?))
+    })
+}
+
 fn ascii_marker(prefix: &str) -> String {
     if prefix == "—— " {
         return "- ".into();
@@ -4239,6 +4346,69 @@ mod tests {
         }
     }
 
+    /// #69: `$$` (or `$$$$`) typed first, the caret moved between them and the
+    /// source typed there: an equation once the caret leaves, not before.
+    #[test]
+    fn equation_delimiters_first() {
+        for (pair, inside, source) in [("$$", 1, "X_t"), ("$$$$", 2, "\\frac{a}{b}")] {
+            for after in ["", " cd"] {
+                let mut c = doc("<title>T</title><p></p>");
+                let b = id(&c, 1);
+                c.sel = Selection::caret(Pos::new(b, 0));
+                typed(&mut c, &format!("ab {pair}{after}"));
+                c.sel = Selection::caret(Pos::new(b, 3 + inside));
+                typed(&mut c, source);
+                assert!(!c.equation_on_leave(), "still inside");
+                assert!(!c.text_of(b).unwrap().text.contains(EQUATION));
+                let raw = c.text_of(b).unwrap().text.clone();
+                c.sel = Selection::caret(Pos::new(b, raw.len()));
+                assert!(c.equation_on_leave());
+                assert_eq!(c.equation_source(Pos::new(b, 3)).as_deref(), Some(source.replace("\\\\", "\\").as_str()));
+                assert_eq!(c.text_of(b).unwrap().text, format!("ab {EQUATION}{after}"));
+                assert_eq!(c.sel.head.offset, c.text_of(b).unwrap().len(), "the caret stays after the text");
+                assert!(!c.equation_on_leave(), "once");
+                c.undo();
+                assert_eq!(c.text_of(b).unwrap().text, raw);
+            }
+        }
+        // Left by moving before the pair: the caret keeps its place.
+        let mut c = doc("<title>T</title><p></p>");
+        let b = id(&c, 1);
+        c.sel = Selection::caret(Pos::new(b, 0));
+        typed(&mut c, "ab $$");
+        c.sel = Selection::caret(Pos::new(b, 4));
+        typed(&mut c, "y");
+        c.sel = Selection::caret(Pos::new(b, 1));
+        assert!(c.equation_on_leave());
+        assert_eq!(c.sel.head.offset, 1);
+        assert_eq!(c.equation_source(Pos::new(b, 3)).as_deref(), Some("y"));
+    }
+
+    /// What the typed closing `$` leaves alone stays text this way too: an
+    /// amount, no boundary, an empty pair, a pair nobody typed in.
+    #[test]
+    fn equation_delimiters_first_rules() {
+        for (text, inside, typed_in) in [("$$", 1, "5 and 6 "), ("x$$", 2, "a"), ("$ $", 1, "")] {
+            let mut c = doc("<title>T</title><p></p>");
+            let b = id(&c, 1);
+            c.sel = Selection::caret(Pos::new(b, 0));
+            typed(&mut c, text);
+            c.sel = Selection::caret(Pos::new(b, inside));
+            typed(&mut c, typed_in);
+            let len = c.text_of(b).unwrap().len();
+            c.sel = Selection::caret(Pos::new(b, len));
+            assert!(!c.equation_on_leave(), "{text} {typed_in}");
+            assert!(!c.text_of(b).unwrap().text.contains(EQUATION), "{text} {typed_in}");
+        }
+        let mut c = doc("<title>T</title><p>$a$ b</p>");
+        let b = id(&c, 1);
+        // The caret only passing through: nothing typed between the pair.
+        c.sel = Selection::caret(Pos::new(b, 1));
+        assert!(!c.equation_on_leave());
+        c.sel = Selection::caret(Pos::new(b, 5));
+        assert!(!c.equation_on_leave());
+    }
+
     #[test]
     fn equation_edits_coalesce() {
         let mut c = doc("<title>T</title><p>ab</p>");
@@ -4651,6 +4821,35 @@ mod tests {
         let p = c.insert_equation("X_t").unwrap();
         c.sel = Selection { anchor: Pos::new(b, 0), head: Pos::new(b, p.offset + EQUATION.len() + 1) };
         assert_eq!(c.selected_text(), "aX_tb");
+    }
+
+    #[test]
+    fn selection_to_equation() {
+        let mut c = doc("<title>T</title><p>a <b>x^2</b><code>+1</code> b</p><p>c</p><pre lang=\"plaintext\"><code>y</code></pre>");
+        let (b, cb, code) = (id(&c, 1), id(&c, 2), id(&c, 3));
+        let before = xml(&c);
+        c.sel = Selection { anchor: Pos::new(b, 7), head: Pos::new(b, 2) };
+        assert_eq!(c.selection_equation_source().as_deref(), Some("x^2+1"));
+        let p = c.selection_to_equation().unwrap();
+        assert_eq!(p, Pos::new(b, 2));
+        assert_eq!(c.equation_source(p).as_deref(), Some("x^2+1"));
+        assert_eq!(c.sel, Selection::caret(Pos::new(b, 2 + EQUATION.len())));
+        let after = xml(&c);
+        assert!(after.contains("<p>a <latex>x^2+1</latex> b</p>"), "{after}");
+        // Markdown keeps it as `$...$`, and reads it back as the same equation.
+        let md = crate::markdown::write_file(&c.doc, "", None);
+        assert!(md.contains("a $x^2+1$ b"), "{md}");
+        let back = crate::markdown::parse_file(&md, "T", None);
+        assert_eq!(crate::markdown::write_file(&back, "", None), md);
+        assert_eq!(back.blocks[0].text.runs.iter().find_map(|r| r.marks.inline.as_ref()?.equation().map(str::to_string)).as_deref(), Some("x^2+1"));
+        // The equation itself, across blocks, blank, in code: refused.
+        for (a, h) in [(Pos::new(b, 2), Pos::new(b, 2 + EQUATION.len())), (Pos::new(b, 0), Pos::new(cb, 1)), (Pos::new(b, 1), Pos::new(b, 2)), (Pos::new(code, 0), Pos::new(code, 1))] {
+            c.sel = Selection { anchor: a, head: h };
+            assert!(c.selection_to_equation().is_none());
+        }
+        assert_eq!(xml(&c), after);
+        c.undo();
+        assert_eq!(xml(&c), before);
     }
 
     #[test]

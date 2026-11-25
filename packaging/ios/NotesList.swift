@@ -1,4 +1,66 @@
 import UIKit
+
+@MainActor
+final class FeiToastView: UIVisualEffectView {
+    let message = UILabel()
+    private let icon = UIImageView()
+
+    init(id: String) {
+        super.init(effect: UIBlurEffect(style: .systemMaterial))
+        message.font = .preferredFont(forTextStyle: .subheadline)
+        message.adjustsFontForContentSizeCategory = true
+        message.numberOfLines = 0
+        icon.contentMode = .scaleAspectFit
+        let content = UIStackView(arrangedSubviews: [icon,message])
+        content.alignment = .center
+        content.spacing = 8
+        content.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(content)
+        layer.cornerRadius = 22
+        clipsToBounds = true
+        translatesAutoresizingMaskIntoConstraints = false
+        isHidden = true
+        isAccessibilityElement = true
+        accessibilityIdentifier = id
+        isUserInteractionEnabled = false
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            content.topAnchor.constraint(equalTo: contentView.topAnchor,constant: 10),
+            content.bottomAnchor.constraint(equalTo: contentView.bottomAnchor,constant: -10),
+            content.leadingAnchor.constraint(equalTo: contentView.leadingAnchor,constant: 16),
+            content.trailingAnchor.constraint(equalTo: contentView.trailingAnchor,constant: -16),
+            icon.widthAnchor.constraint(equalToConstant: 18),
+            icon.heightAnchor.constraint(equalToConstant: 18)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func attach(to host: UIView,bottomInset: CGFloat? = nil) {
+        if superview === host {
+            host.bringSubviewToFront(self)
+            return
+        }
+        removeFromSuperview()
+        host.addSubview(self)
+        let vertical = bottomInset.map { bottomAnchor.constraint(equalTo: host.keyboardLayoutGuide.topAnchor,constant: -$0) }
+            ?? topAnchor.constraint(equalTo: host.safeAreaLayoutGuide.topAnchor,constant: 8)
+        NSLayoutConstraint.activate([
+            vertical,
+            centerXAnchor.constraint(equalTo: host.safeAreaLayoutGuide.centerXAnchor),
+            widthAnchor.constraint(lessThanOrEqualTo: host.safeAreaLayoutGuide.widthAnchor,constant: -40)
+        ])
+    }
+
+    func update(_ text: String?,kind: String?,accent: UIColor) {
+        message.text = text
+        accessibilityLabel = text
+        isHidden = text == nil
+        icon.image = UIImage(systemName: kind == "error" ? "exclamationmark.circle.fill"
+            : kind == "success" ? "checkmark.circle.fill" : "info.circle.fill")
+        icon.tintColor = kind == "error" ? .systemRed : accent
+    }
+}
 import UIKit.UIGestureRecognizerSubclass
 
 /// Gives ordinary pans to the table and stationary holds to UIKit's context menu.
@@ -122,9 +184,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     private var labels: [String:String] = [:]
     private let count = UILabel()
     private let empty = UILabel()
-    private let notice = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
-    private let noticeText = UILabel()
-    private let noticeIcon = UIImageView()
+    private let notice = FeiToastView(id: "fei.notes.notice")
     private var palette = FeiMobileTheme.system
     private struct SearchOrigin { let scope: String; let query: String; let anchor: ListAnchor }
     private var searchOrigin: SearchOrigin?
@@ -329,16 +389,9 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         view.keyboardLayoutGuide.usesBottomSafeArea = false
         view.keyboardLayoutGuide.followsUndockedKeyboard = false
         NSLayoutConstraint.activate([tableView.topAnchor.constraint(equalTo: view.topAnchor),tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),tableView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor)])
-        noticeText.font = .preferredFont(forTextStyle: .subheadline); noticeText.adjustsFontForContentSizeCategory = true
-        noticeText.textColor = .label; noticeText.numberOfLines = 2
-        noticeIcon.translatesAutoresizingMaskIntoConstraints=false; noticeIcon.contentMode = .scaleAspectFit
-        let status=UIStackView(arrangedSubviews: [noticeIcon,noticeText]); status.axis = .horizontal; status.spacing=8; status.alignment = .center
-        status.translatesAutoresizingMaskIntoConstraints=false; notice.contentView.addSubview(status)
-        notice.layer.cornerRadius=22; notice.clipsToBounds=true; notice.translatesAutoresizingMaskIntoConstraints=false; notice.isHidden=true
-        notice.accessibilityIdentifier="fei.notes.notice"; notice.isAccessibilityElement=true; notice.isUserInteractionEnabled=false
-        view.addSubview(notice)
+        notice.message.numberOfLines = 2
         if #available(iOS 26.0, *) { installCompactSearchRow() }
-        NSLayoutConstraint.activate([notice.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor,constant: 8),notice.centerXAnchor.constraint(equalTo: view.centerXAnchor),notice.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor,constant: -40),notice.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),status.topAnchor.constraint(equalTo: notice.contentView.topAnchor,constant: 10),status.bottomAnchor.constraint(equalTo: notice.contentView.bottomAnchor,constant: -10),status.leadingAnchor.constraint(equalTo: notice.contentView.leadingAnchor,constant: 16),status.trailingAnchor.constraint(equalTo: notice.contentView.trailingAnchor,constant: -16),noticeIcon.widthAnchor.constraint(equalToConstant: 18),noticeIcon.heightAnchor.constraint(equalToConstant: 18)])
+        notice.attach(to: view)
     }
     @available(iOS 26.0, *)
     private func installCompactSearchRow() {
@@ -470,7 +523,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         }
         updateRowHeight()
         updateSearchTypography()
-        empty.font = interfaceFont(.body); noticeText.font = interfaceFont(.subheadline)
+        empty.font = interfaceFont(.body); notice.message.font = interfaceFont(.subheadline)
         rows = Dictionary(uniqueKeysWithValues: next.rows.map { ($0.id,$0) })
         let key = !next.query.isEmpty ? "result-count" : next.rows.contains(where: { $0.folder }) ? "item-count" : "note-count"
         if let selection = next.selection {
@@ -504,10 +557,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         }
         restoreSelection()
         let message = next.notice
-        noticeText.text=message; notice.accessibilityLabel=message; notice.isHidden=message == nil
-        let danger=next.notice_kind == "error"
-        noticeIcon.image=UIImage(systemName: danger ? "exclamationmark.circle.fill" : next.notice_kind == "success" ? "checkmark.circle.fill" : "info.circle.fill")
-        noticeIcon.tintColor=danger ? .systemRed : palette.accentColor
+        notice.update(message,kind: next.notice_kind,accent: palette.accentColor)
         if message != nil && message != previous?.notice { UIAccessibility.post(notification: .announcement,argument: message) }
         applyPinnedHeader()
         updateSelection(previous: previous?.selection)
@@ -823,7 +873,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             let item = coordinator?.rowItem(id,in: listing)
             let labelKey: String
             switch key {
-            case "delete" where item?.shared == true: labelKey = item?.share_end ?? "leave-shared"
+            case "delete" where item?.menu_root == id: labelKey = item?.share_end ?? "leave-shared"
+            case "delete" where item?.folder == true && item?.menu_root != nil: labelKey = "delete-child-folder"
             case "delete","restore","purge": labelKey = item?.folder == true ? key + "-folder" : key
             case "pin" where item?.pinned == true: labelKey = "unpin"
             case "star" where item?.starred == true: labelKey = "unstar"
@@ -848,8 +899,10 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         let item = coordinator?.rowItem(id,in: listing)
         if item?.offline_recovery == true { return swipe([("discard-recovery","trash",.systemRed)],id: id) }
         if listing.kind == "trash" { return swipe([("purge","trash",.systemRed)],id: id) }
-        guard coordinator?.canModifyFolderContents(browser: browsesWorkspace) == true else { return nil }
-        return swipe(item?.shared == true ? [("delete","trash",.systemRed)] : [("delete","trash",.systemRed),("move","folder",.systemBlue)],id: id)
+        guard let item,!id.hasPrefix("collection-") else { return nil }
+        if item.menu_root == id { return item.share_end == nil ? nil : swipe([("delete","trash",.systemRed)],id: id) }
+        if (item.menu_root != nil || item.inherited_share) && !item.menu_writable { return nil }
+        return swipe([("move","folder",.systemBlue),("delete","trash",.systemRed)],id: id)
     }
     private func draggableRow(_ path: IndexPath) -> Bool {
         guard let id = source.itemIdentifier(for: path) else { return false }

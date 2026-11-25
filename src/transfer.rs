@@ -10,8 +10,7 @@ use crate::app::Workspace;
 use crate::settings::display_title;
 use crate::model::{Block, BlockKind, Document, RichText};
 use crate::printing::{self, Job};
-use crate::theme::Theme;
-use crate::trash::{close_button, dialog, primary_button, scrim, secondary_button};
+use crate::design::{Button, Dialog, scrim};
 use crate::ui::{TipExt, ToastKind};
 use gpui::{prelude::FluentBuilder, *};
 use std::path::{Path, PathBuf};
@@ -238,14 +237,8 @@ fn file_name(doc: &Document) -> String {
 /// The modal mask (the window dimmed) and its dialog.
 fn mask(id: &'static str, dialog: impl IntoElement, close: impl Fn(&mut Workspace, &mut Context<Workspace>) + 'static, cx: &mut Context<Workspace>) -> AnyElement {
     deferred(
-        div()
+        scrim()
             .id(id)
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(scrim())
             .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, _, cx| close(w, cx)))
             .child(dialog),
     )
@@ -253,19 +246,8 @@ fn mask(id: &'static str, dialog: impl IntoElement, close: impl Fn(&mut Workspac
     .into_any_element()
 }
 
-/// 16px radio: the accent with a white dot when checked, else a white disc
-/// with the task box's rim.
-pub(crate) fn radio(on: bool) -> Div {
-    div()
-        .size(px(16.))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .when(on, |d| d.bg(Theme::primary()).child(div().size(px(6.)).rounded_full().bg(crate::theme::raised(Theme::bg_body()))))
-        .when(!on, |d| d.border_1().border_color(Theme::todo_box()).bg(crate::theme::raised(Theme::bg_body())))
-}
+/// The radio: `design::Radio`.
+pub(crate) fn radio(on: bool) -> crate::design::Radio { crate::design::Radio::new(on) }
 
 /// Percent-escapes in a Markdown link (`%20` and friends).
 fn percent_decode(s: &str) -> String {
@@ -593,15 +575,17 @@ impl Workspace {
         self.import_menu = None;
         cx.notify();
         let picked = crate::devtools::take_pick();
-        let (folders, extensions): (bool, &[&str]) = match kind {
+        let (folders, file_extensions): (bool, &[&str]) = match kind {
             ImportKind::Markdown => (false, &["md", "markdown", "mdown"]),
             ImportKind::Folder => (true, &[]),
             ImportKind::DocxXml => (false, &["xml"]),
             ImportKind::Csv => (false, &["csv", "tsv"]),
         };
+        #[cfg(target_os = "ios")]
+        let _ = file_extensions;
         let options = PathPromptOptions {
             files: !folders, directories: folders, multiple: !folders, prompt: Some(crate::settings::text("导入").into()),
-            #[cfg(not(target_os = "ios"))] extensions: (!folders).then(|| extensions.iter().map(|e| SharedString::from(*e)).collect()),
+            #[cfg(not(target_os = "ios"))] extensions: (!folders).then(|| file_extensions.iter().map(|e| SharedString::from(*e)).collect()),
         };
         let prompt = picked.is_none().then(|| cx.prompt_for_paths(options));
         cx.spawn_in(window, async move |this, cx| {
@@ -621,13 +605,13 @@ impl Workspace {
     /// The 导入 menu under the header icon.
     pub(crate) fn render_import_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (parent, pos) = self.import_menu.clone()?;
-        let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::ui::menu_row(id, SharedString::from(id)).child(crate::ui::icon(glyph, 16., Theme::icon())).child(label);
+        let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::design::MenuItem::new(id).icon(glyph).label(label);
         let item = |id: &'static str, glyph: &'static str, label: &'static str, kind: ImportKind| {
             let parent = parent.clone();
             row(id, glyph, label).on_click(cx.listener(move |w, _, window, cx| w.open_import_kind(kind, parent.clone(), window, cx)))
         };
         Some(deferred(anchored().anchor(Anchor::TopRight).position(pos).snap_to_window_with_margin(px(8.)).child(
-            crate::ui::popover().id("import-items").occlude().min_w(px(210.)).py(px(crate::ui::MENU_PAD_Y))
+            crate::design::Popover::new("import-items").menu().min_w(px(210.))
                 .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.import_menu = None; cx.notify(); }))
                 .child(item("import-md", "doc-md", crate::settings::tr("导入 Markdown 文件…", "Import Markdown Files…"), ImportKind::Markdown))
                 .child(item("import-folder", "folder", crate::settings::tr("导入文件夹…", "Import Folder…"), ImportKind::Folder))
@@ -644,9 +628,9 @@ impl Workspace {
             else if cfg!(target_os = "windows") { crate::settings::tr("在文件资源管理器中打开", "Open in File Explorer") }
             else { crate::settings::tr("在文件管理器中打开", "Open in File Manager") };
         Some(deferred(anchored().anchor(Anchor::TopRight).position(pos).snap_to_window_with_margin(px(8.)).child(
-            crate::ui::popover().id("place-items").occlude().w(px(210.)).py(px(crate::ui::MENU_PAD_Y))
+            crate::design::Popover::new("place-items").menu().w(px(210.))
                 .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.place_menu = None; cx.notify(); }))
-                .child(crate::ui::menu_row("place-open", SharedString::from("place-open")).child(crate::ui::icon("folder", 16., Theme::icon())).child(label)
+                .child(crate::design::MenuItem::new("place-open").icon("folder").label(label)
                     .on_click(cx.listener(move |w, _, _, cx| {
                         w.place_menu = None;
                         if let Some(dir) = w.store.folder_dir(folder.as_deref()) { cx.open_with_system(&dir); }
@@ -656,10 +640,10 @@ impl Workspace {
     }
 
     /// The header's … icon, left of 导入; its menu hangs below it, right-aligned.
-    pub(crate) fn place_button(&self, id: &'static str, folder: Option<String>, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(crate) fn place_button(&self, id: &'static str, folder: Option<String>, cx: &mut Context<Self>) -> crate::design::Button {
         let open = self.place_menu.is_some();
         crate::ui::header_icon(id, "ellipsis")
-            .when(open, |d| d.bg(Theme::fill_hover()))
+            .selected(open)
             .when(!open, |d| d.tip(crate::settings::tr("更多", "More"), None))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |w, ev: &ClickEvent, _, cx| {
@@ -669,10 +653,10 @@ impl Workspace {
     }
 
     /// The header's 导入 icon; its menu hangs below it, right-aligned.
-    pub(crate) fn import_button(&self, id: &'static str, parent: Option<String>, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(crate) fn import_button(&self, id: &'static str, parent: Option<String>, cx: &mut Context<Self>) -> crate::design::Button {
         let open = self.import_menu.is_some();
         crate::ui::header_icon(id, "import")
-            .when(open, |d| d.bg(Theme::fill_hover()))
+            .selected(open)
             .tip(crate::settings::tr("导入", "Import"), None)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |w, ev: &ClickEvent, _, cx| {
@@ -768,8 +752,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// 导出 Markdown 设置 as a modal: white, radius 16, a 15pt semibold
-    /// title over a hairline, 13pt options, the buttons on the right.
+    /// 导出 Markdown 设置 as a `Dialog`: its title, the options, the buttons
+    /// on the right.
     pub(crate) fn render_export_md(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let all = self.export_md.as_ref()?.all;
         let option = |id: &'static str, on: bool, label: &'static str, value: bool| {
@@ -787,56 +771,42 @@ impl Workspace {
                     }
                 }))
         };
-        let dialog = dialog("export-md")
+        let ws = cx.entity().downgrade();
+        let ws2 = ws.clone();
+        let dialog = Dialog::new("export-md")
+            .keys(&self.dialog_focus, move |_, cx| { let _ = ws.update(cx, |w, cx| { w.export_md = None; cx.notify(); }); },
+                Some(move |window: &mut Window, cx: &mut App| { let _ = ws2.update(cx, |w, cx| w.export_markdown(window, cx)); }))
             .relative()
             .w(px(720.))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .pt(px(24.))
-                    .pb(px(24.))
-                    .pl(px(24.))
-                    .pr(px(56.))
-                    .border_b_1()
-                    .border_color(Theme::line_divider())
-                    .text_size(px(15.))
-                    .line_height(px(24.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(crate::settings::text("导出 Markdown 设置")),
-            )
-            .child(close_button("export-md-close").absolute().top(px(27.)).right(px(25.)).on_click(cx.listener(|w, _, _, cx| {
+            .title(crate::settings::text("导出 Markdown 设置"))
+            .closable(cx.listener(|w, _, _, cx| {
                 w.export_md = None;
                 cx.notify();
-            })))
-            .child(
-                div().pt(px(24.)).px(px(24.)).pb(px(16.)).mb(px(24.)).child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .text_size(px(13.))
-                        .line_height(px(20.))
-                        .child(div().mr(px(40.)).text_color(Theme::text_caption()).child(crate::settings::text("内容范围")))
-                        .child(
-                            div()
-                                .flex()
-                                .gap(px(24.))
-                                .child(option("export-md-text", !all, crate::settings::text("仅文本（不含图片和附件）"), false))
-                                .child(option("export-md-all", all, crate::settings::text("所有内容"), true)),
-                        ),
-                ),
-            )
+            }))
             .child(
                 div()
-                    .px(px(24.))
-                    .pb(px(24.))
+                    .flex()
+                    .items_center()
+                    .child(div().mr(px(40.)).text_color(crate::design::color::muted_foreground()).child(crate::settings::text("内容范围")))
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(24.))
+                            .child(option("export-md-text", !all, crate::settings::text("仅文本（不含图片和附件）"), false))
+                            .child(option("export-md-all", all, crate::settings::text("所有内容"), true)),
+                    ),
+            )
+            .footer(
+                div()
                     .flex()
                     .justify_end()
-                    .gap(px(12.))
-                    .child(secondary_button("export-md-cancel", crate::settings::text("取消")).min_w(px(80.)).on_click(cx.listener(|w, _, _, cx| {
+                    .gap(px(8.))
+                    .child(Button::outline("export-md-cancel").label(crate::settings::text("取消")).min_w(px(80.)).on_click(cx.listener(|w, _, _, cx| {
                         w.export_md = None;
                         cx.notify();
                     })))
-                    .child(primary_button("export-md-ok", crate::settings::text("导出")).min_w(px(80.)).on_click(cx.listener(|w, _, window, cx| w.export_markdown(window, cx)))),
+                    .child(Button::primary("export-md-ok").label(crate::settings::text("导出")).min_w(px(80.)).on_click(cx.listener(|w, _, window, cx| w.export_markdown(window, cx)))),
             );
         Some(mask(
             "export-md-mask",

@@ -24,7 +24,7 @@ const SAVE_DELAY: Duration = Duration::from_millis(500);
 const SAVE_MAX_DELAY: Duration = Duration::from_secs(2);
 
 actions!(workspace, [NewDoc, OpenFile, OpenFolder, ImportDoc, ImportFolder, ToggleSidebar, FocusSearch, FindInDoc, ReplaceInDoc, OpenSettings, OpenAbout, CheckForUpdates, GoHome, CloseWindow, Quit,
-    ReplayOnboarding, HideApp, HideOthers, ShowAll, Minimize, Zoom, ToggleFullScreen]);
+    ReplayOnboarding, HideApp, HideOthers, ShowAll, Minimize, Zoom, ToggleFullScreen, ToggleDarkMode]);
 // A confirmation dialog's keys, in its own key context: ↩ is the action button, Esc 取消.
 actions!(confirm, [ConfirmOk, ConfirmCancel]);
 
@@ -154,6 +154,16 @@ fn menu_bar(markdown: bool) -> Vec<Menu> {
             },
             disabled: false,
         },
+        // 显示 (View). Its name per language, not through `tr`: the key 显示 is the verb
+        // "show" in the tables (Mostrar, Afficher…); these are the system's View menus.
+        Menu {
+            name: {
+                use crate::settings::Lang as L;
+                match crate::settings::lang() { L::Zh => "显示", L::ZhTw => "顯示", L::En => "View", L::Ja => "表示", L::Ko => "보기", L::Fr => "Présentation", L::Es => "Visualización", L::Ar => "عرض", L::Tr => "Görüntü" }.into()
+            },
+            items: vec![MenuItem::action(tr("切换深色 / 浅色", "Toggle Dark Mode"), ToggleDarkMode)],
+            disabled: false,
+        },
         Menu {
             name: tr("窗口", "Window").into(),
             items: vec![
@@ -212,6 +222,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-h", HideApp, None),
         KeyBinding::new("cmd-m", Minimize, None),
         KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
+        // ⌥⌘D is the system's Dock hiding; ⌃⌘D is free in the app (Cocoa's 查询 doesn't reach GPUI)
+        KeyBinding::new("ctrl-cmd-d", ToggleDarkMode, None),
     ]);
     // Windows: F11 for full screen, and Ctrl+H for 查找和替换 as in Office
     // and Notepad (written cmd-h: `shortcuts::pc_binding` maps cmd to
@@ -220,6 +232,9 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("f11", ToggleFullScreen, None)]);
     #[cfg(not(target_os = "macos"))]
     cx.bind_keys([KeyBinding::new("cmd-h", ReplaceInDoc, None)]);
+    // Ctrl+Shift+D there (written cmd-shift-d, mapped by `pc_binding`): Ctrl+Alt reads as AltGr on Windows (#290).
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([KeyBinding::new("cmd-shift-d", ToggleDarkMode, None)]);
     cx.on_action(|_: &HideApp, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -236,6 +251,14 @@ pub fn bind_keys(cx: &mut App) {
         }
     });
     cx.on_action(|_: &Quit, cx| cx.defer(quit));
+    // 切换深色 / 浅色: the other of the two, kept as the 外观 preference; under 跟随系统
+    // the look is the system's, so this is the opposite of the system's. After the
+    // key's dispatch, which borrows the window.
+    cx.on_action(|_: &ToggleDarkMode, cx| cx.defer(|cx| {
+        let Some(h) = cx.windows().into_iter().find_map(|w| w.downcast::<Workspace>()) else { return };
+        let to = if crate::theme::dark() { "light" } else { "dark" };
+        let _ = h.update(cx, |ws, _, cx| ws.set_pref(|p| p.appearance = to.into(), cx));
+    }));
     crate::modes::bind_keys(cx);
 }
 
@@ -327,8 +350,12 @@ pub enum View {
 pub enum Confirm {
     /// 删除 (to the 回收站); `batch` for the 批量操作 selection.
     Delete { ids: Vec<String>, batch: bool },
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     DeleteSharedFolder { room: crate::cloud_sync::shared::Room, id: String, title: String },
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    DeleteSharedDocument { room: crate::cloud_sync::shared::Room, id: String, title: String },
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    EndSharing { room: crate::cloud_sync::shared::Room },
     /// 回收站 → 恢复.
     Restore(String),
     /// 回收站 → 彻底删除.
@@ -456,6 +483,8 @@ pub struct Workspace {
     sidebar_was_open: bool,
     /// The window width before that widening, until the window takes the new size.
     widen_from: Option<f32>,
+    /// The keyboard's height last frame (iOS): when it grows, the caret is scrolled back into view.
+    keyboard_inset: f32,
     /// Narrowing the window hid the sidebar (not the user): widening it until
     /// the sidebar fits shows it again.
     sidebar_auto_hidden: bool,
@@ -505,6 +534,8 @@ pub struct Workspace {
     /// opened (given back when it closes); `None` while no dialog has it.
     pub confirm_focus: FocusHandle,
     pub confirm_return: Option<Option<WeakFocusHandle>>,
+    /// The keyboard while 导出 Markdown or 文档信息 dialog (the confirmation has its own, `confirm_focus`) is open.
+    pub dialog_focus: crate::design::DialogFocus,
     /// The first-launch pages laid over the window again (⌘⌥⇧O, Settings › About).
     pub onboarding: Option<Entity<crate::onboarding::Onboarding>>,
     pub view: View,
@@ -604,7 +635,14 @@ impl Workspace {
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub(crate) fn new_shared_window(store: SharedStore, note: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::build_window(true, Some(note), Some(store), window, cx)
+        #[cfg(target_os = "macos")]
+        {
+            let mut workspace = Self::build_window(true, Some(note.clone()), Some(store), window, cx);
+            if workspace.view == View::Home { workspace.sharing.sidebar_waiting = Some(note); }
+            workspace
+        }
+        #[cfg(target_os = "ios")]
+        { Self::build_window(true, Some(note), Some(store), window, cx) }
     }
 
     pub(crate) fn build_window(quick: bool, document: Option<String>, store: Option<SharedStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -686,6 +724,9 @@ impl Workspace {
                 cx.notify();
                 if window.is_window_active() {
                     if !this.is_shared() && let Some(id) = &this.current { crate::quick_note::used(id, cx); }
+                    // Several windows share one root in front: the one coming forward
+                    // puts its own back (its pasted images, its look).
+                    if let Some(id) = this.current.clone().or_else(|| this.folder_current.clone()) && this.store.set_active(&id) { cx.defer(crate::settings::root_switched); }
                     if !this.store.file_task_busy() { this.entries = this.store.list(); this.sort(); this.refresh_markdown(Some(window.window_handle().window_id()), cx); }
                     crate::update::check_if_stale(cx); cx.notify();
                 }
@@ -845,6 +886,7 @@ impl Workspace {
             sidebar_width,
             sidebar_was_open: false,
             widen_from: None,
+            keyboard_inset: 0.,
             sidebar_auto_hidden: false,
             sidebar_drag: false,
             folder_current: None,
@@ -875,6 +917,7 @@ impl Workspace {
             confirm: None,
             confirm_focus: cx.focus_handle(),
             confirm_return: None,
+            dialog_focus: crate::design::DialogFocus::new(cx),
             onboarding: None,
             view: View::Doc,
             home: Default::default(),
@@ -920,7 +963,7 @@ impl Workspace {
         }).flatten());
         match document {
             Some(id) => { if !ws.try_open(&id, window, cx) { ws.view = View::Home; } }
-            None if quick => ws.new_doc(window, cx),
+            None if quick => ws.new_quick_note(window, cx),
             None => { ws.view = View::Home; crate::gpui_compat::focus(window,&ws.focus,cx); }
         }
         // Kept in the top bar (not just a toast): the user should notice.
@@ -1272,6 +1315,13 @@ impl Workspace {
         self.create_doc(crate::settings::quick_new_markdown(), parent, window, cx);
     }
 
+    /// A 快速笔记 window's own note: at the top of the root Settings › 文档库
+    /// picks (2.8), else the first open root.
+    fn new_quick_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let parent = self.store.quick_note_root().map(|k| crate::shared_store::root_row(&k));
+        self.create_doc(crate::settings::quick_new_markdown(), parent, window, cx);
+    }
+
     /// Ask before 删除: a confirmation, then the 回收站.
     pub fn ask_delete(&mut self, id: &str, cx: &mut Context<Self>) {
         self.row_menu = None;
@@ -1283,6 +1333,18 @@ impl Workspace {
                 || (id != room.scope.note && self.shared_sidebar_folder_writable(&room, cx)) {
                 self.confirm = Some(Confirm::DeleteSharedFolder { room, id: id.into(), title });
                 cx.notify();
+            }
+            return;
+        }
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if let Some(room) = self.shared_child_room(id, cx) {
+            self.ask_delete_shared_descendant(&room, id, false, cx);
+            return;
+        }
+        #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+        if let Some(room) = self.current_room(cx).filter(|room| room.scope.folder) {
+            if let Some(folder) = self.entries.iter().find(|entry| entry.id == id).map(|entry| entry.meta.folder.is_some()) {
+                self.ask_delete_shared_descendant(&room, id, folder, cx);
             }
             return;
         }
@@ -1584,7 +1646,7 @@ impl Workspace {
             if !matches!(self.sharing_access(cx), Some(crate::cloud_sync::shared::Access::Owner | crate::cloud_sync::shared::Access::ReadWrite)) { return; }
             if section.is_none() { self.sharing.folded = false; }
         }
-        if crate::shared_store::root_of_row(id).is_some() { return; }
+        if crate::shared_store::root_of_row(id).is_some_and(|key| !self.store.can_rename_root(key)) { return; }
         let Some(title) = self.entries.iter().find(|e| e.id == id).map(|e| e.title.trim().to_string()) else { return };
         let field = cx.new(|cx| {
             let mut f = TextField::new(crate::model::UNTITLED, cx);
@@ -1616,11 +1678,17 @@ impl Workspace {
 
     pub(crate) fn finish_rename(&mut self, commit: bool, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let commit = commit && (!self.is_shared() || matches!(self.sharing_access(cx), Some(crate::cloud_sync::shared::Access::Owner | crate::cloud_sync::shared::Access::ReadWrite)));
+        let commit = commit && (!self.is_shared() || (self.sharing_access(cx).is_some_and(crate::cloud_sync::shared::Access::can_write)
+            && !crate::cloud_sync::shared::editing_paused(&self.store, cx)));
         let Some(r) = self.rename.take() else { return };
         let refocus = r.field.read(cx).is_focused(window);
         let title = r.field.read(cx).text.trim().to_string();
         let old = self.entries.iter().find(|e| e.id == r.id).map(|e| e.title.trim().to_string());
+        if let Some(key) = crate::shared_store::root_of_row(&r.id) {
+            if commit && old.is_some_and(|o| o != title) { self.rename_root(key, &title, window, cx); }
+            cx.notify();
+            return;
+        }
         // A document with children is renamed through its 正文, which renames the folder too.
         let r = Rename { id: self.note_or(&r.id), ..r };
         if commit && old.is_some_and(|o| o != title) {
@@ -1792,6 +1860,7 @@ impl Workspace {
         let Some(id) = self.current.clone() else { return };
         if !self.store.is_markdown(&id) || self.store.file_path(&id).is_none()
             || self.editor.as_ref().is_some_and(|e| e.read(cx).marked.is_some()) { return }
+        if !self.unsaved { self.follow_moved_links(cx); }
         if self.unsaved {
             self.flush(cx);
             return
@@ -1803,6 +1872,27 @@ impl Workspace {
         if let Ok(Some(doc)) = self.store.with(Some(&id), |s| s.refresh_markdown(&id)) {
             self.adopt_markdown(&id, doc, cx);
         }
+    }
+
+    /// A move rewrote the open document's links to files on disk
+    /// (`Store::follow_moved_links`): every window showing it follows, so no
+    /// save writes the old paths back. Each link as it was → as it is now.
+    pub(crate) fn follow_moved_links(&mut self, cx: &mut Context<Self>) -> Option<HashMap<String, String>> {
+        let id = self.current.clone().filter(|_| self.preview.is_none())?;
+        if self.is_shared() || self.store.file_path(&id).is_none() { return None; }
+        let root = self.store.document_root(&id);
+        let map = self.store.with(Some(&id), |s| Ok(s.follow_moved_links(&id))).ok().flatten()?;
+        let relink = |w: &mut Self, cx: &mut Context<Self>| if let Some(ed) = &w.editor {
+            ed.update(cx, |e, cx| if e.core.relink_files(&|l| map.get(l).cloned()) { cx.notify(); });
+        };
+        relink(self, cx);
+        for peer in Self::other_workspaces(cx) {
+            let view = peer.read(cx);
+            if view.current.as_deref() == Some(id.as_str()) && view.preview.is_none() && view.store.document_root(&id) == root {
+                peer.update(cx, |w, cx| relink(w, cx));
+            }
+        }
+        Some(map)
     }
 
     /// All live views share the store's save baseline, so install the accepted
@@ -1857,6 +1947,7 @@ impl Workspace {
             self.unsaved = false;
             return true;
         };
+        self.follow_moved_links(cx);
         let doc = &ed.read(cx).core.doc;
         let (title, icon, body, reminders, links) = (doc.title.text.clone(), doc.icon.clone(), doc.plain_text(), doc.reminders(), doc.doc_links());
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -1873,7 +1964,7 @@ impl Workspace {
                     e.body = body.into();
                     e.reminders = reminders;
                     e.links = links;
-                    e.meta = meta.clone();
+                    e.meta = self.store.as_row(&id, meta.clone());
                 }
                 // A mirrored edit was saved by this window. A sibling must not
                 // later write it a second time over a newer external edit.
@@ -1934,7 +2025,9 @@ impl Workspace {
         if cfg!(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-restore")) { return; }
         if !self.save_before(cx, |w, window, cx| w.migrate_library(window, cx)) { return }
         let root = crate::store::Store::root_dir();
-        let moved = crate::store::Store::migrate(&root).and_then(|r| Ok((r, crate::store::Store::open_at(root.clone())?)));
+        // Reopened under the same root key: what this computer keeps about it stays.
+        let key = self.store.with(None, |s| Ok(s.key().to_string())).unwrap_or_else(|_| crate::store::library_key(&root));
+        let moved = crate::store::Store::migrate(&root).and_then(|r| Ok((r, crate::store::Store::open_at_as(root.clone(), &key)?)));
         match moved {
             Err(e) => self.show_toast_kind(ToastKind::Error, &crate::localized_format!("没能改为真实文件夹，文档库保持原样：{}", "Couldn't move to real folders; the library is unchanged: {}", crate::settings::diagnostic(&e.to_string())), cx),
             Ok((report, store)) => {
@@ -2097,7 +2190,7 @@ impl Workspace {
     /// either side of it: the title (and, with the sidebar hidden, the
     /// traffic lights and 展开侧栏) on the left, … 导入 + on the right. Below a
     /// usable width it is None and the caller shows a search icon instead.
-    pub(crate) fn header_search(&self, window: &Window, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+    pub(crate) fn header_search(&self, window: &Window, cx: &mut Context<Self>) -> Option<crate::design::Field> {
         let main = f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w(window) } else { 0. };
         let title = crate::settings::label(crate::settings::text("主页"));
         let title_w = f32::from(window.text_system().shape_line(title.clone().into(), px(17.), &[window.text_style().highlight(HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() }).to_run(title.len())], None).width);
@@ -2109,13 +2202,12 @@ impl Workspace {
         let half = (main / 2. - left).min(main / 2. - right);
         let width = (main - 320.).min(2. * half).min(360.);
         if width < 120. { return None }
-        Some(crate::ui::toolbar_control(div().id("header-search").absolute().left(px((main - width) / 2.)).top(px(8.))
-            .w(px(width)).h(px(32.)).no_drag().flex().items_center().gap(px(8.)).px(px(10.))
-            .bg(Theme::fill_hover())
-            .cursor_pointer(), 9., Theme::fill_hover_strong, None)
-            .child(crate::ui::toolbar_icon("search", 15.))
-            .child(div().flex_1().min_w_0().truncate().text_size(px(13.)).text_color(Theme::text_caption()).child(crate::settings::tr("搜索文档…", "Search documents…")))
-            .when(width >= 200., |d| d.child(div().flex_none().text_size(px(11.)).text_color(Theme::text_placeholder()).child(crate::shortcuts::hint("workspace::FocusSearch", "⌘ + J").replace(" + ", " "))))
+        // A field that opens the search panel rather than taking text itself.
+        Some(crate::design::Field::new("header-search").sized(crate::design::FieldSize::Sm).absolute().left(px((main - width) / 2.)).top(px(8.))
+            .w(px(width)).no_drag().gap(px(8.)).cursor_pointer()
+            .child(crate::design::icon("search", 16., crate::design::color::muted_foreground()))
+            .child(div().flex_1().min_w_0().truncate().text_color(crate::design::color::placeholder()).child(crate::settings::tr("搜索文档…", "Search documents…")))
+            .when(width >= 200., |d| d.child(crate::design::Kbd::new(crate::shortcuts::hint("workspace::FocusSearch", "⌘ + J").replace(" + ", " "))))
             .tip(crate::settings::tr("搜索文档", "Search documents"), Some(crate::shortcuts::hint("workspace::FocusSearch", "⌘ + J")))
             .on_click(cx.listener(|w, _, window, cx| w.open_search(window, cx))))
     }
@@ -2151,7 +2243,7 @@ impl Workspace {
         let sharing = None::<Div>;
         // Independent icon controls, with equal top and right insets.
         let seg = crate::ui::header_icon;
-        let divider = || div().flex_none().w(px(1.)).h(px(18.)).bg(Theme::line_divider());
+        let divider = || crate::design::Separator::new().vertical().h(px(18.));
         // Breadcrumbs: the parent pages, each linking to itself, with the
         // middle ones folded into "…" when the chain is long.
         let ancestors = if let Some(id) = &self.current { self.ancestors(id) }
@@ -2267,29 +2359,19 @@ impl Workspace {
             .title_bar()
             .when(!self.sidebar_open, |d| {
                 d.child(
-                    crate::ui::toolbar_control(div()
-                        .id("open-sidebar")
+                    crate::design::Button::ghost("open-sidebar")
                         .no_drag()
-                        .flex_none()
                         .ml(px(4.))
-                        .size(px(28.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer(), 8., Theme::fill_hover_strong, None)
+                        .icon("panel-left-open")
                         .tip(crate::settings::tr("展开侧栏", "Show sidebar"), Some(crate::shortcuts::hint("workspace::ToggleSidebar", "⌘ + ]")))
-                        .child(crate::ui::toolbar_icon("panel-left-open", 17.))
                         .on_click(cx.listener(|w, _, _, cx| {
                             w.sidebar_open = true;
                             cx.notify();
                         })),
                 )
                 .child(
-                    crate::ui::toolbar_control(div().id("header-home").no_drag().flex_none().ml(px(4.)).size(px(28.))
-                        .flex().items_center().justify_center().cursor_pointer(),
-                        8., Theme::fill_hover_strong, Some(Theme::fill_pressed))
+                    crate::design::Button::ghost("header-home").no_drag().ml(px(4.)).icon("home")
                         .tip(crate::settings::text("返回主页"), None)
-                        .child(crate::ui::toolbar_icon("home", 18.))
                         .on_click(cx.listener(|w, _, window, cx| w.navigate_home(window, cx))),
                 )
                 .child(div().mx(px(12.)).child(divider()))
@@ -2524,6 +2606,19 @@ fn apply_cloud_notes(root: &std::path::Path, notes: &[crate::cloud_sync::NoteCha
                     editor.update(cx, |editor, cx| editor.receive_document(&crate::editor::core::Core::new(doc), cx));
                 }
             }
+            #[cfg(target_os = "ios")]
+            if remote && access == Some(crate::cloud_sync::shared::Access::Revoked)
+                && !ws.library_switching && !ws.sharing_busy()
+                && let Some(scope) = crate::cloud_sync::shared::scope(&ws.store,cx).cloned()
+            {
+                // Leave the share before clearing its document ID. A permissions sheet
+                // still tied to the old workspace would otherwise acquire a new scope.
+                if cx.has_global::<crate::cloud_sync::activity::ActivityView>() {
+                    crate::cloud_sync::activity::remove_room(&scope.note,cx);
+                }
+                ws.mobile_finish_share_exit(window,cx);
+                return;
+            }
             if ws.current.as_ref().is_some_and(|id| !ws.entries.iter().any(|e| &e.id == id)) {
                 if let Some(id) = ws.current.take() { ws.store.forget_loaded(&id); }
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -2639,6 +2734,19 @@ impl Render for Workspace {
         crate::editor::image::frame_drawn(window, cx);
         #[cfg(target_os = "ios")]
         if crate::mobile::native_shell(window) { return self.render_mobile(window, cx); }
+        // iOS: the status bar, the home indicator and the keyboard cover the window's
+        // edges (zero elsewhere). The window shrinks above the keyboard; the sidebar
+        // and the note's contents keep clear of the bars while the note's page runs
+        // under them. A taller keyboard scrolls the caret back above it.
+        #[cfg(not(target_os = "ios"))]
+        let (inset_top, inset_bottom, keyboard) = {
+            let insets = window.insets();
+            (f32::from(insets.safe_area.top), f32::from(insets.safe_area.bottom), f32::from(insets.ime.bottom))
+        };
+        #[cfg(target_os = "ios")]
+        let (inset_top, inset_bottom, keyboard) = (0., 0., 0.);
+        if keyboard > self.keyboard_inset + 0.5 && let Some(ed) = &self.editor { ed.update(cx, |e, cx| { e.autoscroll = true; cx.notify(); }); }
+        self.keyboard_inset = keyboard;
         #[cfg(not(target_os = "ios"))]
         {
         // Full screen: the sidebar is solid (`Theme::window`) and the native glass stays hidden.
@@ -2684,6 +2792,8 @@ impl Render for Workspace {
         let doc_menu = self.render_doc_menu(window, cx);
         let doc_info = self.render_doc_info(cx);
         let history = self.render_history(cx);
+        // a dialog holds the keyboard while open (Esc and ↩ go to it, not to the editor behind)
+        self.dialog_focus.sync(self.export_md.is_some() || self.doc_info.is_some(), window, cx);
         let confirm = self.render_confirm(window, cx);
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let conflict_review = self.render_conflict_review(window, cx);
@@ -2750,7 +2860,7 @@ impl Render for Workspace {
         // the two (no gutter, radius or border).
         // A document sits on its theme's page colour.
         let page = if self.view == View::Doc { crate::editor_theme::Theme::bg_body() } else { Theme::bg_body() };
-        let note = div().id("note").relative().flex_1().min_w_0().h_full().flex().bg(page).when(!crate::FEI_NOTES, |d| d.shadow(theme::shadow_note())).child(main)
+        let note = div().id("note").relative().flex_1().min_w_0().h_full().pt(px(inset_top)).flex().bg(page).when(!crate::FEI_NOTES, |d| d.shadow(theme::shadow_note())).child(main)
             .when(cfg!(target_os = "macos") && crate::FEI_NOTES, |d| d.overflow_hidden())
             // Files from the Finder dropped on 主页 or a folder's page are imported there.
             .when(!self.is_shared() && matches!(self.view, View::Home | View::Folder), |d| d
@@ -2783,6 +2893,7 @@ impl Render for Workspace {
             }))
             .relative()
             .size_full()
+            .pb(px(keyboard))
             .flex()
             .bg(Theme::window())
             .font_family(theme::ui_family())
@@ -2802,7 +2913,7 @@ impl Render for Workspace {
                 w.finish_sidebar_click(window, cx);
             }))
             .map(|d| self.workspace_actions(d,cx))
-            .children(sidebar)
+            .children(sidebar.map(|s| if inset_top + inset_bottom > 0. { div().flex_none().h_full().pt(px(inset_top)).pb(px(if keyboard > 0. { 0. } else { inset_bottom })).child(s).into_any_element() } else { s }))
             .child(note)
             .children(resize)
             .children(crate::ui::window_controls(window))
@@ -2993,18 +3104,11 @@ impl Workspace {
                     cx.stop_propagation();
                     cx.notify();
                 }
-                #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                if ev.keystroke.key == "escape" && (w.sharing.panel_open || w.sharing.sync_panel_open) {
-                    w.sharing.panel_open = false;
-                    w.sharing.sync_panel_open = false;
-                    cx.stop_propagation();
-                    cx.notify();
-                }
             }))
             // Esc leaves 批量操作 (closing its menu or confirmation first), even from the editor.
             .capture_key_down(cx.listener(|w, ev: &KeyDownEvent, window, cx| {
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                if ev.keystroke.key == "escape" && w.sharing.sheet.is_some() {
+                if ev.keystroke.key == "escape" && (w.sharing.sheet.is_some() || w.sharing.panel_open || w.sharing.sync_panel_open) {
                     w.close_sharing(window, cx); cx.stop_propagation(); return;
                 }
                 let undo = crate::gpui_compat::secondary(ev.keystroke.modifiers,cx) && matches!(ev.keystroke.key.as_str(), "z" | "y");

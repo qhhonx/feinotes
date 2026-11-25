@@ -4,8 +4,7 @@
 
 use crate::app::Workspace;
 use crate::model::Document;
-use crate::theme::Theme;
-use crate::ui::{format_date, format_relative, icon};
+use crate::ui::{format_date, format_relative};
 use gpui::{prelude::FluentBuilder, *};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -137,13 +136,13 @@ impl Workspace {
         }
     }
 
-    /// The modal (white, radius 16): a 15pt semibold title with the grey
-    /// close disc, a quiet selected nav item and soft tiles.
+    /// A `Dialog` laid out edge to edge: the title with a close button, the
+    /// one selected nav item and soft tiles.
     pub(crate) fn render_doc_info(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if cfg!(target_os = "ios") { return None; }
         let info = self.doc_info.clone()?;
         let section = |title: &'static str| {
-            div().text_size(px(13.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::text()).child(title)
+            div().text_size(px(13.)).line_height(px(20.)).font_weight(FontWeight::MEDIUM).text_color(crate::design::color::foreground()).child(title)
         };
         let tile = |label: &'static str, value: String, big: bool| {
             div()
@@ -153,15 +152,15 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .gap(px(16.))
-                .rounded(px(10.))
-                .bg(Theme::bg_overlay())
-                .child(div().text_size(px(13.)).line_height(px(20.)).text_color(Theme::text_caption()).child(label))
+                .rounded(px(crate::design::R))
+                .bg(crate::design::color::muted())
+                .child(div().text_size(px(13.)).line_height(px(20.)).text_color(crate::design::color::muted_foreground()).child(label))
                 .child(
                     div()
                         .text_size(px(if big { 19. } else { 13. }))
                         .line_height(px(if big { 26. } else { 20. }))
                         .when(big, |d| d.font_weight(FontWeight::SEMIBOLD))
-                        .text_color(Theme::text())
+                        .text_color(crate::design::color::foreground())
                         .child(value),
                 )
         };
@@ -170,12 +169,15 @@ impl Workspace {
             w.doc_info = None;
             cx.notify();
         });
-        let modal = crate::trash::dialog("doc-info")
+        let ws = cx.entity().downgrade();
+        let modal = crate::design::Dialog::new("doc-info")
+            .keys(&self.dialog_focus, move |_, cx| { let _ = ws.update(cx, |w, cx| { w.doc_info = None; cx.notify(); }); }, None::<fn(&mut Window, &mut App)>)
             .w(px(840.))
             .h(px(562.))
-            .flex()
-            .flex_col()
+            .p_0()
+            .gap_0()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .closable(close)
             .child(
                 div()
                     .flex_none()
@@ -185,9 +187,8 @@ impl Workspace {
                     .items_center()
                     .justify_between()
                     .border_b_1()
-                    .border_color(Theme::line_divider())
-                    .child(div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).child(crate::settings::tr("文档信息", "Document information")))
-                    .child(crate::trash::close_button("doc-info-close").mr(px(3.)).on_click(close)),
+                    .border_color(crate::design::color::border())
+                    .child(div().text_size(px(16.)).line_height(px(20.)).child(crate::settings::tr("文档信息", "Document information"))),
             )
             .child(
                 div()
@@ -195,21 +196,9 @@ impl Workspace {
                     .min_h_0()
                     .flex()
                     .child(
-                        div().flex_none().w(px(224.)).h_full().pt(px(12.)).px(px(12.)).border_r_1().border_color(Theme::line_divider()).child(
-                            // The one nav item, selected the way the sidebar selects: a quiet pill.
-                            div()
-                                .h(px(30.))
-                                .px(px(10.))
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .rounded(px(9.))
-                                .bg(Theme::fill_hover_strong())
-                                .text_size(px(13.))
-                                .line_height(px(20.))
-                                .text_color(Theme::text())
-                                .child(icon("list", 15., Theme::icon()))
-                                .child(crate::settings::text("信息与数据")),
+                        div().flex_none().w(px(224.)).h_full().pt(px(12.)).px(px(12.)).border_r_1().border_color(crate::design::color::border()).child(
+                            // The one nav item, selected.
+                            crate::design::Button::ghost("doc-info-nav").sized(crate::design::ButtonSize::Sm).w_full().justify_start().icon("list").label(crate::settings::text("信息与数据")).selected(true),
                         ),
                     )
                     .child(
@@ -233,14 +222,8 @@ impl Workspace {
             );
         Some(
             deferred(
-                div()
+                crate::design::scrim()
                     .id("doc-info-mask")
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(crate::trash::scrim())
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|w, _, _, cx| {

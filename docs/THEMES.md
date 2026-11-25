@@ -44,11 +44,12 @@ Themes with `--theme-base: feishu` use Feishu block rendering. The last column l
 | `::selection` | `background-color` | Selected text background | ✓ |
 | `p` | `margin-bottom` | Space between blocks | ✓ |
 | `.title` | `font-family` `font-size` `line-height` `font-weight` `color` | Document title | ✓ |
-| `h1`–`h9` | `font-family` `font-size` `line-height` `font-weight` `color` `margin-top` `margin-bottom` | Heading levels | Size, line height, weight and margins |
-| `strong` (`b`) | `font-weight` `color` | Bold text | |
+| `h1`–`h9` | `font-family` `font-size` `line-height` `font-weight` `color` `margin-top` `margin-bottom` | Heading levels | Size, line height, weight, color and margins |
+| `strong` (`b`) | `font-weight` `color` | Bold text | Color only |
+| `em` (`i`) | `color` | Italic text. Inside bold text, the `strong` color applies. | ✓ |
 | `a` | `color` `text-decoration` (`underline` / `none`) `text-decoration-color` | Links. With `underline`, the line is always visible. | Color only |
 | `a:hover` | `color` | Hovered link | ✓ |
-| `code` | `color` `background-color` `border-color` `border-radius` `padding-left` | Inline code | |
+| `code` | `color` `background-color` `border-color` `border-radius` `padding-left` | Inline code. `padding-left` widens the background on both sides without moving the text. | Color, radius and padding |
 | `pre` | `font-family` `font-size` `line-height` `color` `background-color` `border-color` `border-radius` | Code blocks | Colors and font |
 | `.line-numbers` | `display` (`block` / `none`) `color` `background-color` | Code block line numbers | Colors |
 | `.token.comment` `.token.keyword` `.token.tag` `.token.string` `.token.number` `.token.boolean` `.token.class-name` `.token.attr-name` `.token.function` | `color` | Syntax highlighting using Prism class names | ✓ |
@@ -81,7 +82,7 @@ Override `--token-<name>` in `:root` for block hover and selection colors, table
 
 ## Scope
 
-Themes style the document. The sidebar, menus and settings have their own appearance. Choose System, Light or Dark in Settings › Appearance to set the application appearance. CSS also leaves block structure, such as code toolbars and table row and column tools, under the editor's control.
+Themes style the document. The sidebar, menus and settings have their own appearance. For example, the indent guides in the sidebar's folder tree use the app's `Theme::sidebar_guide()` token, not a CSS variable, and follow light or dark mode with the rest of the sidebar. Choose System, Light or Dark in Settings › Appearance to set the application appearance. CSS also leaves block structure, such as code toolbars and table row and column tools, under the editor's control.
 
 Choosing an installed font in Settings › Appearance › Document font draws the body text, the title and the headings in it, so this file's `font-family` for `.page`, `.title` and `h1`–`h9` has no effect while one is chosen; Theme default goes back. `pre` keeps its own font.
 

@@ -9,7 +9,8 @@ use super::overlays::at;
 use super::view::{Editor, EditorEvent, Menu};
 use crate::model::Cover;
 use crate::editor_theme::{self as theme, Theme, craft};
-use crate::editor_ui::{ROW_RADIUS, TipExt, icon, menu, menu_glyph, menu_row, panel};
+use crate::editor_ui::{TipExt, icon};
+use crate::design::{Button, ButtonSize, ButtonVariant, MenuItem, Popover, Separator, color};
 use super::image::picture;
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::Cell;
@@ -96,62 +97,26 @@ fn preset_bytes(name: &str) -> Option<&'static [u8]> {
     crate::assets::get(&format!("covers/{name}.jpg"))
 }
 
-/// The header's icon / cover entry: 28 tall, 16px icon with 4px each side, 13pt
-/// secondary text, a grey hover.
-fn meta_entry(id: &'static str, ic: &'static str, label: &'static str) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex_none()
-        .h(px(28.))
-        .pr(px(6.))
+/// The header's icon / cover entry: a quiet ghost button, shown on header hover.
+fn meta_entry(id: &'static str, ic: &'static str, label: &'static str) -> Button {
+    Button::ghost(id)
         .mr(px(4.))
-        .flex()
-        .items_center()
-        .rounded(px(ROW_RADIUS))
-        .cursor_pointer()
-        .text_size(px(13.))
-        .line_height(px(28.))
-        .text_color(Theme::text_caption())
+        .text_color(color::muted_foreground())
         .opacity(0.)
         .group_hover("doc-header", |s| s.opacity(1.))
-        .hover(|s| s.bg(Theme::fill_hover()))
-        .active(|s| s.bg(Theme::fill_pressed()))
-        .child(div().mx(px(4.)).child(icon(ic, 16., Theme::icon())))
-        .child(label)
+        .child(icon(ic, 16., color::muted_foreground()))
+        .label(label)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
-/// The toolbar's small buttons on the image:
-/// white with a hairline and a 1px drop, or (`primary`, 确认) the accent in
-/// white semibold; radius 9.
-fn toolbar_button(id: &'static str, label: &'static str, primary: bool) -> Stateful<Div> {
-    let (bg, hover, active, rim, color) = if primary {
-        (Theme::primary(), Theme::primary(), Theme::primary(), Theme::primary(), Theme::on_primary())
-    } else {
-        (theme::ta(255, 255, 255, 0.92), theme::ta(255, 255, 255, 1.), theme::c(craft::N100), Theme::button_border(), Theme::text())
-    };
-    div()
-        .id(id)
+/// The toolbar's small buttons on the image: outline, or (`primary`, 确认)
+/// primary.
+fn toolbar_button(id: &'static str, label: &'static str, primary: bool) -> Button {
+    Button::new(id, if primary { ButtonVariant::Primary } else { ButtonVariant::Outline })
+        .sized(ButtonSize::Tool)
         .ml(px(8.))
         .min_w(px(60.))
-        .px(px(10.))
-        .py(px(4.))
-        .flex()
-        .justify_center()
-        .items_center()
-        .border_1()
-        .border_color(rim)
-        .rounded(px(9.))
-        .shadow(theme::shadow_button())
-        .text_size(px(13.))
-        .line_height(px(18.))
-        .when(primary, |d| d.font_weight(FontWeight::SEMIBOLD))
-        .text_color(color)
-        .bg(bg)
-        .hover(move |s| s.bg(hover).opacity(if primary { 0.9 } else { 1. }))
-        .active(move |s| s.bg(active).opacity(if primary { 0.8 } else { 1. }))
-        .cursor_pointer()
-        .child(label)
+        .label(label)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
@@ -446,18 +411,14 @@ impl Editor {
     pub(super) fn cover_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let loaded = self.cover_ui.geo.get().is_some();
         let item = |id: &'static str, ic: &'static str, label: &'static str| {
-            let g = SharedString::from(id);
-            menu_row(id, g.clone())
+            MenuItem::new(id)
                 .pr(px(16.))
-                .whitespace_nowrap()
-                .child(menu_glyph(ic, 16., g))
-                .child(label)
+                .leading(icon(ic, 16., color::muted_foreground()))
+                .label(label)
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         };
-        let el = menu()
-            .id("cover-menu")
-            .occlude()
-            .py(px(crate::editor_ui::MENU_PAD_Y))
+        let el = Popover::new("cover-menu")
+            .menu()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(item("cover-pick", "image", crate::settings::text("选择图片")).on_click(cx.listener(|e, _, _, cx| e.open_cover_menu(Some(Menu::CoverPick { upload: false }), cx))))
             .when(loaded, |d| d.child(item("cover-move", "move", crate::settings::text("调整图片位置")).on_click(cx.listener(|e, _, _, cx| e.start_cover_drag(cx)))))
@@ -491,18 +452,7 @@ impl Editor {
                 .child(label)
                 .on_click(cx.listener(move |e, _, _, cx| e.open_cover_menu(Some(Menu::CoverPick { upload: to_upload }), cx)))
         };
-        let action = |id: &'static str| {
-            div()
-                .id(id)
-                .h(px(26.))
-                .px(px(6.))
-                .flex()
-                .items_center()
-                .rounded(px(ROW_RADIUS))
-                .cursor_pointer()
-                .hover(|s| s.bg(Theme::fill_hover_strong()).text_color(Theme::text()))
-                .active(|s| s.bg(Theme::fill_pressed()))
-        };
+        let action = |id: &'static str| Button::ghost(id).text_color(color::muted_foreground());
         let header = div()
             .flex_none()
             .h(px(44.))
@@ -523,13 +473,13 @@ impl Editor {
                     .when(!upload, |d| {
                         d.child(
                             action("cover-random")
-                                .child(div().mr(px(4.)).child(icon("shuffle", 16., Theme::icon())))
-                                .child(crate::settings::text("随机"))
+                                .child(icon("shuffle", 16., color::muted_foreground()))
+                                .label(crate::settings::text("随机"))
                                 .on_click(cx.listener(|e, _, _, cx| e.random_cover(cx))),
                         )
-                        .child(div().mx(px(10.)).w(px(1.)).h(px(16.)).bg(Theme::line_divider()))
+                        .child(Separator::new().vertical().mx(px(10.)).h(px(16.)))
                     })
-                    .child(action("cover-panel-remove").child(crate::settings::text("移除")).on_click(cx.listener(|e, _, _, cx| {
+                    .child(action("cover-panel-remove").label(crate::settings::text("移除")).on_click(cx.listener(|e, _, _, cx| {
                         e.menu = None;
                         e.set_cover(None, cx);
                     }))),
@@ -542,24 +492,10 @@ impl Editor {
                 .items_center()
                 .justify_center()
                 .child(
-                    // The primary button: the accent, white 13pt semibold, radius 9.
-                    div()
-                        .id("cover-upload")
+                    Button::primary("cover-upload")
+                        .sized(ButtonSize::Sm)
                         .min_w(px(270.))
-                        .px(px(16.))
-                        .rounded(px(9.))
-                        .text_size(px(13.))
-                        .line_height(px(30.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .flex()
-                        .justify_center()
-                        .bg(Theme::primary())
-                        .shadow(theme::shadow_button())
-                        .hover(|s| s.bg(Theme::primary()).opacity(0.9))
-                        .active(|s| s.bg(Theme::primary()).opacity(0.8))
-                        .text_color(Theme::on_primary())
-                        .cursor_pointer()
-                        .child(crate::settings::text("上传图片"))
+                        .label(crate::settings::text("上传图片"))
                         .on_click(cx.listener(|e, _, window, cx| {
                             e.menu = None;
                             e.upload_cover(window, cx);
@@ -620,10 +556,8 @@ impl Editor {
                 .child(list)
                 .into_any_element()
         };
-        // The second-level panel: white, hairline, radius 12, the panel drop.
-        let el = panel()
-            .id("cover-panel")
-            .occlude()
+        // The second-level panel.
+        let el = Popover::new("cover-panel")
             .w(px(PANEL_W))
             .h(px(h))
             .flex()

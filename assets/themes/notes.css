@@ -282,6 +282,10 @@ strong {
   color: inherit;
 }
 
+em {
+  color: inherit;
+}
+
 a {
   color: var(--notes-link);
   text-decoration: underline;

@@ -64,9 +64,6 @@ pub fn disabled() -> Hsla { pick(GRAY_40, GRAY_70) }
 pub fn keybinding() -> Hsla { pick(GRAY_40, GRAY_60) }
 pub fn button_gray_2() -> Hsla { pick(0xced4da, 0x272727) }
 pub fn button_gray_3() -> Hsla { pick(0xadb5bd, 0x222222) }
-pub fn popup_secondary_bg() -> Hsla { pick(0xf1f3f5, 0x222222) }
-pub fn popup_text() -> Hsla { pick(0x000000, 0xced4da) }
-pub fn select_highlight() -> Hsla { pick(0x339af0, 0x4dabf7) }
 pub fn dialog_border() -> Hsla { pick(GRAY_20, GRAY_80) }
 /// `--list-border-color` (`QuickSearch.scss`; dark draws no border there).
 pub fn list_border() -> Hsla { if dark() { gpui::transparent_black() } else { hex(GRAY_20) } }
@@ -80,17 +77,12 @@ pub fn color_outline() -> Hsla { pick(GRAY_20, GRAY_80) }
 pub fn panel_button_bg() -> Hsla { if dark() { surface_high() } else { surface_mid() } }
 pub fn panel_button_hover_bg() -> Hsla { if dark() { hex(0x363541) } else { surface_high() } }
 pub fn hint_text() -> Hsla { pick(GRAY_40, GRAY_60) }
-/// `$color-red-7` / `$color-red-6` (the context menu's dangerous item).
-pub const RED_7: u32 = 0xf03e3e;
-pub const RED_6: u32 = 0xfa5252;
 /// `--color-gray-*`.
 pub const GRAY_20: u32 = 0xebebeb;
 pub const GRAY_40: u32 = 0xb8b8b8;
 pub const GRAY_60: u32 = 0x7a7a7a;
 pub const GRAY_70: u32 = 0x5c5c5c;
 pub const GRAY_80: u32 = 0x3d3d3d;
-/// `$color-gray-5` (`.context-menu-item-separator`).
-pub const GRAY_5: u32 = 0xadb5bd;
 /// `--color-selection`: the interactive canvas's selection color.
 pub fn selection() -> Hsla { pick(0x6965db, 0xb4b0ff) }
 
@@ -104,7 +96,5 @@ pub fn shadow_island_stronger() -> Vec<BoxShadow> { vec![sh(0., 1., 0.17), sh(0.
 pub fn shadow_modal() -> Vec<BoxShadow> {
     vec![sh(100., 80., 0.07), sh(41.78, 33.42, 0.0503), sh(22.34, 17.87, 0.0417), sh(12.52, 10.02, 0.035), sh(6.65, 5.32, 0.0283), sh(2.77, 2.21, 0.0197)]
 }
-/// `.context-menu`: `0 3px 10px rgba(0, 0, 0, 0.2)`.
-pub fn shadow_context_menu() -> Vec<BoxShadow> { vec![sh(3., 10., 0.2)] }
 /// A 1px ring (`box-shadow: 0 0 0 1px …`).
 pub fn ring(c: Hsla) -> Vec<BoxShadow> { vec![BoxShadow { color: c, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(1.), inset: false }] }

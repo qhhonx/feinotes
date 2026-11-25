@@ -15,7 +15,9 @@ use crate::store::Store;
 use crate::editor_theme::{self as theme, Theme, craft};
 use crate::editor_ui::{ROW_RADIUS, TipExt, ToastKind, icon};
 #[cfg(not(target_os = "ios"))]
-use crate::editor_ui::popover;
+use crate::design::toolbar::{TOOLBAR_H, toolbar_layout, w as tw};
+#[cfg(not(target_os = "ios"))]
+use crate::design::{Button, ButtonGroupSeparator, ButtonSize, Toggle, Toolbar};
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -1448,20 +1450,10 @@ impl Editor {
         let has_caption = caption.as_ref().is_some_and(|c| !c.is_empty());
         let align = b.align;
 
-        // Toolbar buttons: 24 square, radius 6, a grey hover; a toggle that
-        // is on gets the accent glyph on the accent tint.
-        let btn = |id: &'static str| {
-            div()
-                .id(id)
-                .size(px(24.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(ROW_RADIUS))
-                .cursor_pointer()
-                .hover(|s| s.bg(Theme::fill_hover_strong()))
-        };
-        let sep = || div().w(px(1.)).h(px(18.)).bg(Theme::line_divider());
+        // A toolbar (design::toolbar): ghost icon-sm actions, toggles for
+        // crop and the alignment.
+        let btn = |id: &'static str, ic: &'static str| Button::ghost(id).sized(ButtonSize::Sm).editor_icon(ic);
+        let sep = ButtonGroupSeparator::new;
         let act = |f: fn(&mut Editor, BlockId, &mut Window, &mut Context<Editor>)| {
             cx.listener(move |e: &mut Editor, _: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
@@ -1469,24 +1461,22 @@ impl Editor {
                 f(e, id, window, cx);
             })
         };
-        let mut bar = div().h(px(40.)).px(px(8.)).flex().items_center().gap(px(8.));
-        let mut w = 16. + 2.;
-        let mut n = 0;
+        let mut bar = Toolbar::new("image-toolbar").on_mouse_down(MouseButton::Left, |_, window, cx| {
+            cx.stop_propagation();
+            window.prevent_default();
+        });
+        let mut widths = vec![];
         if ok {
             let crop_btn = if small {
-                div()
-                    .id("itb-crop")
-                    .size(px(24.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
+                Toggle::new("itb-crop")
+                    .editor_icon("crop")
+                    .disabled(true)
                     .tip_above(crate::settings::text("图片过小，请放大后重试"), None)
-                    .child(icon("crop", 18., Theme::text_disabled()))
             } else {
-                btn("itb-crop")
-                    .when(cropping, |d| d.bg(Theme::fill_turninto_active()))
+                Toggle::new("itb-crop")
+                    .editor_icon("crop")
+                    .pressed(cropping)
                     .tip_above(if cropping { crate::settings::text("保存裁剪") } else { crate::settings::text("裁剪") }, None)
-                    .child(icon("crop", 18., if cropping { Theme::primary() } else { Theme::icon() }))
                     .on_mouse_down(
                         MouseButton::Left,
                         act(|e, id, window, cx| {
@@ -1499,32 +1489,26 @@ impl Editor {
                     )
             };
             bar = bar.child(crop_btn);
-            w += 24.;
-            n += 1;
+            widths.push(tw::TOGGLE);
             if reset {
                 bar = bar.child(
-                    btn("itb-reset")
+                    btn("itb-reset", "image-reset")
                         .tip_above(crate::settings::text("重置图片"), None)
-                        .child(icon("image-reset", 18., Theme::icon()))
                         .on_mouse_down(MouseButton::Left, act(|e, id, _, cx| e.reset_crop(id, cx))),
                 );
-                w += 24.;
-                n += 1;
+                widths.push(tw::BUTTON);
             }
             bar = bar.child(sep());
-            w += 1.;
-            n += 1;
+            widths.push(tw::SEPARATOR);
         }
         bar = bar
             .child(
-                btn("itb-caption")
+                btn("itb-caption", "caption")
                     .tip_above(if has_caption { crate::settings::text("编辑描述") } else { crate::settings::text("添加描述") }, None)
-                    .child(icon("caption", 18., Theme::icon()))
                     .on_mouse_down(MouseButton::Left, act(|e, id, window, cx| e.edit_caption(id, window, cx))),
             )
             .child(sep());
-        w += 25.;
-        n += 2;
+        widths.extend([tw::BUTTON, tw::SEPARATOR]);
         for (key, ic, tip, a) in [
             ("itb-left", "align-left", crate::settings::text("左对齐"), Align::Left),
             ("itb-center", "align-center", crate::settings::text("居中对齐"), Align::Center),
@@ -1532,10 +1516,10 @@ impl Editor {
         ] {
             let on = align == a;
             bar = bar.child(
-                btn(key)
-                    .when(on, |d| d.bg(Theme::fill_turninto_active()))
+                Toggle::new(key)
+                    .editor_icon(ic)
+                    .pressed(on)
                     .tip_above(tip, None)
-                    .child(icon(ic, 18., if on { Theme::primary() } else { Theme::icon() }))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |e, _, window, cx| {
@@ -1546,23 +1530,13 @@ impl Editor {
                         }),
                     ),
             );
-            w += 24.;
-            n += 1;
+            widths.push(tw::TOGGLE);
         }
-        w += (n - 1) as f32 * 8.;
+        let (_, w) = toolbar_layout(&widths);
         let x = clampf(f32::from(rect.center().x) - w / 2., f32::from(viewport.left()) + 8., f32::from(viewport.right()) - w - 8.);
-        let h = 42.;
-        let above = f32::from(rect.top()) - 8. - h;
+        let above = f32::from(rect.top()) - 8. - TOOLBAR_H;
         let y = if above >= f32::from(viewport.top()) { above } else { f32::from(rect.bottom()) + 8. };
-        let el = popover()
-            .id("image-toolbar")
-            .occlude()
-            .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                cx.stop_propagation();
-                window.prevent_default();
-            })
-            .child(bar);
-        Some(at(self.rel(point(px(x), px(y))), Anchor::TopLeft, el))
+        Some(at(self.rel(point(px(x), px(y))), Anchor::TopLeft, bar))
     }
 
     /// 添加描述 / 编辑描述: shows the description and puts the caret in it.

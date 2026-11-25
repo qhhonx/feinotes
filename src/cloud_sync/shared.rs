@@ -4,6 +4,7 @@
 //! history, settings, or unrelated attachments enter its CloudKit zone.
 
 use anyhow::{Context, Result, ensure};
+#[cfg(target_os = "macos")]
 use gpui::AppContext;
 use serde::{Deserialize, Serialize};
 use std::{ffi::{CStr, CString, c_char}, fs, path::{Path, PathBuf}, sync::Mutex};
@@ -15,7 +16,7 @@ pub(crate) mod original;
 static ACTIVE: Mutex<Option<Scope>> = Mutex::new(None);
 #[cfg(all(feature = "devtools", target_os = "macos"))]
 pub(crate) mod session_qa;
-#[cfg(feature = "devtools")]
+#[cfg(any(feature = "devtools", all(target_os = "ios", target_abi = "sim", feature = "mobile-qa")))]
 mod ui_qa;
 
 const LINK_PENDING: &str = "public-link-pending";
@@ -223,7 +224,7 @@ impl<'a> Command<'a> {
     }
 
     fn receive(&self) -> Result<Reply> {
-        #[cfg(feature = "devtools")]
+        #[cfg(any(feature = "devtools", all(target_os = "ios", target_abi = "sim", feature = "mobile-qa")))]
         if let Some(result) = ui_qa::command(self) { return result; }
         let revision = super::account_revision();
         let json = CString::new(serde_json::to_vec(self)?)?;
@@ -304,6 +305,8 @@ pub(crate) struct Reply {
     pub url: Option<String>,
     #[serde(default)]
     pub audience: Audience,
+    #[serde(default, rename = "draftPermission")]
+    pub draft_permission: Option<Access>,
     pub members: Vec<Member>,
     error: Option<String>,
     #[serde(rename = "errorKind")]
@@ -339,19 +342,36 @@ pub(crate) fn prepare_copy(personal: &Path, title: String, doc: &Document, front
     Ok(room)
 }
 
+impl Reply {
+    pub(crate) fn public_draft(&self) -> bool {
+        self.audience == Audience::LinkDraft && self.members.is_empty()
+    }
+
+    pub(crate) fn draft_public_access(&self, local: Option<Access>) -> Option<Access> {
+        if !self.public_draft() { return None; }
+        match self.draft_permission.or(local).unwrap_or(Access::ReadOnly) {
+            access @ (Access::ReadOnly | Access::ReadWrite) => Some(access),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn ensure_created(personal: &Path, room: &Room) -> Result<()> {
-    #[cfg(feature = "devtools")]
+    #[cfg(any(feature = "devtools", all(target_os = "ios", target_abi = "sim", feature = "mobile-qa")))]
     if let Some(result) = ui_qa::publish(personal, room) { return result; }
     let root = room_root(personal, &room.scope.note)?;
     if root.join("seed-published").is_file() { return Ok(()); }
     let key = account(personal)?;
-    let action = if public_link_pending(personal, room) { "createLinkDraft" } else { "create" };
+    let access = pending_public_access(personal, room);
+    let action = if access.is_some() { "createLinkDraft" } else { "create" };
     let mut command = Command::new(&key, action, Some(&room.scope))?;
+    command.permission = access;
     command.title = Some(&room.title);
     command.trace = ShareTrace::for_room(room);
     let draft = command.send()?;
     let expected = if action == "createLinkDraft" { Audience::LinkDraft } else { Audience::Invited };
-    ensure!(draft.scope.as_ref() == Some(&room.scope) && draft.audience == expected && draft.members.is_empty(),
+    ensure!(draft.scope.as_ref() == Some(&room.scope) && draft.audience == expected && draft.members.is_empty()
+        && draft.draft_permission.is_none_or(|saved| Some(saved) == access),
         "{}", existing_share_message());
     let mut journal = Journal::open(&root, None)?;
     let start = std::time::Instant::now();
@@ -368,12 +388,13 @@ pub(crate) fn ensure_created(personal: &Path, room: &Room) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(test, feature = "devtools"))]
 pub(crate) fn public_link_pending(personal: &Path, room: &Room) -> bool {
     pending_public_access(personal, room).is_some()
 }
 
 pub(crate) fn pending_public_access(personal: &Path, room: &Room) -> Option<Access> {
-    if room.scope.owner.is_some() || room.scope.folder { return None; }
+    if room.scope.owner.is_some() { return None; }
     let root = room_root(personal, &room.scope.note).ok()?;
     if root.join("shared-note-ended").exists() { return None; }
     match fs::read(root.join(LINK_PENDING)).ok()?.as_slice() {
@@ -384,7 +405,7 @@ pub(crate) fn pending_public_access(personal: &Path, room: &Room) -> Option<Acce
 }
 
 #[derive(Debug)]
-enum LinkWriteError { Region, Rejected, Unconfirmed }
+pub(crate) enum LinkWriteError { Region, Rejected, Unconfirmed }
 
 impl std::fmt::Display for LinkWriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -399,19 +420,26 @@ impl std::fmt::Display for LinkWriteError {
 
 impl std::error::Error for LinkWriteError {}
 
+pub(crate) enum PublishedLink { Active(Option<String>), Closed }
+
 pub(crate) struct LinkPublication {
     pub reply: Option<Reply>,
-    pub result: Result<Option<String>>,
+    pub result: Result<PublishedLink>,
 }
 
-// Only the initiating device can retry its staged public link after uploading the document.
-pub(crate) fn publish_link(personal: &Path, room: &Room) -> LinkPublication {
+pub(crate) fn publish_link(personal: &Path, room: &Room, retry_as: Option<Access>) -> LinkPublication {
     let revision = super::account_revision();
     let trace = ShareTrace::for_room(room);
-    let requested = pending_public_access(personal, room);
+    let local = pending_public_access(personal, room);
+    let requested = retry_as.or(local);
     let outcome = (|| {
-        ensure!(requested.is_some() && room_root(personal, &room.scope.note)?.join("seed-published").is_file(),
-            "{}", crate::settings::tr("请先完成文档上传，再启用公开链接。", "Finish uploading the document before enabling its public link."));
+        let root = room_root(personal, &room.scope.note)?;
+        // The creator may use its upload receipt. Another device must have
+        // received the shared root, not only discovered its CloudKit share.
+        let can_publish = requested.is_some() && !root.join("shared-note-ended").exists()
+            && root.join("seed-published").is_file() && (local.is_some() || remote_public_seed_available(&root, room));
+        ensure!(can_publish,
+            "{}", crate::settings::tr("共享内容仍在同步。同步完成后再启用公开链接。", "The shared content is still syncing. Enable the public link after it finishes."));
         manage_traced(personal, room, "publishLink", "", requested, trace.clone())
     })();
     let reply = match outcome {
@@ -428,15 +456,24 @@ pub(crate) fn publish_link(personal: &Path, room: &Room) -> LinkPublication {
             }
         }
     };
-    let result = match reply.audience {
-        audience if requested.is_some() && audience.public_access() == requested => reply.url.as_deref().context(LinkWriteError::Unconfirmed)
-            .and_then(crate::sharing::links::branded).map(Some),
-        Audience::LinkClosed => Ok(None),
-        _ => Err(LinkWriteError::Unconfirmed.into()),
-    };
-    let result = super::check_account_revision(revision).and(result);
+    let result = super::check_account_revision(revision).and_then(|()| published_link(&reply, requested));
     if result.is_ok() && let Ok(root) = room_root(personal, &room.scope.note) { clear_pending_link(&root); }
     LinkPublication { reply: Some(reply), result }
+}
+
+fn remote_public_seed_available(root: &Path, room: &Room) -> bool {
+    rusqlite::Connection::open_with_flags(root.join(crate::store::SQLITE_FILE), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .and_then(|db| db.busy_timeout(std::time::Duration::from_secs(2)).map(|()| db))
+        .is_ok_and(|db| super::journal::has_materialized_item(&db, &room.scope.note).unwrap_or(false))
+}
+
+fn published_link(reply: &Reply, requested: Option<Access>) -> Result<PublishedLink> {
+    match reply.audience {
+        audience if requested.is_some() && audience.public_access() == requested =>
+            Ok(PublishedLink::Active(reply.url.as_deref().and_then(crate::sharing::links::invitation_url))),
+        Audience::LinkClosed => Ok(PublishedLink::Closed),
+        _ => Err(LinkWriteError::Unconfirmed.into()),
+    }
 }
 
 fn clear_pending_link(root: &Path) {
@@ -595,9 +632,9 @@ pub(crate) fn end(personal: &Path, room: &Room, lock: Option<std::fs::File>) -> 
             ensure!(journal.counts()? == (0, 0, 0, 0), "{}", crate::settings::tr(
                 "这台设备还有待恢复的共享改动。请先保留这些改动。", "This device has shared changes to recover. Keep those changes first."));
         }
-        #[cfg(feature = "devtools")]
+        #[cfg(any(feature = "devtools", all(target_os = "ios", target_abi = "sim", feature = "mobile-qa")))]
         let simulated = ui_qa::enabled();
-        #[cfg(not(feature = "devtools"))]
+        #[cfg(not(any(feature = "devtools", all(target_os = "ios", target_abi = "sim", feature = "mobile-qa"))))]
         let simulated = false;
         if !simulated && !already_deleted {
             journal.merge(&Default::default())?;
@@ -674,6 +711,17 @@ pub(crate) fn launch(room: &Room, cx: &mut gpui::App) -> gpui::Task<Result<()>> 
 
 #[cfg(target_os = "macos")]
 pub(crate) fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
+    open_window_at(room, None, cx)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn open_child_window(room: &Room, id: &str, cx: &mut gpui::App) -> Result<()> {
+    ensure!(room.scope.folder && id != room.scope.note, "Expected a document inside the shared folder");
+    open_window_at(room, Some(id), cx)
+}
+
+#[cfg(target_os = "macos")]
+fn open_window_at(room: &Room, target: Option<&str>, cx: &mut gpui::App) -> Result<()> {
     room.scope.validate()?;
     let personal = Store::root_dir();
     check_room_account(&personal, cx)?;
@@ -685,20 +733,30 @@ pub(crate) fn open_window(room: &Room, cx: &mut gpui::App) -> Result<()> {
     ensure!(!root.join("shared-note-ended").exists(), "This shared document has been removed");
     ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope) && account(&root)? == account(&personal)?,
         "Shared document belongs to another library");
-    for window in cx.windows().into_iter().filter_map(|w| w.downcast::<crate::app::Workspace>()) {
-        if window.read(cx).is_ok_and(|ws| ws.store.root() == root) {
-            window.update(cx, |_, window, cx| {
-                if !crate::devtools::scripted() { window.activate_window(); cx.activate(true); }
-            })?;
-            return Ok(());
+    if target.is_none() {
+        for window in cx.windows().into_iter().filter_map(|w| w.downcast::<crate::app::Workspace>()) {
+            if window.read(cx).is_ok_and(|ws| ws.store.root() == root) {
+                window.update(cx, |_, window, cx| {
+                    if !crate::devtools::scripted() { window.activate_window(); cx.activate(true); }
+                })?;
+                return Ok(());
+            }
         }
     }
-    let store = store_for(room, cx)?;
+    let mut store = check_opened_store(store_for(room, cx)?, room, cx)?;
+    if let Some(target) = target {
+        ensure!(access(&store, cx).is_some_and(|access| access != Access::Revoked)
+            && !editing_paused(&store, cx), "{}", sharing_unavailable());
+        let entries = store.list();
+        ensure!(entries.iter().any(|entry| entry.id == target && entry.meta.folder.is_none())
+            && crate::tree::Tree::new(&entries).subtree(&room.scope.note).iter().any(|id| id == target),
+            "{}", crate::settings::tr("此共享文档暂不可用。", "This shared document is not available."));
+    }
     let mut options = crate::main_window_options(crate::devtools::scripted(), None, cx);
     if let Some(bar) = &mut options.titlebar {
         bar.title = Some(format!("{} · {}", crate::app_name(), crate::settings::tr("共享文档", "Shared document")).into());
     }
-    let note = room.scope.note.clone();
+    let note = target.unwrap_or(&room.scope.note).to_owned();
     cx.open_window(options, |window, cx| {
         #[cfg(feature = "devtools")]
         crate::devtools::park_window(window, cx);
@@ -742,6 +800,18 @@ pub(super) fn inspect_room_access(account: &str, room: &Room) -> Result<Access> 
     let reply = Command::new(account, "inspectRoomAccess", Some(&room.scope))?.send()?;
     ensure!(reply.scope.as_ref() == Some(&room.scope), "CloudKit returned the wrong sharing scope");
     reply.verified_access.context("Missing shared access")
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn inspect_library_room_access(personal: &Path, room: &Room, revision: u64) -> Result<Access> {
+    super::check_account_revision(revision)?;
+    let root = room_root(personal, &room.scope.note)?;
+    let key = account(personal)?;
+    ensure!(descriptor(&root)?.is_some_and(|saved| saved.scope == room.scope) && account(&root)? == key,
+        "Shared document belongs to another account");
+    let access = inspect_room_access(&key, room)?;
+    super::check_account_revision(revision)?;
+    Ok(access)
 }
 
 pub(crate) fn verify_room_access(personal: &Path, room: &Room) -> Result<VerifiedRoomAccess> {
@@ -883,7 +953,6 @@ pub(crate) fn editing_paused(store: &crate::shared_store::SharedStore, cx: &gpui
         || matches!(status.phase, super::SyncPhase::AccountChecking | super::SyncPhase::AccountChanged | super::SyncPhase::SignedOut))
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn live_room_writable(room: &Room, cx: &gpui::App) -> Option<bool> {
     let root = room_root(&Store::root_dir(), &room.scope.note).ok()?;
     let session = super::session(&root, cx)?;
@@ -1084,6 +1153,18 @@ mod tests {
     }
 
     #[test]
+    fn enabled_link_stays_enabled_when_readback_has_no_copyable_url() -> Result<()> {
+        let mut reply: Reply = serde_json::from_str(r#"{"audience":"linkReadOnly","members":[]}"#)?;
+        assert!(matches!(published_link(&reply, Some(Access::ReadOnly))?, PublishedLink::Active(None)));
+        reply.url = Some("https://www.icloud.com.cn/share/synthetic#Document".into());
+        assert!(matches!(published_link(&reply, Some(Access::ReadOnly))?, PublishedLink::Active(Some(url)) if crate::sharing::links::cloud(&url).ok().as_deref() == reply.url.as_deref()));
+        assert!(published_link(&reply, Some(Access::ReadWrite)).is_err());
+        reply.audience = Audience::LinkClosed;
+        assert!(matches!(published_link(&reply, Some(Access::ReadOnly))?, PublishedLink::Closed));
+        Ok(())
+    }
+
+    #[test]
     fn share_tracing_selects_only_the_two_exact_session_samples() {
         let token = "01234567-89ab-4def-8123-456789abcdef";
         let prefix = format!("Fei share trace {token}");
@@ -1169,6 +1250,12 @@ mod tests {
             assert_eq!(rooms(library)?, vec![room.clone()]);
         }
         assert!(public_link_pending(&first, &room) && !public_link_pending(&second, &room));
+        assert!(remote_public_seed_available(&second_root, &room));
+        let draft: Reply = serde_json::from_str(r#"{"audience":"linkDraft","draftPermission":"readWrite","members":[]}"#)?;
+        assert_eq!(draft.draft_public_access(None), Some(Access::ReadWrite));
+        let legacy: Reply = serde_json::from_str(r#"{"audience":"linkDraft","members":[]}"#)?;
+        assert_eq!(legacy.draft_public_access(None), Some(Access::ReadOnly));
+        assert_eq!(legacy.draft_public_access(Some(Access::ReadWrite)), Some(Access::ReadWrite));
         let store = Store::open_sqlite_at(second_root)?;
         assert_eq!(store.load(&id)?.plain_text(), doc.plain_text());
         Ok(())

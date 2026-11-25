@@ -5,11 +5,10 @@
 
 use crate::app::{RowMenu, View, Workspace};
 use crate::theme::Theme;
-use crate::ui::{icon, popover};
 use crate::settings::tr;
 use crate::ui::ToastKind;
-use fdl_core::workspace::AddError;
-use gpui::*;
+use fdl_core::workspace::{AddError, RenameError};
+use gpui::{prelude::FluentBuilder, *};
 use std::path::{Path, PathBuf};
 
 /// "在访达中显示", in the system's words.
@@ -138,14 +137,45 @@ impl Workspace {
         cx.notify();
     }
 
+    /// 重命名 a root: its folder on disk takes `name` (2.11). The open
+    /// document is saved first; ids stay, so it stays open. On failure the
+    /// name stays as it was and a toast says why.
+    pub(crate) fn rename_root(&mut self, key: &str, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let (k, n) = (key.to_string(), name.to_string());
+        if !self.save_before(cx, move |w, window, cx| w.rename_root(&k, &n, window, cx)) { return; }
+        self.flush_view_state();
+        match self.store.rename_root(key, name) {
+            Ok(_) => {
+                self.entries = self.store.list();
+                self.sort();
+                // Every window lists the root by its new name.
+                let me = window.window_handle().window_id();
+                for h in cx.windows().into_iter().filter(|w| w.window_id() != me).filter_map(|w| w.downcast::<Workspace>()) {
+                    let _ = h.update(cx, |ws, _, cx| { if !ws.store.file_task_busy() { ws.entries = ws.store.list(); ws.sort(); } cx.notify(); });
+                }
+            }
+            Err(e) => {
+                let msg = match e {
+                    RenameError::Taken(n) => crate::localized_format!("已经有一个叫「{}」的文件夹", "There is already a folder named “{}”", n),
+                    RenameError::Empty => tr("文件夹名不能为空", "The folder name can't be empty").to_string(),
+                    RenameError::Denied => tr("没有权限给这个文件夹改名", "You don't have permission to rename this folder").to_string(),
+                    RenameError::Unavailable | RenameError::Fixed => tr("这个文件夹不能改名", "This folder can't be renamed").to_string(),
+                    RenameError::Other(e) => crate::localized_format!("文件夹改名失败：{}", "Could not rename the folder: {}", crate::settings::diagnostic(&e)),
+                };
+                self.show_toast_kind(ToastKind::Error, &msg, cx);
+            }
+        }
+        cx.notify();
+    }
+
     /// The "…" menu of a root's row (two or more roots).
     pub(crate) fn root_row_menu(&self, key: &str, m: RowMenu, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::ui::menu_row(id, SharedString::from(id)).child(icon(glyph, 16., Theme::icon())).child(label);
+        let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::design::MenuItem::new(id).icon(glyph).label(label);
         let pos = if m.pos.x < px(0.) { point(-m.pos.x, m.pos.y + px(22.)) } else { m.pos };
         let open = self.store.roots().into_iter().find(|r| r.0 == key);
         let (name, path, missing) = open.map(|r| (r.1, r.2, r.3.is_some())).unwrap_or_default();
-        let (doc, folder, k1, k2) = (m.id.clone(), m.id.clone(), key.to_string(), key.to_string());
-        let mut menu = popover().id("root-row-menu").occlude().min_w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
+        let (doc, folder, rename, k1, k2) = (m.id.clone(), m.id.clone(), m.id.clone(), key.to_string(), key.to_string());
+        let mut menu = crate::design::Popover::new("root-row-menu").menu().min_w(px(200.))
             .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }));
         if missing {
             menu = menu.child(row("rr-retry", "folder", tr("重新查找", "Look again")).on_click(cx.listener(move |w, _, _, cx| {
@@ -159,6 +189,7 @@ impl Workspace {
             menu = menu
                 .child(row("rr-new-doc", "doc", tr("新建文档", "New document")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.create_doc(false, Some(doc.clone()), window, cx); })))
                 .child(row("rr-new-folder", "folder", tr("新建文件夹", "New folder")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.new_folder(crate::folders::CreateTarget::Library(Some(folder.clone())), None, window, cx); })))
+                .when(self.store.can_rename_root(key), |m| m.child(row("rr-rename", "square-pen", tr("重命名", "Rename")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.start_rename(&rename.clone(), window, cx); }))))
                 .child(row("rr-reveal", "folder", show_in_files()).on_click(cx.listener(move |w, _, _, cx| { w.row_menu = None; cx.reveal_path(&path); cx.notify(); })));
         }
         menu = menu.child(row("rr-remove", "x", tr("从侧栏移除", "Remove from sidebar")).on_click(cx.listener(move |w, _, _, cx| {
@@ -171,12 +202,22 @@ impl Workspace {
 
     /// The sidebar with no root folder open: a way to open or make one.
     pub(crate) fn empty_roots(&self, cx: &mut Context<Self>) -> Div {
-        let button = |id: &'static str, label: &'static str| crate::ui::menu_row(id, SharedString::from(id)).child(label);
+        let button = |id: &'static str, label: &'static str| crate::design::MenuItem::new(id).label(label);
         div().flex().flex_col().gap(px(2.)).px(px(4.)).pt(px(12.))
             .child(div().px(px(8.)).pb(px(6.)).text_size(px(crate::theme::ui_font())).line_height(px(crate::theme::ui_font() + 7.)).text_color(Theme::text_caption())
                 .child(tr("还没有打开任何文件夹。笔记就是文件夹里的文件。", "No folder is open yet. Your notes are the files in a folder.")))
             .child(button("empty-open", tr("打开文件夹…", "Open folder…")).on_click(cx.listener(|w, _, window, cx| w.open_folder_dialog(window, cx))))
             .child(button("empty-new", tr("新建文件夹…", "New folder…")).on_click(cx.listener(|w, _, window, cx| w.new_root_dialog(window, cx))))
+    }
+
+    /// The main area with no root folder open (2.8), centred: what to do first.
+    pub(crate) fn empty_main(&self, cx: &mut Context<Self>) -> Div {
+        div().flex_1().flex().flex_col().items_center().justify_center().pb(px(64.))
+            .child(img("illus/empty-list.svg").size(px(120.)))
+            .child(div().mt(px(16.)).text_size(px(13.)).line_height(px(20.)).text_color(Theme::text_caption()).child(tr("还没有打开任何文件夹。笔记就是文件夹里的文件。", "No folder is open yet. Your notes are the files in a folder.")))
+            .child(div().mt(px(20.)).flex().gap(px(8.))
+                .child(crate::design::Button::primary("empty-main-open").label(tr("打开文件夹…", "Open folder…")).on_click(cx.listener(|w, _, window, cx| w.open_folder_dialog(window, cx))))
+                .child(crate::design::Button::secondary("empty-main-new").label(tr("新建文件夹…", "New folder…")).on_click(cx.listener(|w, _, window, cx| w.new_root_dialog(window, cx)))))
     }
 
     /// What the top of the tree is called where nothing names a root: the

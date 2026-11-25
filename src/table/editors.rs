@@ -5,7 +5,7 @@
 
 use super::style::*;
 use super::*;
-use crate::ui::{popover, ui_text};
+use crate::ui::{ui_text};
 
 /// The text a cell's in-place editor starts with.
 pub(crate) fn edit_text(f: &Field, v: &Value) -> String {
@@ -19,7 +19,7 @@ pub(crate) fn edit_text(f: &Field, v: &Value) -> String {
 }
 
 pub(crate) fn open_select(v: &mut TableView, cell: CellId, pos: Point<Pixels>, window: &mut Window, cx: &mut Context<TableView>) {
-    v.aux.update(cx, |t, cx| { t.size = TEXT; t.line_height = 20.; t.set_placeholder(crate::settings::label("查找或创建选项"), cx); t.set_text("", cx); });
+    v.aux.update(cx, |t, cx| { t.size = text_sm(); t.line_height = 20.; t.set_placeholder(crate::settings::label("查找或创建选项"), cx); t.set_text("", cx); });
     window.focus(&v.aux.focus_handle(cx), cx);
     v.rename = None;
     v.open_popup(pos, Popup::Select { rec: cell.0, field: cell.1, editing: None }, cx);
@@ -32,7 +32,7 @@ pub(crate) fn open_date(v: &mut TableView, cell: CellId, pos: Point<Pixels>, cx:
 }
 
 pub(crate) fn open_links(v: &mut TableView, cell: CellId, pos: Point<Pixels>, window: &mut Window, cx: &mut Context<TableView>) {
-    v.aux.update(cx, |t, cx| { t.size = TEXT; t.line_height = 20.; t.set_placeholder(crate::settings::label("搜索记录"), cx); t.set_text("", cx); });
+    v.aux.update(cx, |t, cx| { t.size = text_sm(); t.line_height = 20.; t.set_placeholder(crate::settings::label("搜索记录"), cx); t.set_text("", cx); });
     window.focus(&v.aux.focus_handle(cx), cx);
     v.rename = None;
     v.open_popup(pos, Popup::Links { rec: cell.0, field: cell.1 }, cx);
@@ -62,7 +62,7 @@ pub(crate) fn aux_event(v: &mut TableView, ev: TextFieldEvent, window: &mut Wind
 
 fn back_to_options(v: &mut TableView, window: &mut Window, cx: &mut Context<TableView>) {
     if let Some((_, Popup::Select { editing, .. })) = v.popup.as_mut() { *editing = None; }
-    v.aux.update(cx, |t, cx| { t.size = TEXT; t.line_height = 20.; t.set_placeholder(crate::settings::label("查找或创建选项"), cx); t.set_text("", cx); });
+    v.aux.update(cx, |t, cx| { t.size = text_sm(); t.line_height = 20.; t.set_placeholder(crate::settings::label("查找或创建选项"), cx); t.set_text("", cx); });
     window.focus(&v.aux.focus_handle(cx), cx);
     cx.notify();
 }
@@ -108,7 +108,7 @@ pub(crate) fn pick_option(v: &mut TableView, rec: RecId, fid: FieldId, opt: OptI
     if single { v.close_popup(window, cx); }
 }
 
-fn close_on_out(d: Stateful<Div>, cx: &Context<TableView>) -> Stateful<Div> {
+fn close_on_out<E: InteractiveElement>(d: E, cx: &Context<TableView>) -> E {
     d.occlude().on_mouse_down_out(cx.listener(|v, _, window, cx| if v.dropdown.is_none() { v.close_popup(window, cx) }))
 }
 
@@ -117,11 +117,11 @@ pub(crate) fn select_popup(v: &TableView, t: &Table, rec: RecId, fid: FieldId, e
     let (Some(f), Some(r)) = (t.field(fid), t.record(rec)) else { return div().into_any_element() };
     let chosen: Vec<OptId> = match r.get(fid) { Value::Select(ids) => ids.clone(), _ => vec![] };
     let person = f.ty == FieldType::Person;
-    let shell = close_on_out(popover().id("tb-select").w(px(260.)).py(px(6.)), cx);
+    let shell = close_on_out(crate::design::Popover::new("tb-select").w(px(260.)).py(px(6.)), cx);
     if let Some(opt) = editing.and_then(|id| f.option(id)) {
         let oid = opt.id;
         let mut swatches = div().px(px(12.)).py(px(8.)).flex().flex_wrap().gap(px(8.));
-        for slot in 0..PALETTE.len() as u8 {
+        for slot in 0..SLOTS as u8 {
             let (bg, fg) = tag_colors(slot);
             swatches = swatches.child(div().id(("tb-swatch", slot as usize)).size(px(20.)).rounded(px(4.)).bg(bg).flex().items_center().justify_center().cursor_pointer()
                 .when(opt.color == slot, |d| d.child(icon("check", 12., fg)))
@@ -129,7 +129,7 @@ pub(crate) fn select_popup(v: &TableView, t: &Table, rec: RecId, fid: FieldId, e
         }
         return shell
             .child(div().px(px(12.)).pb(px(4.)).text_size(px(12.)).text_color(Theme::text_caption()).child(crate::settings::label("选项名称")))
-            .child(div().px(px(12.)).child(input_box().child(div().flex_1().child(v.aux.clone()))))
+            .child(div().px(px(12.)).child(input_box("tb-opt-name").child(div().flex_1().child(v.aux.clone()))))
             .when(!person, |d| d.child(div().px(px(12.)).pt(px(10.)).text_size(px(12.)).text_color(Theme::text_caption()).child(crate::settings::label("颜色"))).child(swatches))
             .child(menu_rule())
             .child(menu_item("tb-opt-del", "bin", crate::settings::label("删除选项"), true).on_click(cx.listener(move |v, _, window, cx| {
@@ -144,16 +144,16 @@ pub(crate) fn select_popup(v: &TableView, t: &Table, rec: RecId, fid: FieldId, e
     let mut list = div().id("tb-select-list").max_h(px(280.)).overflow_y_scroll().flex().flex_col();
     for o in shown {
         let (oid, on, name) = (o.id, chosen.contains(&o.id), o.name.clone());
-        list = list.child(div().id(("tb-opt", oid)).group("tb-opt").flex_none().h(px(32.)).mx(px(4.)).px(px(8.)).flex().items_center().gap(px(8.)).rounded(px(6.)).cursor_pointer()
+        list = list.child(div().id(("tb-opt", oid)).group("tb-opt").flex_none().h(px(32.)).mx(px(4.)).px(px(8.)).flex().items_center().gap(px(8.)).rounded(px(crate::design::geo().menu_row_r)).cursor_pointer()
             .hover(|s| s.bg(Theme::fill_hover()))
-            .child(div().flex_1().min_w_0().flex().child(if person { super::style::person(&o.name, o.color) } else { tag(&o.name, o.color) }))
+            .child(div().flex_1().min_w_0().flex().child(if person { super::style::person(&o.name, o.color).into_any_element() } else { tag(&o.name, o.color).into_any_element() }))
             .when(on, |d| d.child(icon("check", 14., Theme::primary())))
             .child(div().id(("tb-opt-more", oid)).flex_none().size(px(22.)).rounded(px(4.)).flex().items_center().justify_center().invisible().group_hover("tb-opt", |s| s.visible())
                 .hover(|s| s.bg(Theme::fill_hover_strong())).child(icon("ellipsis", 14., Theme::icon()))
                 .on_mouse_down(MouseButton::Left, cx.listener(move |v, _, window, cx| {
                     cx.stop_propagation();
                     if let Some((_, Popup::Select { editing, .. })) = v.popup.as_mut() { *editing = Some(oid); }
-                    v.aux.update(cx, |t, cx| { t.size = TEXT; t.line_height = 20.; t.set_placeholder("", cx); t.set_text(&name, cx); t.select_all_text(cx); });
+                    v.aux.update(cx, |t, cx| { t.size = text_sm(); t.line_height = 20.; t.set_placeholder("", cx); t.set_text(&name, cx); t.select_all_text(cx); });
                     window.focus(&v.aux.focus_handle(cx), cx);
                     cx.notify();
                 })))
@@ -162,9 +162,9 @@ pub(crate) fn select_popup(v: &TableView, t: &Table, rec: RecId, fid: FieldId, e
     if !query.is_empty() && !exact {
         let name = v.aux.read(cx).text.trim().to_string();
         let slot = (f.opts.options.len() % 10) as u8;
-        list = list.child(div().id("tb-opt-new").flex_none().h(px(32.)).mx(px(4.)).px(px(8.)).flex().items_center().gap(px(8.)).rounded(px(6.)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+        list = list.child(list_row("tb-opt-new").cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
             .child(icon("plus", 14., Theme::icon())).child(div().flex_none().text_color(Theme::text_caption()).child(crate::settings::label(if person { "添加人员" } else { "新建选项" })))
-            .child(if person { super::style::person(&name, slot) } else { tag(&name, slot) })
+            .child(if person { super::style::person(&name, slot).into_any_element() } else { tag(&name, slot).into_any_element() })
             .on_click(cx.listener(move |v, _, window, cx| {
                 if let Some(id) = ensure_option(v, fid, &name, cx) { pick_option(v, rec, fid, id, window, cx); }
                 v.aux.update(cx, |t, cx| t.set_text("", cx));
@@ -173,7 +173,7 @@ pub(crate) fn select_popup(v: &TableView, t: &Table, rec: RecId, fid: FieldId, e
         list = list.child(div().px(px(12.)).py(px(10.)).text_color(Theme::text_placeholder()).child(crate::settings::label(if person { "输入名字后回车添加" } else { "输入名称后回车新建选项" })));
     }
     shell
-        .child(div().px(px(8.)).pb(px(6.)).child(input_box().child(icon("search", 14., Theme::text_placeholder())).gap(px(6.)).child(div().flex_1().child(v.aux.clone()))))
+        .child(div().px(px(8.)).pb(px(6.)).child(input_box("tb-opt-search").child(icon("search", 14., Theme::text_placeholder())).gap(px(6.)).child(div().flex_1().child(v.aux.clone()))))
         .child(list)
         .into_any_element()
 }
@@ -220,7 +220,7 @@ pub(crate) fn date_popup(_v: &TableView, t: &Table, rec: RecId, fid: FieldId, ye
         }
         grid = grid.child(row);
     }
-    close_on_out(popover().id("tb-date").w(px(248.)).py(px(10.)), cx)
+    close_on_out(crate::design::Popover::new("tb-date").w(px(248.)).py(px(10.)), cx)
         .child(div().px(px(12.)).pb(px(6.)).flex().items_center()
             .child(div().flex_1().text_size(px(14.)).child(format!("{year}年{month}月")))
             .child(nav("tb-date-prev", "chevron-left", -1)).child(nav("tb-date-next", "chevron-right", 1)))
@@ -250,7 +250,7 @@ pub(crate) fn links_popup(v: &TableView, base: &Base, t: &Table, rec: RecId, fid
         shown += 1;
         if shown > 200 { break; }
         let (oid, on) = (o.id, linked.contains(&o.id));
-        list = list.child(div().id(("tb-link", oid as usize)).flex_none().h(px(34.)).mx(px(4.)).px(px(8.)).flex().items_center().gap(px(8.)).rounded(px(6.)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+        list = list.child(list_row(("tb-link", oid as usize)).h(px(34.)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
             .child(checkbox(on))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().when(title.is_empty(), |d| d.text_color(Theme::text_placeholder()))
                 .child(ui_text(if title.is_empty() { crate::settings::label("未命名记录") } else { title })))
@@ -266,9 +266,9 @@ pub(crate) fn links_popup(v: &TableView, base: &Base, t: &Table, rec: RecId, fid
             })));
     }
     if shown == 0 { list = list.child(div().px(px(12.)).py(px(10.)).text_color(Theme::text_placeholder()).child(crate::settings::label("没有记录"))); }
-    close_on_out(popover().id("tb-links").w(px(320.)).py(px(6.)), cx)
+    close_on_out(crate::design::Popover::new("tb-links").w(px(320.)).py(px(6.)), cx)
         .child(div().px(px(12.)).pb(px(6.)).text_size(px(12.)).text_color(Theme::text_caption()).child(format!("{}「{}」", crate::settings::label("关联到"), other.name)))
-        .child(div().px(px(8.)).pb(px(6.)).child(input_box().child(icon("search", 14., Theme::text_placeholder())).gap(px(6.)).child(div().flex_1().child(v.aux.clone()))))
+        .child(div().px(px(8.)).pb(px(6.)).child(input_box("tb-link-search").child(icon("search", 14., Theme::text_placeholder())).gap(px(6.)).child(div().flex_1().child(v.aux.clone()))))
         .child(list)
         .into_any_element()
 }
@@ -280,7 +280,7 @@ pub(crate) fn files_popup(_v: &TableView, t: &Table, rec: RecId, fid: FieldId, c
     let mut list = div().flex().flex_col();
     for (i, a) in files.iter().enumerate() {
         let path = a.path.clone();
-        list = list.child(div().id(("tb-file", i)).group("tb-file").h(px(34.)).mx(px(4.)).px(px(8.)).flex().items_center().gap(px(8.)).rounded(px(6.)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+        list = list.child(div().id(("tb-file", i)).group("tb-file").h(px(34.)).mx(px(4.)).px(px(8.)).flex().items_center().gap(px(8.)).rounded(px(crate::design::geo().menu_row_r)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
             .child(icon("paperclip", 14., Theme::icon()))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(a.name.clone())))
             .child(div().id(("tb-file-del", i)).size(px(22.)).rounded(px(4.)).flex().items_center().justify_center().invisible().group_hover("tb-file", |s| s.visible())
@@ -300,7 +300,7 @@ pub(crate) fn files_popup(_v: &TableView, t: &Table, rec: RecId, fid: FieldId, c
                 cx.open_url(&format!("file://{}", abs.display()));
             })));
     }
-    close_on_out(popover().id("tb-files").w(px(300.)).py(px(6.)), cx)
+    close_on_out(crate::design::Popover::new("tb-files").w(px(300.)).py(px(6.)), cx)
         .when(files.is_empty(), |d| d.child(div().px(px(12.)).py(px(8.)).text_color(Theme::text_placeholder()).child(crate::settings::label("还没有附件"))))
         .child(list)
         .child(menu_rule())

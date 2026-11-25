@@ -359,20 +359,21 @@ fn fetch_required() -> Result<Required, Error> {
 /// ([`blocking`]), else a banner at the foot of the window that leaves the
 /// notes usable (downloading, offline, a failed download or install).
 pub fn prompt(window: &mut Window, cx: &mut Context<crate::app::Workspace>) -> Option<AnyElement> {
-    use crate::{settings::tr, theme::{self, craft, Theme}, ui};
+    use crate::{settings::tr, theme::{self, craft}, ui};
+    use crate::design::{Button, ButtonSize, Dialog, Popover, color, scrim};
     let f = forced(cx)?;
     let state = state(cx);
     if blocking(cx) {
         let State::Ready(m, _) = &state else { return None };
         let body = crate::localized_format!("这个版本需要更新后才能继续使用。{} 已下载好，重启即可完成更新，打开的文档会先保存。", "This version must be updated before you continue. Version {} is downloaded; Quiet.md restarts to finish, and open documents are saved first.", m.version);
-        let dialog = ui::dialog("forced-update-dialog").w(px(440.)).px(px(24.)).pt(px(20.)).pb(px(24.))
+        let dialog = Dialog::alert("forced-update-dialog").title(tr("需要更新 Quiet.md", "Quiet.md needs to update"))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).child(ui::ui_para(tr("需要更新 Quiet.md", "Quiet.md needs to update"))))
-            .children(f.message().map(|t| div().mt(px(8.)).text_size(px(13.)).line_height(px(20.)).child(ui::ui_para(t.to_string()))))
-            .child(div().mt(px(8.)).text_size(px(13.)).line_height(px(20.)).text_color(Theme::text_caption()).child(ui::ui_para(body)))
-            .child(div().mt(px(24.)).flex().justify_end()
-                .child(ui::primary_button("forced-update-restart", tr("立即重启更新", "Restart and Update")).on_click(|_, _, cx| install(cx))));
-        return Some(deferred(div().id("forced-update-mask").occlude().absolute().inset_0().flex().items_center().justify_center().bg(ui::scrim())
+            .child(div().flex().flex_col().gap(px(8.))
+                .children(f.message().map(|t| div().child(ui::ui_para(t.to_string()))))
+                .child(div().text_color(color::muted_foreground()).child(ui::ui_para(body))))
+            .footer(div().flex().justify_end()
+                .child(Button::primary("forced-update-restart").label(tr("立即重启更新", "Restart and Update")).on_click(|_, _, cx| install(cx))));
+        return Some(deferred(scrim().id("forced-update-mask").occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .child(dialog)).with_priority(4).into_any_element());
@@ -384,16 +385,14 @@ pub fn prompt(window: &mut Window, cx: &mut Context<crate::app::Workspace>) -> O
         _ => (crate::localized_format!("这个版本需要更新到 {} 或更高。暂时无法下载，联网后会自动重试。", "This version must be updated to {} or later. The download retries automatically once you're online.", f.min), true),
     };
     let width = (f32::from(window.viewport_size().width) - 32.).clamp(200., 560.);
-    let card = div().id("forced-update-banner").occlude().w(px(width)).flex().items_start().gap(px(10.)).px(px(14.)).py(px(10.))
-        .rounded(px(12.)).bg(theme::raised(Theme::bg_body())).border_1().border_color(Theme::line_border()).shadow(theme::shadow_panel())
-        .font_family(theme::ui_family()).text_size(px(13.)).line_height(px(20.)).text_color(Theme::text())
+    let card = Popover::new("forced-update-banner").w(px(width)).flex().items_start().gap(px(10.)).px(px(14.)).py(px(10.))
         .child(div().relative().mt(px(2.)).size(px(16.)).flex_none().flex().items_center().justify_center()
             .child(ui::icon("circle-filled", 16., theme::c(craft::O400)).absolute().top_0().left_0())
             .child(ui::icon("info-mark", 12., gpui::white())))
         .child(div().flex_1().min_w_0().flex().flex_col()
             .child(ui::ui_para(text))
-            .children(f.message().map(|t| div().text_size(px(12.)).line_height(px(18.)).text_color(Theme::text_caption()).truncate().child(t.to_string()))))
-        .when(retry, |d| d.child(ui::secondary_button("forced-update-retry", tr("重试", "Retry")).h(px(26.)).px(px(12.)).on_click(|_, _, cx| retry_forced(cx))));
+            .children(f.message().map(|t| div().text_size(px(12.)).line_height(px(18.)).text_color(color::muted_foreground()).truncate().child(t.to_string()))))
+        .when(retry, |d| d.child(Button::outline("forced-update-retry").sized(ButtonSize::Tool).label(tr("重试", "Retry")).on_click(|_, _, cx| retry_forced(cx))));
     Some(deferred(div().absolute().left_0().right_0().bottom(px(16.)).flex().justify_center().child(card)).with_priority(2).into_any_element())
 }
 

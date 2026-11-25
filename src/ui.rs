@@ -84,8 +84,7 @@ pub enum ToastKind {
     Info,
 }
 
-/// Toast: a white rounded card 32px below the top, centred, with a filled
-/// status circle (green check / red x / accent i). It lasts 3s and fades over
+/// Toast: `design::Toast` 32px below the top, centred. It lasts 3s and fades over
 /// its last .3s; None once it is over.
 pub fn toast_el(kind: ToastKind, msg: &SharedString, t0: web_time::Instant, window: &mut Window) -> Option<AnyElement> {
     let e = t0.elapsed().as_secs_f32();
@@ -143,6 +142,8 @@ pub(crate) fn status_card(kind: ToastKind, msg: &SharedString, window: &Window, 
     ).with_priority(20).into_any_element()
 }
 
+
+
 /// Popover shell shared by the slash menu, block menu and toolbar dropdowns:
 /// the light panel (macOS 26 menu material, near-white), hairline,
 /// radius 12, soft drop.
@@ -157,84 +158,8 @@ pub fn popover() -> Div {
         .text_color(Theme::text())
 }
 
-/// Second-level panels (color panel, link editor): white, larger drop.
-/// The header button: a white pill on the note (hairline, 1px drop, radius 12).
-pub fn pill() -> Div {
-    div()
-        .flex_none()
-        .rounded(px(12.))
-        .bg(crate::theme::raised(Theme::bg_body()))
-        .border_1()
-        .border_color(Theme::button_border())
-        .shadow(theme::shadow_button())
-}
-
-/// Column headers of the page lists: tertiary text (measured #88898B on
-/// the name / last-viewed / created columns).
-pub fn list_header_text() -> Hsla {
-    theme::c(0x88898b)
-}
-
-/// Hairline under a list header and between rows (black 4.5%).
-pub fn list_line() -> Hsla {
-    theme::ca(craft::N1000, 0.045)
-}
-
-/// The quiet list hover: a rounded fill that also hides the row's
-/// hairline above it.
-pub fn row_hover(s: StyleRefinement) -> StyleRefinement {
-    s.bg(Theme::fill_hover()).border_color(transparent_black()).rounded(px(ROW_RADIUS))
-}
-
-
-/// The window dimmed under a modal dialog: a light black veil.
-pub fn scrim() -> Hsla {
-    theme::ca(craft::N1000, 0.25)
-}
-
-/// The modal dialog: white, radius 16, deep soft drop.
-pub fn dialog(id: &'static str) -> Stateful<Div> {
-    div().id(id).occlude().rounded(px(16.)).bg(crate::theme::raised(Theme::bg_body())).shadow(theme::shadow_dialog()).font_family(theme::ui_family()).text_color(Theme::text())
-}
-
-/// A busy mark for a button: three short bars rising and falling in turn,
-/// for `t` seconds since it started. The caller asks for frames while it shows.
-pub fn spinner(t: f32, color: Hsla) -> Div {
-    let mut bars = div().h(px(14.)).flex().items_center().gap(px(3.));
-    for i in 0..3 {
-        let w = 0.5 + 0.5 * (std::f32::consts::TAU * (t * 1.25 - i as f32 * 0.18)).sin();
-        bars = bars.child(div().w(px(3.)).h(px(5. + 9. * w)).rounded(px(1.5)).bg(color.opacity(0.55 + 0.45 * w)));
-    }
-    bars
-}
-
-/// The primary button: the accent, a white 13pt semibold label, 30 tall, radius 9.
-pub fn primary_button(id: &'static str, label: &'static str) -> Stateful<Div> { colored_button(id, label, false) }
-pub(crate) fn danger_button(id: &'static str, label: &'static str) -> Stateful<Div> { colored_button(id, label, true) }
-
-fn colored_button(id: &'static str, label: &'static str, danger: bool) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex_none()
-        .h(px(30.))
-        .px(px(16.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(9.))
-        .cursor_pointer()
-        .bg(if danger { Theme::danger() } else { Theme::primary() })
-        .shadow(theme::shadow_button())
-        .hover(move |s| s.bg(theme::c(if danger { craft::R600 } else { craft::B600 })))
-        .active(move |s| s.bg(theme::c(if danger { craft::R700 } else { craft::B700 })))
-        .text_size(px(13.))
-        .line_height(px(20.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(gpui::white())
-        .child(crate::settings::label(label))
-}
-
 /// The secondary button: white with a hairline and a 1px drop, 30 tall, radius 9.
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 pub fn secondary_button(id: &'static str, label: &'static str) -> Stateful<Div> {
     div()
         .id(id)
@@ -258,28 +183,8 @@ pub fn secondary_button(id: &'static str, label: &'static str) -> Stateful<Div> 
         .child(crate::settings::label(label))
 }
 
-/// The panel close button: a grey disc with a white cross (measured
-/// #B6B7B8 on #F7F7F7, black at about 26%).
-pub fn close_button(id: &'static str) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex_none()
-        .size(px(18.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .cursor_pointer()
-        .bg(theme::ca(craft::N1000, 0.26))
-        .hover(|s| s.bg(theme::ca(craft::N1000, 0.36)))
-        .child(icon("x", 16., gpui::white()))
-}
 
-/// Menus and popovers round at 12 (the native menu panel); their
-/// rows at 6, 5pt in from the edge.
 pub const MENU_RADIUS: f32 = 12.;
-pub const ROW_RADIUS: f32 = 6.;
-
 /// A menu row: 32 tall, 13pt label, 16pt glyph; hovering lays the quiet
 /// fill the editor's menus use, and text and glyph keep their colours.
 pub const MENU_ROW_H: f32 = 32.;
@@ -315,7 +220,83 @@ pub fn menu_label(label: impl Into<SharedString>, _group: SharedString, _hover: 
 /// Glyph of a [`menu_row`]: secondary, on hover too.
 pub fn menu_glyph(name: &str, size: f32, _group: SharedString) -> Svg { icon(name, size, Theme::icon()) }
 
-/// Tooltip bubble: the dark rounded tip (12pt white on near-black, radius 7, arrow).
+
+
+/// Column headers of the page lists: tertiary text (measured #88898B on
+/// the name / last-viewed / created columns).
+pub fn list_header_text() -> Hsla {
+    theme::c(0x88898b)
+}
+
+/// Hairline under a list header and between rows (black 4.5%).
+pub fn list_line() -> Hsla {
+    theme::ca(craft::N1000, 0.045)
+}
+
+/// The quiet list hover: a rounded fill that also hides the row's
+/// hairline above it.
+pub fn row_hover(s: StyleRefinement) -> StyleRefinement {
+    s.bg(Theme::fill_hover()).border_color(transparent_black()).rounded(px(ROW_RADIUS))
+}
+
+
+
+
+/// The window dimmed under a modal dialog: a light black veil.
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+pub fn scrim() -> Hsla {
+    theme::ca(craft::N1000, 0.25)
+}
+
+/// The modal dialog: white, radius 16, deep soft drop.
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+pub fn dialog(id: &'static str) -> Stateful<Div> {
+    div().id(id).occlude().rounded(px(16.)).bg(crate::theme::raised(Theme::bg_body())).shadow(theme::shadow_dialog()).font_family(theme::ui_family()).text_color(Theme::text())
+}
+
+/// A busy mark for a button: three short bars rising and falling in turn,
+/// for `t` seconds since it started. The caller asks for frames while it shows.
+pub fn spinner(t: f32, color: Hsla) -> Div {
+    let mut bars = div().h(px(14.)).flex().items_center().gap(px(3.));
+    for i in 0..3 {
+        let w = 0.5 + 0.5 * (std::f32::consts::TAU * (t * 1.25 - i as f32 * 0.18)).sin();
+        bars = bars.child(div().w(px(3.)).h(px(5. + 9. * w)).rounded(px(1.5)).bg(color.opacity(0.55 + 0.45 * w)));
+    }
+    bars
+}
+
+/// The primary button: the accent, a white 13pt semibold label, 30 tall, radius 9.
+pub fn primary_button(id: &'static str, label: &'static str) -> Stateful<Div> { colored_button(id, label, false) }
+
+fn colored_button(id: &'static str, label: &'static str, danger: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .h(px(30.))
+        .px(px(16.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(9.))
+        .cursor_pointer()
+        .bg(if danger { Theme::danger() } else { Theme::primary() })
+        .shadow(theme::shadow_button())
+        .hover(move |s| s.bg(theme::c(if danger { craft::R600 } else { craft::B600 })))
+        .active(move |s| s.bg(theme::c(if danger { craft::R700 } else { craft::B700 })))
+        .text_size(px(13.))
+        .line_height(px(20.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(gpui::white())
+        .child(crate::settings::label(label))
+}
+
+
+
+/// A list row's corners under the pointer (主页, 回收站).
+pub const ROW_RADIUS: f32 = 6.;
+
+
+/// Tooltip bubble: shadcn's tooltip (`tip_bg`) with an arrow.
 pub struct Tooltip {
     /// One or more lines.
     label: SharedString,
@@ -335,13 +316,14 @@ pub enum TipSide {
     Right,
 }
 
-const TIP_GAP: f32 = 8.;
+/// Radix's offset with shadcn's 10pt arrow (`size-2.5`, sticking out 5).
+const TIP_GAP: f32 = 10.;
 const TIP_ARROW: f32 = 5.;
-const TIP_PAD: f32 = 12.;
-const TIP_LINE: f32 = 18.;
-const TIP_BG: u32 = 0x2a2c2f;
-/// Tooltips stay dark in both looks (a step lighter on the dark page).
-fn tip_bg() -> Hsla { if theme::dark() { theme::rgbaf(0x3a, 0x3b, 0x3d, 1.) } else { theme::rgbaf((TIP_BG >> 16) as u8, (TIP_BG >> 8) as u8, TIP_BG as u8, 1.) } }
+const TIP_PAD: f32 = 2. * crate::design::G.tip_py;
+const TIP_LINE: f32 = 16.;
+/// shadcn's tooltip: `foreground` under `background` text (inverted in the dark), `rounded-md`,
+/// px-3 py-1.5, text-xs.
+fn tip_bg() -> Hsla { crate::design::color::foreground() }
 
 impl Render for Tooltip {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -365,13 +347,14 @@ impl Render for Tooltip {
             }
             lines
         };
+        let g = crate::design::geo();
         let bubble = div()
-            .px(px(10.))
-            .py(px(6.))
-            .rounded(px(7.))
+            .px(px(g.tip_px))
+            .py(px(g.tip_py))
+            .rounded(px(g.tip_r))
             .bg(tip_bg())
-            .text_color(gpui::white())
-            .text_size(px(12.))
+            .text_color(crate::design::color::background())
+            .text_size(px(g.text_xs))
             .line_height(px(TIP_LINE))
             .font_family(theme::ui_family())
             .whitespace_nowrap()
@@ -390,7 +373,7 @@ impl Render for Tooltip {
                 window.text_system().shape_line(l.clone(), px(12.), &runs, None).width
             })
             .fold(px(0.), |a, b| a.max(b));
-        let w = text_w + px(20.);
+        let w = text_w + px(2. * g.tip_px);
         let h = px(TIP_PAD + TIP_LINE * lines.len() as f32);
         let gap = px(TIP_GAP);
         let s = px(TIP_ARROW);
@@ -555,7 +538,8 @@ impl TipExt for Stateful<Div> {
         let bounds = Rc::new(std::cell::Cell::new(None::<Bounds<Pixels>>));
         let record = bounds.clone();
         let label = SharedString::from(label);
-        self.child(canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {}).absolute().inset_0()).tooltip(move |window, cx| {
+        // shadcn's TooltipProvider: `delayDuration = 0`
+        self.child(canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {}).absolute().inset_0()).tooltip_show_delay(std::time::Duration::ZERO).tooltip(move |window, cx| {
             let origin = window.mouse_position() + point(px(1.), px(1.));
             let (label, anchor) = (label.clone(), bounds.get());
             cx.new(|_| Tooltip { label, anchor, origin, side }).into()
@@ -960,37 +944,7 @@ pub fn wave_fill(fraction: f32, color: Hsla) -> impl IntoElement {
     }).absolute().inset_0()
 }
 
-pub fn continuous_surface(radius: f32, color: Hsla) -> Div {
-    div().relative().child(canvas(|bounds, _, _| bounds, move |_, bounds, window, _| {
-        let inset = 0.;
-                let x = f32::from(bounds.left()) + inset;
-                let y = f32::from(bounds.top()) + inset;
-                let w = f32::from(bounds.size.width) - inset * 2.;
-                let h = f32::from(bounds.size.height) - inset * 2.;
-                let r = (radius - inset).max(0.).min(w / 2.).min(h / 2.);
-                let pt = |a, b| point(px(a), px(b));
-                let mut path = PathBuilder::fill();
-                // Two cubics per corner: zero curvature at the straight joins,
-                // a shared tangent/curvature at the midpoint, and a circular-size
-                // diagonal inset rather than the previous overly square curve.
-                let corner = |path: &mut PathBuilder, sx: f32, sy: f32, ux: f32, uy: f32, vx: f32, vy: f32| {
-                    let q = |u: f32, v: f32| pt(sx + r * (u * ux + v * vx), sy + r * (u * uy + v * vy));
-                    path.cubic_bezier_to(q(std::f32::consts::FRAC_1_SQRT_2, 0.2928932), q(0.2071068, 0.), q(0.4142136, 0.));
-                    path.cubic_bezier_to(q(1., 1.), q(1., 0.5857864), q(1., 0.7928932));
-                };
-                path.move_to(pt(x + r, y));
-                path.line_to(pt(x + w - r, y));
-                corner(&mut path, x + w - r, y, 1., 0., 0., 1.);
-                path.line_to(pt(x + w, y + h - r));
-                corner(&mut path, x + w, y + h - r, 0., 1., -1., 0.);
-                path.line_to(pt(x + r, y + h));
-                corner(&mut path, x + r, y + h, -1., 0., 0., -1.);
-                path.line_to(pt(x, y + r));
-                corner(&mut path, x, y + r, 0., -1., 1., 0.);
-                path.close();
-                if let Ok(path) = path.build() { window.paint_path(path, color); }
-    }).absolute().inset_0())
-}
+
 
 pub(crate) fn toolbar_color(key: &str) -> Option<Hsla> { crate::themes::interface().color(key) }
 
@@ -1029,11 +983,11 @@ pub(crate) fn toolbar_icon(name: &str, size: f32) -> Svg {
     icon(name, size, toolbar_color("toolbar.button.color").unwrap_or_else(Theme::icon))
 }
 
-pub fn header_icon(id: &'static str, name: &'static str) -> Stateful<Div> {
-    toolbar_control(div().id(id).no_drag().size(px(crate::app::HEADER_ACTIONS_H)).flex_none().flex().items_center().justify_center().cursor_pointer(),
-        8., Theme::fill_hover, Some(Theme::fill_pressed)).child(toolbar_icon(name, 18.))
+pub fn header_icon(id: &'static str, name: &'static str) -> crate::design::Button {
+    crate::design::Button::ghost(id).icon(name).size(px(crate::app::HEADER_ACTIONS_H)).no_drag()
 }
 
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 pub(crate) fn checkbox(on: bool) -> Div {
     div()
         .size(px(16.))
