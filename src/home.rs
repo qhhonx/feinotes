@@ -694,8 +694,14 @@ impl Workspace {
         if let Some(l) = level.as_ref().filter(|l| l.key == key && l.order == order && l.parent.as_deref() == parent) { return l.entries.clone(); }
         // A folder's 正文 is the folder's own card, not one inside it.
         let notes: std::collections::HashSet<&str> = self.entries.iter().filter_map(|e| e.note.as_deref()).collect();
-        let entries = Rc::new(self.sorted_entries(self.entries.iter().filter(|e| e.meta.parent.as_deref() == parent && !notes.contains(e.id.as_str())).map(crate::tree::face).collect()));
+        let entries = self.entries.iter().filter(|e| e.meta.parent.as_deref() == parent && !notes.contains(e.id.as_str())).map(crate::tree::face).collect();
+        let entries = Rc::new(if self.is_shared() && parent.is_some() { Self::shared_folder_order(entries) } else { self.sorted_entries(entries) });
         *level = Some(Level { key, parent: parent.map(str::to_string), order, entries: entries.clone() });
+        entries
+    }
+
+    pub(crate) fn shared_folder_order(mut entries: Vec<Entry>) -> Vec<Entry> {
+        entries.sort_by_cached_key(|entry| (entry.meta.shared_place(&entry.id).into_owned(), entry.id.clone()));
         entries
     }
 
@@ -730,6 +736,7 @@ impl Workspace {
     }
 
     fn displayed_order(&self, entries: &[Entry]) -> HomeSort {
+        if self.view == crate::app::View::Folder && self.is_shared() { return HomeSort::Manual; }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.home.shared() { return self.shared_order(entries); }
         let _ = entries;
@@ -1146,9 +1153,7 @@ impl Workspace {
         if entries.is_empty() {
             rows = rows.child(div().pt(px(72.)).child(empty_state("illus/empty-list.svg", crate::settings::text("当前列表暂无内容"))));
         }
-        let shared_drag = in_folder && self.shared_home_drag_enabled(cx);
         for (i, e) in entries.iter().enumerate() {
-            let arm = e.id.clone();
             let (id, id2) = (e.id.clone(), e.id.clone());
             let title = display_title(&e.title);
             let menu_on = self.row_menu.as_ref().is_some_and(|m| m.id == e.id);
@@ -1156,16 +1161,12 @@ impl Workspace {
             let mut row = div()
                 .id(SharedString::from(format!("home-row-{}", e.id)))
                 .h(px(56.))
-                .when(shared_drag || cfg!(feature = "devtools"), |d| d.relative().child(self.record_home_card(&e.id)))
-                .when(shared_drag, |d| d.on_mouse_down(MouseButton::Left, cx.listener(move |w, ev: &MouseDownEvent, _, cx| w.arm_home_drag(&arm, ev.position, cx))))
-                .when(self.home_dragging(&e.id), |d| d.opacity(0.45))
+                .when(cfg!(feature = "devtools"), |d| d.relative().child(self.record_home_card(&e.id)))
                 .flex()
                 .items_center()
                 .when(i > 0, |d| d.border_t_1().border_color(list_line()))
                 .cursor_pointer()
                 .hover(row_hover)
-                .when(self.home_shared_drop_target(&e.id) || self.sidebar_shared_drop_target(&e.id),
-                    |d| d.bg(Theme::sidebar_drop()).border_color(transparent_black()).rounded(px(ROW_RADIUS)))
                 .when(menu_on, |d| d.bg(Theme::fill_hover()).border_color(transparent_black()).rounded(px(ROW_RADIUS)))
                 .on_click(cx.listener(move |w, _, window, cx| w.home_click(&id, window, cx)))
                 .when(self.batch.is_none(), |d| d.on_mouse_down(
@@ -1310,10 +1311,10 @@ impl Workspace {
             let menu_on = self.row_menu.as_ref().is_some_and(|m| m.id == e.id);
             let check = self.home_check(e);
             let arm = e.id.clone();
-            #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-            let draggable = if self.is_shared() && cfg!(target_os = "macos") {
-                self.shared_home_drag_enabled(cx)
-            } else { self.shared_list_room(&e.id, cx).is_none() };
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            let draggable = self.grid_document_can_drag(e, cx);
+            #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+            let draggable = self.shared_list_room(&e.id, cx).is_none();
             #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
             let draggable = true;
             // Carried away as a paper: its place stays as an empty slot of the

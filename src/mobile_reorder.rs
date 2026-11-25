@@ -67,7 +67,8 @@ impl Workspace {
         entries.sort_by_key(|entry|!entry.meta.pinned);
         entries
     }
-    pub(crate) fn mobile_sort_key(&self) -> String {
+    pub(crate) fn mobile_sort_key(&self, cx: &App) -> String {
+        if self.is_shared() && !self.mobile_personal_browser(cx) { return "manual".into(); }
         self.private_order_key().and_then(|key| self.private_order(&key))
             .map(|order| order.rule).filter(|rule| !rule.is_empty())
             .unwrap_or_else(|| self.mobile_home_sort_key().into())
@@ -81,8 +82,11 @@ impl Workspace {
     }
 
     pub(crate) fn mobile_native_sort(&mut self,key:&str,cx:&mut Context<Self>) -> bool {
+        if self.is_shared() && !self.mobile_personal_browser(cx) {
+            return key == "manual" && self.mobile_can_sort(cx);
+        }
         if key == "folders-first" {
-            if self.mobile_folders_first(cx).is_none() || self.mobile_sort_key() == "manual" { return false; }
+            if self.mobile_folders_first(cx).is_none() || self.mobile_sort_key(cx) == "manual" { return false; }
             self.toggle_folder_priority(cx);
             return true;
         }
@@ -101,8 +105,9 @@ impl Workspace {
         if self.library_switching || self.mobile_batch.is_some() || !self.query(cx).is_empty() || self.confirm.is_some() { return false; }
         let browser = !unsafe { crate::ipad::fei_ios_is_phone() };
         let personal = !self.is_shared() || self.mobile_personal_browser(cx);
-        personal &&
-            (matches!(self.view,View::Home|View::Folder) || browser && self.view==View::Doc)
+        let folder = self.folder_current.is_some() && self.current_room(cx).is_some_and(|room| room.scope.folder)
+            && crate::cloud_sync::shared::can_edit_in(self.store.root(), cx);
+        (personal || folder) && (matches!(self.view,View::Home|View::Folder) || browser && self.view==View::Doc)
     }
     pub(crate) fn mobile_row_reorderable(&self,entry:&crate::store::Entry) -> bool {
         // My Documents lists actual entries in the personal store, including
@@ -121,6 +126,10 @@ impl Workspace {
         let group=|row:&crate::store::Entry|row.meta.pinned && row.meta.folder.is_none();
         let before=before.filter(|v|!v.is_empty());
         if before.is_some_and(|next|next==id || !rows.iter().any(|e|e.id==next && group(e)==group(entry))) { return false; }
+        if self.is_shared() && !self.mobile_personal_browser(cx) {
+            let Some(parent) = self.folder_current.clone() else { return false; };
+            return self.reorder_current_shared_folder(id, &parent, before, cx);
+        }
         if let Some(key)=self.private_order_key() {
             if self.home.tab == HomeTab::Shared {
                 let siblings = rows.iter().filter(|row| group(row) == group(entry)).collect::<Vec<_>>();

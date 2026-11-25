@@ -125,8 +125,8 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
         fs::write(room_root(&personal, &room.scope.note)?.join("seed-published"), b"synthetic shared owner")?;
     }
     if std::env::var_os("QUIET_SYNC_QA_SHARED_DROP").is_some() {
-        for (title, access) in [("Owner", Access::Owner), ("Editor", Access::ReadWrite), ("Reader", Access::ReadOnly)] {
-            let sender = if access == Access::Owner { personal.clone() } else {
+        for (title, access) in [("Personal", None), ("Owner", Some(Access::Owner)), ("Editor", Some(Access::ReadWrite)), ("Reader", Some(Access::ReadOnly))] {
+            let sender = if matches!(access, None | Some(Access::Owner)) { personal.clone() } else {
                 let sender = root.join(format!("drop-sender-{title}"));
                 Store::initialize_shared_sqlite(&sender, &"c".repeat(64))?;
                 sender
@@ -134,15 +134,16 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
             let mut store = Store::open_sqlite_at(sender.clone())?;
             let folder = store.create_folder(title, None)?;
             let source = store.create_folder(&format!("{title} source"), Some(&folder))?;
-            store.create_folder(&format!("{title} target"), Some(&folder))?;
+            let target = store.create_folder(&format!("{title} target"), Some(&folder))?;
             store.create_folder(&format!("{title} inner target"), Some(&source))?;
             let moving = store.create_folder(&format!("{title} folder"), Some(&source))?;
             store.create_folder(&format!("{title} descendant"), Some(&moving))?;
-            for (kind, parent) in [("document", &source), ("child", &moving)] {
+            for (kind, parent) in [("document", &source), ("child", &moving), ("target child", &target)] {
                 store.create_from_in(&Document { title: crate::model::RichText::plain(format!("{title} {kind}")),
                     blocks: vec![crate::model::Block::text("Synthetic drag fixture")], ..Default::default() }, Some(parent))?;
             }
             drop(store);
+            let Some(access) = access else { continue; };
             let mut room = original::prepare_local(&sender, &folder, title.into(), false)?;
             let cache = room_root(&sender, &folder)?;
             if access == Access::Owner {
@@ -157,6 +158,20 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
                     room_access: Some(access), cursor_replayed: false, upload_quota_exceeded: false })?;
                 journal.merge(&Default::default())?;
             }
+        }
+    }
+    if std::env::var_os("QUIET_SYNC_QA_GRID_POLICY").is_some() {
+        let mut store = Store::open_sqlite_at(personal.clone())?;
+        let source = store.list().into_iter().find(|row| row.title == "Personal source")
+            .context("Grid policy requires the personal drag fixture")?.id;
+        let standalone = store.create_from_in(&Document { title: crate::model::RichText::plain("Personal standalone"),
+            blocks: vec![crate::model::Block::text("Synthetic standalone body")], ..Default::default() }, Some(&source))?;
+        let at_root = store.create_from(&Document { title: crate::model::RichText::plain("Personal standalone root"),
+            blocks: vec![crate::model::Block::text("Synthetic root original")], ..Default::default() })?;
+        let target = store.create_folder("Personal share target", Some(&source))?;
+        for (id, title) in [(standalone, "Personal standalone"), (at_root, "Personal standalone root"), (target, "Personal share target")] {
+            let room = original::prepare_local(&personal, &id, title.into(), false)?;
+            fs::write(room_root(&personal, &room.scope.note)?.join("seed-published"), b"synthetic shared owner")?;
         }
     }
     fs::write(root.join("pause-cloud"), b"isolated local session regression")?;

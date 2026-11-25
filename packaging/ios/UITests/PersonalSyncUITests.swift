@@ -344,6 +344,58 @@ final class PersonalSyncUITests: XCTestCase {
                                 excluded: ["My documents","Move personal target","Move shared B","Move shared B target"])
     }
 
+    func testSharedFolderReordersDocumentsAndFolders() {
+        checkSharedFolderOrder()
+    }
+
+    func testSharedFolderReordersInPortraitOnPad() {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+        checkSharedFolderOrder(compact: true)
+    }
+
+    private func checkSharedFolderOrder(compact: Bool = false) {
+        let (app, _) = launchMoveFixture(compact: compact, offline: true)
+        func openFolder() {
+            app.segmentedControls["fei.notes.tabs"].buttons["Shared documents"].tap()
+            for title in ["Move shared A", "Move shared A source"] {
+                let row = moveRow(title,in: app)
+                XCTAssertTrue(row.waitForExistence(timeout: 8), title)
+                row.tap()
+            }
+        }
+        openFolder()
+        let document = moveRow("Move shared A moving document",in: app)
+        let folder = moveRow("Move shared A moving folder",in: app)
+        XCTAssertTrue(document.waitForExistence(timeout: 8))
+        XCTAssertTrue(folder.exists)
+        let more = app.buttons["fei.library-actions"].firstMatch
+        more.tap()
+        let reorder = app.buttons["Reorder"].firstMatch
+        XCTAssertTrue(reorder.waitForExistence(timeout: 5))
+        capture("shared-order-menu")
+        reorder.tap()
+        let done = app.buttons["fei.notes.reorder.done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 5))
+        capture("shared-order-handles")
+        let upper = document.frame.midY < folder.frame.midY ? document : folder
+        let lower = document.frame.midY < folder.frame.midY ? folder : document
+        let handle = lower.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Reorder")).firstMatch
+        XCTAssertTrue(handle.exists)
+        handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.5))
+            .press(forDuration: 0.25,thenDragTo: upper.coordinate(withNormalizedOffset: CGVector(dx: 0.94,dy: 0.05)))
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate { _,_ in
+            lower.exists && upper.exists && lower.frame.midY < upper.frame.midY
+        },object: nil)],timeout: 8),.completed)
+        capture("shared-order-dragged")
+        done.tap()
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.segmentedControls["fei.notes.tabs"].waitForExistence(timeout: 15))
+        openFolder()
+        XCTAssertTrue(lower.waitForExistence(timeout: 8))
+        XCTAssertLessThan(lower.frame.midY,upper.frame.midY)
+    }
+
     func testMovePersonalIntoOwnedSharedFolder() {
         let (app,pad) = launchMoveFixture()
         let source = "Move personal source"
@@ -375,15 +427,19 @@ final class PersonalSyncUITests: XCTestCase {
         capture("move-personal-into-shared")
     }
 
-    private func launchMoveFixture() -> (XCUIApplication,Bool) {
+    private func launchMoveFixture(compact: Bool = false, offline: Bool = false) -> (XCUIApplication,Bool) {
         continueAfterFailure = false
         let pad = UIDevice.current.userInterfaceIdiom == .pad
-        XCUIDevice.shared.orientation = pad ? .landscapeLeft : .portrait
+        XCUIDevice.shared.orientation = pad && !compact ? .landscapeLeft : .portrait
         let app = XCUIApplication()
         app.launchArguments += ["-AppleLanguages", "(en)"]
         app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
         app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
         app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        if offline {
+            app.launchEnvironment["FEI_QA_OFFLINE_INVITATION"] = "1"
+            app.launchEnvironment["FEI_QA_PERSONAL_SYNC_STATE"] = "ready"
+        }
         app.launch()
         XCTAssertTrue(app.segmentedControls["fei.notes.tabs"].waitForExistence(timeout: 15))
         return (app,pad)

@@ -571,6 +571,140 @@ mod tests {
     }
 
     #[test]
+    fn shared_sibling_order_merges_offline_and_follows_the_winning_location() -> Result<()> {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        let fixture = Fixture(std::env::temp_dir().join(format!("fei-shared-order-{}", uuid::Uuid::new_v4())));
+        let personal = fixture.0.join("owner");
+        let editor = fixture.0.join("editor");
+        let reader = fixture.0.join("reader");
+        for (path, key) in [(&personal, 'a'), (&editor, 'b'), (&reader, 'c')] {
+            Store::initialize_local_sqlite(path)?;
+            fs::write(path.join(".cloud-restore-ready"), format!("{}\n", key.to_string().repeat(64)))?;
+        }
+        let mut store = Store::open_sqlite_at(personal.clone())?;
+        let root = store.create_folder("Shared", None)?;
+        let source = store.create_folder("Source", Some(&root))?;
+        let target = store.create_folder("Target", Some(&root))?;
+        for name in ["Document one", "Document two"] {
+            store.create_from_in(&Document { title: crate::model::RichText::plain(name), ..Default::default() }, Some(&source))?;
+        }
+        let folder = store.create_folder("Subfolder", Some(&source))?;
+        let child = store.create_from_in(&Document::default(), Some(&folder))?;
+        store.create_folder("Other subfolder", Some(&source))?;
+        let room = prepare_local(&personal, &root, "Shared".into(), false)?;
+        let owner_root = room_root(&personal, &root)?;
+        let guest = Room { scope: Scope { owner: Some("synthetic-owner".into()), ..room.scope }, title: room.title };
+        let editor_root = stage(&editor, &guest, None)?;
+        let reader_root = stage(&reader, &guest, None)?;
+        let (mut owner, mut edit, mut read) = (Journal::open(&owner_root, None)?, Journal::open(&editor_root, None)?, Journal::open(&reader_root, None)?);
+        let page = |access, edits, uploaded| Changes { retention: None, uploaded, edits, token: Some(Bytes(vec![1])),
+            more: false, legacy: false, room_access: Some(access), upload_quota_exceeded: false, #[cfg(feature = "devtools")] cursor_replayed: false };
+        let outbound = |journal: &mut Journal, access| -> Result<_> {
+            journal.merge(&Default::default())?;
+            let edits = journal.request()?.edits;
+            let uploaded = edits.iter().map(|edit| edit.id.clone()).collect();
+            journal.receive(page(access, vec![], uploaded))?;
+            Ok(edits)
+        };
+        let deliver = |journal: &mut Journal, access, edits| -> Result<()> {
+            journal.receive(page(access, edits, vec![]))?;
+            journal.merge(&Default::default())?;
+            Ok(())
+        };
+        let ordered = |path: &Path, parent: &str| -> Result<Vec<String>> {
+            let mut rows: Vec<_> = entries(&connect(path)?)?.into_iter()
+                .filter(|(_, meta)| meta.parent.as_deref() == Some(parent)).collect();
+            rows.sort_by(|(a, left), (b, right)| (left.shared_place(a), a).cmp(&(right.shared_place(b), b)));
+            Ok(rows.into_iter().map(|(id, _)| id).collect())
+        };
+        let reorder = |path: &Path, id: &str, before: &str| Store::open_sqlite_at(path.to_path_buf())?
+            .reorder_shared_item(id, &source, Some(before));
+        let seed = outbound(&mut owner, Access::Owner)?;
+        deliver(&mut edit, Access::ReadWrite, seed.clone())?;
+        deliver(&mut read, Access::ReadOnly, seed)?;
+        let initial = ordered(&owner_root, &source)?;
+        assert_eq!(initial.len(), 4);
+        assert_eq!(ordered(&reader_root, &source)?, initial);
+        assert!(reorder(&reader_root, &initial[3], &initial[0]).is_err());
+        assert!(read.request()?.edits.is_empty());
+
+        // Peers drag different items into the same gap while offline.
+        reorder(&owner_root, &initial[2], &initial[0])?;
+        reorder(&editor_root, &initial[3], &initial[0])?;
+        let from_owner = outbound(&mut owner, Access::Owner)?;
+        let from_editor = outbound(&mut edit, Access::ReadWrite)?;
+        assert!(from_owner.iter().chain(&from_editor).all(|edit| edit.note == crate::cloud_sync::catalogue::SCOPE));
+        deliver(&mut owner, Access::Owner, from_editor.clone())?;
+        deliver(&mut edit, Access::ReadWrite, from_owner.clone())?;
+        deliver(&mut read, Access::ReadOnly, from_editor.into_iter().chain(from_owner).collect())?;
+        let merged = ordered(&owner_root, &source)?;
+        assert!(merged[..2].contains(&initial[2]) && merged[..2].contains(&initial[3]));
+        assert_eq!(ordered(&editor_root, &source)?, merged);
+        assert_eq!(ordered(&reader_root, &source)?, merged);
+
+        // Inserting between tied rows uses their current shared order.
+        reorder(&owner_root, &merged[3], &merged[1])?;
+        let squeezed = outbound(&mut owner, Access::Owner)?;
+        deliver(&mut edit, Access::ReadWrite, squeezed.clone())?;
+        deliver(&mut read, Access::ReadOnly, squeezed)?;
+        let expected = vec![merged[0].clone(), merged[3].clone(), merged[1].clone(), merged[2].clone()];
+        assert_eq!(ordered(&reader_root, &source)?, expected);
+
+        let before = (expected[0] != folder).then_some(expected[0].as_str());
+        Store::open_sqlite_at(owner_root.clone())?.reorder_shared_item(&folder, &source, before)?;
+        Store::open_sqlite_at(editor_root.clone())?.set_parent(&folder, Some(&target))?;
+        let from_owner = outbound(&mut owner, Access::Owner)?;
+        let from_editor = outbound(&mut edit, Access::ReadWrite)?;
+        assert!(!from_owner.is_empty() && !from_editor.is_empty());
+        deliver(&mut owner, Access::Owner, from_editor.clone())?;
+        deliver(&mut edit, Access::ReadWrite, from_owner.clone())?;
+        deliver(&mut read, Access::ReadOnly, from_owner.into_iter().chain(from_editor).collect())?;
+        for path in [&owner_root, &editor_root, &reader_root] {
+            let rows = entries(&connect(path)?)?;
+            assert_eq!(rows[&folder].parent.as_deref(), Some(target.as_str()));
+            assert_eq!(rows[&child].parent.as_deref(), Some(folder.as_str()));
+            assert!(rows[&folder].shared_order.is_some());
+        }
+        assert!(Store::open_sqlite_at(owner_root.clone())?.reorder_shared_item(&folder, &source, before).is_err());
+
+        // A pre-feature client can send away and back without retaining a rank
+        // or changing the final tuple. The earlier rank must still be invalid.
+        let legacy = crate::cloud_sync::journal::stored_catalogue(&connect(&editor_root)?)?;
+        legacy.set_peer_id(7)?;
+        let base = legacy.oplog_vv();
+        let entry = legacy.get_map(format!("entry-{folder}"));
+        let current = crate::cloud_sync::content::value(&entry, "location").unwrap();
+        entry.insert("location", serde_json::json!([source, 1, null]).to_string())?;
+        entry.insert("location", current)?;
+        legacy.commit();
+        let change = crate::cloud_sync::Edit { id: uuid::Uuid::new_v4().to_string(),
+            note: crate::cloud_sync::catalogue::SCOPE.to_owned(), data: Bytes(legacy.export(loro::ExportMode::updates(&base))?),
+            collaborator: true };
+        for (journal, access, path) in [(&mut owner, Access::Owner, &owner_root), (&mut edit, Access::ReadWrite, &editor_root), (&mut read, Access::ReadOnly, &reader_root)] {
+            deliver(journal, access, vec![change.clone()])?;
+            assert!(entries(&connect(path)?)?[&folder].shared_order.is_none());
+            assert_eq!(ordered(path, &target)?, vec![folder.clone()]);
+        }
+
+        // Both local moves can happen before the catalogue samples the store.
+        // Even when the item comes back to its original sibling slot, emit a new location.
+        let previous_order = entries(&connect(&editor_root)?)?[&folder].order;
+        let mut writer = Store::open_sqlite_at(editor_root.clone())?;
+        writer.set_parent(&folder, Some(&source))?;
+        writer.set_parent(&folder, Some(&target))?;
+        let back = outbound(&mut edit, Access::ReadWrite)?;
+        assert!(!back.is_empty());
+        deliver(&mut read, Access::ReadOnly, back)?;
+        assert!(entries(&connect(&reader_root)?)?[&folder].order > previous_order);
+        drop(read);
+        let reopened = Journal::open(&reader_root, None)?;
+        assert!(reopened.request()?.edits.is_empty());
+        assert_eq!(ordered(&reader_root, &target)?, vec![folder]);
+        Ok(())
+    }
+
+    #[test]
     fn stopped_share_on_one_owner_device_can_be_shared_again_on_another() -> Result<()> {
         struct Fixture(PathBuf);
         impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }

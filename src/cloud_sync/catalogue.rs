@@ -4,7 +4,7 @@
 //! metadata fields merge separately from the character operations in each note.
 
 use anyhow::{Result, ensure};
-use loro::{LoroDoc, LoroMap, VersionVector};
+use loro::{ContainerID, IdLp, JsonMapOp, JsonOpContent, LoroDoc, LoroMap, VersionVector};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -15,8 +15,66 @@ use super::{content, journal};
 pub const SCOPE: &str = "00000000-0000-0000-0000-000000000001";
 // Internal projection key. The wire format uses a separate Loro map, also read by Web.
 const LIST_TITLE: &str = "list-title";
+const RANK: &str = "shared_order";
+const RANK_MAP: &str = "shared-folder-order";
+const LOCATION_REVISIONS: &str = "shared-location-revisions";
 type Fields = BTreeMap<String, Value>;
 pub type Catalogue = BTreeMap<String, Fields>;
+
+#[derive(Default, Serialize, Deserialize)]
+struct LocationRevisions {
+    through: VersionVector,
+    latest: BTreeMap<String, IdLp>,
+}
+
+fn rank_key(id: &str, location: IdLp) -> String { format!("{id}:{}:{}", location.lamport, location.peer) }
+
+// The position's revision is the winning location write, including writes
+// from old clients. Moving away and back can repeat the location's literal
+// value, but can't repeat its operation id.
+fn location_revisions(db: &Connection, doc: &LoroDoc) -> Result<LocationRevisions> {
+    let saved: Option<Vec<u8>> = db.query_row("SELECT value FROM state WHERE key = ?1", [LOCATION_REVISIONS], |r| r.get(0)).optional()?;
+    let mut revisions: LocationRevisions = saved.as_deref().and_then(|raw| serde_json::from_slice(raw).ok()).unwrap_or_default();
+    let version = doc.oplog_vv();
+    if version == revisions.through { return Ok(revisions); }
+    if !version.includes_vv(&revisions.through) { revisions = LocationRevisions::default(); }
+    let updates = doc.export_json_updates_without_peer_compression(&revisions.through, &version)?;
+    for change in updates.changes {
+        for op in change.ops {
+            let ContainerID::Root { name, .. } = &op.container else { continue; };
+            let Some(id) = name.strip_prefix("entry-") else { continue; };
+            let JsonOpContent::Map(JsonMapOp::Insert { key, .. }) = op.content else { continue; };
+            if key != "location" { continue; }
+            let stamp = IdLp { lamport: change.lamport + (op.counter - change.id.counter) as u32, peer: change.id.peer };
+            let latest = revisions.latest.entry(id.to_owned()).or_insert(stamp);
+            *latest = (*latest).max(stamp);
+        }
+    }
+    revisions.through = version;
+    db.execute("INSERT OR REPLACE INTO state (key, value) VALUES (?1, ?2)",
+        params![LOCATION_REVISIONS, serde_json::to_vec(&revisions)?])?;
+    Ok(revisions)
+}
+
+pub(super) fn capture_shared_order(db: &Connection, doc: &LoroDoc, old: &Catalogue, new: &Catalogue) -> Result<()> {
+    let moved: Vec<_> = new.iter().filter_map(|(id, now)| {
+        let rank = now.get(RANK)?.as_str()?;
+        let previous = old.get(id);
+        (now.get("life").and_then(Value::as_str) == Some("Live") &&
+            (previous.and_then(|row| row.get(RANK)) != now.get(RANK)
+                || previous.and_then(|row| row.get("location")) != now.get("location"))).then_some((id, rank))
+    }).collect();
+    if moved.is_empty() { return Ok(()); }
+    doc.commit();
+    let revisions = location_revisions(db, doc)?;
+    let ranks = doc.get_map(RANK_MAP);
+    for (id, rank) in moved {
+        if let Some(location) = revisions.latest.get(id).copied() && !permanently_deleted(doc, id) {
+            ranks.insert(&rank_key(id, location), rank)?;
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Life {
@@ -107,12 +165,12 @@ pub fn capture(db: &Connection, doc: &LoroDoc, old: &Catalogue, new: &Catalogue)
             titles.insert(id, title)?;
         }
         for (key, value) in current {
-            if key != LIST_TITLE && old.get(id).and_then(|entry| entry.get(key)) != Some(value) {
+            if key != LIST_TITLE && key != RANK && old.get(id).and_then(|entry| entry.get(key)) != Some(value) {
                 entry.insert(key, serde_json::to_string(value)?)?;
             }
         }
         if let Some(previous) = old.get(id) {
-            for key in previous.keys().filter(|key| key.as_str() != LIST_TITLE && !current.contains_key(*key)) {
+            for key in previous.keys().filter(|key| key.as_str() != LIST_TITLE && key.as_str() != RANK && !current.contains_key(*key)) {
                 entry.delete(key)?;
             }
         }
@@ -145,6 +203,8 @@ fn read_fields(map: &LoroMap) -> Result<Fields> {
 }
 
 pub fn project(db: &Connection, doc: &LoroDoc, shared_folder: bool) -> Result<bool> {
+    let ranks = doc.get_map(RANK_MAP);
+    let revisions = (shared_folder && !ranks.is_empty()).then(|| location_revisions(db, doc)).transpose()?;
     let mut entries = BTreeMap::new();
     for id in doc.get_map("entries").keys() {
         let id = id.to_string();
@@ -155,6 +215,7 @@ pub fn project(db: &Connection, doc: &LoroDoc, shared_folder: bool) -> Result<bo
         if life == Life::Purged { mark_purged(doc, &id, None)?; }
         let (parent, order, root_order) = serde_json::from_value(fields.remove("location").unwrap_or(json!([null, 0, null])))?;
         fields.insert("modified".into(), fields.get("created").cloned().unwrap_or(json!(0)));
+        fields.remove(RANK);
         let mut meta: Meta = serde_json::from_value(serde_json::to_value(fields)?)?;
         if shared_folder {
             ensure!(meta.path.is_none() && meta.rel.is_empty() && meta.share_root.is_none(), "Invalid private metadata in shared folder");
@@ -162,6 +223,11 @@ pub fn project(db: &Connection, doc: &LoroDoc, shared_folder: bool) -> Result<bo
         meta.parent = parent;
         meta.order = order;
         meta.top_order = root_order;
+        if meta.parent.is_some() && let Some(location) = revisions.as_ref().and_then(|revisions| revisions.latest.get(&id))
+            && let Some(rank) = content::value(&ranks, &rank_key(&id, *location))
+            && crate::board::fractional_index::generate_key_between(Some(&rank), None).is_ok() {
+            meta.shared_order = Some(rank);
+        }
         if meta.folder.is_none() && life != Life::Purged {
             let body: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM library_documents WHERE id = ?1)", [&id], |row| row.get(0))?;
             let held: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM notes WHERE id = ?1 AND held <> 0)", [&id], |row| row.get(0))?;
@@ -204,7 +270,7 @@ pub fn project(db: &Connection, doc: &LoroDoc, shared_folder: bool) -> Result<bo
             Store::remove_sync_body(db, &id)?;
             continue;
         }
-        if roots.contains(&id) { meta.parent = None; }
+        if roots.contains(&id) { meta.parent = None; meta.shared_order = None; }
         let stored: Option<String> = db.query_row(&format!("SELECT meta FROM {table} WHERE id = ?1"), [&id], |row| row.get(0))
             .optional()?;
         let old = stored.as_ref().map(|raw| -> Result<Meta> {

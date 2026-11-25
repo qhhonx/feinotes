@@ -578,7 +578,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
     let listing = (opening.is_none() && (matches!(body_view,View::Home | View::Folder) && unsafe { fei_ios_is_phone() } || body_view==View::Trash) && (!workspace.is_shared() || crate::cloud_sync::shared::scope(&workspace.store,cx).is_some_and(|scope|scope.folder))).then(||NativeListing {
         kind:if body_view==View::Trash { "trash" } else if !workspace.is_shared() && workspace.home.tab==crate::home::HomeTab::Shared { "shared" } else { "notes" },can_select:workspace.mobile_can_select(cx),can_sort:workspace.mobile_can_sort(cx),can_reorder:workspace.mobile_can_reorder(cx),
         shared_create:body_view == View::Home && !workspace.is_shared() && workspace.home.shared() && workspace.sharing.collection.is_none() && query.is_empty() && !crate::cloud_restore::local_only(),
-        sort_rule:workspace.mobile_sort_key(),folders_first:workspace.mobile_folders_first(cx),shared_count:workspace.shared_entries(cx).len(),selection:workspace.mobile_batch_state(cx),
+        sort_rule:workspace.mobile_sort_key(cx),folders_first:workspace.mobile_folders_first(cx),shared_count:workspace.shared_entries(cx).len(),selection:workspace.mobile_batch_state(cx),
         notice_kind:workspace.mobile_list_notice().map(|(kind, _)| kind),
         notice:workspace.mobile_list_notice().map(|(_, text)| text.to_owned()),
         interface_size:settings::prefs().ui_font,scope:listing_scope(workspace),query:if body_view==View::Trash { String::new() } else { workspace.search.read(cx).text.clone() },tab:match workspace.home.tab { crate::home::HomeTab::Starred=>1,crate::home::HomeTab::Shared=>2,_=>0 },

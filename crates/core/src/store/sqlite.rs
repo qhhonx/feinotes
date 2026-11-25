@@ -709,6 +709,16 @@ impl Store {
         super::SESSION.replace(expected, root)
     }
 
+    pub(crate) fn shared_folder_root(&self) -> Result<Option<String>> {
+        let descriptor = match std::fs::read(self.top_dir.join("shared-note.json")) {
+            Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let scope = &descriptor["scope"];
+        Ok(scope["folder"].as_bool().unwrap_or(false).then(|| scope["note"].as_str().map(str::to_owned)).flatten())
+    }
+
     pub(super) fn check_shared_writer(&self, structural_target: Option<&str>) -> Result<()> {
         if !self.top_dir.join("shared-note.json").is_file() { return Ok(()); }
         let library = self.sqlite.as_ref().context("Shared database unavailable")?;
@@ -1026,6 +1036,37 @@ mod tests {
         std::fs::write(stage.join(".cloud-restore-ready"), "synthetic account\n")?;
         Store::initialize_sqlite(&temp.0)?;
         Ok(temp)
+    }
+
+    #[test]
+    fn shared_move_undo_restores_parent_and_sibling_position() -> Result<()> {
+        let temp = isolated_sqlite("shared-move-history")?;
+        let mut store = Store::open_sqlite_at(temp.0.clone())?;
+        let root = store.create_folder("Shared", None)?;
+        let first = store.create_folder("First", Some(&root))?;
+        let moving = store.create_folder("Moving", Some(&root))?;
+        let last = store.create_folder("Last", Some(&root))?;
+        store.sqlite.as_ref().unwrap().read()?.execute_batch("CREATE TABLE state (key TEXT PRIMARY KEY, value BLOB NOT NULL)")?;
+        std::fs::write(temp.0.join("shared-note.json"), serde_json::to_vec(&serde_json::json!({
+            "scope": { "note": root, "folder": true }
+        }))?)?;
+        store.reorder_shared_item(&first, &root, Some(&last))?;
+        store.reorder_shared_item(&moving, &root, Some(&last))?;
+        let original_rank = store.index[&moving].shared_order.clone().context("Missing original rank")?;
+
+        let before = store.track_file_changes();
+        store.set_parent(&moving, Some(&last))?;
+        let destination_rank = store.index[&moving].shared_order.clone();
+        assert_ne!(destination_rank.as_ref(), Some(&original_rank));
+        let changes = before.take();
+        assert_eq!(changes.len(), 1);
+        store.apply_file_history(&changes, false)?;
+        assert_eq!(store.index[&moving].parent.as_deref(), Some(root.as_str()));
+        assert_eq!(store.index[&moving].shared_order.as_ref(), Some(&original_rank));
+        store.apply_file_history(&changes, true)?;
+        assert_eq!(store.index[&moving].parent.as_deref(), Some(last.as_str()));
+        assert_eq!(store.index[&moving].shared_order, destination_rank);
+        Ok(())
     }
 
     #[test]

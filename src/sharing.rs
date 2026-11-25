@@ -19,6 +19,8 @@ mod lifecycle;
 pub(crate) use lifecycle::SharedTrashAction;
 mod list;
 mod sidebar;
+#[cfg(target_os = "macos")]
+pub(crate) use sidebar::SharedFolderInsertion;
 pub(crate) mod organizer;
 pub(crate) mod preferences;
 mod actions;

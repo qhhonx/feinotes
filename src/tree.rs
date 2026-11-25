@@ -72,7 +72,9 @@ impl<'a> Tree<'a> {
         };
         roots.sort_by(cmp);
         let kids = kids.into_iter().enumerate().filter(|(f, v)| seen[*f] && !v.is_empty())
-            .map(|(f, mut v)| { v.sort_by(cmp); (fids[f], v) }).collect();
+            .map(|(f, mut v)| { if v.iter().all(|entry| entry.meta.share_root.as_deref().is_some_and(|root| root != entry.id)) {
+                    v.sort_by_cached_key(|entry| (entry.meta.shared_place(&entry.id), entry.id.as_str()));
+                } else { v.sort_by(cmp); } (fids[f], v) }).collect();
         Tree { roots, kids, notes }
     }
 
@@ -117,8 +119,9 @@ pub(crate) fn shape_key(entries: &[Entry]) -> u64 {
     let mut h = rustc_hash::FxHasher::default();
     entries.len().hash(&mut h);
     for Entry { id, meta, title, icon, body: _, reminders: _, links: _, note, top } in entries {
-        let crate::store::Meta { folder, top_order, created, modified, pinned, opened, width, catalogue_closed, parent, order, starred, reading, info, refs_hidden, markdown, path, name, rel, kind, share_root } = meta;
+        let crate::store::Meta { folder, top_order, created, modified, pinned, opened, width, catalogue_closed, parent, order, starred, reading, info, refs_hidden, markdown, path, name, rel, kind, share_root, shared_order } = meta;
         (id, title, icon, note, top, folder, top_order, created, modified, pinned, opened, share_root).hash(&mut h);
+        shared_order.hash(&mut h);
         (catalogue_closed, parent, order, starred, reading, refs_hidden, markdown, path, name, rel).hash(&mut h);
         (std::mem::discriminant(width), info.hidden, info.created, info.modified, std::mem::discriminant(kind)).hash(&mut h);
     }
@@ -277,6 +280,10 @@ impl Workspace {
     /// 移动到: hang each page under `target` (`None`: top level), skipping
     /// moves into its own subtree.
     pub(crate) fn move_docs(&mut self, ids: &[String], target: Option<String>, cx: &mut Context<Self>) {
+        self.move_docs_with_feedback(ids, target, true, cx);
+    }
+
+    pub(crate) fn move_docs_with_feedback(&mut self, ids: &[String], target: Option<String>, show_success: bool, cx: &mut Context<Self>) {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.confirm_shared_move(ids, target.as_deref(), cx) { return; }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -313,10 +320,11 @@ impl Workspace {
         }
         self.sync_sub_pages(cx);
         self.entries = self.store.list(); self.sort();
-        if !failed { self.show_toast(crate::settings::text("移动成功"), cx); }
+        if !failed && show_success { self.show_toast(crate::settings::text("移动成功"), cx); }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         self.publish_shared_folder_change(cx);
-        self.remember_files(file_before, crate::settings::tr("移动", "Move"));
+        let label = if show_success { crate::settings::tr("移动", "Move") } else { crate::settings::tr("拖拽移动", "Drag move") };
+        self.remember_files(file_before, label);
         cx.notify();
     }
 

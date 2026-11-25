@@ -1672,6 +1672,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     }
     private func listActionsMenu(browser: Bool) -> UIMenu {
         guard let state else { return UIMenu() }
+        let listing = browser ? state.browser?.listing : state.listing
         if state.shared_session && !(browser && state.browser?.personal == true) {
             var groups: [UIMenuElement] = []
             if browser ? state.browser?.can_create == true : state.can_create {
@@ -1683,23 +1684,24 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 ]
                 groups.append(UIMenu(title: label("new-in-folder"),image: UIImage(systemName: "plus"),children: create))
             }
+            if let listing,listing.can_reorder {
+                groups.append(menuSection([menuAction("reorder","arrow.up.arrow.down") { [weak self] in
+                    self?.beginListReorder(browser: browser)
+                }]))
+            }
             let access = hasSharedFolderShortcut(state,browser: browser) ? nil : menuAction("shared-folder-access","person.2") { [weak self] in
                 self?.send("shared-folder-access",id: state.current,scope: state.editor_scope)
             }
             if let collaboration = collaborationSection(access,state: state,browser: browser) { groups.append(collaboration) }
             return UIMenu(children: groups)
         }
-        let listing = browser ? state.browser?.listing : state.listing
         let shared = listing?.kind == "shared"
         let sortRules = ["manual","visited","modified","created","title"].map { key in
             UIAction(title: label(key),state: listing?.sort_rule == key ? .on : .off) { [weak self] _ in
                 guard let self,let listing,self.state?.busy == false,
                       (browser ? self.state?.browser?.listing.scope : self.state?.listing?.scope) == listing.scope else { return }
                 self.send("sort",value: key,scope: listing.scope)
-                if key == "manual" && listing.can_reorder {
-                    if browser { self.host?.padWorkspace?.beginBrowserReorder() }
-                    else { (self.host?.navigationController?.topViewController as? FeiRouteController)?.notesList?.beginReordering() }
-                }
+                if key == "manual" && listing.can_reorder { self.beginListReorder(browser: browser) }
             }
         }
         var sortEntries: [UIMenuElement] = sortRules
@@ -1745,6 +1747,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         }
         return UIMenu(children: menus)
     }
+    private func beginListReorder(browser: Bool) {
+        if browser { host?.padWorkspace?.beginBrowserReorder() }
+        else { (host?.navigationController?.topViewController as? FeiRouteController)?.notesList?.beginReordering() }
+    }
+
     private func beginListSelection(browser: Bool) {
         host?.settleEditorComposition(); host?.view.endEditing(true)
         if browser { host?.padWorkspace?.beginBrowserSelection() }

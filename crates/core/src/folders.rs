@@ -105,6 +105,11 @@ impl Store {
         anyhow::ensure!(self.index[id].share_root.as_deref().is_none_or(|root| root == id),
             "请在共享文件夹内移动项目 / Move this item from inside its shared folder");
         self.validate_folder(Some(id), parent)?;
+        #[cfg(feature = "sqlite-store")]
+        if self.sqlite.is_some() && let Some(root) = self.shared_folder_root()? {
+            let parent = parent.ok_or_else(|| anyhow::anyhow!("The shared folder root must remain in the share"))?;
+            return self.place_shared_item(&root, id, parent, before);
+        }
         if let Some(anchor) = before {
             anyhow::ensure!(self.index.get(anchor).is_some_and(|m| m.parent.as_deref() == parent) && self.index_has(anchor), "目标位置已改变，请重试");
             if anchor == id { return Ok(()); }
@@ -134,6 +139,70 @@ impl Store {
             }
         }
         if let Err(e) = self.save_index() { self.index = previous; return Err(e); }
+        self.record_tree_changes(&previous);
+        Ok(())
+    }
+
+    /// Recheck the parent and sibling anchor under the write lock. A stale reorder
+    /// must never become a cross-folder move.
+    #[cfg(feature = "sqlite-store")]
+    pub fn reorder_shared_item(&mut self, id: &str, parent: &str, before: Option<&str>) -> Result<()> {
+        let _lock = self.begin_write()?;
+        let root = self.shared_folder_root()?.ok_or_else(|| anyhow::anyhow!("Not a shared folder"))?;
+        anyhow::ensure!(self.index.get(id).is_some_and(|entry| entry.parent.as_deref() == Some(parent)),
+            "目标位置已改变，请重试 / The folder changed. Try again");
+        self.validate_folder(Some(id), Some(parent))?;
+        self.place_shared_item(&root, id, parent, before)
+    }
+
+    #[cfg(feature = "sqlite-store")]
+    fn place_shared_item(&mut self, root: &str, id: &str, parent: &str, before: Option<&str>) -> Result<()> {
+        use crate::board::fractional_index::{generate_key_between, generate_n_keys_between};
+
+        let mut ancestor = parent;
+        while ancestor != root {
+            ancestor = self.index.get(ancestor).and_then(|meta| meta.parent.as_deref())
+                .ok_or_else(|| anyhow::anyhow!("Target is outside the shared folder"))?;
+        }
+        if before == Some(id) { return Ok(()); }
+        let mut siblings: Vec<_> = self.index.iter().filter(|(key, meta)| key.as_str() != id && meta.parent.as_deref() == Some(parent))
+            .map(|(key, meta)| (meta.shared_place(key).into_owned(), key.clone())).collect();
+        siblings.sort_unstable();
+        let position = match before {
+            Some(anchor) => siblings.iter().position(|(_, key)| key == anchor)
+                .ok_or_else(|| anyhow::anyhow!("目标位置已改变，请重试 / The folder changed. Try again"))?,
+            None => siblings.len(),
+        };
+        let moved = self.index[id].parent.as_deref() != Some(parent);
+        let relative = |index: usize| siblings.get(index).map(|(rank, _)| rank.as_str());
+        let left = position.checked_sub(1).and_then(relative);
+        let right = relative(position);
+        let current = (self.index[id].shared_place(id).into_owned(), id.to_owned());
+        if !moved && siblings.partition_point(|sibling| sibling < &current) == position { return Ok(()); }
+        let previous = self.index.clone();
+        if let (Some(left), Some(right)) = (left, right) && left == right {
+            // Concurrent inserts can select the same key. Space only the tied rows.
+            let first = siblings.partition_point(|(rank, _)| rank.as_str() < left);
+            let last = siblings.partition_point(|(rank, _)| rank.as_str() <= right);
+            let ranks = generate_n_keys_between(first.checked_sub(1).and_then(relative), relative(last), last - first + 1)
+                .map_err(anyhow::Error::msg)?;
+            let mut keys: Vec<_> = siblings[first..last].iter().map(|(_, key)| key.as_str()).collect();
+            keys.insert(position - first, id);
+            for (key, rank) in keys.into_iter().zip(ranks) { self.index.get_mut(key).unwrap().shared_order = Some(rank); }
+        } else {
+            self.index.get_mut(id).unwrap().shared_order = Some(generate_key_between(left, right).map_err(anyhow::Error::msg)?);
+        }
+        if moved {
+            // Keep the legacy location different even if two moves leave and
+            // return to the same folder before the journal takes a snapshot.
+            let append = siblings.iter().map(|(_, key)| self.index[key].order)
+                .fold(self.index[id].order, u64::max).saturating_add(1);
+            let meta = self.index.get_mut(id).unwrap();
+            meta.parent = Some(parent.to_owned());
+            meta.order = append;
+            meta.top_order = None;
+        }
+        if let Err(error) = self.save_index() { self.index = previous; return Err(error); }
         self.record_tree_changes(&previous);
         Ok(())
     }

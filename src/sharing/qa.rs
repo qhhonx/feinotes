@@ -1014,45 +1014,132 @@ fn shared_drop(args: &str, primary: WindowHandle<Workspace>, cx: &mut App) -> Re
     let role = args.next().context("Shared-drop role missing")?;
     let (kind, target) = (args.next().unwrap_or("document"), args.next().unwrap_or("inner"));
     let ws = primary.read(cx)?;
-    let rows = ws.shared_sidebar_entries(cx);
+    let shared = role != "Personal";
+    let rows = if shared { ws.shared_sidebar_entries(cx) } else { ws.personal_navigation_entries(cx) };
     let id = |kind: &str| -> Result<String> {
-        let title = if kind == "root" { role.into() } else { format!("{role} {kind}") };
+        if kind == "received" {
+            return ws.shared_sidebar_entries(cx).into_iter().find(|row| row.title == "Shared reader fixture")
+                .map(|row| row.id).context("Missing received grid fixture");
+        }
+        let title = if kind == "root" { role.into() } else { format!("{role} {}", kind.replace('_', " ")) };
         rows.iter().find(|row| row.title == title).map(|row| row.id.clone()).with_context(|| format!("Fixture missing: {title}"))
     };
-    let room = ws.shared_list_room(&id("root")?, cx).context("Shared-drop room missing")?;
+    let room = if shared { Some(ws.shared_list_room(&id("root")?, cx).context("Shared-drop room missing")?) } else { None };
+    let store_entries = |cx: &mut App| -> Result<Vec<crate::store::Entry>> { Ok(match &room {
+        Some(room) => shared::store_for(room, cx)?.list(),
+        None => primary.read(cx)?.store.clone().list(),
+    }) };
     let surface = |kind: &str| -> Result<_> {
         let id = id(kind)?;
         ws.qa_home_card_point(&id).with_context(|| format!("Home item did not render: {kind}"))
     };
     let sidebar = |kind: &str| -> Result<_> {
-        ws.qa_sidebar_point(true, &id(kind)?, false).with_context(|| format!("Sidebar item did not render: {kind}"))
+        ws.qa_sidebar_point(shared, &id(kind)?, false).with_context(|| format!("Sidebar item did not render: {kind}"))
     };
     if matches!(action, "list" | "grid" | "sidebar" | "personal") {
-        let (root, source, folder) = (id("root")?, id("source")?, id("folder")?);
+        let (root, source, folder, inner) = (id("root")?, id("source")?, id("folder")?, id("inner target")?);
         return primary.update(cx, |ws, window, cx| {
             ws.sidebar_open = true;
-            ws.folded[1] = true;
-            ws.sharing.folded = false;
-            ws.sharing.expanded.extend([root, source.clone(), folder]);
+            ws.folded[1] = shared;
+            ws.sharing.folded = !shared;
+            let expanded = if shared { &mut ws.sharing.expanded } else { &mut ws.expanded };
+            expanded.extend([root, source.clone(), folder, inner]);
             match action {
                 "list" | "grid" => {
                     ws.home.grid = action == "grid";
-                    ws.navigate_shared_sidebar(room, crate::sidebar::SidebarEntry::new(crate::sidebar::SidebarSection::Shared, &source), window, cx);
+                    if let Some(room) = room {
+                        ws.navigate_shared_sidebar(room, crate::sidebar::SidebarEntry::new(crate::sidebar::SidebarSection::Shared, &source), window, cx);
+                    } else { ws.open(&source, window, cx); }
                 }
                 "personal" => ws.navigate_personal_home_tab(crate::home::HomeTab::Recent, window, cx),
                 _ => cx.notify(),
             }
         });
     }
+    if action == "shared-overview" {
+        return primary.update(cx, |ws, window, cx| ws.navigate_personal_home_tab(crate::home::HomeTab::Shared, window, cx));
+    }
+    if action == "grid-confirm" {
+        let (document, folder) = (id("document")?, id("share_target")?);
+        ensure!(matches!(&ws.sharing.sheet, Some(Sheet::MoveInto(ids, target, room))
+            if ids.as_slice() == [document] && target == &folder && room.scope.note == folder),
+            "Import into a shared folder did not request the existing permission confirmation");
+        eprintln!("GRID_SHARE_CONFIRM");
+        return Ok(());
+    }
+    if action == "grid-no-confirm" {
+        ensure!(ws.sharing.sheet.is_none(), "A rejected grid drop entered the permission confirmation");
+        return Ok(());
+    }
+    if action == "grid-cancel" {
+        return primary.update(cx, |ws, window, cx| ws.close_sharing(window, cx));
+    }
+    if action == "grid-own-share" {
+        let document = id(kind)?;
+        let entry = rows.iter().find(|row| row.id == document).context("Missing original")?;
+        ensure!(entry.meta.share_root.as_ref() == Some(&document), "Moving the original changed its share identity");
+        ensure!(ws.shared_list_room(&document, cx).is_some_and(|room| !room.scope.folder
+            && room.scope.owner.is_none() && room.scope.note == document), "Standalone share missing from activity");
+        eprintln!("GRID_OWN_SHARE_RETAINED");
+        return Ok(());
+    }
     let parent = |target: &str| if target == "inner" { id("inner target") }
         else { id(target) };
+    if matches!(action, "check-folded" | "check-expanded" | "fold-target") {
+        let (folder, child) = (id("target")?, id("target child")?);
+        if action == "fold-target" {
+            return primary.update(cx, |ws, _, cx| {
+                let expanded = if shared { &mut ws.sharing.expanded } else { &mut ws.expanded };
+                expanded.remove(&folder);
+                cx.notify();
+            });
+        }
+        let expanded = if shared { &ws.sharing.expanded } else { &ws.expanded };
+        let expected = action == "check-expanded";
+        ensure!(expanded.contains(&folder) == expected, "{role} target expansion differs from expected {expected}");
+        ensure!(ws.qa_sidebar_point(shared, &child, false).is_some() == expected, "{role} target child visibility differs from expected {expected}");
+        eprintln!("FOLDER_DWELL {role} expanded={expected}");
+        return Ok(());
+    }
+    if action == "verify-gap" {
+        ensure!(ws.qa_shared_sidebar_gap(&id(kind)?, &id(target)?), "{role} sidebar did not open the upstream gap before {target}");
+        eprintln!("SHARED_SIBLING_GAP {role} {kind} before {target}");
+        return Ok(());
+    }
+    if matches!(action, "capture-order" | "verify-order") {
+        let parent = id("source")?;
+        let rows = store_entries(cx)?.into_iter()
+            .filter(|row| row.meta.parent.as_deref() == Some(&parent)).collect();
+        let rows = if shared { Workspace::shared_folder_order(rows) } else { primary.read(cx)?.sorted_entries(rows) };
+        let order = rows.into_iter().map(|row| row.id).collect::<Vec<_>>();
+        let path = cloud_sync::test_root()?.context("Missing QA root")?.join("shared-drop-order.json");
+        if action == "capture-order" { std::fs::write(path, serde_json::to_vec(&order)?)?; }
+        else {
+            let before: Vec<String> = serde_json::from_slice(&std::fs::read(path)?)?;
+            ensure!(before == order, "{role} main area drag changed sibling order");
+            eprintln!("SHARED_HOME_KEEP_ORDER {role}");
+        }
+        return Ok(());
+    }
+    if action == "verify-before" {
+        let moving = id(kind)?;
+        let anchor = id(target)?;
+        let parent = id("source")?;
+        let mut rows = store_entries(cx)?;
+        rows.retain(|entry| entry.meta.parent.as_deref() == Some(&parent));
+        let rows = Workspace::shared_folder_order(rows);
+        ensure!(rows.windows(2).any(|pair| pair[0].id == moving && pair[1].id == anchor),
+            "{role} {kind} did not move immediately before {target}");
+        eprintln!("SHARED_SIBLING_ORDER {role} {kind} before {target}");
+        return Ok(());
+    }
     if matches!(action, "verify" | "observe") {
         let item = id(kind)?;
         let expected = parent(target)?;
         let moving = id("folder")?;
         let child = id("child")?;
         let descendant = id("descendant")?;
-        let entries = shared::store_for(&room, cx)?.list();
+        let entries = store_entries(cx)?;
         let actual = entries.iter().find(|entry| entry.id == item).and_then(|entry| entry.meta.parent.as_deref());
         if action == "verify" { ensure!(actual == Some(expected.as_str()), "{role} {kind} did not land in {target}"); }
         ensure!([child, descendant].iter().all(|id| entries.iter().any(|entry| entry.id == *id
@@ -1086,9 +1173,13 @@ fn shared_drop(args: &str, primary: WindowHandle<Workspace>, cx: &mut App) -> Re
     }
     let at = match action {
         "home-down" => surface(kind)?,
-        "home-move" | "home-up" => surface(if target == "inner" { "inner target" } else { target })?,
+        "home-move" | "home-up" | "sidebar-home-move" | "sidebar-home-up" => surface(if target == "inner" { "inner target" } else { target })?,
         "sidebar-down" | "hover" => sidebar(kind)?,
         "sidebar-move" | "sidebar-up" => sidebar(if target == "inner" { "inner target" } else { target })?,
+        "sidebar-slot-move" | "sidebar-slot-up" => {
+            let at = sidebar(target)?;
+            point(at.x, at.y - px(crate::sidebar::ROW_H / 2.) + px(2.))
+        }
         "blank-move" | "blank-up" => point(px(450.), px(905.)),
         "cross-move" | "cross-up" => {
             let other = if role == "Owner" { "Editor" } else { "Owner" };

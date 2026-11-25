@@ -162,6 +162,13 @@ mod shell {
             if !self.query(cx).is_empty() { return self.search_results(cx); }
             if personal && self.home.tab == crate::home::HomeTab::Shared { return self.mobile_order_entries(self.sorted_shared_entries(self.shared_collection_entries(cx))); }
             let mut entries = if personal { self.personal_navigation_entries(cx) } else { self.entries.clone() };
+            if !personal && self.current_room(cx).is_some_and(|room| room.scope.folder) {
+                entries.retain(|entry| entry.meta.parent == self.folder_current && self.folder_current.is_some());
+                // Personal pins remain available in shortcuts and menus. The
+                // shared folder itself has a single order for all members.
+                for entry in &mut entries { entry.meta.pinned = false; }
+                return Self::shared_folder_order(entries);
+            }
             if self.home.tab == crate::home::HomeTab::Starred {
                 entries = self.favorite_entries(cx);
             } else { entries.retain(|entry| entry.meta.parent == self.folder_current); }

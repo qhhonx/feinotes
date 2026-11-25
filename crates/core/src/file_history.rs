@@ -7,10 +7,25 @@ pub struct FileState {
     pub parent: Option<String>,
     pub order: u64,
     pub top_order: Option<u64>,
+    pub shared_order: Option<String>,
 }
 impl FileState {
-    pub fn of(e: &Entry) -> Self { Self { title: e.title.clone(), folder: e.meta.folder.is_some(), parent: e.meta.parent.clone(), order: e.meta.order, top_order: e.meta.top_order } }
-    fn place(&self) -> (&Option<String>, u64, Option<u64>) { (&self.parent, self.order, self.top_order) }
+    pub fn of(e: &Entry) -> Self { Self::from_meta(e.title.clone(), &e.meta) }
+    fn from_meta(title: String, m: &Meta) -> Self {
+        Self { title, folder: m.folder.is_some(), parent: m.parent.clone(), order: m.order, top_order: m.top_order, shared_order: m.shared_order.clone() }
+    }
+    pub fn place(&self) -> (Option<&str>, u64, Option<u64>, Option<&str>) {
+        (self.parent.as_deref(), self.order, self.top_order, self.shared_order.as_deref())
+    }
+    fn meta_place(m: &Meta) -> (Option<&str>, u64, Option<u64>, Option<&str>) {
+        (m.parent.as_deref(), m.order, m.top_order, m.shared_order.as_deref())
+    }
+    pub fn apply_place(&self, m: &mut Meta) {
+        m.parent = self.parent.clone();
+        m.order = self.order;
+        m.top_order = self.top_order;
+        m.shared_order = self.shared_order.clone();
+    }
 }
 
 #[derive(Clone)]
@@ -52,7 +67,7 @@ impl Store {
     pub(super) fn file_state(&self, id: &str) -> Option<FileState> {
         let m = self.index.get(id)?;
         let title = m.folder.clone().or_else(|| self.load(id).ok().map(|d| d.title.text))?;
-        Some(FileState { title, folder: m.folder.is_some(), parent: m.parent.clone(), order: m.order, top_order: m.top_order })
+        Some(FileState::from_meta(title, m))
     }
 
     pub(super) fn record_file_change(&self, id: &str, before: Option<FileState>) {
@@ -67,10 +82,8 @@ impl Store {
         if !self.file_changes.iter().any(|w| w.strong_count() > 0) { return; }
         for (id, m) in &self.index {
             let old = previous.get(id);
-            if old.is_some_and(|o| (&o.parent, o.order, o.top_order) == (&m.parent, m.order, m.top_order)) { continue; }
-            let before = old.and_then(|o| self.file_state(id).map(|mut state| {
-                state.parent = o.parent.clone(); state.order = o.order; state.top_order = o.top_order; state
-            }));
+            if old.is_some_and(|o| FileState::meta_place(o) == FileState::meta_place(m)) { continue; }
+            let before = old.and_then(|o| self.file_state(id).map(|state| FileState::from_meta(state.title, o)));
             self.record_file_change(id, before);
         }
     }
@@ -108,7 +121,7 @@ impl Store {
             if let Some(expected) = from {
                 let m = &self.index[&c.id];
                 if to.as_ref().is_none_or(|t| t.place() != expected.place()) {
-                    anyhow::ensure!((&m.parent, m.order, m.top_order) == expected.place(), "文件位置已被其他操作改变，请先刷新");
+                    anyhow::ensure!(FileState::meta_place(m) == expected.place(), "文件位置已被其他操作改变，请先刷新");
                 }
                 if let Some(target) = to && target.title != expected.title {
                     let title = if let Some(name) = &m.folder { name.clone() } else { self.load(&c.id)?.title.text };
@@ -124,12 +137,12 @@ impl Store {
                     let saved = self.trash.get(&c.id).ok_or_else(|| anyhow::anyhow!("恢复内容已不在回收站，无法重做或撤销"))?;
                     anyhow::ensure!(target.folder || self.trash_path(&c.id).fs_is_file(), "恢复内容已不在回收站，无法重做或撤销");
                     let mut meta = saved.meta.clone();
-                    meta.parent = target.parent.clone(); meta.order = target.order; meta.top_order = target.top_order;
+                    target.apply_place(&mut meta);
                     projected.insert(c.id.clone(), meta);
                 }
                 (Some(from), Some(to)) if from.place() != to.place() => {
                     let m = projected.get_mut(&c.id).unwrap();
-                    m.parent = to.parent.clone(); m.order = to.order; m.top_order = to.top_order;
+                    to.apply_place(m);
                 }
                 _ => {}
             }
@@ -182,7 +195,7 @@ impl Store {
                     if let Some(m) = self.index.get_mut(&c.id) { m.modified = now(); }
                 }
                 if let Some(m) = self.index.get_mut(&c.id) && from.place() != to.place() {
-                    m.parent = to.parent.clone(); m.order = to.order; m.top_order = to.top_order;
+                    to.apply_place(m);
                 }
             }
             // What goes to the 回收站, deepest first; the root is the outermost
@@ -206,6 +219,7 @@ impl Store {
     #[cfg(feature = "sqlite-store")]
     fn apply_sqlite_file_history(&mut self, changes: &[FileDelta], redo: bool) -> Result<()> {
         let _lock = self.begin_write()?;
+        self.check_shared_writer(None)?;
         let mut moves = vec![];
         let mut titles = vec![];
         let mut index = self.index.clone();
@@ -218,7 +232,7 @@ impl Store {
             if let Some(expected) = from {
                 let m = &self.index[&c.id];
                 if to.as_ref().is_none_or(|t| t.place() != expected.place()) {
-                    anyhow::ensure!((&m.parent, m.order, m.top_order) == expected.place(), "文件位置已被其他操作改变，请先刷新");
+                    anyhow::ensure!(FileState::meta_place(m) == expected.place(), "文件位置已被其他操作改变，请先刷新");
                 }
                 if let Some(target) = to && target.title != expected.title {
                     let title = if let Some(name) = &m.folder { name.clone() } else { self.load(&c.id)?.title.text };
@@ -244,12 +258,12 @@ impl Store {
                         moves.push((c.id.clone(), false));
                     }
                     let mut meta = saved.meta;
-                    meta.parent = target.parent.clone(); meta.order = target.order; meta.top_order = target.top_order;
+                    target.apply_place(&mut meta);
                     index.insert(c.id.clone(), meta);
                 }
                 (Some(from), Some(to)) => {
                     let m = index.get_mut(&c.id).unwrap();
-                    if from.place() != to.place() { m.parent = to.parent.clone(); m.order = to.order; m.top_order = to.top_order; }
+                    if from.place() != to.place() { to.apply_place(m); }
                     if from.title != to.title {
                         if to.folder { m.folder = Some(to.title.clone()); }
                         else {

@@ -361,6 +361,10 @@ impl SharedStore {
         let (parent, before) = (self.real_parent(parent), self.real_parent(before));
         self.on_res(id, |s| s.move_in_tree(id, parent, before))
     }
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    pub fn reorder_shared_item(&mut self, id: &str, parent: &str, before: Option<&str>) -> Result<()> {
+        self.on_res(id, |s| s.reorder_shared_item(id, parent, before))
+    }
     /// Moves stay inside a root for now (W7).
     pub fn same_top(&self, id: &str, parent: Option<&str>) -> Result<()> {
         if self.is_session() { return Ok(()); }

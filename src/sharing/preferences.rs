@@ -183,6 +183,7 @@ impl Workspace {
 
     pub(crate) fn organization_toast(&mut self, pin: bool, enabled: bool, cx: &mut Context<Self>) {
         let message = match (pin, enabled) {
+            (true, true) if cfg!(target_os = "ios") && self.current_room(cx).is_some_and(|room| room.scope.folder) => tr("已置顶", "Pinned"),
             (true, true) if cfg!(target_os = "ios") => tr("已置顶，可在文档列表顶部查看", "Pinned at the top of the document list"),
             (true, true) => tr("已置顶，可在侧栏查看", "Pinned in the sidebar"),
             (true, false) => tr("已取消置顶", "Unpinned"),

@@ -313,7 +313,7 @@ impl Workspace {
         let id = e.id.clone();
         let h = card_h;
         let hot = self.home.folders.hovered.as_ref() == Some(&id) && self.home.folders.drag.is_none();
-        let over = self.home.folders.drag.as_ref().is_some_and(|d| d.started && !d.returning && d.over.as_ref() == Some(&id)) || self.sidebar_shared_drop_target(&id) || self.file_drop_over(&id);
+        let over = self.home.folders.drag.as_ref().is_some_and(|d| d.started && !d.returning && d.over.as_ref() == Some(&id)) || self.file_drop_over(&id);
         let front = self.home.folders.fx.get(&id).and_then(|f| f.front.clone());
         let entries = self.entries.as_slice();
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -386,7 +386,6 @@ impl Workspace {
         let reveal = if menu_on { 1. } else { (o - m).clamp(0., 1.) };
         let (open_id, menu_id, new_id) = (id.clone(), id.clone(), id.clone());
         let hover_id = id.clone();
-        let arm = id.clone();
         let label = div().absolute().left(px(16.)).right(px(14.)).bottom(px(14. - lift)).flex().items_end().gap(px(8.))
             .child(div().flex_1().min_w_0().flex().flex_col()
                 .child(div().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::text())
@@ -404,9 +403,6 @@ impl Workspace {
                 .child(self.home_more(e, format!("home-fmore-{id}"), cx).variant(crate::design::ButtonVariant::Outline).sized(crate::design::ButtonSize::Tool).rounded_full().opacity(reveal)));
         div().id(SharedString::from(format!("home-folder-{id}"))).relative().w_full().min_w_0().h(px(h)).cursor_pointer()
             .when(self.batch.is_some(), |d| d.opacity(0.45))
-            .when(self.home_dragging(&id), |d| d.opacity(0.45))
-            .when(self.shared_home_drag_enabled(cx), |d| d.on_mouse_down(MouseButton::Left,
-                cx.listener(move |w, ev: &MouseDownEvent, _, cx| w.arm_home_drag(&arm, ev.position, cx))))
             .on_hover(cx.listener(move |w, on: &bool, _, cx| {
                 if *on { w.home.folders.hovered = Some(hover_id.clone()); }
                 else if w.home.folders.hovered.as_ref() == Some(&hover_id) { w.home.folders.hovered = None; }
@@ -442,32 +438,39 @@ impl Workspace {
     pub(crate) fn clear_home_card_bounds(&self) { self.home.folders.bounds.borrow_mut().clear(); }
 
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    pub(crate) fn grid_document_can_drag(&self, entry: &Entry, cx: &App) -> bool {
+        if self.is_shared() { return self.shared_home_drag_room(cx).is_some(); }
+        if self.view == crate::app::View::Home && self.home.shared() { return false; }
+        // Favorites may contain received entries. Personal folders already
+        // render entries from this tree, including originals with their own share.
+        let origin = if self.view == crate::app::View::Home && self.home.tab == crate::home::HomeTab::Starred {
+            self.entries.iter().find(|origin| origin.id == entry.id)
+        } else { Some(entry) };
+        origin.is_some_and(|row| row.meta.share_root.as_ref().is_none_or(|root| root == &row.id))
+    }
+
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    fn personal_grid_can_drop(&self, id: &str, target: &Entry) -> bool {
+        let Some(source) = self.entries.iter().find(|entry| entry.id == id && entry.meta.parent.as_ref() != Some(&target.id)) else { return false; };
+        if target.meta.share_root.is_none() { return true; }
+        // Importing into a share uses the same permission confirmation as Move to.
+        let Some(room) = crate::cloud_sync::shared::original::owner_room(&self.entries, &target.id) else { return false; };
+        room.scope.folder && source.meta.share_root.is_none() && !source.meta.local()
+    }
+
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     fn shared_home_drag_room(&self, cx: &App) -> Option<crate::cloud_sync::shared::Room> {
         if self.view != crate::app::View::Folder || self.batch.is_some() { return None; }
         self.current_room(cx).filter(|room| self.shared_sidebar_folder_writable(room, cx))
     }
 
-    pub(crate) fn shared_home_drag_enabled(&self, _cx: &App) -> bool {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        { self.shared_home_drag_room(_cx).is_some() }
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
-        { false }
-    }
-
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    pub(crate) fn shared_home_drop_at(&self, at: Point<Pixels>, room: &crate::cloud_sync::shared::Room, id: &str, cx: &App) -> Option<&str> {
-        if self.view != crate::app::View::Folder || self.current_room(cx).as_ref().map(|room| &room.scope) != Some(&room.scope) { return None; }
-        let bounds = self.home.folders.bounds.borrow();
-        let target = self.entries.iter().find(|entry| entry.meta.folder.is_some() && entry.meta.parent == self.folder_current
-            && bounds.get(&entry.id).is_some_and(|b| b.contains(&at)))?;
-        Self::shared_drop_allowed(&self.entries, room, id, &target.id).then_some(target.id.as_str())
-    }
-
-    pub(crate) fn home_shared_drop_target(&self, _id: &str) -> bool {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        { self.home.folders.drag.as_ref().is_some_and(|d| d.room.is_some() && d.over.as_deref() == Some(_id)) }
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
-        { false }
+    fn grid_drop_allowed(&self, drag: &HomeDrag, target: &Entry, cx: &App) -> bool {
+        match &drag.room {
+            Some(room) => self.shared_home_drag_room(cx).is_some_and(|current| current.scope == room.scope)
+                && Self::shared_drop_allowed(&self.entries, room, &drag.id, &target.id),
+            None => !self.is_shared() && self.personal_grid_can_drop(&drag.id, target),
+        }
     }
 
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync", feature = "devtools"))]
@@ -510,20 +513,16 @@ impl Workspace {
     }
 
     fn move_home_drag(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
-        if !self.home.folders.drag.as_ref().is_some_and(|d| d.started && !d.returning) { return; }
+        let Some(drag) = self.home.folders.drag.as_ref().filter(|d| d.started && !d.returning) else { return };
         // Only folders on the page now: bounds linger for cards of pages left behind.
         let shown = if self.view == crate::app::View::Folder { self.level_entries(self.folder_current.as_deref()) } else { self.home_entries(cx) };
-        let over = shown.iter().filter(|e| e.meta.folder.is_some())
-            .find(|e| self.home.folders.bounds.borrow().get(&e.id).is_some_and(|b| b.contains(&at)))
-            .map(|e| e.id.clone());
+        let over = shown.iter().filter(|e| e.meta.folder.is_some() && e.note.is_none())
+            .find(|e| self.home.folders.bounds.borrow().get(&e.id).is_some_and(|b| b.contains(&at)));
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        let over = if let Some(d) = &self.home.folders.drag && let Some(room) = &d.room {
-            self.shared_home_drop_at(at, room, &d.id, cx).or_else(|| {
-                if !self.sidebar_open || self.sharing.folded { return None; }
-                self.sharing.sidebar.folder_at(at, self.list_scroll.bounds())
-                    .filter(|target| Self::shared_drop_allowed(&self.entries, room, &d.id, target))
-            }).map(str::to_owned)
-        } else { over };
+        let over = over.filter(|entry| self.grid_drop_allowed(drag, entry, cx));
+        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
+        let _ = drag;
+        let over = over.map(|entry| entry.id.clone());
         let Some(d) = self.home.folders.drag.as_mut() else { return };
         d.at = at;
         if over != d.over {
@@ -554,14 +553,6 @@ impl Workspace {
 
     fn end_home_drag(&mut self, cx: &mut Context<Self>) {
         let Some(d) = self.home.folders.drag.as_mut().filter(|d| d.started && !d.returning) else { self.home.folders.drag = None; return };
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        if let (Some(room), Some(target)) = (d.room.clone(), d.over.clone()) {
-            let id = d.id.clone();
-            self.home.folders.drag = None;
-            self.move_shared_drop(room, id, target, cx);
-            cx.notify();
-            return;
-        }
         let target = d.over.clone().and_then(|f| self.home.folders.bounds.borrow().get(&f).copied().map(|b| (f, b)));
         let Some((folder, b)) = target else {
             // Not over a folder: the paper flies back and becomes the card again.
@@ -571,14 +562,27 @@ impl Workspace {
             return;
         };
         let id = d.id.clone();
-        // Hand the paper to the folder where it is; it slides in behind the glass.
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let room = d.room.clone();
         let [x, y, w, h] = d.rect.p;
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if self.confirm_shared_move(std::slice::from_ref(&id), Some(&folder), cx) {
+            self.home.folders.drag = None;
+            cx.notify();
+            return;
+        }
+        // Hand the paper to the folder where it is; it slides in behind the glass.
         let local = [x - f32::from(b.left()), y - f32::from(b.top()), w, h];
         self.home.folders.drag = None;
         let fx = self.home.folders.fx.entry(folder.clone()).or_insert_with(FolderFx::new);
         fx.arrival = Some((id.clone(), Spring::new(local)));
         fx.front = Some(id.clone());
         fx.dip.v += 5.5;
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if let Some(room) = room {
+            self.move_shared_drop(room, id, folder, cx);
+            return;
+        }
         self.move_into_folder(&id, &folder, cx);
     }
 
@@ -590,34 +594,25 @@ impl Workspace {
             self.home.folders.drag = None;
             return None;
         };
-        let plain = e.meta.folder.is_some() || !self.home.grid;
-        let (ghost_w, ghost_h) = if plain { (172., crate::sidebar::ROW_H) } else { (MINI_W, MINI_H) };
         let now = Instant::now();
         let dt = d.last.replace(now).map_or(1. / 120., |t| now.duration_since(t).as_secs_f32().min(0.032));
         if !d.returning {
             // The size a paper has inside a folder, from pickup to drop.
-            let (mut x, mut y) = (f32::from(d.at.x) - d.grab.0 * ghost_w, f32::from(d.at.y) - d.grab.1 * ghost_h);
-            if let Some(b) = folder_bounds.filter(|_| !plain) {
+            let (mut x, mut y) = (f32::from(d.at.x) - d.grab.0 * MINI_W, f32::from(d.at.y) - d.grab.1 * MINI_H);
+            if let Some(b) = folder_bounds {
                 // Drawn toward the folder's mouth, held just above the glass.
                 let (fx, fy) = (f32::from(b.center().x) - MINI_W / 2., f32::from(b.top()) + 0.56 * f32::from(b.size.height) - MINI_H);
                 x += (fx - x) * 0.45; y += (fy - y) * 0.45;
             }
-            d.rect.target = [x, y, ghost_w, ghost_h];
+            d.rect.target = [x, y, MINI_W, MINI_H];
         }
         let moving = d.rect.step(dt);
         if d.returning && !moving { self.home.folders.drag = None; cx.notify(); return None; }
         window.request_animation_frame();
         let [x, y, w, h] = d.rect.p;
-        let ghost = if plain {
-            div().size_full().rounded(px(10.)).bg(Theme::bg_body()).flex().items_center().gap(px(6.)).px(px(8.))
-                .child(crate::sidebar::entry_icon(e, false, false, cx))
-                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis()
-                    .text_size(px(13.)).child(ui_text(display_title(&e.title)))).into_any_element()
-        } else {
-            // The carried page skeleton is painted straight onto the GPU.
-            let paper = Paper { cx: w / 2., cy: h / 2., w, h, rot: 0., seed: seed(&e.id) };
-            canvas(|_, _, _| {}, move |b, _, window, _| paper.paint(b.origin, Face::Sketch, window)).absolute().inset_0().into_any_element()
-        };
+        // The carried page skeleton is painted straight onto the GPU.
+        let paper = Paper { cx: w / 2., cy: h / 2., w, h, rot: 0., seed: seed(&e.id) };
+        let ghost = canvas(|_, _, _| {}, move |b, _, window, _| paper.paint(b.origin, Face::Sketch, window)).absolute().inset_0();
         let layer = div().id("home-drag-overlay").absolute().inset_0().occlude().cursor(CursorStyle::ClosedHand)
             .on_mouse_move(cx.listener(|w, ev: &MouseMoveEvent, _, cx| {
                 if ev.pressed_button != Some(MouseButton::Left) { w.cancel_home_drag(cx); return; }

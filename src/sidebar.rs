@@ -81,6 +81,7 @@ pub(crate) fn folder_glyph(entry: &Entry, open: bool, _mark_shared: bool, _cx: &
     Some(if open { "folder-open" } else { "folder" })
 }
 
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 pub(crate) fn entry_icon(entry: &Entry, open: bool, mark_shared: bool, cx: &App) -> Div {
     let folder = folder_glyph(entry, open, mark_shared, cx);
     div().size(px(20.)).flex_none().flex().items_center().justify_center().relative().map(|d| match &entry.icon {

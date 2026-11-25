@@ -2,6 +2,13 @@
 use super::*;
 use crate::{cloud_sync::activity::ActivityView, sidebar::{SidebarEntry, SidebarSection}, store::{Entry, Store}};
 
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+pub(crate) struct SharedFolderInsertion {
+    pub parent: String,
+    pub before: Option<String>,
+}
+
 pub(super) fn notify(cx: &mut App) {
     cx.defer(|cx| {
         for handle in cx.windows().into_iter().filter_map(|handle| handle.downcast::<Workspace>()) {
@@ -11,6 +18,52 @@ pub(super) fn notify(cx: &mut App) {
 }
 
 impl Workspace {
+    pub(crate) fn reorder_current_shared_folder(&mut self, id: &str, parent: &str, before: Option<&str>, cx: &mut Context<Self>) -> bool {
+        let Some(room) = self.current_room(cx).filter(|room| room.scope.folder) else { return false; };
+        self.commit_shared_reorder(&room, self.store.clone(), id, parent, before, cx)
+    }
+
+    fn commit_shared_reorder(&mut self, room: &Room, store: crate::shared_store::SharedStore, id: &str, parent: &str, before: Option<&str>, cx: &mut Context<Self>) -> bool {
+        let result = (|| {
+            let mut store = shared::check_opened_store(store, room, cx)?;
+            anyhow::ensure!(shared::access(&store, cx).is_some_and(Access::can_write) && !shared::editing_paused(&store, cx),
+                "{}", tr("当前无法调整共享顺序。", "The shared order can't be changed right now."));
+            let history = (self.store.root() == store.root()).then(|| store.track_file_changes());
+            store.reorder_shared_item(id, parent, before)?;
+            let entries = store.list();
+            if self.store.root() == store.root() { self.entries = entries.clone(); self.sort(); }
+            cloud_sync::activity::update_folder_items(&room.scope, &entries, cx);
+            cloud_sync::recheck_account(store.root(), cx);
+            if let Some(history) = history { self.remember_files(history, tr("拖拽移动", "Drag move")); }
+            notify(cx);
+            Ok::<_, anyhow::Error>(())
+        })();
+        if let Err(error) = result {
+            self.show_toast_kind(ui::ToastKind::Error, &settings::diagnostic(&error.to_string()), cx);
+            return false;
+        }
+        cx.notify();
+        true
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn reorder_shared_drop(&mut self, room: Room, id: String, position: SharedFolderInsertion, cx: &mut Context<Self>) {
+        if !self.shared_sidebar_folder_writable(&room, cx) { return; }
+        if shared::scope(&self.store, cx) == Some(&room.scope) {
+            self.reorder_current_shared_folder(&id, &position.parent, position.before.as_deref(), cx);
+            return;
+        }
+        let workspace = cx.weak_entity();
+        let requested = room.clone();
+        if let Err(error) = shared::load_sidebar_store(room, cx, Box::new(move |result, cx| {
+            let _ = workspace.update(cx, |w, cx| match result {
+                Ok(store) => { w.commit_shared_reorder(&requested, store, &id, &position.parent, position.before.as_deref(), cx); }
+                Err(error) => w.report_shared_drop_error(&error, cx),
+            });
+        })) { self.report_shared_drop_error(&error.to_string(), cx); }
+        cx.notify();
+    }
+
     fn viewing_shared_folder(&self, id: &str, cx: &App) -> bool {
         matches!(self.view, View::Folder | View::Doc)
             && shared::scope(&self.store, cx).is_some_and(|scope| scope.folder && scope.note == id)
@@ -157,6 +210,7 @@ impl Workspace {
                 entry.meta.folder = current.meta.folder;
                 entry.meta.parent = current.meta.parent;
                 entry.meta.order = current.meta.order;
+                entry.meta.shared_order = current.meta.shared_order;
                 true
             });
             entries.extend(children.into_values());
@@ -251,13 +305,12 @@ impl Workspace {
             || !Self::shared_drop_allowed(&store.list(), &room, id, target) { return; }
         self.sharing.expanded.insert(target.to_owned());
         if self.store.root() == store.root() {
-            self.move_docs(&[id.to_owned()], Some(target.to_owned()), cx);
+            self.move_docs_with_feedback(&[id.to_owned()], Some(target.to_owned()), false, cx);
         } else {
             match store.set_parent(id, Some(target)) {
                 Ok(_) => {
                     cloud_sync::activity::update_folder_items(&room.scope, &store.list(), cx);
                     cloud_sync::recheck_account(store.root(), cx);
-                    self.show_toast(settings::text("移动成功"), cx);
                     notify(cx);
                 }
                 Err(error) => self.report_shared_drop_error(&error.to_string(), cx),

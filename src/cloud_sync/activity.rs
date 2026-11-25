@@ -34,6 +34,7 @@ pub(crate) struct FolderItem {
     created: u64,
     modified: u64,
     order: u64,
+    shared_order: Option<String>,
     markdown: bool,
     kind: crate::store::DocKind,
 }
@@ -42,14 +43,16 @@ impl FolderItem {
     pub(crate) fn from_listing(id: &str, title: &str, icon: Option<&str>, meta: &crate::store::Meta, scope: &shared::Scope) -> Option<Self> {
         if id == scope.note || !scope.permits(id) || meta.local() { return None; }
         Some(Self { id: id.into(), title: title.into(), icon: icon.map(str::to_owned), folder: meta.folder.is_some(),
-            parent: meta.parent.clone()?, created: meta.created, modified: meta.modified, order: meta.order, markdown: meta.markdown, kind: meta.kind })
+            parent: meta.parent.clone()?, created: meta.created, modified: meta.modified, order: meta.order,
+            shared_order: meta.shared_order.clone(), markdown: meta.markdown, kind: meta.kind })
     }
 
     pub(crate) fn entry(&self, scope: &shared::Scope) -> crate::store::Entry {
         crate::store::Entry { id: self.id.clone(), title: self.title.clone(), icon: self.icon.clone(),
             meta: crate::store::Meta { parent: Some(self.parent.clone()), folder: self.folder.then(|| self.title.clone()),
                 share_root: Some(scope.note.clone()), created: self.created, modified: self.modified, order: self.order, markdown: self.markdown,
-                kind: self.kind, ..Default::default() }, body: Default::default(), reminders: vec![], links: vec![], note: None, top: String::new() }
+                shared_order: self.shared_order.clone(), kind: self.kind, ..Default::default() },
+            body: Default::default(), reminders: vec![], links: vec![], note: None, top: String::new() }
     }
 }
 

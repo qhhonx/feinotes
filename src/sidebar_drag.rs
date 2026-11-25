@@ -14,6 +14,11 @@ const PITCH: f32 = crate::sidebar::ROW_H + crate::sidebar::ROW_GAP;
 fn animate_folding() -> bool { crate::settings::motion_high() }
 const INDENT: f32 = 18.;
 
+fn projected_slot(y: f32, open: Option<usize>, rows: usize) -> usize {
+    if let Some(index) = open && (index as f32 * PITCH..=(index + 1) as f32 * PITCH).contains(&y) { return index; }
+    (0..rows).filter(|i| y > (*i + usize::from(open.is_some_and(|index| *i >= index))) as f32 * PITCH + 15.).count()
+}
+
 /// A row of the tree; its entry is shared with the cached rows (`RowCache`).
 #[derive(Clone)]
 struct Row { entry: Rc<Entry>, depth: usize }
@@ -151,6 +156,12 @@ pub(crate) struct Drag {
     navigation_only: bool,
     #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
     room: Option<crate::cloud_sync::shared::Room>,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    insertion: Option<crate::sharing::SharedFolderInsertion>,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    shared_parent: Option<String>,
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    shared_slot: bool,
     excluded: HashSet<String>,
     index: usize,
     depth: usize,
@@ -158,18 +169,54 @@ pub(crate) struct Drag {
     parent: Option<String>,
     original_index: usize,
     original_depth: usize,
-    hover: Option<(String, Instant)>,
+    hover: Option<FolderHover>,
     ghost: Spring,
     lift: Fade,
 }
 
 impl Drag {
+    fn slot(&self) -> Option<(usize, usize)> {
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        if self.moves_shared_item() && !self.shared_slot { return None; }
+        Some((self.index, self.depth))
+    }
+
     fn moves_shared_item(&self) -> bool {
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         { self.room.is_some() }
         #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
         { false }
     }
+}
+
+struct FolderHover {
+    id: String,
+    at: Point<Pixels>,
+    started: Instant,
+}
+
+/// The same dwell, feedback and expansion for ordinary and shared folders.
+fn hover_folder(drag: &mut Drag, id: &str, fx: &mut FxHashMap<String, RowFx>, expanded: &mut HashSet<String>) -> bool {
+    let entered = drag.hover.as_ref().is_none_or(|hover| hover.id != id);
+    if entered {
+        drag.hover = Some(FolderHover { id: id.to_owned(), at: drag.at, started: Instant::now() });
+        if let Some(f) = fx.get_mut(id) { f.pop.v += 3.2; }
+    }
+    let hover = drag.hover.as_mut().expect("active folder hover");
+    hover.at = drag.at;
+    if hover.started.elapsed().as_secs_f32() >= DWELL
+        && expanded.insert(id.to_owned()) && let Some(f) = fx.get_mut(id) { f.pop.v += 4.; }
+    entered
+}
+
+fn project_inside_folder(drag: &mut Drag, index: usize, row: &Row, fx: &mut FxHashMap<String, RowFx>, expanded: &mut HashSet<String>) {
+    if hover_folder(drag, &row.entry.id, fx, expanded) {
+        drag.initial_depth = row.depth + 1;
+        drag.start.x = drag.at.x;
+    }
+    drag.index = index + 1;
+    drag.depth = row.depth + 1;
+    drag.parent = Some(row.entry.id.clone());
 }
 
 #[derive(Clone)]
@@ -221,17 +268,23 @@ impl SidebarDrag {
     pub(crate) fn has_children(&self, id: &str) -> bool { self.rows.borrow().parents.contains(id) }
     /// How far the rename field on `id` has faded in (0–1).
     pub(crate) fn rename_in(&self, id: &str) -> f32 { self.rename_fx.as_ref().filter(|(r, _)| r == id).map_or(1., |(_, f)| f.unit()) }
-    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-    pub(crate) fn folder_at(&self, at: Point<Pixels>, viewport: Bounds<Pixels>) -> Option<&str> {
-        let bounds = self.bounds.get()?;
-        if !viewport.contains(&at) || !bounds.contains(&at) { return None; }
-        let local = at - bounds.origin;
-        self.shown.iter().find_map(|row| {
-            let [x, y, width] = self.springs.get(&row.entry.id)?.p;
-            (row.entry.meta.folder.is_some() && local.x >= px(x) && local.x < px(x + width)
-                && local.y >= px(y + 3.) && local.y < px(y + crate::sidebar::ROW_H - 3.))
-                .then_some(row.entry.id.as_str())
-        })
+    fn settle_drag(&mut self, d: &Drag, index: usize, depth: usize, accepted: bool) {
+        // Drop the overlay immediately: normal row color and hit testing resume this frame.
+        // Seed the real row at the pointer so it settles without a second visual swap.
+        let bounds = self.bounds.get();
+        // The card keeps its lifted size and shadow and sinks back from there.
+        let lift = d.lift.unit();
+        let mut spring = d.ghost;
+        if let Some(b) = bounds { spring.p[0] -= f32::from(b.left()); spring.p[1] -= f32::from(b.top()); }
+        spring.p[0] -= 3. * lift; spring.p[1] -= lift; spring.p[2] += 6. * lift;
+        spring.target = [depth as f32 * INDENT, index as f32 * PITCH, spring.p[2]];
+        self.springs.insert(d.id.clone(), spring);
+        let fx = self.fx.entry(d.id.clone()).or_insert_with(RowFx::new);
+        fx.show = SHOW;
+        fx.lift = fx.lift.from(lift, 0.);
+        if accepted { fx.glow = fx.glow.from(1., 0.); }
+        // The card covers the slot as it lands; the slot goes at once instead of stacking under it.
+        self.slot = None;
     }
 
     pub(crate) fn kick(&mut self, id: &str, v: f32) { if let Some(f) = self.fx.get_mut(id) { f.pop.v += v; } }
@@ -296,7 +349,7 @@ impl Workspace {
             let parents = entries.iter().filter(|e| !notes.contains(e.id.as_str())).filter_map(|e| e.meta.parent.clone()).collect();
             *c = RowCache { key, order: Some(order), expanded: self.expanded.clone(), rows: std::mem::take(&mut c.rows), parents };
         }
-        c.rows.iter().filter(|r| self.folder_drag.active.as_ref().is_none_or(|d| !d.started || d.moves_shared_item() || !d.excluded.contains(&r.entry.id))).cloned().collect()
+        c.rows.iter().filter(|r| self.folder_drag.active.as_ref().is_none_or(|d| !d.started || !d.excluded.contains(&r.entry.id))).cloned().collect()
     }
 
     pub(crate) fn arm_folder_drag(&mut self, id: &str, at: Point<Pixels>, cx: &mut Context<Self>) {
@@ -316,6 +369,12 @@ impl Workspace {
             navigation_only,
             #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
             room,
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            insertion: None,
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            shared_parent: rows[index].entry.meta.parent.clone(),
+            #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+            shared_slot: true,
             excluded: crate::tree::Tree::new(self.drag_entries()).subtree(id).into_iter().collect(),
             index, depth: rows[index].depth, initial_depth: rows[index].depth, parent: rows[index].entry.meta.parent.clone(),
             original_index: index, original_depth: rows[index].depth, hover: None,
@@ -345,57 +404,89 @@ impl Workspace {
     }
 
     fn project_folder_drop(&mut self, _cx: &App) {
+        let Some(bounds) = self.folder_drag.bounds.get() else { return };
+        let rows = self.drag_rows();
+        let Some(drag) = self.folder_drag.active.as_ref().filter(|d| d.started) else { return };
+        let pointer = drag.at - bounds.origin;
+        // Hit the folder where its row is currently drawn, even while rows are making room.
+        let over_folder = |i: usize, row: &Row| {
+            let top = self.folder_drag.springs.get(&row.entry.id).map_or(
+                (i + usize::from(drag.slot().is_some_and(|(index, _)| i >= index))) as f32 * PITCH, |s| s.p[1]);
+            row.entry.meta.folder.is_some() && f32::from(pointer.y) > top + 5.
+                && f32::from(pointer.y) < top + 26. && f32::from(pointer.x) >= row.depth as f32 * INDENT
+        };
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        if let Some(d) = self.folder_drag.active.as_ref().filter(|d| d.started)
-            && let Some(room) = &d.room {
-            let target = self.folder_drag.folder_at(d.at, self.list_scroll.bounds())
-                .filter(|target| Self::shared_drop_allowed(self.drag_entries(), room, &d.id, target))
-                .or_else(|| self.shared_home_drop_at(d.at, room, &d.id, _cx))
-                .map(str::to_owned);
-            if let Some(d) = self.folder_drag.active.as_mut() { d.parent = target; }
+        if let Some(room) = &drag.room {
+            let slot = self.shared_sibling_slot(drag, &rows);
+            let in_slot = drag.insertion.is_some() && slot.is_some()
+                && (drag.index as f32 * PITCH..(drag.index + 1) as f32 * PITCH).contains(&f32::from(pointer.y));
+            let inside = self.list_scroll.bounds().contains(&drag.at) && bounds.contains(&drag.at);
+            // Opening or closing a row slot can move the folder under a stationary
+            // pointer. Keep the captured target until the pointer actually moves.
+            let allowed = |row: &Row| Self::shared_drop_allowed(self.drag_entries(), room, &drag.id, &row.entry.id);
+            let folder = inside.then(|| {
+                drag.hover.as_ref().filter(|hover| hover.at == drag.at)
+                    .and_then(|hover| rows.iter().enumerate().find(|(_, row)| row.entry.id == hover.id && allowed(row)))
+                    .or_else(|| rows.iter().enumerate().find(|(i, row)| !in_slot && over_folder(*i, row) && allowed(row)))
+            }).flatten();
+            if let Some(d) = self.folder_drag.active.as_mut() {
+                if let Some((index, row)) = folder {
+                    project_inside_folder(d, index, row, &mut self.folder_drag.fx, &mut self.expanded);
+                    d.insertion = None;
+                } else {
+                    d.hover = None;
+                    d.parent = None;
+                    d.insertion = slot.map(|(index, position)| {
+                        d.index = index;
+                        d.depth = d.original_depth;
+                        position
+                    });
+                }
+                d.shared_slot = d.parent.is_some() || d.insertion.is_some();
+            }
             return;
         }
-        let Some(bounds) = self.folder_drag.bounds.get() else { return };
-        // Each frame calls this: the rows are only built while a row is dragged.
-        if !self.folder_drag.active.as_ref().is_some_and(|d| d.started) { return }
-        let rows = self.drag_rows();
         let shared = self.folder_drag.shared_rows.is_some();
         let drop_folder = |row: &Row| takes_drop(&row.entry) && (!shared || row.entry.id.starts_with("collection-"));
+        let folder = rows.iter().enumerate().find(|(i, row)| drop_folder(row) && over_folder(*i, row));
         let Some(d) = self.folder_drag.active.as_mut().filter(|d| d.started) else { return };
         let y = f32::from(d.at.y - d.offset.y - bounds.top()) + crate::sidebar::ROW_H / 2.;
         let desired = (d.initial_depth as i32 + (f32::from(d.at.x - d.start.x) / INDENT).round() as i32).max(0) as usize;
         // Hit the visible folder row with the pointer, including collapsed folders.
         // Accept immediately; the dwell timer only controls automatic expansion.
-        let pointer_y = f32::from(d.at.y - bounds.top());
-        let folder = rows.iter().enumerate().find(|(i, r)| {
-            let top = self.folder_drag.springs.get(&r.entry.id).map_or(
-                (*i + usize::from(*i >= d.index)) as f32 * PITCH, |s| s.p[1]);
-            drop_folder(r) && pointer_y > top + 5. && pointer_y < top + 26.
-                && f32::from(d.at.x - bounds.left()) >= r.depth as f32 * INDENT
-        });
         if let Some((i, r)) = folder {
-            if d.hover.as_ref().is_none_or(|(id, _)| *id != r.entry.id) {
-                d.hover = Some((r.entry.id.clone(), Instant::now()));
-                d.initial_depth = r.depth + 1; d.start.x = d.at.x;
-                // The folder notices the row: a small bounce as its lid opens.
-                if let Some(f) = self.folder_drag.fx.get_mut(&r.entry.id) { f.pop.v += 3.2; }
-            }
-            d.index = i + 1;
-            d.depth = r.depth + 1;
-            d.parent = Some(r.entry.id.clone());
-            if d.hover.as_ref().is_some_and(|(_, t)| t.elapsed().as_secs_f32() >= DWELL) && self.expanded.insert(r.entry.id.clone())
-                && let Some(f) = self.folder_drag.fx.get_mut(&r.entry.id) { f.pop.v += 4.; }
+            project_inside_folder(d, i, r, &mut self.folder_drag.fx, &mut self.expanded);
             return;
         }
-        let slot_y = d.index as f32 * PITCH;
-        let in_slot = y >= slot_y && y <= slot_y + PITCH;
         d.hover = None;
-        let index = if in_slot { d.index } else {
-            rows.iter().enumerate().filter(|(i, _)| y > (*i + usize::from(*i >= d.index)) as f32 * PITCH + crate::sidebar::ROW_H / 2.).count()
-        };
+        let index = projected_slot(y, Some(d.index), rows.len());
         let depth = slot_depth(index.checked_sub(1).and_then(|i| rows.get(i)), rows.get(index), desired);
-        let parent = if depth == 0 { None } else { rows[..index].iter().rev().find(|r| r.depth + 1 == depth && r.entry.meta.folder.is_some()).map(|r| r.entry.id.clone()) };
+        let parent = if depth == 0 { None } else { rows[..index].iter().rev().find(|r| r.depth + 1 == depth && drop_folder(r)).map(|r| r.entry.id.clone()) };
         d.index = index; d.depth = depth; d.parent = parent;
+    }
+
+    #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+    fn shared_sibling_slot(&self, d: &Drag, rows: &[Row]) -> Option<(usize, crate::sharing::SharedFolderInsertion)> {
+        let parent = d.shared_parent.as_ref()?;
+        let bounds = self.folder_drag.bounds.get()?;
+        if !self.list_scroll.bounds().contains(&d.at) || !bounds.contains(&d.at) { return None; }
+        let parent_index = rows.iter().position(|row| &row.entry.id == parent)?;
+        let first = parent_index + 1;
+        let end = rows[first..].iter().position(|row| row.depth <= rows[parent_index].depth).map_or(rows.len(), |n| first + n);
+        let open = d.slot().map(|(index, _)| index);
+        let visible_end = end + usize::from(open.is_some());
+        let y = f32::from(d.at.y - bounds.top());
+        if y < first as f32 * PITCH - 3. || y > visible_end as f32 * PITCH + 3. { return None; }
+        let y = y - f32::from(d.offset.y) + 15.;
+        let projected = projected_slot(y, open, rows.len());
+        // Only the gaps between direct siblings are legal. An expanded folder
+        // and all of its descendants occupy a single position in this order.
+        let (index, before) = rows[first..end].iter().enumerate()
+            .filter(|(_, row)| row.entry.meta.parent.as_ref() == Some(parent))
+            .map(|(i, row)| (first + i, Some(row.entry.id.clone())))
+            .chain(std::iter::once((end, None)))
+            .min_by_key(|(index, _)| index.abs_diff(projected))?;
+        Some((index, crate::sharing::SharedFolderInsertion { parent: parent.clone(), before }))
     }
 
     /// Where something dragged in from outside the tree lands at `at`: into the
@@ -423,14 +514,6 @@ impl Workspace {
         })
     }
 
-    pub(crate) fn sidebar_shared_drop_target(&self, _id: &str) -> bool {
-        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
-        { [&self.folder_drag, &self.sharing.sidebar].iter().any(|sidebar| sidebar.active.as_ref()
-            .is_some_and(|d| d.started && d.moves_shared_item() && d.parent.as_deref() == Some(_id))) }
-        #[cfg(not(all(target_os = "macos", feature = "cloudkit-sync")))]
-        { false }
-    }
-
     pub(crate) fn folder_drop_target(&self, id: &str) -> bool {
         self.sidebar_drop.as_ref().is_some_and(|t| t.parent.as_deref() == Some(id)) || self.folder_drag.active.as_ref().is_some_and(|d| {
             let b = self.list_scroll.bounds();
@@ -442,11 +525,21 @@ impl Workspace {
     pub(crate) fn end_folder_drag(&mut self, cancel: bool, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
         if self.folder_drag.active.as_ref().is_some_and(Drag::moves_shared_item) {
-            if let Some(d) = self.folder_drag.active.take() && !cancel && d.started
-                && let (Some(room), Some(target)) = (d.room, d.parent) {
-                // The shared sidebar temporarily swaps its state during pointer dispatch.
-                let workspace = cx.weak_entity();
-                cx.defer(move |cx| { let _ = workspace.update(cx, |w, cx| w.move_shared_drop(room, d.id, target, cx)); });
+            if let Some(d) = self.folder_drag.active.take() && d.started
+                && let Some(room) = d.room.clone() {
+                let accepted = !cancel && (d.insertion.is_some() || d.parent.is_some());
+                let (index, depth) = if accepted { (d.index, d.depth) } else { (d.original_index, d.original_depth) };
+                self.folder_drag.settle_drag(&d, index, depth, accepted);
+                if self.expanded.contains(&d.id) { self.folder_drag.reopen = Some(d.id.clone()); }
+                if accepted {
+                    if let Some(parent) = &d.parent { self.folder_drag.kick(parent, 4.5); }
+                    // The shared sidebar temporarily swaps its state during pointer dispatch.
+                    let workspace = cx.weak_entity();
+                    cx.defer(move |cx| { let _ = workspace.update(cx, |w, cx| {
+                        if let Some(position) = d.insertion { w.reorder_shared_drop(room, d.id, position, cx); }
+                        else if let Some(target) = d.parent { w.move_shared_drop(room, d.id, target, cx); }
+                    }); });
+                }
             }
             cx.notify();
             return;
@@ -467,24 +560,9 @@ impl Workspace {
         let movement = PendingMove { id: d.id.clone(), parent: d.parent.clone(), before, history: 0 };
         let depth = if cancel { d.original_depth } else { d.depth };
         let index = if cancel { d.original_index } else { d.index };
-        // Drop the overlay immediately: normal row color and hit testing resume this frame.
-        // Seed the real row at the pointer so it settles without a second visual swap.
-        let bounds = self.folder_drag.bounds.get();
-        // The card keeps its lifted size and shadow and sinks back from there.
-        let lift = d.lift.unit();
-        let mut spring = d.ghost;
-        if let Some(b) = bounds { spring.p[0] -= f32::from(b.left()); spring.p[1] -= f32::from(b.top()); }
-        spring.p[0] -= 3. * lift; spring.p[1] -= lift; spring.p[2] += 6. * lift;
-        spring.target = [depth as f32 * INDENT, index as f32 * PITCH, spring.p[2]];
-        self.folder_drag.springs.insert(movement.id.clone(), spring);
-        let fx = self.folder_drag.fx.entry(movement.id.clone()).or_insert_with(RowFx::new);
-        fx.show = SHOW;
-        fx.lift = fx.lift.from(lift, 0.);
-        if !cancel { fx.glow = fx.glow.from(1., 0.); }
+        let drag = self.folder_drag.active.take().expect("active drag");
+        self.folder_drag.settle_drag(&drag, index, depth, !cancel);
         if !cancel && let Some(parent) = &movement.parent { self.folder_drag.kick(parent, 4.5); }
-        self.folder_drag.active = None;
-        // The card covers the slot as it lands; the slot goes at once instead of stacking under it.
-        self.folder_drag.slot = None;
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.folder_drag.shared_rows.is_some() {
             if !cancel { self.reorder_shared_sidebar(&movement.id, movement.parent.as_deref(), movement.before.as_deref(), cx); }
@@ -609,15 +687,13 @@ impl Workspace {
         let active = self.folder_drag.active.as_ref().filter(|d| d.started);
         // A row being moved, or something dragged in from outside, opens a slot.
         let shared = self.folder_drag.shared_rows.is_some();
-        let reorder = active.filter(|d| !d.moves_shared_item());
-        let slot = reorder.map(|d| (d.index, d.depth)).or_else(|| (!shared).then(|| self.sidebar_drop.as_ref().and_then(|t| t.slot)).flatten());
-        let dragged = reorder.map(|d| d.id.clone());
-        let dwell = active.and_then(|d| d.hover.as_ref()).filter(|(id, _)| !self.expanded.contains(id))
-            .map(|(id, t)| (id.clone(), (t.elapsed().as_secs_f32() / DWELL).min(1.)));
+        let slot = active.and_then(Drag::slot).or_else(|| (!shared).then(|| self.sidebar_drop.as_ref().and_then(|t| t.slot)).flatten());
+        let dragged = active.map(|d| d.id.clone());
+        let dwell = active.and_then(|d| d.hover.as_ref()).filter(|hover| !self.expanded.contains(&hover.id))
+            .map(|hover| (hover.id.clone(), (hover.started.elapsed().as_secs_f32() / DWELL).min(1.)));
         let receiving = rows.iter().position(|r| {
             if !shared { return self.folder_drop_target(&r.entry.id); }
             active.is_some_and(|d| d.moves_shared_item()) && self.folder_drop_target(&r.entry.id)
-                || self.home_shared_drop_target(&r.entry.id)
         });
         let receiving_end = receiving.map(|start| rows.iter().enumerate().skip(start + 1)
             .find(|(_, r)| r.depth <= rows[start].depth).map_or(rows.len(), |(i, _)| i));
@@ -1114,6 +1190,15 @@ impl Workspace {
         let row = sidebar.springs.get(id)?;
         let bounds = sidebar.bounds.get()?;
         Some(bounds.origin + point(px(row.p[0] + if icon { 16. } else { 85. }), px(row.p[1] + 15.)))
+    }
+
+    pub(crate) fn qa_shared_sidebar_gap(&self, id: &str, before: &str) -> bool {
+        let sidebar = &self.sharing.sidebar;
+        let Some(drag) = sidebar.active.as_ref().filter(|drag| drag.shared_slot && drag.id == id) else { return false; };
+        let Some((gap, _)) = &sidebar.slot else { return false; };
+        let Some(next) = sidebar.springs.get(before) else { return false; };
+        !sidebar.shown.iter().any(|row| row.entry.id == id) && next.target[1] - gap.target[1] >= PITCH - 0.05
+            && drag.insertion.as_ref().and_then(|slot| slot.before.as_deref()) == Some(before)
     }
 
     pub(crate) fn qa_sidebar_has_children(&self, id: &str) -> bool { self.sharing.sidebar.has_children(id) }

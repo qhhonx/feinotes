@@ -27,7 +27,7 @@ impl Workspace {
             let make = |state: &FileState| {
                 let mut e = entry.clone().unwrap_or_else(|| Entry { id: c.id.clone(), meta: Default::default(), title: String::new(), icon: None, body: Default::default(), reminders: vec![], links: vec![], note: None, top: String::new() });
                 e.title = state.title.clone(); e.meta.folder = state.folder.then(|| state.title.clone());
-                e.meta.parent = state.parent.clone(); e.meta.order = state.order; e.meta.top_order = state.top_order;
+                state.apply_place(&mut e.meta);
                 e
             };
             (c.before.as_ref().map(make), c.after.as_ref().map(make))
@@ -128,8 +128,9 @@ impl Workspace {
                     let delta = record.changes.iter().find(|c| c.id == id).unwrap();
                     let fields_changed = delta.before.as_ref().zip(delta.after.as_ref());
                     if fields_changed.is_some_and(|(a,b)| a.title != b.title) { entry.title = target.title.clone(); entry.meta.folder = target.meta.folder.clone(); }
-                    if fields_changed.is_some_and(|(a,b)| (a.parent.clone(),a.order,a.top_order) != (b.parent.clone(),b.order,b.top_order)) {
-                        entry.meta.parent = target.meta.parent.clone(); entry.meta.order = target.meta.order; entry.meta.top_order = target.meta.top_order;
+                    if fields_changed.is_some_and(|(a,b)| a.place() != b.place()) {
+                        let new_state = if redo { delta.after.as_ref() } else { delta.before.as_ref() };
+                        if let Some(state) = new_state { state.apply_place(&mut entry.meta); }
                     }
                 } else { self.entries.push(target.clone()); }
                 if let Some(parent) = &target.meta.parent { self.expanded.insert(parent.clone()); }
@@ -164,6 +165,8 @@ impl Workspace {
                         w.trash = w.store.list_trash();
                         w.batch = None; w.row_menu = None;
                         w.sync_sub_pages(cx);
+                        #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+                        if w.is_shared() { w.publish_shared_folder_change(cx); }
                         w.show_toast(&format!("{}{}", if redo { crate::settings::tr("已重做：", "Redone: ") } else { crate::settings::tr("已撤销：", "Undone: ") }, record.label), cx);
                     }
                     Err(e) => {

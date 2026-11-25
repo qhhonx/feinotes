@@ -74,6 +74,9 @@ pub struct Meta {
     /// back to `created`.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub order: u64,
+    /// Fractional position in a shared folder's common order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_order: Option<String>,
     /// 收藏时间 (0: not starred).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub starred: u64,
@@ -164,7 +167,7 @@ impl Default for Meta {
         Self {
             folder: None, share_root: None, top_order: None, created: 0, modified: 0, pinned: false, opened: 0,
             width: PageWidth::default(), catalogue_closed: true,
-            parent: None, order: 0, starred: 0, reading: false,
+            parent: None, order: 0, shared_order: None, starred: 0, reading: false,
             info: InfoRow::default(), refs_hidden: false,
             markdown: false, path: None, name: None, rel: String::new(), kind: DocKind::Doc,
         }
@@ -205,6 +208,16 @@ impl Meta {
     pub fn place(&self) -> (bool, u64, std::cmp::Reverse<u64>) {
         let placed = if self.parent.is_none() { self.top_order.unwrap_or(0) } else { self.order };
         (placed > 0, placed, std::cmp::Reverse(self.modified))
+    }
+
+    pub fn shared_place<'a>(&'a self, id: &str) -> std::borrow::Cow<'a, str> {
+        if let Some(rank) = &self.shared_order {
+            return std::borrow::Cow::Borrowed(rank);
+        }
+        // Legacy ranks and creation dates are shared; modification dates are local.
+        // The terminator makes this a valid fractional key even when the id ends in zero.
+        std::borrow::Cow::Owned(format!("a0{}{:016x}{:016x}{}V",
+            u8::from(self.order != 0), self.order, u64::MAX - self.created, id.replace('-', "")))
     }
 }
 

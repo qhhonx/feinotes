@@ -207,7 +207,10 @@ fn stage_catalogue(db: &Connection, peer: u64, personal: bool, writable: bool, p
         Ok(doc.oplog_vv())
     })?;
     if personal { super::organizer::capture(db, &catalogue)?; }
-    if writable { catalogue::capture(db, &catalogue, seen, local)?; }
+    if writable {
+        catalogue::capture(db, &catalogue, seen, local)?;
+        if !personal { catalogue::capture_shared_order(db, &catalogue, seen, local)?; }
+    }
     catalogue.commit();
     if catalogue.oplog_vv() != before {
         enqueue(db, catalogue::SCOPE, catalogue.export(ExportMode::updates(&before))?)?;
