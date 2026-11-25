@@ -642,10 +642,7 @@ impl Workspace {
         if !matches!(self.view, crate::app::View::Home | crate::app::View::Folder) { return; }
         let fresh = self.home.folders.file_drop.as_ref().is_none_or(|d| d.landed.is_some());
         if fresh { self.home.folders.file_drop = Some(FileDrop::new(paths)); }
-        let shown = if self.view == crate::app::View::Folder { self.page_entries(self.folder_current.as_deref()) } else { self.home_entries() };
-        let over = shown.iter().filter(|e| e.meta.folder.is_some() && e.note.is_none())
-            .find(|e| self.home.folders.bounds.borrow().get(&e.id).is_some_and(|b| b.contains(&at)))
-            .map(|e| e.id.clone());
+        let over = self.drop_folder_at(at);
         let Some(d) = self.home.folders.file_drop.as_mut() else { return };
         d.leaving = false;
         if over != d.over {
@@ -656,6 +653,22 @@ impl Workspace {
         d.at = at;
         d.inside = d.zone.get().is_some_and(|z| z.contains(&at));
         cx.notify();
+    }
+
+    fn drop_folder_at(&self, at: Point<Pixels>) -> Option<String> {
+        let shown = if self.view == crate::app::View::Folder { self.page_entries(self.folder_current.as_deref()) } else { self.home_entries() };
+        shown.iter().filter(|e| e.meta.folder.is_some() && e.note.is_none())
+            .find(|e| self.home.folders.bounds.borrow().get(&e.id).is_some_and(|b| b.contains(&at)))
+            .map(|e| e.id.clone())
+    }
+
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn browser_drop_parent(&self, at: Point<Pixels>, window: &Window) -> Option<String> {
+        if !matches!(self.view, crate::app::View::Home | crate::app::View::Folder)
+            || self.confirm.is_some() || self.store.loading() || self.store.file_task_busy() || self.file_history.busy
+            || self.sidebar_open && at.x < px(self.sidebar_w(window)) { return None; }
+        let page = if self.view == crate::app::View::Folder { self.folder_current.clone() } else { None };
+        self.drop_folder_at(at).or(page).or_else(|| self.store.active_top().map(|key| crate::shared_store::top_row(&key)))
     }
 
     /// Let go over the list: import into the folder under the pointer, the

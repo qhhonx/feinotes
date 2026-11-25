@@ -38,10 +38,16 @@ pub(crate) fn select(accept: Option<&str>) -> JsFuture {
     JsFuture::from(pick_import(accept.unwrap_or_default(), accept.is_none()))
 }
 
-pub(crate) struct Staging(PathBuf);
+pub(crate) struct Staging {
+    root: PathBuf,
+    separate_roots: bool,
+}
 
 impl Staging {
-    fn new() -> Arc<Self> { Arc::new(Self(PathBuf::from("/.quiet-web-import").join(uuid::Uuid::new_v4().to_string()))) }
+    fn new(separate_roots: bool) -> Arc<Self> {
+        let root = PathBuf::from("/.quiet-web-import").join(uuid::Uuid::new_v4().to_string());
+        Arc::new(Self { root, separate_roots })
+    }
 
     async fn write(&self, path: &Path, file: web_sys::File) -> Result<(), JsValue> {
         let data = JsFuture::from(file.array_buffer()).await?;
@@ -52,7 +58,7 @@ impl Staging {
 }
 
 impl Drop for Staging {
-    fn drop(&mut self) { let _ = fdl_core::vfs::remove_dir_all(&self.0); }
+    fn drop(&mut self) { let _ = fdl_core::vfs::remove_dir_all(&self.root); }
 }
 
 fn invalid_path() -> JsValue { JsValue::from_str("Invalid selected path") }
@@ -63,7 +69,7 @@ pub(crate) async fn stage_documents(files: JsFuture) -> Result<Option<(Arc<Stagi
     let files = files.await?.dyn_into::<js_sys::Array>()?;
     if files.length() == 0 { return Ok(None); }
     if files.length() as usize > IMPORT_FOLDER_LIMIT { return Err(JsValue::from_str("Too many selected documents")); }
-    let staging = Staging::new();
+    let staging = Staging::new(false);
     let mut paths = Vec::new();
     let mut bytes = 0.;
     for (index, item) in files.iter().enumerate() {
@@ -74,7 +80,7 @@ pub(crate) async fn stage_documents(files: JsFuture) -> Result<Option<(Arc<Stagi
         if file.size() > IMPORT_FILE_LIMIT as f64 || bytes > (2 * IMPORT_FILE_LIMIT) as f64 {
             return Err(JsValue::from_str("Selected files exceed the browser import limit"));
         }
-        let path = staging.0.join(index.to_string()).join(name);
+        let path = staging.root.join(index.to_string()).join(name);
         staging.write(&path, file).await?;
         paths.push(path);
     }
@@ -83,17 +89,32 @@ pub(crate) async fn stage_documents(files: JsFuture) -> Result<Option<(Arc<Stagi
 
 /// Use one directory for all selected files, so relative links work.
 pub(crate) async fn stage_folder(files: JsFuture) -> Result<Option<(Arc<Staging>, PathBuf)>, JsValue> {
-    use crate::transfer::{IMPORT_FILE_LIMIT, IMPORT_FOLDER_LIMIT, importable};
-    let selected = files.await?.dyn_into::<js_sys::Array>()?;
-    if selected.length() == 0 { return Ok(None); }
+    let files = files.await?.dyn_into::<js_sys::Array>()?.iter().map(|item| {
+        let file = item.dyn_into::<web_sys::File>()?;
+        let rel = js_sys::Reflect::get(&file, &"webkitRelativePath".into())?.as_string().ok_or_else(invalid_path)?;
+        Ok((rel, file))
+    }).collect::<Result<Vec<_>, JsValue>>()?;
+    stage_tree(files, false).await
+}
+
+pub(crate) async fn stage_drop(files: JsFuture) -> Result<Option<(Arc<Staging>, PathBuf)>, JsValue> {
+    let files = files.await?.dyn_into::<js_sys::Array>()?.iter().map(|entry| {
+        let pair = entry.dyn_into::<js_sys::Array>()?;
+        let rel = pair.get(0).as_string().ok_or_else(invalid_path)?;
+        Ok((format!("selection/{rel}"), pair.get(1).dyn_into::<web_sys::File>()?))
+    }).collect::<Result<Vec<_>, JsValue>>()?;
+    stage_tree(files, true).await
+}
+
+async fn stage_tree(selected: Vec<(String, web_sys::File)>, separate_roots: bool) -> Result<Option<(Arc<Staging>, PathBuf)>, JsValue> {
+    use crate::transfer::{IMPORT_FOLDER_LIMIT, importable};
+    if selected.is_empty() { return Ok(None); }
     let mut root = String::new();
     let mut documents = 0;
     let mut files = BTreeMap::new();
     let mut initial = BTreeSet::new();
     let mut xml = Vec::new();
-    for item in selected.iter() {
-        let file = item.dyn_into::<web_sys::File>()?;
-        let rel = js_sys::Reflect::get(&file, &"webkitRelativePath".into())?.as_string().ok_or_else(invalid_path)?;
+    for (rel, file) in selected {
         let parts = fdl_core::paths::selection_parts(&rel).filter(|parts| parts.len() >= 2).ok_or_else(invalid_path)?;
         if root.is_empty() { root = parts[0].to_owned(); }
         if root != parts[0] { return Err(invalid_path()); }
@@ -103,14 +124,15 @@ pub(crate) async fn stage_folder(files: JsFuture) -> Result<Option<(Arc<Staging>
         let doc = !hidden && importable(path);
         let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
         let image = crate::editor::image::FORMATS.iter().any(|kind| ext.eq_ignore_ascii_case(kind));
-        if doc || image || parts[1..] == [".obsidian", "app.json"] { initial.insert(rel.clone()); }
+        let settings = if separate_roots && parts.len() > 2 { &parts[2..] } else { &parts[1..] };
+        if doc || image || settings == [".obsidian", "app.json"] { initial.insert(rel.clone()); }
         if doc && ext.eq_ignore_ascii_case("xml") { xml.push(rel.clone()); }
         documents += usize::from(doc);
         if documents > IMPORT_FOLDER_LIMIT { return Err(JsValue::from_str("Too many selected documents")); }
         if files.insert(rel, file).is_some() { return Err(invalid_path()); }
     }
-    let staging = Staging::new();
-    let dir = staging.0.join(root);
+    let staging = Staging::new(separate_roots);
+    let dir = staging.root.join(root);
     fdl_core::vfs::create_dir_all(&dir).map_err(|error| JsValue::from_str(&error.to_string()))?;
     if documents == 0 { return Ok(Some((staging, dir))); }
     let mut bytes = 0.;
@@ -122,9 +144,9 @@ pub(crate) async fn stage_folder(files: JsFuture) -> Result<Option<(Arc<Staging>
     // Other sidecars are copied only when a selected DocxXML names them.
     let mut attachments = BTreeSet::new();
     for rel in xml {
-        let Ok(mut doc) = read_docxxml(&staging.0.join(&rel)) else { continue };
+        let Ok(mut doc) = read_docxxml(&staging.root.join(&rel)) else { continue };
         doc.map_sources(|src| {
-            if let Some(path) = selected_asset(&rel, src, |p| files.contains_key(p) || staging.0.join(p).fs_is_file()) {
+            if let Some(path) = staging.selected_asset(&rel, src, |p| files.contains_key(p) || staging.root.join(p).fs_is_file()) {
                 attachments.insert(path);
             }
             None
@@ -142,7 +164,7 @@ async fn stage_folder_file(staging: &Staging, rel: &str, file: web_sys::File, by
     if file.size() > IMPORT_FILE_LIMIT as f64 || *bytes > (2 * IMPORT_FILE_LIMIT) as f64 {
         return Err(JsValue::from_str("Selected folder exceeds the browser import limit"));
     }
-    staging.write(&staging.0.join(rel), file).await
+    staging.write(&staging.root.join(rel), file).await
 }
 
 fn read_docxxml(path: &Path) -> anyhow::Result<Document> {
@@ -150,23 +172,28 @@ fn read_docxxml(path: &Path) -> anyhow::Result<Document> {
     Ok(fdl_core::docxml::parse(xml.trim_start_matches('\u{feff}'))?)
 }
 
-fn selected_asset(rel: &str, src: &str, exists: impl FnMut(&String) -> bool) -> Option<String> {
-    let mut dir = fdl_core::paths::selection_parts(rel)?;
-    dir.pop()?;
-    fdl_core::paths::selection_attachment_paths(&dir, src, true).into_iter().find(exists)
-}
-
 impl Staging {
+    fn selected_asset(&self, rel: &str, src: &str, mut exists: impl FnMut(&str) -> bool) -> Option<String> {
+        let mut dir = fdl_core::paths::selection_parts(rel)?;
+        dir.pop()?;
+        // The outer staging directory joins the drop into one import operation.
+        // A folder's library-root attachments still belong to that folder.
+        let prefix = if self.separate_roots && dir.len() > 1 { dir.remove(0) } else { "" };
+        fdl_core::paths::selection_attachment_paths(&dir, src, true).into_iter()
+            .map(|path| if prefix.is_empty() { path } else { format!("{prefix}/{path}") })
+            .find(|path| exists(path))
+    }
+
     pub(crate) fn import_docxxml(&self, store: &mut Store, path: &Path, parent: Option<&str>,
         copied: &mut BTreeMap<String, String>) -> anyhow::Result<String> {
-        let rel = path.strip_prefix(&self.0)?.to_str().ok_or_else(|| anyhow::anyhow!("Invalid staged path"))?;
+        let rel = path.strip_prefix(&self.root)?.to_str().ok_or_else(|| anyhow::anyhow!("Invalid staged path"))?;
         let mut doc = read_docxxml(path)?;
         let mut result = Ok(());
         doc.map_sources(|src| {
             if result.is_err() { return None; }
-            let selected = selected_asset(rel, src, |p| self.0.join(p).fs_is_file())?;
+            let selected = self.selected_asset(rel, src, |p| self.root.join(p).fs_is_file())?;
             if let Some(path) = copied.get(&selected) { return Some(path.clone()); }
-            match store.import_attachment(&self.0.join(&selected)) {
+            match store.import_attachment(&self.root.join(&selected)) {
                 Ok(path) => { copied.insert(selected, path.clone()); Some(path) }
                 Err(error) => { result = Err(error); None }
             }

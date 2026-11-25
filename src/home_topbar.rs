@@ -33,7 +33,7 @@ impl Workspace {
         match folder {
             Some(id) => self.folder_crumbs(id, fold, cx),
             None => div().min_w_0().flex().items_center().text_size(px(crate::ui::CRUMB_SIZE)).line_height(px(20.))
-                .child(div().px(px(4.)).whitespace_nowrap().text_color(Theme::text_caption()).child(crate::settings::label(crate::settings::text("主页")))),
+                .child(div().px(px(4.)).whitespace_nowrap().text_color(crate::ui::crumb_page()).child(crate::settings::label(crate::settings::text("主页")))),
         }
     }
 

@@ -5,6 +5,7 @@
 //! canvas text (gpui_web).
 
 pub(crate) mod file_import;
+mod file_drop;
 
 use crate::*;
 use std::borrow::Cow;
@@ -122,6 +123,7 @@ fn run(fonts: Vec<Cow<'static, [u8]>>) {
         if let Err(e) = cx.text_system().add_fonts(fonts) { log::warn!("fonts: {e}") }
         init_app(cx);
         start(true, false, None, local_files::Incoming::default(), cx);
+        file_drop::install(cx);
         cx.spawn(async |cx| loop {
             cx.background_executor().timer(std::time::Duration::from_millis(150)).await;
             if ARRIVED.swap(false, std::sync::atomic::Ordering::Relaxed) { cx.update(|cx| cx.refresh_windows()) }

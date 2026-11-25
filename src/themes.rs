@@ -228,6 +228,22 @@ impl Style {
     }
     /// A colour property: its own value, its token's, or `None` (inherit).
     pub fn color(&self, key: &str) -> Option<Hsla> {
+        // a link and the list markers are coloured text on the page: lifted until they read in the
+        // dark (`theme::lift`; 4.5:1 for the link, 3:1 for a marker and the checkbox edge)
+        let min = match key { "a.color" => Some(4.5), "bullet.color" | "number.color" | "task.border" => Some(3.), _ => None };
+        // the check mark sits on the checkbox's vivid fill, which keeps its lightness in the dark: it
+        // stays the colour the theme gives (white), not mirrored to near-black (the home cards draw it white)
+        if key == "task.check" {
+            return match self.values.get(key) {
+                Some(Val::C(c)) => Some(*c),
+                Some(Val::Inherit) => None,
+                _ => match self.def(key) { Def::Rgb(v) => Some(gpui::rgb(v).into()), _ => self.color_raw(key) },
+            };
+        }
+        let c = self.color_raw(key);
+        match min { Some(m) => c.map(|c| crate::theme::lift(c, m)), None => c }
+    }
+    fn color_raw(&self, key: &str) -> Option<Hsla> {
         match self.values.get(key) {
             Some(Val::C(c)) => Some(crate::theme::adapt(*c)),
             Some(Val::Inherit) => None,
@@ -313,7 +329,11 @@ pub fn active() -> &'static Style {
     let p = ACTIVE.load(Ordering::Relaxed);
     if p.is_null() { &PLAIN } else { unsafe { &*p } }
 }
-pub fn color(i: usize) -> Option<Hsla> { active().tokens.get(i).copied().flatten().map(crate::theme::adapt) }
+pub fn color(i: usize) -> Option<Hsla> {
+    let c = active().tokens.get(i).copied().flatten().map(crate::theme::adapt)?;
+    // a link is coloured text on the page: lifted until it reads in the dark, like `a.color`
+    Some(if TOKENS[i].starts_with("link") { crate::theme::lift(c, 4.5) } else { c })
+}
 
 /// 设置 › 文档字体: a family every piece of body text and every heading is
 /// drawn in, overriding the theme's `font-family` for them. `None` follows
@@ -598,6 +618,11 @@ fn parse_with_fonts<'a>(css: &str, fonts: &mut dyn FnMut() -> &'a [String]) -> R
     let meta = Meta { name: var("--theme-name"), name_en: var("--theme-name-en"), author: var("--theme-author"), description: var("--theme-description") };
     let mut st = Style::plain(feishu);
     let mut warn = vec![];
+    // At-rules are skipped whole; a `@media (prefers-color-scheme: dark)` block is the one people
+    // write, and it never applies: the dark look is worked out from the light colours. Say so.
+    if css.contains("@media") {
+        warn.push(format!("@media … — {}", crate::settings::tr("深色效果由浅色配色推算，主题不能单独写深色值", "the dark look is worked out from the light colours; a theme can't set its own")));
+    }
     for (n, v) in &vars {
         let v = subst(v, &vars, 0);
         for kind in ["color", "background", "callout", "highlight", "border"] {
@@ -1032,7 +1057,9 @@ mod tests {
         assert_eq!((st.num("callout.pad-y"), st.num("callout.pad-x")), (16., 12.));
         assert!(st.palette("color", "red").is_some());
         assert!(st.tokens[TOKENS.iter().position(|t| *t == "block_hover").unwrap()].is_some());
-        assert_eq!(warn, vec![".made-up { color }".to_string()]);
+        assert_eq!(warn.len(), 2, "{warn:?}");
+        assert!(warn.iter().any(|w| w.starts_with("@media")), "{warn:?}");
+        assert!(warn.iter().any(|w| w == ".made-up { color }"), "{warn:?}");
     }
 
     #[test]

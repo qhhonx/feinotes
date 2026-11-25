@@ -216,6 +216,41 @@ impl BoardView {
         if stale.is_empty() { cx.notify(); } else { self.commit(Some(CaptureUpdateAction::Never), cx); }
     }
 
+    /// In the middle of something a scene from outside would pull from
+    /// under it: a gesture, a text or frame name being edited, a line drawn
+    /// click by click, a slider being dragged.
+    pub fn busy(&self) -> bool { self.gesture.is_some() || self.text.is_some() || self.frame_name.is_some() || self.multi.is_some() || self.slider }
+
+    /// The file changed outside (another program, an agent): its scene comes
+    /// in as upstream takes a collaborator's (`updateScene` with
+    /// `CaptureUpdateAction.NEVER`): not an undo step, nothing saved, the
+    /// viewport, tool and what is still selected left as they were. The
+    /// file's canvas color and grid come with it. Nothing happens when it is
+    /// what is shown already (a sibling window's edit coming back).
+    pub fn reload(&mut self, board: &Board, cx: &mut Context<Self>) {
+        if *self.board() == (Board { height: self.height, ..board.clone() }) { return }
+        let came: rustc_hash::FxHashSet<&str> = board.elements.iter().map(|e| e.id.as_str()).collect();
+        // Deleted elements stay for the undo history; those the file has again are its.
+        let gone = self.scene.elements_including_deleted().iter().filter(|e| e.is_deleted && !came.contains(e.id.as_str())).cloned();
+        let elements: Vec<Element> = board.elements.iter().cloned().chain(gone).collect();
+        self.scene.replace_all_elements(elements);
+        self.files.extend(board.files.iter().map(|(k, v)| (k.clone(), v.clone())));
+        self.app.apply_exported(&board.app);
+        let here: rustc_hash::FxHashSet<String> = self.scene.non_deleted_elements().map(|e| e.id.clone()).collect();
+        self.app.selected_element_ids.retain(|id| here.contains(id));
+        if self.app.selected_element_ids.is_empty() { self.app.selected_group_ids.clear(); self.app.editing_group_id = None; }
+        self.sync_linear();
+        self.menu = None;
+        // An outside writer may change an element without bumping its version: nothing cached by version holds.
+        self.aabbs.borrow_mut().clear();
+        *self.hits.borrow_mut() = canvas::HitIndex::default();
+        self.painter.borrow_mut().clear();
+        self.store.schedule_action(CaptureUpdateAction::Never);
+        let _ = self.store.commit(Some(self.scene.elements_including_deleted()), Some(&self.app));
+        self.saved = self.scene_version();
+        cx.notify();
+    }
+
     // ---- what the chrome reads and calls
 
     pub fn tool(&self) -> Tool { tool_of(self.app.active_tool.ty) }

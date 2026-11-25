@@ -22,7 +22,7 @@ impl Card {
 impl RenderOnce for Card {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let g = geo();
-        let d = under(self.base, |d| d.bg(crate::theme::raised(color::card())).rounded(px(g.card_r)).shadow(shadow::frame()).flex().flex_col()
+        let d = under(self.base, |d| d.bg(color::card()).rounded(px(g.card_r)).shadow(shadow::frame()).flex().flex_col()
             .text_size(px(g.text)).text_color(color::foreground()));
         super::base::Raised(d.into_any_element())
     }

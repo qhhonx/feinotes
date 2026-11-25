@@ -545,7 +545,7 @@ impl Workspace {
             ]))
             .when(global_rec || last_rec, |d| d.child(self.shortcut_recorder(cx)))
             .children(global_err.map(|e| div().px(px(4.)).text_size(px(12.)).line_height(px(18.)).text_color(Theme::danger()).child(e)));
-        div().w_full().flex().flex_col().gap(px(28.))
+        div().w_full().flex().flex_col().gap(px(crate::design::geo().section_gap))
             .children(general_error.map(|e| div().px(px(4.)).text_size(px(12.)).line_height(px(18.)).text_color(Theme::danger()).child(e)))
             .when(show_global, |d| d.child(global_group))
             .when(empty, |d| d.child(div().py(px(40.)).flex().justify_center().text_size(px(13.)).text_color(Theme::text_caption()).child(tr("没有匹配的快捷键", "No matching shortcuts"))))

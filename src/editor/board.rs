@@ -132,6 +132,31 @@ impl Editor {
         cx.notify();
     }
 
+    /// The open board is in the middle of something (a drag, a text): a
+    /// change from outside waits.
+    pub fn board_busy(&self, cx: &App) -> bool { self.boards.open.as_ref().is_some_and(|o| o.1.read(cx).busy()) }
+
+    /// The document was replaced (a change from outside, 重新载入, a sibling
+    /// window's edit): the open board follows its block, keeping where it
+    /// looks. `at`: the open board's place among the old document's boards,
+    /// for when the block's id changed with the reading.
+    pub(super) fn follow_open_board(&mut self, at: Option<usize>, cx: &mut Context<Self>) {
+        let Some((id, view, _)) = &mut self.boards.open else { return };
+        let boards = self.core.units().iter().filter_map(|u| match self.core.block(u.id).map(|b| &b.kind) { Some(BlockKind::Board(bd)) => Some((u.id, bd.clone())), _ => None }).collect::<Vec<_>>();
+        let found = boards.iter().find(|b| b.0 == *id).or_else(|| at.and_then(|i| boards.get(i))).cloned();
+        match found {
+            Some((now, bd)) => { *id = now; view.update(cx, |v, cx| v.reload(&bd, cx)); }
+            // its block is gone: back to the document (a standalone file always has its board)
+            None => self.boards.open = None,
+        }
+    }
+
+    /// The open board's place among the document's boards.
+    pub(super) fn open_board_at(&self) -> Option<usize> {
+        let (id, ..) = self.boards.open.as_ref()?;
+        self.core.units().iter().filter(|u| matches!(self.core.block(u.id).map(|b| &b.kind), Some(BlockKind::Board(_)))).position(|u| u.id == *id)
+    }
+
     /// A board is open (in place of the document).
     pub fn board_open(&self) -> bool { self.boards.open.is_some() }
 

@@ -62,10 +62,17 @@ pub fn list_line() -> Hsla {
     theme::ca(craft::N1000, 0.045)
 }
 
-/// The quiet list hover: a rounded fill that also hides the row's
-/// hairline above it.
+/// The quiet list hover: a rounded fill that hides the row's own hairline
+/// at once (the one below follows `Home::list_hover`, see [`row_line`]).
 pub fn row_hover(s: StyleRefinement) -> StyleRefinement {
     s.bg(Theme::fill_hover()).border_color(transparent_black()).rounded(px(ROW_RADIUS))
+}
+
+/// A list hairline (the header's foot, or the line above a row), hidden
+/// when a row it touches is lit (hovered, or holding its menu): a lit
+/// row's rounded fill would otherwise leave the line's ends at its corners.
+pub fn row_line(touches_lit: bool) -> Hsla {
+    if touches_lit { transparent_black() } else { list_line() }
 }
 
 
@@ -757,6 +764,12 @@ pub(crate) fn tilde(p: &std::path::Path) -> String {
 /// The breadcrumbs' size in every page header (a document's, a folder's, 主页's): shadcn's
 /// Breadcrumb, text-sm.
 pub const CRUMB_SIZE: f32 = 14.;
+
+/// shadcn's Breadcrumb (the user's call, 2026-11-25): the crumbs before the page, their separators
+/// and the "…" in `muted-foreground` (BreadcrumbLink), `foreground` under the pointer; the current
+/// page in `foreground` (BreadcrumbPage), the same weight.
+pub fn crumb_ink() -> Hsla { crate::design::color::muted_foreground() }
+pub fn crumb_page() -> Hsla { crate::design::color::foreground() }
 
 /// A page header's icon button (search, new, more): `Button::ghost`, header-tall.
 pub fn header_icon(id: &'static str, name: &'static str) -> crate::design::Button {

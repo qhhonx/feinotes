@@ -15,7 +15,7 @@ use crate::search::doc_icon;
 use crate::store::Entry;
 use crate::editor::image::picture;
 use crate::theme::{self, Theme};
-use crate::trash::{empty_state, list_header_text, list_line, row_hover};
+use crate::trash::{empty_state, list_header_text, row_hover, row_line};
 use crate::design::Popover;
 use crate::ui::{ROW_RADIUS, icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
@@ -399,6 +399,9 @@ pub struct Home {
     /// `generation`) and the order stay as they were:
     /// copying and sorting a folder of 3,000 notes took most of a frame.
     level: RefCell<Option<Level>>,
+    /// The list row under the pointer (its element id), so the hairlines on
+    /// both sides of it hide (`ui::row_line`); the trash list shares it.
+    pub(crate) list_hover: Option<SharedString>,
 }
 
 struct Level { key: u64, parent: Option<String>, order: Order, entries: Rc<Vec<Entry>> }
@@ -412,8 +415,9 @@ impl Default for Home {
             list_scroll: Default::default(),
             folder_grid_scroll: Default::default(),
             folder_list_scroll: Default::default(),
-            grid_scrollbar: Default::default(),
-            list_scrollbar: Default::default(),
+            // both run down to the window's bottom corner
+            grid_scrollbar: Rc::new(crate::design::ScrollBar::corners(0., crate::design::scroll::WINDOW_R)),
+            list_scrollbar: Rc::new(crate::design::ScrollBar::corners(0., crate::design::scroll::WINDOW_R)),
             search_scrollbar: Default::default(),
             // Manual: the sidebar's order (`Meta::place`), so both lists read the same.
             sort: HomeSort::Manual,
@@ -424,6 +428,7 @@ impl Default for Home {
             anchors: Default::default(),
             folders: Default::default(),
             level: Default::default(),
+            list_hover: None,
         }
     }
 }
@@ -433,6 +438,13 @@ impl Home {
     /// (the sidebar's tree).
     pub(crate) fn order(&self) -> Order {
         Order { field: self.sort, dir: self.sort_dir, folders_first: self.folders_first }
+    }
+
+    /// Tracks the hovered list row; true when it changed.
+    pub(crate) fn hover_row(&mut self, key: &SharedString, on: bool) -> bool {
+        let was = self.list_hover.clone();
+        if on { self.list_hover = Some(key.clone()) } else if self.list_hover.as_ref() == Some(key) { self.list_hover = None }
+        was != self.list_hover
     }
 
     pub(crate) fn anchor(&self, key: &str) -> Option<Bounds<Pixels>> {
@@ -780,7 +792,7 @@ impl Workspace {
     pub(crate) fn render_home(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let header = self.topbar(None, window, cx);
         // No top-level folder open (2.8): nothing to list or sort, a way to open one.
-        if self.store.top_folders().is_empty() {
+        if self.store.shown_tops().is_empty() {
             return div().flex_1().min_w_0().h_full().flex().flex_col().child(header).child(self.empty_main(cx)).into_any_element();
         }
         let entries = self.home_entries();
@@ -799,6 +811,11 @@ impl Workspace {
         let col_cell = || div().flex_grow_1().flex_shrink_1().flex_basis(relative(0.)).max_w(px(240.)).min_w(px(120.));
         // The list: 13pt tertiary headers over a hairline; the
         // sorted column in the text colour, semibold, with its arrow.
+        // A row is lit while hovered or holding its menu; the lines touching it hide.
+        let lit = |i: usize| entries.get(i).is_some_and(|e| {
+            self.home.list_hover.as_ref().is_some_and(|h| *h == format!("home-row-{}", e.id))
+                || self.row_menu.as_ref().is_some_and(|m| m.id == e.id)
+        });
         let mut header = div()
             .h(px(33.))
             .mt(px(10.))
@@ -806,7 +823,7 @@ impl Workspace {
             .flex()
             .items_center()
             .border_b_1()
-            .border_color(list_line())
+            .border_color(row_line(lit(0)))
             .child(
                 weight3(title_cell()).pl(px(20.)).child(
                     self.sort_head(SharedString::from("home-col-title"), "标题", self.home.sort == HomeSort::Title, Some(HomeSort::Title), cx),
@@ -829,15 +846,17 @@ impl Workspace {
             let (id, id2) = (e.id.clone(), e.id.clone());
             let menu_on = self.row_menu.as_ref().is_some_and(|m| m.id == e.id);
             let check = self.home_check(e);
+            let key = SharedString::from(format!("home-row-{}", e.id));
             let mut row = div()
-                .id(SharedString::from(format!("home-row-{}", e.id)))
+                .id(key.clone())
                 .h(px(56.))
                 .flex()
                 .items_center()
-                .when(i > 0, |d| d.border_t_1().border_color(list_line()))
+                .when(i > 0, |d| d.border_t_1().border_color(row_line(lit(i - 1) || lit(i))))
                 .cursor_pointer()
                 .hover(row_hover)
-                .when(menu_on, |d| d.bg(Theme::fill_hover()).border_color(transparent_black()).rounded(px(ROW_RADIUS)))
+                .on_hover(cx.listener(move |w, on: &bool, _, cx| if w.home.hover_row(&key, *on) { cx.notify() }))
+                .when(menu_on, |d| d.bg(Theme::fill_hover()).rounded(px(ROW_RADIUS)))
                 .on_click(cx.listener(move |w, _, window, cx| w.home_click(&id, window, cx)))
                 .when(check.is_none(), |d| d.on_mouse_down(
                     MouseButton::Right,
@@ -930,7 +949,7 @@ impl Workspace {
                     .flex_col()
                     .items_center()
                     .justify_center()
-                    .child(img("illus/blank-doc.svg").size(px(64.)))
+                    .child(img(crate::trash::illus_for("illus/blank-doc.svg")).size(px(64.)))
                     .child(div().mt(px(4.)).text_size(px(14.)).line_height(px(22.)).text_color(Theme::text_placeholder()).child(crate::settings::text("空白文档")))
             } else {
                 let mut p = div().size_full().p(px(pad)).overflow_hidden().flex().flex_col();

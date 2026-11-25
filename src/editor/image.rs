@@ -1859,7 +1859,8 @@ impl Editor {
             .child(pic.id("lb-pic-box").when(can_drag, |d| d.cursor(if lb.press.is_some() { CursorStyle::ClosedHand } else { CursorStyle::OpenHand })));
 
         let white = gpui::white();
-        // Chrome over the dark backdrop: near-black glass, white glyphs.
+        // Chrome over the dark backdrop: near-black glass, white glyphs, in either look (literal
+        // colours: `ca` would turn the glass near-white in the dark under the same white glyphs).
         let close = div()
             .id("lb-close")
             .absolute()
@@ -1867,8 +1868,8 @@ impl Editor {
             .right(px(20.))
             .size(px(40.))
             .rounded_full()
-            .bg(theme::ca(craft::N950, 0.6))
-            .hover(|s| s.bg(theme::ca(craft::N800, 0.75)))
+            .bg(theme::rgbaf(0x14, 0x15, 0x17, 0.6))
+            .hover(|s| s.bg(theme::rgbaf(0x30, 0x33, 0x35, 0.75)))
             .border_1()
             .border_color(theme::rgbaf(255, 255, 255, 0.1))
             .flex()
@@ -1919,7 +1920,7 @@ impl Editor {
             .h(px(44.))
             .px(px(10.))
             .rounded(px(12.))
-            .bg(theme::ca(craft::N950, 0.78))
+            .bg(theme::rgbaf(0x14, 0x15, 0x17, 0.78))
             .border_1()
             .border_color(theme::rgbaf(255, 255, 255, 0.1))
             .shadow(theme::shadow_panel())

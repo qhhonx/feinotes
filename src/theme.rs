@@ -96,39 +96,62 @@ fn to_dark(c: Hsla) -> Hsla {
     srgb(l2, oa, ob, a)
 }
 
-/// The text highlight to draw for light-look highlight `c`: in dark mode
-/// the same colour the light page shows (`c` over white, made opaque). Kept
-/// translucent it lets the dark page through and turns muddy. Text on it
-/// takes the light page's ink, see `on_mark`.
+/// WCAG relative luminance of an opaque colour.
+fn luminance(c: Hsla) -> f32 {
+    let Rgba { r, g, b, .. } = Rgba::from(c);
+    let ch = |v: f32| if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+}
+
+/// Text in colour (a link, a font colour, a list marker) on the dark page, lifted until it reads:
+/// vivid colours keep their own lightness in `to_dark`, which leaves a link blue or a red at about
+/// 4:1 on the page; this raises the OKLab lightness (hue and chroma kept) until the colour is `min`
+/// times the page's contrast (4.5 for text, 3 for marks). The light look and colours that already
+/// read are unchanged.
+pub fn lift(c: Hsla, min: f32) -> Hsla {
+    if !dark() { return c }
+    let pc = Rgba::from(adapt(gpui::white()));
+    let page = luminance(pc.into());
+    // a translucent colour (Obsidian's faint greys) reads as what it makes over the page
+    let Rgba { r, g, b, a } = Rgba::from(c);
+    let over = |v: f32, p: f32| p + (v - p) * a;
+    let c: Hsla = Rgba { r: over(r, pc.r), g: over(g, pc.g), b: over(b, pc.b), a: 1. }.into();
+    let reads = |x: Hsla, m: f32| (luminance(x) + 0.05) / (page + 0.05) >= m;
+    if reads(c, min) { return c }
+    // lifted past `min`: antialiased strokes and 1px edges read about a tenth below their colour
+    let min = min * 1.15;
+    let reads = |x: Hsla| reads(x, min);
+    let Rgba { r, g, b, a } = Rgba::from(c);
+    let [l, oa, ob] = oklab(r, g, b);
+    let mut up = l;
+    while up < 0.98 {
+        up = (up + 0.01).min(0.98);
+        let x = srgb(up, oa, ob, a);
+        if reads(x) { return x }
+    }
+    srgb(0.98, oa, ob, a)
+}
+
+/// The text highlight to draw for light-look highlight `c` (a marker colour at its strength, 35% or
+/// 65%): in dark mode a deep tint of the same hue laid into the page, opaque, so the highlight reads
+/// as a highlight without lighting up like a lamp (it used to be the light page's pale colour, a
+/// bright block in the dark). Text on it keeps the dark page's ink, see `on_mark`.
 pub fn mark(c: Hsla) -> Hsla {
     if !dark() { return c }
     let Rgba { r, g, b, a } = Rgba::from(c);
-    let w = |v: f32| v * a + 1. - a;
-    Rgba { r: w(r), g: w(g), b: w(b), a: 1. }.into()
+    let Rgba { r: pr, g: pg, b: pb, .. } = Rgba::from(adapt(gpui::white()));
+    // the stronger the marker, the more of its hue (35% → 0.22, 65% → 0.28): dark enough that the
+    // page's ink reads on it at 4.5:1
+    let k = 0.15 + 0.2 * a;
+    let m = |v: f32, p: f32| p + (v - p) * k;
+    Rgba { r: m(r, pr), g: m(g, pg), b: m(b, pb), a: 1. }.into()
 }
 
-/// Text drawn on a highlight (`color`, already adapted). In dark mode it
-/// gets back its light-page ink: the mirror undone (the near-white text →
-/// L 0.25), at most L 0.55 so coloured text (red on light red) reads as it
-/// does on the light page.
+/// Text drawn on a highlight (`color`, already adapted). On the dark tint `mark` gives it stays the
+/// dark page's ink, lifted where a coloured run would sink into its own tint (`lift`).
 pub fn on_mark(c: Hsla) -> Hsla {
     if !dark() { return c }
-    let Rgba { r, g, b, a } = Rgba::from(c);
-    let [l, oa, ob] = oklab(r, g, b);
-    let l2 = ((1.137 - l) / 0.907).clamp(0., 0.55);
-    let chroma = (oa * oa + ob * ob).sqrt();
-    let (sin, cos) = if chroma > 1e-4 { (ob / chroma, oa / chroma) } else { (0., 1.) };
-    let k = in_gamut(l2, chroma, cos, sin);
-    srgb(l2, k * cos, k * sin, a)
-}
-
-/// The largest chroma ≤ `max` at lightness `l` and hue (`cos`, `sin`) inside sRGB.
-fn in_gamut(l: f32, max: f32, cos: f32, sin: f32) -> f32 {
-    let fits = |k: f32| lrgb(l, k * cos, k * sin).iter().all(|v| (-1e-4..=1. + 1e-4).contains(v));
-    if fits(max) { return max }
-    let (mut lo, mut hi) = (0., max);
-    for _ in 0..16 { let m = (lo + hi) / 2.; if fits(m) { lo = m } else { hi = m } }
-    lo
+    lift(c, 4.5)
 }
 
 // sRGB ⇄ OKLab with Björn Ottosson's matrices, kept digit for digit.
@@ -357,9 +380,9 @@ impl Theme {
     pub fn text_code() -> Hsla { c(craft::N800) }
     /// The link colour: the content accent (#0087FF) blended half-way to the
     /// text colour, #0F5492 measured.
-    pub fn link() -> Hsla { mix(0x0087ff, craft::N900, 0.5) }
+    pub fn link() -> Hsla { lift(mix(0x0087ff, craft::N900, 0.5), 4.5) }
     /// A hovered link or document chip: a step closer to the text colour.
-    pub fn link_hover() -> Hsla { mix(0x0087ff, craft::N900, 0.65) }
+    pub fn link_hover() -> Hsla { lift(mix(0x0087ff, craft::N900, 0.65), 4.5) }
     pub fn primary() -> Hsla { c(craft::B500) }
     pub fn primary_500() -> Hsla { c(craft::B500) }
     pub fn primary_fill_1() -> Hsla { c(craft::B50) }
@@ -534,7 +557,7 @@ fn split(name: &str) -> Option<(&str, bool)> {
 
 /// Font colour swatches as the colour panel shows them (first = default).
 pub fn text_color(name: &str) -> Option<Hsla> {
-    hue::of(name).map(|h| c(h.0))
+    hue::of(name).map(|h| lift(c(h.0), 4.5))
 }
 
 /// Text highlight: the marker colours at 35% (yellow #FFF100 → #FFFAA6

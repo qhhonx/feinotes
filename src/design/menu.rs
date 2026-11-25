@@ -82,11 +82,11 @@ pub const MIN_W: f32 = 128.;
 /// It has an opaque ground, which the shadow-drawn edge needs. `menu()` makes it a column of rows
 /// (`DropdownMenuContent`: p-1, at least 128 wide).
 #[derive(IntoElement)]
-pub struct Popover { id: ElementId, base: Stateful<Div>, menu: bool, padded: bool, fit: Option<f32>, handle: Option<ScrollHandle> }
+pub struct Popover { id: ElementId, base: Stateful<Div>, menu: bool, padded: bool, fit: Option<f32>, handle: Option<ScrollHandle>, inset: Option<f32> }
 element!(Popover, parent);
 
 impl Popover {
-    pub fn new(id: impl Into<ElementId>) -> Self { let id = id.into(); Popover { base: div().id(id.clone()), id, menu: false, padded: false, fit: None, handle: None } }
+    pub fn new(id: impl Into<ElementId>) -> Self { let id = id.into(); Popover { base: div().id(id.clone()), id, menu: false, padded: false, fit: None, handle: None, inset: None } }
     /// A column of menu rows, `PAD` above and below them (rows keep `PAD` from the sides), `min-w-32`.
     pub fn menu(mut self) -> Self { self.menu = true; self }
     /// A popover holding a form: padded 16 (p-4), a column with 16 between its fields (gap-4).
@@ -96,6 +96,9 @@ impl Popover {
     /// `fit` with the caller's handle, for a caller that needs how far it scrolled (a submenu levelled
     /// with its row).
     pub fn scroll(mut self, handle: &ScrollHandle) -> Self { self.handle = Some(handle.clone()); self }
+    /// How far in from the right edge a `fit` popover's content keeps of itself, for the room it
+    /// makes the scrollbar (`scroll::ScrollBar::room`): a padded one's padding, else a row's `PAD`.
+    pub fn inset(mut self, inset: f32) -> Self { self.inset = Some(inset); self }
 }
 
 impl RenderOnce for Popover {
@@ -103,15 +106,22 @@ impl RenderOnce for Popover {
         let (g, menu, padded) = (geo(), self.menu, self.padded);
         set_viewport(window);
         let fit = self.fit.map(|h| {
-            let st = window.use_keyed_state((self.id.clone(), "fit"), cx, |_, _| (ScrollHandle::new(), Rc::new(super::scroll::ScrollBar::rounded(g.menu_r))));
+            let id = self.id.clone();
+            let st = window.use_keyed_state((self.id.clone(), "fit"), cx, move |_, _| (ScrollHandle::new(), Rc::new(super::scroll::ScrollBar::rounded(g.menu_r).remembered(&id))));
             let (own, bar) = st.read(cx).clone();
             (h, (self.handle.clone().unwrap_or(own), bar))
         });
-        let d = under(self.base, |d| {
+        let inset = self.inset.unwrap_or(if padded { g.popover_pad } else { PAD });
+        // the scrollbar's lane goes on the outside: a width the caller set grows by it, the content keeps its own
+        let room = fit.as_ref().map_or(0., |(_, (_, bar))| bar.room(inset));
+        let mut base = self.base;
+        let own_right = super::scroll::widen(base.style(), room);
+        let d = under(base, |d| {
             d.occlude().bg(color::popover()).rounded(px(g.menu_r)).shadow(shadow::popover()).font_family(crate::theme::ui_family())
                 .text_size(px(g.text)).line_height(px(super::text::SM_LINE)).text_color(color::foreground())
                 .when(menu, |d| d.min_w(px(MIN_W)).py(px(PAD)).flex().flex_col())
                 .when(padded, |d| d.p(px(g.popover_pad)).flex().flex_col().gap(px(g.popover_gap)))
+                .when(own_right, |d| d.pr(px(if padded { g.popover_pad } else { 0. } + room)))
                 .when_some(fit, |d, (h, (handle, bar))| d.max_h(px(h)).overflow_y_scroll().track_scroll(&handle).child(bar.render(&handle)))
         });
         MenuScope { id: self.id, child: d.into_any_element() }
@@ -167,7 +177,7 @@ fn scope() -> Option<Shared> { SCOPE.with(|s| s.borrow().clone()) }
 struct MenuScope { id: ElementId, child: AnyElement }
 impl Element for MenuScope {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = bool;
     fn id(&self) -> Option<ElementId> { Some(self.id.clone()) }
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> { None }
     fn request_layout(&mut self, id: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
@@ -180,12 +190,14 @@ impl Element for MenuScope {
         DEPTH.with(|d| d.set(d.get() - 1));
         (l, ())
     }
-    fn prepaint(&mut self, id: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) {
+    /// Whether a scrollbar inside found its room a frame behind (`scroll::unsettled`): this frame isn't painted.
+    fn prepaint(&mut self, id: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), window: &mut Window, cx: &mut App) -> bool {
         let rows = window.with_element_state(id.unwrap(), |s: Option<Shared>, _| { let s = s.unwrap_or_default(); (s.clone(), s) });
         rows.borrow_mut().now.clear();
-        in_scope(rows, || self.child.prepaint(window, cx));
+        super::scroll::unsettled(|| { in_scope(rows, || self.child.prepaint(window, cx)); })
     }
-    fn paint(&mut self, id: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), _: &mut (), window: &mut Window, cx: &mut App) {
+    fn paint(&mut self, id: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut (), unsettled: &mut bool, window: &mut Window, cx: &mut App) {
+        if *unsettled { return; }
         let rows = window.with_element_state(id.unwrap(), |s: Option<Shared>, _| { let s = s.unwrap_or_default(); (s.clone(), s) });
         {
             let r = &mut *rows.borrow_mut();

@@ -520,7 +520,7 @@ impl Workspace {
                 empty(crate::settings::tr("还没有命名版本", "Nothing named yet"), crate::settings::tr("把鼠标移到某一版上，点铅笔给它起个名字。", "Hover a version and click the pencil to name it."))
             }.into_any_element()
         } else {
-            div().id("history-list").flex_1().min_h_0().overflow_y_scroll().track_scroll(&h.list_scroll).flex().flex_col().pb(px(6.)).children(rows).child(crate::design::scroll::bar("history-list", &h.list_scroll, 0.)).into_any_element()
+            crate::design::scroll::make_room(div().id("history-list").flex_1().min_h_0().overflow_y_scroll().track_scroll(&h.list_scroll).flex().flex_col().pb(px(6.)), "history-list", dmenu::PAD).children(rows).child(crate::design::scroll::bar_corners("history-list", &h.list_scroll, 0., crate::design::scroll::WINDOW_R)).into_any_element()
         };
         let act = |id: &'static str, text: &'static str| Button::ghost(id).label(text);
         let footer = div().flex_none().border_t_1().border_color(Theme::line_divider()).p(px(12.)).flex().items_center().gap(px(4.))

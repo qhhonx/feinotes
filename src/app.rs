@@ -584,6 +584,8 @@ impl Workspace {
                     if let Some(id) = this.current.clone().or_else(|| this.folder_current.clone()) && this.store.set_active(&id) { cx.defer(crate::settings::top_switched); }
                     // A write of the tree on its way holds the library's lock, and lists it when it lands.
                     if !this.store.file_task_busy() && !this.store.loading() && !this.tree_writes_pending() { this.entries.set(this.store.list()); this.sort(); this.refresh_external(Some(window.window_handle().window_id()), cx); }
+                    // An attachment another program wrote meanwhile: its card says so.
+                    if let Some(ed) = this.editor.clone() { ed.update(cx, |e, cx| e.files_changed(cx)); }
                     crate::update::check_if_stale(cx); cx.notify();
                 }
                 else if !this.store.file_task_busy() { this.cancel_home_drag(cx); this.end_folder_drag(true, cx); this.cancel_shortcut_recording(cx); if !this.tree_writes_pending() { this.flush(cx); } }
@@ -629,8 +631,9 @@ impl Workspace {
         // A file written into the library from outside (a model writing a
         // note, say) joins it without going away and back: each top-level folder's
         // shape is compared every couple of seconds, and those that changed are
-        // listed again off the main thread (`relist`). So is the open document: a
-        // clean editor takes in what another program (the `quiet` CLI, say) wrote to it.
+        // listed again off the main thread (`relist`). So is the open document or
+        // 画板: a clean editor takes in what another program (the `quiet` CLI, an
+        // agent drawing) wrote to it; a file caught half written is read again next time.
         cx.spawn(async move |this, cx| {
             let bg = cx.background_executor().clone();
             let shape = |dirs: Vec<(String, std::path::PathBuf)>| bg.spawn(async move { dirs.into_iter().map(|(k, d)| (k, crate::store::Store::shape_at(&d))).collect::<Vec<_>>() });
@@ -639,9 +642,12 @@ impl Workspace {
             let mut last_file = None;
             loop {
                 bg.timer(Duration::from_secs(2)).await;
+                // A top-level folder gone from the disk leaves the sidebar (and nothing is written
+                // there any more); one that is back returns.
+                if this.update(cx, |w, cx| w.check_folders(cx)).is_err() { break }
                 let now = shape(dirs(cx)).await;
                 let Ok(path) = this.update(cx, |w, _| w.current.as_ref()
-                    .filter(|id| !w.store.file_task_busy() && !w.tree_writes_pending() && w.store.kind(id) == crate::store::DocKind::Doc)
+                    .filter(|id| !w.store.file_task_busy() && !w.tree_writes_pending() && w.store.kind(id) != crate::store::DocKind::Table)
                     .and_then(|id| w.store.file_path(id))) else { break };
                 let file = bg.spawn(async move {
                     let path = path?;
@@ -649,8 +655,8 @@ impl Workspace {
                     Some((path, meta.modified().ok()?, meta.len()))
                 }).await;
                 if file != last_file {
-                    let _ = this.update(cx, |w, cx| w.refresh_external(None, cx));
-                    last_file = file;
+                    let Ok(settled) = this.update(cx, |w, cx| w.refresh_external(None, cx)) else { break };
+                    last_file = if settled { file } else { None };
                 }
                 if now == last { continue }
                 // Only what changed; a top-level folder just added is listed as it is added.
@@ -833,6 +839,32 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Each top-level folder against the disk (`SharedStore::check_presence`): what was open in a
+    /// folder that is gone closes unsaved-but-nothing-lost (it can't be written where it was), and
+    /// the window shows the folders still there; a folder that came back is listed again.
+    pub(crate) fn check_folders(&mut self, cx: &mut Context<Self>) {
+        if self.store.file_task_busy() || self.store.loading() { return }
+        let (lost, back) = self.store.check_presence();
+        if lost.is_empty() && back.is_empty() { return }
+        let in_lost = |w: &Self, id: &Option<String>| id.as_deref().and_then(|id| w.store.top_of(id)).is_some_and(|k| lost.contains(&k));
+        if !lost.is_empty() {
+            if in_lost(self, &self.current) { self.current = None; self.editor = None; self.editor_sub = None; if self.view == View::Doc { self.view = View::Home; } }
+            if in_lost(self, &self.folder_current) || self.folder_current.as_deref().and_then(crate::shared_store::top_of_row).is_some_and(|k| lost.iter().any(|l| l == k)) {
+                self.folder_current = None;
+                if self.view == View::Folder { self.view = View::Home; }
+            }
+            self.entries.set(self.store.listed_rows());
+            self.sort();
+            cx.defer(crate::settings::top_switched);
+        }
+        // back: listed as a folder just opened is (here when quick, else in the background)
+        for k in &back {
+            if let Some(entries) = crate::loading::begin_added(&mut self.store, k, cx) { self.entries.set(entries); self.sort(); }
+        }
+        if !back.is_empty() { cx.defer(crate::settings::top_switched); }
+        cx.notify();
+    }
+
     /// Top-level folders `keys` listed again off the main thread (the 2 s look): each
     /// library takes over its writer when it wrote nothing meanwhile, else is listed
     /// here. False when another listing is still running (try again later).
@@ -1003,6 +1035,7 @@ impl Workspace {
                 this.search_sel = this.default_search_sel(cx);
             }
             EditorEvent::OpenRelative(url) => this.open_relative(url, window, cx),
+            EditorEvent::OpenFile(path) => this.open_in_own_window(path, cx),
             EditorEvent::OpenDoc(id) => this.open(id, window, cx),
             EditorEvent::OpenDocAt(id, ordinal) => this.open_at(id, *ordinal, window, cx),
             EditorEvent::HideRefs => this.ask_refs(false, cx),
@@ -1469,21 +1502,29 @@ impl Workspace {
     }
 
     /// `on_stack`: the window being updated, if any (it can't be read now; it is this one).
-    fn refresh_external(&mut self, on_stack: Option<gpui::WindowId>, cx: &mut Context<Self>) {
-        if self.preview.is_some() || self.store.file_task_busy() || self.tree_writes_pending() || matches!(self.confirm, Some(Confirm::SaveFailed)) { return }
-        let Some(id) = self.current.clone() else { return };
+    /// False when the file wasn't settled (unreadable or half written, a 画板
+    /// mid-gesture): the 2 s poll looks again even if the file stays as it is.
+    /// Edits here go first, as a save: one that finds the file changed refuses
+    /// to write over it (保存失败: 重试, 另存副本, 重新载入), a document and a 画板 alike.
+    fn refresh_external(&mut self, on_stack: Option<gpui::WindowId>, cx: &mut Context<Self>) -> bool {
+        if self.preview.is_some() || self.store.file_task_busy() || self.tree_writes_pending() || matches!(self.confirm, Some(Confirm::SaveFailed)) { return false }
+        let Some(id) = self.current.clone() else { return true };
         if !self.unsaved { self.follow_moved_links(cx); }
-        if self.store.kind(&id) != crate::store::DocKind::Doc { return }
+        if self.store.kind(&id) == crate::store::DocKind::Table { return true }
         if self.unsaved {
             self.flush(cx);
-            return
+            return true
         }
+        // A 画板 in the middle of a drag or a text: its file is looked at again once it ends.
+        if self.editor.as_ref().is_some_and(|e| e.read(cx).board_busy(cx)) { return false }
         // A newly opened sibling can be clean while its source view still has a pending edit.
         if cx.windows().into_iter().filter(|h| Some(h.window_id()) != on_stack).filter_map(|h| h.downcast::<Workspace>()?.entity(cx).ok())
             .filter(|p| p.entity_id() != cx.entity_id())
-            .any(|p| { let w = p.read(cx); w.current.as_ref() == Some(&id) && w.unsaved }) { return }
-        if let Ok(Some(doc)) = self.store.with(Some(&id), |s| s.refresh_external(&id)) {
-            self.adopt_external(&id, doc, cx);
+            .any(|p| { let w = p.read(cx); w.current.as_ref() == Some(&id) && w.unsaved }) { return true }
+        match self.store.with(Some(&id), |s| s.refresh_external(&id)) {
+            Ok(Some(doc)) => { self.adopt_external(&id, doc, cx); true }
+            Ok(None) => true,
+            Err(_) => false,
         }
     }
 
@@ -1583,6 +1624,12 @@ impl Workspace {
                     }
                 }
                 self.sync_links(cx);
+                // A 本机文件 may be an attachment of a page open in another window: its card follows (size, preview).
+                if meta.local() {
+                    for peer in Self::other_workspaces(cx) {
+                        if let Some(ed) = peer.read(cx).editor.clone() { ed.update(cx, |e, cx| e.files_changed(cx)); }
+                    }
+                }
                 // a renamed 数据表's file moved with its title
                 let moved = (meta.kind == crate::store::DocKind::Table).then(|| self.store.file_path(&id)).flatten();
                 ed.update(cx, |e, cx| {
@@ -1794,7 +1841,7 @@ impl Workspace {
             .map(|id| self.ancestors(id).iter().filter(|e| crate::shared_store::top_of_row(&e.id).is_none()).map(|e| (e.id.clone(), display_title(&e.title), e.icon.clone())).collect())
             .unwrap_or_default();
         let mut crumbs: Vec<AnyElement> = vec![];
-        let sep = || div().mx(px(3.)).flex_none().child(icon("chevron-right", 12., Theme::text_caption())).into_any_element();
+        let sep = || div().mx(px(3.)).flex_none().child(icon("chevron-right", 12., crate::ui::crumb_ink())).into_any_element();
         // Every path starts at the library, as a folder page's does; a file
         // under 本机文件 starts there, which has no page of its own.
         let local = self.current.as_ref().and_then(|id| self.entries.iter().find(|e| &e.id == id)).is_some_and(|e| e.meta.local());
@@ -1808,15 +1855,15 @@ impl Workspace {
         let home_label = crate::settings::text("主页").to_string();
         if self.current.is_some() {
             crumbs.push(div().id("crumb-home").no_drag().flex_none().px(px(4.)).rounded(px(4.))
-                .whitespace_nowrap().text_color(Theme::text_caption()).cursor_pointer().hover(|s| s.text_color(Theme::text()))
+                .whitespace_nowrap().text_color(crate::ui::crumb_ink()).cursor_pointer().hover(|s| s.text_color(crate::ui::crumb_page()))
                 .on_click(cx.listener(|w, _, _, cx| w.show_view(View::Home, cx)))
                 .child(ui_text(home_label.clone()))
                 .into_any_element());
             crumbs.push(sep());
             let target = top_target.clone();
             crumbs.push(div().id("crumb-library").no_drag().flex_none().px(px(4.)).rounded(px(4.))
-                .whitespace_nowrap().text_color(Theme::text_caption())
-                .when(!local, |d| d.cursor_pointer().hover(|s| s.text_color(Theme::text())).on_click(cx.listener(move |w, _, window, cx| match &target {
+                .whitespace_nowrap().text_color(crate::ui::crumb_ink())
+                .when(!local, |d| d.cursor_pointer().hover(|s| s.text_color(crate::ui::crumb_page())).on_click(cx.listener(move |w, _, window, cx| match &target {
                     Some(t) => w.open(t, window, cx),
                     None => w.show_view(View::Home, cx),
                 })))
@@ -1845,8 +1892,8 @@ impl Workspace {
                     .items_center()
                     .rounded(px(4.))
                     .cursor_pointer()
-                    .text_color(Theme::text_caption())
-                    .hover(|s| s.text_color(Theme::text()))
+                    .text_color(crate::ui::crumb_ink())
+                    .hover(|s| s.text_color(crate::ui::crumb_page()))
                     .when_some(em.clone(), |d, em| {
                         d.child(div().size(px(20.)).mr(px(4.)).flex_none().flex().items_center().justify_center().text_size(px(16.)).child(em))
                     })
@@ -1859,7 +1906,7 @@ impl Workspace {
         if board_block {
             crumbs.push(
                 div().id("crumb-board-doc").no_drag().min_w(px(28.)).max_w(px(200.)).px(px(4.)).flex().items_center().rounded(px(4.)).cursor_pointer()
-                    .text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::text()))
+                    .text_color(crate::ui::crumb_ink()).hover(|s| s.text_color(crate::ui::crumb_page()))
                     .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(title.clone())))
                     .on_click(cx.listener(|w, _, window, cx| if let Some(e) = w.editor.clone() { e.update(cx, |e, cx| e.close_open_board(window, cx)) }))
                     .into_any_element(),
@@ -1870,7 +1917,7 @@ impl Workspace {
         if table_block {
             crumbs.push(
                 div().id("crumb-table-doc").no_drag().min_w(px(28.)).max_w(px(200.)).px(px(4.)).flex().items_center().rounded(px(4.)).cursor_pointer()
-                    .text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::text()))
+                    .text_color(crate::ui::crumb_ink()).hover(|s| s.text_color(crate::ui::crumb_page()))
                     .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(title.clone())))
                     .on_click(cx.listener(|w, _, window, cx| if let Some(e) = w.editor.clone() { e.update(cx, |e, cx| e.close_open_table(window, cx)) }))
                     .into_any_element(),
@@ -1941,9 +1988,8 @@ impl Workspace {
                                     .min_w_0()
                                     .text_size(px(crate::ui::CRUMB_SIZE))
                                     .line_height(px(20.))
-                                    // the current page reads like the crumbs before it (the user's call, 2026-11-25;
-                                    // shadcn's BreadcrumbPage is `foreground`): one colour and weight along the path
-                                    .text_color(Theme::text_caption())
+                                    // the current page: `foreground`, the crumbs before it muted (`crate::ui::crumb_page`)
+                                    .text_color(crate::ui::crumb_page())
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()

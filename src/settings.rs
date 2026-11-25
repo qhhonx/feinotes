@@ -25,13 +25,14 @@ static PREFS: RwLock<Option<Preferences>> = RwLock::new(None);
 /// The active document theme draws blocks the 飞书 way (else Craft's).
 pub fn feishu() -> bool { FEISHU.load(Ordering::Relaxed) }
 pub(crate) fn set_base(feishu: bool) { FEISHU.store(feishu, Ordering::Relaxed); }
-/// 界面语言, in the order Settings lists them. Chinese strings are the keys:
+/// 界面语言, in the order Settings lists them (English first, then the two Chinese).
+/// `ALL` keeps the variants' order: `LANG` holds a variant's index in it. Chinese strings are the keys:
 /// other languages look them up in `l10n` and fall back to English.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Lang { Zh, ZhTw, En, Ja, Ko, Fr, Es, Ar, Tr }
+pub enum Lang { En, Zh, ZhTw, Ja, Ko, Fr, Es, Ar, Tr }
 
 impl Lang {
-    pub const ALL: [Lang; 9] = [Lang::Zh, Lang::ZhTw, Lang::En, Lang::Ja, Lang::Ko, Lang::Fr, Lang::Es, Lang::Ar, Lang::Tr];
+    pub const ALL: [Lang; 9] = [Lang::En, Lang::Zh, Lang::ZhTw, Lang::Ja, Lang::Ko, Lang::Fr, Lang::Es, Lang::Ar, Lang::Tr];
     /// The `language` preference value.
     pub fn code(self) -> &'static str { match self { Lang::Zh => "zh", Lang::ZhTw => "zh-TW", Lang::En => "en", Lang::Ja => "ja", Lang::Ko => "ko", Lang::Fr => "fr", Lang::Es => "es", Lang::Ar => "ar", Lang::Tr => "tr" } }
     /// The language's own name, as Settings lists it.
@@ -478,7 +479,7 @@ impl Page {
             Page::General => "view-settings",
             Page::Appearance => "palette",
             Page::Shortcuts => "keyboard",
-            Page::Library => "storage",
+            Page::Library => "folder",
             Page::About => "info",
         }
     }
@@ -501,7 +502,8 @@ pub(crate) fn group(id: impl Into<ElementId>, title: Option<&'static str>, rows:
         card = card.child(div().w_full().flex().flex_col().child(r));
         if i + 1 < n { card = card.child(Separator::new()); }
     }
-    div().w_full().flex().flex_col().gap(px(8.)).children(title.map(caption)).child(card)
+    // the caption hangs over its own card (`label_gap`), sections stand `section_gap` apart
+    div().w_full().flex().flex_col().gap(px(crate::design::geo().label_gap)).children(title.map(caption)).child(card)
 }
 
 pub(crate) fn caption(t: &'static str) -> Div {
@@ -978,7 +980,7 @@ impl Workspace {
                 w.theme_menu = None;
                 cx.notify();
             }))
-            .child({ let h = crate::design::scroll::handle("theme-menu-list"); div().id("theme-menu-list").w(px(220.)).max_h(px(302.)).overflow_y_scroll().track_scroll(&h).py(px(menu::PAD)).flex().flex_col().children(rows).child(crate::design::scroll::bar("theme-menu-list", &h, crate::design::geo().menu_r)) });
+            .child({ let h = crate::design::scroll::handle("theme-menu-list"); crate::design::scroll::make_room(div().id("theme-menu-list").w(px(220.)).max_h(px(302.)).overflow_y_scroll().track_scroll(&h).py(px(menu::PAD)).flex().flex_col(), "theme-menu-list", menu::PAD).children(rows).child(crate::design::scroll::bar("theme-menu-list", &h, crate::design::geo().menu_r)) });
         Some(deferred({ let (pos, corner) = crate::design::hang(b, crate::design::Align::End, None); anchored().anchor(corner).position(pos) }.snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
@@ -1488,7 +1490,7 @@ impl Workspace {
             // The bar only drags the window; the page title heads the centred column.
             .child(div().h(px(crate::app::HEADER_H)).flex_none().flex().items_center().title_bar()
                 .when(!self.sidebar_open, |d| d.pl(px(theme::TRAFFIC_LIGHTS_W)).child(self.header_navigation(cx))))
-            .child(div().id("settings-content").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.settings_scroll).child(crate::design::scroll::bar("settings-content", &self.settings_scroll, 0.))
+            .child(div().id("settings-content").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.settings_scroll).child(crate::design::scroll::bar_corners("settings-content", &self.settings_scroll, 0., crate::design::scroll::WINDOW_R))
                 .child(div().w_full().flex().flex_col().items_center().px(px(32.)).pb(px(64.))
                     .child(div().w_full().max_w(px(if page == Page::Shortcuts { 760. } else { COLUMN_W })).flex().flex_col().gap(px(28.))
                         .child(div().flex().items_center().gap(px(16.))
@@ -1517,7 +1519,7 @@ impl Workspace {
                 }, cx)
             }).into_any_element()]
         };
-        div().w_full().flex().flex_col().gap(px(28.))
+        div().w_full().flex().flex_col().gap(px(crate::design::geo().section_gap))
             .child(group("group-general", None, vec![
                 row(tr("界面语言", "Interface language"), None, {
                     let anchor = self.lang_anchor.clone();
@@ -1614,8 +1616,8 @@ impl Workspace {
         // The page itself, the group's last row: no frame around it.
         let shown = { let list = themes::themes(); list.iter().find(|t| t.id == current).or_else(|| list.first()).map(|t| sample_page(t, PAGE_S)) };
         let sample = div().w_full().h(px(640.)).children(shown);
-        div().w_full().flex().flex_col().gap(px(28.))
-            .child(div().w_full().flex().flex_col().gap(px(8.))
+        div().w_full().flex().flex_col().gap(px(crate::design::geo().section_gap))
+            .child(div().w_full().flex().flex_col().gap(px(crate::design::geo().section_gap))
                 .child(group("group-appearance", None, vec![
                     row(tr("外观", "Appearance"), None, {
                         let at = match prefs().appearance.as_str() { "light" => 1, "dark" => 2, _ => 0 };
@@ -1734,7 +1736,7 @@ impl Workspace {
         // A new folder is made in the system's own open panel (its 新建文件夹 button), not here.
         folders.push(row(tr("打开文件夹", "Open a folder"), Some(tr("打开电脑上的文件夹，它会显示在侧栏里；要新的文件夹，在打开窗口里新建。", "Open a folder on your computer and it shows in the sidebar; for a new one, make it in the open window.").into()),
             button("open-folder", tr("打开…", "Open…")).on_click(cx.listener(|w, _, window, cx| w.open_folder_dialog(window, cx)))).into_any_element());
-        div().w_full().flex().flex_col().gap(px(8.))
+        div().w_full().flex().flex_col().gap(px(crate::design::geo().section_gap))
             .child(group("group-folders", Some(tr("文件夹", "Folders")), folders))
             .child(group("group-library", None, vec![
                 row(tr("回收站", "Trash"), Some(crate::localized_format!("删除的文档保留 {} 天后自动清除。", "Deleted documents are kept for {} days.", crate::store::TRASH_DAYS).into()),
@@ -1764,7 +1766,7 @@ impl Workspace {
     }
 
     fn about_page(&self, cx: &mut Context<Self>) -> AnyElement {
-        div().w_full().flex().flex_col().gap(px(28.)).child(div().w_full().pt(px(24.)).flex().flex_col().items_center().gap(px(10.))
+        div().w_full().flex().flex_col().gap(px(crate::design::geo().section_gap)).child(div().w_full().pt(px(24.)).flex().flex_col().items_center().gap(px(10.))
             .child(img(about_icon()).size(px(88.)))
             .child(div().text_size(px(20.)).line_height(px(26.)).font_weight(FontWeight::SEMIBOLD).child("Quiet.md"))
             .child(div().text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 5.)).text_color(Theme::text_caption()).child(format!("{} {}", tr("版本", "Version"), env!("CARGO_PKG_VERSION"))))

@@ -44,6 +44,8 @@ const WINDOWS_TEXT: &[(&str, &str)] = &[
     ("Copy the complete Quiet.md folder into Documents on the new Mac.", "Copy the complete Quiet.md folder into Documents on the new computer."),
     ("Press a new combination containing Command, Control or Option.", "Press a new combination containing Ctrl or Alt."),
     ("Hold <code>⌥</code> to do the same for every folder inside.", "Hold <code>Alt</code> to do the same for every folder inside."),
+    // ⌃⌘D is Ctrl+Shift+D there (Ctrl+Alt reads as AltGr, #290); this entry serves the Chinese guides too
+    ("<code>⌃ ⌘ D</code>", "<code>Ctrl+Shift+D</code>"),
     // The system-wide quick-note shortcut exists on macOS only.
     ("<p>A global shortcut can open a small note window while you are using another app. Write the thought down, then close the window; it is saved with your documents.</p><ul><li>Enable the global quick-note shortcut in Settings › Shortcuts.</li><li>The default is <code>⌥ Space</code>. If another app already uses it, choose another combination, such as <code>⌥ ⇧ Space</code>. Registration failures are shown in settings.</li>",
      "<p>A note window is a small window of its own for writing a thought down. Close it when you are done; the note is saved with your documents.</p><ul>"),

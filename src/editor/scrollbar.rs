@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 // The shared look (`design::scroll`, shadcn's ScrollArea): a 7pt `border` thumb 1pt in, shown while
 // the pointer is on the bar, while the page scrolls and while held, fading out after.
-use crate::design::scroll::{HELD, HOVER, PAD as INSET, THUMB as W, thumb_tone};
+use crate::design::scroll::{HELD, HOVER, PAD as INSET, THUMB as W, WINDOW_R, ends_for, thumb_tone};
 const MIN_H: f32 = 32.;
 /// The grab zone is wider than the thumb.
 const HIT_W: f32 = 12.;
@@ -113,9 +113,12 @@ impl Editor {
                         grab = None;
                     }
                 }
-                let (y, h) = thumb(offset, content, view, bounds.size.height, grab)?;
-                let top = bounds.top() + y;
-                let f = if bounds.size.height > h { y / (bounds.size.height - h) } else { 0. };
+                // under the top bar a straight edge; at the bottom the page runs into the window's corner
+                let (ends, ends_b) = (px(INSET), px(ends_for(WINDOW_R)));
+                let track = (bounds.size.height - ends - ends_b).max(px(1.));
+                let (y, h) = thumb(offset, content, view, track, grab)?;
+                let top = bounds.top() + ends + y;
+                let f = if track > h { y / (track - h) } else { 0. };
                 let zone = Bounds::new(point(bounds.right() - px(HIT_W), top), size(px(HIT_W), h));
                 Some((top, h, f, window.insert_hitbox(zone, HitboxBehavior::BlockMouseExceptScroll)))
             },
@@ -155,8 +158,8 @@ impl Editor {
                         }
                         match sb.held.get().filter(|g| g.down) {
                             Some(g) if ev.pressed_button == Some(MouseButton::Left) => {
-                                let travel = (bounds.size.height - g.h).max(px(1.));
-                                let f = ((ev.position.y - g.dy - bounds.top()) / travel).clamp(0., 1.);
+                                let travel = (bounds.size.height - px(INSET + ends_for(WINDOW_R)) - g.h).max(px(1.));
+                                let f = ((ev.position.y - g.dy - bounds.top() - px(INSET)) / travel).clamp(0., 1.);
                                 sb.held.set(Some(Grab { f, tries: TRIES, moved: Instant::now(), ..g }));
                                 let (_, content, view) = list.estimated_scroll_metrics();
                                 list.scroll_to_estimated_offset(aim(f, content, view));

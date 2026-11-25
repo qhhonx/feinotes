@@ -447,6 +447,9 @@ impl Onboarding {
     }
 
     /// Each folder to import, and the name it takes in the library.
+    /// Nothing left to bring in: 导入副本 has nothing to copy, so it is off again (its card is gone).
+    fn sync_copy(&mut self) { if self.imports().is_empty() { self.copy = false; } }
+
     fn imports(&self) -> Vec<(PathBuf, Option<String>)> {
         let mut out: Vec<_> = self.picked.iter().map(|p| (p.clone(), None)).collect();
         if let Some(found) = &self.found {
@@ -618,7 +621,7 @@ impl Onboarding {
         ];
         for (i, p) in self.picked.iter().enumerate() {
             pick_rows.push(row(short_path(p), None, soft_button(("onb-unpick", i), tr("移除", "Remove"))
-                .on_click(cx.listener(move |w, _, _, cx| { if i < w.picked.len() { w.picked.remove(i); } cx.notify(); }))).into_any_element());
+                .on_click(cx.listener(move |w, _, _, cx| { if i < w.picked.len() { w.picked.remove(i); } w.sync_copy(); cx.notify(); }))).into_any_element());
         }
         // Folders other apps keep notes in; nothing at all while looking or
         // when there are none. A long list shows its first few until 再显示.
@@ -629,7 +632,7 @@ impl Onboarding {
                 let on = self.chosen.get(i).copied().unwrap_or(false);
                 let (title, desc) = (f.title(), f.desc());
                 div().id(("onb-found", i)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
-                    .on_click(cx.listener(move |w, _, _, cx| { if let Some(c) = w.chosen.get_mut(i) { *c = !*c; } cx.notify(); }))
+                    .on_click(cx.listener(move |w, _, _, cx| { if let Some(c) = w.chosen.get_mut(i) { *c = !*c; } w.sync_copy(); cx.notify(); }))
                     .child(row(title, Some(desc.into()), Checkbox::new(on))).into_any_element()
             }).collect();
             if shown < found.len() {
@@ -644,7 +647,7 @@ impl Onboarding {
             let head = div().w_full().px(px(4.)).flex().items_center().justify_between()
                 .child(lifted(over, 12., 16., false, true, crate::localized_format!("在这台电脑上找到 {} 处笔记", "Notes found on this computer ({})", found.len())))
                 .when(can.len() > 1, |d| d.child(lesser(over, false, "onb-all", if all { tr("全不选", "Select none") } else { tr("全选", "Select all") },
-                    cx.listener(move |w, _, _, cx| { for &i in &can { if let Some(c) = w.chosen.get_mut(i) { *c = !all; } } cx.notify(); }))));
+                    cx.listener(move |w, _, _, cx| { for &i in &can { if let Some(c) = w.chosen.get_mut(i) { *c = !all; } } w.sync_copy(); cx.notify(); }))));
             (head, rows)
         });
         // Auto margins centre it while it fits; taller, it starts at the top and scrolls.
@@ -653,10 +656,12 @@ impl Onboarding {
                 .child(heading(over, tr("带上已有的笔记", "Bring your notes"), if self.copy { tr("导入的是副本，原来的文件不会被改动。也可以跳过，以后从菜单导入。", "Imports are copies; your files stay as they are. You can skip this and import later.") }
                     else { tr("选中的文件夹会直接打开，文件留在原处。也可以跳过，以后从菜单打开。", "The folders you pick open where they are; the files stay put. You can skip this and open them later.") }))
                 .child(sheet("onb-pick-sheet", None, pick_rows))
-                // 导入副本 needs a folder to copy into: the new one.
-                .when(self.open.is_empty(), |d| d.child(sheet("onb-copy-sheet", None, vec![div().id("onb-copy").cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+                // 导入副本 needs a folder to copy into (the new one) and something to copy: shown once a
+                // folder is picked or ticked, fading in.
+                .when(self.open.is_empty() && !self.imports().is_empty(), |d| d.child(sheet("onb-copy-sheet", None, vec![div().id("onb-copy").cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
                     .on_click(cx.listener(|w, _, _, cx| { w.copy = !w.copy; cx.notify(); }))
-                    .child(row(tr("改为导入副本", "Import copies instead"), Some(tr("复制到新文件夹里，和原来的文件夹分开", "Copy them into the new folder, apart from the originals").into()), Checkbox::new(self.copy))).into_any_element()])))
+                    .child(row(tr("改为导入副本", "Import copies instead"), Some(tr("复制到新文件夹里，和原来的文件夹分开", "Copy them into the new folder, apart from the originals").into()), Checkbox::new(self.copy))).into_any_element()])
+                    .with_animation("onb-copy-in", Animation::new(std::time::Duration::from_millis(180)), |el, k| el.opacity(k))))
                 .children(found.map(|(head, rows)| sheet("onb-found-sheet", Some(head.into_any_element()), rows)))
                 .children(self.error.clone().map(|e| note_owned(e, true))))
             .into_any_element()

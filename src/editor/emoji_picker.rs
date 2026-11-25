@@ -329,7 +329,7 @@ impl Editor {
                 .left_0()
                 .right_0()
                 .h(px(2.))
-                .bg(linear_gradient(180., linear_color_stop(theme::rgbaf(0, 0, 0, 0.05), 0.), linear_color_stop(theme::rgbaf(0, 0, 0, 0.), 1.))),
+                .bg(linear_gradient(180., linear_color_stop(theme::rgbaf(0, 0, 0, if crate::theme::dark() { 0.35 } else { 0.05 }), 0.), linear_color_stop(theme::rgbaf(0, 0, 0, 0.), 1.))),
         );
         for (i, (label, ic)) in NAV.iter().enumerate() {
             let on = !searching && i == current;

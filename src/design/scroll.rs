@@ -2,10 +2,12 @@
 //! `ScrollHandle`: a trackless `border`-coloured thumb, 7 wide (the bar's `w-2.5` less its `p-px` and
 //! clear `border-l`), 1 in from every edge; it shows while the pointer is over the box, while it
 //! scrolls and while it is dragged, and fades out `HIDE` after (Radix's `scrollHideDelay`). The fade
-//! is ours: shadcn switches it. Inside a rounded surface the bar stays flush to the side and its
-//! round ends stay whole: it keeps from the top and bottom just what clears the corner (`ends_for`),
-//! as shadcn's `p-px` does against its smaller corners. The pages' own scrollbar (the editor's virtualized list) takes
-//! the same look from `THUMB`, `PAD`, `thumb_color` and `Fade`.
+//! is ours: shadcn switches it. Two rules shadcn's overlay doesn't keep (docs/design/SHADCN_AUDIT.md,
+//! 滚动条): the thumb never lies over anything that takes the pointer, so a box that overflows makes
+//! room for it on the right (`ScrollBar::room`, `room`), whether it shows or not; and inside a rounded
+//! surface it runs only along the straight part of the edge, the corner and `PAD` clear of either
+//! end (`ends_for`). The pages' own scrollbar (the editor's virtualized list) takes the same look from
+//! `THUMB`, `PAD`, `thumb_color` and `Fade`.
 
 use super::color;
 use gpui::*;
@@ -25,50 +27,65 @@ pub const HIDE: Duration = Duration::from_millis(600);
 /// Fade in and out.
 pub const FADE: Duration = Duration::from_millis(150);
 
-/// How far a flush thumb (`PAD` in from the side) keeps from the box's top and bottom so its round
-/// ends stay whole inside a surface rounded `r`: shadcn's corners are small enough that `p-px` does
-/// (8 against a 3.5 end), ours (12) need 4.5. No cut, no gap at the side.
-pub fn ends_for(r: f32) -> f32 {
-    let half = THUMB / 2.;
-    let cx = PAD + half;
-    if r <= cx { return PAD; }
-    let reach = (r - half) * (r - half) - (r - cx) * (r - cx);
-    if reach <= 0. { return PAD; }
-    let i = r - half - reach.sqrt();
-    ((i * 2.).ceil() / 2.).max(PAD)
+/// How far the thumb keeps from the box's top and bottom inside a surface rounded `r`: the whole
+/// corner, then the same `PAD` it keeps from the side, so it runs only along the straight part of the
+/// edge and never into an arc, even at either end of its travel (as AppKit's `scrollerInsets` and
+/// GPUI Kit's inset pull it in; shadcn's runs flush and the corner clips it). Square: just `PAD`.
+pub fn ends_for(r: f32) -> f32 { if r > 0. { r + PAD } else { PAD } }
+
+/// How far the window's own corner curves in from its edges, for a box that runs into it (the page, a
+/// settings page, the home lists, a side panel): macOS draws a continuous corner whose curve starts 18
+/// from the corner (measured on macOS 27 with `deskshot`, 2026-11-25); Windows 11 rounds 8.
+pub const WINDOW_R: f32 = if cfg!(target_os = "macos") { 18. } else if cfg!(windows) { 8. } else { 0. };
+
+/// The room the thumb takes in from the box's right edge: `PAD`, then the thumb.
+pub const LANE: f32 = PAD + THUMB;
+/// What the box's content keeps clear of the thumb: a menu's `p-1`, as its rows keep from the edge.
+pub const GAP: f32 = 4.;
+
+/// How much more right padding a box needs, beyond `inset` its content already keeps from the right
+/// edge, for the content to stay `GAP` clear of the thumb's lane: nothing interactive (a row's hover
+/// or selected fill, a button, a field) under the thumb. A box that has the room already (the
+/// sidebar's 14) needs none.
+pub fn room_for(inset: f32) -> f32 { (LANE + GAP - inset).max(0.) }
+
+/// Makes `room` for the thumb on a box styled `style`: a width set in points grows by it (the lane goes
+/// outside the content, which keeps its own width), and so does a right padding set in points. Says
+/// whether the box's own right padding (none set) should take the room instead.
+pub fn widen(style: &mut StyleRefinement, room: f32) -> bool {
+    if room <= 0. { return false; }
+    let grow = |l: &mut Length| if let Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(w))) = l { *l = px(f32::from(*w) + room).into(); };
+    if let Some(w) = style.size.width.as_mut() { grow(w); }
+    if let Some(w) = style.min_size.width.as_mut() { grow(w); }
+    if let Some(w) = style.max_size.width.as_mut() { grow(w); }
+    match style.padding.right.as_mut() {
+        Some(DefiniteLength::Absolute(AbsoluteLength::Pixels(p))) => { *p = px(f32::from(*p) + room); false }
+        Some(_) => false,
+        None => true,
+    }
 }
 
-/// Paints a thumb at `thumb` (round-ended, `THUMB` wide) cut to `clip` rounded `r`: where the thumb
-/// passes the surface's corner it takes the corner's arc, as overflow-hidden on a rounded box cuts
-/// shadcn's. A thumb clear of the corners is a plain capsule.
-pub fn paint_thumb(window: &mut Window, thumb: Bounds<Pixels>, clip: Bounds<Pixels>, r: f32, color: Hsla) {
-    let (top, bottom) = (f32::from(thumb.top()), f32::from(thumb.bottom()));
-    let (ctop, cbottom, cright) = (f32::from(clip.top()), f32::from(clip.bottom()), f32::from(clip.right()));
-    let half = f32::from(thumb.size.width) / 2.;
-    if r <= 0. || (top >= ctop + r && bottom <= cbottom - r) {
-        window.paint_quad(fill(thumb, color).corner_radii(px(half)));
-        return;
-    }
-    let (x0, cx) = (f32::from(thumb.left()), f32::from(thumb.left()) + half);
-    // the thumb's and the surface's extent across, at height y
-    let across = |y: f32| -> Option<(f32, f32)> {
-        let cap = if y < top + half { Some(top + half - y) } else if y > bottom - half { Some(y - (bottom - half)) } else { None };
-        let (mut l, mut rt) = match cap { Some(d) if d >= half => return None, Some(d) => { let w = (half * half - d * d).sqrt(); (cx - w, cx + w) } None => (x0, x0 + 2. * half) };
-        let edge = if y < ctop + r { Some(ctop + r - y) } else if y > cbottom - r { Some(y - (cbottom - r)) } else { None };
-        if let Some(d) = edge { if d >= r { return None } rt = rt.min(cright - r + (r * r - d * d).sqrt()); }
-        l = l.min(rt);
-        (rt - l > 0.01).then_some((l, rt))
-    };
-    let (y0, y1) = (top.max(ctop), bottom.min(cbottom));
-    let n = (((y1 - y0) * 4.).ceil() as usize).max(2);
-    let rows: Vec<(f32, f32, f32)> = (0..=n).filter_map(|i| { let y = y0 + (y1 - y0) * i as f32 / n as f32; across(y).map(|(l, rt)| (y, l, rt)) }).collect();
-    if rows.len() < 2 { return; }
-    let mut path = PathBuilder::fill();
-    path.move_to(point(px(rows[0].1), px(rows[0].0)));
-    for &(y, l, _) in &rows[1..] { path.line_to(point(px(l), px(y))); }
-    for &(y, _, rt) in rows.iter().rev() { path.line_to(point(px(rt), px(y))); }
-    path.close();
-    if let Ok(path) = path.build() { window.paint_path(path, color); }
+/// Paints the thumb: a capsule (`ends_for` keeps it out of the corners).
+pub fn paint_thumb(window: &mut Window, thumb: Bounds<Pixels>, color: Hsla) {
+    window.paint_quad(fill(thumb, color).corner_radii(thumb.size.width / 2.));
+}
+
+thread_local! {
+    /// A scrollbar found its box overflowing when it was laid out as not (or the other way): the
+    /// box's room is a frame behind, and the popover around it skips this frame (`unsettled`).
+    static UNSETTLED: Cell<bool> = const { Cell::new(false) };
+    /// Whether a popover's box overflowed when last open, by the popover's id, so it opens with its
+    /// room already made.
+    static ROOMY: std::cell::RefCell<std::collections::HashMap<ElementId, bool>> = Default::default();
+}
+
+/// Runs `f` (a popover's prepaint) and says whether a scrollbar inside it found its room a frame
+/// behind: the popover then skips painting this frame and shows next frame, laid out right, rather
+/// than showing its rows wide for a frame and then narrowing them.
+pub fn unsettled(f: impl FnOnce()) -> bool {
+    let prev = UNSETTLED.with(|u| u.replace(false));
+    f();
+    UNSETTLED.with(|u| u.replace(prev))
 }
 
 /// The thumb's colour at `alpha` (shadcn `bg-border`).
@@ -168,19 +185,57 @@ pub struct ScrollBar {
     /// (held still so the thumb stays under the pointer as newly measured rows refine the estimate).
     grab: Cell<Option<(Pixels, Pixels, Pixels)>>,
     fade: Fade,
-    /// The radius of the surface the box fills (0: square), whose corners the thumb's ends keep clear of.
-    radius: Cell<f32>,
+    /// The radii of the corners by the box's top right and bottom right (0: square), which the thumb's
+    /// ends keep clear of (`ends_for`).
+    radius: Cell<(f32, f32)>,
     /// The pointer was over the box last paint.
     over: Cell<bool>,
     /// The pointer was on the thumb last paint.
     on_thumb: Cell<bool>,
     tone: Tone,
+    /// The box overflowed when last laid out: its content makes room for the thumb (`room`).
+    wide: Cell<bool>,
+    /// The popover whose box this is, to remember `wide` by when it closes (`ROOMY`).
+    memo: std::cell::RefCell<Option<ElementId>>,
 }
 
 impl ScrollBar {
     /// A scrollbar in a box that fills a surface rounded `r` (0 for a square box): flush to the side, its
     /// ends clear of the corners (`ends_for`).
-    pub fn rounded(r: f32) -> Self { let s = Self::default(); s.radius.set(r); s }
+    pub fn rounded(r: f32) -> Self { Self::corners(r, r) }
+    /// A scrollbar whose box's top right corner is rounded `top` and its bottom right `bottom` (a box
+    /// that runs down to the window's corner: `WINDOW_R`).
+    pub fn corners(top: f32, bottom: f32) -> Self { let s = Self::default(); s.radius.set((top, bottom)); s }
+
+    /// The scrollbar of popover `id`'s box: it opens with the room it needed when last open.
+    pub fn remembered(self, id: &ElementId) -> Self {
+        self.wide.set(ROOMY.with(|m| m.borrow().get(id).copied().unwrap_or(false)));
+        *self.memo.borrow_mut() = Some(id.clone());
+        self
+    }
+
+    /// The right padding the box adds, beyond the `inset` its content keeps from the right edge, so
+    /// its content stays clear of the thumb (`room_for`): only while it overflows, and then whether
+    /// the thumb shows or not, so nothing moves as it fades in and out (`scrollbar-gutter: stable`
+    /// with `overflow: auto`, as a classic scrollbar takes its room).
+    pub fn room(&self, inset: f32) -> f32 { if self.wide.get() { room_for(inset) } else { 0. } }
+
+    /// The box `el`, given its `room` (`widen`): last in the box's styling, after its own padding and width.
+    pub fn make_room<E: Styled>(&self, mut el: E, inset: f32) -> E {
+        let room = self.room(inset);
+        if widen(el.style(), room) { el = el.pr(px(room)); }
+        el
+    }
+
+    /// Notes whether the box overflows; a change has it laid out again (`room`), the popover around
+    /// it skipping this frame (`unsettled`).
+    fn overflows(&self, yes: bool, window: &mut Window) {
+        if self.wide.get() == yes { return; }
+        self.wide.set(yes);
+        if let Some(id) = self.memo.borrow().clone() { ROOMY.with(|m| m.borrow_mut().insert(id, yes)); }
+        UNSETTLED.with(|u| u.set(true));
+        window.request_animation_frame();
+    }
 
     pub fn render(self: &std::rc::Rc<Self>, handle: &ScrollHandle) -> impl IntoElement + use<> {
         let (list, list2) = (handle.clone(), handle.clone());
@@ -189,12 +244,14 @@ impl ScrollBar {
             move |_, window, _| {
                 let area = list.bounds();
                 let inset = px(PAD);
-                // flush to the side; at the ends just far enough that the round end clears the corner
-                let ends = px(ends_for(sb.radius.get()));
+                // flush to the side; at either end clear of the corner there
+                let (r_top, r_bottom) = sb.radius.get();
+                let (ends, ends_b) = (px(ends_for(r_top)), px(ends_for(r_bottom)));
                 let view = area.size.height;
                 let content = view + list.max_offset().y;
+                sb.overflows(content > view + px(1.), window);
                 if content <= view + px(1.) { return None; }
-                let track = (view - ends * 2.).max(px(1.));
+                let track = (view - ends - ends_b).max(px(1.));
                 let h = match sb.grab.get() { Some((_, _, h)) => h, None => (track * (view / content)).max(px(MIN)).min(track) };
                 let content = sb.grab.get().map_or(content, |(_, c, _)| c);
                 let offset = -list.offset().y;
@@ -216,7 +273,7 @@ impl ScrollBar {
                 let tone = sb.tone.step(if held { HELD } else if on_thumb { HOVER } else { 0. }, window, cx);
                 if a > 0. {
                     let thumb = Bounds::new(point(area.right() - inset - px(THUMB), top), size(px(THUMB), h));
-                    paint_thumb(window, thumb, area, sb.radius.get(), thumb_tone(tone, a));
+                    paint_thumb(window, thumb, thumb_tone(tone, a));
                 }
                 window.on_mouse_event({
                     let (sb, hitbox) = (sb.clone(), hitbox.clone());
@@ -236,7 +293,7 @@ impl ScrollBar {
                         match sb.grab.get() {
                             Some((dy, _, h)) if ev.pressed_button == Some(MouseButton::Left) => {
                                 let travel = (track - h).max(px(1.));
-                                let f = ((ev.position.y - dy - area.top() - px(ends_for(sb.radius.get()))) / travel).clamp(0., 1.);
+                                let f = ((ev.position.y - dy - area.top() - px(ends_for(sb.radius.get().0))) / travel).clamp(0., 1.);
                                 // At the end, the real bottom: rows there may not be measured yet.
                                 list.set_offset(point(list.offset().x, -list.max_offset().y * f));
                                 window.refresh();
@@ -259,9 +316,12 @@ impl ScrollBar {
                 });
             },
         )
+        // it paints from the box's bounds, not its own, and sits among the rows: the box counts its
+        // children's extent as its content, and a point at its top, above the top padding, had a menu
+        // that fits scroll by that padding
         .absolute()
-        .top_0()
-        .right_0()
+        .top(relative(0.5))
+        .left(relative(0.5))
         .size_0()
     }
 }
@@ -273,11 +333,29 @@ thread_local! {
     static BARS: std::cell::RefCell<std::collections::HashMap<&'static str, std::rc::Rc<ScrollBar>>> = Default::default();
 }
 
-/// The scrollbar of the box `handle` tracks, kept under `key`, in a surface rounded `r` (0: square):
-/// the box's last child (it paints over the box wherever the box is, and takes no room).
-pub fn bar(key: &'static str, handle: &ScrollHandle, r: f32) -> impl IntoElement + use<> {
-    BARS.with(|m| m.borrow_mut().entry(key).or_insert_with(|| std::rc::Rc::new(ScrollBar::rounded(r))).clone()).render(handle)
+fn keyed(key: &'static str, r: f32) -> std::rc::Rc<ScrollBar> { keyed_corners(key, r, r) }
+fn keyed_corners(key: &'static str, top: f32, bottom: f32) -> std::rc::Rc<ScrollBar> {
+    let b = BARS.with(|m| m.borrow_mut().entry(key).or_default().clone());
+    b.radius.set((top, bottom));
+    b
 }
+
+/// `bar` for a box whose top right corner is rounded `top` and bottom right `bottom` (`ScrollBar::corners`).
+pub fn bar_corners(key: &'static str, handle: &ScrollHandle, top: f32, bottom: f32) -> impl IntoElement + use<> { keyed_corners(key, top, bottom).render(handle) }
+
+/// The scrollbar of the box `handle` tracks, kept under `key`, in a surface rounded `r` (0: square):
+/// the box's last child (it paints over the box wherever the box is). Its room comes from `room`.
+pub fn bar(key: &'static str, handle: &ScrollHandle, r: f32) -> impl IntoElement + use<> { keyed(key, r).render(handle) }
+
+/// The right padding `key`'s box adds while it overflows, beyond the `inset` its content keeps from
+/// the right edge (`ScrollBar::room`).
+pub fn room(key: &'static str, inset: f32) -> Pixels { px(of(key).room(inset)) }
+
+/// `key`'s box `el`, given its room (`ScrollBar::make_room`); `inset` as `room` takes it.
+pub fn make_room<E: Styled>(el: E, key: &'static str, inset: f32) -> E { of(key).make_room(el, inset) }
+
+/// `key`'s scrollbar, as `bar` keeps it.
+fn of(key: &'static str) -> std::rc::Rc<ScrollBar> { BARS.with(|m| m.borrow_mut().entry(key).or_default().clone()) }
 
 /// A scroll handle kept under `key`, for a box with none of its own to `track_scroll` and give `bar`.
 pub fn handle(key: &'static str) -> ScrollHandle {

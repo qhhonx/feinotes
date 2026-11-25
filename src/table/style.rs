@@ -96,8 +96,10 @@ pub fn range_bg() -> Hsla { color::muted() }
 pub fn star() -> Hsla { crate::theme::c(crate::theme::craft::O350) }
 // 查找's hits and the current one: 飞书多维表格's two yellows, as the first 数据表 took them (4cf23b9).
 // The design system has no highlight token yet; these stay until it does.
-pub fn found_bg() -> Hsla { crate::theme::c(0xfff5c2) }
-pub fn found_current() -> Hsla { crate::theme::c(0xffd666) }
+// In the dark both are the yellow as a dim tint under the page's ink (`theme::mark`), the current
+// one the stronger: mirrored, the current one stayed a bright yellow under white text (1.5:1).
+pub fn found_bg() -> Hsla { if crate::theme::dark() { crate::theme::mark(crate::theme::rgbaf(0xff, 0xd6, 0x66, 0.35)) } else { crate::theme::c(0xfff5c2) } }
+pub fn found_current() -> Hsla { if crate::theme::dark() { crate::theme::mark(crate::theme::rgbaf(0xff, 0xd6, 0x66, 1.)) } else { crate::theme::c(0xffd666) } }
 
 /// Slots 10–19: 飞书's deeper row, (fill, text): 飞书多维表格's option palette as files store its
 /// slots (4cf23b9). The design system's chips cover the first ten only, so these keep their values.

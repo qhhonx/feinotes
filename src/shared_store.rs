@@ -7,6 +7,7 @@
 use crate::store::*;
 use crate::model::Document;
 use anyhow::Result;
+use fdl_core::vfs::PathExt as _;
 use fdl_core::home::{AddError, RenameError, TopFolder, Home};
 use std::{cell::RefCell, path::{Path, PathBuf}, rc::Rc, sync::{atomic::{AtomicBool, Ordering}, Arc}};
 
@@ -83,6 +84,26 @@ impl SharedStore {
         Ok(())
     }
     pub fn retry_folder(&self, key: &str) { self.0.borrow_mut().ws.retry(key) }
+    /// The top-level folders the window shows: those open (one gone from the disk is not shown).
+    pub fn shown_tops(&self) -> Vec<(String, String, PathBuf, Option<String>)> { self.top_folders().into_iter().filter(|r| r.3.is_none()).collect() }
+    /// Each top-level folder against the disk: one whose folder is gone (no `.quiet/format.json`
+    /// any more) closes and leaves the window; one gone before that is back opens again.
+    /// The keys lost and found.
+    pub fn check_presence(&self) -> (Vec<String>, Vec<String>) {
+        let mut sh = self.0.borrow_mut();
+        let here = |p: &Path| p.join(crate::store::INTERNAL).join("format.json").fs_exists();
+        let lost: Vec<String> = sh.ws.folders.iter().filter(|r| r.store.is_some() && !here(&r.path)).map(|r| r.key.clone()).collect();
+        let back: Vec<String> = sh.ws.folders.iter().filter(|r| r.store.is_none() && here(&r.path)).map(|r| r.key.clone()).collect();
+        for k in &lost { sh.ws.lose(k, crate::settings::tr("文件夹不在原来的位置了", "The folder is no longer where it was").to_string()); sh.entries.retain(|(e, _)| e != k); }
+        for k in &back { sh.ws.retry(k); }
+        let back = back.into_iter().filter(|k| sh.ws.store(k).is_some()).collect();
+        (lost, back)
+    }
+    /// The window's rows from what was last listed, without reading the disk.
+    pub fn listed_rows(&self) -> Vec<Entry> {
+        let all: Vec<Entry> = self.0.borrow().entries.iter().flat_map(|(_, v)| v.iter().cloned()).collect();
+        self.with_top_rows(all)
+    }
     /// 重命名 a top-level folder: its folder on disk (2.11). Ids and the key stay.
     pub fn rename_folder_top(&self, key: &str, name: &str) -> std::result::Result<PathBuf, RenameError> {
         let mut sh = self.0.borrow_mut();
@@ -225,7 +246,8 @@ impl SharedStore {
             // Its place at the top of its top-level folder, now that it sits in the top-level folder's row.
             e.meta.order = e.meta.top_order.unwrap_or(0);
         }
-        for (i, (key, name, _, _)) in self.top_folders().into_iter().enumerate() {
+        // a top-level folder gone from the disk has no row (`check_presence`)
+        for (i, (key, name, _, _)) in self.shown_tops().into_iter().enumerate() {
             let meta = Meta { folder: Some(name.clone()), top_order: Some(i as u64 + 1), ..Default::default() };
             entries.push(Entry { id: top_row(&key), meta, title: name, icon: None, body: Default::default(), reminders: vec![], links: vec![], note: None, top: key });
         }

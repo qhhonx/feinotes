@@ -29,6 +29,8 @@ pub enum EditorEvent {
     /// A 子页面列表 item or an @文档 link was clicked.
     OpenDoc(String),
     OpenRelative(String),
+    /// An attachment Quiet.md edits itself (`local_files::opens_here`): in a window of its own.
+    OpenFile(std::path::PathBuf),
     /// A 反向引用 line: that document, scrolled to its nth block.
     OpenDocAt(String, usize),
     /// The reference list's close button.
@@ -604,6 +606,7 @@ impl Editor {
     pub fn receive_document(&mut self, core: &Core, cx: &mut Context<Self>) {
         let sel = self.core.sel;
         let generation = self.core.generation;
+        let board_at = self.open_board_at();
         self.core = core.clone();
         self.core.sel = sel;
         self.core.block_sel = None;
@@ -620,6 +623,7 @@ impl Editor {
         self.slash = None;
         self.cat_generation = None;
         self.ro_doc = self.read_only.then(|| self.core.doc.clone());
+        self.follow_open_board(board_at, cx);
         self.refresh_find(false, cx);
         cx.notify();
     }

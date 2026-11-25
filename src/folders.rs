@@ -1,6 +1,5 @@
 use crate::app::{View, Workspace};
 use crate::settings::{display_title, tr};
-use crate::theme::Theme;
 use crate::ui::{TipExt, TitleBarExt, icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 
@@ -124,7 +123,7 @@ impl Workspace {
 
     /// The first top-level folder's page, shown as the window first opens (after 开始使用).
     pub(crate) fn show_first_folder(&mut self, cx: &mut Context<Self>) {
-        let Some(key) = self.store.top_folders().first().map(|r| r.0.clone()) else { return };
+        let Some(key) = self.store.shown_tops().first().map(|r| r.0.clone()) else { return };
         let row = crate::shared_store::top_row(&key);
         self.folder_current = Some(row.clone());
         self.view = View::Folder;
@@ -225,7 +224,7 @@ impl Workspace {
         let id = id.to_string();
         let title = self.entries.iter().find(|e| e.id == id).map(|e| display_title(&e.title)).unwrap_or_else(|| tr("文件夹", "Folder").to_string());
         // 我的文档 › … › parent › this folder; a long path folds its middle into "…".
-        let sep = || div().mx(px(3.)).flex_none().child(icon("chevron-right", 12., Theme::text_caption()));
+        let sep = || div().mx(px(3.)).flex_none().child(icon("chevron-right", 12., crate::ui::crumb_ink()));
         // A top-level folder's own row (two or more top-level folders) is the first crumb, by name.
         let path: Vec<_> = self.ancestors(&id).into_iter().filter(|e| crate::shared_store::top_of_row(&e.id).is_none()).collect();
         // a long path folds its middle into a "…" that opens the folded crumbs
@@ -239,7 +238,7 @@ impl Workspace {
         let link = |key: String, label: String, target: Option<String>| {
             div().id(SharedString::from(format!("folder-crumb-{key}"))).no_drag().flex_none().max_w(px(220.)).px(px(4.)).rounded(px(6.))
                 .overflow_hidden().whitespace_nowrap().text_ellipsis().cursor_pointer()
-                .text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::text()))
+                .text_color(crate::ui::crumb_ink()).hover(|s| s.text_color(crate::ui::crumb_page()))
                 .child(ui_text(label))
                 .on_click(cx.listener(move |w, _, window, cx| match &target { Some(t) => w.open(t, window, cx), None => w.show_view(View::Home, cx) }))
         };
@@ -259,7 +258,7 @@ impl Workspace {
             crumbs = crumbs.child(sep()).child(link(e.id.clone(), display_title(&e.title), Some(e.id.clone())));
         }
         crumbs.child(sep()).child(div().min_w_0().px(px(4.)).overflow_hidden().whitespace_nowrap().text_ellipsis()
-            .text_color(Theme::text_caption()).child(ui_text(title)))
+            .text_color(crate::ui::crumb_page()).child(ui_text(title)))
     }
 
     /// A folder's page: one header row (the path on the left, the actions on
@@ -306,7 +305,7 @@ impl Workspace {
         let path = hidden.iter().map(|c| c.0.as_str()).collect::<Vec<_>>().join(" / ");
         let open = self.crumb_menu.is_some();
         div().id(key).no_drag().relative().flex_none().size(px(20.)).flex().items_center().justify_center().rounded(px(4.)).cursor_pointer()
-            .text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::text())).when(open, |d| d.text_color(Theme::text()))
+            .text_color(crate::ui::crumb_ink()).hover(|s| s.text_color(crate::ui::crumb_page())).when(open, |d| d.text_color(crate::ui::crumb_page()))
             .child(self.home.track(key)).child("…")
             .when(!open, |d| d.tip(&path, None))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

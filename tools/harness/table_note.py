@@ -39,17 +39,17 @@ CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO _meta VALUES 
 db.commit()
 db.close()
 
-# where things are in a 1300×850 window (light theme, Chinese)
+# where things are in a 1300×850 window (light theme, Chinese); the sheet starts at the header's foot (48)
 TABLE_ROW = "62 166"            # 书单 in the sidebar: the first row, its notes under it once it has some
-ADD_FIELD = "828 111"            # 「+」: a 文本 column at once, its name ready to type
-NEW_TYPE = "845 111"            # the new column's type, after its name: its settings
-TYPE_BOX = "1002 257"
-TYPE_NOTE = "897 559"           # 笔记, the type list scrolled to its end
-NOTE_1, NOTE_2 = "845 149", "845 185"   # the 笔记 cells of rows 1 and 2
-PANEL_CLOSE = "1265 124"
-NOTE_BODY, NOTE_TITLE = "885 581", "830 223"
-NOTE_FULL = "1229 124"
-UNDO = "720 77"                 # the table's own ↶ (⌘Z after a rename in the sidebar undoes the rename)
+ADD_FIELD = "828 103"            # 「+」: a 文本 column at once, its name ready to type
+NEW_TYPE = "845 103"            # the new column's type, after its name: its settings
+TYPE_BOX = "1002 249"
+TYPE_NOTE = "897 551"           # 笔记, the type list scrolled to its end
+NOTE_1, NOTE_2 = "845 141", "845 177"   # the 笔记 cells of rows 1 and 2
+PANEL_CLOSE = "1265 116"
+NOTE_BODY, NOTE_TITLE = "885 573", "830 215"
+NOTE_FULL = "1229 116"
+UNDO = "720 69"                 # the table's own ↶ (⌘Z after a rename in the sidebar undoes the rename)
 
 OPEN = f"""click {TABLE_ROW}
 wait 1200
@@ -63,10 +63,10 @@ click {NEW_TYPE}
 wait 500
 click {TYPE_BOX}
 wait 300
-move 1002 412
-wheel 1002 412 600
+move 1002 404
+wheel 1002 404 600
 wait 100
-wheel 1002 412 600
+wheel 1002 404 600
 wait 300
 shot types
 click {TYPE_NOTE}
@@ -159,7 +159,7 @@ wait 200
 rclick {NOTE_1}
 wait 400
 shot cell-menu
-click 908 401
+click 908 393
 wait 500
 shot ask
 click 797 464
@@ -178,10 +178,10 @@ more = run("point", OPEN + ADD_COLUMN + WRITE + f"""click {NOTE_2}
 wait 200
 rclick {NOTE_2}
 wait 400
-click 921 305
+click 921 297
 wait 500
 shot pick
-click 913 306
+click 913 298
 wait 500
 move 1200 800
 shot pointed
@@ -220,7 +220,7 @@ key enter
 wait 2800
 move 1200 800
 shot sidebar-renamed
-click 634 185
+click 634 177
 wait 200
 type 大刘
 key enter

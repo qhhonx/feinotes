@@ -253,7 +253,7 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(head)
                     .child(crate::design::Separator::new())
-                    .child(div().id("tb-rec-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-rec-body")).px(px(40.)).pb(px(24.)).child(list).child(crate::design::scroll::bar("tb-rec-body", &crate::design::scroll::handle("tb-rec-body"), 0.)))
+                    .child(div().id("tb-rec-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-rec-body")).px(px(40.)).pb(px(24.)).child(list).child(crate::design::scroll::bar_corners("tb-rec-body", &crate::design::scroll::handle("tb-rec-body"), 0., crate::design::geo().dialog_r)))
                     .children(menu)))).with_priority(4).into_any_element();
     }
     let panel = div().id("tb-record").relative().flex_none().w(px(notes::panel_w(v))).h_full().flex().flex_col().bg(Theme::bg_body()).border_l_1().border_color(line());
@@ -262,7 +262,7 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
     panel
         .child(head)
         .child(crate::design::Separator::new())
-        .child(div().id("tb-rec-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-rec-body")).child(list).child(crate::design::scroll::bar("tb-rec-body", &crate::design::scroll::handle("tb-rec-body"), 0.)))
+        .child(div().id("tb-rec-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-rec-body")).child(list).child(crate::design::scroll::bar_corners("tb-rec-body", &crate::design::scroll::handle("tb-rec-body"), 0., crate::design::scroll::WINDOW_R)))
         .child(notes::grip(v, cx))
         .children(menu)
         .into_any_element()

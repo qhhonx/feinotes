@@ -33,7 +33,7 @@
 | `button.rs` | `Button` + `ButtonVariant`（Primary / Outline / Secondary / Ghost / Destructive / Link）+ `ButtonSize`（Lg 40 / Default 36 / Sm 32 / Tool 28 / Xs 24）；`icon`、`icon_end`、`label`、`selected`、`disabled`、`variant` | Button |
 | `card.rs` | `Card`、`Item`、`Separator`、`Toast` + `ToastTone` | Card、Item、Separator、Sonner |
 | `menu.rs` | `Popover`（`.menu()`、`.padded()`）、`MenuItem`、`MenuLabel`、`MenuSeparator`；常量 `menu::PAD`、`ROW_H`、`SEP_H`、`LABEL_H` 给算子菜单位置用 ；`MenuItem::switch(on)`（带开关的行：点了只切换，菜单留着，Esc 和点外面才关）；`hang`（按钮菜单挂在量到的按钮下 4、`Align::Start / End`、放不下翻上去）、`room` + `Popover::fit`（放不下时限高、滚动） | DropdownMenu、Popover |
-| `scroll.rs` | `ScrollBar`（`render(&handle)`，`rounded(r)`：框铺满一个圆角 r 的面时，上下让出 `ends_for(r)`，圆头不碰圆角）、`scroll::bar(key, &handle, r)`（给任何 `overflow_y_scroll` 框挂上，放在框的最后一个子元素）、`Fade`、`THUMB` / `PAD` / `thumb_color`（页面和宽表格自己的滚动条也用） | ScrollArea、ScrollBar |
+| `scroll.rs` | `ScrollBar`（`render(&handle)`；`rounded(r)` / `corners(top, bottom)`：上下各让出整个圆角加 1，`ends_for`，贴窗口角的用 `WINDOW_R`；`make_room(el, inset)` / `room(inset)`：框溢出时右边让出滚动条通道，`inset` 是内容本来离右边的距离，定宽的框加宽）、`scroll::bar(key, &handle, r)` / `bar_corners`（给任何 `overflow_y_scroll` 框挂上，放在框的最后一个子元素）和 `scroll::make_room(el, key, inset)`（同一个框，放在它样式的最后）、`Fade`、`THUMB` / `PAD` / `thumb_color`（页面和宽表格自己的滚动条也用）。`Popover::fit` 自己做好这些，内容不是菜单行时用 `.inset(x)` 说明 | ScrollArea、ScrollBar |
 | `field.rs` | `Field`（`Field::select`、`Field::select_value`，`FieldSize`）、`Textarea`、`Label` | Input、SelectTrigger、Textarea、Label |
 | `control.rs` | `Checkbox`（含半选）、`Radio`、`Switch`（`.keyed(id)`：切换时滑过去）、`Segmented` + `Segment`（可带图标） | Checkbox、RadioGroupItem、Switch、Tabs |
 | `badge.rs` | `Badge`（`new` / `primary` / `outline` / `destructive`、`chip(i)`、`colored`、`closable`）、`Kbd`、`KbdGroup` | Badge、Kbd、KbdGroup |

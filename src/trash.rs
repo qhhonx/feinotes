@@ -6,7 +6,7 @@ use crate::app::{Confirm, ConfirmCancel, ConfirmOk, Workspace};
 use crate::settings::display_title;
 use crate::search::doc_icon;
 use crate::store::{TRASH_DAYS, TrashEntry};
-pub(crate) use crate::ui::{ToastKind, list_header_text, list_line, row_hover};
+pub(crate) use crate::ui::{ToastKind, list_header_text, row_hover, row_line};
 use crate::design::{Button, ButtonSize, Checkbox, Dialog};
 use crate::theme::{self, Theme};
 use crate::ui::{ROW_RADIUS, TipExt, TitleBarExt, icon, ui_text};
@@ -63,6 +63,16 @@ pub(crate) fn page_header_with(ws: &Workspace, title: impl IntoElement, left: f3
 }
 
 /// Centred empty-state illustration and caption.
+/// An illustration in the app's look: `illus/dark/…` beside `illus/…` holds the dark one (light greys
+/// mirrored to deep ones), so a white bin doesn't glow on a dark page.
+pub(crate) fn illus_for(path: &'static str) -> SharedString {
+    if crate::theme::dark() && let Some(name) = path.strip_prefix("illus/") {
+        let dark = format!("illus/dark/{name}");
+        if crate::assets::get(&dark).is_some() { return dark.into() }
+    }
+    path.into()
+}
+
 pub(crate) fn empty_state(illus: &'static str, text: &'static str) -> Div {
     div()
         .flex_1()
@@ -71,7 +81,7 @@ pub(crate) fn empty_state(illus: &'static str, text: &'static str) -> Div {
         .items_center()
         .justify_center()
         .pb(px(64.))
-        .child(img(illus).size(px(120.)))
+        .child(img(illus_for(illus)).size(px(120.)))
         .child(div().mt(px(16.)).text_size(px(13.)).line_height(px(20.)).text_color(Theme::text_caption()).child(text))
 }
 
@@ -109,6 +119,11 @@ impl Workspace {
                 .text_color(list_header_text())
                 .child(crate::settings::label(label))
         };
+        // A row is lit while hovered or holding its menu; the lines touching it hide.
+        let lit = |i: usize| self.trash.get(i).is_some_and(|t| {
+            self.home.list_hover.as_ref().is_some_and(|h| *h == format!("trash-row-{}", t.id))
+                || self.trash_menu.as_ref().is_some_and(|(m, _, _)| *m == t.id)
+        });
         let table_header = div()
             .h(px(33.))
             .flex_none()
@@ -116,7 +131,7 @@ impl Workspace {
             .flex()
             .items_center()
             .border_b_1()
-            .border_color(list_line())
+            .border_color(row_line(lit(0)))
             .child(col(None, "标题"))
             .child(col(Some(168.), "位置"))
             .child(col(Some(168.), "剩余时间"))
@@ -142,15 +157,17 @@ impl Workspace {
                     w.trash_menu = Some((id.clone(), pos, corner));
                     cx.notify();
                 }));
+            let key = SharedString::from(format!("trash-row-{}", t.id));
             list = list.child(
                 div()
-                    .id(SharedString::from(format!("trash-row-{}", t.id)))
+                    .id(key.clone())
                     .h(px(56.))
                     .flex()
                     .items_center()
-                    .when(i > 0, |d| d.border_t_1().border_color(list_line()))
+                    .when(i > 0, |d| d.border_t_1().border_color(row_line(lit(i - 1) || lit(i))))
                     .hover(row_hover)
-                    .when(menu_open, |d| d.bg(Theme::fill_hover()).border_color(transparent_black()).rounded(px(ROW_RADIUS)))
+                    .on_hover(cx.listener(move |w, on: &bool, _, cx| if w.home.hover_row(&key, *on) { cx.notify() }))
+                    .when(menu_open, |d| d.bg(Theme::fill_hover()).rounded(px(ROW_RADIUS)))
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
@@ -179,7 +196,7 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap(px(4.))
-                            .child(icon("library", 16., Theme::icon()))
+                            .child(icon("folder", 16., Theme::icon()))
                             .child(div().min_w_0().text_size(px(13.)).text_color(Theme::text_caption()).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(self.trash_location(t)))),
                     )
                     .child(div().w(px(168.)).flex_none().pl(px(20.)).text_size(px(13.)).text_color(Theme::text_caption()).child(remaining(t.deleted)))

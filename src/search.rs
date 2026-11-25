@@ -309,7 +309,10 @@ pub(crate) fn extra_line(e: &Entry) -> Div {
     if e.meta.opened > 0 {
         extra.push(extra_segment(Some("eye"), crate::localized_format!("你在 {}打开过", "Opened {}", format_visit(e.meta.opened))));
     }
-    extra.push(extra_segment(Some("pen-line"), crate::localized_format!("我在 {}修改过", "Modified {}", format_visit(e.meta.modified))));
+    // a row with no modified time (a folder never written) says nothing rather than 1970
+    if e.meta.modified > 0 {
+        extra.push(extra_segment(Some("pen-line"), crate::localized_format!("我在 {}修改过", "Modified {}", format_visit(e.meta.modified))));
+    }
     let last = extra.len() - 1;
     let extra = extra.into_iter().enumerate().flat_map(|(i, seg)| {
         let seg = if i == last { seg.flex_shrink_1().min_w_0().overflow_hidden() } else { seg };
@@ -427,7 +430,8 @@ impl Workspace {
     /// [`Self::search_results`] as indices into `entries`.
     fn search_rows(&self, q: &str) -> Vec<usize> {
         if q.is_empty() {
-            let mut recent: Vec<usize> = (0..self.entries.len()).filter(|&i| self.entries[i].note.is_none()).collect();
+            // An attachment opened in its own window belongs to its page, not to 最近浏览.
+            let mut recent: Vec<usize> = (0..self.entries.len()).filter(|&i| self.entries[i].note.is_none() && !self.entries[i].meta.attachment()).collect();
             recent.sort_by_key(|&i| std::cmp::Reverse(self.entries[i].meta.opened.max(self.entries[i].meta.modified)));
             recent.truncate(RECENT);
             return recent;
@@ -548,6 +552,8 @@ impl Workspace {
             .flex_col()
             .overflow_y_scroll()
             .track_scroll(&self.search_scroll);
+        // the rows keep 6 from the side: while the list scrolls, the scrollbar's lane beside them
+        list = self.home.search_scrollbar.make_room(list, 6.);
         if q.is_empty() && !results.is_empty() {
             list = list.child(
                 div()
@@ -632,7 +638,7 @@ impl Workspace {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(input)
             .child(Separator::new())
-            // The thumb sits in the list's right padding, over no row.
+            // The thumb sits in the list's right padding (`make_room`), over no row.
             .child(div().flex_1().min_h_0().relative().flex().flex_col().child(list).child(self.home.search_scrollbar.render(&self.search_scroll)))
             .child(footer);
 
