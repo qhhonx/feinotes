@@ -141,13 +141,13 @@ pub(crate) fn select_popup(v: &TableView, t: &Table, rec: RecId, fid: FieldId, e
     let query = v.aux.read(cx).text.trim().to_lowercase();
     let shown: Vec<&SelectOption> = f.opts.options.iter().filter(|o| query.is_empty() || o.name.to_lowercase().contains(&query)).collect();
     let exact = f.opts.options.iter().any(|o| o.name.to_lowercase() == query);
-    let mut list = div().id("tb-select-list").max_h(px(280.)).overflow_y_scroll().flex().flex_col();
+    let mut list = div().id("tb-select-list").max_h(px(280.)).overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-select-list")).flex().flex_col();
     for o in shown {
         let (oid, on, name) = (o.id, chosen.contains(&o.id), o.name.clone());
         list = list.child(div().id(("tb-opt", oid)).group("tb-opt").flex_none().h(px(32.)).mx(px(4.)).px(px(8.)).flex().items_center().gap(px(8.)).rounded(px(crate::design::geo().menu_row_r)).cursor_pointer()
             .hover(|s| s.bg(Theme::fill_hover()))
             .child(div().flex_1().min_w_0().flex().child(if person { super::style::person(&o.name, o.color).into_any_element() } else { tag(&o.name, o.color).into_any_element() }))
-            .when(on, |d| d.child(icon("check", 14., Theme::primary())))
+            .when(on, |d| d.child(icon("check", 14., crate::design::color::foreground())))
             .child(div().id(("tb-opt-more", oid)).flex_none().size(px(22.)).rounded(px(4.)).flex().items_center().justify_center().invisible().group_hover("tb-opt", |s| s.visible())
                 .hover(|s| s.bg(Theme::fill_hover_strong())).child(icon("ellipsis", 14., Theme::icon()))
                 .on_mouse_down(MouseButton::Left, cx.listener(move |v, _, window, cx| {
@@ -162,7 +162,7 @@ pub(crate) fn select_popup(v: &TableView, t: &Table, rec: RecId, fid: FieldId, e
     if !query.is_empty() && !exact {
         let name = v.aux.read(cx).text.trim().to_string();
         let slot = (f.opts.options.len() % 10) as u8;
-        list = list.child(list_row("tb-opt-new").cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+        list = list.child(list_row("tb-opt-new")
             .child(icon("plus", 14., Theme::icon())).child(div().flex_none().text_color(Theme::text_caption()).child(crate::settings::label(if person { "添加人员" } else { "新建选项" })))
             .child(if person { super::style::person(&name, slot).into_any_element() } else { tag(&name, slot).into_any_element() })
             .on_click(cx.listener(move |v, _, window, cx| {
@@ -174,7 +174,7 @@ pub(crate) fn select_popup(v: &TableView, t: &Table, rec: RecId, fid: FieldId, e
     }
     shell
         .child(div().px(px(8.)).pb(px(6.)).child(input_box("tb-opt-search").child(icon("search", 14., Theme::text_placeholder())).gap(px(6.)).child(div().flex_1().child(v.aux.clone()))))
-        .child(list)
+        .child(list.child(crate::design::scroll::bar("tb-select-list", &crate::design::scroll::handle("tb-select-list"), 0.)))
         .into_any_element()
 }
 
@@ -184,8 +184,7 @@ pub(crate) fn date_popup(_v: &TableView, t: &Table, rec: RecId, fid: FieldId, ye
     let cur_day = cur.map(|d| { let (y, m, d, ..) = field::date_parts(d); (y, m, d) });
     let time = cur.map(|d| { let (.., h, mi) = field::date_parts(d); (h, mi) }).unwrap_or((0, 0));
     let (ty, tm, td, ..) = field::date_parts(field::today());
-    let nav = |id: &'static str, glyph: &'static str, by: i32| div().id(id).size(px(24.)).rounded(px(4.)).flex().items_center().justify_center().cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
-        .child(icon(glyph, 14., Theme::icon()))
+    let nav = |id: &'static str, glyph: &'static str, by: i32| mini_btn(id, glyph)
         .on_click(cx.listener(move |v, _, _, cx| {
             if let Some((_, Popup::Date { year, month, .. })) = v.popup.as_mut() {
                 let m = *month as i32 - 1 + by;
@@ -212,8 +211,8 @@ pub(crate) fn date_popup(_v: &TableView, t: &Table, rec: RecId, fid: FieldId, ye
             let (today, on) = ((year, month, d) == (ty, tm, td), cur_day == Some((year, month, d)));
             row = row.child(div().id(("tb-day", d as usize)).size(px(32.)).flex().items_center().justify_center().cursor_pointer()
                 .child(div().size(px(28.)).rounded_full().flex().items_center().justify_center()
-                    .when(on, |x| x.bg(Theme::primary()).text_color(Theme::bg_body()))
-                    .when(today && !on, |x| x.border_1().border_color(Theme::primary()).text_color(Theme::primary()))
+                    .when(on, |x| x.bg(crate::design::color::primary()).text_color(crate::design::color::primary_foreground()))
+                    .when(today && !on, |x| x.border_1().border_color(crate::design::color::foreground()).text_color(crate::design::color::foreground()))
                     .when(!on, |x| x.hover(|s| s.bg(Theme::fill_hover())))
                     .child(format!("{d}")))
                 .on_click(cx.listener(move |v, _, window, cx| set(v, Value::Date(field::date_ms(year, month, d, time.0, time.1)), window, cx))));
@@ -227,10 +226,8 @@ pub(crate) fn date_popup(_v: &TableView, t: &Table, rec: RecId, fid: FieldId, ye
         .child(grid)
         .child(menu_rule())
         .child(div().px(px(12.)).flex().items_center().justify_between()
-            .child(div().id("tb-date-today").h(px(26.)).px(px(8.)).rounded(px(4.)).flex().items_center().cursor_pointer().text_color(Theme::primary()).hover(|s| s.bg(Theme::fill_hover()))
-                .child(crate::settings::label("今天")).on_click(cx.listener(move |v, _, window, cx| set(v, Value::Date(field::today()), window, cx))))
-            .child(div().id("tb-date-clear").h(px(26.)).px(px(8.)).rounded(px(4.)).flex().items_center().cursor_pointer().text_color(Theme::text_caption()).hover(|s| s.bg(Theme::fill_hover()))
-                .child(crate::settings::label("清除")).on_click(cx.listener(move |v, _, window, cx| set(v, Value::Empty, window, cx)))))
+            .child(crate::design::Button::ghost("tb-date-today").sized(crate::design::ButtonSize::Xs).label(crate::settings::label("今天")).on_click(cx.listener(move |v, _, window, cx| set(v, Value::Date(field::today()), window, cx))))
+            .child(crate::design::Button::ghost("tb-date-clear").sized(crate::design::ButtonSize::Xs).label(crate::settings::label("清除")).on_click(cx.listener(move |v, _, window, cx| set(v, Value::Empty, window, cx)))))
         .into_any_element()
 }
 
@@ -241,7 +238,7 @@ pub(crate) fn links_popup(v: &TableView, base: &Base, t: &Table, rec: RecId, fid
     let linked: Vec<RecId> = match r.get(fid) { Value::Links(l) => l.clone(), _ => vec![] };
     let query = v.aux.read(cx).text.trim().to_lowercase();
     let single = f.opts.single;
-    let mut list = div().id("tb-links-list").max_h(px(320.)).overflow_y_scroll().flex().flex_col();
+    let mut list = div().id("tb-links-list").max_h(px(320.)).overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-links-list")).flex().flex_col();
     let mut shown = 0;
     for o in &other.records {
         let title = other.title(o);
@@ -250,7 +247,7 @@ pub(crate) fn links_popup(v: &TableView, base: &Base, t: &Table, rec: RecId, fid
         shown += 1;
         if shown > 200 { break; }
         let (oid, on) = (o.id, linked.contains(&o.id));
-        list = list.child(list_row(("tb-link", oid as usize)).h(px(34.)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
+        list = list.child(list_row(("tb-link", oid as usize))
             .child(checkbox(on))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().when(title.is_empty(), |d| d.text_color(Theme::text_placeholder()))
                 .child(ui_text(if title.is_empty() { crate::settings::label("未命名记录") } else { title })))
@@ -269,7 +266,7 @@ pub(crate) fn links_popup(v: &TableView, base: &Base, t: &Table, rec: RecId, fid
     close_on_out(crate::design::Popover::new("tb-links").w(px(320.)).py(px(6.)), cx)
         .child(div().px(px(12.)).pb(px(6.)).text_size(px(12.)).text_color(Theme::text_caption()).child(format!("{}「{}」", crate::settings::label("关联到"), other.name)))
         .child(div().px(px(8.)).pb(px(6.)).child(input_box("tb-link-search").child(icon("search", 14., Theme::text_placeholder())).gap(px(6.)).child(div().flex_1().child(v.aux.clone()))))
-        .child(list)
+        .child(list.child(crate::design::scroll::bar("tb-links-list", &crate::design::scroll::handle("tb-links-list"), 0.)))
         .into_any_element()
 }
 

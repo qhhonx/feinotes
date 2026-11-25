@@ -212,7 +212,7 @@ pub(crate) fn import_file(store: &mut crate::store::Store, p: &Path, parent: Opt
         _ if crate::local_files::is_markdown_path(p) => import_markdown(store, p, None, parent),
         e if MARKDOWN_EXTS.contains(&e) => markdown_document(p, &crate::store::Store::assets_in(store.top_dir())).map_err(anyhow::Error::from).and_then(|doc| store.create_from_in(&doc, parent)),
         "xml" => store.import_into(p, parent),
-        "csv" | "tsv" if crate::DATATABLE => import_csv(store, p, parent),
+        "csv" | "tsv" => import_csv(store, p, parent),
         _ => Err(anyhow::anyhow!("文件格式不支持")),
     }?;
     keep_times(store, &id, p);
@@ -287,7 +287,7 @@ fn save_path(name: &str, cx: &mut App) -> impl std::future::Future<Output = Opti
 /// scripted answer.
 fn open_paths(cx: &mut App) -> impl std::future::Future<Output = Option<Vec<PathBuf>>> + use<> {
     let picked = crate::devtools::take_pick();
-    let extensions = Some(MARKDOWN_EXTS.iter().chain(&["xml", "csv", "tsv"]).filter(|e| crate::DATATABLE || !matches!(**e, "csv" | "tsv")).map(|e| SharedString::from(*e)).collect());
+    let extensions = Some(MARKDOWN_EXTS.iter().chain(&["xml", "csv", "tsv"]).map(|e| SharedString::from(*e)).collect());
     let prompt = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some(crate::settings::text("导入").into()), extensions }));
     async move {
         match prompt {
@@ -298,7 +298,7 @@ fn open_paths(cx: &mut App) -> impl std::future::Future<Output = Option<Vec<Path
 }
 
 /// A CSV or TSV file, imported as a 数据表 (only while they are offered).
-pub(crate) fn is_csv_path(p: &Path) -> bool { crate::DATATABLE && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("csv") || x.eq_ignore_ascii_case("tsv")) }
+pub(crate) fn is_csv_path(p: &Path) -> bool { p.extension().is_some_and(|x| x.eq_ignore_ascii_case("csv") || x.eq_ignore_ascii_case("tsv")) }
 
 /// A CSV or TSV file as a new 数据表 file named after it: the first row
 /// names the columns, each column's type is guessed from its cells.
@@ -850,7 +850,7 @@ impl Workspace {
             },
             item("import-xml", "doc", crate::settings::tr("导入 DocxXML…", "Import DocxXML…"), ImportKind::DocxXml),
         ];
-        if crate::DATATABLE { out.push(item("import-csv", "datatable", crate::settings::tr("从 CSV 新建数据表…", "New Data Table from CSV…"), ImportKind::Csv)); }
+        out.push(item("import-csv", "datatable", crate::settings::tr("从 CSV 新建数据表…", "New Data Table from CSV…"), ImportKind::Csv));
         out
     }
 
@@ -1290,7 +1290,7 @@ mod tests {
     fn imported_files_keep_their_times() {
         let (tmp, from, mut store) = places("files");
         let mut files = vec![("周报.md", "# 周报\n\nbody\n"), ("notes.markdown", "body"), ("plain.txt", "body"), ("page.xml", "<doc><title>page</title><body><p>body</p></body></doc>")];
-        if crate::DATATABLE { files.push(("rows.csv", "name,n\na,1\n")); }
+        files.push(("rows.csv", "name,n\na,1\n"));
         for (k, (name, text)) in files.iter().enumerate() {
             let src = from.join(name);
             let t = THEN + k as u64 * 1000;

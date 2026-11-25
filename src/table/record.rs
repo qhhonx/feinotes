@@ -43,12 +43,15 @@ pub(crate) fn open(v: &mut TableView, rec: RecId, window: &mut Window, cx: &mut 
         v.record.input = Some(input);
     }
     v.record.menu = None;
+    // the record's fields: a note open in the panel gives way (a 笔记 cell opens its note after this)
+    notes::close(v, cx);
     v.expanded = Some(rec);
     cx.notify();
 }
 
-fn close(v: &mut TableView, window: &mut Window, cx: &mut Context<TableView>) {
+pub(crate) fn close(v: &mut TableView, window: &mut Window, cx: &mut Context<TableView>) {
     commit(v, true, window, cx);
+    notes::close(v, cx);
     v.record.menu = None;
     v.expanded = None;
     cx.notify();
@@ -101,6 +104,7 @@ fn activate(v: &mut TableView, cell: CellId, at: Point<Pixels>, window: &mut Win
         FieldType::Date => editors::open_date(v, cell, under, cx),
         FieldType::Link => editors::open_links(v, cell, under, window, cx),
         FieldType::Attachment => v.open_popup(under, Popup::Files { rec: cell.0, field: cell.1 }, cx),
+        FieldType::Note => notes::open_cell(v, cell, under, window, cx),
         // the stars take their own clicks
         FieldType::Rating => {}
         _ => begin(v, cell, window, cx),
@@ -115,6 +119,7 @@ fn placeholder(ty: FieldType) -> &'static str {
         FieldType::Date => "请选择日期",
         FieldType::Link => "请选择记录",
         FieldType::Attachment => "添加附件",
+        FieldType::Note => "新建笔记",
         _ if ty.computed() => "空",
         _ => "请输入",
     }
@@ -130,25 +135,29 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
     let place = v.order.get(&rid).copied();
     let id_at = |p: Option<usize>| p.and_then(|p| v.result.records.get(p)).and_then(|i| t.records.get(*i)).map(|r| r.id);
     let (prev, next) = (id_at(place.and_then(|p| p.checked_sub(1))), id_at(place.map(|p| p + 1)));
-    let button = |id: &'static str, glyph: Svg, on: bool| div().id(id).flex_none().size(px(28.)).rounded(px(crate::design::geo().tool_r)).flex().items_center().justify_center()
-        .when(on, |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))).child(glyph);
+    // the head's tools: ghost buttons of the design system (28)
+    let button = |id: &'static str, glyph: &'static str, on: bool| crate::design::Button::ghost(id).icon(glyph).disabled(!on);
+    // ∧ ∨: the one chevron, turned for ∧ (the set has no chevron-up, and a `Button` draws its glyph as it is),
+    // in a ghost button's box and fills
     let nav = |id: &'static str, up: bool, to: Option<RecId>| {
-        let glyph = icon("chevron-down", 16., if to.is_some() { Theme::icon() } else { Theme::text_disabled() });
-        button(id, if up { glyph.with_transformation(Transformation::rotate(percentage(0.5))) } else { glyph }, to.is_some())
+        let glyph = icon("chevron-down", 16., crate::design::color::foreground());
+        div().id(id).flex_none().size(px(crate::design::geo().tool_h)).rounded(px(crate::design::geo().button_r.min(10.))).flex().items_center().justify_center()
+            .when(to.is_some(), |d| d.cursor_pointer().hover(|s| s.bg(crate::design::color::muted()))).when(to.is_none(), |d| d.opacity(0.5))
+            .child(if up { glyph.with_transformation(Transformation::rotate(percentage(0.5))) } else { glyph })
             .on_click(cx.listener(move |v, _, window, cx| if let Some(to) = to { open(v, to, window, cx) }))
     };
-    let head = div().flex_none().h(px(if modal { 64. } else { 48. })).px(px(if modal { 24. } else { 12. })).flex().items_center().gap(px(4.)).border_b_1().border_color(Theme::line_divider())
+    let head = div().flex_none().h(px(if modal { 64. } else { 48. })).px(px(if modal { 24. } else { 12. })).flex().items_center().gap(px(4.))
         .child(nav("tb-rec-prev", true, prev))
         .child(nav("tb-rec-next", false, next))
         .when_some(place, |d, p| d.child(div().pl(px(4.)).text_size(px(12.)).text_color(Theme::text_placeholder()).child(format!("{}/{}", p + 1, v.result.records.len()))))
         .child(div().flex_1())
-        .child(button("tb-rec-more", icon("ellipsis", 16., Theme::icon()), true).on_click(cx.listener(|v, ev: &ClickEvent, window, cx| {
+        .child(button("tb-rec-more", "ellipsis", true).on_click(cx.listener(|v, ev: &ClickEvent, window, cx| {
             commit(v, true, window, cx);
             let p = ev.position();
             v.record.menu = Some(point(p.x - px(150.), p.y + px(18.)));
             cx.notify();
         })))
-        .child(button("tb-rec-close", icon("x", 16., Theme::icon()), true).on_click(cx.listener(|v, _, window, cx| close(v, window, cx))));
+        .child(button("tb-rec-close", "x", true).on_click(cx.listener(|v, _, window, cx| close(v, window, cx))));
 
     // a value's box: a hairline while it is typed in, a tint under the pointer when a click would edit it
     let value_box = |id: ElementId, editing: bool, clickable: bool| div().id(id).flex_1().min_w_0().min_h(px(crate::design::geo().field_h)).px(px(8.)).py(px(6.)).flex().items_center().rounded(px(crate::design::geo().tool_r)).border_1()
@@ -184,6 +193,7 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
                         v.edit(cx, |d| d.set_cells(tid, vec![(rid, fid, if s as f64 == n { Value::Empty } else { Value::Number(s as f64) })]));
                     })))).into_any_element())
             }
+            FieldType::Note if !val.is_empty() => Some(notes::row_value(v, cell, val)),
             _ if val.is_empty() => Some(empty(placeholder(f.ty)).into_any_element()),
             // what the table works out is read, not edited: a shade lighter
             _ if f.ty.computed() => Some(div().w_full().opacity(0.7).child(value(base, f, val)).into_any_element()),
@@ -203,17 +213,13 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
     let (shown, hidden): (Vec<&Field>, Vec<&Field>) = fields.into_iter().skip(1).partition(|f| !view.opts.hidden.contains(&f.id));
     let mut list = div().w_full().flex().flex_col().gap(px(2.)).child(title_el).children(shown.into_iter().map(row));
     if !hidden.is_empty() {
-        list = list.child(div().px(px(16.)).pt(px(8.)).flex().child(div().id("tb-rec-hidden").h(px(28.)).px(px(8.)).flex().items_center().gap(px(4.)).rounded(px(crate::design::geo().tool_r)).cursor_pointer()
-            .text_size(px(12.)).text_color(Theme::text_caption()).hover(|s| s.bg(Theme::fill_hover()))
-            .child(icon(if ui.show_hidden { "triangle-down" } else { "triangle-right" }, 10., Theme::text_caption()))
-            .child(format!("{} {}", hidden.len(), label("个隐藏字段")))
+        list = list.child(div().px(px(16.)).pt(px(8.)).flex().child(crate::design::Button::ghost("tb-rec-hidden").sized(crate::design::ButtonSize::Xs)
+            .icon(if ui.show_hidden { "triangle-down" } else { "triangle-right" }).label(format!("{} {}", hidden.len(), label("个隐藏字段")))
             .on_click(cx.listener(|v, _, _, cx| { v.record.show_hidden = !v.record.show_hidden; cx.notify(); }))));
         if ui.show_hidden { list = list.children(hidden.into_iter().map(row)); }
     }
     list = list
-        .child(div().px(px(16.)).pt(px(8.)).flex().child(div().id("tb-rec-add").h(px(32.)).px(px(8.)).flex().items_center().gap(px(6.)).rounded(px(crate::design::geo().tool_r)).cursor_pointer()
-            .text_color(Theme::text_caption()).hover(|s| s.bg(Theme::fill_hover()))
-            .child(icon("plus", 14., Theme::icon())).child(label("新增字段"))
+        .child(div().px(px(16.)).pt(px(8.)).flex().child(ghost_btn("tb-rec-add", "plus", label("新增字段")).sized(crate::design::ButtonSize::Sm)
             .on_click(cx.listener(|v, ev: &ClickEvent, window, cx| {
                 commit(v, true, window, cx);
                 let p = ev.position();
@@ -231,11 +237,9 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
                 v.edit(cx, |d| d.duplicate_records(tid, &[rid]));
             })))
             .child(menu_item("tb-rec-del", "bin", label("删除记录"), true).on_click(cx.listener(move |v, _, window, cx| {
-                close(v, window, cx);
-                let tid = v.table;
-                v.edit(cx, |d| d.remove_records(tid, &[rid]));
-                v.rows_sel.remove(&rid);
-                if v.sel.is_some_and(|s| s.anchor.0 == rid || s.head.0 == rid) { v.sel = None; }
+                commit(v, true, window, cx);
+                v.record.menu = None;
+                notes::remove_records(v, vec![rid], window, cx);
             }))))).with_priority(5));
 
     if modal {
@@ -248,12 +252,18 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
                 .child(crate::design::Dialog::new("tb-record").w(px(w)).h(px(h)).p_0().gap_0().overflow_hidden().text_size(px(text_sm()))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(head)
-                    .child(div().id("tb-rec-body").flex_1().min_h_0().overflow_y_scroll().px(px(40.)).pb(px(24.)).child(list))
+                    .child(crate::design::Separator::new())
+                    .child(div().id("tb-rec-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-rec-body")).px(px(40.)).pb(px(24.)).child(list).child(crate::design::scroll::bar("tb-rec-body", &crate::design::scroll::handle("tb-rec-body"), 0.)))
                     .children(menu)))).with_priority(4).into_any_element();
     }
-    div().id("tb-record").flex_none().w(px(RECORD_W)).h_full().flex().flex_col().bg(Theme::bg_body()).border_l_1().border_color(line())
+    let panel = div().id("tb-record").relative().flex_none().w(px(notes::panel_w(v))).h_full().flex().flex_col().bg(Theme::bg_body()).border_l_1().border_color(line());
+    // a 笔记 cell's note: the note alone, under a page's head
+    if let Some(note) = notes::pane(v, rid, cx) { return panel.child(note).child(notes::grip(v, cx)).into_any_element(); }
+    panel
         .child(head)
-        .child(div().id("tb-rec-body").flex_1().min_h_0().overflow_y_scroll().child(list))
+        .child(crate::design::Separator::new())
+        .child(div().id("tb-rec-body").flex_1().min_h_0().overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-rec-body")).child(list).child(crate::design::scroll::bar("tb-rec-body", &crate::design::scroll::handle("tb-rec-body"), 0.)))
+        .child(notes::grip(v, cx))
         .children(menu)
         .into_any_element()
 }

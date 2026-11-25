@@ -8,8 +8,11 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
-    /// Set cells of one table. Computed fields are not set this way.
+    /// Set cells of one table. Computed fields are not set this way. A record
+    /// whose cells change is stamped: 修改时间 now, 修改者 `Base::writer`.
     SetCells(Vec<(RecId, FieldId, Value)>),
+    /// Put records' 修改时间 and 修改者 back (what undoing `SetCells` ends with).
+    Stamp(Vec<(RecId, i64, Option<String>)>),
     /// Records with the row each lands on, rows ascending. A record whose
     /// `ord` doesn't fit where it lands gets a key that does (`order::repair`).
     InsertRecords(Vec<(usize, Record)>),
@@ -61,8 +64,9 @@ impl Base {
     pub fn apply(&mut self, op: BaseOp, dirty: &mut Dirty) -> Vec<BaseOp> {
         match op {
             BaseOp::Table(tid, op) => {
-                let Some(t) = self.table_mut(tid) else { return vec![] };
-                t.apply(op, dirty).into_iter().map(|o| BaseOp::Table(tid, o)).collect()
+                let Base { tables, writer, .. } = self;
+                let Some(t) = tables.iter_mut().find(|t| t.id == tid) else { return vec![] };
+                t.apply(op, &writer.0, dirty).into_iter().map(|o| BaseOp::Table(tid, o)).collect()
             }
             BaseOp::InsertTable { at, table } => {
                 let id = table.id;
@@ -94,13 +98,17 @@ impl Base {
 }
 
 impl Table {
-    pub fn apply(&mut self, op: Op, dirty: &mut Dirty) -> Vec<Op> {
+    /// `Base::apply` for one table's op; `writer` is who edits (`Base::writer`).
+    pub fn apply(&mut self, op: Op, writer: &str, dirty: &mut Dirty) -> Vec<Op> {
         let tid = self.id;
         match op {
             Op::SetCells(cells) => {
                 let now = field::now();
                 let index: HashMap<RecId, usize> = self.records.iter().enumerate().map(|(i, r)| (r.id, i)).collect();
                 let mut old = Vec::with_capacity(cells.len());
+                // each record's stamp before this, once
+                let mut stamps = vec![];
+                let mut stamped = HashSet::new();
                 for (rid, fid, v) in cells {
                     let Some(&i) = index.get(&rid) else { continue };
                     let r = &mut self.records[i];
@@ -108,12 +116,26 @@ impl Table {
                     if *r.get(fid) == v { continue; }
                     old.push((rid, fid, r.get(fid).clone()));
                     r.set(fid, v);
+                    if stamped.insert(rid) { stamps.push((rid, r.modified, r.updated_by.clone())); }
                     r.modified = now;
+                    r.updated_by = Some(writer.to_string());
                     dirty.row(tid, rid);
                 }
                 if old.is_empty() { return vec![]; }
                 old.reverse();
-                vec![Op::SetCells(old)]
+                // the cells put back stamp the records again: the stamp after puts back theirs
+                vec![Op::SetCells(old), Op::Stamp(stamps)]
+            }
+            Op::Stamp(stamps) => {
+                let mut old = vec![];
+                for (rid, at, by) in stamps {
+                    let Some(r) = self.record_mut(rid) else { continue };
+                    if r.modified == at && r.updated_by == by { continue; }
+                    old.push((rid, std::mem::replace(&mut r.modified, at), std::mem::replace(&mut r.updated_by, by)));
+                    dirty.row(tid, rid);
+                }
+                if old.is_empty() { return vec![]; }
+                vec![Op::Stamp(old)]
             }
             Op::InsertRecords(recs) => {
                 let mut ids = vec![];
@@ -191,7 +213,10 @@ impl Table {
             Op::SetField { field, cells } => {
                 let Some(at) = self.fields.iter().position(|f| f.id == field.id) else { return vec![] };
                 let id = field.id;
+                // only the 唯一键 mark changed: `_fields` says so, the table's column stays as it is
+                let mark_only = cells.is_none() && FieldOpts { unique: field.opts.unique, ..self.fields[at].opts.clone() } == field.opts && Field { opts: field.opts.clone(), ..self.fields[at].clone() } == field;
                 let old = std::mem::replace(&mut self.fields[at], field);
+                if mark_only { dirty.meta = true; return vec![Op::SetField { field: old, cells: None }]; }
                 let old_cells = cells.map(|cells| {
                     let before: Vec<(RecId, Value)> = self.records.iter_mut().filter_map(|r| r.cells.remove(&id).map(|v| (r.id, v))).collect();
                     let index: HashMap<RecId, usize> = self.records.iter().enumerate().map(|(i, r)| (r.id, i)).collect();
@@ -253,7 +278,22 @@ impl Table {
     }
 }
 
-/// Drop every mention of a removed field from a view.
+/// Point a view's mentions of fields at the ids in `to` (fields that got a new
+/// id when the file was read); the rest stay.
+pub fn rename_fields(o: &mut ViewOpts, to: &HashMap<FieldId, FieldId>) {
+    if to.is_empty() { return; }
+    let m = |f: &mut FieldId| if let Some(n) = to.get(f) { *f = *n; };
+    o.order.iter_mut().for_each(m);
+    o.hidden = o.hidden.drain().map(|mut f| { m(&mut f); f }).collect();
+    o.widths = std::mem::take(&mut o.widths).into_iter().map(|(mut f, w)| { m(&mut f); (f, w) }).collect();
+    o.stats = std::mem::take(&mut o.stats).into_iter().map(|(mut f, s)| { m(&mut f); (f, s) }).collect();
+    o.filter.conds.iter_mut().for_each(|c| m(&mut c.field));
+    o.sorts.iter_mut().chain(o.groups.iter_mut()).for_each(|s| m(&mut s.field));
+    for rule in &mut o.colors { rule.filter.conds.iter_mut().for_each(|c| m(&mut c.field)); }
+    for f in [&mut o.stack, &mut o.cover, &mut o.date, &mut o.end].into_iter().flatten() { m(f); }
+}
+
+/// Drop every mention of a removed field from a view. (A new mention: `rename_fields` too.)
 fn forget_field(o: &mut ViewOpts, id: FieldId) {
     o.order.retain(|f| *f != id);
     o.hidden.remove(&id);

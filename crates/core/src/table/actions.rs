@@ -15,7 +15,8 @@ impl Doc {
     /// It gets its sort key where it is inserted.
     fn blank_record(&self, t: &Table, id: RecId, n: u64) -> Record {
         let now = field::now();
-        let mut r = Record { id, created: now, modified: now, auto: t.next_auto + n, ..Default::default() };
+        let by = Some(self.base.writer.0.clone());
+        let mut r = Record { id, created: now, modified: now, created_by: by.clone(), updated_by: by, auto: t.next_auto + n, ..Default::default() };
         for f in t.fields.iter().filter(|f| !f.ty.computed() && !f.opts.default.is_empty()) {
             let v = if f.ty.is_date() && f.opts.default == "now" { Value::Date(if f.opts.time { now - now.rem_euclid(60_000) } else { field::today() }) } else { field::parse(f, &f.opts.default) };
             r.set(f.id, v);
@@ -48,7 +49,7 @@ impl Doc {
         let mut n = 0;
         for (i, r) in t.records.iter().enumerate().filter(|(_, r)| ids.contains(&r.id)) {
             let mut c = self.blank_record(t, new[n as usize], n);
-            c.cells = r.cells.iter().filter(|(f, _)| t.field(**f).is_some_and(|f| !f.ty.computed())).map(|(f, v)| (*f, v.clone())).collect();
+            c.cells = r.cells.iter().filter(|(f, _)| t.field(**f).is_some_and(|f| f.ty.copies())).map(|(f, v)| (*f, v.clone())).collect();
             n += 1;
             recs.push((i + n as usize, c));
         }
@@ -145,6 +146,7 @@ impl Doc {
         let at = at.unwrap_or(t.fields.len());
         let id = self.base.new_id();
         let mut f = Field { id, name, ty, opts, desc: String::new() };
+        f.opts.unique &= ty.keyable();
         let mut ops = vec![];
         if ty == FieldType::Link && f.opts.link_table.is_none() { f.opts.link_table = Some(tid); }
         if ty == FieldType::Link && let Some(other) = f.opts.link_table.filter(|o| f.opts.back == Some(0) && *o != tid) {
@@ -167,7 +169,7 @@ impl Doc {
         let mut f = t.fields[at].clone();
         f.name = t.free_field_name(&format!("{} 副本", f.name), None);
         f.opts.back = None;
-        let cells: Vec<(RecId, Value)> = if f.ty.computed() { vec![] } else { t.records.iter().filter_map(|r| r.cells.get(&fid).map(|v| (r.id, v.clone()))).collect() };
+        let cells: Vec<(RecId, Value)> = if !f.ty.copies() { vec![] } else { t.records.iter().filter_map(|r| r.cells.get(&fid).map(|v| (r.id, v.clone()))).collect() };
         let view_ops: Vec<Op> = t.views.iter().filter(|v| v.opts.order.contains(&fid)).cloned().collect::<Vec<_>>().into_iter().map(Op::SetView).collect();
         // the copy's options are its own: ids of their own, its cells following
         let fresh: HashMap<OptId, OptId> = f.opts.options.iter().map(|o| o.id).collect::<Vec<_>>().into_iter().map(|o| (o, self.base.new_id())).collect();
@@ -196,6 +198,7 @@ impl Doc {
         new.name = t.free_field_name(&new.name, Some(new.id));
         // the primary field stays something a title can be
         if at == 0 && !(new.ty.textual() || matches!(new.ty, FieldType::Number | FieldType::Date | FieldType::Formula | FieldType::AutoNumber | FieldType::Currency | FieldType::Phone | FieldType::Email)) { new.ty = old.ty; }
+        if !new.ty.keyable() { new.opts.unique = false; }
         if new == old { return false; }
         let mut ops: Vec<BaseOp> = vec![];
         let mut ids = self.base.take_ids();
@@ -229,6 +232,15 @@ impl Doc {
         self.run(ops)
     }
 
+    /// Mark or unmark a field as 唯一键 (one undo step). False: unchanged, or a type that can't be one.
+    pub fn set_unique(&mut self, tid: TableId, fid: FieldId, on: bool) -> bool {
+        let Some(f) = self.base.table(tid).and_then(|t| t.field(fid)) else { return false };
+        if f.opts.unique == on || (on && !f.ty.keyable()) { return false; }
+        let mut f = f.clone();
+        f.opts.unique = on;
+        self.run_in(tid, vec![Op::SetField { field: f, cells: None }])
+    }
+
     /// Delete a field (not the primary one); a 双向关联's mirror goes with it.
     pub fn remove_field(&mut self, tid: TableId, fid: FieldId) -> bool { self.remove_fields(tid, &[fid]) }
 
@@ -257,7 +269,7 @@ impl Doc {
         let t = self.base.table(tid)?;
         let name = t.free_view_name(if name.is_empty() { kind.label() } else { name });
         let at = t.views.len();
-        let mut opts = ViewOpts { frozen: 1, ..Default::default() };
+        let mut opts = ViewOpts::default();
         match kind {
             ViewKind::Kanban => opts.stack = t.fields.iter().find(|f| f.ty == FieldType::SingleSelect).map(|f| f.id),
             ViewKind::Calendar | ViewKind::Gantt => {
@@ -332,7 +344,7 @@ impl Doc {
         for (ri, line) in text.iter().enumerate() {
             for (ci, s) in line.iter().enumerate() {
                 let Some(fid) = fields.get(ci) else { break };
-                let Some(f) = t.field(*fid).filter(|f| !f.ty.computed()) else { continue };
+                let Some(f) = t.field(*fid).filter(|f| f.ty.copies()) else { continue };
                 let f = fields_now.entry(*fid).or_insert_with(|| f.clone());
                 let v = field::parse_new(f, s, &mut ids);
                 match rows.get(ri) {
@@ -356,7 +368,7 @@ impl Doc {
         let mut cells = vec![];
         for (i, rid) in dst.iter().enumerate() {
             let Some(from) = t.record(src[i % src.len()]) else { continue };
-            for f in fields { cells.push((*rid, *f, from.get(*f).clone())); }
+            for f in fields.iter().filter(|f| t.field(**f).is_some_and(|f| f.ty.copies())) { cells.push((*rid, *f, from.get(*f).clone())); }
         }
         self.set_cells(tid, cells)
     }

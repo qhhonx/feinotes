@@ -419,7 +419,10 @@ impl Theme {
         // 外观 › 窗口背景: an opaque window keeps a moving desktop from showing
         // through the sidebar (which some people find distracting).
         if crate::settings::prefs().opaque_window || fullscreen() { return ca(craft::WINDOW, 1.) }
-        if crate::native_header::supported() { ca(craft::WINDOW, 0.) } else if crate::theme::glass() { ca(craft::WINDOW, 0.84) } else { ca(craft::WINDOW, 1.) }
+        // Liquid Glass stays bright over a light desktop even in the dark appearance (a washed grey
+        // under light text): in the dark the sidebar lays a deep wash over it, so it reads as Finder's
+        // and Notes' dark sidebars do and the desktop only colours it; in the light, none.
+        if crate::native_header::supported() { ca(craft::WINDOW, if dark() { 0.82 } else { 0. }) } else if crate::theme::glass() { ca(craft::WINDOW, 0.84) } else { ca(craft::WINDOW, 1.) }
     }
 
     /// Sidebar row label: text at 85%.

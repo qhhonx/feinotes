@@ -137,6 +137,8 @@ impl Workspace {
         if let Some(note) = self.entries.iter().find(|e| e.id == id).and_then(|e| e.note.clone()) { return self.try_open(&note, window, cx); }
         let target = id.to_string();
         if !self.save_before(cx, move |w, window, cx| { w.open_folder(&target, window, cx); }) { return false; }
+        #[cfg(target_family = "wasm")]
+        crate::web_print::cancel();
         self.editor = None;
         self.current = None;
         if self.folder_current.as_deref() != Some(id) { self.reset_folder_scroll(); }
@@ -214,7 +216,7 @@ impl Workspace {
             row("create-markdown", "markdown", "Markdown").on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.create_doc(true, md_parent.clone(), window, cx) })),
         ];
         // 数据表 above 画板 (the maintainer, 2026-11-25: the more finished of the two first).
-        if crate::DATATABLE { out.push(row("create-table", "datatable", crate::settings::text("数据表")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.create_table(table_parent.clone(), window, cx) }))); }
+        out.push(row("create-table", "datatable", crate::settings::text("数据表")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.create_table(table_parent.clone(), window, cx) })));
         out.push(row("create-board", "board", crate::settings::text("画板")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.create_board(board_parent.clone(), window, cx) })));
         out.push(row("create-folder", "folder", tr("文件夹", "Folder")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.new_folder(folder_parent.clone(), window, cx) })));
         out

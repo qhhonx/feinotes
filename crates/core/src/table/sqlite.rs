@@ -17,25 +17,26 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// `_meta.format`. 2: ids are random (no `next_id`, `next_rec`), `_order`
-/// is a text sort key. A format 1 file reads as ever and is written in 2.
+/// is a text sort key, a row's times, writers and 自动编号 are columns of
+/// their own (`SYSTEM`). A format 1 file reads as ever and is written in 2.
 pub const FORMAT: u32 = 2;
 
 const README: &str = "\
 Quiet.md 数据表。每张数据表就是一张同名的 SQL 表，列名就是字段名，值就是界面上看到的内容。
-- 每张表开头的三列：`id` 是记录的编号（主键），一个随机整数（小于 2^53）；`_order` 是手动排序的排序键，按字符串比较从小到大就是行的顺序（相同时按 id）；`_meta` 是 JSON，记着这条记录的创建、修改时间和自动编号。
-- 表、字段、视图、选项的 id 也是随机整数，整个文件里不重复；新加的行不填 id 和 `_order` 也行，Quiet.md 读到时补上，排在最后。
-- 单选存选项名；多选、人员存选项名的 JSON 数组；关联存对方表记录 id 的 JSON 数组；附件存 {path, name} 的 JSON 数组；日期是 2026-11-17 或 2026-11-17 09:30；复选框是 1 / 0；空格子是 NULL。
+- 每张表开头的七列：`id` 是记录的编号（主键），一个随机整数（小于 2^53）；`_order` 是手动排序的排序键，按字符串比较从小到大就是行的顺序（相同时按 id）；`_created_at`、`_updated_at` 是这条记录的创建、最后修改时间，UTC 的 ISO 8601，如 2027-01-15T00:02:03.123Z（也认 2027-01-15 08:02:03+08:00 这样带时区的写法，不带时区按 UTC）；`_created_by`、`_updated_by` 是谁建的、谁最后改的（`user` 是在 Quiet.md 里改的，`agent:名字` 是 Agent 写的），空表示不知道；`_auto` 是自动编号。
+- 表、字段、视图、选项的 id 也是随机整数，整个文件里不重复；新加的行不填 id 和 `_order` 也行，Quiet.md 读到时补上，排在最后；时间不填就按现在算，`_auto` 不填就发新号。
+- 单选存选项名；多选、人员存选项名的 JSON 数组；关联存对方表记录 id 的 JSON 数组；附件存 {path, name} 的 JSON 数组；笔记存那篇笔记相对这个文件所在文件夹的路径（如 `三体.xml`、`../别处/笔记.xml`）；日期是 2026-11-17 或 2026-11-17 09:30；复选框是 1 / 0；空格子是 NULL。
 - `_fields` 里 type 为 formula、lookup、auto_number、created_time、modified_time 的列是算出来的，直接改会被覆盖。
 - 别的列可以直接改，也可以加行、删行、加列、加表：Quiet.md 下次读取时照单全收，没见过的选项名会加进选项。
-- 选项的颜色、数字和日期的显示格式、公式在 `_fields.options`；视图（筛选、排序、分组、列宽等）在 `_views.config`；表的顺序在 `_tables`。
+- 选项的颜色、数字和日期的显示格式、公式、是否唯一键（`unique`，只是标记，不阻止重复）在 `_fields.options`；视图（筛选、排序、分组、列宽等）在 `_views.config`；表的顺序在 `_tables`。
 
 A Quiet.md data table file. Every data table is a SQL table of the same name; its columns are the fields and its values are what the app shows.
-- Three leading columns: `id` is the record's id (primary key), a random integer below 2^53; `_order` is its sort key in manual order: the rows sorted by it as strings are in order (equal keys by id); `_meta` is JSON with the record's created / modified times and auto number.
-- Table, field, view and option ids are random integers too, each used once in the file. A row added without an id or `_order` is fine: Quiet.md fills them in when it reads it, and puts the row last.
-- A single select holds the option's name; multi selects and people hold a JSON array of names; links hold a JSON array of the other table's record ids; attachments hold a JSON array of {path, name}; dates read 2026-11-17 or 2026-11-17 09:30; checkboxes are 1 / 0; an empty cell is NULL.
+- Seven leading columns: `id` is the record's id (primary key), a random integer below 2^53; `_order` is its sort key in manual order: the rows sorted by it as strings are in order (equal keys by id); `_created_at` and `_updated_at` are when the record was made and last changed, UTC ISO 8601 such as 2027-01-15T00:02:03.123Z (2027-01-15 08:02:03+08:00, with an offset, reads too; no zone means UTC); `_created_by` and `_updated_by` say who made it and who changed it last (`user`: in Quiet.md; `agent:<name>`: an agent), empty when not known; `_auto` is its auto number.
+- Table, field, view and option ids are random integers too, each used once in the file. A row added without an id or `_order` is fine: Quiet.md fills them in when it reads it, and puts the row last; with no times it is taken as made now, with no `_auto` it gets a new number.
+- A single select holds the option's name; multi selects and people hold a JSON array of names; links hold a JSON array of the other table's record ids; attachments hold a JSON array of {path, name}; a note holds the path of its note relative to the folder this file is in (`三体.xml`, `../elsewhere/note.xml`); dates read 2026-11-17 or 2026-11-17 09:30; checkboxes are 1 / 0; an empty cell is NULL.
 - Columns whose `_fields.type` is formula, lookup, auto_number, created_time or modified_time are computed: edits to them are overwritten.
 - Every other column can be edited directly, and rows, columns and tables added or removed: Quiet.md takes it all in the next time it reads the file, adding option names it has not seen.
-- Option colours, number and date formats and formulas are in `_fields.options`; views (filter, sort, group, widths…) in `_views.config`; the order of tables in `_tables`.";
+- Option colours, number and date formats, formulas and whether a field is a unique key (`unique`: a mark, duplicates are not refused) are in `_fields.options`; views (filter, sort, group, widths…) in `_views.config`; the order of tables in `_tables`.";
 
 /// Make the file (an error if it is there already) and write `base` to it.
 pub fn create(path: &Path, base: &Base) -> Result<()> {
@@ -212,13 +213,21 @@ fn cell<'a>(f: &'a Field, v: &'a Value) -> ToSqlOutput<'a> {
     }
 }
 
-fn insert_sql(name: &str, fields: usize) -> String { format!("INSERT OR REPLACE INTO {} VALUES (?, ?, ?{})", q(name), ", ?".repeat(fields)) }
+/// The columns every table starts with, and how they are declared: the record's id,
+/// sort key, times, writers and 自动编号. Then come the fields.
+const SYSTEM: [(&str, &str); 7] = [("id", "INTEGER PRIMARY KEY"), ("_order", "TEXT"), ("_created_at", "TEXT"), ("_updated_at", "TEXT"), ("_created_by", "TEXT"), ("_updated_by", "TEXT"), ("_auto", "INTEGER")];
+
+fn insert_sql(name: &str, fields: usize) -> String { format!("INSERT OR REPLACE INTO {} VALUES (?{})", q(name), ", ?".repeat(SYSTEM.len() - 1 + fields)) }
+
+/// The local offset our wall-clock milliseconds carry (`field::now`), in milliseconds:
+/// the file's times are UTC.
+fn zone() -> i64 { crate::time::local_offset() * 1000 }
 
 /// Write one record (through `insert_sql`'s statement).
-fn put(stmt: &mut Statement, t: &Table, r: &Record) -> rusqlite::Result<()> {
-    // readable times to the minute, and the exact milliseconds (`c`, `m`) to read back
-    let meta = format!(r#"{{"created":"{}","modified":"{}","auto":{},"c":{},"m":{}}}"#, field::iso(r.created, true), field::iso(r.modified, true), r.auto, r.created, r.modified);
-    let head = [Sql::Integer(r.id as i64), Sql::Text(r.ord.clone()), Sql::Text(meta)].map(ToSqlOutput::Owned);
+fn put(stmt: &mut Statement, t: &Table, r: &Record, zone: i64) -> rusqlite::Result<()> {
+    let by = |b: &Option<String>| b.clone().map_or(Sql::Null, Sql::Text);
+    let head = [Sql::Integer(r.id as i64), Sql::Text(r.ord.clone()), Sql::Text(field::iso_utc(r.created - zone)), Sql::Text(field::iso_utc(r.modified - zone)),
+        by(&r.created_by), by(&r.updated_by), Sql::Integer(r.auto.min(i64::MAX as u64) as i64)].map(ToSqlOutput::Owned);
     stmt.execute(params_from_iter(head.into_iter().chain(t.fields.iter().map(|f| cell(f, r.get(f.id))))))?;
     Ok(())
 }
@@ -231,12 +240,14 @@ fn write_table(conn: &Connection, t: &Table, name: &str) -> Result<()> {
     #[cfg(test)]
     WHOLE.with(|w| w.set(w.get() + 1));
     let n = q(name);
-    let mut sql = format!("DROP TABLE IF EXISTS {n}; CREATE TABLE {n} (\"id\" INTEGER PRIMARY KEY, \"_order\" TEXT, \"_meta\" TEXT");
+    let head: Vec<String> = SYSTEM.iter().map(|(c, decl)| format!("{} {decl}", q(c))).collect();
+    let mut sql = format!("DROP TABLE IF EXISTS {n}; CREATE TABLE {n} ({}", head.join(", "));
     for (f, c) in t.fields.iter().zip(column_names(t)) { sql.push_str(&format!(", {}{}", q(&c), decl(f.ty))); }
     sql.push_str(");");
     conn.execute_batch(&sql)?;
     let mut stmt = conn.prepare(&insert_sql(name, t.fields.len()))?;
-    for r in &t.records { put(&mut stmt, t, r)?; }
+    let zone = zone();
+    for r in &t.records { put(&mut stmt, t, r, zone)?; }
     Ok(())
 }
 
@@ -251,7 +262,8 @@ fn patch(conn: &Connection, t: &Table, name: &str, dirty: &Dirty) -> Result<bool
     if let Some(rows) = dirty.rows.get(&t.id).filter(|r| !r.is_empty()) {
         let index: HashMap<RecId, usize> = t.records.iter().enumerate().map(|(i, r)| (r.id, i)).collect();
         let mut stmt = conn.prepare(&insert_sql(name, t.fields.len()))?;
-        for id in rows { if let Some(&i) = index.get(id) { put(&mut stmt, t, &t.records[i])?; } }
+        let zone = zone();
+        for id in rows { if let Some(&i) = index.get(id) { put(&mut stmt, t, &t.records[i], zone)?; } }
     }
     let count: i64 = conn.query_row(&format!("SELECT count(*) FROM {n}"), [], |r| r.get(0))?;
     Ok(count as usize == t.records.len())
@@ -311,11 +323,11 @@ fn write(conn: &Connection, base: &Base, dirty: Option<&Dirty>) -> Result<()> {
         let patched = match dirty {
             Some(d) if !d.schema.contains(&t.id) && file.iter().any(|n| n.eq_ignore_ascii_case(name)) => {
                 // a table that isn't in our shape (another program's, one it altered, a format 1 table's
-                // numbered `_order`) is rewritten in it
+                // numbered `_order`, an older one's `_meta`) is rewritten in it
                 let info = grid(conn, &format!("PRAGMA table_info({})", q(name)));
                 let cols: Vec<String> = info.iter().map(|r| text(&r[1])).collect();
-                cols.iter().map(String::as_str).eq(["id", "_order", "_meta"].into_iter().chain(column_names(t).iter().map(String::as_str)))
-                    && text(&info[1][2]).eq_ignore_ascii_case("TEXT") && patch(conn, t, name, d)?
+                cols.iter().map(String::as_str).eq(SYSTEM.iter().map(|c| c.0).chain(column_names(t).iter().map(String::as_str)))
+                    && SYSTEM.iter().zip(&info).skip(1).all(|(c, r)| text(&r[2]).eq_ignore_ascii_case(c.1)) && patch(conn, t, name, d)?
             }
             _ => false,
         };
@@ -326,10 +338,18 @@ fn write(conn: &Connection, base: &Base, dirty: Option<&Dirty>) -> Result<()> {
 
 // ---- reading ----
 
-/// What a row's `_meta` holds.
+/// What the file says about a row besides its cells: its system columns, or
+/// before them the `_meta` JSON (`c`, `m`: wall-clock milliseconds; `created`,
+/// `modified`: the same to the minute, as text). The writers only have columns.
 #[derive(Default, Deserialize)]
 #[serde(default)]
-struct RowMeta { c: Option<i64>, m: Option<i64>, auto: Option<u64>, created: Option<String>, modified: Option<String> }
+struct RowMeta {
+    c: Option<i64>, m: Option<i64>, auto: Option<u64>, created: Option<String>, modified: Option<String>,
+    #[serde(skip)] by: (Option<String>, Option<String>),
+    /// Its rowid when that was too big to keep (`ID_LIMIT`), else 0; and where it came in the read.
+    #[serde(skip)] was: u64,
+    #[serde(skip)] at: u64,
+}
 
 /// Every value of every table in the file, ours and SQLite's too, as text, a
 /// line each: what the unused-asset sweep (#237) looks for a file's name in.
@@ -350,6 +370,33 @@ pub fn all_text(path: &Path) -> Result<String> {
     Ok(out)
 }
 
+/// Give every 笔记 cell of the file the path `f` returns for it (None: as it
+/// is): a note or the table itself was renamed or moved (`Store::relocate`).
+/// Only the cells that change are written, the rows stamped as changed now, by
+/// the app (`user`); a file with no 笔记 column is not written at all. Returns the cells changed.
+pub fn rewrite_notes(path: &Path, f: impl Fn(&str) -> Option<String>) -> Result<usize> {
+    let mut conn = open(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    let file = tables(&conn)?;
+    if !file.iter().any(|t| t == "_fields") { return Ok(0); }
+    let columns: Vec<(String, String)> = grid(&conn, "SELECT table_name, name FROM _fields WHERE type = 'note'").iter().map(|r| (text(&r[0]), text(&r[1]))).filter(|(t, _)| file.contains(t)).collect();
+    let mut changes = vec![];
+    for (t, c) in &columns {
+        let Ok(mut stmt) = conn.prepare(&format!("SELECT rowid, {c} FROM {t} WHERE {c} IS NOT NULL", t = q(t), c = q(c))) else { continue };
+        let cells: Vec<(i64, String)> = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Sql>(1)?)))?.filter_map(|r| r.ok()).map(|(id, v)| (id, text(&v))).collect();
+        for (id, href) in cells { if let Some(new) = f(&href) { changes.push((t.clone(), c.clone(), id, new)); } }
+    }
+    if changes.is_empty() { return Ok(0); }
+    let (now, by) = (field::iso_utc(crate::time::now_ms() as i64), Writer::default().0);
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    for (t, c, id, new) in &changes {
+        // when and by whom, where the table has the columns (ours); a table another program made has only the cell
+        let stamped = tx.execute(&format!("UPDATE {} SET {} = ?, \"_updated_at\" = ?, \"_updated_by\" = ? WHERE rowid = ?", q(t), q(c)), params![new, now, by, id]);
+        if stamped.is_err() { tx.execute(&format!("UPDATE {} SET {} = ? WHERE rowid = ?", q(t), q(c)), params![new, id])?; }
+    }
+    tx.commit()?;
+    Ok(changes.len())
+}
+
 /// Read the whole file. Lenient: the file may have been edited by another
 /// program, or never been ours — then every table that isn't SQLite's or
 /// `_`-prefixed is a data table, with field types guessed from its columns.
@@ -368,36 +415,32 @@ pub fn load_marked(path: &Path) -> Result<(Base, Dirty)> {
     let file = tables(&conn).with_context(|| format!("{} is not a SQLite database", path.display()))?;
     let has = |n: &str| file.iter().any(|x| x == n);
     let described = has("_tables") && has("_fields");
-    // ids are ours to keep unique across the file: a duplicate, a 0 or one past ID_LIMIT becomes 0 here and gets a fresh one below
-    let id = |seen: &mut HashSet<u64>, v: &Sql| int(v).and_then(|i| u64::try_from(i).ok()).filter(|i| (1..ID_LIMIT).contains(i) && seen.insert(*i)).unwrap_or(0);
-    let mut seen = HashSet::new();
+    // the ids as the file has them (a negative or missing one: 0); `stable_ids` replaces those that can't stay
+    let id = |v: &Sql| int(v).and_then(|i| u64::try_from(i).ok()).unwrap_or(0);
     // (the id in the file, which the fields and views point at; the table so far)
     let mut known: Vec<(Option<i64>, Table)> = if !described { vec![] } else {
         grid(&conn, "SELECT id, name, next_auto FROM _tables ORDER BY position, id").iter().map(|r| {
-            (int(&r[0]), Table { id: id(&mut seen, &r[0]), name: text(&r[1]), next_auto: int(&r[2]).unwrap_or(0).max(0) as u64, ..Default::default() })
+            (int(&r[0]), Table { id: id(&r[0]), name: text(&r[1]), next_auto: int(&r[2]).unwrap_or(0).max(0) as u64, ..Default::default() })
         }).collect()
     };
     for r in if described { grid(&conn, "SELECT table_id, id, name, type, options, description FROM _fields ORDER BY position, id") } else { vec![] } {
         let Some((_, t)) = known.iter_mut().find(|(tid, _)| tid.is_some() && *tid == int(&r[0])) else { continue };
-        let mut opts: FieldOpts = serde_json::from_str(&text(&r[4])).unwrap_or_default();
-        let fid = id(&mut seen, &r[1]);
-        // cells name their options, so an option can take another id
-        for o in &mut opts.options { o.id = id(&mut seen, &Sql::Integer(o.id.min(i64::MAX as u64) as i64)); }
-        t.fields.push(Field { id: fid, name: text(&r[2]), ty: FieldType::from_key(&text(&r[3])).unwrap_or(FieldType::Text), opts, desc: text(&r[5]) });
+        let opts: FieldOpts = serde_json::from_str(&text(&r[4])).unwrap_or_default();
+        t.fields.push(Field { id: id(&r[1]), name: text(&r[2]), ty: FieldType::from_key(&text(&r[3])).unwrap_or(FieldType::Text), opts, desc: text(&r[5]) });
     }
     for r in if described { grid(&conn, "SELECT table_id, id, name, type, config FROM _views ORDER BY position, id") } else { vec![] } {
         let Some((_, t)) = known.iter_mut().find(|(tid, _)| tid.is_some() && *tid == int(&r[0])) else { continue };
         let kind = serde_json::from_value(serde_json::Value::String(text(&r[3]))).unwrap_or_default();
-        let opts = serde_json::from_str(&text(&r[4])).unwrap_or(ViewOpts { frozen: 1, ..Default::default() });
-        t.views.push(View { id: id(&mut seen, &r[1]), name: text(&r[2]), kind, opts });
+        let opts = serde_json::from_str(&text(&r[4])).unwrap_or_default();
+        t.views.push(View { id: id(&r[1]), name: text(&r[2]), kind, opts });
     }
-    let mut ids = IdGen::default();
-    ids.take(seen);
-    let mut fresh = |slot: &mut u64| if *slot == 0 { *slot = ids.fresh(); };
-    for (_, t) in &mut known {
-        fresh(&mut t.id);
-        for f in &mut t.fields { fresh(&mut f.id); for o in &mut f.opts.options { fresh(&mut o.id); } }
-        for v in &mut t.views { fresh(&mut v.id); }
+    let (mut kept, moved, replaced) = stable_ids(&mut known);
+    if !moved.is_empty() {
+        let to = |x: &mut Option<u64>| if let Some(n) = x.and_then(|x| moved.get(&x)) { *x = Some(*n); };
+        for (_, t) in &mut known {
+            for f in &mut t.fields { to(&mut f.opts.link_table); to(&mut f.opts.back); to(&mut f.opts.via); to(&mut f.opts.target); }
+            for v in &mut t.views { super::ops::rename_fields(&mut v.opts, &moved); }
+        }
     }
     // the described tables that are in the file, in their order, then the rest of the file's
     let mut rest: Vec<&String> = file.iter().filter(|n| user_table(n)).collect();
@@ -406,18 +449,72 @@ pub fn load_marked(path: &Path) -> Result<(Base, Dirty)> {
         let Some(k) = rest.iter().position(|n| **n == t.name).or_else(|| rest.iter().position(|n| n.eq_ignore_ascii_case(&t.name))) else { continue };
         found.push((rest.remove(k), t, true));
     }
-    for n in rest { found.push((n, Table { id: ids.fresh(), next_auto: 1, ..Default::default() }, false)); }
+    // a table nobody described gets a `stable_id` too (its records' are made from it)
+    for (k, n) in rest.into_iter().enumerate() {
+        let id = stable_id(IdKind::Table, 0, 0, (found.len() + k) as u64, |x| kept.contains(&x));
+        kept.insert(id);
+        found.push((n, Table { id, next_auto: 1, ..Default::default() }, false));
+    }
+    let mut ids = IdGen::default();
+    ids.take(kept);
     let mut base = Base::default();
-    let mut dirty = Dirty::default();
+    // `_tables`, `_fields`, `_views` to write with the new ids
+    let mut dirty = Dirty { meta: replaced, ..Default::default() };
+    // per table, the records whose id was too big: the old id, the new
+    let mut renamed: HashMap<TableId, HashMap<RecId, RecId>> = HashMap::new();
+    let mut ours = HashSet::new();
     for i in 0..found.len() {
         // a name the app can carry, that no other table of the file has
         let name = safe_name(found[i].0, "数据表", |x| base.tables.iter().any(|t| t.name.eq_ignore_ascii_case(x)) || found[i + 1..].iter().any(|f| f.0.eq_ignore_ascii_case(x)));
         let (sql, t, described) = &mut found[i];
         t.name = name;
-        if let Some(t) = read_table(&conn, sql, std::mem::take(t), *described, &mut ids, &mut dirty) { base.tables.push(t); }
+        if *described { ours.insert(t.id); }
+        if let Some(t) = read_table(&conn, sql, std::mem::take(t), *described, &mut ids, &mut dirty, &mut renamed) { base.tables.push(t); }
+    }
+    // 关联 cells follow records that got a new id
+    for t in &mut base.tables {
+        let links: Vec<(FieldId, &HashMap<RecId, RecId>)> = t.fields.iter().filter(|f| f.ty == FieldType::Link).filter_map(|f| Some((f.id, renamed.get(&f.opts.link_table?)?))).collect();
+        for r in &mut t.records {
+            for (f, to) in &links {
+                let Some(Value::Links(l)) = r.cells.get_mut(f) else { continue };
+                if !l.iter().any(|id| to.contains_key(id)) { continue; }
+                for id in l.iter_mut() { if let Some(n) = to.get(id) { *id = *n; } }
+                if ours.contains(&t.id) { dirty.row(t.id, r.id); }
+            }
+        }
     }
     base.ids = ids;
     Ok((base, dirty))
+}
+
+/// Keep the ids of `known` (as read, tables first, then each table's fields with
+/// their options, then its views) that are in range and not had before; give the
+/// rest a `stable_id`. Returns the ids in use, the ids 2^53 or more with their
+/// new ones (what pointed at them is to follow; a 0 or a duplicate means
+/// nothing to point at), and whether any was replaced.
+fn stable_ids(known: &mut [(Option<i64>, Table)]) -> (HashSet<u64>, HashMap<u64, u64>, bool) {
+    let mut good: HashSet<u64> = known.iter().flat_map(|(_, t)| t.all_ids()).filter(|i| (1..ID_LIMIT).contains(i)).collect();
+    let mut kept = HashSet::new();
+    let mut moved = HashMap::new();
+    let mut replaced = false;
+    let mut fix = |slot: &mut u64, kind: IdKind, table: u64, seq: u64| {
+        if (1..ID_LIMIT).contains(slot) && kept.insert(*slot) { return; }
+        let new = stable_id(kind, *slot, table, seq, |x| good.contains(&x) || kept.contains(&x));
+        kept.insert(new);
+        good.insert(new);
+        if *slot >= ID_LIMIT { moved.entry(*slot).or_insert(new); }
+        *slot = new;
+        replaced = true;
+    };
+    for (i, (_, t)) in known.iter_mut().enumerate() { fix(&mut t.id, IdKind::Table, 0, i as u64); }
+    for (_, t) in known.iter_mut() {
+        for (j, f) in t.fields.iter_mut().enumerate() {
+            fix(&mut f.id, IdKind::Field, t.id, j as u64);
+            for (k, o) in f.opts.options.iter_mut().enumerate() { fix(&mut o.id, IdKind::Option, t.id, (j as u64) << 20 | k as u64); }
+        }
+    }
+    for (_, t) in known.iter_mut() { for (j, v) in t.views.iter_mut().enumerate() { fix(&mut v.id, IdKind::View, t.id, j as u64); } }
+    (kept, moved, replaced)
 }
 
 /// A row's `_order`: a sort key (format 2), or a row number (format 1, another program's).
@@ -436,7 +533,7 @@ fn guess(conn: &Connection, table: &str, col: &str, decl: &str) -> FieldType {
 /// describe) from the SQL table `sql`. None: the table can't be read at all.
 /// Rows that got a sort key or an id here are marked in `dirty` (only in a
 /// described table: another program's table is rewritten whole when written).
-fn read_table(conn: &Connection, sql: &str, mut t: Table, described: bool, ids: &mut IdGen, dirty: &mut Dirty) -> Option<Table> {
+fn read_table(conn: &Connection, sql: &str, mut t: Table, described: bool, ids: &mut IdGen, dirty: &mut Dirty, renamed: &mut HashMap<TableId, HashMap<RecId, RecId>>) -> Option<Table> {
     let n = q(sql);
     // WITHOUT ROWID tables have no rowid: their records are numbered as they come
     let mut stmt = conn.prepare(&format!("SELECT rowid, * FROM {n}")).or_else(|_| conn.prepare(&format!("SELECT NULL, * FROM {n}"))).ok()?;
@@ -445,9 +542,12 @@ fn read_table(conn: &Connection, sql: &str, mut t: Table, described: bool, ids: 
     let keys = info.iter().filter(|r| int(&r[5]).is_some_and(|k| k > 0)).count();
     // `id INTEGER PRIMARY KEY` is the rowid; an `id` that is anything else is a column like any other
     let is_id = |c: &str| c.eq_ignore_ascii_case("id") && keys == 1 && info.iter().any(|r| text(&r[1]) == c && int(&r[5]) == Some(1) && text(&r[2]).eq_ignore_ascii_case("INTEGER"));
-    let (order_at, meta_at) = (cols.iter().position(|c| c == "_order"), cols.iter().position(|c| c == "_meta"));
+    let col = |name: &str| cols.iter().position(|c| c == name);
+    let (order_at, meta_at) = (col("_order"), col("_meta"));
+    let [made_at, changed_at, made_by, changed_by, auto_at] = ["_created_at", "_updated_at", "_created_by", "_updated_by", "_auto"].map(col);
+    let system = [order_at, meta_at, made_at, changed_at, made_by, changed_by, auto_at];
     // the columns that are fields; `at` is each field's column
-    let mut free: Vec<usize> = (0..cols.len()).filter(|i| !is_id(&cols[*i]) && Some(*i) != order_at && Some(*i) != meta_at).collect();
+    let mut free: Vec<usize> = (0..cols.len()).filter(|i| !is_id(&cols[*i]) && !system.contains(&Some(*i))).collect();
     let mut at: Vec<Option<usize>> = vec![];
     for mut f in std::mem::take(&mut t.fields) {
         // described but not in the table: gone
@@ -462,21 +562,24 @@ fn read_table(conn: &Connection, sql: &str, mut t: Table, described: bool, ids: 
         let name = safe_name(&cols[i], "字段", |x| t.fields.iter().any(|f| f.name.eq_ignore_ascii_case(x)) || free[k + 1..].iter().any(|j| cols[*j].eq_ignore_ascii_case(x)));
         let decl = info.iter().find(|r| text(&r[1]) == cols[i]).map(|r| text(&r[2]).to_ascii_uppercase()).unwrap_or_default();
         let ty = guess(conn, &n, &cols[i], &decl);
-        t.fields.push(Field { id: ids.fresh(), name, ty, opts: field::default_opts(ty), desc: String::new() });
+        // an id every reader of the file gives it (`stable_id`), like the rest of what is made here
+        t.fields.push(Field { id: ids.stable(IdKind::Field, 0, t.id, i as u64), name, ty, opts: field::default_opts(ty), desc: String::new() });
         at.push(Some(i));
     }
     // the first field is the title
     if guessed && let Some(f) = t.fields.first_mut().filter(|f| matches!(f.ty, FieldType::SingleSelect | FieldType::Checkbox)) { f.ty = FieldType::Text; }
     if t.fields.is_empty() {
-        t.fields.push(Field { id: ids.fresh(), name: "文本".into(), ty: FieldType::Text, opts: FieldOpts::default(), desc: String::new() });
+        t.fields.push(Field { id: ids.stable(IdKind::Field, 0, t.id, cols.len() as u64), name: "文本".into(), ty: FieldType::Text, opts: FieldOpts::default(), desc: String::new() });
         at.push(None);
     }
 
     // (its `_order`, whether it came with an id, the record, what its `_meta` said)
     let mut recs: Vec<(Option<Place>, bool, Record, RowMeta)> = vec![];
+    let zone = zone();
     let mut rows = stmt.query([]).ok()?;
     while let Ok(Some(row)) = rows.next() {
-        let id = match row.get_ref(0) { Ok(ValueRef::Integer(i)) if i > 0 => Some(i as u64), _ => None };
+        // a rowid of 2^53 or more is replaced like a missing one (and remembered, for the links to it)
+        let (id, was) = match row.get_ref(0) { Ok(ValueRef::Integer(i)) if i > 0 => if (i as u64) < ID_LIMIT { (Some(i as u64), 0) } else { (None, i as u64) }, _ => (None, 0) };
         let order = order_at.and_then(|c| match row.get_ref(c + 1) {
             Ok(ValueRef::Text(b)) => Some(Place::Key(String::from_utf8_lossy(b).into_owned())),
             Ok(ValueRef::Integer(i)) => Some(Place::Row(i as f64)),
@@ -484,6 +587,19 @@ fn read_table(conn: &Connection, sql: &str, mut t: Table, described: bool, ids: 
             _ => None,
         });
         let mut meta: RowMeta = meta_at.and_then(|c| match row.get_ref(c + 1) { Ok(ValueRef::Text(b)) => serde_json::from_slice(b).ok(), _ => None }).unwrap_or_default();
+        // the columns: what isn't there or doesn't read stays unknown
+        let get = |at: Option<usize>| at.and_then(|c| row.get_ref(c + 1).ok());
+        let words = |at| match get(at) { Some(ValueRef::Text(b)) => Some(String::from_utf8_lossy(b).trim().to_string()).filter(|s| !s.is_empty()), _ => None };
+        let time = |at| words(at).and_then(|s| field::parse_iso(&s)).map(|ms| ms + zone);
+        if let Some(c) = time(made_at) { meta.c = Some(c); }
+        if let Some(m) = time(changed_at) { meta.m = Some(m); }
+        meta.by = (words(made_by), words(changed_by));
+        match get(auto_at) {
+            Some(ValueRef::Integer(i)) if i >= 0 => meta.auto = Some(i as u64),
+            Some(ValueRef::Real(x)) if x >= 0. && x.fract() == 0. => meta.auto = Some(x as u64),
+            Some(ValueRef::Text(b)) => if let Ok(i) = std::str::from_utf8(b).unwrap_or("").trim().parse::<u64>() { meta.auto = Some(i) },
+            _ => {}
+        }
         let mut r = Record { id: id.unwrap_or(0), ..Default::default() };
         for (f, c) in t.fields.iter_mut().zip(&at) {
             let Some(Ok(v)) = c.map(|c| row.get_ref(c + 1)) else { continue };
@@ -497,6 +613,7 @@ fn read_table(conn: &Connection, sql: &str, mut t: Table, described: bool, ids: 
                 (_, v) => { r.cells.insert(f.id, v); }
             }
         }
+        (meta.was, meta.at) = (was, recs.len() as u64);
         recs.push((order, id.is_some(), r, meta));
     }
     drop(rows);
@@ -510,24 +627,33 @@ fn read_table(conn: &Connection, sql: &str, mut t: Table, described: bool, ids: 
         for r in &mut recs { if let Some(Place::Key(k)) = r.0.take() { r.2.ord = k; } }
         recs.sort_by(|a, b| (a.2.ord.is_empty(), &a.2.ord, id(a)).cmp(&(b.2.ord.is_empty(), &b.2.ord, id(b))));
     }
-    // a row without a rowid (a WITHOUT ROWID table, a 0) gets an id no other row of the table has
-    let have: HashSet<RecId> = recs.iter().filter(|r| r.1).map(|r| r.2.id).collect();
+    // a row without a rowid we can keep (a WITHOUT ROWID table, a 0, 2^53 or more) gets an id no
+    // other row of the table has: a `stable_id`, the same wherever the file is read
+    let mut have: HashSet<RecId> = recs.iter().filter(|r| r.1).map(|r| r.2.id).collect();
     let mut marked = vec![];
-    for r in recs.iter_mut().filter(|r| !r.1) { r.2.id = ids.fresh_unless(|id| have.contains(&id)); marked.push(r.2.id); }
+    for r in recs.iter_mut().filter(|r| !r.1) {
+        r.2.id = stable_id(IdKind::Record, r.3.was, t.id, r.3.at, |id| have.contains(&id));
+        have.insert(r.2.id);
+        marked.push(r.2.id);
+        if r.3.was != 0 { renamed.entry(t.id).or_default().insert(r.3.was, r.2.id); }
+    }
     t.next_auto = t.next_auto.max(recs.iter().filter_map(|r| r.3.auto).max().map_or(0, |a| a + 1)).max(if described { 0 } else { 1 });
     let now = field::now();
+    // `_meta` (format 1, and 2 before the system columns): the table is written again in today's shape
+    if described && meta_at.is_some() { dirty.schema.insert(t.id); }
     for (_, _, mut r, meta) in recs {
         let c = meta.c.or_else(|| meta.created.as_deref().and_then(field::parse_date));
         let m = meta.m.or_else(|| meta.modified.as_deref().and_then(field::parse_date));
         r.created = c.or(m).unwrap_or(now);
         r.modified = m.unwrap_or(r.created);
         r.auto = meta.auto.unwrap_or_else(|| { t.next_auto += 1; t.next_auto - 1 });
+        (r.created_by, r.updated_by) = meta.by;
         t.records.push(r);
     }
     marked.extend(super::order::repair(&mut t.records));
     if described { for id in marked { dirty.row(t.id, id); } }
     if t.views.is_empty() {
-        t.views.push(View { id: ids.fresh(), name: "表格视图".into(), kind: ViewKind::Grid, opts: ViewOpts { frozen: 1, ..Default::default() } });
+        t.views.push(View { id: ids.stable(IdKind::View, 0, t.id, 0), name: "表格视图".into(), kind: ViewKind::Grid, opts: ViewOpts::default() });
     }
     Some(t)
 }
@@ -547,6 +673,7 @@ fn read(f: &mut Field, v: ValueRef, ids: &mut IdGen) -> Value {
         (_, ValueRef::Null) | (Formula | Lookup, _) => Value::Empty,
         (t, v) if t.textual() => Value::Text(string(v)).normal(),
         (_, ValueRef::Blob(_)) => Value::Empty,
+        (Note, v) => Value::Text(string(v).trim().to_string()).normal(),
         (Checkbox, ValueRef::Integer(i)) => Value::Bool(i != 0).normal(),
         (Checkbox, ValueRef::Real(x)) => Value::Bool(x != 0.).normal(),
         (Checkbox, v) => field::parse(f, &string(v)),
@@ -563,7 +690,8 @@ fn read(f: &mut Field, v: ValueRef, ids: &mut IdGen) -> Value {
             let ids = names.iter().filter(|n| !n.is_empty()).map(|n| match f.option_named(n) {
                 Some(o) => o.id,
                 None => {
-                    let (id, color) = (ids.fresh(), (f.opts.options.len() % 10) as u8);
+                    // the field's id where the others have their table's: an option is its field's
+                    let (id, color) = (ids.stable(IdKind::Option, 0, f.id, f.opts.options.len() as u64), (f.opts.options.len() % 10) as u8);
                     f.opts.options.push(SelectOption { id, name: n.clone(), color });
                     id
                 }
@@ -628,7 +756,8 @@ mod tests {
         let (books, authors) = (b.new_id(), b.new_id());
         let name = fld(&mut b, "姓名", Text);
         let mut works = fld(&mut b, "作品", Link);
-        let title = fld(&mut b, "书名", Text);
+        let mut title = fld(&mut b, "书名", Text);
+        title.opts.unique = true;
         let state = { let f = fld(&mut b, "状态", SingleSelect); choices(&mut b, f, &["想读", "在读", "读完", "[暂存]"]) };
         let tags = { let f = fld(&mut b, "标签", MultiSelect); choices(&mut b, f, &["小说", "科幻", "历史, 传记"]) };
         let reader = { let f = fld(&mut b, "读者", Person); choices(&mut b, f, &["小明", "小红"]) };
@@ -670,7 +799,9 @@ mod tests {
         let total = lookup(&mut b, "页数合计", pages.id, Rollup::Sum);
         let first = lookup(&mut b, "最早开始", start.id, Rollup::Min);
 
-        let rec = |id: RecId, cells: Vec<(FieldId, Value)>| Record { id, cells: cells.into_iter().collect(), created: T0 + id as i64 * 1000, modified: T0 + id as i64 * 77_777, auto: id + 10, ord: String::new() };
+        let rec = |id: RecId, cells: Vec<(FieldId, Value)>| Record { id, cells: cells.into_iter().collect(), created: T0 + id as i64 * 1000, modified: T0 + id as i64 * 77_777, auto: id + 10, ord: String::new(),
+            // made in the app, changed by an agent; not known
+            created_by: (!id.is_multiple_of(3)).then(|| "user".into()), updated_by: (!id.is_multiple_of(3)).then(|| format!("agent:读书 {id}")) };
         let pick = |f: &Field, names: &[&str]| Value::Select(names.iter().map(|n| f.option_named(n).unwrap().id).collect());
         let file = |n: &str| super::super::model::Attachment { path: format!(".assets/{n}"), name: n.to_string() };
         let text = |s: &str| Value::Text(s.to_string());
@@ -776,9 +907,13 @@ mod tests {
         let rows = grid(&conn, r#"select "姓名", "作品", "作品数", "作品名", "页数合计", "最早开始" from "作者" order by _order"#);
         assert_eq!(rows[0], [t("刘慈欣"), t("[1,2]"), Sql::Integer(2), t(r#"["三体","球状闪电"]"#), Sql::Real(-1.5e300), t("1969-12-31")]);
         assert_eq!(grid(&conn, r#"select "失效引用" from "读书清单" where id = 1"#)[0], [t(crate::table::calc::BAD_REF)]);
-        // the record's own data, readable and exact
-        let meta: serde_json::Value = serde_json::from_str(&text(&grid(&conn, r#"select _meta from "读书清单" where id = 3"#)[0][0])).unwrap();
-        assert_eq!(meta, serde_json::json!({ "created": "2027-01-15 08:02", "modified": "2027-01-15 08:05", "auto": 13, "c": T0 + 3000, "m": T0 + 233_331 }));
+        // the record's own data, readable and exact: UTC to the millisecond, the writers (or nothing), the number
+        let utc = |ms: i64| t(&field::iso_utc(ms - zone()));
+        assert_eq!(grid(&conn, r#"select _created_at, _updated_at, _created_by, _updated_by, _auto from "读书清单" where id in (2, 3) order by id"#),
+            [[utc(T0 + 2000), utc(T0 + 155_554), t("user"), t("agent:读书 2"), Sql::Integer(12)], [utc(T0 + 3000), utc(T0 + 233_331), Sql::Null, Sql::Null, Sql::Integer(13)]]);
+        assert_eq!(grid(&conn, r#"select name, type from pragma_table_info('读书清单') where name like '\_%' escape '\' or name = 'id'"#).iter().map(|r| format!("{} {}", text(&r[0]), text(&r[1]))).collect::<Vec<_>>(),
+            SYSTEM.map(|(c, d)| format!("{c} {}", d.replace(" PRIMARY KEY", ""))));
+        assert_eq!(grid(&conn, "select options from _fields where name = '书名'")[0], [t(r#"{"unique":true}"#)]);
         // the descriptions
         assert_eq!(grid(&conn, "select table_name, type, description from _fields where name = '页数'")[0], [t("读书清单"), t("number"), t("不含附录")]);
         assert_eq!(grid(&conn, "select type, options from _fields where name = '开始'")[0], [t("date"), t(r#"{"date":"cn","time":true}"#)]);
@@ -948,7 +1083,8 @@ mod tests {
         conn.execute_batch(r#"
             INSERT INTO "读书清单" ("书名", "状态", "标签", "页数", "读完", "开始", "作者", "封面", "评分") VALUES ('外来的书', '弃读', '科幻, 新标签', '1,024', 'yes', '2026/3/4 5:06', '2, 3', 'x/y.png', 'five');
             UPDATE "读书清单" SET "书名" = 12, "页数" = 'many', "读者" = '["小红","小刚"]', "开始" = 1800000000000 WHERE id = 1;
-            UPDATE "读书清单" SET _meta = 'not json', "状态" = 3 WHERE id = 3;
+            INSERT INTO "读书清单" (id, "书名", _created_at, _updated_by, _auto) VALUES (9, '带时间的书', '2027-01-15 08:02:03+08:00', 'agent:脚本', 99);
+            UPDATE "读书清单" SET _created_at = NULL, _updated_at = 'not a time', _created_by = '', _auto = NULL, "状态" = 3 WHERE id = 3;
             DELETE FROM "读书清单" WHERE id = 2;
             ALTER TABLE "读书清单" ADD COLUMN "备注" TEXT;
             ALTER TABLE "读书清单" ADD COLUMN "_score" INTEGER;
@@ -968,7 +1104,7 @@ mod tests {
         assert!(t.field_named("条码").is_none());
         assert_eq!(t.fields[t.fields.len() - 2..].iter().map(|f| (f.name.as_str(), f.ty)).collect::<Vec<_>>(), [("备注", FieldType::Text), ("score", FieldType::Number)]);
         assert_eq!(t.fields.len(), base.tables[0].fields.len() + 1);
-        assert_eq!(t.records.iter().map(|r| r.id).collect::<Vec<_>>(), [1, 3, 7, 8]);
+        assert_eq!(t.records.iter().map(|r| r.id).collect::<Vec<_>>(), [1, 3, 7, 8, 9]);
         // the new row: its values as each field reads them, new option names added
         let r = t.record(8).unwrap();
         assert_eq!(r.get(f("书名").id), &Value::Text("外来的书".into()));
@@ -986,7 +1122,12 @@ mod tests {
         assert_eq!(r.get(f("score").id), &Value::Number(16.));
         // a row nobody stamped is new as of now
         let fresh = |r: &Record| (field::now() - r.created).abs() < 60_000 && r.modified == r.created;
-        assert!(r.auto >= 30 && fresh(r) && t.next_auto == r.auto + 1);
+        assert!(r.auto == 100 && fresh(r) && t.next_auto == r.auto + 1, "after the 99 another program gave");
+        // and nobody is guessed to have written it
+        assert_eq!((&r.created_by, &r.updated_by), (&None, &None));
+        // one stamped as other programs write times: that instant, in our wall clock; the writer it gave
+        let r = t.record(9).unwrap();
+        assert_eq!((r.created, r.modified, r.auto, &r.created_by, r.updated_by.as_deref()), (field::date_ms(2027, 1, 15, 0, 2) + 3000 + zone(), r.created, 99, &None, Some("agent:脚本")));
         // the edited rows
         let r = t.record(1).unwrap();
         assert_eq!((r.get(f("书名").id), r.get(f("页数").id), r.get(f("开始").id)), (&Value::Text("12".into()), &Value::Empty, &Value::Date(1_800_000_000_000)));
@@ -994,13 +1135,13 @@ mod tests {
         assert_eq!((r.created, r.auto), (T0 + 1000, 11));
         let r = t.record(3).unwrap();
         assert_eq!(r.get(f("状态").id), &Value::Select(vec![f("状态").option_named("3").unwrap().id]));
-        // its `_meta` is gone, but the 创建 / 更新 / 编号 cells still say what it held
-        assert_eq!((r.created, r.modified, r.auto), (T0 + 3000, T0 + 233_331, 13));
+        // its system columns are emptied or garbled, but the 创建 / 更新 / 编号 cells still say what they held
+        assert_eq!((r.created, r.modified, r.auto, &r.created_by), (T0 + 3000, T0 + 233_331, 13, &None));
         // a table we were never told about, and one that lost its views
         let t = &got.tables[2];
         assert_eq!(t.fields.iter().map(|f| (f.name.as_str(), f.ty)).collect::<Vec<_>>(), [("名称", FieldType::Text), ("价格", FieldType::Number), ("买了", FieldType::Checkbox), ("日期", FieldType::Date)]);
         assert_eq!(t.records.iter().map(|r| (t.title(r), r.get(t.fields[2].id).clone(), r.id)).collect::<Vec<_>>(), [("牛奶".to_string(), Value::Bool(true), 1), ("面包".to_string(), Value::Empty, 2)]);
-        assert_eq!((t.views.len(), t.views[0].kind, t.views[0].opts.frozen, got.tables[1].views.len()), (1, ViewKind::Grid, 1, 1));
+        assert_eq!((t.views.len(), t.views[0].kind, t.views[0].opts.frozen, got.tables[1].views.len()), (1, ViewKind::Grid, 0, 1));
         // every id is its own
         let mut ids: Vec<u64> = got.all_ids().collect();
         assert!(ids.iter().all(|i| (1..ID_LIMIT).contains(i)));
@@ -1056,6 +1197,12 @@ mod tests {
         // no rowids: ids of their own, the rows in the order they came
         assert_eq!(t.records.iter().map(|r| t.title(r)).collect::<Vec<_>>(), ["a", "b"]);
         assert!(t.records.iter().all(|r| (1..ID_LIMIT).contains(&r.id)) && t.records[0].id != t.records[1].id);
+        // and the same ones each time the file is read (`stable_id`)
+        assert_eq!(load(&path).unwrap().tables[2].records.iter().map(|r| r.id).collect::<Vec<_>>(), t.records.iter().map(|r| r.id).collect::<Vec<_>>());
+        // so is everything else made for a file nobody described: tables, the fields guessed, the view each is given
+        let again = load(&path).unwrap();
+        assert!(again.all_ids().eq(got.all_ids()));
+        assert!(got.all_ids().all(|i| (1..ID_LIMIT).contains(&i)) && got.all_ids().collect::<HashSet<_>>().len() == got.all_ids().count());
         // a table with no columns of its own still has a title field
         let t = &got.tables[3];
         assert_eq!((t.fields.len(), t.fields[0].ty, t.records.iter().map(|r| r.id).collect::<Vec<_>>()), (1, Text, vec![5, 9]));
@@ -1148,6 +1295,8 @@ mod tests {
             assert_eq!(people.records.iter().map(|r| (r.id, r.get(7).clone())).collect::<Vec<_>>(), [(1, Value::Links(vec![1, 2])), (2, Value::Links(vec![2]))]);
             assert!(base.tables.iter().all(|t| t.records.windows(2).all(|w| w[0].ord < w[1].ord) && t.records.iter().all(|r| order::valid(&r.ord))));
             assert_eq!((books.next_auto, books.records[2].auto), (4, 1));
+            // `_meta`'s times and numbers; nobody known to have written them
+            assert!(base.tables.iter().flat_map(|t| &t.records).all(|r| (r.created, r.modified, &r.created_by, &r.updated_by) == (1000, 2000, &None, &None)));
         };
         check(&base);
         // every row has a key made here, to be written
@@ -1162,11 +1311,95 @@ mod tests {
         assert_eq!(grid(&conn, "select name from pragma_table_info('_tables')").iter().map(|r| text(&r[0])).collect::<Vec<_>>(), ["id", "name", "position", "next_auto"]);
         assert_eq!(grid(&conn, r#"select type from pragma_table_info('书') where name = '_order'"#), [[Sql::Text("TEXT".into())]]);
         assert_eq!(grid(&conn, r#"select id from "书" order by _order"#), [[Sql::Integer(2)], [Sql::Integer(3)], [Sql::Integer(1)]]);
+        assert_eq!(columns(&conn, "人"), ["id", "_order", "_created_at", "_updated_at", "_created_by", "_updated_by", "_auto", "姓名", "书"]);
         drop(conn);
         // read again, it is what it was, with nothing left to write
         let (again, dirty) = load_marked(&path).unwrap();
         assert!(dirty.is_clean());
         assert_eq!(Doc::new(again).base, doc.base);
+    }
+
+    fn columns(conn: &Connection, table: &str) -> Vec<String> { grid(conn, &format!("select name from pragma_table_info('{table}')")).iter().map(|r| text(&r[0])).collect() }
+
+    /// A file as format 2 was first written (#424): sort keys, but the row's data still in `_meta`.
+    const WITH_META: &str = r#"
+        CREATE TABLE "书" ("id" INTEGER PRIMARY KEY, "_order" TEXT, "_meta" TEXT, "书名" TEXT, "编号" INTEGER);
+        INSERT INTO "书" VALUES (11, 'a0', '{"created":"2027-01-15 08:02","modified":"2027-01-15 08:05","auto":1,"c":1800000123456,"m":1800000300000}', '甲', 1),
+            (22, 'a1', '{"created":"2027-01-15 08:02","modified":"2027-01-16 09:00","auto":2}', '乙', 2), (33, 'a2', NULL, '丙', 7);
+        CREATE TABLE _tables (id INTEGER PRIMARY KEY, name TEXT, position INTEGER, next_auto INTEGER);
+        INSERT INTO _tables VALUES (101, '书', 0, 8);
+        CREATE TABLE _fields (id INTEGER PRIMARY KEY, table_id INTEGER, table_name TEXT, name TEXT, position INTEGER, type TEXT, options TEXT, description TEXT);
+        INSERT INTO _fields VALUES (102, 101, '书', '书名', 0, 'text', '{}', ''), (103, 101, '书', '编号', 1, 'auto_number', '{}', '');
+        CREATE TABLE _views (id INTEGER PRIMARY KEY, table_id INTEGER, table_name TEXT, name TEXT, position INTEGER, type TEXT, config TEXT);
+        INSERT INTO _views VALUES (104, 101, '书', '表格', 0, 'grid', '{"frozen":1}');
+        CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT);
+        INSERT INTO _meta VALUES ('format', '2'), ('app', 'Quiet.md');
+    "#;
+
+    #[test]
+    fn row_data_in_meta_moves_to_its_columns() {
+        let dir = Tmp::new("with-meta");
+        let path = dir.file("a.sqlite");
+        Connection::open(&path).unwrap().execute_batch(WITH_META).unwrap();
+        let (base, dirty) = load_marked(&path).unwrap();
+        let check = |base: &Base| {
+            let t = &base.tables[0];
+            let got: Vec<_> = t.records.iter().map(|r| (r.id, r.created, r.modified, r.auto, r.created_by.clone(), r.updated_by.clone())).collect();
+            // the exact milliseconds; to the minute where only the text was; the 编号 cell where `_meta` is missing
+            assert_eq!(got[..2], [(11, 1_800_000_123_456, 1_800_000_300_000, 1, None, None), (22, field::date_ms(2027, 1, 15, 8, 2), field::date_ms(2027, 1, 16, 9, 0), 2, None, None)]);
+            assert_eq!((got[2].0, got[2].3, got[2].2 == got[2].1, t.next_auto), (33, 7, true, 8));
+        };
+        check(&base);
+        // the whole table is written again, in today's columns
+        assert_eq!(dirty.schema, [101].into_iter().collect());
+        let mut doc = Doc::new(base);
+        let made = doc.base.tables[0].records[2].created;
+        doc.dirty = dirty;
+        whole();
+        sync(&mut doc, &path);
+        assert_eq!(whole(), 1);
+        check(&reload(&path));
+        assert_eq!(reload(&path).tables[0].records[2].created, made);
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(columns(&conn, "书"), ["id", "_order", "_created_at", "_updated_at", "_created_by", "_updated_by", "_auto", "书名", "编号"]);
+        assert_eq!(grid(&conn, r#"select _created_at, _created_by, _auto from "书" where id = 11"#), [[Sql::Text(field::iso_utc(1_800_000_123_456 - zone())), Sql::Null, Sql::Integer(1)]]);
+        drop(conn);
+        let (again, dirty) = load_marked(&path).unwrap();
+        assert!(dirty.is_clean());
+        assert_eq!(Doc::new(again).base, doc.base);
+    }
+
+    /// An edit stamps the record with the time and who made it; undo puts both back, in the file too.
+    #[test]
+    fn an_edit_is_stamped_and_undone() {
+        let dir = Tmp::new("stamp");
+        let path = dir.file("a.sqlite");
+        let mut doc = Doc::new(library());
+        create(&path, &doc.base).unwrap();
+        let (t, f) = (doc.base.tables[0].id, doc.base.tables[0].fields[0].id);
+        let row = |path: &Path| grid(&Connection::open(path).unwrap(), r#"select _created_at, _updated_at, _created_by, _updated_by from "读书清单" where id = 3"#).remove(0);
+        let before = (doc.base.tables[0].record(3).cloned().unwrap(), row(&path));
+        doc.base.writer = Writer("agent:整理".into());
+        assert!(doc.set_cells(t, vec![(3, f, Value::Text("改过".into()))]));
+        sync(&mut doc, &path);
+        let r = doc.base.tables[0].record(3).unwrap();
+        assert!((field::now() - r.modified).abs() < 60_000);
+        assert_eq!((r.created, &r.created_by, r.updated_by.as_deref()), (before.0.created, &None, Some("agent:整理")));
+        let after = row(&path);
+        assert_eq!((&after[0], &after[2], &after[3]), (&before.1[0], &Sql::Null, &Sql::Text("agent:整理".into())));
+        assert_ne!(after[1], before.1[1]);
+        // the writer of the moment is whoever edits: undo isn't an edit of its own
+        doc.base.writer = Writer::default();
+        doc.undo();
+        sync(&mut doc, &path);
+        assert_eq!((doc.base.tables[0].record(3).unwrap(), row(&path)), (&before.0, before.1.clone()));
+        doc.redo();
+        sync(&mut doc, &path);
+        assert_eq!(row(&path), after);
+        // a new record is the writer's from the start
+        let id = doc.add_records(t, None, 1, &[])[0];
+        let r = doc.base.tables[0].record(id).unwrap();
+        assert_eq!((r.created_by.as_deref(), r.updated_by.as_deref(), r.created), (Some("user"), Some("user"), r.modified));
     }
 
     #[test]
@@ -1190,6 +1423,91 @@ mod tests {
         assert!(doc.undo());
         sync(&mut doc, &path);
         assert_eq!(orders(), before);
+    }
+
+    /// A 笔记 cell is its note's path, as text; option names another program wrote get the same ids on every read.
+    #[test]
+    fn note_cells_hold_paths() {
+        let dir = Tmp::new("notes");
+        let path = dir.file("读书.sqlite");
+        let mut doc = Doc::new(Base::blank_seeded(T0, 9));
+        let t = doc.base.tables[0].id;
+        let note = doc.add_field(t, None, "读书笔记", FieldType::Note, FieldOpts::default()).unwrap();
+        let pick = doc.add_field(t, None, "状态", FieldType::SingleSelect, FieldOpts::default()).unwrap();
+        let rows: Vec<RecId> = doc.base.tables[0].records.iter().map(|r| r.id).collect();
+        assert!(doc.set_cells(t, vec![(rows[0], note, Value::Text("三体.xml".into())), (rows[1], note, Value::Text("../别处/球状 闪电.xml".into()))]));
+        create(&path, &doc.base).unwrap();
+        assert_eq!(reload(&path), doc.base);
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(grid(&conn, r#"select "读书笔记" from "未命名数据表" order by _order limit 3"#), [[Sql::Text("三体.xml".into())], [Sql::Text("../别处/球状 闪电.xml".into())], [Sql::Null]]);
+        assert_eq!(grid(&conn, "select type from _fields where name = '读书笔记'"), [[Sql::Text("note".into())]]);
+        // another program points a row at a note, and writes option names the field hasn't got
+        conn.execute_batch(&format!(r#"UPDATE "未命名数据表" SET "读书笔记" = ' 新的.xml ', "状态" = '在读' WHERE id = {}; UPDATE "未命名数据表" SET "状态" = '读完' WHERE id = {};"#, rows[2], rows[3])).unwrap();
+        drop(conn);
+        let got = load(&path).unwrap();
+        assert_eq!(got.tables[0].record(rows[2]).unwrap().get(note), &Value::Text("新的.xml".into()));
+        let options = |b: &Base| b.tables[0].field(pick).unwrap().opts.options.clone();
+        assert_eq!(options(&got).iter().map(|o| o.name.as_str()).collect::<Vec<_>>(), ["在读", "读完"]);
+        assert_eq!(options(&load(&path).unwrap()), options(&got));
+        // what the engine does with them: shown, searched and exported by title; never copied to another cell
+        let mut doc = Doc::new(got);
+        assert_eq!(crate::table::csv::plain_text(&doc.base, &doc.base.tables[0]).lines().next(), Some("三体"));
+        let copy = doc.duplicate_records(t, &[rows[0]])[0];
+        assert!(doc.base.tables[0].record(copy).unwrap().get(note).is_empty());
+        assert!(!doc.fill(t, &[rows[0]], &[rows[4]], &[note]));
+        assert!(!doc.paste(t, &rows[4..], &[note], &[vec!["x.xml".into()]]));
+        let twin = doc.duplicate_field(t, note).unwrap();
+        assert!(doc.base.tables[0].records.iter().all(|r| r.get(twin).is_empty()));
+    }
+
+    /// Ids that can't stay (2^53 or more, 0, a duplicate) are replaced as they are read,
+    /// what points at them following, and the same way on every read: two devices
+    /// opening one damaged file make the same file of it.
+    #[test]
+    fn bad_ids_are_replaced_the_same_everywhere() {
+        let dir = Tmp::new("bad-ids");
+        let path = dir.file("a.sqlite");
+        create(&path, &library()).unwrap();
+        const BIG: u64 = ID_LIMIT + 5;
+        Connection::open(&path).unwrap().execute_batch(&format!(r#"
+            INSERT INTO "作者" (id, _order, _created_at, _updated_at, "姓名") VALUES ({BIG}, 'a5', '2027-01-15T00:02:03Z', '2027-01-15T00:02:03Z', '大号');
+            UPDATE "读书清单" SET "作者" = '[1,{BIG}]' WHERE id = 3;
+            UPDATE _tables SET id = {t} WHERE name = '作者';
+            UPDATE _fields SET table_id = {t} WHERE table_name = '作者';
+            UPDATE _views SET table_id = {t} WHERE table_name = '作者';
+            UPDATE _fields SET options = json_set(options, '$.link_table', {t}) WHERE table_name = '读书清单' AND name = '作者';
+            UPDATE _fields SET id = {f} WHERE name = '状态';
+            UPDATE _views SET config = json_set(config, '$.stack', {f}) WHERE name = '看板';
+            UPDATE _fields SET id = 0 WHERE name = '页数';
+            UPDATE _views SET id = (SELECT id FROM _fields WHERE name = '书名') WHERE name = '看板';
+        "#, t = ID_LIMIT + 7, f = ID_LIMIT + 8)).unwrap();
+        let (base, dirty) = load_marked(&path).unwrap();
+        // another read, its own random ids for anything new: the same base
+        assert_eq!(load_marked(&path).unwrap(), (base.clone(), dirty.clone()));
+        assert!(base.all_ids().all(|i| (1..ID_LIMIT).contains(&i)) && base.tables.iter().flat_map(|t| &t.records).all(|r| (1..ID_LIMIT).contains(&r.id)));
+        let ids: Vec<u64> = base.all_ids().collect();
+        assert_eq!(ids.len(), ids.iter().collect::<HashSet<_>>().len());
+        let (books, people) = (&base.tables[0], &base.tables[1]);
+        let f = |n: &str| books.field_named(n).unwrap();
+        // the table and the field that moved are pointed at where they went
+        assert!(people.id < ID_LIMIT && f("作者").opts.link_table == Some(people.id));
+        let kanban = books.views.iter().find(|v| v.name == "看板").unwrap();
+        assert_eq!(kanban.opts.stack, Some(f("状态").id));
+        assert_ne!(kanban.id, f("书名").id);
+        // the record too: the link to it holds its new id
+        let big = people.records.iter().find(|r| people.title(r) == "大号").unwrap().id;
+        assert!(big < ID_LIMIT);
+        assert_eq!(books.record(3).unwrap().get(f("作者").id), &Value::Links(vec![1, big]));
+        // written back at once: `_tables` / `_fields` / `_views`, the new row, the row whose link changed
+        assert!(dirty.meta && dirty.rows[&people.id].contains(&big) && dirty.rows[&books.id].contains(&3));
+        let mut doc = Doc::new(base);
+        doc.dirty = dirty;
+        sync(&mut doc, &path);
+        let conn = Connection::open(&path).unwrap();
+        for sql in [r#"select max(id) from "作者""#, "select max(id) from _tables", "select max(id) from _fields", "select max(id) from _views"] { assert!(int(&grid(&conn, sql)[0][0]).unwrap() < ID_LIMIT as i64, "{sql}"); }
+        assert_eq!(grid(&conn, r#"select "作者" from "读书清单" where id = 3"#), [[Sql::Text(format!("[1,{}]", big))]]);
+        drop(conn);
+        assert!(load_marked(&path).unwrap().1.is_clean());
     }
 
     #[test]
@@ -1409,7 +1727,7 @@ mod tests {
         let cols = base.tables[0].fields.len();
         let t = std::time::Instant::now();
         create(&path, &base).unwrap();
-        println!("create 100000 × {cols}: {:?} ({} MB)", t.elapsed(), std::fs::metadata(&path).unwrap().len() / 1_000_000);
+        println!("create 100000 × {cols}: {:?} ({:.1} MB)", t.elapsed(), std::fs::metadata(&path).unwrap().len() as f64 / 1e6);
         let t = std::time::Instant::now();
         let got = load(&path).unwrap();
         println!("load: {:?}", t.elapsed());

@@ -701,7 +701,8 @@ fn font_for(spec: &TextSpec, m: &Marks) -> Font {
     Font {
         family,
         features: FontFeatures::default(),
-        fallbacks: Some(FontFallbacks::from_fonts(vec!["PingFang SC".into(), "Apple Color Emoji".into()])),
+        // a field drawn as the UI's own labels (`font` the UI's sans: a table's cell) falls back as they do
+        fallbacks: if spec.font == Some(theme::DOC_UI_FONT) { None } else { Some(FontFallbacks::from_fonts(vec!["PingFang SC".into(), "Apple Color Emoji".into()])) },
         weight: if m.bold { bold_weight() } else { spec.weight },
         style: if m.italic || spec.italic { FontStyle::Italic } else { FontStyle::Normal },
     }

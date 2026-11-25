@@ -45,6 +45,10 @@ pub enum EditorEvent {
     Leave,
     /// Esc while 版本历史 is open: back to the live document, then close.
     HistoryEscape,
+    /// A 数据表 made, trashed or restored a note for a 笔记 cell: the library's lists are read again.
+    LibraryChanged,
+    /// A note edited in a 数据表's record panel was saved: its row follows.
+    NoteSaved(Box<crate::table::NoteSaved>),
 }
 
 /// A child page shown by 子页面列表 blocks.
@@ -767,7 +771,7 @@ impl Editor {
         let ranked: Vec<usize> =
             ranked.into_iter().filter(|i| menus::SLASH_ITEMS[*i].group != 0 || menus::basic_visible(menus::SLASH_ITEMS[*i].kind, grid, with_text))
                 .filter(|i| !self.markdown || menus::markdown_ok(menus::SLASH_ITEMS[*i].kind))
-                .filter(|i| crate::DATATABLE || menus::SLASH_ITEMS[*i].kind != SlashKind::DataTable).collect();
+                .collect();
         let mut groups: Vec<usize> = vec![];
         for i in &ranked {
             let g = menus::SLASH_ITEMS[*i].group;

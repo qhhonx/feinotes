@@ -167,6 +167,13 @@ impl SharedStore {
         };
         self.with_top_rows(all)
     }
+    /// The rows as last listed, each top-level folder's under its key, without reading the
+    /// disk: for a view that only looks documents up (数据表's 笔记 cells).
+    pub fn listed<R>(&self, f: impl FnOnce(&[(String, Vec<Entry>)]) -> R) -> R { f(&self.0.borrow().entries) }
+    /// Bring a listed row up to date after a save made outside a window's own list, for `listed`'s readers.
+    pub fn update_listed(&self, id: &str, f: impl FnOnce(&mut Entry)) {
+        if let Some(e) = self.0.borrow_mut().entries.iter_mut().flat_map(|r| r.1.iter_mut()).find(|e| e.id == id) { f(e); }
+    }
     /// The first listing goes off the main thread: until `end_loading`,
     /// `list` reads no document (one opened from the Finder still works).
     pub fn begin_loading(&self) { let mut sh = self.0.borrow_mut(); sh.loading = true; sh.listed_meanwhile = false; }

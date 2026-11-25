@@ -24,6 +24,8 @@ pub enum FieldType {
     Text, SingleSelect, MultiSelect, Person, Date, Attachment, Number, Checkbox, Url, Formula, Lookup,
     AutoNumber, Phone, Email, Location, Barcode, Progress, Currency, Rating,
     Link, CreatedTime, ModifiedTime,
+    /// 笔记: a cell is one note, a document of the library; the cell holds where it is (`field::note_rel`).
+    Note,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,7 +42,7 @@ impl FieldType {
         use FieldType::*;
         &[Text, SingleSelect, MultiSelect, Person, Date, Attachment, Number, Checkbox, Url, Formula, Lookup,
           AutoNumber, Phone, Email, Location, Barcode, Progress, Currency, Rating,
-          Link, CreatedTime, ModifiedTime]
+          Link, CreatedTime, ModifiedTime, Note]
     };
 
     pub fn label(self) -> &'static str {
@@ -50,7 +52,7 @@ impl FieldType {
             Attachment => "附件", Number => "数字", Checkbox => "复选框", Url => "超链接", Formula => "公式",
             Lookup => "查找引用", AutoNumber => "自动编号", Phone => "电话号码", Email => "Email",
             Location => "地理位置", Barcode => "条码", Progress => "进度", Currency => "货币", Rating => "评分",
-            Link => "关联", CreatedTime => "创建时间", ModifiedTime => "最后更新时间",
+            Link => "关联", CreatedTime => "创建时间", ModifiedTime => "最后更新时间", Note => "笔记",
         }
     }
 
@@ -62,7 +64,7 @@ impl FieldType {
             Attachment => "attachment", Number => "number", Checkbox => "checkbox", Url => "url", Formula => "formula",
             Lookup => "lookup", AutoNumber => "auto_number", Phone => "phone", Email => "email",
             Location => "location", Barcode => "barcode", Progress => "progress", Currency => "currency", Rating => "rating",
-            Link => "link", CreatedTime => "created_time", ModifiedTime => "modified_time",
+            Link => "link", CreatedTime => "created_time", ModifiedTime => "modified_time", Note => "note",
         }
     }
 
@@ -73,7 +75,7 @@ impl FieldType {
         match self {
             Text | SingleSelect | MultiSelect | Person | Date | Attachment | Number | Checkbox | Url | Formula | Lookup => FieldGroup::General,
             AutoNumber | Phone | Email | Location | Barcode | Progress | Currency | Rating => FieldGroup::Business,
-            Link | CreatedTime | ModifiedTime => FieldGroup::Advanced,
+            Link | CreatedTime | ModifiedTime | Note => FieldGroup::Advanced,
         }
     }
 
@@ -81,6 +83,11 @@ impl FieldType {
     pub fn computed(self) -> bool {
         matches!(self, FieldType::Formula | FieldType::Lookup | FieldType::AutoNumber | FieldType::CreatedTime | FieldType::ModifiedTime)
     }
+
+    /// A cell's value can be put in another cell as it is (paste, fill, a
+    /// duplicated record or column). Not what is computed, and not a 笔记:
+    /// the note is one record's, a second cell would share it.
+    pub fn copies(self) -> bool { !self.computed() && self != FieldType::Note }
 
     /// Values are numbers (right-aligned, summed, formatted by `NumberFmt`).
     pub fn numeric(self) -> bool {
@@ -96,6 +103,12 @@ impl FieldType {
     }
 
     pub fn is_date(self) -> bool { matches!(self, FieldType::Date | FieldType::CreatedTime | FieldType::ModifiedTime) }
+
+    /// Can be marked 唯一键 (`FieldOpts::unique`): a value people key records by.
+    /// Not what is computed (自动编号 is unique as it is), dates, links or files.
+    pub fn keyable(self) -> bool {
+        matches!(self, FieldType::Text | FieldType::Number | FieldType::Url | FieldType::Email | FieldType::Phone | FieldType::Barcode | FieldType::SingleSelect)
+    }
 }
 
 /// A 单选 / 多选 / 人员 option. `color` is a slot of the tag palette.
@@ -205,6 +218,10 @@ pub struct FieldOpts {
     /// 新记录's value, as text the field parses (`field::parse`).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub default: String,
+    /// 唯一键: records are told apart by this field's value (`Table::find_unique`).
+    /// Only marked: nothing stops two records sharing a value. `FieldType::keyable` fields only.
+    #[serde(skip_serializing_if = "is_default")]
+    pub unique: bool,
 }
 
 fn is_default<T: Default + PartialEq>(v: &T) -> bool { *v == T::default() }
@@ -279,6 +296,9 @@ pub struct Record {
     /// Wall-clock milliseconds.
     pub created: i64,
     pub modified: i64,
+    /// Who made it and who changed it last (`Base::writer`); None: not known (a row another program wrote).
+    pub created_by: Option<String>,
+    pub updated_by: Option<String>,
     /// 自动编号's number: handed out once, never reused.
     pub auto: u64,
     /// Sort key of the manual order (`order.rs`): rises strictly along `Table::records`.
@@ -294,12 +314,14 @@ impl Record {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RowHeight { #[default] Short, Medium, Tall, ExtraTall }
+/// `Fit`: each row as tall as its content needs at the columns' widths (the grid measures it; `px` is
+/// its one-line height).
+pub enum RowHeight { #[default] Short, Medium, Tall, ExtraTall, Fit }
 
 impl RowHeight {
-    pub const ALL: &'static [RowHeight] = &[RowHeight::Short, RowHeight::Medium, RowHeight::Tall, RowHeight::ExtraTall];
-    pub fn px(self) -> f32 { match self { RowHeight::Short => 36., RowHeight::Medium => 44., RowHeight::Tall => 88., RowHeight::ExtraTall => 128. } }
-    pub fn label(self) -> &'static str { match self { RowHeight::Short => "低", RowHeight::Medium => "中等", RowHeight::Tall => "高", RowHeight::ExtraTall => "超高" } }
+    pub const ALL: &'static [RowHeight] = &[RowHeight::Short, RowHeight::Medium, RowHeight::Tall, RowHeight::ExtraTall, RowHeight::Fit];
+    pub fn px(self) -> f32 { match self { RowHeight::Short => 36., RowHeight::Medium => 44., RowHeight::Tall => 88., RowHeight::ExtraTall => 128., RowHeight::Fit => 36. } }
+    pub fn label(self) -> &'static str { match self { RowHeight::Short => "低", RowHeight::Medium => "中等", RowHeight::Tall => "高", RowHeight::ExtraTall => "超高", RowHeight::Fit => "适应内容" } }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -421,7 +443,7 @@ pub struct ViewOpts {
     pub order: Vec<FieldId>,
     pub hidden: HashSet<FieldId>,
     pub widths: BTreeMap<FieldId, f32>,
-    /// Leading columns that stay put when scrolling sideways (at least the first).
+    /// Leading columns that stay put when scrolling sideways (none unless asked for).
     pub frozen: usize,
     pub row_height: RowHeight,
     pub filter: Filter,
@@ -473,6 +495,32 @@ impl Table {
     pub fn view_mut(&mut self, id: ViewId) -> Option<&mut View> { self.views.iter_mut().find(|v| v.id == id) }
     pub fn record(&self, id: RecId) -> Option<&Record> { self.records.iter().find(|r| r.id == id) }
     pub fn record_mut(&mut self, id: RecId) -> Option<&mut Record> { self.records.iter_mut().find(|r| r.id == id) }
+
+    /// The first record whose value of `field` is `v` (by `unique_key`): what an
+    /// upsert by 唯一键 updates. None for an empty value or a field that can't be a key.
+    pub fn find_unique(&self, field: FieldId, v: &Value) -> Option<RecId> {
+        let f = self.field(field)?;
+        let k = unique_key(f, v)?;
+        self.records.iter().find(|r| unique_key(f, r.get(field)).as_ref() == Some(&k)).map(|r| r.id)
+    }
+
+    /// The records that share a value of `field` with another, a group per value,
+    /// in row order (groups by their first record). Empty values share nothing.
+    pub fn duplicates(&self, field: FieldId) -> Vec<Vec<RecId>> {
+        let Some(f) = self.field(field) else { return vec![] };
+        let mut groups: Vec<Vec<RecId>> = vec![];
+        let mut at: HashMap<Key, usize> = HashMap::new();
+        for r in &self.records {
+            let Some(k) = unique_key(f, r.get(field)) else { continue };
+            match at.get(&k) { Some(&i) => groups[i].push(r.id), None => { at.insert(k, groups.len()); groups.push(vec![r.id]); } }
+        }
+        groups.retain(|g| g.len() > 1);
+        groups
+    }
+    /// Its own id, its fields', their options' and its views'.
+    pub fn all_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        [self.id].into_iter().chain(self.fields.iter().flat_map(|f| [f.id].into_iter().chain(f.opts.options.iter().map(|o| o.id)))).chain(self.views.iter().map(|v| v.id))
+    }
     pub fn index_of(&self, id: RecId) -> Option<usize> { self.records.iter().position(|r| r.id == id) }
 
     /// The fields a view shows, in its order.
@@ -510,6 +558,26 @@ impl Table {
 }
 
 /// `want`, or `want 2`, `want 3`… until `ok`.
+/// A value as a 唯一键 compares: text trimmed, then exactly (case counts);
+/// numbers by value (1 is 1.0); a 单选 by its option's name. None: empty, or not a key.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Key { Text(String), Number(u64) }
+
+pub fn unique_key(f: &Field, v: &Value) -> Option<Key> {
+    let text = |s: &str| Some(s.trim()).filter(|s| !s.is_empty()).map(|s| Key::Text(s.to_string()));
+    match (f.ty, v) {
+        (t, _) if !t.keyable() => None,
+        // + 0.0: -0 is 0
+        (FieldType::Number, Value::Number(n)) if n.is_finite() => Some(Key::Number((n + 0.).to_bits())),
+        (FieldType::Number, Value::Text(s)) => super::field::parse_number(s).filter(|n| n.is_finite()).map(|n| Key::Number((n + 0.).to_bits())),
+        (FieldType::SingleSelect, Value::Select(ids)) => ids.first().and_then(|id| f.option(*id)).and_then(|o| text(&o.name)),
+        (FieldType::Number, _) => None,
+        (_, Value::Text(s)) => text(s),
+        (_, Value::Number(n)) => text(&super::field::plain_number(*n)),
+        _ => None,
+    }
+}
+
 pub fn free_name(want: &str, ok: impl Fn(&str) -> bool) -> String {
     // what no file can carry as a name is dropped first (`sqlite_name_ok`), so a number always helps
     let want = want.trim().trim_start_matches('_').replace('\0', "");
@@ -531,18 +599,50 @@ impl IdGen {
     /// splitmix64, cut to 53 bits.
     fn raw(&mut self) -> u64 {
         self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        (z ^ (z >> 31)) >> 11
+        mix(self.state) >> 11
     }
     /// A fresh id that `busy` doesn't refuse either.
     pub fn fresh_unless(&mut self, busy: impl Fn(u64) -> bool) -> u64 {
         loop { let id = self.raw(); if id != 0 && !busy(id) && self.taken.insert(id) { return id; } }
     }
     pub fn fresh(&mut self) -> u64 { self.fresh_unless(|_| false) }
+    /// A `stable_id` nothing here has, taken: for what a file is given as it is read.
+    pub fn stable(&mut self, kind: IdKind, old: u64, table: u64, seq: u64) -> u64 {
+        let id = stable_id(kind, old, table, seq, |x| self.taken.contains(&x));
+        self.taken.insert(id);
+        id
+    }
     /// Ids that are in use without having come from here (read from a file).
     pub fn take(&mut self, ids: impl IntoIterator<Item = u64>) { self.taken.extend(ids); }
+}
+
+/// splitmix64's finalizer.
+fn mix(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// What a replaced id was: the hash of `stable_id` tells them apart.
+#[derive(Clone, Copy)]
+pub enum IdKind { Table = 1, Field, View, Option, Record }
+
+/// The id for something whose id in the file can't be kept (0, a duplicate,
+/// 2^53 or more): a hash of what it is, the id it had, its table's id (0 for a
+/// table) and where it is in the file, so every device that reads the same file
+/// gives it the same one, and two copies merge without one side's id seeming
+/// deleted and another's added. Below 2^53; one `taken` says is in use is passed
+/// for the next one up (from 2^53 - 1 round to 1). Not std's hasher: it may
+/// change between Rust versions.
+pub fn stable_id(kind: IdKind, old: u64, table: u64, seq: u64, taken: impl Fn(u64) -> bool) -> u64 {
+    let h = [kind as u64, old, table, seq].iter().fold(0x5157_4D44_7461_626Cu64, |h, p| mix(h.wrapping_add(0x9E37_79B9_7F4A_7C15) ^ *p));
+    free_from((h >> 11).max(1), taken)
+}
+
+/// `id`, or the first after it that isn't `taken` (past 2^53 - 1: from 1).
+fn free_from(mut id: u64, taken: impl Fn(u64) -> bool) -> u64 {
+    while taken(id) { id = if id + 1 >= ID_LIMIT { 1 } else { id + 1 }; }
+    id
 }
 
 impl Default for IdGen {
@@ -554,17 +654,31 @@ impl std::fmt::Debug for IdGen {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "IdGen({} taken)", self.taken.len()) }
 }
 
+/// Who edits (`Record::created_by` / `updated_by`): `user` in the app; an
+/// agent writing through the app's interface gives its name (`agent:<name>`).
+#[derive(Clone)]
+pub struct Writer(pub String);
+
+impl Default for Writer { fn default() -> Writer { Writer("user".into()) } }
+// who is editing now, not content
+impl PartialEq for Writer { fn eq(&self, _: &Writer) -> bool { true } }
+impl std::fmt::Debug for Writer {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "Writer({:?})", self.0) }
+}
+
 /// One file: its tables, in tab order.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Base {
     pub tables: Vec<Table>,
     pub ids: IdGen,
+    /// Who the edits made now are by: not saved as such, stamped on the records they touch.
+    pub writer: Writer,
 }
 
 impl Base {
     /// The table, field, view and option ids in use.
     pub fn all_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.tables.iter().flat_map(|t| [t.id].into_iter().chain(t.fields.iter().flat_map(|f| [f.id].into_iter().chain(f.opts.options.iter().map(|o| o.id)))).chain(t.views.iter().map(|v| v.id)))
+        self.tables.iter().flat_map(Table::all_ids)
     }
     /// A fresh id for a table, field, view or option: none in the base has it.
     pub fn new_id(&mut self) -> u64 {
@@ -599,10 +713,10 @@ impl Base {
         }
         // the table isn't in the base yet: its ids only have to differ from each other
         for ord in super::order::keys_between(None, None, 5) {
-            t.records.push(Record { id: self.ids.fresh(), created: now, modified: now, auto: t.next_auto, ord, ..Default::default() });
+            t.records.push(Record { id: self.ids.fresh(), created: now, modified: now, created_by: Some(self.writer.0.clone()), updated_by: Some(self.writer.0.clone()), auto: t.next_auto, ord, ..Default::default() });
             t.next_auto += 1;
         }
-        t.views.push(View { id: self.new_id(), name: "表格视图".into(), kind: ViewKind::Grid, opts: ViewOpts { frozen: 1, ..Default::default() } });
+        t.views.push(View { id: self.new_id(), name: "表格视图".into(), kind: ViewKind::Grid, opts: ViewOpts::default() });
         t
     }
 
@@ -623,5 +737,91 @@ impl Base {
         let t = b.blank_table_in(name, column, now);
         b.tables.push(t);
         b
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_ids_repeat_and_step_past_what_is_taken() {
+        let a = stable_id(IdKind::Record, ID_LIMIT + 5, 7, 3, |_| false);
+        assert!((1..ID_LIMIT).contains(&a));
+        assert_eq!(stable_id(IdKind::Record, ID_LIMIT + 5, 7, 3, |_| false), a);
+        // each part counts
+        let others = [stable_id(IdKind::Field, ID_LIMIT + 5, 7, 3, |_| false), stable_id(IdKind::Record, 0, 7, 3, |_| false), stable_id(IdKind::Record, ID_LIMIT + 5, 8, 3, |_| false), stable_id(IdKind::Record, ID_LIMIT + 5, 7, 4, |_| false)];
+        assert!(others.iter().all(|o| *o != a) && others.iter().collect::<HashSet<_>>().len() == 4);
+        // taken: the next one up, round past the top to 1
+        if a + 2 < ID_LIMIT { assert_eq!(stable_id(IdKind::Record, ID_LIMIT + 5, 7, 3, |x| x == a || x == a + 1), a + 2); }
+        assert_eq!(free_from(ID_LIMIT - 2, |x| x >= ID_LIMIT - 2 || x == 1), 2);
+        // the values themselves are part of the file format between devices: they mustn't drift
+        assert_eq!(stable_id(IdKind::Table, 0, 0, 0, |_| false), 312_325_106_538_460);
+    }
+
+    #[test]
+    fn unique_keys_find_and_clash() {
+        let mut d = super::super::Doc::new(Base::blank_seeded(0, 3));
+        let t = d.base.tables[0].id;
+        let text = d.base.tables[0].fields[0].id;
+        let num = d.add_field(t, None, "数", FieldType::Number, FieldOpts::default()).unwrap();
+        let pick = d.add_field(t, None, "选", FieldType::SingleSelect, FieldOpts::default()).unwrap();
+        let ids: Vec<RecId> = d.base.tables[0].records.iter().map(|r| r.id).collect();
+        let s = |x: &str| Value::Text(x.into());
+        d.paste(t, &ids, &[text, num, pick], &[
+            vec!["https://x.com/1".into(), "1".into(), "红".into()],
+            vec![" https://x.com/1 ".into(), "1.0".into(), "红".into()],
+            vec!["HTTPS://x.com/1".into(), "2".into(), "蓝".into()],
+            vec!["   ".into(), "".into(), "".into()],
+            vec!["".into(), "-0".into(), "".into()],
+        ]);
+        let tb = &d.base.tables[0];
+        // text: trimmed, then exact (case counts); empty finds nothing
+        assert_eq!(tb.find_unique(text, &s("https://x.com/1")), Some(ids[0]));
+        assert_eq!(tb.find_unique(text, &s("  https://x.com/1\n")), Some(ids[0]));
+        assert_eq!(tb.find_unique(text, &s("HTTPS://x.com/1")), Some(ids[2]));
+        assert_eq!(tb.find_unique(text, &s("https://X.com/1")), None);
+        assert_eq!((tb.find_unique(text, &s("   ")), tb.find_unique(text, &Value::Empty)), (None, None));
+        assert_eq!(tb.duplicates(text), [vec![ids[0], ids[1]]]);
+        // numbers by value: 1 is 1.0, -0 is 0; text that reads as one finds it
+        assert_eq!(tb.find_unique(num, &Value::Number(1.)), Some(ids[0]));
+        assert_eq!(tb.find_unique(num, &s("1.00")), Some(ids[0]));
+        assert_eq!(tb.find_unique(num, &Value::Number(0.)), Some(ids[4]));
+        assert_eq!(tb.find_unique(num, &s("一")), None);
+        assert_eq!(tb.duplicates(num), [vec![ids[0], ids[1]]]);
+        // a 单选 by its option's name
+        let red = tb.field(pick).unwrap().option_named("红").unwrap().id;
+        assert_eq!(tb.find_unique(pick, &Value::Select(vec![red])), Some(ids[0]));
+        assert_eq!(tb.find_unique(pick, &s("蓝")), Some(ids[2]));
+        assert_eq!(tb.duplicates(pick), [vec![ids[0], ids[1]]]);
+        // not a key: nothing found, nothing clashes
+        let made = d.add_field(t, None, "建", FieldType::CreatedTime, FieldOpts::default()).unwrap();
+        assert_eq!((d.base.tables[0].find_unique(made, &Value::Date(0)), d.base.tables[0].duplicates(made).len()), (None, 0));
+    }
+
+    #[test]
+    fn the_unique_mark_is_undone_and_dropped_with_the_type() {
+        let mut d = super::super::Doc::new(Base::blank_seeded(0, 4));
+        let t = d.base.tables[0].id;
+        let f = d.base.tables[0].fields[1].id;
+        let unique = |d: &super::super::Doc| d.base.tables[0].field(f).unwrap().opts.unique;
+        assert!(d.set_unique(t, f, true) && unique(&d));
+        assert!(!d.set_unique(t, f, true));
+        // only `_fields` changes: the table's rows are left alone
+        assert!(d.dirty.meta && d.dirty.schema.is_empty());
+        d.undo();
+        assert!(!unique(&d));
+        d.redo();
+        assert!(unique(&d));
+        // to a type that can't be a key, the mark goes; it doesn't come back with the type
+        let mut g = d.base.tables[0].field(f).unwrap().clone();
+        g.ty = FieldType::Date;
+        assert!(d.change_field(t, g.clone()) && !unique(&d));
+        let mut g = d.base.tables[0].field(f).unwrap().clone();
+        g.ty = FieldType::Text;
+        assert!(d.change_field(t, g) && !unique(&d));
+        let day = d.add_field(t, None, "日", FieldType::Date, FieldOpts { unique: true, ..Default::default() }).unwrap();
+        assert!(!d.set_unique(t, day, true));
+        assert!(!d.base.tables[0].fields.last().unwrap().opts.unique);
     }
 }

@@ -762,6 +762,13 @@ fn font_row(family: &str, dl: Option<&'static str>, flat: bool, g: SharedString,
             .on_click(cx.listener(move |w, _, _, cx| { cx.stop_propagation(); w.toggle_favorite(&star, cx) }))))
 }
 
+thread_local! {
+    /// 正文字号's 自定义 was picked this session: its stepper shows though the size may be a preset's.
+    static DOC_CUSTOM: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Bumped at each step of 正文字号's stepper, so only the last of a burst is written.
+    static DOC_SIZE_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// A segmented control, each segment `(id, i)`.
 fn segmented(id: &'static str, labels: &[&'static str], selected: usize, on: impl Fn(&mut Workspace, usize, &mut Context<Workspace>) + Clone + 'static, cx: &mut Context<Workspace>) -> Segmented {
     Segmented::new().children(labels.iter().enumerate().map(|(i, label)| {
@@ -1325,6 +1332,21 @@ impl Workspace {
 
 impl Workspace {
     /// Change preferences and refresh what depends on them.
+    /// 正文字号's stepper moved to `pref`: the note and the sample redraw at once; the preferences and
+    /// the folder's look are written when the steps stop for half a second, not at every step.
+    pub(crate) fn set_doc_size_soon(&mut self, pref: String, cx: &mut Context<Self>) {
+        let mut p = prefs();
+        p.doc_size = pref.clone();
+        apply(p);
+        refresh_all(self, cx);
+        cx.notify();
+        let turn = DOC_SIZE_GEN.with(|g| { g.set(g.get() + 1); g.get() });
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
+            let _ = this.update(cx, |w, cx| if DOC_SIZE_GEN.with(|g| g.get()) == turn { w.set_pref(|p| p.doc_size = pref, cx) });
+        }).detach();
+    }
+
     pub(crate) fn set_pref(&mut self, f: impl FnOnce(&mut Preferences), cx: &mut Context<Self>) {
         let old = prefs();
         let mut p = old.clone();
@@ -1631,10 +1653,30 @@ impl Workspace {
                     self.font_row(FontTarget::Doc, tr("文档字体", "Document font"),
                         tr("正文和标题用这个字体，代码块仍用主题的等宽字体。", "Body text and headings use it; code keeps the theme's monospace face."), cx).into_any_element(),
                     // 正文字号: the note's text, headings and code together (themes::doc_len).
+                    // Presets and 自定义: a custom size (12–24pt) steps by 1 under the presets; a size that
+                    // is a preset's lights that preset unless 自定义 was picked this time.
                     row(tr("正文字号", "Text size"), None, {
-                        let sel = match prefs().doc_size.as_str() { "small" => 0, "large" => 2, "xlarge" => 3, _ => 1 };
-                        segmented("doc-size", &[tr("小", "Small"), tr("标准", "Default"), tr("大", "Large"), tr("特大", "Extra large")], sel,
-                            |w, i, cx| w.set_pref(|p| p.doc_size = ["small", "", "large", "xlarge"][i].into(), cx), cx)
+                        let body = themes::active().num("page.size");
+                        let pref = prefs().doc_size.clone();
+                        let pt = themes::doc_size_pt(&pref, body);
+                        let preset = themes::DOC_PRESETS.iter().position(|n| themes::doc_size_pt(n, body) == pt);
+                        let custom = DOC_CUSTOM.with(|c| c.get()) || preset.is_none();
+                        let sel = if custom { 4 } else { preset.unwrap_or(1) };
+                        let step = move |d: f32| move |w: &mut Workspace, _: &ClickEvent, _: &mut Window, cx: &mut Context<Workspace>| {
+                            let next = (pt + d).clamp(themes::DOC_MIN, themes::DOC_MAX);
+                            if next != pt { w.set_doc_size_soon(format!("{next}"), cx) }
+                        };
+                        div().flex_none().flex().flex_col().items_end().gap(px(10.))
+                            .child(segmented("doc-size", &[tr("小", "Small"), tr("标准", "Default"), tr("大", "Large"), tr("特大", "Extra large"), tr("自定义", "Custom")], sel,
+                                move |w, i, cx| {
+                                    DOC_CUSTOM.with(|c| c.set(i == 4));
+                                    // 自定义 starts at the size in force; a preset brings its own
+                                    w.set_pref(|p| p.doc_size = if i == 4 { format!("{pt}") } else { themes::DOC_PRESETS[i].into() }, cx)
+                                }, cx))
+                            .when(custom, |d| d.child(div().flex_none().flex().items_center().gap(px(12.))
+                                .child(button("doc-size-minus", "−").on_click(cx.listener(step(-1.))))
+                                .child(div().w(px(56.)).flex().items_center().justify_center().text_size(px(theme::ui_font())).text_color(Theme::text()).child(format!("{pt} pt")))
+                                .child(button("doc-size-plus", "+").on_click(cx.listener(step(1.))))))
                     }).into_any_element(),
                     row(tr("文档主题", "Document theme"), None, picker).into_any_element(),
                     sample.into_any_element(),
@@ -2407,7 +2449,6 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "早于" => "Is before",
         "显示时间" => "Include time",
         "晚于" => "Is after",
-        "暂未支持" => " is not supported yet",
         "最后更新于" => "Last modified",
         "最后更新时间" => "Last modified time",
         "最大值" => "Max",
@@ -2428,10 +2469,22 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "条件" => "conditions",
         "条码" => "Barcode",
         "条记录" => "records",
-        "条，使用筛选缩小范围" => "more: narrow them down with a filter",
         "查找引用" => "Lookup",
         "查找或创建选项" => "Find or create an option",
         "查看详情" => "Open record",
+        "打开链接" => "Open link",
+        "⌘ + 点击" => "⌘ + click",
+        "一起删除" => "Delete both",
+        "保留笔记" => "Keep the notes",
+        "找不到笔记" => "Note not found",
+        "指向已有笔记" => "Point to an existing note",
+        "搜索笔记" => "Search notes",
+        "整页打开" => "Open as a page",
+        "新建笔记" => "New note",
+        "没有笔记" => "No notes",
+        "独立的数据表才能加笔记列" => "Only a data table of its own can have a note column",
+        "空笔记" => "Empty",
+        "笔记" => "Note",
         "欧元" => "Euro",
         "求和" => "Sum",
         "没有符合筛选条件的记录" => "No records match the filter",
@@ -2499,11 +2552,11 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "货币" => "Currency",
         "超链接" => "URL",
         "超高" => "Extra tall",
+        "适应内容" => "Fit to content",
         "输入名字后回车添加" => "Type a name and press Enter",
         "输入名称后回车新建选项" => "Type a name and press Enter to create an option",
         "过去 30 天内" => "Past 30 days",
         "过去 7 天内" => "Past 7 days",
-        "还有" => "And",
         "还没有附件" => "No attachments yet",
         "进度" => "Progress",
         "选择一个单选或人员字段作为看板的分组依据" => "Choose a single select or person field to stack the kanban by",

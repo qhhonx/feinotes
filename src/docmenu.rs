@@ -25,6 +25,34 @@ thread_local! {
     static ROWS: std::cell::RefCell<std::collections::HashMap<&'static str, Bounds<Pixels>>> = Default::default();
 }
 
+/// What a page's 「…」 holds, by what the page is: each kind its own list, nothing in it that the
+/// page can't do. How the page is seen comes first (页宽, then the 阅读模式, 显示引用列表 and
+/// 窗口保持在最前 switches: the user's order, 2026-11-25), then what is done to it.
+#[derive(Clone, Copy, PartialEq)]
+enum Item { Width, Read, Refs, OnTop, Find, Move, Pin, Star, Child, Copy, Download, CopyMd, Print, Info, History, Delete, Shortcuts, Rule }
+
+/// The page open: a document, one with a 画板 opened in its place, a 画板 file, a 数据表 file.
+#[derive(Clone, Copy, PartialEq)]
+enum Page { Doc, Board, BoardFile, Table }
+
+fn items(page: Page, child: bool) -> Vec<Item> {
+    use Item::*;
+    let print: &[Item] = if crate::printing::SUPPORTED || cfg!(target_family = "wasm") { &[Print, Rule] } else { &[] };
+    let child: &[Item] = if child { &[Child] } else { &[] };
+    let top: &[Item] = if crate::on_top::SUPPORTED { &[OnTop] } else { &[] };
+    let top_rule: &[Item] = if crate::on_top::SUPPORTED { &[OnTop, Rule] } else { &[] };
+    let list: Vec<&[Item]> = match page {
+        Page::Doc => vec![&[Width, Read, Refs], top, &[Rule, Find, Rule, Move, Pin, Star, Rule], child, &[Copy, Download, CopyMd, Rule], print, &[Info, History, Rule, Delete, Rule, Shortcuts]],
+        // a board isn't the page: no page width, no find in its text, its own shortcut help (`?`)
+        Page::Board => vec![&[Read, Refs], top, &[Rule, Move, Pin, Star, Rule], child, &[Copy, Download, CopyMd, Rule], print, &[Info, History, Rule, Delete]],
+        // a board file: no Markdown, no reading mode or references either
+        Page::BoardFile => vec![top_rule, &[Move, Pin, Star, Rule, Copy, Download, Rule], print, &[Info, History, Rule, Delete]],
+        // a 数据表 file: the file's own things; finding, exporting and copying are the table's (its bar)
+        Page::Table => vec![top_rule, &[Move, Pin, Star, Rule, Copy, Rule, History, Rule, Delete]],
+    };
+    list.concat()
+}
+
 /// Records where the row `key` is painted (a submenu's row).
 fn record_row(key: &'static str) -> impl IntoElement {
     canvas(move |b, _, _| ROWS.with(|m| { m.borrow_mut().insert(key, b); }), |_, _, _, _| {}).absolute().inset_0()
@@ -142,10 +170,8 @@ impl Workspace {
         let starred = entry.is_some_and(|e| e.meta.starred > 0);
         let width = entry.map(|e| e.meta.width).unwrap_or_default();
         let refs_shown = !entry.is_some_and(|e| e.meta.refs_hidden);
-        // An open board isn't the page: no page width, find in its text or
-        // editor shortcuts; a standalone board file has no Markdown or
-        // references either
-        let (board, board_file) = self.editor.as_ref().map_or((false, false), |e| { let e = e.read(cx); (e.board_open(), e.board_file) });
+        // which list the 「…」 shows (`items`)
+        let page = self.editor.as_ref().map_or(Page::Doc, |e| { let e = e.read(cx); if e.table_file { Page::Table } else if e.board_file { Page::BoardFile } else if e.board_open() { Page::Board } else { Page::Doc } });
         let reading = self.reading();
         let on_top = self.on_top;
         let sub = self.doc_sub;
@@ -168,9 +194,10 @@ impl Workspace {
         };
         let (pin_id, star_id, mv_id, del_id, dup_id, print_id) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
         // 新建子文档 (#357): under a document of the library.
-        let child = !board_file && self.takes_children(&id);
+        let child = matches!(page, Page::Doc | Page::Board) && self.takes_children(&id);
+        let list = items(page, child);
         let child_id = id.clone();
-        let menu = Popover::new("doc-menu")
+        let mut menu = Popover::new("doc-menu")
             .menu()
             .min_w(px(MENU_W))
             .child(menu_w())
@@ -178,87 +205,56 @@ impl Workspace {
                 if sub_bounds.get().is_none_or(|b| !b.contains(&ev.position)) {
                     w.close_doc_menu(cx);
                 }
-            }))
-            // How this document is seen first: 页宽, then the 阅读模式, 显示引用列表 and 窗口保持在最前
-            // switches (the user's order, 2026-11-25), then what is done to it.
-            .when(!board, |d| d.child(
-                menu_item("dm-width", "page-width", crate::settings::text("页宽设置"), true, sub == Some(DocSub::Width))
+            }));
+        for item in &list {
+            let (pin_id, star_id, mv_id, del_id, dup_id, print_id, child_id) = (pin_id.clone(), star_id.clone(), mv_id.clone(), del_id.clone(), dup_id.clone(), print_id.clone(), child_id.clone());
+            menu = menu.child(match item {
+                Item::Rule => divider().into_any_element(),
+                Item::Width => menu_item("dm-width", "page-width", crate::settings::text("页宽设置"), true, sub == Some(DocSub::Width))
                     .child(record_row("dm-width"))
-                    .on_hover(hover_sub(Some(DocSub::Width))),
-            ))
-            // (a board file has no reading mode or references)
-            .when(!board_file, |d| d.child(
+                    .on_hover(hover_sub(Some(DocSub::Width))).into_any_element(),
                 // switch rows keep the menu open (`MenuItem::switch`): the click flips, nothing else
-                menu_item("dm-read", "eye-open", crate::settings::text("阅读模式"), false, false)
+                Item::Read => menu_item("dm-read", "eye-open", crate::settings::text("阅读模式"), false, false)
                     .switch(reading)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(move |w, _, window, cx| w.set_mode(!reading, window, cx))),
-            )
-            .child(
-                menu_item("dm-refs", "list", crate::settings::text("显示引用列表"), false, false)
+                    .on_click(cx.listener(move |w, _, window, cx| w.set_mode(!reading, window, cx))).into_any_element(),
+                Item::Refs => menu_item("dm-refs", "list", crate::settings::text("显示引用列表"), false, false)
                     .switch(refs_shown)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(move |w, _, _, cx| w.ask_refs(!refs_shown, cx))),
-            ))
-            .when(crate::on_top::SUPPORTED, |d| d.child(
-                menu_item("dm-on-top", crate::on_top::ICON, crate::settings::tr("窗口保持在最前", "Keep Window on Top"), false, false)
+                    .on_click(cx.listener(move |w, _, _, cx| w.ask_refs(!refs_shown, cx))).into_any_element(),
+                Item::OnTop => menu_item("dm-on-top", crate::on_top::ICON, crate::settings::tr("窗口保持在最前", "Keep Window on Top"), false, false)
                     .switch(on_top)
                     .tip_right(crate::settings::tr("窗口会一直显示在其他应用的窗口之上", "Stays above other apps' windows"), None)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(move |w, _, window, cx| w.set_on_top(!on_top, window, cx))),
-            ))
-            .when(!board || !board_file || crate::on_top::SUPPORTED, |d| d.child(divider()))
-            .when(!board, |d| d.child(
-                menu_item("dm-find", "text-search", crate::settings::text("查找和替换"), false, false)
+                    .on_click(cx.listener(move |w, _, window, cx| w.set_on_top(!on_top, window, cx))).into_any_element(),
+                Item::Find => menu_item("dm-find", "text-search", crate::settings::text("查找和替换"), false, false)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(|w, _, window, cx| w.find_in_doc(false, window, cx))),
-            )
-            .child(divider()))
-            .child(
-                menu_item("dm-move", "folder-input", crate::settings::text("移动到"), false, false)
+                    .on_click(cx.listener(|w, _, window, cx| w.find_in_doc(false, window, cx))).into_any_element(),
+                Item::Move => menu_item("dm-move", "folder-input", crate::settings::text("移动到"), false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(move |w, _, window, cx| {
                         w.close_doc_menu(cx);
                         w.open_move(vec![mv_id.clone()], window, cx);
-                    })),
-            )
-            .child(
-                menu_item(
-                    "dm-pin",
-                    if pinned { "pin-off" } else { "pin" },
-                    if pinned { crate::settings::text("从“置顶”移除") } else { crate::settings::text("添加到“置顶”") },
-                    false,
-                    false,
-                )
-                .on_hover(hover_sub(None))
-                .on_click(cx.listener(move |w, _, _, cx| {
-                    w.toggle_pin(&pin_id, cx);
-                    w.close_doc_menu(cx);
-                })),
-            )
-            .child(
-                menu_item("dm-star", if starred { "star-off" } else { "star" }, if starred { crate::settings::text("取消收藏") } else { crate::settings::text("添加到收藏") }, false, false)
+                    })).into_any_element(),
+                Item::Pin => menu_item("dm-pin", if pinned { "pin-off" } else { "pin" }, if pinned { crate::settings::text("从“置顶”移除") } else { crate::settings::text("添加到“置顶”") }, false, false)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_star(&star_id, cx))),
-            )
-            .child(divider())
-            .when(child, |d| d.child(
-                menu_item("dm-child", "plus", crate::settings::tr("新建子文档", "New child page"), false, false)
+                    .on_click(cx.listener(move |w, _, _, cx| {
+                        w.toggle_pin(&pin_id, cx);
+                        w.close_doc_menu(cx);
+                    })).into_any_element(),
+                Item::Star => menu_item("dm-star", if starred { "star-off" } else { "star" }, if starred { crate::settings::text("取消收藏") } else { crate::settings::text("添加到收藏") }, false, false)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(move |w, _, window, cx| { w.close_doc_menu(cx); w.new_child(&child_id, window, cx); })),
-            ))
-            .child(
-                menu_item("dm-copy", "copy", crate::settings::text("创建副本"), false, false)
+                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_star(&star_id, cx))).into_any_element(),
+                Item::Child => menu_item("dm-child", "plus", crate::settings::tr("新建子文档", "New child page"), false, false)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(move |w, _, window, cx| w.duplicate_doc(&dup_id, window, cx))),
-            )
-            .child(
-                menu_item("dm-download", "export", crate::settings::text("下载为"), true, sub == Some(DocSub::Download))
+                    .on_click(cx.listener(move |w, _, window, cx| { w.close_doc_menu(cx); w.new_child(&child_id, window, cx); })).into_any_element(),
+                Item::Copy => menu_item("dm-copy", "copy", crate::settings::text("创建副本"), false, false)
+                    .on_hover(hover_sub(None))
+                    .on_click(cx.listener(move |w, _, window, cx| w.duplicate_doc(&dup_id, window, cx))).into_any_element(),
+                Item::Download => menu_item("dm-download", "export", crate::settings::text("下载为"), true, sub == Some(DocSub::Download))
                     .child(record_row("dm-download"))
-                    .on_hover(hover_sub(Some(DocSub::Download))),
-            )
-            .when(!board_file, |d| d.child(
-                menu_item("dm-copy-md", "doc-md", crate::settings::text("复制为 Markdown"), false, false)
+                    .on_hover(hover_sub(Some(DocSub::Download))).into_any_element(),
+                Item::CopyMd => menu_item("dm-copy-md", "doc-md", crate::settings::text("复制为 Markdown"), false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(|w, _, _, cx| {
                         w.close_doc_menu(cx);
@@ -266,44 +262,31 @@ impl Workspace {
                             ed.update(cx, |e, cx| e.copy_markdown(cx));
                             w.show_toast(crate::settings::text("已复制为 Markdown"), cx);
                         }
-                    })),
-            ))
-            .child(divider())
-            .when(crate::printing::SUPPORTED || cfg!(target_family = "wasm"), |d| d.child(
-                menu_item("dm-print", "printer", crate::settings::text("打印"), false, false)
+                    })).into_any_element(),
+                Item::Print => menu_item("dm-print", "printer", crate::settings::text("打印"), false, false)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(move |w, _, window, cx| w.print_doc(&print_id, window, cx))),
-            ).child(divider()))
-            .child(
-                menu_item("dm-info", "info", crate::settings::text("文档信息"), false, false)
+                    .on_click(cx.listener(move |w, _, window, cx| w.print_doc(&print_id, window, cx))).into_any_element(),
+                Item::Info => menu_item("dm-info", "info", crate::settings::text("文档信息"), false, false)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(|w, _, window, cx| w.open_doc_info(window, cx))),
-            )
-            .child(
-                menu_item("dm-history", "restore", crate::settings::tr("版本历史", "Version history"), false, false)
+                    .on_click(cx.listener(|w, _, window, cx| w.open_doc_info(window, cx))).into_any_element(),
+                Item::History => menu_item("dm-history", "restore", crate::settings::tr("版本历史", "Version history"), false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(|w, _, window, cx| {
                         w.close_doc_menu(cx);
                         if let Some(id) = w.current.clone() { w.open_history(&id, window, cx) }
-                    })),
-            )
-            .child(divider())
-            .child(
-                menu_item("dm-delete", "bin", crate::settings::text("删除"), false, false)
+                    })).into_any_element(),
+                Item::Delete => menu_item("dm-delete", "bin", crate::settings::text("删除"), false, false)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(move |w, _, _, cx| w.ask_delete(&del_id, cx))),
-            )
-            // (a board has its own shortcut help, `?`)
-            .when(!board, |d| d.child(divider())
-            .child(
-                menu_item("dm-shortcuts", "keyboard", crate::settings::text("快捷键"), false, false)
+                    .on_click(cx.listener(move |w, _, _, cx| w.ask_delete(&del_id, cx))).into_any_element(),
+                Item::Shortcuts => menu_item("dm-shortcuts", "keyboard", crate::settings::text("快捷键"), false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(|w, _, _, cx| {
                         w.close_doc_menu(cx);
                         w.shortcuts = true;
                         cx.notify();
-                    })),
-            ));
+                    })).into_any_element(),
+            });
+        }
         // hung from the measured button; not yet measured: not drawn yet
         let Some(b) = self.more_btn_bounds.get() else { return vec![] };
         let (at, _) = crate::design::hang(b, crate::design::Align::End, None);

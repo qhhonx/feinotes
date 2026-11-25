@@ -10,6 +10,9 @@ pub(crate) fn key_down(v: &mut TableView, ev: &KeyDownEvent, window: &mut Window
     let m = &ev.keystroke.modifiers;
     let key = ev.keystroke.key.as_str();
     let cmd = if cfg!(target_os = "macos") { m.platform } else { m.control };
+    // typing in a note in 记录详情: the keys are the note's
+    if notes::typing(v, window, cx) { return; }
+    if header_key(v, key, m.shift, window, cx) { cx.stop_propagation(); return; }
     let mut used = true;
     match key {
         "z" if cmd && m.shift => v.redo(cx),
@@ -18,7 +21,7 @@ pub(crate) fn key_down(v: &mut TableView, ev: &KeyDownEvent, window: &mut Window
         "f" if cmd => v.open_find(window, cx),
         "escape" if v.popup.is_some() || v.dropdown.is_some() => v.close_popup(window, cx),
         "escape" if v.find.is_some() => v.close_find(window, cx),
-        "escape" if v.expanded.is_some() => { v.expanded = None; cx.notify(); }
+        "escape" if v.expanded.is_some() => { notes::close(v, cx); v.expanded = None; cx.notify(); }
         "escape" if v.sel.is_some() || !v.rows_sel.is_empty() || !v.col_sel.is_empty() => { v.clear_selection(); cx.notify(); }
         "c" if cmd => copy(v, false, cx),
         "x" if cmd => { copy(v, false, cx); v.clear_cells(cx); }
@@ -164,4 +167,47 @@ pub(crate) fn export_csv(v: &mut TableView, window: &mut Window, cx: &mut Contex
         // a BOM, so Excel reads the UTF-8 as such
         if let Some(path) = path { let _ = std::fs::write(path, format!("\u{feff}{text}")); }
     }).detach();
+}
+
+/// Keys on the headers, which are picked as cells are: ↑ from the first row picks the column's
+/// header; there ←/→ pick the next (⇧: as well), ↓ goes back to the first row, ⏎ / F2 edit the
+/// name. False: the key is the grid's as usual.
+fn header_key(v: &mut TableView, key: &str, shift: bool, window: &mut Window, cx: &mut Context<TableView>) -> bool {
+    let (ids, first) = {
+        let st = v.state.read(cx);
+        let Some(t) = st.doc.base.table(v.table) else { return false };
+        let Some(view) = t.view(v.view) else { return false };
+        let ids: Vec<FieldId> = t.visible_fields(view).iter().map(|f| f.id).collect();
+        let first = (0..v.result.records.len()).find(|p| v.row_of.get(*p).is_some_and(|r| *r != usize::MAX)).map(|p| t.records[v.result.records[p]].id);
+        (ids, first)
+    };
+    // in the grid: ↑ on the first row climbs into the header
+    if let Some(s) = v.sel {
+        if key == "up" && !shift && s.anchor == s.head && Some(s.head.0) == first {
+            v.col_sel = vec![s.head.1];
+            v.sel = None;
+            cx.notify();
+            return true;
+        }
+        return false;
+    }
+    let (Some(&last), true) = (v.col_sel.last(), v.rows_sel.is_empty()) else { return false };
+    let Some(at) = ids.iter().position(|f| *f == last) else { return false };
+    match key {
+        "enter" | "f2" if v.col_sel.len() == 1 => v.begin_rename(Rename::Field(last), window, cx),
+        "left" | "right" => {
+            let to = if key == "left" { at.saturating_sub(1) } else { (at + 1).min(ids.len() - 1) };
+            if shift { if !v.col_sel.contains(&ids[to]) { v.col_sel.push(ids[to]); } } else { v.col_sel = vec![ids[to]]; }
+            cx.notify();
+        }
+        "down" => {
+            let Some(r) = first else { return true };
+            v.col_sel.clear();
+            v.sel = Some(Sel { anchor: (r, last), head: (r, last) });
+            cx.notify();
+        }
+        "up" => {}
+        _ => return false,
+    }
+    true
 }
