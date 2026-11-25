@@ -3,7 +3,7 @@ file opens, an imported folder (Markdown, an Obsidian vault) shows its page,
 a 思源笔记 workspace its 导入报告.
 
 Build with --release --features devtools, then run this file. Each import
-goes through 我的文档's "+" menu (思源笔记 and Obsidian through its
+goes through a folder's "+" menu (思源笔记 and Obsidian through its
 从其他应用导入… panel) and a `pick` instead of the system panel, into a
 temporary library; `showing` checks what is in front. `found_vault` imports a
 vault the panel found in a stand-in home folder (an Obsidian iCloud vault), so
@@ -22,11 +22,11 @@ here = Path(__file__).resolve().parent
 repo = here.parent.parent
 work = Path(tempfile.mkdtemp(prefix="quiet-import-open-"))
 source = work / "source"
-(source / "docs").mkdir(parents=True)
-DOC = "aaaaaaaa-0000-0000-0000-000000000001"
-(source / "docs" / f"{DOC}.xml").write_text("<title>Start</title>\n<p>start</p>\n")
-(source / "index.json").write_text(json.dumps({DOC: {"created": 1, "modified": 1, "opened": 1}}))
-(source / "preferences.json").write_text(json.dumps({
+# A folder to import into: 主页's "+" only opens folders, a folder's "+" brings things in.
+(source / "Inbox").mkdir(parents=True)
+(source / "Inbox" / "Start.md").write_text("# Start\n\nstart\n")
+(source / ".quiet").mkdir()
+(source / ".quiet" / "preferences.json").write_text(json.dumps({
     "appearance": "light", "english": True, "language": "en", "seen_version": "9.9.9",
     "auto_update": False, "quick_hotkey": False,
 }))
@@ -48,25 +48,25 @@ found = home / "Library/Mobile Documents/iCloud~md~obsidian/Documents/Thesis"
 (found / ".obsidian").mkdir(parents=True)
 (found / "Intro.md").write_text("# Intro\n\nFound.\n")
 
-# The "+" menu under 我的文档 (English): its 导入 rows, then the panel's row if any.
-APPS = "Import from Another App…"
+# Inbox's "+" menu (English): what to click, with `pick` before the row that opens the file panel.
+# An Obsidian vault asks first, open it where it is or import a copy: these take the copy.
+APPS, COPY = "Import from Another App…", "Import a copy"
 CASES = {
-    "markdown_file": (["Import Markdown Files…"], files / "Single.md", "Single"),
-    "markdown_folder": (["Import Folder…"], files / "notes", "notes"),
-    "obsidian_vault": (["Import Folder…"], files / "Vault", "Vault"),
-    "obsidian_app": ([APPS, "Obsidian"], files / "Vault", "Vault"),
-    "siyuan": ([APPS, "SiYuan"], files / "siyuan", "SiYuan Import Report"),
-    "found_vault": ([APPS, "Obsidian · Thesis"], None, "Thesis"),
+    "markdown_file": (["pick", "Import Markdown Files…"], files / "Single.md", "Single"),
+    "markdown_folder": (["pick", "Import Folder…"], files / "notes", "notes"),
+    "obsidian_vault": (["pick", "Import Folder…", COPY], files / "Vault", "Vault"),
+    "obsidian_app": ([APPS, "Obsidian", "pick", COPY], files / "Vault", "Vault"),
+    "siyuan": ([APPS, "pick", "SiYuan"], files / "siyuan", "SiYuan Import Report"),
+    "found_vault": ([APPS, "Obsidian · Thesis", COPY], None, "Thesis"),
 }
 
 failed = []
 for name in sys.argv[1:] or CASES:
     rows, path, title = CASES[name]
     script = work / f"{name}.txt"
-    # The panel looks for other apps' notes as it opens; the pick waits for the row that opens the file panel.
-    steps = [f"row {rows[0]}", "wait 1500"] + [f"pick {path}"] * (path is not None) + [f"row {r}" for r in rows[1:]]
-    if len(rows) == 1: steps = [f"pick {path}", f"row {rows[0]}"]
-    script.write_text("move 5 5\nwait 800\nshowing Start\nanchor create-sidebar\nwait 400\n" + "\n".join(steps) + f"\nwait 2500\nshot {name}\nshowing {title}\n")
+    # The panel looks for other apps' notes as it opens: a pause after each row.
+    steps = [f"pick {path}" if r == "pick" else f"row {r}\nwait 1500" for r in rows]
+    script.write_text("move 5 5\nwait 800\nrow Inbox\nwait 800\nshowing Inbox\nanchor create-folder\nwait 400\n" + "\n".join(steps) + f"\nwait 2500\nshot {name}\nshowing {title}\n")
     out = work / name
     r = subprocess.run([sys.executable, str(here / "run.py"), str(script), str(source), str(out)],
                        env=dict(os.environ, FDL_NOBLINK="1", HOME=str(home)), timeout=120)

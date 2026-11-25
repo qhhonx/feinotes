@@ -95,6 +95,12 @@ pub struct TextField {
     pub mono: bool,
     /// Fonts by run (`TextSpec::font_runs`).
     pub font_runs: Option<crate::editor::text::FontRuns>,
+    /// Lines' ascent and descent (`TextSpec::metrics`).
+    pub metrics: Option<(f32, f32)>,
+    /// Where rows break (`TextSpec::breaks`).
+    pub breaks: Option<crate::editor::text::Breaks>,
+    /// `TextSpec::shift`.
+    pub shift: Point<Pixels>,
     /// Longest text in chars (longer input is cut off).
     pub max_len: Option<usize>,
     /// Only ASCII digits get in (number inputs).
@@ -140,6 +146,9 @@ impl TextField {
             multiline: false,
             mono: false,
             font_runs: None,
+            metrics: None,
+            breaks: None,
+            shift: Point::default(),
             max_len: None,
             digits: false,
             tab_events: false,
@@ -561,6 +570,9 @@ impl Render for TextField {
         spec.wrap = self.wrap;
         spec.mono = self.mono;
         spec.font_runs = self.font_runs.clone();
+        spec.metrics = self.metrics;
+        spec.breaks = self.breaks.clone();
+        spec.shift = self.shift;
         let el = RichTextElement {
             id: self.id,
             text: RichText::plain(self.text.clone()),

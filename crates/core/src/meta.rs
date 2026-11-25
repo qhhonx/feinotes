@@ -1,16 +1,26 @@
 //! FORMAT 5 (sync.md 3.3): what the files cannot say, split by device. Each
-//! device writes only `.quiet/meta/<device id>.json`; every field there is
-//! `[value, stamp]`, and reading takes, per (item, field), the value with the
-//! latest stamp across all devices' files (ties: the larger device id). An
-//! item is a document or folder by its id, with its place in `path` (folders
-//! end in `/`, `null`: removed); `_root` holds the top-level folder's own settings.
-//! A device keeps in its file only the fields it still wins.
+//! device writes only its own files in `.quiet/meta/`: FORMAT 5 one,
+//! `<device id>.json`; FORMAT 6 a folder, `<device id>/`, of `device.json`
+//! and 64 shards `00.json` … `3f.json`, each item in the one `shard_of` its
+//! id. Every field there is `[value, stamp]`, and reading takes, per (item,
+//! field), the value with the latest stamp across all devices' files (ties:
+//! the larger device id). An item is a document or folder by its id, with
+//! its place in `path` (folders end in `/`, `null`: removed); `_root` holds
+//! the top-level folder's own settings. A device keeps in its files only the
+//! fields it still wins.
 
 use super::*;
 use serde_json::Value;
+use std::collections::BTreeSet;
 
-/// How long a 彻底删除 tombstone (`purged`) stays in its device's file.
-pub(super) const PURGED_KEPT_MS: u64 = 30 * 86_400_000;
+/// How long a 彻底删除 tombstone (`purged`) stays in its device's file; in
+/// FORMAT 6's shards also a `gone` one, and an item whose file never came.
+pub(super) const PURGED_KEPT_MS: u64 = 30 * DAY_MS;
+/// A device that wrote nothing for this long no longer holds a tombstone back.
+pub(super) const ACTIVE_MS: u64 = 90 * DAY_MS;
+pub(super) const DAY_MS: u64 = 86_400_000;
+/// How many files a device's metadata is split into (FORMAT 6).
+pub(super) const SHARDS: u8 = 64;
 
 /// The folder in `.quiet/` holding one file per device.
 pub(super) const META: &str = "meta";
@@ -21,6 +31,49 @@ pub(super) const FOLDER_ITEM: &str = "_root";
 pub(super) const KNOWN: &[&str] = &["path", "created", "modified", "pinned", "starred", "order", "root_order", "width", "catalogue_closed", "reading", "info", "refs_hidden"];
 
 type Fields = BTreeMap<String, (Value, u64)>;
+
+/// The time stamps and the clean-up go by: this computer's clock, or the
+/// one a test sets.
+pub(super) fn now_ms() -> u64 {
+    #[cfg(test)]
+    if let Some(t) = CLOCK.with(|c| c.get()) { return t }
+    crate::time::now_ms()
+}
+#[cfg(test)]
+thread_local!(pub(super) static CLOCK: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) });
+
+/// Which shard item `id` is kept in: the low six bits of the first byte of
+/// the SHA-1 of its id (UTF-8), so every device puts it in the same one.
+pub(super) fn shard_of(id: &str) -> u8 { sha1_smol::Sha1::from(id.as_bytes()).digest().bytes()[0] & (SHARDS - 1) }
+
+fn shard_name(n: u8) -> String { format!("{n:02x}.json") }
+
+/// What a file in `.quiet/meta/` is, by its name there.
+#[derive(PartialEq)]
+enum Kind {
+    /// `<id>.json`: a device's metadata in one file (FORMAT 5, and 6 before shards).
+    Whole,
+    /// `<id>/<nn>.json` (a sync's copy, `<nn> 2.json`, too): one of a device's
+    /// shards; `None` for a name that says no shard.
+    Shard(Option<u8>),
+    /// `<id>/device.json`: which device the folder is.
+    Device,
+}
+
+fn kind_of(rel: &str) -> Kind {
+    let Some((_, name)) = rel.split_once('/') else { return Kind::Whole };
+    if name == "device.json" { return Kind::Device }
+    let n = name.get(..2).filter(|_| !name[2..].starts_with(|c: char| c.is_ascii_hexdigit())).and_then(|h| u8::from_str_radix(h, 16).ok());
+    Kind::Shard(n.filter(|n| *n < SHARDS))
+}
+
+/// One shard: the items of `Kind::Shard`.
+#[derive(Default, Serialize, Deserialize)]
+struct ShardFile {
+    v: u32,
+    #[serde(default)]
+    items: BTreeMap<String, Fields>,
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Device {
@@ -47,8 +100,12 @@ pub(super) struct Won { pub v: Value, pub ts: u64, pub dev: String }
 /// `files`: the folder as it was when read, so a later read can tell
 /// nothing changed (`refresh`). `read`: which read this is, a number no
 /// other read had, so the store can tell it has taken in what this one found.
+/// `last`: each file's device and latest stamp, by its name in `.quiet/meta/`.
+/// `held`: the (item, field)s another device than the winner's still holds
+/// an older value for, in its files: the winner, a `null` above all, keeps
+/// it down until that device drops it (`clean`).
 #[derive(Clone, Debug, Default)]
-pub(super) struct Merged { pub items: BTreeMap<String, BTreeMap<String, Won>>, pub max: u64, files: Option<Files>, pub read: u64 }
+pub(super) struct Merged { pub items: BTreeMap<String, BTreeMap<String, Won>>, pub max: u64, files: Option<Files>, pub read: u64, last: BTreeMap<String, (String, u64)>, held: BTreeSet<(String, String)> }
 
 static READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -124,16 +181,32 @@ pub(super) fn still(p: &Path, last: &Option<Seen>) -> bool {
     }
 }
 
-/// The device files seen now.
+/// The device files seen now, by their names in `.quiet/meta/` (`Kind`).
 pub(super) fn files(root: &Path) -> Files {
     let at = web_time::SystemTime::now();
-    let Ok(rd) = crate::vfs::read_dir(dir(root)) else { return vec![] };
-    let mut out: Files = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).map(|p| {
-        let m = crate::vfs::metadata(&p).ok();
-        (p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), seen(&p, stat(&p, m.as_ref()), at))
-    }).collect();
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
+    listing(root).0.into_iter().map(|(rel, p)| { let m = crate::vfs::metadata(&p).ok(); (rel, seen(&p, stat(&p, m.as_ref()), at)) }).collect()
+}
+
+/// The files of `.quiet/meta/` by their names there (`Kind`), in order, and
+/// the devices with a folder. Not a conversion's `<id>.tmp/`, nor its
+/// `.single` copy, backups or temporary files.
+fn listing(root: &Path) -> (Vec<(String, PathBuf)>, BTreeSet<String>) {
+    let (mut out, mut dirs) = (vec![], BTreeSet::new());
+    let Ok(rd) = crate::vfs::read_dir(dir(root)) else { return (out, dirs) };
+    let json = |p: &Path| p.extension().is_some_and(|x| x == "json");
+    for p in rd.flatten().map(|e| e.path()) {
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if json(&p) { out.push((name, p)); continue }
+        if name.ends_with(".tmp") || !p.fs_is_dir() { continue }
+        if let Ok(rd) = crate::vfs::read_dir(&p) {
+            for q in rd.flatten().map(|e| e.path()).filter(|q| json(q)) {
+                out.push((format!("{name}/{}", q.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), q));
+            }
+        }
+        dirs.insert(name);
+    }
+    out.sort();
+    (out, dirs)
 }
 
 /// Whether the device files seen as `now` still hold what `was` saw
@@ -181,18 +254,46 @@ pub(super) fn written(p: &Path, m: Option<&crate::vfs::Metadata>, dataless: bool
 }
 
 /// `merged` read again unless no device file was added, removed or changed
-/// (`unchanged`) since it was read (sync.md 3.3). Any change reads
-/// everything again. Whether it was read again.
+/// (`unchanged`) since it was read (sync.md 3.3). When only shards changed,
+/// only those shards are read again, every device's; any other change reads
+/// everything. Whether it was read again.
 pub(super) fn refresh(root: &Path, me: &str, merged: &mut Merged, warnings: &mut Vec<String>) -> bool {
     let now = files(root);
     // Kept as seen now: one seen within a tick of its change but no longer is
     // trusted on its `Stat` from here on (a later write moves the change time past it).
     if merged.files.as_ref().is_some_and(|was| same_files(root, was, &now, None)) { merged.files = Some(now); return false }
     // Taken before reading: a file changing meanwhile makes the next look read again.
-    *merged = load(root, me, warnings);
+    match merged.files.as_ref().and_then(|was| changed_shards(root, was, &now)) {
+        Some(shards) => {
+            merged.items.retain(|id, _| !shards.contains(&shard_of(id)));
+            merged.held.retain(|(id, _)| !shards.contains(&shard_of(id)));
+            merged.last.retain(|rel, _| !matches!(kind_of(rel), Kind::Shard(Some(n)) if shards.contains(&n)));
+            for (rel, ..) in &now {
+                if let Kind::Shard(Some(n)) = kind_of(rel) && shards.contains(&n) { read_shard(root, me, rel, merged, warnings); }
+            }
+        }
+        None => *merged = load(root, me, warnings),
+    }
     merged.files = Some(now);
     merged.read = READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     true
+}
+
+/// The shards whose files differ between `was` and `now` (`unchanged`),
+/// when nothing else that is read does and no device has a whole file (which
+/// holds every shard): those alone need reading again. `None`: read everything.
+fn changed_shards(root: &Path, was: &Files, now: &Files) -> Option<BTreeSet<u8>> {
+    if was.iter().chain(now).any(|e| kind_of(&e.0) == Kind::Whole) { return None }
+    let (a, b): (BTreeMap<&str, &Seen>, BTreeMap<&str, &Seen>) = (was.iter().map(|(n, s)| (n.as_str(), s)).collect(), now.iter().map(|(n, s)| (n.as_str(), s)).collect());
+    let same = |n: &str| match (a.get(n), b.get(n)) {
+        (Some(last), Some(seen)) => unchanged(last, &seen.stat, || seen.contents.unwrap_or_else(|| contents(&dir(root).join(n)))),
+        _ => false,
+    };
+    let mut out = BTreeSet::new();
+    for name in a.keys().chain(b.keys()).filter(|n| !same(n)) {
+        match kind_of(name) { Kind::Shard(Some(n)) => { out.insert(n); } Kind::Device => {} _ => return None }
+    }
+    Some(out)
 }
 
 /// `refresh` on a copy of `last`.
@@ -206,13 +307,32 @@ impl Merged {
     fn put(&mut self, item: &str, field: &str, w: Won) {
         self.max = self.max.max(w.ts);
         let slot = self.items.entry(item.to_string()).or_default();
-        match slot.get(field) {
-            Some(o) if (o.ts, &o.dev) >= (w.ts, &w.dev) => {}
-            _ => { slot.insert(field.to_string(), w); }
-        }
+        let (wins, loser) = match slot.get(field) {
+            Some(o) if (o.ts, &o.dev) >= (w.ts, &w.dev) => (false, (o.dev != w.dev && !w.v.is_null()).then_some(())),
+            Some(o) => (true, (o.dev != w.dev && !o.v.is_null()).then_some(())),
+            None => (true, None),
+        };
+        if loser.is_some() { self.held.insert((item.to_string(), field.to_string())); }
+        if wins { slot.insert(field.to_string(), w); }
     }
 
     pub fn get(&self, item: &str, field: &str) -> Option<&Value> { self.items.get(item)?.get(field).map(|w| &w.v).filter(|v| !v.is_null()) }
+
+    /// One file's items as device `dev`'s, its latest stamp noted under `rel`.
+    fn take(&mut self, rel: &str, dev: &str, items: BTreeMap<String, Fields>) {
+        let mut last = 0;
+        for (item, fields) in items {
+            for (k, (v, ts)) in fields { last = last.max(ts); self.put(&item, &k, Won { v, ts, dev: dev.to_string() }); }
+        }
+        self.last.insert(rel.to_string(), (dev.to_string(), last));
+    }
+
+    /// Each device's latest stamp: when it last wrote here.
+    fn last_by_device(&self) -> BTreeMap<String, u64> {
+        let mut out: BTreeMap<String, u64> = BTreeMap::new();
+        for (dev, t) in self.last.values() { let e = out.entry(dev.clone()).or_default(); *e = (*e).max(*t); }
+        out
+    }
 
     /// The documents and folders by path as `.quiet/index.json` had them.
     /// Two ids claiming one path (renamed here while made there) become the
@@ -220,7 +340,7 @@ impl Merged {
     pub fn disk_index(&self) -> DiskIndex {
         let mut by_path: BTreeMap<String, Vec<&String>> = BTreeMap::new();
         for (id, fields) in &self.items {
-            if id == FOLDER_ITEM { continue; }
+            if id == FOLDER_ITEM || tomb(fields).is_some() { continue; }
             if let Some(Value::String(p)) = fields.get("path").map(|w| &w.v) && !p.is_empty() { by_path.entry(p.clone()).or_default().push(id); }
         }
         let mut objs = vec![];
@@ -261,6 +381,19 @@ impl Merged {
             .filter_map(|(id, f)| Some((id.clone(), f.get("trashed").map(|w| &w.v).filter(|v| !v.is_null())?.clone()))).collect()
     }
 
+    /// The pages deleted outside the app (`gone` their tombstone) since
+    /// `since` (a stamp), by the path each was at (its `from`); the latest
+    /// for a path. Not one in the 回收站.
+    pub fn gone_from(&self, since: u64) -> HashMap<String, String> {
+        let mut out: HashMap<String, (u64, String)> = HashMap::new();
+        for (id, f) in &self.items {
+            let Some(t) = tomb(f).filter(|t| t.ts >= since && f.get("trashed").is_none_or(|w| w.v.is_null())) else { continue };
+            let Some(from) = t.v.get("from").and_then(Value::as_str) else { continue };
+            if out.get(from).is_none_or(|o| o.0 < t.ts) { out.insert(from.to_string(), (t.ts, id.clone())); }
+        }
+        out.into_iter().map(|(k, (_, id))| (k, id)).collect()
+    }
+
     /// The top-level folder's settings under `prefix` (`look.` …) as one object.
     pub fn root_object(&self, prefix: &str) -> Value {
         let mut obj = serde_json::Map::new();
@@ -269,6 +402,15 @@ impl Merged {
         }
         Value::Object(obj)
     }
+}
+
+/// The tombstone that has item `fields` deleted: the later of `purged` (彻底删除)
+/// and `gone` (deleted outside the app), when the latest `path` is earlier
+/// or `null` (`gone` comes with one). A `path` written after it brings the
+/// item back.
+fn tomb(fields: &BTreeMap<String, Won>) -> Option<&Won> {
+    let t = ["purged", "gone"].iter().filter_map(|k| fields.get(*k)).filter(|w| !w.v.is_null()).max_by(|a, b| (a.ts, &a.dev).cmp(&(b.ts, &b.dev)))?;
+    fields.get("path").is_none_or(|p| p.v.is_null() || (p.ts, &p.dev) < (t.ts, &t.dev)).then_some(t)
 }
 
 /// Which field holds a page's place: `top_order` at the top of the top-level folder,
@@ -409,43 +551,66 @@ pub(super) fn diff(before: &HashMap<String, BTreeMap<String, Value>>, after: &Ha
 
 pub(super) fn dir(root: &Path) -> PathBuf { root.join(INTERNAL).join(META) }
 
-/// Every device's file under `root` merged. A file that does not parse is
+/// Every device's files under `root` merged. A file that does not parse is
 /// passed over (a sync's torn copy); this device's own falls back to its
-/// `.bak`, as the index did.
+/// `.bak`, as the index did. A device with a folder is read from it alone.
 pub(super) fn load(root: &Path, me: &str, warnings: &mut Vec<String>) -> Merged {
     let mut merged = Merged::default();
-    let Ok(rd) = crate::vfs::read_dir(dir(root)) else { return merged };
-    let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
-    paths.sort();
-    for p in paths {
-        let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let f: DeviceFile = if stem == me {
-            // Recovered from its backup: put back, or the next read finds nothing.
-            let n = warnings.len();
-            let f = load_json(&p, "文档索引", warnings);
-            if warnings.len() > n && !p.fs_exists() { let _ = save_json(&p, &f); }
-            f
-        } else if hold_dataless(&p) {
-            // Another device's, still only in iCloud: its changes count once it is here.
-            warnings.push(not_downloaded(&format!("{stem}.json")));
-            continue;
-        } else {
-            match crate::vfs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok()) { Some(f) => f, None => continue }
-        };
-        // A sync's copy (`<id> 2.json`) is still that device's.
-        let dev = if f.device.id.is_empty() { stem } else { f.device.id.clone() };
-        for (item, fields) in f.items {
-            for (k, (v, ts)) in fields { merged.put(&item, &k, Won { v, ts, dev: dev.clone() }); }
+    let (files, dirs) = listing(root);
+    for (rel, p) in files {
+        match kind_of(&rel) {
+            Kind::Device => {}
+            Kind::Shard(_) => read_shard(root, me, &rel, &mut merged, warnings),
+            Kind::Whole => {
+                let stem = rel.trim_end_matches(".json").to_string();
+                if dirs.contains(&stem) { continue }
+                let f: DeviceFile = if stem == me {
+                    // Recovered from its backup: put back, or the next read finds nothing.
+                    let n = warnings.len();
+                    let f = load_json(&p, "文档索引", warnings);
+                    if warnings.len() > n && !p.fs_exists() { let _ = save_json(&p, &f); }
+                    f
+                } else if hold_dataless(&p) {
+                    // Another device's, still only in iCloud: its changes count once it is here.
+                    warnings.push(not_downloaded(&rel));
+                    continue;
+                } else {
+                    match crate::vfs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok()) { Some(f) => f, None => continue }
+                };
+                // A sync's copy (`<id> 2.json`) is still that device's.
+                let dev = if f.device.id.is_empty() { stem } else { f.device.id.clone() };
+                if dirs.contains(&dev) { continue }
+                merged.take(&rel, &dev, f.items);
+            }
         }
     }
     merged
+}
+
+/// Shard `rel` (`<id>/<nn>.json`) into `merged` as its device's.
+fn read_shard(root: &Path, me: &str, rel: &str, merged: &mut Merged, warnings: &mut Vec<String>) {
+    let p = dir(root).join(rel);
+    let dev = rel.split_once('/').map_or(rel, |d| d.0);
+    let f: ShardFile = if dev == me {
+        // Recovered from its backup: put back, as a whole file is.
+        let n = warnings.len();
+        let f = load_json(&p, "文档索引", warnings);
+        if warnings.len() > n && !p.fs_exists() && let Ok(b) = serde_json::to_vec_pretty(&f) { let _ = put_shard(&p, &b); }
+        f
+    } else if hold_dataless(&p) {
+        warnings.push(not_downloaded(rel));
+        return;
+    } else {
+        match crate::vfs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok()) { Some(f) => f, None => return }
+    };
+    merged.take(rel, dev, f.items);
 }
 
 /// A stamp later than every one seen (a hybrid logical clock): this
 /// computer's time in milliseconds, or one past the latest seen when the
 /// clock is behind.
 pub(super) fn stamp(clock: &std::cell::Cell<u64>, seen: u64) -> u64 {
-    let t = crate::time::now_ms().max(clock.get().max(seen) + 1);
+    let t = now_ms().max(clock.get().max(seen) + 1);
     clock.set(t);
     t
 }
@@ -463,21 +628,92 @@ pub(super) fn commit(root: &Path, me: &Device, clock: &std::cell::Cell<u64>, cha
 /// not, so the next look reads everything again.
 pub(super) fn commit_over(root: &Path, me: &Device, clock: &std::cell::Cell<u64>, merged: &mut Merged, changes: Vec<(String, String, Value)>, warnings: &mut Vec<String>) -> Result<()> {
     refresh(root, &me.id, merged, warnings);
+    let shards: BTreeSet<u8> = changes.iter().map(|c| shard_of(&c.0)).collect();
     if !changes.is_empty() {
         let ts = stamp(clock, merged.max);
         for (item, field, v) in changes { merged.put(&item, &field, Won { v, ts, dev: me.id.clone() }); }
     }
-    write_own(root, me, merged).inspect_err(|_| merged.files = None)
+    write_own(root, me, merged, Some(&shards)).inspect_err(|_| merged.files = None)
 }
 
-/// Write device `me`'s file from `merged`: the fields `me` wins there. Only
-/// this device writes its file, so when the others' files are as `merged`
-/// read them, the result stays good for `cached`.
-fn write_own(root: &Path, me: &Device, merged: &mut Merged) -> Result<()> {
+/// Whether device `me` writes shards: it has its folder, or it is new to a
+/// FORMAT 6 top-level folder. One that still has its whole file goes on
+/// with it until `to_shards` converts it.
+fn sharded(root: &Path, me: &str) -> bool {
+    if dir(root).join(me).fs_is_dir() { return true }
+    // No marker yet: `.quiet/` is made with the first write, as FORMAT 6.
+    let format = Store::format_at(root);
+    !dir(root).join(format!("{me}.json")).fs_exists() && (format == 0 || format >= 6)
+}
+
+/// Write device `me`'s files from `merged`: the fields `me` wins there, in
+/// `shards` (`None`: all), each cleaned first (`clean`). Only this device
+/// writes its files, so the others stay as `merged` read them; a later
+/// look reads again what changed meanwhile.
+fn write_own(root: &Path, me: &Device, merged: &mut Merged, shards: Option<&BTreeSet<u8>>) -> Result<()> {
+    if !sharded(root, &me.id) { return write_whole(root, me, merged) }
+    let all: BTreeSet<u8> = (0..SHARDS).collect();
+    let shards = shards.unwrap_or(&all);
+    clean(root, &me.id, merged, shards);
+    let mut out: BTreeMap<u8, BTreeMap<String, Fields>> = shards.iter().map(|n| (*n, BTreeMap::new())).collect();
+    for (item, fields) in &merged.items {
+        if !fields.values().any(|w| w.dev == me.id) { continue }
+        let Some(slot) = out.get_mut(&shard_of(item)) else { continue };
+        for (k, w) in fields { if w.dev == me.id { slot.entry(item.clone()).or_default().insert(k.clone(), (w.v.clone(), w.ts)); } }
+    }
+    let own = dir(root).join(&me.id);
+    // The folder comes with this device's first field, not before.
+    if !own.fs_is_dir() && out.values().all(BTreeMap::is_empty) { return Ok(()) }
+    crate::vfs::create_dir_all(&own)?;
+    let mut wrote = vec!["device.json".to_string()];
+    put_shard(&own.join("device.json"), &serde_json::to_vec_pretty(me)?)?;
+    for (n, items) in out {
+        let (name, p) = (shard_name(n), own.join(shard_name(n)));
+        let rel = format!("{}/{name}", me.id);
+        if items.is_empty() {
+            if p.fs_exists() { crate::vfs::remove_file(&p)?; }
+            merged.last.remove(&rel);
+        } else {
+            let last = items.values().flat_map(|f| f.values().map(|x| x.1)).max().unwrap_or(0);
+            put_shard(&p, &serde_json::to_vec_pretty(&ShardFile { v: 1, items })?)?;
+            merged.last.insert(rel, (me.id.clone(), last));
+        }
+        wrote.push(name);
+    }
+    // The folder's entries synced once, for every shard written.
+    #[cfg(unix)]
+    crate::vfs::File::open(&own)?.sync_all()?;
+    if let Some(files) = merged.files.as_mut() {
+        for name in wrote {
+            let rel = format!("{}/{name}", me.id);
+            files.retain(|e| e.0 != rel);
+            if let Some(seen) = seen_now(&own.join(&name)) { files.push((rel, seen)); }
+        }
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+    Ok(())
+}
+
+/// `save_json` for a shard: through a temporary file, unless it holds
+/// `bytes` already, the folder's entry left for the caller to sync. Its
+/// `.bak` (for `load_json`) is a cache: not synced to the disk, it costs a
+/// shard no second sync.
+fn put_shard(path: &Path, bytes: &[u8]) -> Result<()> {
+    if hold_dataless(path) { return Err(not_written(path)) }
+    match crate::vfs::read(path) {
+        Ok(old) if old == bytes => return Ok(()),
+        Ok(old) => { let _ = write_cache(&with_suffix(path, ".bak"), &old); }
+        Err(_) => {}
+    }
+    write_atomic_then(path, bytes, false)
+}
+
+/// `write_own` for a device with one whole file (FORMAT 5).
+fn write_whole(root: &Path, me: &Device, merged: &mut Merged) -> Result<()> {
     let mut items: BTreeMap<String, Fields> = BTreeMap::new();
     // A page purged here 30 days ago: every device has had time to see it go,
     // so this device's fields about it are dropped (others drop their own).
-    let expired = crate::time::now_ms().saturating_sub(PURGED_KEPT_MS);
+    let expired = now_ms().saturating_sub(PURGED_KEPT_MS);
     for fields in merged.items.values_mut() {
         if fields.get("purged").is_some_and(|w| w.dev == me.id && !w.v.is_null() && w.ts < expired) { fields.retain(|_, w| w.dev != me.id); }
     }
@@ -491,6 +727,138 @@ fn write_own(root: &Path, me: &Device, merged: &mut Merged) -> Result<()> {
     let now = files(root);
     merged.files = merged.files.as_ref().filter(|was| same_files(root, was, &now, Some(&own))).map(|_| now);
     Ok(())
+}
+
+/// Whether an item's fields (as `by_id` has them) say anything a person
+/// set, so it needs a record at all. Stands in for the sparse rule (w4a):
+/// any field not `null`.
+pub(super) fn has_user_data(fields: &BTreeMap<String, Value>) -> bool { fields.values().any(|v| !v.is_null()) }
+
+/// FORMAT 6's clean-up of device `me`'s fields in `shards` (sync.md 3.3).
+/// An item deleted (`tomb`) 30 days ago goes once every device that wrote
+/// in the last 90 days has written since (has seen it go); so does one
+/// left with nothing (`has_user_data`, every field `null`), by its latest
+/// field. One with neither goes when nothing about it changed in 30 days
+/// and its file is not here (it never came), unless it is in the 回收站.
+/// Each device drops only its own fields, the others theirs.
+fn clean(root: &Path, me: &str, merged: &mut Merged, shards: &BTreeSet<u8>) {
+    let now = now_ms();
+    let (old, active) = (now.saturating_sub(PURGED_KEPT_MS), now.saturating_sub(ACTIVE_MS));
+    let last = merged.last_by_device();
+    let seen_by_all = |t: &Won| t.ts < old && last.iter().all(|(d, l)| d == me || *d == t.dev || *l < active || *l > t.ts);
+    let Merged { items, held, .. } = merged;
+    for (id, fields) in items.iter_mut() {
+        if id == FOLDER_ITEM || !fields.values().any(|w| w.dev == me) || !shards.contains(&shard_of(id)) { continue }
+        let values: BTreeMap<String, Value> = fields.iter().map(|(k, w)| (k.clone(), w.v.clone())).collect();
+        let drop = match tomb(fields) {
+            Some(t) => seen_by_all(t),
+            None if !has_user_data(&values) => fields.values().max_by(|a, b| (a.ts, &a.dev).cmp(&(b.ts, &b.dev))).is_some_and(seen_by_all),
+            None => fields.values().all(|w| w.ts < old) && fields.get("trashed").is_none_or(|w| w.v.is_null()) && !here(root, fields.get("path")),
+        };
+        // Not while another device's files still hold an older value under
+        // one of these: dropping it here would bring that value back. Having
+        // written since (`seen_by_all`) does not say it has dropped it: a
+        // device drops what it lost only when it writes that shard again.
+        let holds_down = fields.iter().any(|(k, w)| w.dev == me && held.contains(&(id.clone(), k.clone())));
+        if drop && !holds_down { fields.retain(|_, w| w.dev != me); }
+    }
+    items.retain(|_, f| !f.is_empty());
+}
+
+/// Whether the file at `path` is here, or on its way (an iCloud placeholder).
+fn here(root: &Path, path: Option<&Won>) -> bool {
+    let Some(rel) = path.and_then(|w| w.v.as_str()).filter(|s| !s.is_empty()) else { return false };
+    let p = root.join(rel.trim_end_matches('/'));
+    p.fs_exists() || layout::placeholder(&p).is_some_and(|q| q.fs_exists())
+}
+
+/// Every one of device `me`'s shards cleaned (`clean`) and written again
+/// where that changed them: once a day, on opening.
+pub(super) fn clean_all(root: &Path, me: &Device, warnings: &mut Vec<String>) -> Result<()> {
+    if !dir(root).join(&me.id).fs_is_dir() { return Ok(()) }
+    let mut merged = load(root, &me.id, warnings);
+    write_own(root, me, &mut merged, None)
+}
+
+/// Whether device `me` still has its whole file (a conversion stopped
+/// midway still has it): `to_shards` has something to do.
+pub(super) fn needs_shards(root: &Path, me: &str) -> bool { dir(root).join(format!("{me}.json")).fs_exists() }
+
+/// FORMAT 6 as the development builds wrote it, one whole file per device,
+/// to shards: this device's own file only (each converts its own, so a
+/// synced folder stays readable throughout). The file is copied to
+/// `<id>.json.single` (to go back: remove `<id>/`, rename the copy), the
+/// shards are written to `<id>.tmp/` and renamed to `<id>/`, and the file is
+/// removed with its `.bak` (the copy is its backup now). Each step can be
+/// redone after a crash: a `<id>.tmp/` is made again, and with `<id>/` there
+/// only the removal is left. The fields keep their values and stamps.
+/// Whether the file was removed now (`tend_single` counts from then).
+pub(super) fn to_shards(root: &Path, me: &Device, warnings: &mut Vec<String>) -> Result<bool> {
+    let d = dir(root);
+    let whole = d.join(format!("{}.json", me.id));
+    let (own, tmp) = (d.join(&me.id), d.join(format!("{}.tmp", me.id)));
+    let remove = || -> Result<bool> {
+        let bak = with_suffix(&whole, ".bak");
+        if bak.fs_exists() { crate::vfs::remove_file(&bak)?; }
+        // Set aside as corrupt by `load_json`, it is gone already.
+        if !whole.fs_exists() { return Ok(false) }
+        crate::vfs::remove_file(&whole)?;
+        Ok(true)
+    };
+    if tmp.fs_exists() { crate::vfs::remove_dir_all(&tmp)?; }
+    if own.fs_is_dir() { return remove() }
+    if crate::vfs::is_dataless(&whole) { return Ok(false) }
+    let Ok(bytes) = crate::vfs::read(&whole) else { return Ok(false) };
+    let keep = d.join(format!("{}.json.single", me.id));
+    if crate::vfs::read(&keep).ok().as_deref() != Some(&bytes[..]) { write_atomic(&keep, &bytes)?; }
+    let f: DeviceFile = load_json(&whole, "文档索引", warnings);
+    let mut shards: BTreeMap<u8, BTreeMap<String, Fields>> = BTreeMap::new();
+    for (item, fields) in f.items { shards.entry(shard_of(&item)).or_default().insert(item, fields); }
+    crate::vfs::create_dir_all(&tmp)?;
+    write_atomic(&tmp.join("device.json"), &serde_json::to_vec_pretty(me)?)?;
+    for (n, items) in shards { write_atomic(&tmp.join(shard_name(n)), &serde_json::to_vec_pretty(&ShardFile { v: 1, items })?)?; }
+    crate::vfs::rename(&tmp, &own)?;
+    #[cfg(unix)]
+    crate::vfs::File::open(&d)?.sync_all()?;
+    remove()
+}
+
+/// The `.single` copy `to_shards` left, removed 30 days after the
+/// conversion (`here.converted`; a copy found with no time noted counts
+/// from now).
+pub(super) fn tend_single(root: &Path, me: &str, here: &mut Here) -> Result<()> {
+    let keep = dir(root).join(format!("{me}.json.single"));
+    if !keep.fs_exists() { here.converted = 0; return Ok(()) }
+    if here.converted == 0 { here.converted = now_ms(); return Ok(()) }
+    if now_ms().saturating_sub(here.converted) >= PURGED_KEPT_MS { crate::vfs::remove_file(&keep)?; here.converted = 0; }
+    Ok(())
+}
+
+/// What this computer keeps about a top-level folder's metadata, outside it
+/// and never synced: where it last saw each item's file (only a file seen
+/// here can be found gone, sync.md 3.3) and when it last cleaned its shards.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(super) struct Here {
+    /// Item id → the path its file was at.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub seen: HashMap<String, String>,
+    /// When `clean_all` last ran (milliseconds).
+    #[serde(default)]
+    pub cleaned: u64,
+    /// When this device's whole file became shards (`to_shards`), while its
+    /// `.single` copy is kept (milliseconds).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub converted: u64,
+}
+
+impl Here {
+    fn path(root: &Path, key: &str, me: &str) -> PathBuf { local_base(root).join("libraries").join(format!("{key}.{me}.meta.json")) }
+    pub fn read(root: &Path, key: &str, me: &str) -> Here { reread(&Self::path(root, key, me)).unwrap_or_default() }
+    pub fn save(&self, root: &Path, key: &str, me: &str) -> Result<()> {
+        let p = Self::path(root, key, me);
+        if let Some(d) = p.parent() { crate::vfs::create_dir_all(d)?; }
+        write_cache(&p, &serde_json::to_vec(self)?)
+    }
 }
 
 /// This computer's id, made once and kept with its other local data; the
@@ -560,17 +928,29 @@ pub(super) fn devices(root: &Path) -> Vec<DeviceInfo> {
     out
 }
 
-/// The device files there are, each with the device it is (`<id> 2.json`, a
-/// sync's copy, is still `<id>`'s).
+/// The devices' files there are, each with the device it is (`<id> 2.json`,
+/// a sync's copy, is still `<id>`'s): a whole file, or a folder of shards
+/// read as one.
 fn device_files(root: &Path) -> Vec<(PathBuf, DeviceFile)> {
-    let Ok(rd) = crate::vfs::read_dir(dir(root)) else { return vec![] };
-    let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
-    paths.sort();
-    paths.into_iter().filter(|p| !crate::vfs::is_dataless(p)).filter_map(|p| {
-        let mut f: DeviceFile = serde_json::from_slice(&crate::vfs::read(&p).ok()?).ok()?;
-        if f.device.id.is_empty() { f.device.id = p.file_stem()?.to_string_lossy().into_owned(); }
-        Some((p, f))
-    }).collect()
+    let (files, dirs) = listing(root);
+    let mut out: Vec<(PathBuf, DeviceFile)> = vec![];
+    for dev in &dirs {
+        let mut f: DeviceFile = reread(&dir(root).join(dev).join("device.json")).map(|device| DeviceFile { device, ..Default::default() }).unwrap_or_default();
+        f.device.id = dev.clone();
+        for (_, p) in files.iter().filter(|(rel, _)| rel.split_once('/').is_some_and(|(d, _)| d == dev) && matches!(kind_of(rel), Kind::Shard(_))) {
+            if crate::vfs::is_dataless(p) { continue }
+            let Some(s) = crate::vfs::read(p).ok().and_then(|b| serde_json::from_slice::<ShardFile>(&b).ok()) else { continue };
+            f.items.extend(s.items);
+        }
+        out.push((dir(root).join(dev), f));
+    }
+    for (rel, p) in files.iter().filter(|(rel, _)| kind_of(rel) == Kind::Whole && !dirs.contains(rel.trim_end_matches(".json"))) {
+        if crate::vfs::is_dataless(p) { continue }
+        let Some(mut f) = crate::vfs::read(p).ok().and_then(|b| serde_json::from_slice::<DeviceFile>(&b).ok()) else { continue };
+        if f.device.id.is_empty() { f.device.id = rel.trim_end_matches(".json").to_string(); }
+        if !dirs.contains(&f.device.id) { out.push((p.clone(), f)); }
+    }
+    out
 }
 
 /// 移除已停用的设备: what device `gone` still wins becomes `me`'s, with the
@@ -583,11 +963,10 @@ pub(super) fn retire(root: &Path, me: &Device, gone: &str, warnings: &mut Vec<St
     let files = device_files(root);
     anyhow::ensure!(files.iter().any(|(_, f)| f.device.id == gone), "没有这台设备");
     // Every file but `gone`'s, as `load` reads them (this device's own may come from its `.bak`).
-    let own = dir(root).join(format!("{}.json", me.id));
-    let mut rest = Merged::default();
-    let mine: DeviceFile = load_json(&own, "文档索引", warnings);
-    for (dev, f) in files.iter().filter(|(p, f)| f.device.id != gone && *p != own).map(|(_, f)| (&f.device.id, f)).chain([(&me.id, &mine)]) {
-        for (item, fields) in &f.items {
+    let mine = own_items(root, &me.id, warnings);
+    let mut rest = Merged { last: all.last.iter().filter(|(_, (d, _))| d != gone).map(|(k, v)| (k.clone(), v.clone())).collect(), ..Default::default() };
+    for (dev, items) in files.iter().filter(|(p, f)| f.device.id != gone && !is_own(root, &me.id, p)).map(|(_, f)| (&f.device.id, &f.items)).chain([(&me.id, &mine)]) {
+        for (item, fields) in items {
             for (k, (v, ts)) in fields { rest.put(item, k, Won { v: v.clone(), ts: *ts, dev: dev.clone() }); }
         }
     }
@@ -600,10 +979,29 @@ pub(super) fn retire(root: &Path, me: &Device, gone: &str, warnings: &mut Vec<St
             slot.insert(k.clone(), Won { v: w.v.clone(), ts, dev: me.id.clone() });
         }
     }
-    // This device's file first: a crash before the others go loses nothing.
-    write_own(root, me, &mut rest)?;
-    for (p, f) in files { if f.device.id == gone { crate::vfs::remove_file(&p)?; } }
+    // This device's files first: a crash before the others go loses nothing.
+    write_own(root, me, &mut rest, None)?;
+    for (p, f) in files {
+        if f.device.id != gone { continue }
+        if p.fs_is_dir() { crate::vfs::remove_dir_all(&p)?; } else { crate::vfs::remove_file(&p)?; }
+    }
     Ok(rest)
+}
+
+/// Whether `p` (from `device_files`) is device `me`'s own folder or file.
+fn is_own(root: &Path, me: &str, p: &Path) -> bool { *p == dir(root).join(me) || *p == dir(root).join(format!("{me}.json")) }
+
+/// Device `me`'s own items as `load` reads them: from its shards, else its
+/// whole file (either may come from its `.bak`).
+fn own_items(root: &Path, me: &str, warnings: &mut Vec<String>) -> BTreeMap<String, Fields> {
+    let own = dir(root).join(me);
+    if !own.fs_is_dir() { return load_json::<DeviceFile>(&dir(root).join(format!("{me}.json")), "文档索引", warnings).items }
+    let mut items = BTreeMap::new();
+    for n in 0..SHARDS {
+        let p = own.join(shard_name(n));
+        if p.fs_exists() { items.extend(load_json::<ShardFile>(&p, "文档索引", warnings).items); }
+    }
+    items
 }
 
 /// The id of a file found on disk with no entry yet: the same on every

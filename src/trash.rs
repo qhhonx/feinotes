@@ -233,7 +233,7 @@ impl Workspace {
                 self.status = crate::app::SaveStatus::Failed(msg);
             }
         }
-        self.entries = self.store.list();
+        self.entries.set(self.store.list());
         self.sort();
         self.sync_sub_pages(cx);
         self.trash = self.store.list_trash();
@@ -254,7 +254,9 @@ impl Workspace {
     }
 
     fn purge_trash(&mut self, ids: Vec<String>, success: &'static str, cx: &mut Context<Self>) {
-        if self.store.file_task_busy() || self.file_history.busy || self.tree_writes_pending() || ids.is_empty() { return; }
+        if self.store.file_task_busy() || self.file_history.busy || ids.is_empty() { return; }
+        let later = ids.clone();
+        if self.after_tree_writes(move |w, _, cx| w.purge_trash(later, success, cx)) { return; }
         let Some(task_guard) = self.store.begin_file_task() else { return };
         // Each top-level folder's 回收站 is its own: one writer, and one write, per top-level folder.
         let mut writers: Vec<(String, crate::store::Store, Vec<String>)> = vec![];

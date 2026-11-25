@@ -198,7 +198,20 @@ Before the fix, most of each frame went to work that grows with the library and 
 - A folder card on Home walked every entry once for each folder under it and copied every document below it, to paint the newest four.
 - Home and a folder's page copied and sorted their whole level, 3,016 entries for `Inbox`, and copied it once more for the grid.
 
-Now only the pinned entries are sorted, and the rest is built once and kept until something it shows changes (`tree::shape_key`, a hash of every field the rows and cards show or are sorted by), so an unchanged frame does none of it. The tree build itself looks up only the folders instead of every id. What is left of `render_sidebar` is mostly `shape_key` (about 0.25 ms a frame) and the rows' spring state. Screenshots of every view above, the row menu and `examples/menus.txt` are pixel-identical before and after (`compare.py`).
+Now only the pinned entries are sorted, and the rest is built once and kept until the entries change, so an unchanged frame does none of it. The tree build itself looks up only the folders instead of every id. Screenshots of every view above, the row menu and `examples/menus.txt` are pixel-identical before and after (`compare.py`).
+
+The rows and cards were first kept by a hash of every field they show (`tree::shape_key`), computed a few times a frame, because the window's entries were assigned in some 70 places and nothing said when they changed. They are now an `Entries` ([entries.rs](../src/entries.rs)): read as a slice, changed only through `set`, `edit` and `take`, each giving them a new `generation` from one counter (a list replaced whole never repeats a number). The sidebar's rows, Home's level and the folder cards' papers are rebuilt when it moves; assigning a `Vec` to the field no longer compiles. Browsing the views above moves it six times in all (the load, the first sort, opening a document). Measured 2026-11-26 against `032e2fb`, three runs alternating, `bench 600 noop` with a 4 s `sample` in each view, medians, ms a frame:
+
+| View | `Window::draw` | `Workspace::render` | of which `render_sidebar` | `shape_key` |
+|---|---:|---:|---:|---:|
+| Inbox open | 2.81 → 1.56 | 0.93 → 0.30 | 0.67 → 0.28 | 0.49 → 0 |
+| Inbox closed | 2.18 → 0.88 | 0.62 → 0.10 | 0.43 → 0.08 | 0.41 → 0 |
+| Sidebar scrolled | 2.96 → 1.48 | 1.16 → 0.37 | 0.90 → 0.35 | 0.50 → 0 |
+| Home | 3.35 → 0.92 | 1.01 → 0.21 | 0.78 → 0.20 | 1.17 → 0 |
+| Home scrolled | 3.64 → 1.78 | 0.97 → 0.46 | 0.75 → 0.41 | 1.28 → 0 |
+| Document | 1.21 → 0.85 | 0.68 → 0.41 | 0.66 → 0.38 | 0.22 → 0 |
+
+Home hashed the entries three times a frame (its level, the folder cards, the sidebar). Frame P50 from the same runs jumps with the core the main thread lands on (performance or efficiency, above) and says little; the samples are steadier. The screenshots of the seven views in all three runs, `examples/menus.txt`, and a script that adds a page, opens folders and goes to Home are pixel-identical before and after, except the new page's row, which differs by up to 4/255 between two runs of the same build too.
 
 ### Still on the main thread
 

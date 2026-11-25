@@ -4,9 +4,11 @@
 # python3 tools/harness/run.py tools/harness/examples/board_edit2.txt
 move 700 700
 wait 1500
-anchor create-sidebar
+row lib
+wait 800
+anchor create-folder
 wait 300
-click 295 236
+row Board
 wait 1200
 # 之后的坐标从画板左上角算起（画板在笔记区里，不占整个窗口）
 origin board

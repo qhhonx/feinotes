@@ -2,6 +2,20 @@
 
 Where every interface icon comes from, for the licence summary in [THIRD_PARTY.md](../THIRD_PARTY.md). Each SVG also names its source in a comment on its first line, except the Lucide and project-drawn editor icons, which follow the conventions below.
 
+## Drawing to match Nucleo UI Outline 18
+
+Project-drawn icons that sit beside Nucleo ones (the shell, the block handle, the slash and 转换为 menus) follow the measurements of the Nucleo files in `assets/icons/`:
+
+- An 18 × 18 `viewBox`, no fill, `stroke="currentColor"`, `stroke-width="1.5"`, `stroke-linecap="round"`, `stroke-linejoin="round"`.
+- Coordinates on the quarter grid, edges of horizontal and vertical strokes on .75 or .25 (`2.75`, `15.25`) so a 1.5 stroke lands on whole pixels at 18 px.
+- The drawing spans about 2.75 to 15.25 (12.5 units); wide marks such as Code may reach 1.75 to 16.25, and nothing goes past 1.5 from an edge.
+- Parallel strokes 3.5 apart centre to centre (BulletList, Quote), which leaves 2 units clear; never less than 1.5 clear.
+- Frames of 12.5 units round their corners by 2 (`doc-table`, `board`), small boxes of 4.5 to 5 by 1 to 1.75 (ListTodo); no sharp corners.
+- Letters and digits are built from the same 1.5 strokes with round ends, at the size Nucleo's Heading1–6 draw them (a cap height of 8.5), not set in a typeface.
+- Shown at 12 px (the block handle) the stroke is 1 px and at 16 px (menus) 1.33 px; check a new icon at both, in the handle's blue and grey and in the dark look.
+
+Each project-drawn file opens with a comment beginning 本项目绘制 that says what it shows.
+
 ## `assets/icons/`: 71 Nucleo icons
 
 Nucleo UI Outline 18, UI Fill 18 and UI Essential Outline 18, under the project’s commercial Nucleo licence (up to 100 icons in an open-source project). 71 files draw on 63 distinct Nucleo icons: several names reuse one icon (for example `code` and `braces` are both Code, `doc` and `file-text` both FileContent). They are excluded from the MIT licence and may not be extracted into an icon set.
@@ -14,7 +28,6 @@ Checked 2026-11-24 against the official packages `nucleo-ui-outline-18` 1.5.0 an
 | `batch.svg` | UI Outline 18 | CheckList | identical to the package |
 | `bin.svg` | UI Outline 18 | Trash 2 | Trash 2 as exported from the Nucleo app; matches an earlier Nucleo export exactly; the 1.5.0 package draws Trash2 slightly differently. |
 | `bold.svg` | UI Outline 18 | TextBold | identical to the package |
-| `braces.svg` | UI Outline 18 | Code | identical to the package |
 | `check.svg` | UI Outline 18 | Check | identical to the package |
 | `chevron-down.svg` | UI Outline 18 | ChevronDown | identical to the package |
 | `chevron-left.svg` | UI Outline 18 | ChevronLeft | Same polyline as ChevronLeft, points listed in reverse order. |
@@ -30,7 +43,6 @@ Checked 2026-11-24 against the official packages `nucleo-ui-outline-18` 1.5.0 an
 | `export.svg` | UI Outline 18 | FileExport | identical to the package |
 | `eye.svg` | UI Outline 18 | Eye | identical to the package |
 | `eye-open.svg` | UI Outline 18 | Eye | identical to the package |
-| `file-text.svg` | UI Outline 18 | FileContent | identical to the package |
 | `folder-input.svg` | UI Outline 18 | FolderDownload | identical to the package |
 | `folder-plus.svg` | UI Outline 18 | FolderPlus | identical to the package (taken from `nucleo-ui-outline-18` 1.5.0, 2026-11-25) |
 | `heading-1.svg` | UI Outline 18 | Heading1 | identical to the package |
@@ -65,7 +77,6 @@ Checked 2026-11-24 against the official packages `nucleo-ui-outline-18` 1.5.0 an
 | `search.svg` | UI Outline 18 | Magnifier | identical to the package |
 | `search-clear.svg` | UI Outline 18 | CircleXmark | identical to the package |
 | `settings-gear.svg` | UI Outline 18 | Gear | identical to the package |
-| `sigma.svg` | UI Outline 18 | MathFunction | identical to the package |
 | `sort-down.svg` | UI Outline 18 | SortNumDescending | identical to the package |
 | `square-pen.svg` | UI Outline 18 | EditSquare | identical to the package |
 | `star.svg` | UI Outline 18 | Star | identical to the package |
@@ -84,15 +95,41 @@ Checked 2026-11-24 against the official packages `nucleo-ui-outline-18` 1.5.0 an
 
 The 18 project-drawn icons in this folder (MIT) are listed in THIRD_PARTY.md; each opens with a comment saying so.
 
-## `assets/editor-icons/`: 174 icons
+## `assets/editor-icons/`: 175 icons
 
-73 come from [Lucide](https://lucide.dev) (ISC, see `assets/editor-icons/LICENSE-lucide`): 67 unchanged and 6 adapted or taken from an earlier Lucide version. The other 101 were drawn by the project on the same 24 px grid with a 2 px stroke and are distributed under MIT. Checked 2026-11-24 against the shapes in `lucide-react` (several versions up to 1.70).
+The block-type icons (the block handle, the slash menu and 转换为) are 23 Nucleo UI Outline 18 icons, taken unchanged from `nucleo-ui-outline-18` 1.5.0 on 2026-11-25 and counted against the same licence as `assets/icons/`, plus the project-drawn `callout`, `divider`, `board` and `doc-table`, drawn to the rules above. 62 come from [Lucide](https://lucide.dev) (ISC, see `assets/editor-icons/LICENSE-lucide`): 56 unchanged and 6 adapted or taken from an earlier Lucide version. The other 90 were drawn by the project and are distributed under MIT; most of the older ones keep Lucide's 24 px grid and 2 px stroke. Lucide checked 2026-11-24 against the shapes in `lucide-react` (several versions up to 1.70).
+
+| File | Nucleo UI Outline 18 icon |
+|---|---|
+| `alarm-clock.svg` | AlarmClock |
+| `braces.svg` | BracketsCurly |
+| `button.svg` | Button |
+| `columns-2.svg` | GridLayoutCols |
+| `file-text.svg` | FileContent |
+| `heading-1.svg` | Heading1 |
+| `heading-2.svg` | Heading2 |
+| `heading-3.svg` | Heading3 |
+| `heading-4.svg` | Heading4 |
+| `heading-5.svg` | Heading5 |
+| `heading-6.svg` | Heading6 |
+| `image.svg` | Image |
+| `link.svg` | Link |
+| `list.svg` | BulletList |
+| `list-ordered.svg` | OrderedList |
+| `list-tree.svg` | ListTree |
+| `paperclip.svg` | Paperclip |
+| `quote.svg` | Quote |
+| `sigma.svg` | MathFunction |
+| `table.svg` | Table |
+| `timer.svg` | Stopwatch |
+| `todo.svg` | CheckboxChecked |
+| `type.svg` | Text |
+
+Each of the 23 is a different Nucleo icon, 14 of them new to the project (AlarmClock, BracketsCurly, Button, CheckboxChecked, GridLayoutCols, Heading4, Heading5, Heading6, Link, ListTree, Paperclip, Stopwatch, Table, Text); the other nine (FileContent, Heading1–3, Image, BulletList, OrderedList, Quote, MathFunction) are already in `assets/icons/`. With them the project uses 77 distinct Nucleo icons of the 100 its licence allows.
 
 | File | Lucide icon |
 |---|---|
-| `alarm-clock.svg` | alarm-clock |
 | `baseline.svg` | baseline |
-| `braces.svg` | braces |
 | `calendar.svg` | calendar |
 | `check.svg` | check |
 | `chevron-down.svg` | chevron-down |
@@ -101,7 +138,6 @@ The 18 project-drawn icons in this folder (MIT) are listed in THIRD_PARTY.md; ea
 | `circle-check.svg` | circle-check |
 | `circle-help.svg` | circle-help |
 | `circle-play.svg` | circle-play (an earlier circle-play) |
-| `columns-2.svg` | columns-2 |
 | `crop.svg` | crop |
 | `download.svg` | download |
 | `ellipsis.svg` | ellipsis |
@@ -110,13 +146,10 @@ The 18 project-drawn icons in this folder (MIT) are listed in THIRD_PARTY.md; ea
 | `emoji-objects.svg` | lightbulb (lightbulb with a filament added) |
 | `export.svg` | log-out |
 | `eye-open.svg` | eye |
-| `file-text.svg` | file-text |
 | `fit-page.svg` | maximize |
 | `folder-input.svg` | folder-input |
 | `globe.svg` | globe |
-| `heading.svg` | heading |
 | `history.svg` | history |
-| `image.svg` | image |
 | `image-reset.svg` | rotate-ccw |
 | `import.svg` | import |
 | `indent-decrease.svg` | list-indent-decrease |
@@ -124,16 +157,13 @@ The 18 project-drawn icons in this folder (MIT) are listed in THIRD_PARTY.md; ea
 | `info.svg` | info |
 | `layout-grid.svg` | layout-grid |
 | `library.svg` | library |
-| `link.svg` | link |
 | `list-todo.svg` | list-todo |
-| `list-tree.svg` | list-tree |
 | `maximize.svg` | maximize |
 | `minus.svg` | minus |
 | `move.svg` | move |
 | `octagon-x.svg` | octagon-x |
 | `panel-left-close.svg` | panel-left-close |
 | `panel-left-open.svg` | panel-left-open |
-| `paperclip.svg` | paperclip |
 | `pause-filled.svg` | pause |
 | `pen-line.svg` | pen-line |
 | `pin.svg` | pin |
@@ -145,7 +175,6 @@ The 18 project-drawn icons in this folder (MIT) are listed in THIRD_PARTY.md; ea
 | `rotate-ccw-square.svg` | rotate-ccw-square |
 | `search.svg` | search |
 | `shuffle.svg` | shuffle |
-| `sigma.svg` | sigma |
 | `smile.svg` | face-slightly-smiling |
 | `smile-plus.svg` | smile-plus |
 | `square-pen.svg` | square-pen |
@@ -153,7 +182,6 @@ The 18 project-drawn icons in this folder (MIT) are listed in THIRD_PARTY.md; ea
 | `star.svg` | star |
 | `star-off.svg` | star-off |
 | `text-search.svg` | text-search |
-| `timer.svg` | timer |
 | `trash-2.svg` | trash-2 |
 | `undo.svg` | undo-2 |
 | `unlink.svg` | unlink |
@@ -164,4 +192,4 @@ The 18 project-drawn icons in this folder (MIT) are listed in THIRD_PARTY.md; ea
 | `zoom-in.svg` | zoom-in (an earlier zoom-in) |
 | `zoom-out.svg` | zoom-out (an earlier zoom-out) |
 
-Drawn by the project (101): `align-center`, `align-left`, `align-right`, `batch`, `bin`, `bold`, `button`, `button-link`, `callout`, `caption`, `caret-down`, `caret-up`, `catalogue-collapse`, `catalogue-list`, `circle-filled`, `code`, `code-fold-down`, `code-fold-right`, `column-add`, `copy`, `distribute-cols`, `divider`, `doc`, `doc-blue`, `doc-blue-lines`, `doc-info`, `emoji-activity`, `emoji-nature`, `emoji-people`, `emoji-places`, `emoji-symbols`, `equation-error`, `eye`, `file-fold`, `file-g-audio`, `file-g-code`, `file-g-excel`, `file-g-image`, `file-g-pdf`, `file-g-ppt`, `file-g-text`, `file-g-video`, `file-g-word`, `file-g-zip`, `file-page`, `grip-vertical`, `header-col`, `header-row`, `heading-1`, `heading-2`, `heading-3`, `heading-4`, `heading-5`, `heading-6`, `home`, `home-filled`, `image-broken`, `indent-align`, `info-mark`, `italic`, `keyboard`, `list`, `list-ordered`, `merge-cells`, `one-to-one`, `page-width`, `palette`, `play-filled`, `plus`, `quote`, `reminder`, `reminder-filled`, `replace`, `row-add`, `scissors`, `search-clear`, `sort-down`, `spinner`, `split-cells`, `storage`, `strikethrough`, `swatch-none`, `table`, `todo`, `todo-check`, `tree-triangle`, `triangle-down`, `triangle-right`, `type`, `underline`, `valign-bottom`, `valign-middle`, `valign-top`, `view-card`, `view-grid`, `view-list`, `view-preview`, `view-settings`, `view-text`, `volume-2`, `volume-x`.
+Drawn by the project (90): `align-center`, `align-left`, `align-right`, `batch`, `bin`, `board`, `bold`, `button-link`, `callout`, `caption`, `caret-down`, `caret-up`, `catalogue-collapse`, `catalogue-list`, `circle-filled`, `code`, `code-fold-down`, `code-fold-right`, `column-add`, `copy`, `distribute-cols`, `divider`, `doc`, `doc-blue`, `doc-blue-lines`, `doc-info`, `doc-table`, `emoji-activity`, `emoji-nature`, `emoji-people`, `emoji-places`, `emoji-symbols`, `equation-error`, `eye`, `file-fold`, `file-g-audio`, `file-g-code`, `file-g-excel`, `file-g-image`, `file-g-pdf`, `file-g-ppt`, `file-g-text`, `file-g-video`, `file-g-word`, `file-g-zip`, `file-page`, `grip-vertical`, `header-col`, `header-row`, `home`, `home-filled`, `image-broken`, `indent-align`, `info-mark`, `italic`, `keyboard`, `merge-cells`, `one-to-one`, `page-width`, `palette`, `play-filled`, `plus`, `reminder`, `reminder-filled`, `replace`, `row-add`, `scissors`, `search-clear`, `sort-down`, `spinner`, `split-cells`, `storage`, `strikethrough`, `swatch-none`, `todo-check`, `tree-triangle`, `triangle-down`, `triangle-right`, `underline`, `valign-bottom`, `valign-middle`, `valign-top`, `view-card`, `view-grid`, `view-list`, `view-preview`, `view-settings`, `view-text`, `volume-2`, `volume-x`.

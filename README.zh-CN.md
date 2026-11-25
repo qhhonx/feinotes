@@ -171,5 +171,5 @@
 
 以下内容不在 MIT 范围内，fork 时请替换：
 
-- `assets/icons/` 里的 70 个 Nucleo 图标使用 Nucleo 商业授权，请勿单独提取再分发；
+- `assets/icons/` 里的 71 个和 `assets/editor-icons/` 里的 23 个 Nucleo 图标使用 Nucleo 商业授权，请勿单独提取再分发；
 - 「Quiet.md」这个名字和应用图标。

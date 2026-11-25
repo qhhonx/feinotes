@@ -1694,8 +1694,27 @@ impl Editor {
     fn lb_download(&mut self, cx: &mut Context<Self>) {
         let Some(lb) = &self.img.lightbox else { return };
         let Some((path, crop, _, _)) = lb.ids.get(lb.ix).and_then(|id| self.lb_source(*id)) else { return };
-        let fmt = image::ImageReader::open(&path).ok().and_then(|r| r.with_guessed_format().ok()).and_then(|r| r.format());
+        let fmt = fdl_core::vfs::File::open(&path).ok()
+            .and_then(|f| image::ImageReader::new(std::io::BufReader::new(f)).with_guessed_format().ok())
+            .and_then(|r| r.format());
         let ext = fmt.and_then(|f| f.extensions_str().first().copied()).unwrap_or("png");
+        #[cfg(target_family = "wasm")]
+        {
+            let result = if crop == FULL {
+                fdl_core::vfs::read(&path).ok().and_then(|bytes| {
+                    crate::web::download_file(&format!("image.{ext}"), &bytes, fmt.map_or("application/octet-stream", |f| f.to_mime_type())).ok()
+                })
+            } else {
+                shrunk(&path, 0).ok().and_then(|(im, _, _)| {
+                    let mut bytes = std::io::Cursor::new(Vec::new());
+                    image_crop(im, crop).write_to(&mut bytes, image::ImageFormat::Png).ok()?;
+                    crate::web::download_file("image.png", &bytes.into_inner(), "image/png").ok()
+                })
+            };
+            if result.is_none() { self.toast_kind(ToastKind::Error, crate::settings::text("导出失败，请重试"), cx); }
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
         let dir = dirs::download_dir().or_else(dirs::home_dir).unwrap_or_default();
         let rx = cx.prompt_for_new_path(&dir, Some(&format!("image.{ext}")));
         let bg = cx.background_executor().clone();
@@ -1705,15 +1724,13 @@ impl Editor {
                 if crop == FULL {
                     let _ = fdl_core::vfs::copy(&path, &dest);
                 } else if let Ok(im) = image::ImageReader::open(&path).and_then(|r| r.with_guessed_format()).map_err(anyhow::Error::from).and_then(|r| Ok(r.decode()?)) {
-                    let (w, h) = (im.width() as f32, im.height() as f32);
-                    let (x, y) = ((crop[0] * w).round() as u32, (crop[1] * h).round() as u32);
-                    let (cw, ch) = (((crop[2] - crop[0]) * w).round().max(1.) as u32, ((crop[3] - crop[1]) * h).round().max(1.) as u32);
-                    let _ = im.crop_imm(x, y, cw, ch).save(&dest);
+                    let _ = image_crop(im, crop).save(&dest);
                 }
             })
             .await;
         })
         .detach();
+        }
     }
 
     /// Decodes the rotated pixels of the current image off the main thread.
@@ -2270,16 +2287,20 @@ fn download(url: &str, dest: &Path) -> bool {
     ok
 }
 
+fn image_crop(im: image::DynamicImage, crop: [f32; 4]) -> image::DynamicImage {
+    if crop == FULL { return im; }
+    let (w, h) = (im.width(), im.height());
+    let x = ((crop[0] * w as f32).round() as u32).min(w - 1);
+    let y = ((crop[1] * h as f32).round() as u32).min(h - 1);
+    let cw = (((crop[2] - crop[0]) * w as f32).round() as u32).clamp(1, w - x);
+    let ch = (((crop[3] - crop[1]) * h as f32).round() as u32).clamp(1, h - y);
+    im.crop_imm(x, y, cw, ch)
+}
+
 /// Crops and turns the image `rot` quarter turns counter-clockwise (BGRA).
 fn decode_rotated(path: &Path, crop: [f32; 4], rot: u8) -> Option<Arc<RenderImage>> {
-    let im = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
-    let (w, h) = (im.width() as f32, im.height() as f32);
-    let im = if crop == FULL {
-        im
-    } else {
-        let (x, y) = ((crop[0] * w).round() as u32, (crop[1] * h).round() as u32);
-        im.crop_imm(x, y, (((crop[2] - crop[0]) * w).round() as u32).max(1), (((crop[3] - crop[1]) * h).round() as u32).max(1))
-    };
+    let (im, _, _) = shrunk(path, 0).ok()?;
+    let im = image_crop(im, crop);
     let im = match rot {
         1 => im.rotate270(),
         2 => im.rotate180(),

@@ -14,6 +14,11 @@ pub struct DocInfo {
     pub words: usize,
     pub chars: usize,
     pub size: u64,
+    /// Where the file is, and whether it was opened on its own (本机文件) rather than inside a folder.
+    pub path: Option<std::path::PathBuf>,
+    pub local: bool,
+    /// The top-level folder it lives in (none for a file opened on its own).
+    pub place: String,
 }
 
 fn is_cjk(c: char) -> bool {
@@ -98,6 +103,9 @@ impl Workspace {
             words: word_count(&text),
             chars: char_count(&text),
             size: self.store.size_of(&id, doc),
+            path: self.store.file_path(&id).or_else(|| self.store.local_path(&id)),
+            local: meta.local(),
+            place: self.entries.iter().find(|e| e.id == id).map(|e| self.folder_name(&e.top)).unwrap_or_default(),
         });
         self.doc_menu = false;
         self.doc_sub = None;
@@ -185,7 +193,18 @@ impl Workspace {
                                 tile(crate::settings::text("总字数"), info.words.to_string(), true),
                                 tile(crate::settings::text("总字符数"), info.chars.to_string(), true),
                                 tile(crate::settings::text("大小"), format_size(info.size), true),
-                            ])),
+                            ]))
+                            // 存储位置: the file itself, edited where it is — what 打开 means, and what 导入 copied into.
+                            .child(div().mt(px(24.)).child(section(crate::settings::tr("存储位置", "Location"))))
+                            .when_some(info.path.clone(), |d, path| d.child(div().mt(px(12.)).w(px(568.)).px(px(16.)).py(px(10.)).rounded(px(crate::design::R)).bg(crate::design::color::muted())
+                                .flex().items_center().gap(px(12.))
+                                .child(div().flex_1().min_w_0().flex().flex_col()
+                                    .child(div().text_size(px(13.)).line_height(px(20.)).text_color(crate::design::color::foreground()).overflow_hidden().whitespace_nowrap().text_ellipsis().child(crate::ui::tilde(&path)))
+                                    .child(div().text_size(px(12.)).line_height(px(18.)).text_color(crate::design::color::muted_foreground())
+                                        .child(if info.local { crate::settings::tr("单独打开的文件：在原位置编辑，改动直接写回这个文件", "Opened on its own: edited where it is, changes go straight back to this file").to_string() }
+                                            else { crate::localized_format!("在「{}」文件夹里：改动直接写入这个文件", "In the “{}” folder: changes go straight into this file", info.place) })))
+                                .child(crate::design::Button::outline("doc-info-reveal").sized(crate::design::ButtonSize::Sm).label(crate::local_folders::show_in_files())
+                                    .on_click(move |_, _, cx| cx.reveal_path(&path))))),
                     ),
             );
         Some(

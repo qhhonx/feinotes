@@ -110,21 +110,6 @@ impl<'a> Tree<'a> {
     }
 }
 
-/// A hash of everything of the entries that the sidebar's rows and Home's cards
-/// show or are ordered by: all but the body, links and reminders. Each field is named, so a new one is decided here.
-pub(crate) fn shape_key(entries: &[Entry]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = rustc_hash::FxHasher::default();
-    entries.len().hash(&mut h);
-    for Entry { id, meta, title, icon, body: _, reminders: _, links: _, note, top } in entries {
-        let crate::store::Meta { folder, top_order, created, modified, pinned, opened, width, catalogue_closed, parent, order, starred, reading, info, refs_hidden, markdown, path, name, rel, kind } = meta;
-        (id, title, icon, note, top, folder, top_order, created, modified, pinned, opened).hash(&mut h);
-        (catalogue_closed, parent, order, starred, reading, refs_hidden, markdown, path, name, rel).hash(&mut h);
-        (std::mem::discriminant(width), info.hidden, info.created, info.modified, std::mem::discriminant(kind)).hash(&mut h);
-    }
-    h.finish()
-}
-
 /// What a sidebar row or a Home card shows of `e`: its links, reminders and body stay behind.
 pub(crate) fn face(e: &Entry) -> Entry {
     Entry { id: e.id.clone(), meta: e.meta.clone(), title: e.title.clone(), icon: e.icon.clone(), body: Default::default(),
@@ -185,7 +170,10 @@ impl Workspace {
         let notes: HashMap<String, usize> = self.entries.iter().enumerate().filter(|(_, e)| e.note.is_some()).map(|(i, e)| (e.note.clone().unwrap(), i)).collect();
         if notes.is_empty() { return; }
         let picks: Vec<(usize, String, Option<String>)> = self.entries.iter().filter_map(|e| notes.get(&e.id).map(|&f| (f, e.title.clone(), e.icon.clone()))).collect();
-        for (f, title, icon) in picks { let e = &mut self.entries[f]; e.title = title; e.icon = icon; }
+        // Only when one differs: this runs on every list, and a change rebuilds the rows.
+        if picks.iter().all(|(f, title, icon)| self.entries[*f].title == *title && self.entries[*f].icon == *icon) { return; }
+        let entries = self.entries.edit();
+        for (f, title, icon) in picks { let e = &mut entries[f]; e.title = title; e.icon = icon; }
     }
 
     /// Expand the sidebar down to `id`.
@@ -223,7 +211,7 @@ impl Workspace {
             else { self.store.create_child(parent, &crate::model::Document::default()) };
         match made {
             Ok(id) => {
-                self.entries = self.store.list();
+                self.entries.set(self.store.list());
                 self.sort();
                 if let Some(folder) = self.entries.iter().find(|e| e.id == id).and_then(|e| e.meta.parent.clone()) {
                     self.expanded.insert(folder.clone());
@@ -267,32 +255,27 @@ impl Workspace {
 
     /// 移动到: hang each page under `target` (`None`: top level), skipping
     /// moves into its own subtree.
+    /// Shown at once and written off the window's thread, as a drop in the
+    /// sidebar is (`tree_writes.rs`): moving a folder rewrites the links across
+    /// its edge. One that fails goes back where it was, with a toast saying why.
     pub(crate) fn move_docs(&mut self, ids: &[String], target: Option<String>, cx: &mut Context<Self>) {
-        let file_before = self.store.track_file_changes();
-        let mut failed = false;
+        use crate::tree_writes::{PendingMove, TreeWrite};
         let ids: Vec<String> = ids.iter().map(|id| self.row_of(id)).collect();
-        for id in &ids {
-            let inside = target.as_ref().is_some_and(|t| Tree::new(&self.entries).subtree(id).contains(t));
-            if inside {
-                continue;
-            }
-            match self.store.set_parent(id, target.as_deref()) {
-                Ok(meta) => {
-                    if let Some(e) = self.entries.iter_mut().find(|e| &e.id == id) {
-                        e.meta = meta;
-                    }
-                }
-                Err(e) => { failed = true; self.status = crate::app::SaveStatus::Failed(crate::localized_format!("移动失败：{}", "Could not move document: {}", crate::settings::diagnostic(&e.to_string()))); },
-            }
-        }
+        let ids: Vec<String> = ids.into_iter().filter(|id| !target.as_ref().is_some_and(|t| Tree::new(&self.entries).subtree(id).contains(t))).collect();
+        if ids.is_empty() { return; }
+        let file_before = self.entries.to_vec();
+        let mut moves: Vec<PendingMove> = ids.iter().map(|id| PendingMove { id: id.clone(), parent: target.clone(), before: None, history: 0, joined: ids.len() > 1 }).collect();
+        for m in &moves { self.apply_tree_move(m); }
+        // One step of the file history for all of them.
+        let history = self.remember_tree_move(file_before, crate::settings::tr("移动", "Move"));
+        for mut m in moves.drain(..) { m.history = history; self.queue_tree_write(TreeWrite::Move(m), cx); }
         if let Some(t) = &target {
             self.expanded.insert(t.clone());
             self.reveal_in_tree(&t.clone());
         }
         self.sync_sub_pages(cx);
-        self.entries = self.store.list(); self.sort();
-        if !failed { self.show_toast(crate::settings::text("移动成功"), cx); }
-        self.remember_files(file_before, crate::settings::tr("移动", "Move"));
+        self.sort();
+        self.show_toast(crate::settings::text("移动成功"), cx);
         cx.notify();
     }
 

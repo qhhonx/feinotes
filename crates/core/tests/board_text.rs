@@ -660,6 +660,52 @@ mod board {
         assert_eq!(caret_viewport_bounds(M, &b, "Hello World", 8, true, |p| p), [20., 25., 20., 50.]);
     }
 
+    /// The editor lays its lines out as GPUI does, centered in the line box
+    /// by an ascent and descent: with `line_box_metrics` its baselines are
+    /// the board's (`display::text_run`) for every family and size.
+    #[test]
+    fn editor_baselines_are_the_boards() {
+        use fdl_core::board::display::{Paint, text_run};
+        for family in font_family::ALL.into_iter().chain([XIAOLAI_FALLBACK]) {
+            for size in [16., 20., 28., 36., 13.7] {
+                let lh = get_line_height(family);
+                let run = text_run("one\ntwo\nthree", 100., family, size, lh, TextAlign::Center, Paint::CanvasBackground);
+                let (a, d) = line_box_metrics(family, size);
+                for l in &run.lines {
+                    assert!((l.top + (run.line_height - a - d) / 2. + a - l.baseline).abs() < 1e-9, "{family} {size}");
+                }
+            }
+        }
+    }
+
+    /// The editor's rows are the board's lines: `editor_lines` over the
+    /// value gives the lines the board draws (the element's wrapped text),
+    /// and the editor's alignment point is where the board aligns them.
+    #[test]
+    fn editor_lines_are_the_boards() {
+        use fdl_core::board::display::{Paint, text_run};
+        let texts = ["Hello World!", "A longer sentence that wraps inside the box 中文也换行", "第一行 line one\nsecond 第二行", "  spaced   out   words  ", "中文没有空格也会在字之间换行，标点不在行首。"];
+        for ty in [ElementType::Rectangle, ElementType::Ellipse, ElementType::Diamond] {
+            for align in [TextAlign::Left, TextAlign::Center, TextAlign::Right] {
+                for text in texts {
+                    setup();
+                    let c = shape(ty, 10., 20., 120., 75.);
+                    let cid = c.id.clone();
+                    let mut scene = Scene::new(vec![c]);
+                    let mut s = start_label(&mut scene, &cid);
+                    let tid = s.element_id.clone();
+                    scene.mutate_element(&tid, true, |e| if let Some(t) = e.text_mut() { t.text_align = align; });
+                    let l = s.on_change(&mut scene, M, text, 760., &view(800., 1.)).style.layout.unwrap();
+                    let (t, d) = (get(&scene, &tid).clone(), txt(&scene, &tid).clone());
+                    let rows: Vec<String> = editor_lines(M, &l.text, text, l.wraps).into_iter().map(|r| r.text).collect();
+                    assert_eq!(rows.join("\n"), d.text, "{ty:?} {align:?} {text:?}");
+                    let run = text_run(&d.text, t.width, d.font_family, d.font_size, d.line_height, d.text_align, Paint::CanvasBackground);
+                    assert_eq!(l.placement.anchor, [t.x + run.lines[0].x, t.y], "{ty:?} {align:?} {text:?}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn bind_text_resize_rewraps() {
         setup();

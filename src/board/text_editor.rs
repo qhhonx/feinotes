@@ -11,11 +11,14 @@ use super::BoardView;
 use super::app_state::ToolType;
 use super::binding::{UpdateBoundOpts, fix_bindings_after_deletion, update_bound_elements};
 use super::history::CaptureUpdateAction;
-use super::text_edit::{EditView, EditorLayout, TextEditSession, caret_index_at, get_max_text_width, indent, outdent};
+use super::render::GpuiMeasure;
+use super::text_edit::{EditView, EditorLayout, TextEditSession, caret_index_at, editor_lines, get_max_text_width, indent, outdent};
 use super::types::TextAlign;
 use super::Hooks;
+use crate::editor::text::Breaks;
 use crate::input::{TextField, TextFieldEvent};
 use gpui::*;
+use std::rc::Rc;
 
 pub struct TextEditing {
     pub session: TextEditSession,
@@ -33,14 +36,20 @@ fn max_width(me: &BoardView) -> f64 {
     get_max_text_width(me.canvas().width, pad, pad, me.app.zoom)
 }
 
-/// The field's look from the layout.
-fn style_field(f: &mut TextField, l: &EditorLayout) {
+/// The field's look from the layout: lines laid out as the board draws
+/// them, so editing starts and ends with the text where it is.
+fn style_field(f: &mut TextField, l: &EditorLayout, m: &Rc<GpuiMeasure>) {
     let z = l.placement.zoom as f32;
     f.size = l.font.size as f32 * z;
     f.line_height = (l.font.size * l.line_height) as f32 * z;
     f.color = super::render::color(super::color::color_or_black(&l.color), l.opacity);
     f.align = match l.text_align { TextAlign::Center => crate::model::Align::Center, TextAlign::Right => crate::model::Align::Right, TextAlign::Left => crate::model::Align::Left };
     f.wrap = l.wraps;
+    // baselines and rows where the board draws them (`display::text_run`)
+    let (a, d) = super::text_measure::line_box_metrics(l.font.family, l.font.size);
+    f.metrics = Some((a as f32 * z, d as f32 * z));
+    let (m, b) = (m.clone(), l.text);
+    f.breaks = l.wraps.then(|| Rc::new(move |line: &str| editor_lines(&*m, &b, line, true).into_iter().map(|r| r.start..r.end).collect()) as Breaks);
     let family = l.font.family;
     f.font_runs = Some(std::rc::Rc::new(move |s: &str| super::fonts::runs(s, family)));
 }
@@ -67,7 +76,7 @@ pub fn begin(me: &mut BoardView, id: &str, existing: bool, caret_at: Option<[f64
         let mut f = TextField::new("", cx);
         f.multiline = true;
         f.tab_events = true;
-        if let Some(l) = &layout { style_field(&mut f, l); }
+        if let Some(l) = &layout { style_field(&mut f, l, &m); }
         f.set_text(&original, cx);
         f.select_range(caret, cx);
         f
@@ -105,7 +114,7 @@ fn changed(me: &mut BoardView, value: &str, cx: &mut Context<BoardView>) {
     let Some(t) = &mut me.text else { return };
     let res = t.session.on_change(&mut me.scene, &*m, value, mw, &view);
     let id = t.session.element_id.clone();
-    if let Some(l) = &res.style.layout { t.field.update(cx, |f, _| style_field(f, l)); }
+    if let Some(l) = &res.style.layout { t.field.update(cx, |f, _| style_field(f, l, &m)); }
     t.layout = res.style.layout.clone();
     if res.value != value {
         let v = res.value.clone();
@@ -151,29 +160,43 @@ pub fn submit(me: &mut BoardView, via_keyboard: bool, window: &mut Window, cx: &
 
 /// Before a render: the editor follows zoom, scroll and style changes
 /// (`updateWysiwygStyle`).
-pub fn restyle(me: &mut BoardView, _: &mut Window, cx: &mut Context<BoardView>) {
+pub fn restyle(me: &mut BoardView, window: &mut Window, cx: &mut Context<BoardView>) {
     let view = edit_view(me);
+    let m = me.m.clone();
     let Some(t) = &mut me.text else { return };
-    if !t.restyle { return; }
-    t.restyle = false;
-    let up = t.session.update_style(&mut me.scene, &view);
-    if let Some(l) = &up.layout { t.field.update(cx, |f, _| style_field(f, l)); }
-    t.layout = up.layout;
+    if t.restyle {
+        t.restyle = false;
+        let up = t.session.update_style(&mut me.scene, &view);
+        if let Some(l) = &up.layout { t.field.update(cx, |f, _| style_field(f, l, &m)); }
+        t.layout = up.layout;
+    }
+    // what layout's rounding leaves out of the field's place, drawn in
+    let Some(shift) = t.layout.as_ref().map(|l| place(l, window.scale_factor()).2) else { return };
+    if t.field.read(cx).shift != shift { t.field.update(cx, |f, cx| { f.shift = shift; cx.notify(); }); }
+}
+
+/// The field's box: its top-left at whole device pixels, its width, and
+/// what is left to its place (`TextSpec::shift`). Its rows' alignment point
+/// is the text's (`anchor`).
+fn place(l: &EditorLayout, scale: f32) -> (Point<Pixels>, Pixels, Point<Pixels>) {
+    let p = &l.placement;
+    let z = p.zoom as f32;
+    // room for the caret past the last glyph: an unwrapped field keeps the
+    // caret 8pt inside its box (`hscroll`) and would scroll the text left
+    let w = (((p.width as f32 * z).max(1.) + 10.) * scale).ceil() / scale;
+    let ratio = match l.text_align { TextAlign::Left => 0., TextAlign::Center => 0.5, TextAlign::Right => 1. };
+    let at = point(p.anchor[0] as f32 - w * ratio, p.anchor[1] as f32);
+    let snapped = point((at.x * scale).floor() / scale, (at.y * scale).floor() / scale);
+    (point(px(snapped.x), px(snapped.y)), px(w), point(px(at.x - snapped.x), px(at.y - snapped.y)))
 }
 
 /// The field, placed over the text (relative to the board view, which the
 /// canvas fills).
-pub fn element(me: &BoardView) -> Option<AnyElement> {
+pub fn element(me: &BoardView, window: &Window) -> Option<AnyElement> {
     let t = me.text.as_ref()?;
     let l = t.layout.as_ref()?;
-    let p = &l.placement;
-    let z = p.zoom as f32;
-    let left = px(p.anchor[0] as f32 + p.origin_x as f32 * z);
-    let top = px(p.anchor[1] as f32);
-    // room for the caret past the last glyph: an unwrapped field keeps the
-    // caret 8pt inside its box (`hscroll`) and would scroll the text left
-    let w = (p.width as f32 * z).max(1.) + 10.;
-    Some(div().key_context("BoardText").absolute().left(left).top(top).w(px(w)).min_h(px(l.height as f32 * z))
+    let (at, w, _) = place(l, window.scale_factor());
+    Some(div().key_context("BoardText").absolute().left(at.x).top(at.y).w(w).min_h(px(l.height as f32 * l.placement.zoom as f32))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .child(div().flex().w_full().child(t.field.clone()))

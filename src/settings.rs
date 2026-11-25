@@ -517,7 +517,8 @@ fn desc(s: &'static str) -> Option<SharedString> { Some(s.into()) }
 
 /// A `Switch` that takes the click (the switch itself only draws).
 pub(crate) fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
-    div().id(id).flex_none().flex().items_center().cursor_pointer().child(Switch::new(on))
+    let id = id.into();
+    div().id(id.clone()).flex_none().flex().items_center().cursor_pointer().child(Switch::new(on).keyed(id))
 }
 
 /// 外观 › 主题 CSS (duplicate, edit, restore a theme's stylesheet): hidden in
@@ -1609,6 +1610,13 @@ impl Workspace {
                             w.set_pref(|p| p.opaque_window = !p.opaque_window, cx);
                             window.refresh();
                         }))).into_any_element(),
+                ]))
+                // 界面, then 文档: each font before its size, and the document theme last, right above
+                // the sample it shapes (the user's order, 2026-11-25)
+                .child(group("group-interface", Some(tr("界面", "Interface")), vec![
+                    // 界面字体: the chrome — sidebar, menus, this page.
+                    self.font_row(FontTarget::Ui, tr("界面字体", "Interface font"),
+                        tr("侧栏、菜单和设置页用这个字体；文档用下面的「文档字体」。", "The sidebar, menus and settings use it; the note has its own below."), cx).into_any_element(),
                     // 界面字号: the sidebar and this page together, so the pairs
                     // (label, description) stay in proportion.
                     row(tr("界面字号", "Interface size"), None, {
@@ -1616,10 +1624,8 @@ impl Workspace {
                         segmented("ui-font", &[tr("小", "Small"), tr("标准", "Default"), tr("大", "Large")], sel,
                             |w, i, cx| w.set_pref(|p| p.ui_font = ["small", "", "large"][i].into(), cx), cx)
                     }).into_any_element(),
-                    // 界面字体: the chrome — sidebar, menus, this page.
-                    self.font_row(FontTarget::Ui, tr("界面字体", "Interface font"),
-                        tr("侧栏、菜单和设置页用这个字体；文档用下面的「文档字体」。", "The sidebar, menus and settings use it; the note has its own below."), cx).into_any_element(),
-                    row(tr("文档主题", "Document theme"), None, picker).into_any_element(),
+                ]))
+                .child(group("group-document", Some(tr("文档", "Document")), vec![
                     // 文档字体: every family the system has, for the note's
                     // body text and headings (code keeps the theme's).
                     self.font_row(FontTarget::Doc, tr("文档字体", "Document font"),
@@ -1630,6 +1636,7 @@ impl Workspace {
                         segmented("doc-size", &[tr("小", "Small"), tr("标准", "Default"), tr("大", "Large"), tr("特大", "Extra large")], sel,
                             |w, i, cx| w.set_pref(|p| p.doc_size = ["small", "", "large", "xlarge"][i].into(), cx), cx)
                     }).into_any_element(),
+                    row(tr("文档主题", "Document theme"), None, picker).into_any_element(),
                     sample.into_any_element(),
                 ].into_iter().chain(THEME_CSS.then(|| {
                     row(tr("主题 CSS", "Theme CSS"), Some(where_),
@@ -1682,9 +1689,9 @@ impl Workspace {
             folders.push(row(tr("快速笔记保存到", "Quick notes go to"), desc(tr("「新建笔记窗口」和全局快捷键记下的笔记放在这个文件夹里。", "Notes from New Note Window and the global shortcut are saved in this folder.")),
                 self.select("quick-note-folder", open.into_iter().map(|r| r.1).collect(), at, move |w, i, cx| { let k = keys[i].clone(); w.set_pref(|p| p.quick_note_folder = k, cx) }, cx)).into_any_element());
         }
-        folders.push(row(tr("添加文件夹", "Add a folder"), Some(tr("打开电脑上已有的文件夹，或新建一个，都会显示在侧栏里。", "Open a folder already on your computer, or make a new one; either shows in the sidebar.").into()), div().flex_none().flex().gap(px(8.))
-            .child(button("open-folder", tr("打开…", "Open…")).on_click(cx.listener(|w, _, window, cx| w.open_folder_dialog(window, cx))))
-            .child(button("new-folder", tr("新建…", "New…")).on_click(cx.listener(|w, _, window, cx| w.new_folder_dialog(window, cx))))).into_any_element());
+        // A new folder is made in the system's own open panel (its 新建文件夹 button), not here.
+        folders.push(row(tr("打开文件夹", "Open a folder"), Some(tr("打开电脑上的文件夹，它会显示在侧栏里；要新的文件夹，在打开窗口里新建。", "Open a folder on your computer and it shows in the sidebar; for a new one, make it in the open window.").into()),
+            button("open-folder", tr("打开…", "Open…")).on_click(cx.listener(|w, _, window, cx| w.open_folder_dialog(window, cx)))).into_any_element());
         div().w_full().flex().flex_col().gap(px(8.))
             .child(group("group-folders", Some(tr("文件夹", "Folders")), folders))
             .child(group("group-library", None, vec![

@@ -1,6 +1,2 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M9 4h13M9 12h13M9 20h13"/>
-  <circle cx="3.5" cy="4" r="1.5" fill="currentColor" stroke="none"/>
-  <circle cx="3.5" cy="12" r="1.5" fill="currentColor" stroke="none"/>
-  <circle cx="3.5" cy="20" r="1.5" fill="currentColor" stroke="none"/>
-</svg>
+<!-- Nucleo UI Outline 18 v1.5.0: BulletList. Copyright Nucleo. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M8.75 11.25H15.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8.75 14.75H15.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8.75 4.25H15.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8.75 7.75H15.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M4 5.75C4.9665 5.75 5.75 4.966 5.75 4C5.75 3.034 4.9665 2.25 4 2.25C3.0335 2.25 2.25 3.034 2.25 4C2.25 4.966 3.0335 5.75 4 5.75Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M4 12.75C4.9665 12.75 5.75 11.966 5.75 11C5.75 10.034 4.9665 9.25 4 9.25C3.0335 9.25 2.25 10.034 2.25 11C2.25 11.966 3.0335 12.75 4 12.75Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>

@@ -171,5 +171,5 @@ El código se publica bajo la licencia [MIT](LICENSE). El código, las fuentes y
 
 Lo siguiente no está cubierto por la licencia MIT y debe sustituirse en los forks:
 
-- Los 70 iconos de Nucleo en `assets/icons/` están bajo una licencia comercial de Nucleo. No los extraigas ni los redistribuyas por separado.
+- Los iconos de Nucleo de `assets/icons/` (71) y `assets/editor-icons/` (23) están bajo una licencia comercial de Nucleo. No los extraigas ni los redistribuyas por separado.
 - El nombre “Quiet.md” y el icono de la app.

@@ -72,10 +72,12 @@ class Host(http.server.SimpleHTTPRequestHandler):
 
 
 def script(tag):
-    # 侧栏「+」› 画板, then a text (IME commit: Chinese), deselected
+    # the folder page's "+" › 画板, then a text (IME commit: Chinese), deselected
     return f"""move 700 700
 wait 1500
-anchor create-sidebar
+row lib
+wait 800
+anchor create-folder
 wait 300
 row Board
 wait 1200

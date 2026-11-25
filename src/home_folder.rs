@@ -39,7 +39,7 @@ pub(crate) struct HomeFolders {
     pub(crate) file_drop: Option<FileDrop>,
     /// Last-frame window bounds of the folder and document cards, by entry id.
     bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
-    /// The folder cards' papers and counts, kept while the entries' shape (`tree::shape_key`) holds.
+    /// The folder cards' papers and counts, kept while the entries hold (`Entries::generation`).
     papers: RefCell<Papers>,
 }
 
@@ -260,7 +260,7 @@ fn glass(o: Point<Pixels>, p: &Pose, window: &mut Window) {
 
 impl Workspace {
     fn folder_papers(&self, id: &str, front: Option<&String>) -> (Vec<Entry>, usize) {
-        let key = crate::tree::shape_key(&self.entries);
+        let key = self.entries.generation();
         let mut p = self.home.folders.papers.borrow_mut();
         if p.key != Some(key) {
             let mut children: HashMap<String, Vec<usize>> = HashMap::new();
@@ -451,7 +451,7 @@ impl Workspace {
     fn move_home_drag(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
         if !self.home.folders.drag.as_ref().is_some_and(|d| d.started && !d.returning) { return; }
         // Only folders on the page now: bounds linger for cards of pages left behind.
-        let shown = if self.view == crate::app::View::Folder { self.level_entries(self.folder_current.as_deref()) } else { self.home_entries() };
+        let shown = if self.view == crate::app::View::Folder { self.page_entries(self.folder_current.as_deref()) } else { self.home_entries() };
         let over = shown.iter().filter(|e| e.meta.folder.is_some() && e.note.is_none())
             .find(|e| self.home.folders.bounds.borrow().get(&e.id).is_some_and(|b| b.contains(&at)))
             .map(|e| e.id.clone());
@@ -642,7 +642,7 @@ impl Workspace {
         if !matches!(self.view, crate::app::View::Home | crate::app::View::Folder) { return; }
         let fresh = self.home.folders.file_drop.as_ref().is_none_or(|d| d.landed.is_some());
         if fresh { self.home.folders.file_drop = Some(FileDrop::new(paths)); }
-        let shown = if self.view == crate::app::View::Folder { self.level_entries(self.folder_current.as_deref()) } else { self.home_entries() };
+        let shown = if self.view == crate::app::View::Folder { self.page_entries(self.folder_current.as_deref()) } else { self.home_entries() };
         let over = shown.iter().filter(|e| e.meta.folder.is_some() && e.note.is_none())
             .find(|e| self.home.folders.bounds.borrow().get(&e.id).is_some_and(|b| b.contains(&at)))
             .map(|e| e.id.clone());
@@ -777,11 +777,11 @@ impl Workspace {
         let (title, sub) = if reject {
             (crate::settings::tr("这些文件不能导入", "These files can't be imported").to_string(), crate::settings::tr("支持 Markdown、DocxXML 文件和文件夹", "Markdown, DocxXML files and folders are supported").to_string())
         } else if d.landed.is_some() {
-            (crate::localized_format!("已导入到「{}」", "Imported into “{}”", place), summary)
-        } else if over {
-            (crate::localized_format!("松手放入「{}」", "Release to put it in “{}”", place), summary)
+            (crate::localized_format!("已复制到「{}」", "Copied into “{}”", place), crate::settings::tr("原文件没有改动", "The originals are untouched").to_string())
         } else {
-            (crate::localized_format!("松手导入到「{}」", "Release to import into “{}”", place), summary)
+            // 导入 copies: say so where the drop lands, and that the originals stay as they are.
+            let _ = over;
+            (crate::localized_format!("松手即复制到「{}」", "Release to copy into “{}”", place), crate::localized_format!("{} · 原文件不变", "{} · originals untouched", summary))
         };
         let back = { let pose = pose.clone(); canvas(|_, _, _| {}, move |b, _, window, _| {
             back_plate(b.origin, &pose, window);

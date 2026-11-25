@@ -74,12 +74,20 @@ pub fn is_known_font_family(family: u32) -> bool { font_family::ALL.contains(&fa
 /// `getLineHeight`: the unitless line height for a family.
 pub fn get_line_height(family: u32) -> f64 { font_metrics(family).line_height }
 
-/// `getVerticalOffset`: baseline offset of an alphabetic-baseline line.
-pub fn get_vertical_offset(family: u32, font_size: f64, line_height_px: f64) -> f64 {
+/// The family's ascent and descent (both positive) at `font_size`: the
+/// glyph box a line centers in its line box. The board draws with them and
+/// its text editor lays its lines out with them, so editing keeps the text
+/// where it is.
+pub fn line_box_metrics(family: u32, font_size: f64) -> (f64, f64) {
     let m = font_metrics(family);
     let em = font_size / m.units_per_em;
-    let line_gap = (line_height_px - em * m.ascender + em * m.descender) / 2.;
-    em * m.ascender + line_gap
+    (em * m.ascender, -em * m.descender)
+}
+
+/// `getVerticalOffset`: baseline offset of an alphabetic-baseline line.
+pub fn get_vertical_offset(family: u32, font_size: f64, line_height_px: f64) -> f64 {
+    let (ascent, descent) = line_box_metrics(family, font_size);
+    ascent + (line_height_px - ascent - descent) / 2.
 }
 
 /// `FONT_FAMILY` names, for `getFontFamilyString`.

@@ -299,12 +299,27 @@ pub struct TextSpec {
     pub italic: bool,
     /// Fonts by run instead (board text: Excalidraw's fonts, `board::fonts::runs`).
     pub font_runs: Option<FontRuns>,
+    /// Every line's ascent and descent in px instead of its fonts' (board
+    /// text: the board's own, so the baseline sits where the board draws it).
+    pub metrics: Option<(f32, f32)>,
+    /// Rows cut where these say instead of at the wrap width (board text:
+    /// where the board wraps it).
+    pub breaks: Option<Breaks>,
+    /// Drawn this far from where layout puts it: less than a device pixel,
+    /// which layout rounds positions to (board text: where the board's is).
+    pub shift: Point<Pixels>,
 }
+
+/// A hard line's rows as byte ranges; what lies between two rows (spaces
+/// dropped at a soft break) takes no room.
+pub type Breaks = Rc<dyn Fn(&str) -> Vec<Range<usize>>>;
 
 /// Cuts a span into runs by font (byte lengths).
 pub type FontRuns = Rc<dyn Fn(&str) -> Vec<(usize, Font)>>;
 
 impl TextSpec {
+    fn shifted(&self, b: Bounds<Pixels>) -> Bounds<Pixels> { Bounds::new(b.origin + self.shift, b.size) }
+
     /// The page body: 15pt, 1.25 × the natural line height.
     pub fn body() -> Self {
         TextSpec {
@@ -322,6 +337,9 @@ impl TextSpec {
             font: None,
             italic: false,
             font_runs: None,
+            metrics: None,
+            breaks: None,
+            shift: Point::default(),
         }
     }
 }
@@ -893,13 +911,14 @@ impl Element for RichTextElement {
         let state: Rc<RefCell<Option<Prepared>>> = Rc::new(RefCell::new(None));
         let font_size = px(self.spec.size);
         let line_height = px(self.spec.line_height);
-        // Linux fallback fonts change during IME composition; keep the title baseline stable.
-        let title_metrics = if cfg!(target_os = "linux") && self.id == crate::editor::core::TITLE {
+        // Lines' ascent and descent when fixed: Linux fallback fonts change during IME
+        // composition, so the title keeps its font's; board text takes the board's (`TextSpec::metrics`).
+        let metrics = if cfg!(target_os = "linux") && self.id == crate::editor::core::TITLE {
             let ts = window.text_system();
             let id = ts.resolve_font(&font_for(&self.spec, &Marks::default()));
             // GPUI Linux font metrics use a signed descent; shaped line layouts use a positive distance.
             Some((ts.ascent(id, font_size), px(f32::from(ts.descent(id, font_size)).abs())))
-        } else { None };
+        } else { self.spec.metrics.map(|(a, d)| (px(a), px(d))) };
         let mut eq_src: Vec<(usize, ObjSrc)> = vec![];
         let (text, runs) = if self.text.is_empty() {
             match &self.placeholder {
@@ -968,6 +987,7 @@ impl Element for RichTextElement {
         let color = self.spec.color;
         let eq_counter = self.eq_counter;
         let spec = self.spec.clone();
+        let breaks = self.spec.breaks.clone();
         let mut style = Style::default();
         let fit = self.fit_content && !wrap;
         if fit { style.min_size.width = relative(1.).into(); style.flex_shrink = 0.; } else { style.size.width = relative(1.).into() }
@@ -986,7 +1006,7 @@ impl Element for RichTextElement {
             {
                 return size(known.width.unwrap_or(if fit { p.width } else { px(0.) }), p.height);
             }
-            let custom = spacing != px(0.) || !eq_src.is_empty();
+            let custom = spacing != px(0.) || !eq_src.is_empty() || breaks.is_some();
             let mut lines = window
                 .text_system()
                 .shape_text(text.clone(), font_size, &runs, if custom { None } else { wrap_width }, None)
@@ -1015,10 +1035,13 @@ impl Element for RichTextElement {
             for mut l in lines.drain(..) {
                 let len = l.len();
                 let line_eqs: Vec<&EqGeom> = eqs.iter().map(|e| &**e).filter(|e| e.ix >= start && e.ix < start + len).collect();
-                if custom {
+                if let Some(b) = &breaks {
+                    let rows = b(&l.text);
+                    break_line(&mut l, &rows);
+                } else if custom {
                     adjust_line(&mut l, spacing, &line_eqs, start, wrap_width);
                 }
-                if let Some((ascent, descent)) = title_metrics {
+                if let Some((ascent, descent)) = metrics {
                     let src = &l.unwrapped_layout;
                     let layout = LineLayout { font_size: src.font_size, width: src.width, ascent, descent, runs: src.runs.clone(), len: src.len };
                     let wrapped = WrappedLineLayout { unwrapped_layout: std::sync::Arc::new(layout), wrap_boundaries: l.wrap_boundaries().into(), wrap_width: l.wrap_width };
@@ -1067,6 +1090,7 @@ impl Element for RichTextElement {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
+        let bounds = self.spec.shifted(bounds);
         let Some(p) = state.borrow_mut().take() else { return Prepaint { placed: vec![], sx: px(0.) } };
         // Single-line fields scroll horizontally; wrapped ones never do.
         let sx = match &self.scroll {
@@ -1150,6 +1174,7 @@ impl Element for RichTextElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let bounds = self.spec.shifted(bounds);
         let cache = self.cache.borrow();
         let Some(layout) = cache.get(&self.id) else { return };
         let lh = layout.line_height;
@@ -1524,6 +1549,44 @@ fn adjust_line(line: &mut WrappedLine, ls: Pixels, eqs: &[&EqGeom], start: usize
     });
 }
 
+/// Cuts a line into `rows` (`break_rows`).
+fn break_line(line: &mut WrappedLine, rows: &[Range<usize>]) {
+    let (layout, wraps) = break_rows(&line.unwrapped_layout, rows);
+    let wrapped: &mut std::sync::Arc<WrappedLineLayout> = line;
+    *wrapped = std::sync::Arc::new(WrappedLineLayout { unwrapped_layout: std::sync::Arc::new(layout), wrap_boundaries: wraps.into(), wrap_width: None });
+}
+
+/// A line cut into `rows`: wrap boundaries where each starts, and what lies
+/// between two rows moved to the end of the first with no width (as the
+/// board drops it), so rows align as the board draws them.
+fn break_rows(src: &LineLayout, rows: &[Range<usize>]) -> (LineLayout, Vec<WrapBoundary>) {
+    let x_at = |ix: usize| src.runs.iter().flat_map(|r| r.glyphs.iter()).find(|g| g.index >= ix).map_or(src.width, |g| g.position.x);
+    // (gap, width dropped before it)
+    let mut gaps = vec![];
+    let mut dropped = px(0.);
+    for w in rows.windows(2) {
+        let gap = w[0].end..w[1].start;
+        gaps.push((gap.clone(), dropped));
+        dropped += x_at(gap.end) - x_at(gap.start);
+    }
+    let moved = |ix: usize, x: Pixels| match gaps.iter().rev().find(|(g, _)| g.start <= ix) {
+        Some((g, d)) if ix < g.end => x_at(g.start) - *d,
+        Some((g, d)) => x - *d - (x_at(g.end) - x_at(g.start)),
+        None => x,
+    };
+    let runs: Vec<ShapedRun> = src
+        .runs
+        .iter()
+        .map(|r| ShapedRun { font_id: r.font_id, glyphs: r.glyphs.iter().map(|g| { let mut g = g.clone(); g.position.x = moved(g.index, g.position.x); g }).collect() })
+        .collect();
+    let mut wraps = vec![];
+    for r in rows.iter().skip(1) {
+        let at = runs.iter().enumerate().flat_map(|(ri, run)| run.glyphs.iter().enumerate().map(move |(gi, g)| (ri, gi, g.index))).find(|g| g.2 >= r.start);
+        if let Some((run_ix, glyph_ix, _)) = at { wraps.push(WrapBoundary { run_ix, glyph_ix }); }
+    }
+    (LineLayout { font_size: src.font_size, width: src.width - dropped, ascent: src.ascent, descent: src.descent, runs, len: src.len }, wraps)
+}
+
 fn is_cjk(ch: char) -> bool {
     (('\u{2E80}'..='\u{9FFF}').contains(&ch) || ('\u{F900}'..='\u{FFEF}').contains(&ch)) && !is_hangul(ch)
 }
@@ -1688,6 +1751,27 @@ mod quote_tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    /// Rows cut where the board cuts them: the spaces dropped at a break
+    /// take no room, so a row is as wide as the board's line.
+    #[test]
+    fn rows_break_where_given() {
+        use gpui::{FontId, GlyphId, LineLayout, ShapedGlyph, ShapedRun, WrapBoundary, point, px};
+        // "ab  cd e": 10pt a glyph
+        let text = "ab  cd e";
+        let glyphs = text.char_indices().map(|(i, _)| ShapedGlyph { id: GlyphId(i as u32), position: point(px(i as f32 * 10.), px(0.)), index: i, is_emoji: false }).collect();
+        let src = LineLayout { font_size: px(10.), width: px(80.), ascent: px(8.), descent: px(2.), runs: vec![ShapedRun { font_id: FontId(0), glyphs }], len: text.len() };
+        let (l, wraps) = super::break_rows(&src, &[0..2, 4..6, 7..8]);
+        assert_eq!(wraps, vec![WrapBoundary { run_ix: 0, glyph_ix: 4 }, WrapBoundary { run_ix: 0, glyph_ix: 7 }]);
+        let xs: Vec<f32> = l.runs[0].glyphs.iter().map(|g| f32::from(g.position.x)).collect();
+        // the two spaces sit at the end of "ab", "cd" right after them, then " " at its end, "e"
+        assert_eq!(xs, vec![0., 10., 20., 20., 20., 30., 40., 40.]);
+        assert_eq!(l.width, px(50.));
+        // rows as wide as the board's lines: "ab", "cd", "e"
+        let ends = [px(20.), px(40.), l.width];
+        let starts: Vec<f32> = std::iter::once(0.).chain(wraps.iter().map(|w| xs[w.glyph_ix])).collect();
+        assert_eq!(starts.iter().zip(ends).map(|(a, b)| f32::from(b) - a).collect::<Vec<_>>(), vec![20., 20., 10.]);
+    }
+
     /// Editor text shapes CJK through CoreText's PingFang fallback, while CJK
     /// punctuation loads the PingFang SC family (`CJK_PUNCT_FONT`): both must
     /// keep drawing the right glyphs.

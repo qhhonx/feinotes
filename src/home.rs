@@ -1,22 +1,23 @@
-//! 主页: the local library's home — the 新建 / 上传
-//! cards (a new document, or 导入为文档 at once: no menus), the 最近访问 and 收藏 lists (list or grid view), 显示设置 for the
-//! list columns and the sort dropdown. Dressed as 所有文档: a
-//! hairline list with quiet hover fills, white cards and pills, native menus.
+//! 主页 and a folder's page: the one-row header (`topbar`, home_topbar.rs), then one level of the
+//! tree as cards or a list, in the order 显示 picks. Dressed as 所有文档: a hairline list with quiet
+//! hover fills, white cards and pills, native menus.
 
 use crate::app::{RowMenu, Workspace};
 #[path = "home_preview_style.rs"]
 mod bs;
 #[path = "home_text.rs"]
 mod text_preview;
+#[path = "home_topbar.rs"]
+pub(crate) mod topbar;
 use crate::settings::display_title;
 use crate::model::BlockKind;
 use crate::search::doc_icon;
 use crate::store::Entry;
 use crate::editor::image::picture;
 use crate::theme::{self, Theme};
-use crate::trash::{empty_state, list_header_text, list_line, page_header, row_hover};
-use crate::design::{MenuItem, MenuSeparator, Popover};
-use crate::ui::{ROW_RADIUS, TipExt, icon, ui_text};
+use crate::trash::{empty_state, list_header_text, list_line, row_hover};
+use crate::design::Popover;
+use crate::ui::{ROW_RADIUS, icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::RefCell;
 use std::collections::{HashMap};
@@ -387,13 +388,15 @@ pub struct Home {
     sort: HomeSort,
     sort_dir: SortDir,
     folders_first: bool,
-    pub sort_menu: bool,
+    /// The header's 显示 menu (view and sort) is open.
+    pub view_menu: bool,
     thumbs: RefCell<HashMap<String, (u64, Thumb, web_time::Instant)>>,
     /// Last-frame bounds of the controls the popovers hang from.
     anchors: Rc<RefCell<HashMap<&'static str, Bounds<Pixels>>>>,
     /// Folder cards and dragging into them (`home_folder.rs`).
     pub(crate) folders: crate::home_folder::HomeFolders,
-    /// The level last shown, kept while nothing its cards show changed:
+    /// The level last shown, kept while the entries (`Level::key`: their
+    /// `generation`) and the order stay as they were:
     /// copying and sorting a folder of 3,000 notes took most of a frame.
     level: RefCell<Option<Level>>,
 }
@@ -416,7 +419,7 @@ impl Default for Home {
             sort: HomeSort::Manual,
             sort_dir: SortDir::Desc,
             folders_first: false,
-            sort_menu: false,
+            view_menu: false,
             thumbs: Default::default(),
             anchors: Default::default(),
             folders: Default::default(),
@@ -566,7 +569,7 @@ impl Workspace {
     /// One level of the tree as 主页 shows it (a folder's page uses it too).
     /// Cards show no body, links or reminders: the entries come without them (`tree::face`).
     pub(crate) fn level_entries(&self, parent: Option<&str>) -> Rc<Vec<Entry>> {
-        let (key, order) = (crate::tree::shape_key(&self.entries), self.home.order());
+        let (key, order) = (self.entries.generation(), self.home.order());
         let mut level = self.home.level.borrow_mut();
         if let Some(l) = level.as_ref().filter(|l| l.key == key && l.order == order && l.parent.as_deref() == parent) { return l.entries.clone(); }
         // A folder's 正文 is the folder's own card, not one inside it.
@@ -583,7 +586,7 @@ impl Workspace {
             Err(e) => { self.show_toast_kind(crate::ui::ToastKind::Error, &e.to_string(), cx); return false; }
             // Already in order: nothing written, the rows stand.
             Ok(false) => return true,
-            Ok(true) => self.entries = self.store.list(),
+            Ok(true) => self.entries.set(self.store.list()),
         }
         self.remember_files(previous, crate::settings::tr("初始化手动排序", "Initialize manual order"));
         true
@@ -597,7 +600,6 @@ impl Workspace {
     /// one flips the direction. Headers without an order are not clickable.
     fn sort_head(&self, id: SharedString, label: &'static str, sorted: bool, on: Option<HomeSort>, cx: &mut Context<Self>) -> Stateful<Div> {
         let dir = self.home.sort_dir;
-        let menu_open = self.home.sort_menu;
         div()
             .id(id)
             .relative()
@@ -611,7 +613,6 @@ impl Workspace {
             .text_color(if sorted { Theme::text() } else { list_header_text() })
             .when(sorted, |d| d.font_weight(FontWeight::SEMIBOLD))
             .when(on.is_some(), |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover())))
-            .when(sorted && menu_open, |d| d.bg(Theme::fill_hover_strong()))
             .child(crate::settings::label(label))
             .when(sorted, |d| d.child(sort_glyph(dir, 12.)))
             .when_some(on, |d, field| d.on_click(cx.listener(move |w, _, _, cx| w.sort_by(field, cx))))
@@ -630,7 +631,6 @@ impl Workspace {
             self.home.sort = field;
             self.home.sort_dir = field.default_dir();
         }
-        self.home.sort_menu = false;
         self.save_home();
         self.home.grid_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.home.folder_grid_scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -747,23 +747,6 @@ impl Workspace {
             }))
     }
 
-    /// The grid / list switcher: a segmented control of two glyphs. 主页 and folder pages share it, so a folder opens in the view its parent showed.
-    pub(crate) fn view_switch(&self, cx: &mut Context<Self>) -> crate::design::Segmented {
-        let toggle = |id: &'static str, ic: &'static str, on: bool, tip: &'static str, grid: bool| {
-            crate::design::Segment::new(id, "").icon(ic).selected(on)
-                .when(!on, |d| d.tip(tip, None))
-                .on_click(cx.listener(move |w, _, _, cx| {
-                    w.home.grid = grid;
-                    w.save_home();
-                    w.home.sort_menu = false;
-                    cx.notify();
-                }))
-        };
-        crate::design::Segmented::new()
-            .child(toggle("home-grid", "view-grid", self.home.grid, crate::settings::text("切换为宫格视图"), true))
-            .child(toggle("home-list", "view-list", !self.home.grid, crate::settings::text("切换为列表视图"), false))
-    }
-
     /// A newly opened folder page starts at its top.
     pub(crate) fn reset_folder_scroll(&self) {
         self.home.folder_grid_scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -793,107 +776,18 @@ impl Workspace {
         if let Err(e) = self.store.save_settings(&s) { eprintln!("无法保存主页视图：{e}"); }
     }
 
+    /// 主页: the one-row header (`topbar`), then the top level in the view chosen.
     pub(crate) fn render_home(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        // Too narrow for the search box: a search icon beside +, in the same style.
-        let search = self.header_search(window, cx);
-        let narrow = search.is_none();
-        let header = page_header(self, crate::settings::text("主页"), 26., cx).relative().children(search)
-            .when(narrow, |d| d.child(crate::ui::header_icon("home-search", "search").mr(px(4.))
-                .tip(crate::settings::tr("搜索文档", "Search documents"), Some(crate::shortcuts::hint("workspace::FocusSearch", "⌘ + J")))
-                .on_click(cx.listener(|w, _, window, cx| w.open_search(window, cx)))))
-            .child(self.place_button("home-more", None, cx))
-            .child(self.import_button("home-import", None, cx))
-            .child(
-            // 主页 makes no documents (which top-level folder they would land in isn't shown here): its one
-            // creation control adds a folder beside the others, as 添加文件夹 under 主页 does.
-            crate::ui::header_icon("home-new", "folder-plus")
-                .tip(crate::settings::tr("添加文件夹", "Add a folder"), Some(crate::shortcuts::hint("workspace::OpenFolder", "⌘ + Shift + O")))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(|w, _, window, cx| w.open_folder_dialog(window, cx))).into_any_element()
-        );
-        // Tabs as a segmented control.
-        let tab = |id: &'static str, label: &'static str, t: HomeTab| {
-            crate::design::Segment::new(id, crate::settings::label(label)).selected(self.home.tab == t)
-                .on_click(cx.listener(move |w, _, _, cx| {
-                    w.home.tab = t;
-                    w.home.sort_menu = false;
-                    cx.notify();
-                }))
-        };
-        // 批量管理: the sidebar's 批量操作 selection, entered and shown here
-        // too, with a toolbar of its own.
-        let text_btn = |id: &'static str, ic: &'static str, label: &'static str, enabled: bool| {
-            crate::design::Button::ghost(id).icon(ic).label(crate::settings::label(label)).disabled(!enabled)
-        };
-        let toolbar = div()
-            .mt(px(12.))
-            .h(px(28.))
-            .flex_none()
-            .pl(px(24.))
-            .pr(px(24.))
-            .flex()
-            .items_center();
-        let toolbar = if let Some(sel) = &self.batch {
-            let ids: Vec<String> = self.home_entries().iter().take(crate::sidebar::BATCH_LIMIT).map(|e| e.id.clone()).collect();
-            let n = sel.len();
-            let all = n > 0 && ids.iter().all(|id| sel.contains(id));
-            use crate::sidebar::{Check, checkbox};
-            toolbar
-                .child(div().id("home-batch-all").flex_none().ml(px(10.)).size(px(14.)).cursor_pointer().group("home-batch-all")
-                    .child(checkbox(if all { Check::On } else if n > 0 { Check::Partial } else { Check::Off }, false))
-                    .tip(crate::settings::text("全选"), None)
-                    .on_click(cx.listener(move |w, _, _, cx| { w.batch = Some(if all { vec![] } else { ids.clone() }); cx.notify(); })))
-                .child(div().ml(px(10.)).text_size(px(13.)).line_height(px(20.)).text_color(Theme::text()).child(crate::localized_format!("已选 {n} 项", "Selected: {n}")))
-                .child(div().flex_1())
-                // The sidebar's 批量操作 actions: 创建副本 | 移动到 | 删除.
-                .child(text_btn("home-batch-copy", "copy", crate::settings::text("创建副本"), n > 0)
-                    .when(n > 0, |d| d.on_click(cx.listener(|w, _, _, cx| w.batch_copy(cx)))))
-                .child(text_btn("home-batch-move", "folder-input", crate::settings::text("移动到"), n > 0).ml(px(4.))
-                    .when(n > 0, |d| d.on_click(cx.listener(|w, _, window, cx| w.batch_move(window, cx)))))
-                .child(text_btn("home-batch-delete", "bin", crate::settings::text("删除"), n > 0).ml(px(4.))
-                    .when(n > 0, |d| d.on_click(cx.listener(|w, _, _, cx| w.ask_batch_delete(cx)))))
-                .child(text_btn("home-batch-exit", "x", crate::settings::text("退出"), true).ml(px(8.))
-                    .tip(crate::settings::text("退出批量操作"), None)
-                    .on_click(cx.listener(|w, _, _, cx| { w.batch = None; w.row_menu = None; cx.notify(); })))
-        } else { // Menu state at render: the popover's outside-press handler clears it on mouse-down, before a click
-            // would fire, so toggle on mouse-down from this snapshot.
-            let sort_open = self.home.sort_menu; toolbar
-            .child(crate::design::Segmented::new()
-                .child(tab("home-tab-recent", crate::settings::text("我的文档"), HomeTab::Recent))
-                .child(tab("home-tab-star", crate::settings::text("收藏"), HomeTab::Starred)))
-            .child(div().flex_1())
-            .child(text_btn("home-batch", "batch", crate::settings::text("批量管理"), true).mr(px(8.))
-                .on_click(cx.listener(|w, _, _, cx| { w.batch = Some(vec![]); w.row_menu = None; w.home.sort_menu = false; cx.notify(); })))
-            .child(
-                crate::design::Button::ghost("home-sort").relative().icon("sort-down").label(crate::settings::label(self.home.sort.label())).selected(self.home.sort_menu)
-                    .child(self.home.track("home-sort"))
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, _, cx| { cx.stop_propagation(); w.home.sort_menu = !sort_open; cx.notify(); })),
-            )
-            .child(self.view_switch(cx).ml(px(16.))
-            ) };
-
+        let header = self.topbar(None, window, cx);
         // No top-level folder open (2.8): nothing to list or sort, a way to open one.
         if self.store.top_folders().is_empty() {
             return div().flex_1().min_w_0().h_full().flex().flex_col().child(header).child(self.empty_main(cx)).into_any_element();
         }
         let entries = self.home_entries();
-        let body = if entries.is_empty() && (self.home.grid || self.lists_library()) {
+        let body = if entries.is_empty() {
             empty_state("illus/empty-list.svg", crate::settings::text("当前列表暂无内容")).into_any_element()
-        } else if self.home.grid {
-            self.render_home_grid(&entries, false, window, cx)
-        } else {
-            self.render_home_list(&entries, false, cx)
-        };
-        div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(toolbar)
-            .child(body)
-            .into_any_element()
+        } else if self.home.grid { self.render_home_grid(&entries, false, window, cx) } else { self.render_home_list(&entries, false, cx) };
+        div().flex_1().min_w_0().h_full().flex().flex_col().child(header).child(div().h(px(8.)).flex_none()).child(body).into_any_element()
     }
 
     pub(crate) fn render_home_list(&self, entries: &[Entry], in_folder: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -1113,44 +1007,16 @@ impl Workspace {
     /// native menu row.
     pub(crate) fn render_home_menus(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut out = vec![];
-        if self.view != crate::app::View::Home {
+        if !matches!(self.view, crate::app::View::Home | crate::app::View::Folder) {
             return out;
         }
         let place = |pos: Point<Pixels>, corner: Anchor, menu: Popover| {
             deferred(anchored().anchor(corner).position(pos).snap_to_window_with_margin(px(8.)).child(menu.fit(crate::design::room(pos, corner)))).with_priority(2).into_any_element()
         };
-        if self.home.sort_menu
-            && let Some(b) = self.home.anchor("home-sort") {
-                let mut menu = Popover::new("sort-menu").menu().min_w(px(200.))
-                    .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.home.sort_menu = false; cx.notify(); }));
-                for (index, order) in [HomeSort::Manual, HomeSort::Visited, HomeSort::Modified, HomeSort::Created, HomeSort::Title].into_iter().enumerate() {
-                    let g = SharedString::from(format!("home-order-{index}"));
-                    menu = menu.child(MenuItem::new(g).label(crate::settings::label(order.label())).checked(self.home.sort == order)
-                        .on_click(cx.listener(move |w, _, _, cx| w.sort_by(order, cx))));
-                }
-                // 升序 / 降序 belongs to the automatic orders only.
-                if self.home.sort.directional() {
-                    menu = menu.child(MenuSeparator::new());
-                    for (index, dir) in [SortDir::Asc, SortDir::Desc].into_iter().enumerate() {
-                        menu = menu.child(MenuItem::new(SharedString::from(format!("home-dir-{index}"))).label(dir.label()).checked(self.home.sort_dir == dir)
-                            .on_click(cx.listener(move |w, _, _, cx| {
-                                w.home.sort_dir = dir;
-                                w.save_home();
-                                w.home.sort_menu = false;
-                                w.home.grid_scroll.scroll_to_item(0, ScrollStrategy::Top);
-                                w.home.folder_grid_scroll.scroll_to_item(0, ScrollStrategy::Top);
-                                w.home.list_scroll.set_offset(point(px(0.), px(0.)));
-                                w.home.folder_list_scroll.set_offset(point(px(0.), px(0.)));
-                                cx.notify();
-                            })));
-                    }
-                }
-                menu = menu.child(MenuSeparator::new()).child(MenuItem::new("home-folders-first").label(crate::settings::tr("文件夹优先", "Folders first")).checked(self.home.folders_first && self.home.sort != HomeSort::Manual)
-                    .when(self.home.sort == HomeSort::Manual, |d| d.opacity(0.4))
-                    .on_click(cx.listener(|w, _, _, cx| { if w.home.sort == HomeSort::Manual { return; } w.home.folders_first = !w.home.folders_first; w.save_home(); w.home.sort_menu = false; cx.notify(); })));
-                let (pos, corner) = crate::design::hang(b, crate::design::Align::End, None);
-                out.push(place(pos, corner, menu));
-            }
+        if self.home.view_menu && let Some(b) = self.home.anchor("home-view") {
+            let (pos, corner) = crate::design::hang(b, crate::design::Align::End, None);
+            out.push(place(pos, corner, self.view_menu(cx)));
+        }
         out
     }
 }

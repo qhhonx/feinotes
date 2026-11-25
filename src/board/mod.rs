@@ -437,7 +437,7 @@ impl Render for BoardView {
         text_editor::restyle(self, window, cx);
         if std::mem::take(&mut self.refocus) && self.text.is_none() && self.frame_name.is_none() { self.focus(window, cx); }
         let canvas_el = canvas::canvas_element(self, cx).into_any_element();
-        let editor = text_editor::element(self);
+        let editor = text_editor::element(self, window);
         let labels = frame_name::labels(self, window);
         let frame_name = frame_name::element(self, cx);
         let me = cx.entity();

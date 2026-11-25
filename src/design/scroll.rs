@@ -2,8 +2,9 @@
 //! `ScrollHandle`: a trackless `border`-coloured thumb, 7 wide (the bar's `w-2.5` less its `p-px` and
 //! clear `border-l`), 1 in from every edge; it shows while the pointer is over the box, while it
 //! scrolls and while it is dragged, and fades out `HIDE` after (Radix's `scrollHideDelay`). The fade
-//! is ours: shadcn switches it. Inside a rounded surface the thumb keeps one inset all round, as much
-//! as clears the corner (`inset_for`). The pages' own scrollbar (the editor's virtualized list) takes
+//! is ours: shadcn switches it. Inside a rounded surface the bar stays flush to the side and its
+//! round ends stay whole: it keeps from the top and bottom just what clears the corner (`ends_for`),
+//! as shadcn's `p-px` does against its smaller corners. The pages' own scrollbar (the editor's virtualized list) takes
 //! the same look from `THUMB`, `PAD`, `thumb_color` and `Fade`.
 
 use super::color;
@@ -24,16 +25,98 @@ pub const HIDE: Duration = Duration::from_millis(600);
 /// Fade in and out.
 pub const FADE: Duration = Duration::from_millis(150);
 
-/// One inset all round that keeps a `THUMB`-wide thumb with round ends inside a surface rounded
-/// `r`: the end's centre sits `r` from the corner's centre less its own radius. 2.5 for 12.
-pub fn inset_for(r: f32) -> f32 {
+/// How far a flush thumb (`PAD` in from the side) keeps from the box's top and bottom so its round
+/// ends stay whole inside a surface rounded `r`: shadcn's corners are small enough that `p-px` does
+/// (8 against a 3.5 end), ours (12) need 4.5. No cut, no gap at the side.
+pub fn ends_for(r: f32) -> f32 {
     let half = THUMB / 2.;
-    let i = (r - half) * (1. - std::f32::consts::FRAC_1_SQRT_2);
+    let cx = PAD + half;
+    if r <= cx { return PAD; }
+    let reach = (r - half) * (r - half) - (r - cx) * (r - cx);
+    if reach <= 0. { return PAD; }
+    let i = r - half - reach.sqrt();
     ((i * 2.).ceil() / 2.).max(PAD)
 }
 
+/// Paints a thumb at `thumb` (round-ended, `THUMB` wide) cut to `clip` rounded `r`: where the thumb
+/// passes the surface's corner it takes the corner's arc, as overflow-hidden on a rounded box cuts
+/// shadcn's. A thumb clear of the corners is a plain capsule.
+pub fn paint_thumb(window: &mut Window, thumb: Bounds<Pixels>, clip: Bounds<Pixels>, r: f32, color: Hsla) {
+    let (top, bottom) = (f32::from(thumb.top()), f32::from(thumb.bottom()));
+    let (ctop, cbottom, cright) = (f32::from(clip.top()), f32::from(clip.bottom()), f32::from(clip.right()));
+    let half = f32::from(thumb.size.width) / 2.;
+    if r <= 0. || (top >= ctop + r && bottom <= cbottom - r) {
+        window.paint_quad(fill(thumb, color).corner_radii(px(half)));
+        return;
+    }
+    let (x0, cx) = (f32::from(thumb.left()), f32::from(thumb.left()) + half);
+    // the thumb's and the surface's extent across, at height y
+    let across = |y: f32| -> Option<(f32, f32)> {
+        let cap = if y < top + half { Some(top + half - y) } else if y > bottom - half { Some(y - (bottom - half)) } else { None };
+        let (mut l, mut rt) = match cap { Some(d) if d >= half => return None, Some(d) => { let w = (half * half - d * d).sqrt(); (cx - w, cx + w) } None => (x0, x0 + 2. * half) };
+        let edge = if y < ctop + r { Some(ctop + r - y) } else if y > cbottom - r { Some(y - (cbottom - r)) } else { None };
+        if let Some(d) = edge { if d >= r { return None } rt = rt.min(cright - r + (r * r - d * d).sqrt()); }
+        l = l.min(rt);
+        (rt - l > 0.01).then_some((l, rt))
+    };
+    let (y0, y1) = (top.max(ctop), bottom.min(cbottom));
+    let n = (((y1 - y0) * 4.).ceil() as usize).max(2);
+    let rows: Vec<(f32, f32, f32)> = (0..=n).filter_map(|i| { let y = y0 + (y1 - y0) * i as f32 / n as f32; across(y).map(|(l, rt)| (y, l, rt)) }).collect();
+    if rows.len() < 2 { return; }
+    let mut path = PathBuilder::fill();
+    path.move_to(point(px(rows[0].1), px(rows[0].0)));
+    for &(y, l, _) in &rows[1..] { path.line_to(point(px(l), px(y))); }
+    for &(y, _, rt) in rows.iter().rev() { path.line_to(point(px(rt), px(y))); }
+    path.close();
+    if let Ok(path) = path.build() { window.paint_path(path, color); }
+}
+
 /// The thumb's colour at `alpha` (shadcn `bg-border`).
-pub fn thumb_color(alpha: f32) -> Hsla { super::alpha(color::border(), alpha) }
+pub fn thumb_color(alpha: f32) -> Hsla { thumb_tone(0., alpha) }
+
+/// The thumb under the pointer: half way from `border` to `ring`.
+pub const HOVER: f32 = 0.5;
+/// The thumb held for a drag: `ring`, kept until the button goes up wherever the pointer is.
+pub const HELD: f32 = 1.;
+
+/// The thumb's colour at `tone` (0 rest, `HOVER`, `HELD`) and `alpha`: hover and a drag darken it, as a
+/// browser's thumb does (the user's call; shadcn's stays `bg-border`): `border` at rest toward `ring`
+/// in the light, the foreground from 10% to 35% in the dark.
+pub fn thumb_tone(tone: f32, alpha: f32) -> Hsla {
+    // dark: `border` is white at 10%, and mixing toward an opaque `ring` reaches it half way once laid on
+    // the surface, so the steps are the foreground at 10% (border), 22% and 35% instead
+    if super::dark() { return super::alpha(color::foreground(), (0.10 + 0.25 * tone.clamp(0., 1.)) * alpha); }
+    let (a, b): (Rgba, Rgba) = (color::border().into(), color::ring().into());
+    let t = tone.clamp(0., 1.);
+    let c: Hsla = Rgba { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: a.a + (b.a - a.a) * t }.into();
+    super::alpha(c, alpha)
+}
+
+/// Draws the window again after `wait` (a paint can't ask for the next one: `refresh` is ignored
+/// while drawing).
+fn wake(window: &mut Window, cx: &mut App, wait: Duration) {
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(wait).await;
+        let _ = handle.update(cx, |_, window, _| window.refresh());
+    }).detach();
+}
+
+/// The thumb's tone easing to its target over `FADE` (`step` each paint).
+#[derive(Default)]
+pub struct Tone { at: Cell<Option<(f32, Instant)>> }
+
+impl Tone {
+    pub fn step(&self, target: f32, window: &mut Window, cx: &mut App) -> f32 {
+        let now = Instant::now();
+        let (v, t) = self.at.get().unwrap_or((target, now));
+        let d = now.duration_since(t).as_secs_f32() / FADE.as_secs_f32();
+        let v = if target > v { (v + d).min(target) } else if target < v { (v - d).max(target) } else { v };
+        self.at.set(Some((v, now)));
+        if v != target { wake(window, cx, Duration::from_millis(16)); }
+        v
+    }
+}
 
 /// Shown or hidden, eased over `FADE`: call `step` each paint with whether it should show; it
 /// returns the opacity and has the window drawn again while it moves or when `HIDE` runs out.
@@ -72,13 +155,7 @@ impl Fade {
         let wait = if a != target { Some(Duration::from_millis(16)) }
             else if lingering && !active { self.seen.get().map(|t| HIDE.saturating_sub(now.duration_since(t)) + Duration::from_millis(1)) }
             else { None };
-        if let Some(wait) = wait {
-            let handle = window.window_handle();
-            cx.spawn(async move |cx| {
-                cx.background_executor().timer(wait).await;
-                let _ = handle.update(cx, |_, window, _| window.refresh());
-            }).detach();
-        }
+        if let Some(wait) = wait { wake(window, cx, wait); }
         a
     }
 }
@@ -91,15 +168,19 @@ pub struct ScrollBar {
     /// (held still so the thumb stays under the pointer as newly measured rows refine the estimate).
     grab: Cell<Option<(Pixels, Pixels, Pixels)>>,
     fade: Fade,
-    /// The inset all round: `PAD`, or `inset_for` the surface's radius.
-    inset: Cell<f32>,
+    /// The radius of the surface the box fills (0: square), whose corners the thumb's ends keep clear of.
+    radius: Cell<f32>,
     /// The pointer was over the box last paint.
     over: Cell<bool>,
+    /// The pointer was on the thumb last paint.
+    on_thumb: Cell<bool>,
+    tone: Tone,
 }
 
 impl ScrollBar {
-    /// A scrollbar inside a surface rounded `r` (0 for a square box).
-    pub fn rounded(r: f32) -> Self { let s = Self::default(); s.inset.set(if r > 0. { inset_for(r) } else { PAD }); s }
+    /// A scrollbar in a box that fills a surface rounded `r` (0 for a square box): flush to the side, its
+    /// ends clear of the corners (`ends_for`).
+    pub fn rounded(r: f32) -> Self { let s = Self::default(); s.radius.set(r); s }
 
     pub fn render(self: &std::rc::Rc<Self>, handle: &ScrollHandle) -> impl IntoElement + use<> {
         let (list, list2) = (handle.clone(), handle.clone());
@@ -107,15 +188,17 @@ impl ScrollBar {
         canvas(
             move |_, window, _| {
                 let area = list.bounds();
-                let inset = px(sb.inset.get().max(PAD));
+                let inset = px(PAD);
+                // flush to the side; at the ends just far enough that the round end clears the corner
+                let ends = px(ends_for(sb.radius.get()));
                 let view = area.size.height;
                 let content = view + list.max_offset().y;
                 if content <= view + px(1.) { return None; }
-                let track = (view - inset * 2.).max(px(1.));
+                let track = (view - ends * 2.).max(px(1.));
                 let h = match sb.grab.get() { Some((_, _, h)) => h, None => (track * (view / content)).max(px(MIN)).min(track) };
                 let content = sb.grab.get().map_or(content, |(_, c, _)| c);
                 let offset = -list.offset().y;
-                let top = area.top() + inset + (track - h) * (offset / (content - view)).clamp(0., 1.);
+                let top = area.top() + ends + (track - h) * (offset / (content - view)).clamp(0., 1.);
                 let zone = Bounds::new(point(area.right() - px(BAR), area.top()), size(px(BAR), view));
                 Some((area, top, h, track, inset, content, offset, window.insert_hitbox(zone, HitboxBehavior::BlockMouseExceptScroll)))
             },
@@ -124,12 +207,16 @@ impl ScrollBar {
                 let Some((area, top, h, track, inset, content, offset, hitbox)) = state else { sb.grab.set(None); return };
                 window.set_cursor_style(CursorStyle::Arrow, &hitbox);
                 let held = sb.grab.get().is_some();
-                let over = area.contains(&window.mouse_position());
+                let mouse = window.mouse_position();
+                let over = area.contains(&mouse);
                 sb.over.set(over);
+                let on_thumb = hitbox.is_hovered(window) && mouse.y >= top && mouse.y <= top + h;
+                sb.on_thumb.set(on_thumb);
                 let a = sb.fade.step(over || held, f32::from(offset), window, cx);
+                let tone = sb.tone.step(if held { HELD } else if on_thumb { HOVER } else { 0. }, window, cx);
                 if a > 0. {
                     let thumb = Bounds::new(point(area.right() - inset - px(THUMB), top), size(px(THUMB), h));
-                    window.paint_quad(fill(thumb, thumb_color(a)).corner_radii(px(THUMB / 2.)));
+                    paint_thumb(window, thumb, area, sb.radius.get(), thumb_tone(tone, a));
                 }
                 window.on_mouse_event({
                     let (sb, hitbox) = (sb.clone(), hitbox.clone());
@@ -149,7 +236,7 @@ impl ScrollBar {
                         match sb.grab.get() {
                             Some((dy, _, h)) if ev.pressed_button == Some(MouseButton::Left) => {
                                 let travel = (track - h).max(px(1.));
-                                let f = ((ev.position.y - dy - area.top() - inset) / travel).clamp(0., 1.);
+                                let f = ((ev.position.y - dy - area.top() - px(ends_for(sb.radius.get()))) / travel).clamp(0., 1.);
                                 // At the end, the real bottom: rows there may not be measured yet.
                                 list.set_offset(point(list.offset().x, -list.max_offset().y * f));
                                 window.refresh();
@@ -158,6 +245,8 @@ impl ScrollBar {
                             Some(_) => { sb.grab.set(None); window.refresh(); }
                             // Entering or leaving the box shows or hides the thumb.
                             None if area.contains(&ev.position) != sb.over.get() => window.refresh(),
+                            // onto or off the thumb: its tone moves
+                            None if (ev.position.x >= area.right() - px(BAR) && ev.position.x <= area.right() && ev.position.y >= top && ev.position.y <= top + h) != sb.on_thumb.get() => window.refresh(),
                             None => {}
                         }
                     }
