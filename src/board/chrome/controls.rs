@@ -25,12 +25,15 @@ fn part(id: &'static str, w: f32, first: bool, last: bool, enabled: bool) -> Sta
 }
 
 pub(crate) fn footer(me: &BoardView, cx: &mut Context<BoardView>) -> impl IntoElement {
+    let width = me.canvas().width as f32;
+    let stacked = cfg!(target_family = "wasm") && width < 5. * style::LG_BUTTON + 60. + 2. * style::PADDING + 9.6;
+    let zoom_width = if stacked { (width - 4. * style::SPACE - 2. * style::LG_BUTTON).clamp(32., 60.) } else { 60. };
     let pct = format!("{}%", (me.viewport().zoom * 100.).round() as i64);
     let run = |a: BoardAction| cx.listener(move |me: &mut BoardView, _: &ClickEvent, window, cx| me.run(a.clone(), window, cx));
     let ic = |name: &str, on: bool| icon(name, style::ICON, if on { style::text() } else { style::disabled() });
     let zoom = group("board-zoom")
         .child(part("board-zoom-out", style::LG_BUTTON, true, false, true).child(ic("zoom-out", true)).ex_tip(tr("缩小", "Zoom out"), Some(&shortcut("CtrlOrCmd+-"))).on_click(run(BoardAction::ZoomOut)))
-        .child(part("board-zoom-reset", 60., false, false, true).child(pct).ex_tip(tr("重置缩放", "Reset zoom"), None).on_click(run(BoardAction::ResetZoom)))
+        .child(part("board-zoom-reset", zoom_width, false, false, true).child(pct).ex_tip(tr("重置缩放", "Reset zoom"), None).on_click(run(BoardAction::ResetZoom)))
         .child(part("board-zoom-in", style::LG_BUTTON, false, true, true).child(ic("zoom-in", true)).ex_tip(tr("放大", "Zoom in"), Some(&shortcut("CtrlOrCmd++"))).on_click(run(BoardAction::ZoomIn)));
     let (u, r) = (me.can_undo(), me.can_redo());
     let undo = group("board-history")
@@ -40,6 +43,11 @@ pub(crate) fn footer(me: &BoardView, cx: &mut Context<BoardView>) -> impl IntoEl
         // no tooltip over the open dialog
         .when(!me.help_open(), |d| d.ex_tip(tr("帮助", "Help"), Some("?")))
         .on_click(cx.listener(|me, _, _, cx| { let open = !me.help_open(); me.set_help_open(open, cx) }));
-    div().absolute().left(px(style::PADDING)).right(px(style::PADDING)).bottom(px(style::PADDING)).flex().items_center()
-        .child(zoom).child(undo.ml(px(9.6))).child(div().flex_1()).child(help)
+    let inset = px(if stacked { 2. * style::SPACE } else { style::PADDING });
+    let footer = div().absolute().left(inset).right(inset).bottom(inset).flex();
+    if stacked {
+        return footer.flex_col().items_start().gap(px(style::SPACE)).child(zoom)
+            .child(div().w_full().flex().justify_between().gap(px(style::SPACE)).child(undo).child(help));
+    }
+    footer.items_center().child(zoom).child(undo.ml(px(9.6))).child(div().flex_1()).child(help)
 }

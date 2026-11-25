@@ -18,6 +18,13 @@ const MAIN: [Tool; 11] = [Tool::Hand, Tool::Selection, Tool::Rectangle, Tool::Di
 /// `ExtraToolsDropdown`'s tools we have.
 const EXTRA: [Tool; 3] = [Tool::Image, Tool::Frame, Tool::Lasso];
 
+// The normal toolbar and the main menu fit side by side above this width.
+const COMPACT_BELOW: f32 = 680.;
+const MENU_CLEARANCE: f32 = style::PADDING + style::LG_BUTTON + style::SPACE;
+const EDGE: f32 = 8.;
+const COMPACT_MAIN: [Tool; 6] = [Tool::Hand, Tool::Selection, Tool::Rectangle, Tool::Arrow, Tool::FreeDraw, Tool::Text];
+const COMPACT_EXTRA: [Tool; 8] = [Tool::Diamond, Tool::Ellipse, Tool::Line, Tool::StickyNote, Tool::Eraser, Tool::Image, Tool::Frame, Tool::Lasso];
+
 pub(crate) fn tool_icon_name(t: Tool) -> &'static str {
     match t {
         Tool::Selection => "selection",
@@ -73,13 +80,13 @@ pub(crate) fn tool_shortcut(t: Tool) -> Option<String> {
     Some(match (letter, n) { (Some(l), Some(n)) => format!("{l} {} {n}", tr("或", "or")), (Some(l), None) => l, (None, n) => n.map(|n| n.to_string()).unwrap_or_default() })
 }
 
-fn tool_button(me: &BoardView, t: Tool, cx: &mut Context<BoardView>) -> Stateful<Div> {
+fn tool_button(me: &BoardView, t: Tool, compact: bool, cx: &mut Context<BoardView>) -> Stateful<Div> {
     let on = me.tool() == t;
     let name = if on && fillable(t) { format!("{}-filled", tool_icon_name(t)) } else { tool_icon_name(t).to_string() };
     tool_icon(SharedString::from(format!("board-tool-{t:?}")), style::LG_BUTTON, on)
         .child(icon(&name, style::ICON, tool_icon_color(on)))
         // the hand hides its key (`hideKeyBinding`)
-        .when_some(tool_letter(t).filter(|_| t != Tool::Hand), |d, k| d.child(keybinding(k, on)))
+        .when_some(tool_letter(t).filter(|_| !compact && t != Tool::Hand), |d, k| d.child(keybinding(k, on)))
         .ex_tip(tool_label(t), tool_shortcut(t).as_deref())
         .on_click(cx.listener(move |me, _, window, cx| me.set_tool(t, window, cx)))
 }
@@ -88,9 +95,9 @@ fn tool_button(me: &BoardView, t: Tool, cx: &mut Context<BoardView>) -> Stateful
 fn divider() -> Div { div().flex_none().w(px(1.)).h(px(24.)).bg(style::border()) }
 
 /// `ExtraToolsDropdown`: the trigger shows the chosen extra tool, else the dots.
-fn extra_tools(me: &BoardView, cx: &mut Context<BoardView>) -> Stateful<Div> {
+fn extra_tools(me: &BoardView, tools: &[Tool], compact: bool, max_height: Option<f32>, cx: &mut Context<BoardView>) -> Stateful<Div> {
     let tool = me.tool();
-    let selected = EXTRA.contains(&tool);
+    let selected = tools.contains(&tool);
     let open = pop(cx) == Some(Pop::ExtraTools);
     let trigger = div().id("board-extra-tools").flex_none().relative().size(px(style::LG_BUTTON)).flex().items_center().justify_center().rounded(px(style::RADIUS_LG)).cursor_pointer()
         .when(selected, |d| d.bg(style::surface_primary_container()))
@@ -99,26 +106,55 @@ fn extra_tools(me: &BoardView, cx: &mut Context<BoardView>) -> Stateful<Div> {
         .when(!open, |d| d.ex_tip(tr("更多工具", "More tools"), None))
         .on_click(cx.listener(|_, _, _, cx| { let open = pop(cx) == Some(Pop::ExtraTools); set_pop(if open { None } else { Some(Pop::ExtraTools) }, cx) }));
     if !open { return trigger; }
-    let mut menu = dropdown("board-extra-tools-menu").min_w(px(190.));
-    for t in EXTRA {
-        let k = match t { Tool::Image => Some("9".to_string()), Tool::Frame => Some("F".to_string()), _ => None };
+    let mut menu = dropdown("board-extra-tools-menu").min_w(px(190.))
+        .when_some(max_height, |menu, height| menu.fit(height));
+    for &t in tools {
+        let k = if compact { None } else { match t { Tool::Image => Some("9".to_string()), Tool::Frame => Some("F".to_string()), _ => None } };
         menu = menu.child(dropdown_item(("board-extra-tool", t as usize), Some(tool_icon_name(t)), tool_label(t), k, tool == t)
             .on_click(cx.listener(move |me, _, window, cx| { set_pop(None, cx); me.set_tool(t, window, cx) })));
+    }
+    if compact {
+        let locked = me.tool_locked();
+        menu = menu.child(super::menu::dropdown_separator())
+            .child(dropdown_item("board-mobile-tool-lock", Some(if locked { "locked" } else { "unlocked" }),
+                tr("绘制后保持所选工具", "Keep selected tool active"), None, locked)
+                .on_click(cx.listener(|me, _, window, cx| { set_pop(None, cx); me.run(BoardAction::ToggleToolLock, window, cx); })));
     }
     let menu = menu.on_mouse_down_out(cx.listener(|_, _, _, cx| if pop(cx) == Some(Pop::ExtraTools) { set_pop(None, cx) }));
     // below the trigger, right edges aligned (`sideOffset` 8 + `margin-top` 6)
     trigger.child(div().absolute().top(px(style::LG_BUTTON + 14.)).right_0().child(deferred(anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3)))
 }
 
-pub(crate) fn render(me: &BoardView, cx: &mut Context<BoardView>) -> impl IntoElement {
+fn compact_tool_count(canvas_width: f32) -> usize {
+    let row_width = canvas_width - MENU_CLEARANCE - EDGE - 2. * style::SPACE;
+    let slots = ((row_width + style::SPACE) / (style::LG_BUTTON + style::SPACE)).floor();
+    // One slot is always reserved for More tools.
+    ((slots as usize).saturating_sub(1)).min(COMPACT_MAIN.len())
+}
+
+pub(crate) fn render(me: &BoardView, window: &Window, cx: &mut Context<BoardView>) -> impl IntoElement {
+    let canvas = me.canvas();
+    let width = f32::from(window.viewport_size().width);
+    let web_compact = cfg!(target_family = "wasm") && (canvas.width as f32) < COMPACT_BELOW;
+    if web_compact || (cfg!(target_os = "ios") && width < COMPACT_BELOW) {
+        let visible = if web_compact { compact_tool_count(canvas.width as f32) } else if width < 356. { 5 } else { COMPACT_MAIN.len() };
+        // Keep Selection directly available if the pane has space for one tool.
+        let main = if visible == 1 { &COMPACT_MAIN[1..2] } else { &COMPACT_MAIN[..visible] };
+        let tools: Vec<_> = COMPACT_EXTRA.into_iter().chain(COMPACT_MAIN.into_iter().filter(|tool| !main.contains(tool))).collect();
+        let mut row = div().flex().items_center().gap(px(style::SPACE));
+        for &tool in main { row = row.child(tool_button(me, tool, true, cx)); }
+        let menu_height = web_compact.then(|| (canvas.height as f32 - style::TOP_PADDING - style::LG_BUTTON - 22.).max(100.));
+        let bar = island("board-toolbar", 1.).child(row.child(extra_tools(me, &tools, true, menu_height, cx)));
+        return div().absolute().top(px(style::TOP_PADDING)).left(px(MENU_CLEARANCE)).right(px(EDGE)).flex().justify_center().child(bar);
+    }
     let locked = me.tool_locked();
     let lock = tool_icon("board-tool-lock", style::LG_BUTTON, locked)
         .child(icon(if locked { "locked" } else { "unlocked" }, style::ICON, tool_icon_color(locked)))
         .ex_tip(&format!("{} — Q", tr("绘制后保持所选的工具栏状态", "Keep selected tool active after drawing")), None)
         .on_click(cx.listener(|me, _, window, cx| me.run(BoardAction::ToggleToolLock, window, cx)));
     let mut row = div().flex().items_center().gap(px(style::SPACE)).child(lock).child(divider().mr(px(4.)));
-    for t in MAIN { row = row.child(tool_button(me, t, cx)); }
-    row = row.child(divider().ml(px(4.))).child(extra_tools(me, cx));
+    for t in MAIN { row = row.child(tool_button(me, t, false, cx)); }
+    row = row.child(divider().ml(px(4.))).child(extra_tools(me, &EXTRA, false, None, cx));
     let bar = island("board-toolbar", 1.).relative().child(row).children(super::hints::render(me));
     div().absolute().top(px(style::TOP_PADDING)).left_0().right_0().flex().justify_center().child(bar)
 }

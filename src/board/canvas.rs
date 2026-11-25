@@ -55,8 +55,22 @@ pub fn canvas_element(me: &BoardView, cx: &mut Context<BoardView>) -> impl IntoE
         // the canvas is the whole view: fit once its size is known, before
         // the first paint
         move |b, _, cx| {
-            bounds.set(b);
-            if let Some(e) = fit.upgrade() { e.update(cx, |v, cx| if !v.fitted { v.fitted = true; v.zoom_to_fit(cx) }); }
+            let _previous = bounds.replace(b).size;
+            let offsets = super::FIT_OFFSETS;
+            let ready = !cfg!(target_family = "wasm") || (b.size.width > px((offsets.left + offsets.right) as f32)
+                && b.size.height > px((offsets.top + offsets.bottom) as f32));
+            if ready && let Some(e) = fit.upgrade()
+            {
+                e.update(cx, |v, cx| {
+                    if !v.fitted {
+                        v.fitted = true;
+                        v.zoom_to_fit(cx);
+                    } else {
+                        #[cfg(target_family = "wasm")]
+                        v.resize_canvas(_previous, b.size, cx);
+                    }
+                });
+            }
         },
         move |b, _, window, cx| {
             let Some(e) = entity.upgrade() else { return };

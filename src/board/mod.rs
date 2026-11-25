@@ -338,6 +338,18 @@ impl BoardView {
         }
     }
 
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn resize_canvas(&mut self, previous: Size<Pixels>, size: Size<Pixels>, cx: &mut Context<Self>) {
+        if previous == size { return; }
+        // A cached chrome view still needs the new width. Keep the same point
+        // under the canvas center when the browser or sidebar resizes.
+        self.chrome_quiet.set(false);
+        let mut viewport = self.viewport();
+        viewport.scroll_x += f64::from(f32::from(size.width - previous.width)) / (2. * viewport.zoom);
+        viewport.scroll_y += f64::from(f32::from(size.height - previous.height)) / (2. * viewport.zoom);
+        self.set_viewport(viewport, cx);
+    }
+
     /// The selection's line editor follows `app.selected_linear_element`
     /// (undo, actions and selection changes set only that).
     pub(crate) fn sync_linear(&mut self) {

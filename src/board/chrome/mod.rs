@@ -6,7 +6,7 @@
 //! it shows and how it looks: the looks are upstream's CSS (`style.rs`) and
 //! icons (`assets/icons/excalidraw/`), light and dark, not our `Theme`.
 //! Differs: no collaboration, library, sidebars, AI, socials, stats, zen /
-//! view mode, compact or mobile layouts; the main menu adds 退出, and the top
+//! view mode; the main menu adds 退出, and the top
 //! left keeps room for the window's traffic lights. Everything here only
 //! reads `BoardView` and dispatches `BoardAction`s / `set_tool`.
 
@@ -87,7 +87,7 @@ pub fn render(me: &BoardView, window: &mut Window, cx: &mut Context<BoardView>) 
     if panel.is_none() && matches!(pop(cx), Some(Pop::Stroke | Pop::Background | Pop::StartArrowhead | Pop::EndArrowhead | Pop::Font)) { set_pop(None, cx); }
     div().absolute().top_0().left_0().size_full().font_family(style::UI_FONT).text_color(style::text())
         .child(menu::main_menu(me, window, cx))
-        .child(toolbar::render(me, cx))
+        .child(toolbar::render(me, window, cx))
         .when_some(panel, |d, p| d.child(p))
         .child(controls::footer(me, cx))
         .when_some(context_menu::render(me, window, cx), |d, m| d.child(m))
