@@ -49,6 +49,6 @@ pub use keyboard::WebKeyboardLayout;
 #[cfg(target_family = "wasm")]
 pub use logging::init_logging;
 #[cfg(target_family = "wasm")]
-pub use platform::{WebPlatform, WebWindowError};
+pub use platform::{BrowserClipboard, WebPlatform, WebWindowError, read_browser_clipboard};
 #[cfg(target_family = "wasm")]
 pub use window::WebWindow;
