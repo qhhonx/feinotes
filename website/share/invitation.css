@@ -106,16 +106,19 @@ body {
 }
 
 .invite-options:not([hidden]) {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  inline-size: max-content;
+  max-inline-size: 100%;
+  margin-inline: auto;
   gap: 6px 24px;
   font-size: .8125rem;
 }
 
 .invite-options a {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  justify-content: center;
   min-block-size: 32px;
   color: var(--muted);
   text-decoration: underline;
