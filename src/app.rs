@@ -2207,6 +2207,7 @@ impl Render for Workspace {
             // the action on its way down while a menu is open (a switch row keeps the menu open, so
             // Esc is how it goes).
             .capture_action(cx.listener(|w, _: &crate::editor::keymap::Escape, _, cx| {
+                if w.dismiss_library_view_menu(cx) { cx.stop_propagation(); return; }
                 if w.doc_menu || w.mode_menu {
                     w.mode_menu = false;
                     w.doc_menu = false;
@@ -2247,6 +2248,10 @@ impl Render for Workspace {
                     w.import_apps = None;
                     cx.stop_propagation();
                     cx.notify();
+                    return;
+                }
+                if ev.keystroke.key == "escape" && w.dismiss_library_view_menu(cx) {
+                    cx.stop_propagation();
                     return;
                 }
                 if ev.keystroke.key != "escape" || w.batch.is_none() || w.search_open || w.rename.is_some() {

@@ -15,6 +15,15 @@ use std::rc::Rc;
 pub(crate) const TB_MORE: &str = "tb-more";
 
 impl Workspace {
+    pub(crate) fn dismiss_library_view_menu(&mut self, cx: &mut Context<Self>) -> bool {
+        if !matches!(self.view, crate::app::View::Home | crate::app::View::Folder) || self.search_open || self.confirm.is_some() {
+            return false;
+        }
+        if !std::mem::take(&mut self.home.view_menu) { return false; }
+        cx.notify();
+        true
+    }
+
     /// What a page lists: 主页's level or a folder's, or, with 只看收藏 on, every starred
     /// document below it, flat (主页: the whole library), as 收藏 always listed them.
     pub(crate) fn page_entries(&self, folder: Option<&str>) -> Rc<Vec<Entry>> {
@@ -54,7 +63,12 @@ impl Workspace {
             .on_click(cx.listener(|w, _, _, cx| { w.batch = Some(vec![]); w.row_menu = None; w.home.view_menu = false; cx.notify(); }));
         let display = icon_btn("home-view", "view-settings").relative().selected(view_open).child(self.home.track("home-view"))
             .when(!view_open, |d| d.tip(tr("显示", "View"), None))
-            .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, _, cx| { cx.stop_propagation(); w.home.view_menu = !view_open; cx.notify(); }));
+            .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, window, cx| {
+                cx.stop_propagation();
+                if !view_open { window.focus(&w.focus, cx); }
+                w.home.view_menu = !view_open;
+                cx.notify();
+            }));
         let more = match folder {
             // 主页's "…": the other ways in from this computer (打开文件夹 is its own button).
             None => self.place_button("home-more", cx),
