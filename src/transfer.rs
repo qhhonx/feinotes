@@ -182,10 +182,11 @@ fn assets_above(blocks: &mut [Block], dir: &Path, root: Option<&Path>) {
 /// One scanned folder as a library folder under `parent`; its id. Needs no
 /// window, so 欢迎页 can import on a background thread before the main window.
 pub(crate) fn import_tree(store: &mut crate::store::Store, t: &Scanned, parent: Option<&str>, failed: &mut usize) -> Option<String> {
-    tree(store, t, &t.dir, parent, failed)
+    tree(store, t, &t.dir, parent, failed, &mut crate::store::Store::import_into)
 }
 
-fn tree(store: &mut crate::store::Store, t: &Scanned, root: &Path, parent: Option<&str>, failed: &mut usize) -> Option<String> {
+fn tree(store: &mut crate::store::Store, t: &Scanned, root: &Path, parent: Option<&str>, failed: &mut usize,
+    docxxml: &mut impl FnMut(&mut crate::store::Store, &Path, Option<&str>) -> anyhow::Result<String>) -> Option<String> {
     let id = match store.create_folder(&t.name, parent) {
         Ok(id) => id,
         Err(_) => { *failed += t.files; return None; }
@@ -195,12 +196,12 @@ fn tree(store: &mut crate::store::Store, t: &Scanned, root: &Path, parent: Optio
     if parent.is_some() { let _ = store.set_parent(&id, parent); }
     // Made when the folder was, else when the first file in it was.
     if let Some(made) = fdl_core::vfs::made_time(&t.dir).or_else(|| first_made(t)) { let _ = store.update_meta(&id, |m| m.created = made); }
-    for sub in &t.dirs { tree(store, sub, root, Some(&id), failed); }
+    for sub in &t.dirs { tree(store, sub, root, Some(&id), failed, docxxml); }
     for p in &t.docs {
         let made = if crate::local_files::is_markdown_path(p) {
             let read = { let _local = NoCloudDownloads::new(); read_markdown(p, Some(root), &crate::store::Store::assets_in(store.top_dir())) };
             read.and_then(|(doc, front)| store.create_markdown_in(&doc, &front, Some(&id)))
-        } else { store.import_into(p, Some(&id)) };
+        } else { docxxml(store, p, Some(&id)) };
         match made { Ok(doc) => keep_times(store, &doc, p), Err(_) => *failed += 1 }
     }
     Some(id)
@@ -939,6 +940,13 @@ impl Workspace {
             // goes and the index once at the end (120 notes took 7 s one by one).
             // Without the batch each file is still written on its own.
             let batch = writer.begin_batch().is_ok();
+            #[cfg(target_family = "wasm")]
+            let top = if let Some(staging) = &_staging {
+                let mut copied = std::collections::BTreeMap::new();
+                self::tree(&mut writer, &tree, &tree.dir, parent.as_deref(), &mut failed,
+                    &mut |store, path, parent| staging.import_docxxml(store, path, parent, &mut copied))
+            } else { import_tree(&mut writer, &tree, parent.as_deref(), &mut failed) };
+            #[cfg(not(target_family = "wasm"))]
             let top = import_tree(&mut writer, &tree, parent.as_deref(), &mut failed);
             let saved = if batch { writer.end_batch() } else { Ok(()) };
             let changes = journal.take();

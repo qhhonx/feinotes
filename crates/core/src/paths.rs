@@ -76,6 +76,35 @@ pub fn selection_component(name: &str) -> bool {
         && !name.chars().any(char::is_control)
 }
 
+/// Paths a relative attachment reference can name inside a browser-selected
+/// folder. DocxXML can also name a file from the original library's root.
+pub fn selection_attachment_paths(dir: &[&str], src: &str, from_library: bool) -> Vec<String> {
+    fn in_selection(dir: &[&str], src: &str) -> Option<String> {
+        let mut path = dir.to_vec();
+        for part in src.split(['/', '\\']) {
+            match part {
+                "." => {}
+                ".." if path.len() > 1 => { path.pop(); }
+                _ if selection_component(part) => path.push(part),
+                _ => return None,
+            }
+        }
+        let parts = path.get(1..)?;
+        if parts.is_empty() || parts.iter().enumerate().any(|(i, p)| {
+            matches!(*p, "node_modules" | "target") || (p.starts_with('.') && !(i == 0 && *p == ".assets"))
+        }) { return None; }
+        Some(path.join("/"))
+    }
+
+    if dir.is_empty() { return vec![]; }
+    let decoded = crate::markdown::percent_decode(src);
+    if is_absolute_anywhere(&decoded) { return vec![]; }
+    let mut paths: Vec<_> = in_selection(dir, &decoded).into_iter().collect();
+    if from_library && dir.len() > 1 && let Some(rooted) = in_selection(&dir[..1], &decoded)
+        && paths.first() != Some(&rooted) { paths.push(rooted); }
+    paths
+}
+
 /// Two parts of a path name the same thing: a drive letter in either case.
 fn same_part(a: &Component, b: &Component) -> bool {
     match (a, b) {
@@ -94,6 +123,17 @@ mod tests {
         parts(rest).fold(base, |p, s| p.join(s))
     }
 
+
+    #[test]
+    fn browser_attachment_stays_in_its_selected_tree() {
+        let dir = ["Vault", "Nested"];
+        assert_eq!(selection_attachment_paths(&dir, "../Images/cover%20page.png", false), ["Vault/Images/cover page.png"]);
+        assert_eq!(selection_attachment_paths(&dir, ".assets\\a.png", true), ["Vault/.assets/a.png"]);
+        assert_eq!(selection_attachment_paths(&dir, "dir/a.png", true), ["Vault/Nested/dir/a.png", "Vault/dir/a.png"]);
+        for src in ["../../private.txt", "%2Fprivate.txt", "C:\\secret.png", "https://site/path", ".quiet/index.json", "../.env", "target/chunk.png"] {
+            assert!(selection_attachment_paths(&dir, src, true).is_empty(), "{src}");
+        }
+    }
 
     #[test]
     fn browser_selection_keeps_its_root_and_relative_names() {

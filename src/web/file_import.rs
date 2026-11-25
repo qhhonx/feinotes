@@ -1,7 +1,8 @@
 //! The browser supplies copies of files and the paths below a selected folder.
 //! Stage them in a temporary VFS tree for the regular importers.
 
-use std::{path::{Path, PathBuf}, sync::Arc};
+use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, sync::Arc};
+use fdl_core::{model::Document, store::Store, vfs::PathExt as _};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
@@ -80,16 +81,17 @@ pub(crate) async fn stage_documents(files: JsFuture) -> Result<Option<(Arc<Stagi
     Ok(Some((staging, paths)))
 }
 
-/// Use one directory for all selected files, so relative image links work.
+/// Use one directory for all selected files, so relative links work.
 pub(crate) async fn stage_folder(files: JsFuture) -> Result<Option<(Arc<Staging>, PathBuf)>, JsValue> {
     use crate::transfer::{IMPORT_FILE_LIMIT, IMPORT_FOLDER_LIMIT, importable};
-    let files = files.await?.dyn_into::<js_sys::Array>()?;
-    if files.length() == 0 { return Ok(None); }
+    let selected = files.await?.dyn_into::<js_sys::Array>()?;
+    if selected.length() == 0 { return Ok(None); }
     let mut root = String::new();
-    let mut bytes = 0.;
     let mut documents = 0;
-    let mut selected = Vec::new();
-    for item in files.iter() {
+    let mut files = BTreeMap::new();
+    let mut initial = BTreeSet::new();
+    let mut xml = Vec::new();
+    for item in selected.iter() {
         let file = item.dyn_into::<web_sys::File>()?;
         let rel = js_sys::Reflect::get(&file, &"webkitRelativePath".into())?.as_string().ok_or_else(invalid_path)?;
         let parts = fdl_core::paths::selection_parts(&rel).filter(|parts| parts.len() >= 2).ok_or_else(invalid_path)?;
@@ -99,21 +101,77 @@ pub(crate) async fn stage_folder(files: JsFuture) -> Result<Option<(Arc<Staging>
         let path = Path::new(&rel);
         let hidden = parts[1..].iter().any(|p| p.starts_with('.'));
         let doc = !hidden && importable(path);
-        let image = path.extension().and_then(|ext| ext.to_str())
-            .is_some_and(|ext| crate::editor::image::FORMATS.iter().any(|kind| ext.eq_ignore_ascii_case(kind)));
-        if !doc && !image && parts[1..] != [".obsidian", "app.json"] { continue; }
+        let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+        let image = crate::editor::image::FORMATS.iter().any(|kind| ext.eq_ignore_ascii_case(kind));
+        if doc || image || parts[1..] == [".obsidian", "app.json"] { initial.insert(rel.clone()); }
+        if doc && ext.eq_ignore_ascii_case("xml") { xml.push(rel.clone()); }
         documents += usize::from(doc);
-        bytes += file.size();
-        if documents > IMPORT_FOLDER_LIMIT || file.size() > IMPORT_FILE_LIMIT as f64 || bytes > (2 * IMPORT_FILE_LIMIT) as f64 {
-            return Err(JsValue::from_str("Selected folder exceeds the browser import limit"));
-        }
-        selected.push((rel, file));
+        if documents > IMPORT_FOLDER_LIMIT { return Err(JsValue::from_str("Too many selected documents")); }
+        if files.insert(rel, file).is_some() { return Err(invalid_path()); }
     }
     let staging = Staging::new();
     let dir = staging.0.join(root);
     fdl_core::vfs::create_dir_all(&dir).map_err(|error| JsValue::from_str(&error.to_string()))?;
-    if documents > 0 {
-        for (rel, file) in selected { staging.write(&staging.0.join(rel), file).await?; }
+    if documents == 0 { return Ok(Some((staging, dir))); }
+    let mut bytes = 0.;
+    for rel in initial {
+        let file = files.remove(&rel).ok_or_else(invalid_path)?;
+        stage_folder_file(&staging, &rel, file, &mut bytes).await?;
+    }
+    // Markdown import already knows about images beside or above the page.
+    // Other sidecars are copied only when a selected DocxXML names them.
+    let mut attachments = BTreeSet::new();
+    for rel in xml {
+        let Ok(mut doc) = read_docxxml(&staging.0.join(&rel)) else { continue };
+        doc.map_sources(|src| {
+            if let Some(path) = selected_asset(&rel, src, |p| files.contains_key(p) || staging.0.join(p).fs_is_file()) {
+                attachments.insert(path);
+            }
+            None
+        });
+    }
+    for rel in attachments {
+        if let Some(file) = files.remove(&rel) { stage_folder_file(&staging, &rel, file, &mut bytes).await?; }
     }
     Ok(Some((staging, dir)))
+}
+
+async fn stage_folder_file(staging: &Staging, rel: &str, file: web_sys::File, bytes: &mut f64) -> Result<(), JsValue> {
+    use crate::transfer::IMPORT_FILE_LIMIT;
+    *bytes += file.size();
+    if file.size() > IMPORT_FILE_LIMIT as f64 || *bytes > (2 * IMPORT_FILE_LIMIT) as f64 {
+        return Err(JsValue::from_str("Selected folder exceeds the browser import limit"));
+    }
+    staging.write(&staging.0.join(rel), file).await
+}
+
+fn read_docxxml(path: &Path) -> anyhow::Result<Document> {
+    let xml = fdl_core::vfs::read_to_string(path)?;
+    Ok(fdl_core::docxml::parse(xml.trim_start_matches('\u{feff}'))?)
+}
+
+fn selected_asset(rel: &str, src: &str, exists: impl FnMut(&String) -> bool) -> Option<String> {
+    let mut dir = fdl_core::paths::selection_parts(rel)?;
+    dir.pop()?;
+    fdl_core::paths::selection_attachment_paths(&dir, src, true).into_iter().find(exists)
+}
+
+impl Staging {
+    pub(crate) fn import_docxxml(&self, store: &mut Store, path: &Path, parent: Option<&str>,
+        copied: &mut BTreeMap<String, String>) -> anyhow::Result<String> {
+        let rel = path.strip_prefix(&self.0)?.to_str().ok_or_else(|| anyhow::anyhow!("Invalid staged path"))?;
+        let mut doc = read_docxxml(path)?;
+        let mut result = Ok(());
+        doc.map_sources(|src| {
+            if result.is_err() { return None; }
+            let selected = selected_asset(rel, src, |p| self.0.join(p).fs_is_file())?;
+            if let Some(path) = copied.get(&selected) { return Some(path.clone()); }
+            match store.import_attachment(&self.0.join(&selected)) {
+                Ok(path) => { copied.insert(selected, path.clone()); Some(path) }
+                Err(error) => { result = Err(error); None }
+            }
+        });
+        result?;
+        store.create_from_in(&doc, parent)
+    }
 }
