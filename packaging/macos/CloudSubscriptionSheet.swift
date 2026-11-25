@@ -1,20 +1,16 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // Copyright 2026 Fei Notes contributors. See LICENSES.md.
+import Foundation
+#if os(iOS)
 import StoreKit
 import SwiftUI
-#if os(macOS)
-import AppKit
-#elseif os(iOS)
 import UIKit
-#endif
 
 @MainActor
 private final class CloudSubscriptionSheetModel: NSObject, ObservableObject {
     let chinese: Bool
     let dark: Bool
-    #if os(iOS)
     var themeAccent = UIColor.systemBlue
-    #endif
     private let store: CloudSubscriptionStore?
     @Published private(set) var offers: [CloudOffer] = []
     @Published private(set) var active: CloudPlan?
@@ -182,57 +178,11 @@ private struct CloudSubscriptionSheet: View {
     @ObservedObject var model: CloudSubscriptionSheetModel
     private var title: String { model.text("飞记云功能", "Fei Notes Cloud") }
     private var intro: String {
-        #if os(macOS)
-        model.text("在 Mac、iPhone 和 iPad 上接着写，也可以邀请他人一起编辑文档。",
-                   "Keep writing on Mac, iPhone, and iPad. Invite others to edit with you.")
-        #else
         model.text("在 Mac、iPhone 和 iPad 间同步文档，并邀请他人共同编辑。",
                    "Sync documents across Mac, iPhone, and iPad and invite others to edit together.")
-        #endif
     }
 
     var body: some View {
-        #if os(macOS)
-        VStack(alignment: .leading, spacing: 16) {
-            Text(title).font(.title2.weight(.semibold))
-                .accessibilityIdentifier("fei.subscription.title")
-            Text(intro).foregroundStyle(.secondary)
-            if let active = model.active { accountStatus(active) }
-            if model.offers.isEmpty {
-                availability
-            } else {
-                GroupBox {
-                    VStack(spacing: 0) {
-                        ForEach(model.offers, id: \.plan) { offer in
-                            if offer.plan != model.offers.first?.plan { Divider() }
-                            planRow(offer).buttonStyle(.plain)
-                        }
-                    }
-                } label: {
-                    Text(model.text("订阅方案", "Subscription plans"))
-                }
-                billing
-            }
-            feedback
-            Divider()
-            HStack {
-                Button(model.text("关闭", "Close")) { model.close?() }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(!model.canDismiss)
-                    .accessibilityIdentifier("fei.subscription.close")
-                Spacer()
-                if !model.offers.isEmpty { purchaseButton }
-            }
-            HStack { purchaseLinks; Spacer(minLength: 10); legalLinks }
-                .font(.footnote)
-            if model.preview { previewNotice }
-        }
-        .padding(24)
-        .frame(width: 500)
-        .fixedSize(horizontal: false, vertical: true)
-        .environment(\.colorScheme, model.dark ? .dark : .light)
-        .task { await model.initialLoadIfNeeded() }
-        #else
         NavigationStack {
             Form {
                 Section {
@@ -278,7 +228,6 @@ private struct CloudSubscriptionSheet: View {
         .environment(\.colorScheme, model.dark ? .dark : .light)
         .tint(Color(uiColor: model.themeAccent))
         .task { await model.initialLoadIfNeeded() }
-        #endif
     }
 
     @ViewBuilder private var availability: some View {
@@ -317,50 +266,6 @@ private struct CloudSubscriptionSheet: View {
             .accessibilityIdentifier("fei.subscription.status")
     }
 
-    #if os(macOS)
-    private func planRow(_ offer: CloudOffer) -> some View {
-        let isSelected = model.selected == offer.plan
-        let annual = offer.plan == .annual
-        let price = annual ? model.text("\(offer.price) / 年", "\(offer.price) / year")
-            : model.text("\(offer.price) / 月", "\(offer.price) / month")
-        var details: [String] = []
-        if offer.plan == model.active { details.append(model.text("当前方案", "Current plan")) }
-        if offer.plan == model.next { details.append(model.text("下次续订生效", "Starts at next renewal")) }
-        if let saving = offer.savingPercent { details.append(model.text("省 \(saving)%", "Save \(saving)%")) }
-
-        return Button {
-            model.select(offer.plan)
-        } label: {
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(model.name(offer.plan)).fontWeight(.medium)
-                    if !details.isEmpty {
-                        Text(details.joined(separator: " · "))
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer(minLength: 4)
-                Text(price)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.trailing)
-                Image(systemName: "checkmark")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .opacity(isSelected ? 1 : 0)
-                    .accessibilityHidden(true)
-            }
-            .padding(.vertical, 5)
-            .frame(minHeight: 34)
-            .contentShape(Rectangle())
-        }
-        .disabled(model.working)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .accessibilityIdentifier("fei.subscription.plan.\(offer.plan.rawValue)")
-    }
-
-    #else
     private func planRow(_ offer: CloudOffer) -> some View {
         let isSelected = model.selected == offer.plan
         let annual = offer.plan == .annual
@@ -421,19 +326,14 @@ private struct CloudSubscriptionSheet: View {
         }
         .contentShape(Rectangle())
     }
-    #endif
 
     private var purchaseButton: some View {
         Button {
             Task { await model.purchase() }
         } label: {
-            #if os(iOS)
             purchaseLabelView
                 .foregroundStyle(model.canPurchase ? purchaseForeground : .secondary)
                 .frame(maxWidth: .infinity)
-            #else
-            purchaseLabelView
-            #endif
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.large)
@@ -488,15 +388,9 @@ private struct CloudSubscriptionSheet: View {
             Task { await model.restore() }
         } label: {
             let title = model.text("恢复购买", "Restore purchases")
-            #if os(iOS)
             settingsRow(title)
-            #else
-            Text(title)
-            #endif
         }
-        #if os(iOS)
         .buttonStyle(.plain)
-        #endif
         .disabled(model.working)
         .accessibilityIdentifier("fei.subscription.restore")
         if model.active != nil {
@@ -511,12 +405,8 @@ private struct CloudSubscriptionSheet: View {
     }
 
     private func subscriptionLink(_ title: String, destination: URL) -> some View {
-        #if os(iOS)
         Link(destination: destination) { settingsRow(title, opensAnotherPage: true) }
             .buttonStyle(.plain)
-        #else
-        Link(title, destination: destination)
-        #endif
     }
 
     @ViewBuilder private var legalLinks: some View {
@@ -537,6 +427,7 @@ private struct CloudSubscriptionSheet: View {
 }
 
 @MainActor private weak var presentedCloudSubscriptionSheet: CloudSubscriptionSheetModel?
+#endif
 
 @_cdecl("quiet_cloud_subscription_sheet_available")
 public func quietCloudSubscriptionSheetAvailable() -> Bool {
@@ -549,26 +440,12 @@ public func quietCloudSubscriptionSheetAvailable() -> Bool {
     #endif
 }
 
+#if os(iOS)
 @_cdecl("quiet_cloud_show_subscription_sheet")
 public func quietCloudShowSubscriptionSheet(_ chinese: Bool, _ dark: Bool, _ red: Float, _ green: Float, _ blue: Float) {
     Task { @MainActor in
         guard quietCloudSubscriptionSheetAvailable(), presentedCloudSubscriptionSheet == nil else { return }
         let model = CloudSubscriptionSheetModel(chinese: chinese, dark: dark)
-        #if os(macOS)
-        let view = CloudSubscriptionSheet(model: model)
-        guard let owner = NSApp.keyWindow, owner.attachedSheet == nil else { return }
-        let host = NSHostingController(rootView: view)
-        let sheet = NSWindow(contentViewController: host)
-        sheet.titleVisibility = .hidden
-        sheet.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-        sheet.setContentSize(host.view.fittingSize)
-        model.presenter = { [weak sheet] in sheet }
-        model.close = { [weak owner, weak sheet] in
-            if let sheet { owner?.endSheet(sheet) }
-        }
-        presentedCloudSubscriptionSheet = model
-        owner.beginSheet(sheet) { _ in model.finish() }
-        #elseif os(iOS)
         model.themeAccent = UIColor(red: CGFloat(red), green: CGFloat(green), blue: CGFloat(blue), alpha: 1)
         let view = CloudSubscriptionSheet(model: model)
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
@@ -591,11 +468,9 @@ public func quietCloudShowSubscriptionSheet(_ chinese: Bool, _ dark: Bool, _ red
         }
         presentedCloudSubscriptionSheet = model
         owner.present(host, animated: true)
-        #endif
     }
 }
 
-#if os(iOS)
 extension CloudSubscriptionSheetModel: UIAdaptivePresentationControllerDelegate {
     func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { finish() }
 }

@@ -233,7 +233,7 @@ struct CloudSubscriptionStore {
 #if os(macOS) || os(iOS)
 enum CloudPurchaseOutcome: String, Encodable { case loaded, purchased, scheduled, pending, cancelled, restored }
 
-enum CloudSubscriptionError: LocalizedError {
+enum CloudSubscriptionError: String, LocalizedError {
     case unavailable, missingWindow, unverified, busy
 
     var errorDescription: String? {
@@ -250,7 +250,9 @@ private struct CloudSubscriptionReply: Encodable {
     var offers: [CloudOffer]?
     var active: CloudActiveSubscription?
     var outcome: CloudPurchaseOutcome?
+    var next: CloudPlan?
     var error: String?
+    var errorKind: String?
 }
 
 @_cdecl("quiet_cloud_subscription_available")
@@ -285,44 +287,87 @@ public func quietCloudWatchSubscription(_ onChange: @escaping @Sendable @convent
 public func quietCloudSubscription(_ action: Int32, _ context: UInt,
     _ complete: @escaping @Sendable @convention(c) (UInt, UnsafePointer<CChar>?) -> Void) {
     Task { @MainActor in
-        #if FEI_STOREKIT_TESTING
-        NSLog("Fei Notes StoreKit: action %d entered", action)
+        #if os(macOS)
+        let window = NSApp.keyWindow
+        #elseif os(iOS)
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive && $0.windows.contains { $0.isKeyWindow } }
+        var window = scene?.windows.first { $0.isKeyWindow }?.rootViewController
+        while let presented = window?.presentedViewController { window = presented }
+        if let navigation = window as? UINavigationController { window = navigation.topViewController }
         #endif
-        var reply = CloudSubscriptionReply()
-        do {
-            guard let store = CloudSubscriptionStore(bundle: .main) else { throw CloudSubscriptionError.unavailable }
-            #if os(macOS)
-            let window = NSApp.keyWindow
-            #elseif os(iOS)
-            let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-                .first { $0.activationState == .foregroundActive && $0.windows.contains { $0.isKeyWindow } }
-            var window = scene?.windows.first { $0.isKeyWindow }?.rootViewController
-            while let presented = window?.presentedViewController { window = presented }
-            if let navigation = window as? UINavigationController { window = navigation.topViewController }
-            #endif
-            switch action {
-            case 0:
-                do {
-                    reply.offers = try await store.offers()
-                    reply.outcome = .loaded
-                } catch { reply.error = error.localizedDescription }
-            case 1, 2:
-                reply.outcome = try await performCloudSubscriptionAction {
-                    try await store.purchase(action == 1 ? .annual : .monthly, in: window)
-                }
-            case 3:
-                try await performCloudSubscriptionAction { try await restoreCloudSubscription() }
-                reply.outcome = .restored
-            case 4: break
-            default: throw CloudSubscriptionError.unavailable
-            }
-            reply.active = await store.activeSubscription()
-        } catch { reply.error = error.localizedDescription }
-        guard let data = try? JSONEncoder().encode(reply) else { complete(context, nil); return }
-        #if FEI_STOREKIT_TESTING
-        NSLog("Fei Notes StoreKit: action %d completed", action)
-        #endif
-        String(decoding: data, as: UTF8.self).withCString { complete(context, $0) }
+        await runCloudSubscription(action, context, window, complete)
     }
+}
+
+#if os(macOS)
+@_cdecl("quiet_cloud_subscription_from_view")
+@MainActor
+public func quietCloudSubscriptionFromView(_ action: Int32, _ context: UInt, _ view: UInt,
+    _ complete: @escaping @Sendable @convention(c) (UInt, UnsafePointer<CChar>?) -> Void) {
+    // Resolve and retain the presenting window before returning to the Rust event loop.
+    let window = UnsafeRawPointer(bitPattern: view).flatMap {
+        Unmanaged<NSView>.fromOpaque($0).takeUnretainedValue().window
+    }
+    Task { @MainActor in await runCloudSubscription(action, context, window, complete) }
+}
+#endif
+
+@MainActor
+private func runCloudSubscription(_ action: Int32, _ context: UInt, _ window: CloudPurchaseWindow?,
+    _ complete: @Sendable @convention(c) (UInt, UnsafePointer<CChar>?) -> Void) async {
+    #if FEI_STOREKIT_TESTING
+    NSLog("Fei Notes StoreKit: action %d entered", action)
+    #endif
+    var reply = CloudSubscriptionReply()
+    do {
+        guard let store = CloudSubscriptionStore(bundle: .main) else { throw CloudSubscriptionError.unavailable }
+        #if os(macOS)
+        var loadedProducts: [CloudPlan: Product]? = nil
+        #endif
+        switch action {
+        case 0:
+            do {
+                let products = try await store.products()
+                #if os(macOS)
+                loadedProducts = products
+                #endif
+                reply.offers = store.offers(in: products)
+                reply.outcome = .loaded
+            } catch { reply.error = error.localizedDescription }
+        case 1, 2:
+            #if os(macOS)
+            guard window?.isVisible == true else { throw CloudSubscriptionError.missingWindow }
+            #endif
+            reply.outcome = try await performCloudSubscriptionAction {
+                try await store.purchase(action == 1 ? .annual : .monthly, in: window)
+            }
+        case 3:
+            try await performCloudSubscriptionAction { try await restoreCloudSubscription() }
+            reply.outcome = .restored
+        case 4: break
+        default: throw CloudSubscriptionError.unavailable
+        }
+        reply.active = await store.activeSubscription()
+        #if os(macOS)
+        if reply.outcome == .purchased || reply.outcome == .restored { notifyCloudSubscriptionChange() }
+        if action != 4, reply.outcome != .cancelled, let active = reply.active {
+            let products: [CloudPlan: Product]?
+            if let loadedProducts { products = loadedProducts }
+            else { products = try? await store.products() }
+            if let products { reply.next = try? await store.nextPlan(for: active.plan, in: products) }
+        }
+        #endif
+    } catch StoreKitError.userCancelled {
+        reply.outcome = .cancelled
+    } catch {
+        reply.error = error.localizedDescription
+        reply.errorKind = (error as? CloudSubscriptionError)?.rawValue
+    }
+    guard let data = try? JSONEncoder().encode(reply) else { complete(context, nil); return }
+    #if FEI_STOREKIT_TESTING
+    NSLog("Fei Notes StoreKit: action %d completed", action)
+    #endif
+    String(decoding: data, as: UTF8.self).withCString { complete(context, $0) }
 }
 #endif

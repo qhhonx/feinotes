@@ -31,6 +31,8 @@ use crate::cloud_subscription::{self, ActiveSubscription, Plan};
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 #[derive(Default)]
 pub(crate) struct Subscription {
+    #[cfg(target_os = "macos")]
+    pub(crate) panel: Option<cloud_subscription::panel::Panel>,
     active: Option<ActiveSubscription>,
     busy: bool,
     refresh_pending: bool,
@@ -685,7 +687,7 @@ fn release_bundle_string(key: &std::ffi::CStr) -> Option<String> {
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-fn release_url(key: &std::ffi::CStr) -> Option<String> {
+pub(crate) fn release_url(key: &std::ffi::CStr) -> Option<String> {
     release_bundle_string(key).filter(|url| url.starts_with("https://"))
 }
 
@@ -2247,6 +2249,9 @@ impl Workspace {
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     fn open_cloud_access(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if cloud_subscription::sheet_available() {
+            #[cfg(target_os = "macos")]
+            self.open_mac_subscription(!cloud_subscription::available(), window, cx);
+            #[cfg(target_os = "ios")]
             cloud_subscription::show_sheet();
         } else if crate::cloud_trial::available() {
             #[cfg(target_os = "ios")]

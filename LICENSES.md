@@ -13,7 +13,7 @@ Fei Notes is maintained by the Fei Notes contributors and is based on Quiet.md. 
 
 The PolyForm license applies to these Fei Notes files in this release:
 
-- `src/cloud_restore.rs`, `src/cloud_trial.rs`, `src/cloud_subscription.rs`
+- `src/cloud_restore.rs`, `src/cloud_trial.rs`, `src/cloud_subscription.rs`, `src/cloud_subscription/panel.rs`
 - All Rust files in `src/cloud_sync/`, and `src/sharing/object_link.rs`
 - `src/settings/sync_status.rs`
 - `packaging/macos/CloudRestore.swift`, `CloudSync.swift`, `CloudShare.swift`, `CloudTrial.swift`, `CloudSubscription.swift`, `CloudSubscriptionSheet.swift`, `TestFlightInstall.swift`

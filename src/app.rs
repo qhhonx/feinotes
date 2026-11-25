@@ -2833,7 +2833,12 @@ impl Render for Workspace {
         let doc_info = self.render_doc_info(cx);
         let history = self.render_history(cx);
         // a dialog holds the keyboard while open (Esc and ↩ go to it, not to the editor behind)
-        self.dialog_focus.sync(self.export_md.is_some() || self.doc_info.is_some(), window, cx);
+        let dialog_open = self.export_md.is_some() || self.doc_info.is_some();
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let dialog_open = dialog_open || self.subscription.panel.is_some();
+        self.dialog_focus.sync(dialog_open, window, cx);
+        #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+        let subscription = self.render_mac_subscription(window, cx);
         let confirm = self.render_confirm(window, cx);
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let conflict_review = self.render_conflict_review(window, cx);
@@ -2988,6 +2993,11 @@ impl Render for Workspace {
             .children(import_menu)
             .children(place_menu)
             .children(forced_update)
+            .map(|d| {
+                #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
+                let d = d.children(subscription);
+                d
+            })
             .children(toast)
             // Over everything, toasts included, until its last page is done.
             .when_some(self.onboarding.clone(), |d, o| d.child(deferred(div().id("onboarding-cover").absolute().inset_0().occlude().child(o)).with_priority(30))).into_any_element()

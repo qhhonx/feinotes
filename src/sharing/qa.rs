@@ -114,6 +114,16 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             eprintln!("ACCOUNT_OPEN_RESUMED_OK");
             Ok(())
         })??,
+        #[cfg(target_os = "macos")]
+        "subscription-preview" => primary.update(cx, |ws, window, cx| {
+            ws.open_mac_subscription(true, window, cx);
+        })?,
+        #[cfg(target_os = "macos")]
+        "subscription-closed" => primary.update(cx, |ws, _, _| -> Result<()> {
+            ensure!(ws.subscription.panel.is_none(), "The plan dialog did not dismiss");
+            eprintln!("SUBSCRIPTION_PANEL_DISMISSED");
+            Ok(())
+        })??,
         "review-panel-closed" => primary.update(cx, |ws, _, _| -> Result<()> {
             ensure!(ws.sharing.sheet.is_none() && !ws.sharing.panel_open && !ws.sharing.sync_panel_open,
                 "The sharing panel did not dismiss");
