@@ -82,7 +82,8 @@ static CJK_PUNCT_MISSING: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 pub fn check_cjk_punct(cx: &App) {
     use std::sync::atomic::Ordering;
     static CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if cfg!(any(target_os = "macos", target_os = "ios")) || CHECKED.swap(true, Ordering::Relaxed) { return }
+    // The browser draws CJK through canvas and cannot resolve a native fallback probe.
+    if cfg!(any(target_os = "macos", target_os = "ios", target_family = "wasm")) || CHECKED.swap(true, Ordering::Relaxed) { return }
     CJK_PUNCT_MISSING.store(!resolves(crate::editor_ui::CJK_PUNCT_FONT, cx), Ordering::Relaxed);
 }
 
@@ -121,6 +122,7 @@ pub fn probe(family: &str, cx: &App) {
     other_name(family, cx);
     // a downloaded font still loading: probed once it is registered (`added`)
     if crate::font_downloads::by_family(family).is_some_and(|e| !crate::font_downloads::registered(&e.id) && !installed(family, cx)) { return }
+    if cfg!(target_family = "wasm") && !installed(family, cx) { return }
     let ts = cx.text_system();
     let id = ts.resolve_font(&gpui::font(family.to_string()));
     let width = |ch| ts.advance(id, gpui::px(16.), ch).ok().map(|s| s.width);

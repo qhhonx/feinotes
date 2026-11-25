@@ -428,8 +428,10 @@ pub fn is_cjk_punct(ch: char) -> bool {
 pub const CJK_PUNCT_FONT: &str = "PingFang SC";
 #[cfg(target_os = "windows")]
 pub const CJK_PUNCT_FONT: &str = "Microsoft YaHei";
-#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows", target_family = "wasm")))]
 pub const CJK_PUNCT_FONT: &str = "Noto Sans CJK SC";
+#[cfg(target_family = "wasm")]
+pub const CJK_PUNCT_FONT: &str = crate::theme::SYSTEM_FONT;
 
 /// `CJK_PUNCT_FONT`, unless this system was found not to have it
 /// (`fonts::check_cjk_punct`): then that text keeps its own family, as

@@ -5,7 +5,8 @@ use super::view::Editor;
 
 use gpui::*;
 use std::cell::Cell;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 // The shared look (`design::scroll`, shadcn's ScrollArea): a 7pt `border` thumb 1pt in, shown while
 // the pointer is on the bar, while the page scrolls and while held, fading out after.
