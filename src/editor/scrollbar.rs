@@ -243,7 +243,8 @@ pub(super) fn table_scrollbar(handle: ScrollHandle, sb: std::rc::Rc<Scrollbar>) 
             window.on_mouse_event({
                 let (sb, hitbox) = (sb.clone(), hitbox.clone());
                 move |ev: &MouseDownEvent, phase, window, cx| {
-                    if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left && hitbox.is_hovered(window) {
+                    // A table's scrollbar can overlap the next row. Capture the thumb before its handler.
+                    if phase == DispatchPhase::Capture && ev.button == MouseButton::Left && hitbox.is_hovered(window) {
                         sb.grab.set(Some((ev.position.x - left, px(0.), w)));
                         cx.stop_propagation();
                         window.refresh();
