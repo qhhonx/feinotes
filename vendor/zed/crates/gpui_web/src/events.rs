@@ -1,7 +1,8 @@
 use std::{collections::HashMap, rc::Rc};
 
 use gpui::{
-    Capslock, ClipboardEntry, ClipboardItem, ClipboardString, DispatchEventResult, GestureTuning,
+    Capslock, ClipboardEntry, ClipboardHtml, ClipboardItem, ClipboardString, DispatchEventResult,
+    GestureTuning,
     Image, ImageFormat, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent,
     MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
     Pixels, PlatformInput, Point, ScrollDelta, ScrollEvent, ScrollSource, TouchEvent, TouchId,
@@ -1049,9 +1050,8 @@ impl WebWindowInner {
     ///
     /// Text-only pastes reach the input handler synchronously. Pasted image
     /// files only expose their bytes through asynchronous blob reads, so
-    /// pastes containing images are delivered once those reads resolve — to
-    /// whichever input handler is focused at that point, matching how an
-    /// application-level paste action would behave.
+    /// pastes containing images are delivered once those reads resolve,
+    /// provided the original input field and selection are still current.
     fn register_paste(self: &Rc<Self>) -> EventListenerHandle {
         let this = Rc::clone(self);
         self.listen_input("paste", move |event: JsValue| {
@@ -1063,6 +1063,15 @@ impl WebWindowInner {
                 .get_data("text/plain")
                 .ok()
                 .filter(|text| !text.is_empty());
+
+            // quiet.md: preserve the HTML flavor on the same event used for text,
+            // so application paste handlers can choose a representation.
+            let html = clipboard_data.get_data("text/html").ok().filter(|html| !html.is_empty());
+            let text = match (text, html) {
+                (text, Some(html)) => Some(ClipboardString::new(text.unwrap_or_default()).with_json_metadata(ClipboardHtml { html })),
+                (Some(text), None) => Some(ClipboardString::new(text)),
+                (None, None) => None,
+            };
 
             // File handles must be collected synchronously: the browser
             // clears `clipboardData`'s item list once this handler returns,
@@ -1092,17 +1101,22 @@ impl WebWindowInner {
             if image_files.is_empty() {
                 if let Some(text) = text {
                     this.with_input_handler(|handler| {
-                        handler.paste(ClipboardItem::new_string(text));
+                        handler.paste(ClipboardItem { entries: vec![ClipboardEntry::String(text)] });
                     });
                 }
                 return;
             }
 
+            let input_target = |handler: &mut gpui::PlatformInputHandler| {
+                let selection = handler.selected_text_range(false).map(|selection| (selection.range, selection.reversed));
+                (handler.focus_id(), selection)
+            };
+            let Some(target) = this.with_input_handler(input_target) else { return };
             let this = Rc::clone(&this);
             wasm_bindgen_futures::spawn_local(async move {
                 let mut entries = Vec::new();
                 if let Some(text) = text {
-                    entries.push(ClipboardEntry::String(ClipboardString::new(text)));
+                    entries.push(ClipboardEntry::String(text));
                 }
                 for (format, file) in image_files {
                     match crate::platform::read_blob_bytes(&file).await {
@@ -1121,7 +1135,9 @@ impl WebWindowInner {
                     return;
                 }
                 this.with_input_handler(|handler| {
-                    handler.paste(ClipboardItem { entries });
+                    if input_target(handler) == target {
+                        handler.paste(ClipboardItem { entries });
+                    }
                 });
             });
         })

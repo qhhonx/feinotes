@@ -3585,6 +3585,14 @@ impl Image {
     }
 }
 
+/// HTML offered with the browser's text/plain clipboard representation.
+#[cfg(target_family = "wasm")]
+#[derive(Serialize, Deserialize)]
+pub struct ClipboardHtml {
+    /// The clipboard's text/html fragment.
+    pub html: String,
+}
+
 /// A clipboard item that should be copied to the clipboard
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClipboardString {

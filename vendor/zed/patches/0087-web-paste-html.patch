@@ -1,0 +1,150 @@
+Keep the DOM clipboard HTML flavor as typed metadata on the delivered string.
+
+diff --git a/crates/gpui/src/platform.rs b/crates/gpui/src/platform.rs
+index e1e50a7b0ad0a39e55142795ac4e50fe1bbf488d..9f301b8a31a479c0266b75f9132b4ba0efc4fb76 100644
+--- a/crates/gpui/src/platform.rs
++++ b/crates/gpui/src/platform.rs
+@@ -3585,6 +3585,14 @@ impl Image {
+     }
+ }
+ 
++/// HTML offered with the browser's text/plain clipboard representation.
++#[cfg(target_family = "wasm")]
++#[derive(Serialize, Deserialize)]
++pub struct ClipboardHtml {
++    /// The clipboard's text/html fragment.
++    pub html: String,
++}
++
+ /// A clipboard item that should be copied to the clipboard
+ #[derive(Clone, Debug, Eq, PartialEq)]
+ pub struct ClipboardString {
+diff --git a/crates/gpui_macos/src/pasteboard.rs b/crates/gpui_macos/src/pasteboard.rs
+index 95fafd41ad2568b7c277fbf265c808e29341b7ed..499f60b78716fbf61015cba43e167daec643c126 100644
+--- a/crates/gpui_macos/src/pasteboard.rs
++++ b/crates/gpui_macos/src/pasteboard.rs
+@@ -80,6 +80,7 @@ impl Pasteboard {
+                     }
+                 }
+                 if !paths.is_empty() {
++                    let single_file = paths.len() == 1;
+                     let mut entries = vec![ClipboardEntry::ExternalPaths(ExternalPaths(paths))];
+ 
+                     // Also include the string representation so text editors can
+@@ -88,6 +89,11 @@ impl Pasteboard {
+                         entries.push(string_item);
+                     }
+ 
++                    // quiet.md: WeChat also supplies the bitmap when its
++                    // temporary file is outside the receiving app's access.
++                    if single_file {
++                        self.append_image(&mut entries);
++                    }
+                     return Some(ClipboardItem { entries });
+                 }
+             }
+@@ -100,16 +106,20 @@ impl Pasteboard {
+             if let Some(string_entry) = self.read_string_from_pasteboard() {
+                 entries.push(string_entry);
+             }
+-            for format in ImageFormat::iter() {
+-                if let Some(item) = self.read_image(format) {
+-                    entries.extend(item.entries);
+-                    break;
+-                }
+-            }
++            self.append_image(&mut entries);
+             (!entries.is_empty()).then_some(ClipboardItem { entries })
+         }
+     }
+ 
++    fn append_image(&self, entries: &mut Vec<ClipboardEntry>) {
++        for format in ImageFormat::iter() {
++            if let Some(item) = self.read_image(format) {
++                entries.extend(item.entries);
++                break;
++            }
++        }
++    }
++
+     fn read_image(&self, format: ImageFormat) -> Option<ClipboardItem> {
+         let ut_type = UTType::from(format);
+ 
+diff --git a/crates/gpui_web/src/events.rs b/crates/gpui_web/src/events.rs
+index fce1f64e5530a17214b0c996e509bf5b7e00e107..3ec92736305e220523df2ae340425f70208fdb3d 100644
+--- a/crates/gpui_web/src/events.rs
++++ b/crates/gpui_web/src/events.rs
+@@ -1,7 +1,8 @@
+ use std::{collections::HashMap, rc::Rc};
+ 
+ use gpui::{
+-    Capslock, ClipboardEntry, ClipboardItem, ClipboardString, DispatchEventResult, GestureTuning,
++    Capslock, ClipboardEntry, ClipboardHtml, ClipboardItem, ClipboardString, DispatchEventResult,
++    GestureTuning,
+     Image, ImageFormat, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent,
+     MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
+     Pixels, PlatformInput, Point, ScrollDelta, ScrollEvent, ScrollSource, TouchEvent, TouchId,
+@@ -1049,9 +1050,8 @@ impl WebWindowInner {
+     ///
+     /// Text-only pastes reach the input handler synchronously. Pasted image
+     /// files only expose their bytes through asynchronous blob reads, so
+-    /// pastes containing images are delivered once those reads resolve — to
+-    /// whichever input handler is focused at that point, matching how an
+-    /// application-level paste action would behave.
++    /// pastes containing images are delivered once those reads resolve,
++    /// provided the original input field and selection are still current.
+     fn register_paste(self: &Rc<Self>) -> EventListenerHandle {
+         let this = Rc::clone(self);
+         self.listen_input("paste", move |event: JsValue| {
+@@ -1064,6 +1064,15 @@ impl WebWindowInner {
+                 .ok()
+                 .filter(|text| !text.is_empty());
+ 
++            // quiet.md: preserve the HTML flavor on the same event used for text,
++            // so application paste handlers can choose a representation.
++            let html = clipboard_data.get_data("text/html").ok().filter(|html| !html.is_empty());
++            let text = match (text, html) {
++                (text, Some(html)) => Some(ClipboardString::new(text.unwrap_or_default()).with_json_metadata(ClipboardHtml { html })),
++                (Some(text), None) => Some(ClipboardString::new(text)),
++                (None, None) => None,
++            };
++
+             // File handles must be collected synchronously: the browser
+             // clears `clipboardData`'s item list once this handler returns,
+             // while the `File`s themselves stay readable afterwards.
+@@ -1092,17 +1101,22 @@ impl WebWindowInner {
+             if image_files.is_empty() {
+                 if let Some(text) = text {
+                     this.with_input_handler(|handler| {
+-                        handler.paste(ClipboardItem::new_string(text));
++                        handler.paste(ClipboardItem { entries: vec![ClipboardEntry::String(text)] });
+                     });
+                 }
+                 return;
+             }
+ 
++            let input_target = |handler: &mut gpui::PlatformInputHandler| {
++                let selection = handler.selected_text_range(false).map(|selection| (selection.range, selection.reversed));
++                (handler.focus_id(), selection)
++            };
++            let Some(target) = this.with_input_handler(input_target) else { return };
+             let this = Rc::clone(&this);
+             wasm_bindgen_futures::spawn_local(async move {
+                 let mut entries = Vec::new();
+                 if let Some(text) = text {
+-                    entries.push(ClipboardEntry::String(ClipboardString::new(text)));
++                    entries.push(ClipboardEntry::String(text));
+                 }
+                 for (format, file) in image_files {
+                     match crate::platform::read_blob_bytes(&file).await {
+@@ -1121,7 +1135,9 @@ impl WebWindowInner {
+                     return;
+                 }
+                 this.with_input_handler(|handler| {
+-                    handler.paste(ClipboardItem { entries });
++                    if input_target(handler) == target {
++                        handler.paste(ClipboardItem { entries });
++                    }
+                 });
+             });
+         })

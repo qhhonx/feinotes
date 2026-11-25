@@ -2062,11 +2062,18 @@ impl Editor {
     }
 
     fn paste(&mut self, plain: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.paste_item(None, plain, window, cx);
+    }
+
+    fn paste_item(&mut self, supplied: Option<ClipboardItem>, plain: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !self.guard(window, cx) {
             return;
         }
-        let fake = crate::clipboard::FAKE_CLIPBOARD.lock().unwrap().clone();
-        let item = if fake.is_some() { None } else { cx.read_from_clipboard() };
+        if supplied.is_some() && let Some((block, range)) = self.marked.take() {
+            self.core.sel = Selection { anchor: Pos::new(block, range.start), head: Pos::new(block, range.end) };
+        }
+        let fake = supplied.is_none().then(|| crate::clipboard::FAKE_CLIPBOARD.lock().unwrap().clone()).flatten();
+        let item = supplied.or_else(|| if fake.is_some() { None } else { cx.read_from_clipboard() });
         let (text, meta, image) = match (&fake, &item) {
             (Some(f), _) => (Some(f.text.clone()), None, (!f.images.is_empty()).then(|| f.images.iter().collect::<Vec<_>>())),
             (None, Some(item)) => {
@@ -2105,6 +2112,14 @@ impl Editor {
         let html = match &fake {
             Some(f) => f.html.clone(),
             None if !plain && internal.is_none() && rich_target && !text.as_deref().is_some_and(crate::paste::has_math) => {
+                #[cfg(target_family = "wasm")]
+                {
+                    item.as_ref().and_then(|item| item.entries().iter().find_map(|entry| match entry {
+                        ClipboardEntry::String(text) => text.metadata_json::<gpui::ClipboardHtml>().map(|content| content.html),
+                        _ => None,
+                    }))
+                }
+                #[cfg(not(target_family = "wasm"))]
                 crate::clipboard::clipboard_html()
             }
             None => None,
@@ -2980,6 +2995,13 @@ pub enum BlockAct {
 }
 
 impl EntityInputHandler for Editor {
+    #[cfg(target_family = "wasm")]
+    fn paste(&mut self, item: ClipboardItem, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.read_only && self.cd.dialog.is_none() && !self.tables_focused(window, cx) {
+            self.paste_item(Some(item), false, window, cx);
+        }
+    }
+
     fn text_for_range(
         &mut self,
         range: Range<usize>,
