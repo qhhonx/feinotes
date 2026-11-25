@@ -532,20 +532,48 @@ impl Workspace {
         self.close_menus();
         if self.still_loading(cx) { return }
         cx.notify();
+        #[cfg(target_family = "wasm")]
+        self.open_web_import(".md,.markdown,.mdown,.mark,.txt,.xml", None, window, cx);
+        #[cfg(not(target_family = "wasm"))]
+        {
         let paths = open_paths(cx);
         cx.spawn_in(window, async move |this, cx| {
             let Some(paths) = paths.await else { return };
             let _ = this.update_in(cx, |w, window, cx| w.import_paths(&paths, None, true, window, cx));
         })
         .detach();
+        }
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn open_web_import(&self, accept: &str, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let files = crate::web::select_documents(accept);
+        cx.spawn_in(window, async move |this, cx| {
+            let staged = crate::web::stage_documents(files, IMPORT_FILE_LIMIT).await;
+            let _ = this.update_in(cx, |w, window, cx| match staged {
+                Ok(Some((staging, paths))) => w.import_staged_paths(&paths, parent, true, Some(staging), window, cx),
+                Ok(None) => {}
+                Err(_) => w.show_toast_kind(ToastKind::Error, crate::settings::text("导入失败，请检查文件格式"), cx),
+            });
+        }).detach();
     }
 
     /// Import files into `parent` (a folder; None: the top of 我的文档); with
     /// `open`, the last one opens (a drop on a list stays on the list).
     pub(crate) fn import_paths(&mut self, paths: &[PathBuf], parent: Option<String>, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.import_staged_paths(paths, parent, open, #[cfg(target_family = "wasm")] None, window, cx);
+    }
+
+    fn import_staged_paths(&mut self, paths: &[PathBuf], parent: Option<String>, open: bool,
+        #[cfg(target_family = "wasm")] staging: Option<std::sync::Arc<crate::web::ImportStaging>>,
+        window: &mut Window, cx: &mut Context<Self>) {
         if self.store.file_task_busy() || self.file_history.busy || self.tree_writes_pending() { return; }
         let (again, retry) = (paths.to_vec(), parent.clone());
-        if !self.save_before(cx, move |w, window, cx| w.import_paths(&again, retry.clone(), open, window, cx)) {
+        #[cfg(target_family = "wasm")]
+        let retry_staging = staging.clone();
+        if !self.save_before(cx, move |w, window, cx| {
+            w.import_staged_paths(&again, retry.clone(), open, #[cfg(target_family = "wasm")] retry_staging.clone(), window, cx);
+        }) {
             return;
         }
         let Some((key, mut writer)) = self.store.tree_writer(parent.as_deref()) else { return self.show_toast_kind(ToastKind::Error, &crate::shared_store::no_folder().to_string(), cx) };
@@ -561,6 +589,8 @@ impl Workspace {
                 match import_file(&mut writer, p, parent.as_deref()) { Ok(id) => last = Some(id), Err(_) => failed = true }
             }
             if batch && writer.end_batch().is_err() { failed = true; }
+            #[cfg(target_family = "wasm")]
+            drop(staging);
             (ImportedFiles { last, failed, changes: journal.take() }, Listed::of(key, writer))
         });
         self.show_toast_kind(ToastKind::Info, crate::settings::tr("正在导入…", "Importing…"), cx);
@@ -584,6 +614,17 @@ impl Workspace {
         self.close_menus();
         self.import_menu = None;
         cx.notify();
+        #[cfg(target_family = "wasm")]
+        {
+            let accept = match kind {
+                ImportKind::Markdown => ".md,.markdown,.mdown,.mark,.txt",
+                ImportKind::DocxXml => ".xml",
+                _ => return,
+            };
+            self.open_web_import(accept, parent, window, cx);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
         let picked = crate::devtools::take_pick();
         let (folders, extensions): (bool, &[&str]) = match kind {
             ImportKind::Markdown => (false, &["md", "markdown", "mdown"]),
@@ -611,6 +652,7 @@ impl Workspace {
             });
         })
         .detach();
+        }
     }
 
     /// 从其他应用导入…: the panel listing the apps notes come in from, and their folders found
@@ -695,7 +737,9 @@ impl Workspace {
         };
         let mut out = vec![
             item("import-md", "doc-md", crate::settings::tr("导入 Markdown 文件…", "Import Markdown Files…"), ImportKind::Markdown),
+            #[cfg(not(target_family = "wasm"))]
             item("import-folder", "folder", crate::settings::tr("导入文件夹…", "Import Folder…"), ImportKind::Folder),
+            #[cfg(not(target_family = "wasm"))]
             {
                 let parent = parent.clone();
                 crate::design::MenuItem::new("import-apps").icon("import").label(crate::settings::tr("从其他应用导入…", "Import from Another App…"))
