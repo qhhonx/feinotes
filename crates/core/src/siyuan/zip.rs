@@ -1,6 +1,6 @@
-//! Unpacking a `.sy.zip` (思源's 导出 › SiYuan .sy.zip) without a zip crate:
-//! the central directory at the end lists each entry, whose data is stored
-//! or raw deflate (`miniz_oxide`). No Zip64: an export that large is refused.
+//! ZIP support for Markdown exports and SiYuan imports. The central
+//! directory lists each entry, whose data is stored or raw deflate.
+//! ZIP64 archives are outside this reader and writer's format.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -54,53 +54,94 @@ pub fn unpack(zip: &[u8], dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A zip of `files` (deflated), for tests and fixtures.
-pub fn pack(files: &[(&str, &[u8])]) -> Vec<u8> {
-    let (mut out, mut dir) = (vec![], vec![]);
-    for (name, data) in files {
-        let packed = miniz_oxide::deflate::compress_to_vec(data, 6);
+/// A single-disk ZIP writer, retaining only the archive and its directory.
+#[derive(Default)]
+pub(crate) struct Writer {
+    bytes: Vec<u8>,
+    directory: Vec<u8>,
+    count: u16,
+}
+
+impl Writer {
+    pub(crate) fn store(&mut self, name: &str, data: &[u8]) -> anyhow::Result<()> {
+        self.entry(name, data, data, 0)
+    }
+
+    fn entry(&mut self, name: &str, data: &[u8], payload: &[u8], method: u16) -> anyhow::Result<()> {
+        anyhow::ensure!(self.count < u16::MAX - 1 && name.len() <= u16::MAX as usize, "Too many ZIP entries or file name too long");
+        anyhow::ensure!([self.bytes.len(), self.directory.len(), payload.len(), data.len()]
+            .into_iter().all(|n| n < u32::MAX as usize), "ZIP64 is not supported");
+        let local = self.bytes.len() as u32;
         let crc = crc32(data);
-        let local = out.len() as u32;
         let head = |sig: u32, central: bool| {
             let mut h = sig.to_le_bytes().to_vec();
             if central { h.extend(20u16.to_le_bytes()); }
             h.extend(20u16.to_le_bytes());
             h.extend((1u16 << 11).to_le_bytes());
-            h.extend(8u16.to_le_bytes());
-            h.extend([0; 4]);
+            h.extend(method.to_le_bytes());
+            h.extend([0, 0, 33, 0]); // 1980-01-01 00:00 in DOS time.
             h.extend(crc.to_le_bytes());
-            h.extend((packed.len() as u32).to_le_bytes());
+            h.extend((payload.len() as u32).to_le_bytes());
             h.extend((data.len() as u32).to_le_bytes());
             h.extend((name.len() as u16).to_le_bytes());
             h.extend(0u16.to_le_bytes());
-            // Comment length, disk, internal and external attributes, then where the entry starts.
             if central { h.extend([0; 10]); h.extend(local.to_le_bytes()); }
             h.extend(name.as_bytes());
             h
         };
-        out.extend(head(0x0403_4b50, false));
-        out.extend(&packed);
-        dir.extend(head(0x0201_4b50, true));
+        let local_head = head(0x0403_4b50, false);
+        let record = head(0x0201_4b50, true);
+        let size = self.bytes.len() as u64 + self.directory.len() as u64
+            + local_head.len() as u64 + payload.len() as u64 + record.len() as u64 + 22;
+        anyhow::ensure!(size < u32::MAX as u64, "ZIP64 is not supported");
+        self.bytes.extend(local_head);
+        self.bytes.extend(payload);
+        self.directory.extend(record);
+        self.count += 1;
+        Ok(())
     }
-    let at = out.len() as u32;
-    out.extend(&dir);
-    out.extend(0x0605_4b50u32.to_le_bytes());
-    out.extend([0; 4]);
-    out.extend((files.len() as u16).to_le_bytes());
-    out.extend((files.len() as u16).to_le_bytes());
-    out.extend((dir.len() as u32).to_le_bytes());
-    out.extend(at.to_le_bytes());
-    out.extend([0; 2]);
-    out
+
+    pub(crate) fn finish(mut self) -> Vec<u8> {
+        let at = self.bytes.len() as u32;
+        self.bytes.extend(&self.directory);
+        self.bytes.extend(0x0605_4b50u32.to_le_bytes());
+        self.bytes.extend([0; 4]);
+        self.bytes.extend(self.count.to_le_bytes());
+        self.bytes.extend(self.count.to_le_bytes());
+        self.bytes.extend((self.directory.len() as u32).to_le_bytes());
+        self.bytes.extend(at.to_le_bytes());
+        self.bytes.extend([0; 2]);
+        self.bytes
+    }
+}
+
+/// A zip of deflated files, used by the SiYuan fixtures.
+pub fn pack(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut zip = Writer::default();
+    for (name, data) in files {
+        let packed = miniz_oxide::deflate::compress_to_vec(data, 6);
+        zip.entry(name, data, &packed, 8).expect("small ZIP fixture");
+    }
+    zip.finish()
 }
 
 fn crc32(data: &[u8]) -> u32 {
-    let mut c = !0u32;
-    for &b in data {
-        c ^= b as u32;
-        for _ in 0..8 { c = if c & 1 != 0 { 0xedb8_8320 ^ (c >> 1) } else { c >> 1 }; }
-    }
-    !c
+    const TABLE: [u32; 256] = {
+        let mut table = [0; 256];
+        let mut i = 0;
+        while i < table.len() {
+            let mut c = i as u32;
+            let mut bit = 0;
+            while bit < 8 {
+                c = if c & 1 != 0 { 0xedb8_8320 ^ (c >> 1) } else { c >> 1 };
+                bit += 1;
+            }
+            table[i] = c;
+            i += 1;
+        }
+        table
+    };
+    !data.iter().fold(!0, |c, &b| TABLE[((c as u8) ^ b) as usize] ^ (c >> 8))
 }
 
 #[cfg(test)]

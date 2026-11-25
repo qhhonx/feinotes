@@ -5,6 +5,8 @@ use crate::vfs::{PathExt as _, KindExt as _};
 use crate::model::*;
 use std::path::{Path, PathBuf};
 
+pub mod archive;
+
 /// 导出 Markdown 设置.
 #[derive(Default)]
 pub struct Options<'a> {
@@ -41,6 +43,10 @@ pub struct Options<'a> {
     /// Writing the file itself (not a copy to paste): what a reader would
     /// lose stays (`BLANK` for an empty paragraph, `hold_end`).
     pub file: bool,
+    /// An archive's authorized source path or key for a local asset.
+    pub archive_asset: Option<&'a dyn Fn(&str) -> Option<PathBuf>>,
+    /// Embedded board images for portable SVG and Excalidraw files.
+    pub board_asset: Option<&'a dyn Fn(&crate::board::types::FileData) -> Option<String>>,
 }
 
 pub struct Export {
@@ -198,7 +204,10 @@ impl Writer<'_> {
             BlockKind::Image { src, caption, .. } => match self.opts.assets {
                 Some(dir) => {
                     let alt = caption.clone().unwrap_or_default();
-                    format!("![{}]({})", escape(&alt), self.image(src, dir).replace(' ', "%20"))
+                    let url = self.image(src, dir);
+                    if self.opts.archive_asset.is_none() { format!("![{}]({})", escape(&alt), url.replace(' ', "%20")) }
+                    else if url.is_empty() { escape(&alt) }
+                    else { format!("![{}]({})", escape(&alt), link_target(&url)) }
                 }
                 None => String::new(),
             },
@@ -213,8 +222,17 @@ impl Writer<'_> {
                     let n = self.generated.len() / 2 + 1;
                     let (svg, file) = (format!("{dir}/board-{n}.svg"), format!("{dir}/board-{n}.excalidraw"));
                     let root = self.opts.library_dir.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::active_dir);
-                    self.generated.push((svg.clone(), bd.svg_in(&root)));
-                    self.generated.push((file.clone(), bd.file_json()));
+                    let (svg_text, scene) = if let Some(read) = self.opts.board_asset {
+                        let mut board = (**bd).clone();
+                        for f in board.files.values_mut() {
+                            f.data_url = read(f);
+                            f.path = None;
+                            if f.data_url.is_none() { self.missing += 1; }
+                        }
+                        (board.svg(&crate::whiteboard::ApproxMeasure, &|f| f.data_url.clone()), board.file_json())
+                    } else { (bd.svg_in(&root), bd.file_json()) };
+                    self.generated.push((svg.clone(), svg_text));
+                    self.generated.push((file.clone(), scene));
                     format!("[![]({})]({})", link_target(&svg), link_target(&file))
                 }
                 None => bd.plain_text().lines().map(escape).collect::<Vec<_>>().join("<br>"),
@@ -308,21 +326,42 @@ impl Writer<'_> {
         if src.starts_with("http://") || src.starts_with("https://") || src.starts_with("data:image/") {
             return src.to_string();
         }
-        let Some(path) = crate::store::export_path_in(self.opts.library_dir.unwrap_or(&crate::store::Store::active_dir()), src) else { self.missing += 1; return String::new() };
+        let path = match self.opts.archive_asset {
+            Some(resolve) => resolve(src),
+            None => crate::store::export_path_in(self.opts.library_dir.unwrap_or(&crate::store::Store::active_dir()), src),
+        };
+        let Some(path) = path else { self.missing += 1; return String::new() };
         if let Some((_, rel)) = self.files.iter().find(|(p, _)| *p == path) {
             return rel.clone();
         }
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image").to_string();
-        let ext = path.extension().and_then(|s| s.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
+        let bundled = self.opts.archive_asset.is_some();
+        let part = |s: &str| if bundled { bundle_name(s) } else { s.to_owned() };
+        let dir = if bundled { format!("{dir}/files") } else { dir.to_owned() };
+        let stem = part(path.file_stem().and_then(|s| s.to_str()).unwrap_or("image"));
+        let ext = path.extension().and_then(|s| s.to_str()).map(|e| format!(".{}", part(e))).unwrap_or_default();
         let mut rel = format!("{dir}/{stem}{ext}");
         let mut n = 1;
-        while self.files.iter().any(|(_, r)| *r == rel) {
+        while self.files.iter().any(|(_, r)| if bundled { r.to_lowercase() == rel.to_lowercase() } else { *r == rel }) {
             n += 1;
             rel = format!("{dir}/{stem}-{n}{ext}");
         }
         self.files.push((path, rel.clone()));
         rel
     }
+}
+
+/// A portable file name for a downloaded bundle and its members.
+pub fn bundle_name(name: &str) -> String {
+    let stem = name.chars().take(80).map(|c| {
+        if c.is_control() || matches!(c, '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*' | '#' | '%') { '_' } else { c }
+    }).collect::<String>();
+    let stem = stem.trim_matches([' ', '.']);
+    if stem.is_empty() { return "document".into(); }
+    let first = stem.split('.').next().unwrap_or(stem).to_ascii_uppercase();
+    if matches!(first.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((first.starts_with("COM") || first.starts_with("LPT")) && first.len() == 4 && first.as_bytes()[3].is_ascii_digit()) {
+        format!("_{stem}")
+    } else { stem.into() }
 }
 
 /// A link target that survives the parser: spaces and parentheses escaped.

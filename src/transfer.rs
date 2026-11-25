@@ -412,17 +412,7 @@ impl Workspace {
     /// 下载为 → Markdown: the 导出 Markdown 设置 first.
     pub fn open_export_md(&mut self, id: &str, cx: &mut Context<Self>) {
         self.close_menus();
-        #[cfg(target_family = "wasm")]
-        {
-            let Some(doc) = self.doc_of(id, cx) else { return };
-            let subs = self.sub_page_titles(id);
-            let out = crate::markdown::export(&doc, &crate::markdown::Options { sub_pages: &subs, ..Default::default() });
-            if crate::web::download_file(&format!("{}.md", file_name(&doc)), out.text.as_bytes(), "text/markdown;charset=utf-8").is_err() {
-                self.show_toast_kind(ToastKind::Error, crate::settings::text("导出失败，请重试"), cx);
-            }
-        }
-        #[cfg(not(target_family = "wasm"))]
-        { self.export_md = Some(ExportMd { id: id.to_string(), all: false }); }
+        self.export_md = Some(ExportMd { id: id.to_string(), all: false });
         cx.notify();
     }
 
@@ -433,6 +423,20 @@ impl Workspace {
         cx.notify();
         let Some(doc) = self.doc_of(&id, cx) else { return };
         let subs = self.sub_page_titles(&id);
+        #[cfg(target_family = "wasm")]
+        {
+            let title = file_name(&doc);
+            if all {
+                self.export_browser_archive(doc, subs, title, window, cx);
+            } else {
+                let out = crate::markdown::export(&doc, &crate::markdown::Options { sub_pages: &subs, ..Default::default() });
+                if crate::web::download_file(&format!("{title}.md"), out.text.as_bytes(), "text/markdown;charset=utf-8").is_err() {
+                    self.show_toast_kind(ToastKind::Error, crate::settings::text("导出失败，请重试"), cx);
+                }
+            }
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
         let path = save_path(&format!("{}.md", file_name(&doc)), cx);
         cx.spawn_in(window, async move |this, cx| {
             let Some(path) = path.await else { return };
@@ -469,6 +473,40 @@ impl Workspace {
             }
         })
         .detach();
+        }
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn export_browser_archive(&mut self, doc: Document, subs: Vec<String>, title: String, window: &mut Window, cx: &mut Context<Self>) {
+        let root = crate::store::Store::active_dir();
+        let pending = crate::web::archive::request_assets(&doc, &root);
+        let preparing = crate::settings::tr("正在准备附件…", "Preparing attachments…");
+        if !pending.is_empty() { self.show_toast_kind(ToastKind::Info, preparing, cx); }
+        let executor = cx.background_executor().clone();
+        cx.spawn_in(window, async move |this, cx| {
+            crate::web::archive::wait_for_assets(pending, &executor).await;
+            let archive = crate::web::archive::pack(&doc, &root, &subs, &title);
+            let _ = this.update_in(cx, |w, _, cx| {
+                let result = archive.and_then(|archive| {
+                    crate::web::download_file(&archive.filename, &archive.bytes, "application/zip")
+                        .map_err(|_| anyhow::anyhow!("Could not start browser download"))?;
+                    Ok(archive.missing)
+                });
+                match result {
+                    Ok(0) => {
+                        if w.toast.as_ref().is_some_and(|t| matches!(t.0, ToastKind::Info) && t.1.as_ref() == preparing) {
+                            w.toast = None;
+                            cx.notify();
+                        }
+                    }
+                    Ok(missing) => w.show_toast_kind(ToastKind::Error, &crate::localized_count!(missing,
+                        "已导出，但有 {missing} 个图片或附件未能包含",
+                        "Exported, but {missing} image or attachment could not be included",
+                        "Exported, but {missing} images or attachments could not be included"), cx),
+                    Err(_) => w.show_toast_kind(ToastKind::Error, crate::settings::text("导出失败，请重试"), cx),
+                }
+            });
+        }).detach();
     }
 
     /// 下载为 → PDF: the page laid out on A4 by WebKit, saved where the user picks.
@@ -981,8 +1019,10 @@ impl Workspace {
 
     /// 导出 Markdown 设置 as a `Dialog`: its title, the options, the buttons
     /// on the right.
-    pub(crate) fn render_export_md(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(crate) fn render_export_md(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let all = self.export_md.as_ref()?.all;
+        let width = (window.viewport_size().width - px(24.)).min(px(720.));
+        let stacked = width < px(560.);
         let option = |id: &'static str, on: bool, label: &'static str, value: bool| {
             div()
                 .id(id)
@@ -1004,7 +1044,7 @@ impl Workspace {
             .keys(&self.dialog_focus, move |_, cx| { let _ = ws.update(cx, |w, cx| { w.export_md = None; cx.notify(); }); },
                 Some(move |window: &mut Window, cx: &mut App| { let _ = ws2.update(cx, |w, cx| w.export_markdown(window, cx)); }))
             .relative()
-            .w(px(720.))
+            .w(width)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .title(crate::settings::text("导出 Markdown 设置"))
             .closable(cx.listener(|w, _, _, cx| {
@@ -1015,13 +1055,16 @@ impl Workspace {
                 div()
                     .flex()
                     .items_center()
-                    .child(div().mr(px(40.)).text_color(crate::design::color::muted_foreground()).child(crate::settings::text("内容范围")))
+                    .when(stacked, |d| d.flex_col().gap(px(12.)))
+                    .when(!stacked, |d| d.gap(px(40.)))
+                    .child(div().text_color(crate::design::color::muted_foreground()).child(crate::settings::text("内容范围")))
                     .child(
                         div()
                             .flex()
-                            .gap(px(24.))
+                            .when(stacked, |d| d.flex_col().gap(px(10.)))
+                            .when(!stacked, |d| d.gap(px(24.)))
                             .child(option("export-md-text", !all, crate::settings::text("仅文本（不含图片和附件）"), false))
-                            .child(option("export-md-all", all, crate::settings::text("所有内容"), true)),
+                            .child(option("export-md-all", all, if cfg!(target_family = "wasm") { crate::settings::tr("所有内容（ZIP）", "All content (ZIP)") } else { crate::settings::text("所有内容") }, true)),
                     ),
             )
             .footer(

@@ -2093,7 +2093,7 @@ impl Render for Workspace {
             View::Settings => self.render_settings(cx),
         };
         let move_dlg = self.render_move_dialog(cx);
-        let export_md = self.render_export_md(cx);
+        let export_md = self.render_export_md(window, cx);
         let import_apps = self.render_import_apps(cx);
         // Only the note stands out: a white plane flush with the window's top,
         // right and bottom edges. The sidebar sits sunken on the window

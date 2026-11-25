@@ -4,6 +4,8 @@
 //! monospace font are fetched too, and CJK text falls back to the browser's
 //! canvas text (gpui_web).
 
+pub(crate) mod archive;
+
 use crate::*;
 use std::borrow::Cow;
 use wasm_bindgen::JsCast;
