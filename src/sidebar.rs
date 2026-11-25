@@ -162,9 +162,16 @@ impl Workspace {
         if !pinned.is_empty() {
             fixed = fixed.child(self.section(0, crate::settings::text("置顶"), cx));
             if !self.folded[0] {
+                let scroll = window.use_keyed_state("sidebar-pinned-scroll", cx, |_, _| ScrollHandle::new()).read(cx).clone();
+                let mut rows = div().flex().flex_col();
                 for e in pinned {
-                    fixed = fixed.child(self.doc_row(e, "pinned", 0, false, cx));
+                    rows = rows.child(self.doc_row(e, "pinned", 0, false, cx));
                 }
+                // Keep the shortcuts above the main list, with room for the main rows
+                // and the footer even when there are more pins than fit in the window.
+                fixed = fixed.child(div().id("sidebar-pinned").max_h(window.viewport_size().height / 3.)
+                    .overflow_y_scroll().track_scroll(&scroll).child(rows)
+                    .child(crate::design::scroll::bar("sidebar-pinned", &scroll, 0.)));
             }
             fixed = fixed.child(div().h(px(GROUP_GAP - SECTION_TOP)));
         }
