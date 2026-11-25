@@ -11,6 +11,7 @@ use super::base::{element, icon, label, under};
 use super::{color, geo, shadow};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use web_time::Instant;
 
 /// The checkbox: 16pt, corners 4, on an `input` hairline with shadow-xs; on, `primary` with a 14pt
 /// `primary-foreground` tick (`[&>svg]:size-3.5`).
@@ -66,10 +67,14 @@ impl RenderOnce for Switch {
         // 0 off, 1 on; a keyed switch that just flipped is part way there
         let t = match self.key {
             Some(key) => {
-                let st = window.use_keyed_state((key, "switch"), cx, |_, _| (on, std::time::Instant::now() - SLIDE));
+                let st = window.use_keyed_state((key, "switch"), cx, |_, _| (on, None));
                 let (was, at) = *st.read(cx);
-                let at = if was != on { let now = std::time::Instant::now(); st.update(cx, |s, _| *s = (on, now)); now } else { at };
-                let k = (at.elapsed().as_secs_f32() / SLIDE.as_secs_f32()).min(1.);
+                let at = if was != on {
+                    let now = Some(Instant::now());
+                    st.update(cx, |s, _| *s = (on, now));
+                    now
+                } else { at };
+                let k = at.map_or(1., |at| (at.elapsed().as_secs_f32() / SLIDE.as_secs_f32()).min(1.));
                 if k < 1. { window.request_animation_frame(); }
                 // ease-out, as Radix's default easing reads
                 let e = 1. - (1. - k) * (1. - k);
