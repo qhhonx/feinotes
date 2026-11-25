@@ -38,7 +38,7 @@ shot m6-blockmenu
 key escape
 wait 200
 # sidebar row context menu
-rclick 150 200
+rclick 150 166
 wait 400
 shot m7-rowmenu
 key escape

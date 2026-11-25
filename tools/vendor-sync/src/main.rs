@@ -3,10 +3,14 @@
 //!
 //!   sync [--rev <sha>] [--keep-going]   rebuild vendor/zed/crates from upstream + patches
 //!   check                               vendor/zed/crates matches upstream + patches
-//!   save <slug> [-m <text>]             turn edits in vendor/zed/crates into a patch
-//!                                       (an existing slug is regenerated and moves
-//!                                       to the end of the series)
+//!   save <slug> [--number <n>] [-m <text>]
+//!                                       turn edits in vendor/zed/crates into a patch
+//!                                       (an existing slug is regenerated in place; a
+//!                                       new one takes <n>, or the highest number + 1)
 //!   refresh                             rewrite every patch against the current snapshot
+//!
+//! Patches apply in number order. Numbers are never reassigned: ranges are handed
+//! out to lines of work (vendor/PATCHES.md), so gaps are normal.
 //!
 //! The upstream crates inherit fields and dependencies from Zed's workspace. A
 //! copied crate is not a member of ours, so each `Cargo.toml` is rewritten to a
@@ -65,11 +69,11 @@ fn run() -> Result<()> {
             println!("vendor/zed/crates matches zed {} + {} patch(es)", &cfg.rev[..12], patch_files(&p)?.len());
         }
         Some("save") => {
-            let slug = args.get(1).filter(|s| !s.starts_with('-')).context("usage: save <slug> [-m <description>]")?.clone();
-            save(&p, &cfg, &slug, opt("-m"))?
+            let slug = args.get(1).filter(|s| !s.starts_with('-')).context("usage: save <slug> [--number <n>] [-m <description>]")?.clone();
+            save(&p, &cfg, &slug, opt("--number"), opt("-m"))?
         }
         Some("refresh") => refresh(&p, &cfg)?,
-        _ => bail!("usage: vendor-sync sync [--rev <sha>] [--keep-going] | check | save <slug> [-m <text>] | refresh"),
+        _ => bail!("usage: vendor-sync sync [--rev <sha>] [--keep-going] | check | save <slug> [--number <n>] [-m <text>] | refresh"),
     }
     Ok(())
 }
@@ -102,21 +106,34 @@ fn set_rev(p: &Paths, rev: &str) -> Result<()> {
 
 // ---- git -------------------------------------------------------------------
 
+/// Git, cut loose from any repository named in the environment. A git hook
+/// (pre-push running scripts/check.py) sets GIT_DIR and friends; inherited,
+/// they point `git -C <tree>` at the outer repository, so `init` rewrote its
+/// config (core.bare = true) instead of making the scratch tree. The list is
+/// `git rev-parse --local-env-vars`, what git itself clears for submodules.
+fn git_cmd() -> Command {
+    let mut c = Command::new("git");
+    for v in ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE",
+        "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES"] { c.env_remove(v); }
+    c
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<()> {
-    let st = Command::new("git").arg("-C").arg(dir).args(GIT_ID).args(args).status().context("running git")?;
+    let st = git_cmd().arg("-C").arg(dir).args(GIT_ID).args(args).status().context("running git")?;
     if !st.success() { bail!("git {} failed in {}", args.join(" "), dir.display()) }
     Ok(())
 }
 
 fn git_out(dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(GIT_ID).args(args).stderr(Stdio::inherit()).output().context("running git")?;
+    let out = git_cmd().arg("-C").arg(dir).args(GIT_ID).args(args).stderr(Stdio::inherit()).output().context("running git")?;
     if !out.status.success() { bail!("git {} failed in {}", args.join(" "), dir.display()) }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Runs git and returns (success, stderr) without failing.
 fn git_try(dir: &Path, args: &[&str]) -> Result<(bool, String)> {
-    let out = Command::new("git").arg("-C").arg(dir).args(GIT_ID).args(args).output().context("running git")?;
+    let out = git_cmd().arg("-C").arg(dir).args(GIT_ID).args(args).output().context("running git")?;
     Ok((out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned()))
 }
 
@@ -128,7 +145,7 @@ fn ensure_cache(p: &Paths, cfg: &Config, rev: &str) -> Result<()> {
     if !p.cache.join(".git").exists() {
         fs::create_dir_all(p.cache.parent().unwrap())?;
         println!("cloning {} (blobless) into {}", cfg.repo, p.cache.display());
-        let st = Command::new("git").args(["clone", "--filter=blob:none", "--no-checkout", "--quiet", &cfg.repo]).arg(&p.cache).status()?;
+        let st = git_cmd().args(["clone", "--filter=blob:none", "--no-checkout", "--quiet", &cfg.repo]).arg(&p.cache).status()?;
         if !st.success() { bail!("git clone failed") }
     }
     if !git_try(&p.cache, &["cat-file", "-e", &format!("{rev}^{{commit}}")])?.0 {
@@ -154,8 +171,13 @@ fn resolve_rev(p: &Paths, cfg: &Config, rev: &str) -> Result<String> {
 fn patch_files(p: &Paths) -> Result<Vec<PathBuf>> {
     let mut v: Vec<PathBuf> = fs::read_dir(&p.patches).map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect()).unwrap_or_default();
     v.retain(|f| f.extension().is_some_and(|e| e == "patch"));
-    v.sort();
+    v.sort_by_key(|f| (number_of(f), f.clone()));
     Ok(v)
+}
+
+/// The number a patch file name starts with ("0046-foo.patch" → 46).
+fn number_of(f: &Path) -> Option<u32> {
+    f.file_name()?.to_string_lossy().split_once('-')?.0.parse().ok()
 }
 
 fn slug_of(f: &Path) -> String {
@@ -284,8 +306,11 @@ fn list_files(dir: &Path) -> Result<BTreeSet<String>> {
 
 // ---- save / refresh ---------------------------------------------------------
 
-fn save(p: &Paths, cfg: &Config, slug: &str, msg: Option<String>) -> Result<()> {
-    let existing = patch_files(p)?.into_iter().find(|f| slug_of(f) == slug);
+fn save(p: &Paths, cfg: &Config, slug: &str, number: Option<String>, msg: Option<String>) -> Result<()> {
+    let files = patch_files(p)?;
+    let existing = files.iter().find(|f| slug_of(f) == slug).cloned();
+    let name = patch_name(&files, slug, number.as_deref())?;
+    let n = number_of(Path::new(&name)).unwrap_or(0);
     let failed = build(p, cfg, existing.as_deref())?;
     if !failed.is_empty() { eprintln!("note: left out of the base because they do not apply: {}", failed.join(", ")) }
     let tree = p.scratch.join("tree");
@@ -297,32 +322,66 @@ fn save(p: &Paths, cfg: &Config, slug: &str, msg: Option<String>) -> Result<()> 
         fs::rename(d.join("Cargo.toml.orig"), d.join("Cargo.toml")).with_context(|| format!("{c}/Cargo.toml.orig missing"))?;
     }
     git(&tree, &["add", "-A"])?;
-    let diff = git_out(&tree, &["diff", "--cached", "--binary", "--full-index"])?;
+    git(&tree, &["commit", "--quiet", "--allow-empty", "-m", "edits"])?;
+    let diff = diff_at(&tree, n)?;
     if diff.trim().is_empty() { bail!("no changes in vendor/zed/crates relative to upstream + the other patches") }
-    // The diff is taken against every other patch, so it applies after all of
-    // them: a regenerated patch moves to the end of the series.
     let header = match &existing {
         Some(f) => msg.map(|m| header_text(&m)).unwrap_or_else(|| read_header(f)),
         None => header_text(&msg.unwrap_or_else(|| format!("{slug}\n\nTODO: describe what this changes and why."))),
     };
-    if let Some(f) = &existing { fs::remove_file(f)? }
-    let n = patch_files(p)?.len() + 1;
-    let path = p.patches.join(format!("{n:04}-{slug}.patch"));
+    let path = p.patches.join(&name);
+    let old = existing.as_ref().map(fs::read).transpose()?;
     fs::create_dir_all(&p.patches)?;
     fs::write(&path, format!("{header}\n{diff}"))?;
-    renumber(p)?;
-    let path = patch_files(p)?.into_iter().find(|f| slug_of(f) == slug).unwrap_or(path);
+    // The series with the new patch in its place must reproduce the edits.
+    let failed_now = build(p, cfg, None)?;
+    let out = p.scratch.join("out");
+    let _ = fs::remove_dir_all(&out);
+    let differs = if failed_now.contains(&name) { vec![name.clone()] } else {
+        write_crates(p, cfg, &out)?;
+        compare_dirs(&out.join("crates"), &p.vendor.join("crates"))?
+    };
+    if !differs.is_empty() && failed.is_empty() {
+        match old { Some(old) => fs::write(&path, old)?, None => fs::remove_file(&path)? }
+        bail!("{name} in its place does not reproduce vendor/zed/crates ({}); nothing was written", differs.join(", "))
+    }
+    if !differs.is_empty() { eprintln!("note: with patches left out, could not confirm {name} reproduces vendor/zed/crates") }
     println!("wrote {}", path.strip_prefix(&p.root).unwrap_or(&path).display());
     Ok(())
 }
 
-/// Numbers the patches 0001, 0002, … in their current order.
-fn renumber(p: &Paths) -> Result<()> {
-    for (i, f) in patch_files(p)?.iter().enumerate() {
-        let want = p.patches.join(format!("{:04}-{}.patch", i + 1, slug_of(f)));
-        if *f != want { fs::rename(f, &want)? }
+/// The file name for `slug`: an existing patch keeps its own; a new one takes
+/// `number`, or the highest number in the series + 1, and never an existing one.
+fn patch_name(files: &[PathBuf], slug: &str, number: Option<&str>) -> Result<String> {
+    let n = match number {
+        Some(s) => Some(s.parse::<u32>().ok().filter(|n| (1..=9999).contains(n)).with_context(|| format!("--number {s}: expected 1–9999"))?),
+        None => None,
+    };
+    if let Some(f) = files.iter().find(|f| slug_of(f) == slug) {
+        if n.is_some_and(|n| number_of(f) != Some(n)) { bail!("{} already exists; patches are not renumbered", f.file_name().unwrap().to_string_lossy()) }
+        return Ok(f.file_name().unwrap().to_string_lossy().into_owned());
     }
-    Ok(())
+    let n = n.unwrap_or_else(|| files.iter().filter_map(|f| number_of(f)).max().unwrap_or(0) + 1);
+    if let Some(f) = files.iter().find(|f| number_of(f) == Some(n)) { bail!("number {n:04} is taken by {}", f.file_name().unwrap().to_string_lossy()) }
+    Ok(format!("{n:04}-{slug}.patch"))
+}
+
+/// `tree` holds upstream, one commit per patch (named by its file) and the
+/// edits on top. Returns the diff the patch numbered `n` needs so that, applied
+/// after the patches numbered below `n`, the later ones still lead to the edits.
+fn diff_at(tree: &Path, n: u32) -> Result<String> {
+    let log = git_out(tree, &["log", "--reverse", "--format=%H %s"])?;
+    let commits: Vec<(&str, &str)> = log.lines().filter_map(|l| l.split_once(' ')).collect();
+    let later: Vec<&(&str, &str)> = commits.iter().filter(|(_, s)| number_of(Path::new(s)).is_some_and(|m| m > n)).collect();
+    for (sha, name) in later.iter().rev() {
+        if git_try(tree, &["diff", "--quiet", &format!("{sha}^"), sha])?.0 { continue }
+        if !git_try(tree, &["revert", "--no-edit", sha])?.0 {
+            let _ = git_try(tree, &["revert", "--abort"]);
+            bail!("the edits overlap {name}, which comes later in the series; save them with a number after it (--number), or fold them into it")
+        }
+    }
+    let base = commits.iter().take_while(|(_, s)| *s != "edits" && number_of(Path::new(s)).is_none_or(|m| m < n)).last().context("empty tree")?.0;
+    git_out(tree, &["diff", "--binary", "--full-index", base, "HEAD"])
 }
 
 /// Patch files start with free text (git apply skips everything before the
@@ -485,4 +544,139 @@ fn relative(from: &str, to: &str) -> String {
     let mut parts: Vec<&str> = vec![".."; f.len() - common];
     parts.extend(&t[common..]);
     parts.join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn files(names: &[&str]) -> Vec<PathBuf> { names.iter().map(|n| PathBuf::from("patches").join(n)).collect() }
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("vendor-sync-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    const SERIES: &[&str] = &["0001-a.patch", "0039-ios.patch", "0047-corners.patch", "0060-tile.patch", "0085-names.patch"];
+
+    #[test]
+    fn existing_patch_keeps_its_number() {
+        let f = files(SERIES);
+        assert_eq!(patch_name(&f, "tile", None).unwrap(), "0060-tile.patch");
+        assert_eq!(patch_name(&f, "tile", Some("0060")).unwrap(), "0060-tile.patch");
+        assert!(patch_name(&f, "tile", Some("0061")).is_err());
+    }
+
+    #[test]
+    fn new_patch_takes_highest_plus_one() {
+        assert_eq!(patch_name(&files(SERIES), "new", None).unwrap(), "0086-new.patch");
+        assert_eq!(patch_name(&[], "new", None).unwrap(), "0001-new.patch");
+    }
+
+    #[test]
+    fn new_patch_takes_explicit_number() {
+        assert_eq!(patch_name(&files(SERIES), "new", Some("0050")).unwrap(), "0050-new.patch");
+        assert_eq!(patch_name(&files(SERIES), "new", Some("62")).unwrap(), "0062-new.patch");
+        assert!(patch_name(&files(SERIES), "new", Some("x")).is_err());
+        assert!(patch_name(&files(SERIES), "new", Some("0")).is_err());
+    }
+
+    #[test]
+    fn taken_number_is_an_error() {
+        let e = patch_name(&files(SERIES), "new", Some("0047")).unwrap_err().to_string();
+        assert!(e.contains("0047-corners.patch"), "{e}");
+    }
+
+    #[test]
+    fn series_sorts_by_number_and_keeps_gaps() {
+        let d = scratch("sort");
+        for n in ["0085-names.patch", "0047-corners.patch", "9-x.patch", "0010-y.patch", "notes.md"] { fs::write(d.join(n), "").unwrap() }
+        let p = Paths { root: d.clone(), vendor: d.clone(), patches: d.clone(), cache: d.clone(), scratch: d.clone() };
+        let names: Vec<String> = patch_files(&p).unwrap().iter().map(|f| f.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["9-x.patch", "0010-y.patch", "0047-corners.patch", "0085-names.patch"]);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A tree with upstream, patches 0010 (line 2) and 0030 (line 18), then edits.
+    fn tree(name: &str, edit: &[(usize, &str)]) -> PathBuf {
+        let d = scratch(name);
+        let mut lines: Vec<String> = (1..=20).map(|i| format!("line {i}")).collect();
+        let commit = |lines: &[String], msg: &str| {
+            fs::write(d.join("a.txt"), lines.join("\n") + "\n").unwrap();
+            git(&d, &["add", "-A"]).unwrap();
+            git(&d, &["commit", "--quiet", "--allow-empty", "-m", msg]).unwrap();
+        };
+        git(&d, &["init", "--quiet"]).unwrap();
+        commit(&lines, "upstream e2f00a41ac67");
+        lines[1] = "line 2 patched".into();
+        commit(&lines, "0010-two.patch");
+        lines[17] = "line 18 patched".into();
+        commit(&lines, "0030-eighteen.patch");
+        for (i, t) in edit { lines[*i - 1] = t.to_string() }
+        commit(&lines, "edits");
+        d
+    }
+
+    #[test]
+    fn patch_in_the_middle_leaves_later_patches_applying() {
+        let d = tree("middle", &[(10, "line 10 edited")]);
+        let diff = diff_at(&d, 20).unwrap();
+        assert!(diff.contains("+line 10 edited") && !diff.contains("line 18 patched"), "{diff}");
+        // 0010, then the new 0020, then 0030 as it was, give the edits.
+        let p30 = git_out(&d, &["diff", "--binary", ":/^0010", ":/^0030"]).unwrap();
+        let edits = git_out(&d, &["rev-parse", ":/^edits"]).unwrap();
+        let want = git_out(&d, &["show", &format!("{}:a.txt", edits.trim())]).unwrap();
+        fs::write(d.join("0020.patch"), &diff).unwrap();
+        fs::write(d.join("0030.patch"), &p30).unwrap();
+        git(&d, &["checkout", "--quiet", "--detach", ":/^0010"]).unwrap();
+        git(&d, &["apply", "0020.patch"]).unwrap();
+        git(&d, &["apply", "0030.patch"]).unwrap();
+        assert_eq!(fs::read_to_string(d.join("a.txt")).unwrap(), want);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn last_patch_is_the_plain_diff() {
+        let d = tree("last", &[(10, "line 10 edited")]);
+        assert_eq!(diff_at(&d, 31).unwrap(), git_out(&d, &["diff", "--binary", "--full-index", ":/^0030", ":/^edits"]).unwrap());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn edits_overlapping_a_later_patch_are_refused() {
+        let d = tree("overlap", &[(18, "line 18 edited")]);
+        let e = diff_at(&d, 20).unwrap_err().to_string();
+        assert!(e.contains("0030-eighteen.patch"), "{e}");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Run by `outer_repository_in_env_is_left_alone` with a hook's environment.
+    #[test]
+    #[ignore]
+    fn in_hook_env() {
+        let d = tree("hook", &[(10, "line 10 edited")]);
+        assert!(diff_at(&d, 20).unwrap().contains("+line 10 edited"));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn outer_repository_in_env_is_left_alone() {
+        // A git hook runs with GIT_DIR etc. naming the repository being pushed.
+        let outer = scratch("outer");
+        git(&outer, &["init", "--quiet"]).unwrap();
+        let snapshot = || -> Vec<(String, Vec<u8>)> {
+            list_files(&outer.join(".git")).unwrap().into_iter().map(|f| { let b = fs::read(outer.join(".git").join(&f)).unwrap(); (f, b) }).collect()
+        };
+        let before = snapshot();
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "tests::in_hook_env"])
+            .env("GIT_DIR", outer.join(".git")).env("GIT_WORK_TREE", &outer).env("GIT_INDEX_FILE", outer.join(".git/index"))
+            .output().unwrap();
+        let log = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success() && log.contains("1 passed"), "{log}");
+        assert!(before == snapshot(), "the outer repository changed");
+        fs::remove_dir_all(&outer).unwrap();
+    }
 }

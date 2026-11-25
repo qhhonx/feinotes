@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.zip"><img src="docs/images/download-macos.svg" height="56" alt="下載 macOS 版"></a>
+  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.dmg"><img src="docs/images/download-macos.svg" height="56" alt="下載 macOS 版"></a>
   &nbsp;
   <a href="https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe"><img src="docs/images/download-windows.svg" height="56" alt="下載 Windows 版"></a>
   &nbsp;
@@ -94,7 +94,7 @@
 ## 下載
 
 <p align="center">
-  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.zip"><img src="docs/images/download-macos.svg" height="56" alt="下載 macOS 版"></a>
+  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.dmg"><img src="docs/images/download-macos.svg" height="56" alt="下載 macOS 版"></a>
   &nbsp;
   <a href="https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe"><img src="docs/images/download-windows.svg" height="56" alt="下載 Windows 版"></a>
   &nbsp;
@@ -103,12 +103,12 @@
 
 | 平台 | 安裝套件 | 系統需求 |
 |---|---|---|
-| **macOS**（Apple Silicon） | [quiet-md-macos-arm64.zip](https://download.quiet.md/latest/quiet-md-macos-arm64.zip) | macOS 13 以上版本 |
+| **macOS**（Apple Silicon） | [quiet-md-macos-arm64.dmg](https://download.quiet.md/latest/quiet-md-macos-arm64.dmg) | macOS 13 以上版本 |
 | **Windows**（x64） | [quiet-md-windows-x64-setup.exe](https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe) | Windows 10 1809 以上版本 |
 | **Linux**（x86_64，實驗性） | [quiet-md-x86_64.AppImage](https://download.quiet.md/latest/quiet-md-x86_64.AppImage) | glibc 2.35 以上版本（Ubuntu 22.04 及更新版本） |
-| **macOS**（Intel） | [quiet-md-macos-x86_64.zip](https://download.quiet.md/latest/quiet-md-macos-x86_64.zip) | macOS 13 以上版本 |
+| **macOS**（Intel） | [quiet-md-macos-x86_64.dmg](https://download.quiet.md/latest/quiet-md-macos-x86_64.dmg) | macOS 13 以上版本 |
 
-- **macOS**：解壓縮後將 `quiet.md.app` 拖入「應用程式」資料夾即可，應用程式已完成 Apple 簽章與公證。
+- **macOS**：打開 `.dmg`，將 `quiet.md.app` 拖到旁邊的「應用程式」捷徑上，再從「應用程式」打開。應用程式與磁碟映像都已完成 Apple 簽章與公證。Releases 頁面上的 `.zip` 是同一個應用程式，供應用程式內更新下載。
 - **Windows**：執行安裝程式，預設僅為目前使用者安裝，解除安裝時絕不會刪除你的筆記。若首次啟動出現 SmartScreen 提示，請點選**其他資訊 → 仍要執行**。
 - **Linux**（實驗性）：執行 `chmod +x quiet-md-*.AppImage` 後即可啟動，若系統未安裝 FUSE 則加上 `--appimage-extract-and-run` 參數。AppImage 0.1.10 以上版本支援應用程式內更新，較舊的 Linux 版本需手動重新安裝一次，目前已在 Wayland 環境下的 Omarchy 完成互動實測，詳情請參閱 [Linux 說明](CONTRIBUTING.md#linux-experimental)。
 
@@ -173,5 +173,5 @@
 
 以下項目不包含在 MIT 授權範圍內，建立衍生分支（Fork）時請自行替換：
 
-- `assets/icons/` 目錄下的 67 個 Nucleo 圖示受商業 Nucleo 授權保護，請勿單獨抽離或重新散佈。
+- `assets/icons/` 目錄下的 71 個 Nucleo 圖示受商業 Nucleo 授權保護，請勿單獨抽離或重新散佈。
 - 「Quiet.md」名稱與應用程式圖示。

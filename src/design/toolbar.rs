@@ -194,9 +194,9 @@ impl RenderOnce for Toolbar {
     }
 }
 
-/// The editor's block handle: shadcn's `ButtonGroup` of outline `icon-xs` buttons, the block's
-/// type glyph (`glyph`, its tint is content) and the ⋮⋮ grip in `muted-foreground`; with no glyph,
-/// the empty line's + alone. `open` while its menu is: `aria-expanded`, `muted`. 26 tall and
+/// The editor's block handle: one outline `xs` button holding the block's type glyph (`glyph`, its
+/// tint is content) and the ⋮⋮ grip in `muted-foreground`, with no rule between them (maintainer
+/// 2026-11-24: it is one control, not a `ButtonGroup`); with no glyph, the empty line's + alone. `open` while its menu is: `aria-expanded`, `muted`. 26 tall and
 /// `w` (42 / 28) wide rather than icon-xs's 24 square: the editor places the handle by those sizes
 /// (DESIGN_SYSTEM.md, deviation C). It is one control, so the pointer anywhere on it lights both
 /// halves.
@@ -206,7 +206,7 @@ pub fn block_handle(key: u64, glyph: Option<Svg>, w: f32, open: bool) -> Statefu
     let hover_bg = if crate::theme::dark() { color::field_hover() } else { color::muted() };
     let seg = |k: u64, w: f32| {
         let g = group.clone();
-        super::Button::outline(("handle-seg", key * 2 + k))
+        super::Button::outline(("handle-seg", key * 2 + k)).px(px(0.)).gap(px(0.))
             .sized(super::ButtonSize::Xs)
             .selected(open)
             .w(px(w))
@@ -219,9 +219,9 @@ pub fn block_handle(key: u64, glyph: Option<Svg>, w: f32, open: bool) -> Statefu
     let d = div().id(("handle", key)).group(group.clone()).occlude().flex();
     match glyph {
         None => d.child(seg(0, w).child(icon("plus", 12., color::foreground()))),
-        Some(g) => d.child(ButtonGroup::new()
-            .child(seg(0, HANDLE_GLYPH_W).child(g))
-            .child(seg(1, w - HANDLE_GLYPH_W).child(crate::editor_ui::icon("grip-vertical", 12., color::muted_foreground())))),
+        Some(g) => d.child(seg(0, w)
+            .child(div().flex_none().w(px(HANDLE_GLYPH_W)).h_full().flex().items_center().justify_center().child(g))
+            .child(div().flex_1().h_full().flex().items_center().justify_center().child(crate::editor_ui::icon("grip-vertical", 12., color::muted_foreground())))),
     }
 }
 /// The handle's height and its type glyph's half (the grip's half is the rest of its 42).

@@ -1321,7 +1321,7 @@ fn pipe_table(lines: &[&str]) -> Option<(Block, usize)> {
 }
 
 /// Initial Markdown widths; saved DocxXML widths and manual resizing stay intact.
-fn pipe_table_widths(rows: &[Vec<TableCell>], ncols: usize) -> Vec<f32> {
+pub(crate) fn pipe_table_widths(rows: &[Vec<TableCell>], ncols: usize) -> Vec<f32> {
     use unicode_width::UnicodeWidthStr;
     let mut widths = vec![Table::MIN_WIDTH; ncols];
     for row in rows {

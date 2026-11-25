@@ -282,7 +282,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let previous = ws.store.create_from(&crate::model::Document { title: crate::model::RichText::plain("Previous personal note"), ..Default::default() })?;
             let same_title = ws.store.create_from(&crate::model::Document { title: doc.title.clone(), ..Default::default() })?;
             for (i, id) in [&original, &previous, &same_title].into_iter().enumerate() {
-                ws.store.update_meta(id, |meta| meta.root_order = Some(i as u64 + 1))?;
+                ws.store.update_meta(id, |meta| meta.top_order = Some(i as u64 + 1))?;
             }
             std::fs::write(root.join("qa-sidebar-original-ids"), serde_json::to_vec(&[original, previous.clone(), same_title])?)?;
             ws.entries = ws.store.list(); ws.sort();
@@ -506,7 +506,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let child = ws.store.create_from(&crate::model::Document::default())?;
             ws.store.set_parent(&child, Some(&folder))?; ws.expanded.insert(folder);
             let mut entries = ws.store.list(); entries.sort_by(|a, b| b.id.cmp(&a.id));
-            for (i, entry) in entries.iter().enumerate() { ws.store.update_meta(&entry.id, |meta| meta.root_order = Some(i as u64 + 1))?; }
+            for (i, entry) in entries.iter().enumerate() { ws.store.update_meta(&entry.id, |meta| meta.top_order = Some(i as u64 + 1))?; }
             ws.entries = ws.store.list(); ws.sort();
             let rows = crate::tree::Tree::new(&ws.entries).rows(|id| ws.expanded.contains(id)).into_iter().map(|(entry, depth)| (entry.id.clone(), depth)).collect::<Vec<_>>();
             std::fs::write(root.join("qa-personal-sidebar.json"), serde_json::to_vec(&rows)?)?;
@@ -580,7 +580,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             let child = ws.store.create_from(&crate::model::Document::default())?;
             ws.store.set_parent(&child, Some(&folder))?;
             let disposable = ws.store.create_from(&crate::model::Document::default())?;
-            ws.store.update_meta(&folder, |meta| meta.root_order = Some(0))?;
+            ws.store.update_meta(&folder, |meta| meta.top_order = Some(0))?;
             ws.entries = ws.store.list(); ws.sort(); ws.open(&disposable, window, cx);
             ws.expanded.remove(&folder);
             std::fs::write(root.join("qa-folded-folder"), &folder)?;
@@ -1315,9 +1315,9 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
         let ws = primary.read(cx)?;
         let bounds = match step {
             "personal-header" => ws.home.anchor("create-sidebar"),
-            "personal-shortcut" => ws.more_bounds.borrow().get(&format!("add-doc-true-{owner}")).copied(),
-            "shared-shortcut" => ws.more_bounds.borrow().get(&format!("add-shared-folder-true-{owner}")).copied(),
-            "nested-shortcut" => ws.more_bounds.borrow().get(&format!("add-shared-folder-true-{nested}")).copied(),
+            "personal-shortcut" => ws.more_bounds.borrow().get(&format!("add-doc-false-{owner}")).copied(),
+            "shared-shortcut" => ws.more_bounds.borrow().get(&format!("add-shared-folder-false-{owner}")).copied(),
+            "nested-shortcut" => ws.more_bounds.borrow().get(&format!("add-shared-folder-false-{nested}")).copied(),
             "personal-folder-choice" => ws.create_menu.as_ref().map(|(_, pos)| Bounds::new(
                 point(pos.x + px(12.), pos.y + px(ui::MENU_PAD_Y + ui::MENU_ROW_H * 2.)), size(px(130.), px(ui::MENU_ROW_H)))),
             _ => anyhow::bail!("Unknown sidebar creation control"),
@@ -1462,7 +1462,7 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
             "folder-sidebar-create-readonly-absent" => {
                 let bounds = ws.more_bounds.borrow();
                 for id in [&received, &empty] {
-                    ensure!(!bounds.contains_key(&format!("add-shared-folder-true-{id}")), "Read-only folder offered a creation shortcut");
+                    ensure!(!bounds.contains_key(&format!("add-shared-folder-false-{id}")), "Read-only folder offered a creation shortcut");
                 }
                 eprintln!("SIDEBAR_CREATE_READONLY_PROTECTED");
             }
@@ -1493,7 +1493,6 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
                 }
                 let slot_bounds = ws.more_bounds.borrow();
                 for (personal, shared) in [(format!("doc-{folder}"), format!("shared-folder-{folder}")),
-                    (format!("add-doc-true-{folder}"), format!("add-shared-folder-true-{folder}")),
                     (format!("add-doc-false-{folder}"), format!("add-shared-folder-false-{folder}"))] {
                     let x = slot_bounds.get(&personal).with_context(|| format!("Missing My Documents shortcut: {personal}"))?.center().x;
                     let y = slot_bounds.get(&shared).with_context(|| format!("Missing Shared Documents shortcut: {shared}"))?.center().x;

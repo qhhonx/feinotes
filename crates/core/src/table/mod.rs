@@ -13,6 +13,7 @@ pub mod formula;
 mod fuzz_tests;
 pub mod model;
 pub mod ops;
+pub mod order;
 pub mod query;
 pub mod sample;
 #[cfg(not(target_family = "wasm"))]

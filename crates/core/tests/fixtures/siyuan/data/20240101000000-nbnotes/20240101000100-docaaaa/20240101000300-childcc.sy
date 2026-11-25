@@ -1,0 +1,38 @@
+{
+	"ID": "20240101000300-childcc",
+	"Spec": "2",
+	"Type": "NodeDocument",
+	"Properties": {
+		"id": "20240101000300-childcc",
+		"title": "子文档",
+		"type": "doc",
+		"updated": "20240305081500"
+	},
+	"Children": [
+		{
+			"ID": "20240101001054-paaaaaa",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20240101001054-paaaaaa",
+				"updated": "20240102090000"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "回到 "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "block-ref",
+					"TextMarkTextContent": "全部块类型",
+					"TextMarkBlockRefID": "20240101000100-docaaaa",
+					"TextMarkBlockRefSubtype": "d"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "。"
+				}
+			]
+		}
+	]
+}

@@ -35,7 +35,7 @@ impl Workspace {
             let mut entry = Entry { id, title: row.room.title.clone(), icon: row.icon.clone(), body: row.body.clone(),
                 meta: crate::store::Meta { parent, folder: row.room.scope.folder.then(|| row.room.title.clone()),
                     created: row.created, modified: row.modified, opened: row.opened, ..Default::default() },
-                reminders: vec![], links: vec![], note: None, root: String::new() };
+                reminders: vec![], links: vec![], note: None, top: String::new() };
             prefs.project(&mut entry);
             if row.room.scope.owner.is_none() && let Some(meta) = originals.get(entry.id.as_str()) {
                 entry.meta.pinned = meta.pinned;
@@ -83,7 +83,7 @@ impl Workspace {
         for (i, entry) in rows.iter_mut().filter(|entry| entry.meta.place().0).enumerate() {
             let rank = i as u64 + 1;
             if entry.meta.parent.is_some() { entry.meta.order = rank; }
-            else { entry.meta.root_order = Some(rank); }
+            else { entry.meta.top_order = Some(rank); }
         }
         rows
     }
@@ -290,7 +290,7 @@ impl Workspace {
             let controls = (!batch && self.sidebar_rename(&id, SidebarSection::Shared).is_none())
                 .then(|| self.folder_row_actions(entry, menu_kind, create.clone(), cx));
             #[cfg(target_os = "macos")]
-            let title_reserve = if controls.is_some() && create.is_some() { 74. } else if controls.is_some() { 28. } else { 0. };
+            let title_reserve = if controls.is_some() && create.is_some() { 52. } else if controls.is_some() { 28. } else { 0. };
             #[cfg(target_os = "ios")]
             let title_reserve = 0.;
             let row = div().id(SharedString::from(format!("shared-sidebar-folder-{id}"))).h(px(crate::sidebar::ROW_H)).w_full().relative().group("doc-row")

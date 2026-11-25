@@ -307,6 +307,11 @@ pub struct Tooltip {
     side: TipSide,
 }
 
+thread_local! {
+    /// The trigger last pressed (its bounds), whose tooltip stays hidden until the pointer leaves it.
+    static TIP_PRESSED: std::cell::Cell<Option<Bounds<Pixels>>> = const { std::cell::Cell::new(None) };
+}
+
 /// Preferred side: chrome shows tooltips below, document controls above,
 /// menu items to the right. Flipped when there is no room.
 #[derive(Clone, Copy, PartialEq)]
@@ -327,6 +332,7 @@ fn tip_bg() -> Hsla { crate::design::color::foreground() }
 
 impl Render for Tooltip {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        if self.anchor.is_some() && TIP_PRESSED.get() == self.anchor { return div().into_any_element(); }
         let vp = window.viewport_size();
         let mut style = window.text_style();
         style.font_family = theme::ui_family().into();
@@ -538,8 +544,18 @@ impl TipExt for Stateful<Div> {
         let bounds = Rc::new(std::cell::Cell::new(None::<Bounds<Pixels>>));
         let record = bounds.clone();
         let label = SharedString::from(label);
-        // shadcn's TooltipProvider: `delayDuration = 0`
-        self.child(canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {}).absolute().inset_0()).tooltip_show_delay(std::time::Duration::ZERO).tooltip(move |window, cx| {
+        // Radix closes a trigger's tooltip on pointerdown and keeps it closed until the pointer
+        // leaves, so a menu opened by the press isn't covered by it. GPUI only drops it on the
+        // press and shows it again on the next move: `TIP_PRESSED` holds it back until the pointer
+        // is out. The element is rebuilt every frame, so the press is kept by the trigger's bounds.
+        let press = bounds.clone();
+        self.child(canvas(move |b, window, _| {
+            record.set(Some(b));
+            if TIP_PRESSED.get() == Some(b) && !b.contains(&window.mouse_position()) { TIP_PRESSED.set(None); }
+        }, |_, _, _, _| {}).absolute().inset_0())
+            .capture_any_mouse_down(move |_, _, _| TIP_PRESSED.set(press.get()))
+            // shadcn's TooltipProvider: `delayDuration = 0`
+            .tooltip_show_delay(std::time::Duration::ZERO).tooltip(move |window, cx| {
             let origin = window.mouse_position() + point(px(1.), px(1.));
             let (label, anchor) = (label.clone(), bounds.get());
             cx.new(|_| Tooltip { label, anchor, origin, side }).into()
@@ -630,10 +646,23 @@ pub fn is_cjk_punct(ch: char) -> bool {
         | '\u{FF01}'..='\u{FF0F}' | '\u{FF1A}'..='\u{FF20}' | '\u{FF3B}'..='\u{FF40}' | '\u{FF5B}'..='\u{FF65}')
 }
 
-/// Font for full-width punctuation. When CoreText falls back from the
-/// system UI font it squeezes these (an opening paren after a CJK
-/// character loses ~5px). Browsers draw them full width with PingFang SC.
+/// Font for full-width punctuation, and curly quotes in Chinese text. When
+/// CoreText falls back from the system UI font it squeezes these (an opening
+/// paren after a CJK character loses ~5px). Browsers draw them full width
+/// with PingFang SC. Each system's own Chinese sans, which has bold: a
+/// missing family would draw every weight and style in one regular face
+/// (`cjk_punct_font`).
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub const CJK_PUNCT_FONT: &str = "PingFang SC";
+#[cfg(target_os = "windows")]
+pub const CJK_PUNCT_FONT: &str = "Microsoft YaHei";
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
+pub const CJK_PUNCT_FONT: &str = "Noto Sans CJK SC";
+
+/// `CJK_PUNCT_FONT`, unless this system was found not to have it
+/// (`fonts::check_cjk_punct`): then that text keeps its own family, as
+/// before there was one.
+pub fn cjk_punct_font() -> Option<&'static str> { crate::fonts::cjk_punct_installed().then_some(CJK_PUNCT_FONT) }
 
 /// Single-line UI text that keeps full-width punctuation at full width,
 /// with an optional colored range (search hits). Inherits the parent text
@@ -687,8 +716,8 @@ pub fn ui_runs(text: &str, style: &TextStyle, hits: &[std::ops::Range<usize>], h
     cuts.windows(2)
         .map(|w| {
             let mut run = style.to_run(w[1] - w[0]);
-            if text[w[0]..w[1]].chars().all(is_cjk_punct) && !crate::fonts::own_glyphs(&run.font.family).cjk_punct {
-                run.font.family = CJK_PUNCT_FONT.into();
+            if text[w[0]..w[1]].chars().all(is_cjk_punct) && !crate::fonts::own_glyphs(&run.font.family).cjk_punct && let Some(f) = cjk_punct_font() {
+                run.font.family = f.into();
             }
             if hits.iter().any(|r| r.start <= w[0] && w[1] <= r.end) {
                 run.color = hit_color;

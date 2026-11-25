@@ -7,8 +7,10 @@ const NOW: i64 = 1_794_911_400_000;
 /// A blank table made 文本 / 单选 / 日期 / 附件 (飞书's blank table), with more columns, a filled
 /// first record, and a second table to link to.
 fn base() -> Base {
-    let mut b = Base::blank(0);
+    let mut b = Base::blank_seeded(0, 1);
     let mut other = b.blank_table("客户", 0);
+    // records 1 … 5 in each, what the cells below name
+    for (i, r) in other.records.iter_mut().chain(&mut b.tables[0].records).enumerate() { r.id = i as u64 % 5 + 1; }
     let title = other.fields[0].id;
     other.records[0].set(title, Value::Text("甲公司".into()));
     other.records[1].set(title, Value::Text("乙公司".into()));
@@ -17,7 +19,7 @@ fn base() -> Base {
     let t = &mut b.tables[0];
     t.fields.truncate(4);
     for (f, (name, ty)) in t.fields.iter_mut().zip([("文本", FieldType::Text), ("单选", FieldType::SingleSelect), ("日期", FieldType::Date), ("附件", FieldType::Attachment)]) { f.name = name.into(); f.ty = ty; }
-    let opt = |id: u32, name: &str| SelectOption { id, name: name.into(), color: 0 };
+    let opt = |id: u64, name: &str| SelectOption { id, name: name.into(), color: 0 };
     t.fields[1].opts.options = vec![opt(301, "待办"), opt(302, "完成")];
     let mut add = |id: FieldId, name: &str, ty: FieldType, opts: FieldOpts| t.fields.push(Field { id, name: name.into(), ty, opts, desc: String::new() });
     add(100, "数量", FieldType::Number, FieldOpts::default());

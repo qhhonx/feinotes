@@ -122,7 +122,7 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
     }
     let us = c.units();
     let any = |rng: &mut Rng| rng.pick(&us).id;
-    match rng.below(27) {
+    match rng.below(28) {
         0..=2 => {
             let s = *rng.pick(TEXTS);
             c.insert_text(s);
@@ -223,13 +223,19 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
             c.move_blocks(&[a], b, place);
             format!("move_blocks({a:?}, {b:?}, {place:?})")
         }
-        26 => {
+        27 => {
             c.toggle_todos(&c.selected_blocks());
             "toggle_selected_todos".into()
         }
         20 if rng.chance(20) => board_step(c, rng),
         20 => table_step(c, rng),
         21 => object_step(c, rng),
+        26 => {
+            let (image, target) = (any(rng), any(rng));
+            let before = rng.chance(50);
+            c.move_image_beside(image, target, before);
+            format!("move_image_beside({image:?}, {target:?}, {before})")
+        }
         22 => {
             if c.sel.head.block != TITLE && !c.is_code(c.sel.head.block) {
                 let images = parse("<title></title><img src=\"screenshot.png\"/><p></p>").unwrap();
@@ -366,7 +372,17 @@ fn table_step(c: &mut Core, rng: &mut Rng) -> String {
     let (nr, nc) = (t.rows.len(), t.ncols());
     let slot = |rng: &mut Rng| (rng.below(nr), rng.below(nc));
     let kind = *rng.pick(&[CellSelKind::Range, CellSelKind::Rows, CellSelKind::Cols]);
-    let s = CellSel { table, anchor: slot(rng), head: slot(rng), kind };
+    let mut s = CellSel { table, anchor: slot(rng), head: slot(rng), kind };
+    // Or one cell, as Shift+↑/↓ past its first / last text block selects it.
+    if rng.chance(25) {
+        let (r, col) = t.origin(rng.below(nr), rng.below(nc));
+        let mut ids = vec![];
+        super::table_ops::text_blocks(&t.rows[r][col].blocks, &mut ids);
+        let down = rng.chance(50);
+        if let Some(one) = (if down { ids.last() } else { ids.first() }).and_then(|id| c.cell_edge_sel(*id, down)) {
+            s = one;
+        }
+    }
     c.select_cells(s);
     let what = match rng.below(7) {
         0 => {

@@ -10,11 +10,12 @@ use std::collections::{HashMap, HashSet};
 pub enum Op {
     /// Set cells of one table. Computed fields are not set this way.
     SetCells(Vec<(RecId, FieldId, Value)>),
-    /// Records with the row each lands on, rows ascending.
+    /// Records with the row each lands on, rows ascending. A record whose
+    /// `ord` doesn't fit where it lands gets a key that does (`order::repair`).
     InsertRecords(Vec<(usize, Record)>),
     RemoveRecords(Vec<RecId>),
-    /// The manual order: every record id, once.
-    SetOrder(Vec<RecId>),
+    /// New sort keys for records: each goes where its key sorts among the rest.
+    Move(Vec<(RecId, String)>),
     InsertField { at: usize, field: Field, cells: Vec<(RecId, Value)> },
     RemoveField(FieldId),
     /// Replace a field's definition; `cells` (when given) replaces the whole column.
@@ -40,11 +41,9 @@ pub enum BaseOp {
 pub struct Dirty {
     /// Tables whose columns, order or name changed (or that are new): rewritten whole.
     pub schema: HashSet<TableId>,
-    /// Rows to write again, and rows to delete.
+    /// Rows to write again (a moved row too: its `_order` is in it), and rows to delete.
     pub rows: HashMap<TableId, HashSet<RecId>>,
     pub removed: HashMap<TableId, HashSet<RecId>>,
-    /// Row order changed.
-    pub order: HashSet<TableId>,
     /// Views or the table list changed (`_views`, `_tables`).
     pub meta: bool,
     /// Tables dropped from the file, by the name they were saved under.
@@ -68,7 +67,6 @@ impl Base {
             BaseOp::InsertTable { at, table } => {
                 let id = table.id;
                 if self.table(id).is_some() { return vec![]; }
-                self.next_id = self.next_id.max(table.id).max(table.fields.iter().map(|f| f.id.max(f.opts.options.iter().map(|o| o.id).max().unwrap_or(0))).max().unwrap_or(0)).max(table.views.iter().map(|v| v.id).max().unwrap_or(0));
                 self.tables.insert(at.min(self.tables.len()), *table);
                 dirty.schema.insert(id);
                 dirty.meta = true;
@@ -121,7 +119,6 @@ impl Table {
                 let mut ids = vec![];
                 for (at, r) in recs {
                     if self.record(r.id).is_some() { continue; }
-                    self.next_rec = self.next_rec.max(r.id + 1);
                     self.next_auto = self.next_auto.max(r.auto + 1);
                     ids.push(r.id);
                     dirty.row(tid, r.id);
@@ -129,7 +126,8 @@ impl Table {
                     self.records.insert(at.min(self.records.len()), r);
                 }
                 if ids.is_empty() { return vec![]; }
-                dirty.order.insert(tid);
+                // new rows get keys; rows put back by undo kept theirs, which still fit
+                for id in super::order::repair(&mut self.records) { dirty.row(tid, id); }
                 vec![Op::RemoveRecords(ids)]
             }
             Op::RemoveRecords(ids) => {
@@ -147,20 +145,24 @@ impl Table {
                     row += 1;
                 }
                 if gone.is_empty() { return vec![]; }
-                dirty.order.insert(tid);
                 vec![Op::InsertRecords(gone)]
             }
-            Op::SetOrder(order) => {
-                let old: Vec<RecId> = self.records.iter().map(|r| r.id).collect();
-                if old == order || old.len() != order.len() { return vec![]; }
-                let mut by_id: HashMap<RecId, Record> = self.records.drain(..).map(|r| (r.id, r)).collect();
-                for id in &order { if let Some(r) = by_id.remove(id) { self.records.push(r); } }
-                // an order that named a record twice or missed one: the rest keep their places at the end
-                let mut rest: Vec<Record> = by_id.into_values().collect();
-                rest.sort_by_key(|r| old.iter().position(|id| *id == r.id));
-                self.records.extend(rest);
-                dirty.order.insert(tid);
-                vec![Op::SetOrder(old)]
+            Op::Move(keys) => {
+                let mut old = vec![];
+                let mut moving = vec![];
+                for (id, ord) in keys {
+                    let Some(i) = self.index_of(id).filter(|i| self.records[*i].ord != ord) else { continue };
+                    let mut r = self.records.remove(i);
+                    old.push((id, std::mem::replace(&mut r.ord, ord)));
+                    moving.push(r);
+                }
+                if moving.is_empty() { return vec![]; }
+                for r in moving {
+                    dirty.row(tid, r.id);
+                    let at = self.records.partition_point(|x| (x.ord.as_str(), x.id) < (r.ord.as_str(), r.id));
+                    self.records.insert(at, r);
+                }
+                vec![Op::Move(old)]
             }
             Op::InsertField { at, field, cells } => {
                 if self.field(field.id).is_some() { return vec![]; }

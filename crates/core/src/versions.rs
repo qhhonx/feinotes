@@ -33,11 +33,11 @@ pub struct Version {
 /// Longest label kept; longer input is cut rather than refused.
 pub const MAX_LABEL: usize = 40;
 
-// `root` is the library's `.quiet/`; the 回收站's snapshots sit beside, not
+// `quiet_dir` is the library's `.quiet/`; the 回收站's snapshots sit beside, not
 // inside, `trash/`, whose entries are trashed documents.
-fn history_root(root: &Path) -> PathBuf { root.join("history") }
-fn trash_root(root: &Path) -> PathBuf { root.join("history-trash") }
-fn base(root: &Path, trashed: bool) -> PathBuf { if trashed { trash_root(root) } else { history_root(root) } }
+fn history_dir(quiet_dir: &Path) -> PathBuf { quiet_dir.join("history") }
+fn trash_dir(quiet_dir: &Path) -> PathBuf { quiet_dir.join("history-trash") }
+fn base(quiet_dir: &Path, trashed: bool) -> PathBuf { if trashed { trash_dir(quiet_dir) } else { history_dir(quiet_dir) } }
 
 /// A snapshot's label file: `<snapshot>.name`, next to the snapshot.
 fn label_path(dir: &Path, name: &str) -> PathBuf { dir.join(format!("{name}.name")) }
@@ -50,9 +50,9 @@ fn label_of(dir: &Path, name: &str) -> Option<String> {
 
 /// Set or clear a snapshot's name. An empty name removes the file rather than
 /// leaving a blank one behind.
-pub fn set_label(root: &Path, id: &str, name: &str, label: Option<&str>, trashed: bool) -> Result<()> {
+pub fn set_label(quiet_dir: &Path, id: &str, name: &str, label: Option<&str>, trashed: bool) -> Result<()> {
     anyhow::ensure!(safe_name(name), "无效的历史版本文件名");
-    let dir = base(root, trashed).join(id);
+    let dir = base(quiet_dir, trashed).join(id);
     let path = label_path(&dir, name);
     let text: String = label.unwrap_or("").lines().next().unwrap_or("").trim().chars().take(MAX_LABEL).collect();
     if text.is_empty() {
@@ -77,22 +77,22 @@ fn safe_name(name: &str) -> bool {
 }
 
 /// Where a snapshot is (a 数据表's is opened in place, read-only, to preview it).
-pub fn path(root: &Path, id: &str, name: &str, trashed: bool) -> Result<PathBuf> {
+pub fn path(quiet_dir: &Path, id: &str, name: &str, trashed: bool) -> Result<PathBuf> {
     anyhow::ensure!(safe_name(name), "无效的历史版本文件名");
-    Ok(base(root, trashed).join(id).join(name))
+    Ok(base(quiet_dir, trashed).join(id).join(name))
 }
 
-pub fn read_bytes(root: &Path, id: &str, name: &str, trashed: bool) -> Result<Vec<u8>> {
-    crate::vfs::read(path(root, id, name, trashed)?).with_context(|| format!("读取历史版本 {name} 失败"))
+pub fn read_bytes(quiet_dir: &Path, id: &str, name: &str, trashed: bool) -> Result<Vec<u8>> {
+    crate::vfs::read(path(quiet_dir, id, name, trashed)?).with_context(|| format!("读取历史版本 {name} 失败"))
 }
 
 /// A label file moves and dies with its snapshot.
 fn is_label(name: &str) -> bool { name.ends_with(".name") && safe_name(name.trim_end_matches(".name")) }
 
 /// Newest first. A missing directory is simply an empty history.
-pub fn list(root: &Path, id: &str, trashed: bool) -> Vec<Version> {
+pub fn list(quiet_dir: &Path, id: &str, trashed: bool) -> Vec<Version> {
     let mut out = vec![];
-    let dir = base(root, trashed).join(id);
+    let dir = base(quiet_dir, trashed).join(id);
     let Ok(entries) = crate::vfs::read_dir(&dir) else { return out };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
@@ -106,15 +106,15 @@ pub fn list(root: &Path, id: &str, trashed: bool) -> Vec<Version> {
     out
 }
 
-pub fn read(root: &Path, id: &str, name: &str, trashed: bool) -> Result<String> {
+pub fn read(quiet_dir: &Path, id: &str, name: &str, trashed: bool) -> Result<String> {
     anyhow::ensure!(safe_name(name), "无效的历史版本文件名");
-    crate::vfs::read_to_string(base(root, trashed).join(id).join(name))
+    crate::vfs::read_to_string(base(quiet_dir, trashed).join(id).join(name))
         .with_context(|| format!("读取历史版本 {name} 失败"))
 }
 
-pub fn remove(root: &Path, id: &str, name: &str, trashed: bool) -> Result<()> {
+pub fn remove(quiet_dir: &Path, id: &str, name: &str, trashed: bool) -> Result<()> {
     anyhow::ensure!(safe_name(name), "无效的历史版本文件名");
-    let dir = base(root, trashed).join(id);
+    let dir = base(quiet_dir, trashed).join(id);
     let p = dir.join(name);
     let _ = crate::vfs::remove_file(label_path(&dir, name));
     match crate::vfs::remove_file(&p) {
@@ -126,37 +126,37 @@ pub fn remove(root: &Path, id: &str, name: &str, trashed: bool) -> Result<()> {
 
 /// Save `previous` as one version. The caller treats every error as a
 /// warning: a history failure must never fail the document's own save.
-pub fn snapshot(root: &Path, id: &str, ext: &str, previous: &str, ms: u64, limit: u32, force: bool) -> Result<()> {
+pub fn snapshot(quiet_dir: &Path, id: &str, ext: &str, previous: &str, ms: u64, limit: u32, force: bool) -> Result<()> {
     if ext != "xml" && ext != "md" { return Ok(()) }
-    snapshot_bytes(root, id, ext, previous.as_bytes(), ms, limit, force)
+    snapshot_bytes(quiet_dir, id, ext, previous.as_bytes(), ms, limit, force)
 }
 
 /// `snapshot` for any kept kind (`xml`, `md`, a 数据表's `sqlite`), as bytes.
-pub fn snapshot_bytes(root: &Path, id: &str, ext: &str, previous: &[u8], ms: u64, limit: u32, force: bool) -> Result<()> {
+pub fn snapshot_bytes(quiet_dir: &Path, id: &str, ext: &str, previous: &[u8], ms: u64, limit: u32, force: bool) -> Result<()> {
     if previous.is_empty() || !matches!(ext, "xml" | "md" | "sqlite") { return Ok(()) }
-    let mut versions = list(root, id, false);
+    let mut versions = list(quiet_dir, id, false);
     if let Some(last) = versions.first() {
         // The same text never adds a snapshot, forced or not: 保存当前版本
         // twice in a row leaves one row.
-        if read_bytes(root, id, &last.name, false).is_ok_and(|s| s == previous) { return Ok(()) }
+        if read_bytes(quiet_dir, id, &last.name, false).is_ok_and(|s| s == previous) { return Ok(()) }
         // Autosave fires on a 500ms debounce; the interval keeps a long
         // editing session from filling the list.
         if !force && ms.saturating_sub(last.ms) < MIN_INTERVAL * 1000 { return Ok(()) }
     }
-    let dir = history_root(root).join(id);
+    let dir = history_dir(quiet_dir).join(id);
     crate::vfs::create_dir_all(&dir)?;
     let name = format!("{ms:013}-{}.{ext}", &uuid::Uuid::new_v4().to_string()[..8]);
     crate::store::write_atomic(&dir.join(&name), previous)?;
     versions.insert(0, Version { name, ms, size: previous.len() as u64, label: None });
-    trim(root, id, &mut versions, limit);
-    trim_library(root);
+    trim(quiet_dir, id, &mut versions, limit);
+    trim_library(quiet_dir);
     Ok(())
 }
 
-fn trim(root: &Path, id: &str, versions: &mut Vec<Version>, limit: u32) {
+fn trim(quiet_dir: &Path, id: &str, versions: &mut Vec<Version>, limit: u32) {
     let keep = clamp_limit(limit) as usize;
     if versions.len() <= keep { return }
-    let dir = history_root(root).join(id);
+    let dir = history_dir(quiet_dir).join(id);
     for v in versions.drain(keep..) {
         let _ = crate::vfs::remove_file(label_path(&dir, &v.name));
         let _ = crate::vfs::remove_file(dir.join(&v.name));
@@ -167,9 +167,9 @@ fn trim(root: &Path, id: &str, versions: &mut Vec<Version>, limit: u32) {
 /// Global ceiling: drop the oldest snapshots across all documents until the
 /// library fits again. Per-document limits are applied first, so a single
 /// long note cannot starve the rest.
-fn trim_library(root: &Path) {
+fn trim_library(quiet_dir: &Path) {
     let mut all: Vec<(u64, u64, PathBuf)> = vec![];
-    let Ok(dirs) = crate::vfs::read_dir(history_root(root)) else { return };
+    let Ok(dirs) = crate::vfs::read_dir(history_dir(quiet_dir)) else { return };
     for d in dirs.flatten() {
         let Ok(files) = crate::vfs::read_dir(d.path()) else { continue };
         for f in files.flatten() {
@@ -206,16 +206,16 @@ fn move_dir(src: &Path, dst: &Path) {
     let _ = crate::vfs::remove_dir(src);
 }
 
-pub fn move_to_trash(root: &Path, id: &str) {
-    move_dir(&history_root(root).join(id), &trash_root(root).join(id));
+pub fn move_to_trash(quiet_dir: &Path, id: &str) {
+    move_dir(&history_dir(quiet_dir).join(id), &trash_dir(quiet_dir).join(id));
 }
 
-pub fn restore_from_trash(root: &Path, id: &str) {
-    move_dir(&trash_root(root).join(id), &history_root(root).join(id));
+pub fn restore_from_trash(quiet_dir: &Path, id: &str) {
+    move_dir(&trash_dir(quiet_dir).join(id), &history_dir(quiet_dir).join(id));
 }
 
-pub fn purge(root: &Path, id: &str) {
-    let dir = trash_root(root).join(id);
+pub fn purge(quiet_dir: &Path, id: &str) {
+    let dir = trash_dir(quiet_dir).join(id);
     let Ok(entries) = crate::vfs::read_dir(&dir) else { return };
     for e in entries.flatten() {
         let name = e.file_name();
@@ -237,64 +237,64 @@ mod tests {
 
     #[test]
     fn snapshots_are_ordered_deduplicated_and_capped() {
-        let root = lib();
+        let quiet_dir = lib();
         let base = 1_700_000_000_000;
         for i in 0..25 {
             let text = format!("body {i}");
-            snapshot(&root, "a", "xml", &text, base + i * MIN_INTERVAL * 1000, 20, true).unwrap();
+            snapshot(&quiet_dir, "a", "xml", &text, base + i * MIN_INTERVAL * 1000, 20, true).unwrap();
         }
-        let v = list(&root, "a", false);
+        let v = list(&quiet_dir, "a", false);
         assert_eq!(v.len(), 20);
-        assert_eq!(read(&root, "a", &v[0].name, false).unwrap(), "body 24");
-        assert_eq!(read(&root, "a", &v[19].name, false).unwrap(), "body 5");
+        assert_eq!(read(&quiet_dir, "a", &v[0].name, false).unwrap(), "body 24");
+        assert_eq!(read(&quiet_dir, "a", &v[19].name, false).unwrap(), "body 5");
         // Same text again: no new file, forced or not.
-        snapshot(&root, "a", "xml", "body 24", base + 25 * MIN_INTERVAL * 1000, 20, false).unwrap();
-        snapshot(&root, "a", "xml", "body 24", base + 26 * MIN_INTERVAL * 1000, 20, true).unwrap();
-        assert_eq!(list(&root, "a", false).len(), 20);
-        crate::vfs::remove_dir_all(&root).unwrap();
+        snapshot(&quiet_dir, "a", "xml", "body 24", base + 25 * MIN_INTERVAL * 1000, 20, false).unwrap();
+        snapshot(&quiet_dir, "a", "xml", "body 24", base + 26 * MIN_INTERVAL * 1000, 20, true).unwrap();
+        assert_eq!(list(&quiet_dir, "a", false).len(), 20);
+        crate::vfs::remove_dir_all(&quiet_dir).unwrap();
     }
 
     #[test]
     fn table_files_keep_byte_snapshots() {
-        let root = lib();
+        let quiet_dir = lib();
         let ms = 1_700_000_000_000;
         let a = [0u8, 1, 2, 255];
-        snapshot_bytes(&root, "t", "sqlite", &a, ms, 20, true).unwrap();
-        snapshot_bytes(&root, "t", "sqlite", &a, ms + 1, 20, true).unwrap();
-        snapshot_bytes(&root, "t", "sqlite", &[9u8, 9], ms + 2, 20, true).unwrap();
-        let v = list(&root, "t", false);
+        snapshot_bytes(&quiet_dir, "t", "sqlite", &a, ms, 20, true).unwrap();
+        snapshot_bytes(&quiet_dir, "t", "sqlite", &a, ms + 1, 20, true).unwrap();
+        snapshot_bytes(&quiet_dir, "t", "sqlite", &[9u8, 9], ms + 2, 20, true).unwrap();
+        let v = list(&quiet_dir, "t", false);
         assert_eq!(v.len(), 2);
         assert!(v[0].name.ends_with(".sqlite"));
-        assert_eq!(read_bytes(&root, "t", &v[1].name, false).unwrap(), a);
-        assert!(path(&root, "t", "../x.sqlite", false).is_err());
-        crate::vfs::remove_dir_all(&root).unwrap();
+        assert_eq!(read_bytes(&quiet_dir, "t", &v[1].name, false).unwrap(), a);
+        assert!(path(&quiet_dir, "t", "../x.sqlite", false).is_err());
+        crate::vfs::remove_dir_all(&quiet_dir).unwrap();
     }
 
     #[test]
     fn autosave_throttles_within_the_interval() {
-        let root = lib();
+        let quiet_dir = lib();
         let ms = 1_700_000_000_000;
-        snapshot(&root, "a", "xml", "one", ms, 20, false).unwrap();
-        snapshot(&root, "a", "xml", "two", ms + 1_000, 20, false).unwrap();
-        assert_eq!(list(&root, "a", false).len(), 1);
-        snapshot(&root, "a", "xml", "three", ms + MIN_INTERVAL * 1000, 20, false).unwrap();
-        assert_eq!(list(&root, "a", false).len(), 2);
-        crate::vfs::remove_dir_all(&root).unwrap();
+        snapshot(&quiet_dir, "a", "xml", "one", ms, 20, false).unwrap();
+        snapshot(&quiet_dir, "a", "xml", "two", ms + 1_000, 20, false).unwrap();
+        assert_eq!(list(&quiet_dir, "a", false).len(), 1);
+        snapshot(&quiet_dir, "a", "xml", "three", ms + MIN_INTERVAL * 1000, 20, false).unwrap();
+        assert_eq!(list(&quiet_dir, "a", false).len(), 2);
+        crate::vfs::remove_dir_all(&quiet_dir).unwrap();
     }
 
     #[test]
     fn history_follows_the_document_through_the_trash() {
-        let root = lib();
-        snapshot(&root, "a", "xml", "one", 1_700_000_000_000, 20, true).unwrap();
-        move_to_trash(&root, "a");
-        assert!(list(&root, "a", false).is_empty());
-        assert_eq!(list(&root, "a", true).len(), 1);
-        restore_from_trash(&root, "a");
-        assert_eq!(list(&root, "a", false).len(), 1);
-        move_to_trash(&root, "a");
-        purge(&root, "a");
-        assert!(list(&root, "a", true).is_empty());
-        crate::vfs::remove_dir_all(&root).unwrap();
+        let quiet_dir = lib();
+        snapshot(&quiet_dir, "a", "xml", "one", 1_700_000_000_000, 20, true).unwrap();
+        move_to_trash(&quiet_dir, "a");
+        assert!(list(&quiet_dir, "a", false).is_empty());
+        assert_eq!(list(&quiet_dir, "a", true).len(), 1);
+        restore_from_trash(&quiet_dir, "a");
+        assert_eq!(list(&quiet_dir, "a", false).len(), 1);
+        move_to_trash(&quiet_dir, "a");
+        purge(&quiet_dir, "a");
+        assert!(list(&quiet_dir, "a", true).is_empty());
+        crate::vfs::remove_dir_all(&quiet_dir).unwrap();
     }
 
     #[test]
@@ -308,34 +308,34 @@ mod tests {
 
     #[test]
     fn labels_stick_to_their_snapshot_and_leave_with_it() {
-        let root = lib();
+        let quiet_dir = lib();
         let base = 1_700_000_000_000;
-        snapshot(&root, "a", "xml", "one", base, 2, true).unwrap();
-        let v = list(&root, "a", false);
+        snapshot(&quiet_dir, "a", "xml", "one", base, 2, true).unwrap();
+        let v = list(&quiet_dir, "a", false);
         assert_eq!(v[0].label, None);
-        set_label(&root, "a", &v[0].name, Some("投稿前"), false).unwrap();
-        assert_eq!(list(&root, "a", false)[0].label.as_deref(), Some("投稿前"));
+        set_label(&quiet_dir, "a", &v[0].name, Some("投稿前"), false).unwrap();
+        assert_eq!(list(&quiet_dir, "a", false)[0].label.as_deref(), Some("投稿前"));
         // The label is not a snapshot of its own.
-        assert_eq!(list(&root, "a", false).len(), 1);
+        assert_eq!(list(&quiet_dir, "a", false).len(), 1);
         // An empty name clears it.
-        set_label(&root, "a", &v[0].name, Some("  "), false).unwrap();
-        assert_eq!(list(&root, "a", false)[0].label, None);
+        set_label(&quiet_dir, "a", &v[0].name, Some("  "), false).unwrap();
+        assert_eq!(list(&quiet_dir, "a", false)[0].label, None);
         // Trimmed away: the label file goes with the snapshot.
-        set_label(&root, "a", &v[0].name, Some("旧稿"), false).unwrap();
-        snapshot(&root, "a", "xml", "two", base + 1_000_000, 2, true).unwrap();
-        snapshot(&root, "a", "xml", "three", base + 2_000_000, 2, true).unwrap();
-        let v = list(&root, "a", false);
+        set_label(&quiet_dir, "a", &v[0].name, Some("旧稿"), false).unwrap();
+        snapshot(&quiet_dir, "a", "xml", "two", base + 1_000_000, 2, true).unwrap();
+        snapshot(&quiet_dir, "a", "xml", "three", base + 2_000_000, 2, true).unwrap();
+        let v = list(&quiet_dir, "a", false);
         assert_eq!(v.len(), 2);
         assert!(v.iter().all(|v| v.label.is_none()), "the oldest snapshot took its label along");
         // Trash: both the snapshot and its label follow the document.
-        set_label(&root, "a", &v[0].name, Some("最新"), false).unwrap();
-        move_to_trash(&root, "a");
-        assert_eq!(list(&root, "a", true)[0].label.as_deref(), Some("最新"));
-        restore_from_trash(&root, "a");
-        assert_eq!(list(&root, "a", false)[0].label.as_deref(), Some("最新"));
-        move_to_trash(&root, "a");
-        purge(&root, "a");
-        assert!(list(&root, "a", true).is_empty());
-        crate::vfs::remove_dir_all(&root).unwrap();
+        set_label(&quiet_dir, "a", &v[0].name, Some("最新"), false).unwrap();
+        move_to_trash(&quiet_dir, "a");
+        assert_eq!(list(&quiet_dir, "a", true)[0].label.as_deref(), Some("最新"));
+        restore_from_trash(&quiet_dir, "a");
+        assert_eq!(list(&quiet_dir, "a", false)[0].label.as_deref(), Some("最新"));
+        move_to_trash(&quiet_dir, "a");
+        purge(&quiet_dir, "a");
+        assert!(list(&quiet_dir, "a", true).is_empty());
+        crate::vfs::remove_dir_all(&quiet_dir).unwrap();
     }
 }

@@ -57,9 +57,15 @@ class Host(http.server.SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
+        # Paced by the clock, not by sleeping after each chunk: a background
+        # process's short sleeps can last several times longer (a 32 ms sleep
+        # took over 100), which made the download outlast the script.
+        start = time.monotonic()
         for i in range(0, len(data), 1 << 16):
             self.wfile.write(data[i:i + (1 << 16)])
-            time.sleep((1 << 16) / RATE)
+            ahead = start + (i + (1 << 16)) / RATE - time.monotonic()
+            if ahead > 0:
+                time.sleep(ahead)
 
     def log_message(self, *a):
         pass
@@ -69,9 +75,9 @@ def script(tag):
     # 侧栏「+」› 画板, then a text (IME commit: Chinese), deselected
     return f"""move 700 700
 wait 1500
-click 251 106
+anchor create-sidebar
 wait 300
-click 295 208
+row Board
 wait 1200
 key t
 click 650 380
@@ -118,7 +124,7 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     # the menu's "Copy to clipboard as SVG" row (see the -2-menu shot)
-    copy = f"click {MENU_SVG[0]} {MENU_SVG[1]}\nwait 1200\nshot {{}}-3-copied\nwait 1500\nclip save {{}}\n"
+    copy = "row Copy to clipboard as SVG\nwait 1200\nshot {}-3-copied\nwait 1500\nclip save {}\n"
 
     online = run("online", url, cache, copy.format("online", work / "online" / "copy.svg"))
     assert hits == [f"/{name}"], hits
@@ -148,8 +154,6 @@ def main():
         assert "panicked" not in (work / tag / "log").read_text(errors="replace"), f"{tag}: panic"
     print(f"board font: ok ({work})")
 
-
-MENU_SVG = (790, 331)
 
 if __name__ == "__main__":
     main()

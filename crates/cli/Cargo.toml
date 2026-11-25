@@ -1,0 +1,28 @@
+# `quiet`: the library from the command line, for people and agents. Every
+# command is one operation of `Session`; `quiet run` exposes the same
+# operations to a sandboxed JavaScript script (QuickJS: no network, no files
+# but the library through the API), committed as one transaction.
+[package]
+name = "quiet_cli"
+version = "0.1.14"
+edition = "2024"
+description = "The Quiet.md library from the command line: read, search, edit and script it"
+license = "MIT"
+readme = "../../README.md"
+authors = ["s1dashu"]
+
+[[bin]]
+name = "quiet"
+path = "src/main.rs"
+
+[dependencies]
+fdl_core = { path = "../core" }
+anyhow = "1.0.104"
+serde_json = "1.0.154"
+sha1_smol = "1.0"
+rquickjs = "0.14"
+dirs = "7.0.0"
+uuid = { version = "1.28.0", features = ["v4"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,132 @@
+==== 收件箱/随手记.xml
+<title>随手记</title>
+<p>收件箱里的一条</p>
+
+==== 读书笔记/全部块类型/全部块类型.xml
+<title icon="📚" cover=".assets/…/封面.png">全部块类型</title>
+<h1>一级标题</h1>
+<p>普通<b><em>粗斜</em></b><u>下划线</u><del>删除线</del><span background-color="light-yellow">高亮</span><code>行内代码</code> <code>⌘K</code> x2 H2O #读书 <a href="https://b3log.org/siyuan">思源</a> <latex>E=mc^2</latex> 备注词<span text-color="gray">（这是一条备注）</span> <span text-color="red" background-color="light-yellow"><b>红字黄底</b></span><br/>第二行</p>
+<h2 folded="true">折叠的标题</h2>
+<p>被折叠的段落</p>
+<ol>
+  <li>第一项</li>
+  <li>第二项
+    <ul>
+      <li>嵌套的无序项</li>
+    </ul>
+  </li>
+</ol>
+<ul>
+  <li folded="true">折叠的项
+    <ul>
+      <li>藏起来的子项</li>
+    </ul>
+  </li>
+</ul>
+<checkbox done="true">做完的事</checkbox>
+<checkbox done="false">没做的事</checkbox>
+<blockquote>
+  <p>引述的话</p>
+</blockquote>
+<callout emoji="ℹ️" background-color="light-blue" border-color="blue">
+  <p><b>注意</b></p>
+  <p>提示里的段落</p>
+</callout>
+<pre lang="javascript"><code>function hello() {
+  return "&lt;思源&gt;";
+}</code></pre>
+<p align="center"><latex>a^2 + b^2 = c^2</latex></p>
+<table>
+  <colgroup><col width="140"/><col width="56"/><col width="56"/></colgroup>
+  <thead>
+    <tr><th><p>书名</p></th><th><p align="center">评分</p></th><th><p align="right">页数</p></th></tr>
+  </thead>
+  <tbody>
+    <tr><td background-color="light-green"><p>三体</p></td><td><p align="center"><b>9.5</b></p></td><td><p align="right">302</p></td></tr>
+    <tr><td colspan="2"><p>合并两格</p></td><td><p align="right">一<br/>二</p></td></tr>
+  </tbody>
+</table>
+<hr/>
+<grid>
+  <column width-ratio="0.5">
+    <p>左栏第一段</p>
+    <p>左栏第二段</p>
+  </column>
+  <column width-ratio="0.5">
+    <p align="center">右栏</p>
+  </column>
+</grid>
+<img src=".assets/…/示意图.png" width="240" caption="图的标题" align="center"/>
+<p>附件：<source path=".assets/…/说明书.pdf" name="说明书.pdf"/></p>
+<figure view-type="Preview"><source path=".assets/…/片段.mp4" name="片段.mp4"/></figure>
+<pre lang="html"><code>&lt;ruby&gt;你&lt;rt&gt;nǐ&lt;/rt&gt;&lt;/ruby&gt;</code></pre>
+<p><a href="https://example.com/embed?a=1&amp;b=2">https://example.com/embed?a=1&amp;b=2</a></p>
+<p><b>第一页</b>
+  <p>第一页的内容</p>
+</p>
+<p><b>第二页</b>
+  <p>第二页的内容</p>
+</p>
+<ul>
+  <li>中心主题
+    <ul>
+      <li>分支</li>
+    </ul>
+  </li>
+</ul>
+<h2>引用目标</h2>
+<p>可被引用的段落</p>
+<p>引用目标下面的段落</p>
+<h2 folded="true">思源笔记属性</h2>
+<table>
+  <colgroup><col width="180"/><col width="140"/><col width="260"/></colgroup>
+  <thead>
+    <tr><th><p>块</p></th><th><p>属性</p></th><th><p>值</p></th></tr>
+  </thead>
+  <tbody>
+    <tr><td><p>可被引用的段落</p></td><td><p>alias</p></td><td><p>核心</p></td></tr>
+    <tr><td><p>可被引用的段落</p></td><td><p>memo</p></td><td><p>块备注</p></td></tr>
+    <tr><td><p>可被引用的段落</p></td><td><p>name</p></td><td><p>要点</p></td></tr>
+    <tr><td><p>可被引用的段落</p></td><td><p>评分</p></td><td><p>5</p></td></tr>
+    <tr><td><p>文档</p></td><td><p>tags</p></td><td><p>示例,导入</p></td></tr>
+    <tr><td><p>文档</p></td><td><p>project</p></td><td><p>Quiet</p></td></tr>
+  </tbody>
+</table>
+
+==== 读书笔记/全部块类型/子文档.xml
+<title>子文档</title>
+<p>回到 <cite type="doc" href="全部块类型.xml" file-type="docx">全部块类型</cite>。</p>
+
+==== 读书笔记/引用与嵌入.xml
+<title>引用与嵌入</title>
+<p>文档引用：<cite type="doc" href="全部块类型/全部块类型.xml" file-type="docx">全部块类型</cite>；自定义锚文本：<a href="全部块类型/全部块类型.xml">那篇长文</a>。</p>
+<p>标题引用：<a href="全部块类型/全部块类型.xml#引用目标">引用目标</a>；块引用：<a href="全部块类型/全部块类型.xml"><b>可被引用的段落</b></a>；失效引用：已删除的块。</p>
+<p>本页块引用：下面这段。</p>
+<p>下面这段</p>
+<h2>引用目标</h2>
+<p>可被引用的段落</p>
+<p>引用目标下面的段落</p>
+<p>思源笔记嵌入块（查询结果没有导入）：</p>
+<pre lang="sql"><code>SELECT * FROM blocks WHERE content LIKE '%读书%'</code></pre>
+<p>#读书 #待整理</p>
+<p><b>书单</b></p>
+<table>
+  <colgroup><col width="150"/><col width="150"/><col width="150"/><col width="150"/></colgroup>
+  <thead>
+    <tr><th><p>书名</p></th><th><p>分类</p></th><th><p>评分</p></th><th><p>读完</p></th></tr>
+  </thead>
+  <tbody>
+    <tr><td><p>三体</p></td><td><p>科幻, 长篇</p></td><td><p>9.5</p></td><td><p>☐</p></td></tr>
+    <tr><td><p>全部块类型</p></td><td><p></p></td><td><p></p></td><td><p>☑</p></td></tr>
+  </tbody>
+</table>
+
+==== 报告
+笔记本 2，文档 4，失败 []
+降级 {"NodeHTMLBlock": 1, "NodeIFrame": 1, "NodeMindmap": 2, "NodeTabs": 1, "inline-memo": 1, "kbd": 1, "sup / sub": 2}
+块引用 [("引用与嵌入", "可被引用的段落", "20240101000600-blockrf"), ("引用与嵌入", "下面这段", "20240101000800-selfref")]
+失效引用 [("引用与嵌入", "已删除的块", "20240101009999-missing")]
+嵌入 1，查询 1
+数据库 ["书单"]
+缺失资源 []
+属性 6

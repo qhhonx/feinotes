@@ -1,2 +1,15 @@
 *.pdf binary
 *.xml text eol=lf
+# Text compiled in with include_str!: the same bytes on every platform (a
+# Windows checkout with autocrlf would otherwise build CRLF into the binary).
+crates/cli/src/*.md text eol=lf
+crates/cli/src/*.js text eol=lf
+crates/core/src/emoji.tsv text eol=lf
+crates/core/tests/fixtures/board/* text eol=lf
+assets/themes/*.css text eol=lf
+packaging/fonts.json text eol=lf
+packaging/update-key.pub text eol=lf
+tools/fonts/data/*.txt text eol=lf
+README.md text eol=lf
+# Compared byte for byte by the 思源笔记 import's tests: never converted on checkout.
+crates/core/tests/fixtures/siyuan/** -text

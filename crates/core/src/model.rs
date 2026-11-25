@@ -1182,6 +1182,34 @@ impl Document {
         out
     }
 
+    /// Each source a page keeps a file by (images, attachments as blocks and
+    /// inline, the cover) handed to `f`, which gives the one to keep instead or
+    /// None to leave it. An inline file's element keeps its other attributes.
+    pub fn map_sources(&mut self, mut f: impl FnMut(&str) -> Option<String>) {
+        fn walk(blocks: &mut [Block], f: &mut dyn FnMut(&str) -> Option<String>) {
+            for b in blocks {
+                match &mut b.kind {
+                    BlockKind::Image { src, .. } => if let Some(new) = f(src) { *src = new },
+                    BlockKind::File(file) if file.src_kind == "path" => if let Some(new) = f(&file.src) { file.src = new },
+                    BlockKind::Table(t) => for cell in t.rows.iter_mut().flatten() { walk(&mut cell.blocks, f) },
+                    _ => {}
+                }
+                for r in &mut b.text.runs {
+                    let Some(inline) = r.marks.inline.as_mut() else { continue };
+                    let InlineKind::File(file) = &mut inline.kind else { continue };
+                    if file.src_kind != "path" { continue }
+                    let Some(new) = f(&file.src) else { continue };
+                    let attr = |s: &str| format!("path=\"{}\"", crate::docxml::esc_attr(s));
+                    inline.xml = inline.xml.replacen(&attr(&file.src), &attr(&new), 1);
+                    file.src = new;
+                }
+                walk(&mut b.children, f);
+            }
+        }
+        if let Some(c) = self.cover.as_mut() && let Some(new) = f(&c.src) { c.src = new }
+        walk(&mut self.blocks, &mut f);
+    }
+
     /// Sources of the images and attachments (blocks and inline files).
     pub fn asset_sources(&self) -> Vec<String> {
         let mut out = vec![];

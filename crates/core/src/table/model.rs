@@ -1,17 +1,21 @@
 //! 数据表 (多维表格) model: a `Base` is one SQLite file holding tables; a
-//! table has typed fields, records and views. Ids are small integers that
-//! never leave the file's bookkeeping tables: what a reader of the file sees
-//! is the table, column and option names (`sqlite.rs`).
+//! table has typed fields, records and views. Ids are random integers below
+//! 2^53 (`IdGen`), so two copies of a file edited apart don't hand out the same
+//! one; what a reader of the file sees is the table, column and option names
+//! (`sqlite.rs`).
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-pub type TableId = u32;
-pub type FieldId = u32;
-pub type ViewId = u32;
-pub type OptId = u32;
+pub type TableId = u64;
+pub type FieldId = u64;
+pub type ViewId = u64;
+pub type OptId = u64;
 /// A record's id: its SQLite rowid.
 pub type RecId = u64;
+
+/// Ids stay below 2^53: a 关联 cell holds record ids as JSON numbers, which JavaScript reads exactly only up to there.
+pub const ID_LIMIT: u64 = 1 << 53;
 
 /// The field types, in 飞书's picker order within their groups.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -277,6 +281,8 @@ pub struct Record {
     pub modified: i64,
     /// 自动编号's number: handed out once, never reused.
     pub auto: u64,
+    /// Sort key of the manual order (`order.rs`): rises strictly along `Table::records`.
+    pub ord: String,
 }
 
 pub static EMPTY: Value = Value::Empty;
@@ -455,7 +461,6 @@ pub struct Table {
     /// In manual (drag) order.
     pub records: Vec<Record>,
     pub views: Vec<View>,
-    pub next_rec: RecId,
     pub next_auto: u64,
 }
 
@@ -513,16 +518,68 @@ pub fn free_name(want: &str, ok: impl Fn(&str) -> bool) -> String {
     (2..100_000).map(|i| format!("{want} {i}")).find(|n| ok(n)).unwrap_or_else(|| format!("{want} {}", uuid::Uuid::new_v4()))
 }
 
+/// Hands out ids: random in [1, 2^53), never one it has handed out or been
+/// told is taken. Seeded from a v4 uuid; tests seed it to repeat a run.
+#[derive(Clone)]
+pub struct IdGen {
+    state: u64,
+    taken: HashSet<u64>,
+}
+
+impl IdGen {
+    pub fn seeded(seed: u64) -> IdGen { IdGen { state: seed, taken: HashSet::new() } }
+    /// splitmix64, cut to 53 bits.
+    fn raw(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        (z ^ (z >> 31)) >> 11
+    }
+    /// A fresh id that `busy` doesn't refuse either.
+    pub fn fresh_unless(&mut self, busy: impl Fn(u64) -> bool) -> u64 {
+        loop { let id = self.raw(); if id != 0 && !busy(id) && self.taken.insert(id) { return id; } }
+    }
+    pub fn fresh(&mut self) -> u64 { self.fresh_unless(|_| false) }
+    /// Ids that are in use without having come from here (read from a file).
+    pub fn take(&mut self, ids: impl IntoIterator<Item = u64>) { self.taken.extend(ids); }
+}
+
+impl Default for IdGen {
+    fn default() -> IdGen { let b = uuid::Uuid::new_v4().into_bytes(); IdGen::seeded(u64::from_le_bytes(b[..8].try_into().unwrap_or_default())) }
+}
+// bookkeeping, not content: two bases with the same tables are equal
+impl PartialEq for IdGen { fn eq(&self, _: &IdGen) -> bool { true } }
+impl std::fmt::Debug for IdGen {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "IdGen({} taken)", self.taken.len()) }
+}
+
 /// One file: its tables, in tab order.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Base {
     pub tables: Vec<Table>,
-    pub next_id: u32,
+    pub ids: IdGen,
 }
 
 impl Base {
-    /// A fresh id for a table, field, view or option.
-    pub fn new_id(&mut self) -> u32 { self.next_id += 1; self.next_id }
+    /// The table, field, view and option ids in use.
+    pub fn all_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.tables.iter().flat_map(|t| [t.id].into_iter().chain(t.fields.iter().flat_map(|f| [f.id].into_iter().chain(f.opts.options.iter().map(|o| o.id)))).chain(t.views.iter().map(|v| v.id)))
+    }
+    /// A fresh id for a table, field, view or option: none in the base has it.
+    pub fn new_id(&mut self) -> u64 {
+        let tables = &self.tables;
+        self.ids.fresh_unless(|id| tables.iter().any(|t| t.id == id || t.views.iter().any(|v| v.id == id) || t.fields.iter().any(|f| f.id == id || f.option(id).is_some())))
+    }
+    /// The id generator, to hand out ids while the base is borrowed (options
+    /// made by `field::parse_new`); it knows every id in the base. Put it back
+    /// in `ids` after.
+    pub fn take_ids(&mut self) -> IdGen { let mut g = std::mem::replace(&mut self.ids, IdGen::seeded(0)); g.take(self.all_ids()); g }
+    /// `n` fresh record ids for table `t`: none of its records has one.
+    pub fn new_rec_ids(&mut self, t: TableId, n: usize) -> Vec<RecId> {
+        let have: HashSet<RecId> = self.table(t).map(|t| t.records.iter().map(|r| r.id).collect()).unwrap_or_default();
+        (0..n).map(|_| self.ids.fresh_unless(|id| have.contains(&id))).collect()
+    }
     pub fn table(&self, id: TableId) -> Option<&Table> { self.tables.iter().find(|t| t.id == id) }
     pub fn table_mut(&mut self, id: TableId) -> Option<&mut Table> { self.tables.iter_mut().find(|t| t.id == id) }
     pub fn table_named(&self, name: &str) -> Option<&Table> { self.tables.iter().find(|t| t.name == name) }
@@ -536,17 +593,25 @@ impl Base {
     /// `blank_table` with its columns called `column` 1 … 5 (the interface language's word for 文本).
     pub fn blank_table_in(&mut self, name: &str, column: &str, now: i64) -> Table {
         let name = self.free_table_name(name, None);
-        let mut t = Table { id: self.new_id(), name, next_rec: 1, next_auto: 1, ..Default::default() };
+        let mut t = Table { id: self.new_id(), name, next_auto: 1, ..Default::default() };
         for i in 1..=5 {
             t.fields.push(Field { id: self.new_id(), name: format!("{column} {i}"), ty: FieldType::Text, opts: FieldOpts::default(), desc: String::new() });
         }
-        for _ in 0..5 {
-            t.records.push(Record { id: t.next_rec, created: now, modified: now, auto: t.next_auto, ..Default::default() });
-            t.next_rec += 1;
+        // the table isn't in the base yet: its ids only have to differ from each other
+        for ord in super::order::keys_between(None, None, 5) {
+            t.records.push(Record { id: self.ids.fresh(), created: now, modified: now, auto: t.next_auto, ord, ..Default::default() });
             t.next_auto += 1;
         }
         t.views.push(View { id: self.new_id(), name: "表格视图".into(), kind: ViewKind::Grid, opts: ViewOpts { frozen: 1, ..Default::default() } });
         t
+    }
+
+    /// `blank`, its ids from `IdGen::seeded(seed)`: the same base every time (tests, fuzzing).
+    pub fn blank_seeded(now: i64, seed: u64) -> Base {
+        let mut b = Base { ids: IdGen::seeded(seed), ..Default::default() };
+        let t = b.blank_table("未命名数据表", now);
+        b.tables.push(t);
+        b
     }
 
     /// A new file's content: one blank table.

@@ -207,4 +207,4 @@ fn block(b: &Block, o: &Block, t: &Block, (bk, ok, tk): (&str, &str, &str), path
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

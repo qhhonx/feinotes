@@ -1,7 +1,8 @@
 //! Random edits through `Doc`'s actions: whatever the sequence, undoing
 //! everything gives the starting base back, redoing gives the end again,
-//! and the base stays well-formed (unique ids, no cell of a missing field,
-//! views that only name fields that exist). `FDL_FUZZ_SEEDS` runs more seeds.
+//! and the base stays well-formed (unique ids below 2^53, sort keys rising
+//! along the rows, no cell of a missing field, views that only name fields
+//! that exist). `FDL_FUZZ_SEEDS` runs more seeds; each seeds the ids too.
 
 use super::*;
 
@@ -30,7 +31,7 @@ fn step(d: &mut Doc, r: &mut Rng) {
             let f = t.field(fid).unwrap().clone();
             let v = match f.ty {
                 FieldType::Link => Value::Links(f.opts.link_table.and_then(|o| d.base.table(o)).map(|o| o.records.iter().map(|x| x.id).filter(|_| r.below(3) == 0).collect()).unwrap_or_default()),
-                _ => { let mut f = f; let mut n = d.base.next_id; let v = field::parse_new(&mut f, r.pick(TEXTS).unwrap(), &mut n); if f.ty.select() { Value::Empty } else { v } }
+                _ => { let mut f = f; let mut n = d.base.ids.clone(); let v = field::parse_new(&mut f, r.pick(TEXTS).unwrap(), &mut n); if f.ty.select() { Value::Empty } else { v } }
             };
             d.set_cells(tid, vec![(rid, fid, v)]);
         }
@@ -91,18 +92,21 @@ fn step(d: &mut Doc, r: &mut Rng) {
 
 fn check(b: &Base) {
     let mut ids = std::collections::HashSet::new();
+    assert!(b.all_ids().all(|id| (1..ID_LIMIT).contains(&id)), "an id out of range");
     for t in &b.tables {
         assert!(ids.insert(t.id), "table id twice");
+        assert!(t.records.windows(2).all(|w| w[0].ord < w[1].ord) && t.records.iter().all(|r| order::valid(&r.ord)), "sort keys don't rise along the rows");
         assert!(!t.fields.is_empty() && !t.views.is_empty(), "a table keeps its primary field and a view");
         assert!(sqlite_name_ok(&t.name), "table name {:?}", t.name);
         let mut names = std::collections::HashSet::new();
         for f in &t.fields {
             assert!(ids.insert(f.id), "field id twice");
+            for o in &f.opts.options { assert!(ids.insert(o.id), "option id twice"); }
             assert!(sqlite_name_ok(&f.name) && names.insert(f.name.to_lowercase()), "field name {:?}", f.name);
         }
         let mut recs = std::collections::HashSet::new();
         for r in &t.records {
-            assert!(recs.insert(r.id) && r.id < t.next_rec, "record id");
+            assert!(recs.insert(r.id) && (1..ID_LIMIT).contains(&r.id), "record id");
             for (f, v) in &r.cells { assert!(t.field(*f).is_some(), "a cell of a field that is gone"); assert!(!v.is_empty(), "an empty cell is stored"); }
         }
         for v in &t.views {
@@ -122,7 +126,7 @@ fn random_table_edits() {
     let seeds: u64 = std::env::var("FDL_FUZZ_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(60);
     for seed in 1..=seeds {
         let mut r = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-        let mut d = Doc::new(Base::blank(0));
+        let mut d = Doc::new(Base::blank_seeded(0, seed));
         let start = d.base.clone();
         for i in 0..120 {
             step(&mut d, &mut r);
@@ -136,14 +140,24 @@ fn random_table_edits() {
         let mut n = 0;
         while d.undo() { n += 1; assert!(n < 10_000); }
         let mut back = d.base.clone();
-        back.next_id = start.next_id;
-        for (t, s) in back.tables.iter_mut().zip(&start.tables) { t.next_rec = s.next_rec; t.next_auto = s.next_auto; for (r, sr) in t.records.iter_mut().zip(&s.records) { r.modified = sr.modified; } }
+        for (t, s) in back.tables.iter_mut().zip(&start.tables) { t.next_auto = s.next_auto; for (r, sr) in t.records.iter_mut().zip(&s.records) { r.modified = sr.modified; } }
         assert_eq!(back, start, "seed {seed}: undo does not return to the start");
         while d.redo() {}
         let mut again = d.base.clone();
         for (t, e) in again.tables.iter_mut().zip(&end.tables) { for (r, er) in t.records.iter_mut().zip(&e.records) { r.modified = er.modified; r.created = er.created; } }
-        let mut end = end;
-        end.next_id = again.next_id;
         assert_eq!(again, end, "seed {seed}: redo does not return to the end");
     }
+}
+
+/// A seed gives the same ids every time: a failing run can be run again.
+#[test]
+fn a_seed_repeats_its_ids() {
+    let run = || {
+        let mut r = Rng(7);
+        let mut d = Doc::new(Base::blank_seeded(0, 7));
+        for _ in 0..80 { step(&mut d, &mut r); }
+        d.base.tables.iter().map(|t| (t.id, t.fields.iter().map(|f| f.id).collect::<Vec<_>>(), t.records.iter().map(|r| (r.id, r.ord.clone())).collect::<Vec<_>>())).collect::<Vec<_>>()
+    };
+    assert_eq!(run(), run());
+    assert_ne!(Base::blank_seeded(0, 1), Base::blank_seeded(0, 2));
 }

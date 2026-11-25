@@ -720,11 +720,15 @@ fn span_color(spec: &TextSpec, m: &Marks) -> Hsla {
     if m.strike && !crate::settings::feishu() { c.opacity(c.a * 0.65) } else { c }
 }
 
-use crate::editor_ui::{CJK_PUNCT_FONT, is_cjk_punct};
+use crate::editor_ui::{cjk_punct_font, is_cjk_punct};
 
-#[cfg(not(target_family = "wasm"))]
+/// A family the platform has: a missing one resolves to GPUI's last-resort
+/// face in its regular style, so quotes in bold or italic text lost theirs (#419).
+#[cfg(target_vendor = "apple")]
 const QUOTE_FONT: &str = "Helvetica Neue";
-#[cfg(target_family = "wasm")]
+#[cfg(target_os = "windows")]
+const QUOTE_FONT: &str = "Segoe UI";
+#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
 const QUOTE_FONT: &str = crate::theme::SYSTEM_FONT;
 
 /// Shaped in place of an equation's U+FFFC: same UTF-8 length, a glyph of
@@ -754,6 +758,31 @@ fn is_quote(ch: char) -> bool {
     matches!(ch, '\u{2018}' | '\u{2019}' | '\u{201C}' | '\u{201D}')
 }
 
+/// #419: the curly quotes that belong to Chinese text, by byte offset: those
+/// right next to a Han character or Chinese punctuation, and the other one of
+/// their pair (`用“Quiet.md”打开`: both). They take the Chinese face, the rest
+/// stay Latin. A quote with no pair (an apostrophe) goes by its own neighbours.
+fn cjk_quotes(text: &str) -> Vec<usize> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let chinese = |j: Option<usize>| j.and_then(|j| chars.get(j)).is_some_and(|&(_, ch)| is_cjk(ch) || is_cjk_punct(ch));
+    let mut on: Vec<bool> = (0..chars.len()).map(|i| is_quote(chars[i].1) && (chinese(i.checked_sub(1)) || chinese(Some(i + 1)))).collect();
+    let (mut double, mut single) = (vec![], vec![]);
+    for (i, &(_, ch)) in chars.iter().enumerate() {
+        let open = match ch {
+            '\u{201C}' => { double.push(i); continue }
+            '\u{2018}' => { single.push(i); continue }
+            '\u{201D}' => double.pop(),
+            '\u{2019}' => single.pop(),
+            _ => continue,
+        };
+        if let Some(o) = open {
+            let both = on[o] || on[i];
+            (on[o], on[i]) = (both, both);
+        }
+    }
+    chars.iter().zip(on).filter(|(_, on)| *on).map(|(&(at, _), _)| at).collect()
+}
+
 pub fn build_runs(
     text: &RichText,
     spec: &TextSpec,
@@ -761,6 +790,7 @@ pub fn build_runs(
     highlight: Option<&Vec<crate::highlight::Span>>,
 ) -> Vec<TextRun> {
     let mut runs = vec![];
+    let chinese_quotes = if text.text.chars().any(is_quote) { cjk_quotes(&text.text) } else { vec![] };
     for (range, m) in text.spans() {
         // Split by the marked (IME) range and syntax highlight boundaries.
         let mut cuts = vec![range.start, range.end];
@@ -775,7 +805,8 @@ pub fn build_runs(
             }
         }
         // Curly quotes render in a Latin-width face (QUOTE_FONT) rather
-        // than the body face's full-width ones.
+        // than the body face's full-width ones, but in Chinese text in the
+        // Chinese one (`cjk_quotes`).
         for (i, ch) in text.text[range.clone()].char_indices() {
             if is_quote(ch) || is_cjk_punct(ch) {
                 cuts.push(range.start + i);
@@ -813,9 +844,17 @@ pub fn build_runs(
                 // A family the reader picked keeps the ones it draws itself.
                 let own = crate::fonts::own_glyphs(&font.family);
                 if text.text[a..b].chars().all(is_quote) {
-                    if !own.quotes { font.family = QUOTE_FONT.into(); }
-                } else if !own.cjk_punct && text.text[a..b].chars().all(is_cjk_punct) {
-                    font.family = CJK_PUNCT_FONT.into();
+                    // Cut one by one, so `a` is the quote.
+                    // In Chinese text the Chinese face's; without one (not
+                    // installed here), as in Latin text.
+                    match (chinese_quotes.binary_search(&a).is_ok(), own.cjk_punct, cjk_punct_font()) {
+                        (true, true, _) => {}
+                        (true, false, Some(f)) => font.family = f.into(),
+                        _ if !own.quotes => font.family = QUOTE_FONT.into(),
+                        _ => {}
+                    }
+                } else if !own.cjk_punct && text.text[a..b].chars().all(is_cjk_punct) && let Some(f) = cjk_punct_font() {
+                    font.family = f.into();
                 }
             }
             if hl_italic {
@@ -1663,6 +1702,43 @@ mod wrap_tests {
     }
 }
 
+#[cfg(test)]
+mod quote_tests {
+    use super::cjk_quotes;
+
+    /// The quotes `cjk_quotes` gives the Chinese face, as the text with those
+    /// marked `^` (the others `.`): everything else drops out.
+    fn marks(text: &str) -> String {
+        let on = cjk_quotes(text);
+        text.char_indices().filter(|(_, ch)| super::is_quote(*ch)).map(|(at, _)| if on.contains(&at) { '^' } else { '.' }).collect()
+    }
+
+    #[test]
+    fn quotes_in_chinese_text_take_the_chinese_face() {
+        // Next to a Han character, on either side, or Chinese punctuation.
+        assert_eq!(marks("他说“好”。"), "^^");
+        assert_eq!(marks("说：“Hello world”"), "^^", "a pair goes together: the closing one has only Latin around it");
+        assert_eq!(marks("用“Quiet.md”打开"), "^^", "English inside, Chinese outside");
+        assert_eq!(marks("“好”"), "^^", "the start and end of a paragraph");
+        assert_eq!(marks("“Hello”你好"), "^^", "one side is enough");
+        // Nested: each pair by its own neighbours.
+        assert_eq!(marks("他说：“她说‘好’。”"), "^^^^");
+        assert_eq!(marks("他说：“‘Hi’ there”"), "^..^", "the inner pair has only quotes and Latin around it");
+        // Latin on both sides stays Latin.
+        assert_eq!(marks("He said “hello” to ‘me’."), "....");
+        assert_eq!(marks("“Hello”"), "..");
+        assert_eq!(marks("中文 “Hello” 中文"), "..", "a space between is not next to");
+        // An apostrophe has no pair: its own neighbours decide.
+        assert_eq!(marks("it’s 中文"), ".");
+        assert_eq!(marks("中’s"), "^");
+        assert_eq!(marks("‘it’s’ 好"), "...", "the apostrophe closes the pair; the last one is alone");
+        // Unpaired openings and closings.
+        assert_eq!(marks("“好"), "^");
+        assert_eq!(marks("Hi” 好”"), ".^", "unpaired closings go by their own neighbours");
+        assert_eq!(marks("plain text"), "");
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     /// Editor text shapes CJK through CoreText's PingFang fallback, while CJK
@@ -1690,6 +1766,48 @@ mod tests {
                     assert_eq!(fonts.glyph_for_char(run.font_id, ch), Some(g.id), "{ch:?} drawn from the wrong face (pass {pass})");
                 }
             }
+        }
+    }
+
+    /// The face CoreText falls back to for a CJK character is kept and given
+    /// to later lines (vendor patch reuse-coretext-fonts). Those lines
+    /// must come out exactly as CoreText's own fallback has them on a fresh
+    /// text system: the same glyphs, places and outlines (bold staying bold
+    /// after regular text kept its faces), across runs of alternating sizes.
+    #[test]
+    fn kept_cjk_fallbacks_shape_like_coretext() {
+        use gpui::{FontRun, FontWeight, PlatformTextSystem, px};
+        let text = "他说“好”。用 Quiet.md 打开（文件），再按「保存」：完成！";
+        let split = text.char_indices().nth(9).unwrap().0;
+        let shape = |fonts: &gpui_apple::AppleTextSystem, weight, parts: usize| {
+            let id = fonts.font_id(&gpui::Font { weight, ..gpui::font(".SystemUIFont") }).unwrap();
+            let runs = if parts == 1 { vec![FontRun { font_id: id, len: text.len() }] } else { vec![FontRun { font_id: id, len: split }, FontRun { font_id: id, len: text.len() - split }] };
+            let layout = fonts.layout_line(text, px(16.), &runs);
+            layout.runs.iter().flat_map(|r| r.glyphs.iter().map(move |g| (g.id, g.index, g.position, fonts.glyph_outline(r.font_id, g.id)))).collect::<Vec<_>>()
+        };
+        let kept = gpui_apple::AppleTextSystem::new();
+        for weight in [FontWeight::NORMAL, FontWeight::BOLD] {
+            for parts in [1, 2] {
+                let fresh = shape(&gpui_apple::AppleTextSystem::new(), weight, parts);
+                for pass in 0..2 {
+                    assert!(shape(&kept, weight, parts) == fresh, "{weight:?}, {parts} runs, pass {pass}");
+                }
+            }
+        }
+    }
+
+    /// #419: curly quotes are drawn in `QUOTE_FONT` whatever the run's weight
+    /// and style, so it must be a family the platform has: a missing one
+    /// resolves every weight and style to one regular fallback face.
+    #[test]
+    fn quote_font_keeps_bold_and_italic() {
+        use gpui::{FontStyle, FontWeight};
+        let ts = gpui::TextSystem::new(std::sync::Arc::new(gpui_apple::AppleTextSystem::new()));
+        let id = |family: &str, weight, style| ts.resolve_font(&gpui::Font { weight, style, ..gpui::font(family.to_string()) });
+        for family in [super::QUOTE_FONT, "No Such Family"] {
+            let regular = id(family, FontWeight::NORMAL, FontStyle::Normal);
+            let differ = regular != id(family, FontWeight::BOLD, FontStyle::Normal) && regular != id(family, FontWeight::NORMAL, FontStyle::Italic);
+            assert_eq!(differ, family == super::QUOTE_FONT, "{family}");
         }
     }
 

@@ -463,7 +463,7 @@ impl Editor {
             focus: cx.focus_handle(),
             cache: Default::default(),
             block_bounds: Default::default(),
-            list: ListState::new(0, ListAlignment::Top, px(600.)),
+            list: ListState::new(0, ListAlignment::Top, px(super::scrollbar::OVERDRAW)),
             items: vec![],
             item_keys: vec![],
             items_key: None,
@@ -1043,6 +1043,9 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Whatever asks (the slash menu lists only these), a Markdown file gets
+        // only blocks it can keep.
+        if self.markdown && !menus::markdown_ok(kind) { return; }
         if let Some(s) = self.slash.take() {
             let end = self.core.sel.head.offset.max(s.start);
             if s.trigger < end {
@@ -1616,6 +1619,12 @@ impl Editor {
         }
         if extend && h.block != TITLE {
             drop(cache);
+            // Past a table cell's first / last line it selects that one cell (Feishu).
+            if let Some(s) = self.core.cell_edge_sel(h.block, down) {
+                self.core.select_cells(s);
+                self.goal_x = None;
+                return;
+            }
             let len = self.core.len_of(h.block);
             // At the edge of a block Shift+↑/↓ goes to the block edge first, then into block selection.
             if us[i].text && !down && h.offset > 0 {
@@ -2143,6 +2152,21 @@ impl Editor {
         true
     }
 
+    /// The image toolbar's 复制: that image alone, as ⌘C copies it when it
+    /// is block-selected. ⌘C itself is unchanged.
+    pub(super) fn copy_image(&mut self, id: BlockId, cx: &mut Context<Self>) -> bool {
+        let Some(b) = self.core.block(id).cloned() else { return false };
+        let doc = Document { blocks: vec![b], ..Default::default() };
+        let (text, xml) = (doc.plain_text(), docxml::serialize(&doc));
+        // A script's stand-in clipboard (devtools `clip`) instead of the system one.
+        if let Some(f) = crate::clipboard::FAKE_CLIPBOARD.lock().unwrap().as_mut() {
+            *f = crate::clipboard::FakeClipboard { text: xml, ..Default::default() };
+            return true;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string_with_json_metadata(text, xml));
+        true
+    }
+
     /// 复制为 Markdown (#60): the selection, or the whole document when
     /// nothing is selected, as Markdown text only.
     pub fn copy_markdown(&mut self, cx: &mut Context<Self>) {
@@ -2240,7 +2264,10 @@ impl Editor {
         }
         let head = self.core.sel.head.block;
         let rich_target = head != TITLE && !self.core.is_code(head);
-        let internal = meta.and_then(|xml| docxml::parse(&xml).ok()).filter(|d| !d.blocks.is_empty());
+        // Into a Markdown file only what it can keep (no 高亮块, 分栏, attachments, 提醒 ...).
+        let md = self.markdown;
+        let keep = |b: Vec<Block>| if md { crate::markdown::keepable(b) } else { b };
+        let internal = meta.and_then(|xml| docxml::parse(&xml).ok()).map(|d| keep(d.blocks)).filter(|b| !b.is_empty());
         let html = match &fake {
             Some(f) => f.html.clone(),
             None if !plain && internal.is_none() && rich_target && !text.as_deref().is_some_and(crate::paste::has_math) => {
@@ -2249,7 +2276,7 @@ impl Editor {
             None => None,
         };
         let html = html.filter(|_| !plain && rich_target).map(|h| {
-            let mut b = crate::paste::html_to_blocks(&h);
+            let mut b = keep(crate::paste::html_to_blocks(&h));
             super::image::localize_pasted_images(&self.library_root, &mut b);
             b
         });
@@ -2271,8 +2298,8 @@ impl Editor {
             if let Some(s) = text.filter(|s| !s.is_empty()) {
                 self.core.paste_text(&s);
             }
-        } else if let Some(d) = internal {
-            self.core.paste_blocks(d.blocks);
+        } else if let Some(b) = internal {
+            self.core.paste_blocks(b);
         } else if let Some(b) = html.filter(|b| !b.is_empty() && !restates(b) && !(image.is_some() && b.iter().all(|b| matches!(b.kind, BlockKind::Image { .. })))) {
             let remote = super::image::pasted_remote(&b);
             self.core.paste_blocks(b);
@@ -2687,6 +2714,17 @@ impl Editor {
             return cx.notify();
         }
         let Some((pos, at_row_end)) = self.pos_at_row(ev.position) else { return };
+        // A press on a cell's left edge selects that one cell (Feishu).
+        if ev.click_count == 1
+            && !ev.modifiers.shift
+            && let Some(s) = self.cell_edge_at(pos.block, ev.position)
+        {
+            self.core.select_cells(s);
+            self.goal_x = None;
+            self.dragging = false;
+            self.restart_blink(window, cx);
+            return cx.notify();
+        }
         let eq = self.cache.borrow().get(&pos.block).and_then(|l| l.equation_at(ev.position));
         if let Some(ix) = eq
             && !ev.modifiers.shift
@@ -3269,7 +3307,7 @@ fn new_table_file() -> Option<String> {
     let name = format!("{}.sqlite", uuid::Uuid::new_v4());
     let path = crate::store::Store::assets_dir().join(&name);
     crate::table::sqlite::create(&path, &crate::table::blank_base()).ok()?;
-    path.strip_prefix(crate::store::Store::root_dir()).ok().map(|r| r.to_string_lossy().replace('\\', "/"))
+    fdl_core::paths::portable_in(&path, &crate::store::Store::active_dir())
 }
 #[cfg(target_family = "wasm")]
 fn new_table_file() -> Option<String> { None }

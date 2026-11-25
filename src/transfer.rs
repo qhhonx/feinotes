@@ -4,7 +4,6 @@
 //! 打印选项 only choose what happens to comments, so they are left out.
 
 use fdl_core::vfs::KindExt as _;
-#[cfg(not(target_os = "ios"))]
 use fdl_core::vfs::PathExt as _;
 use crate::app::Workspace;
 use crate::settings::display_title;
@@ -25,7 +24,7 @@ const MARKDOWN_EXTS: [&str; 4] = ["md", "markdown", "mark", "txt"];
 
 /// What the header's 导入 menu picks.
 #[derive(Clone, Copy)]
-pub(crate) enum ImportKind { Markdown, Folder, DocxXml, Csv }
+pub(crate) enum ImportKind { Markdown, Folder, SiYuan, DocxXml, Csv }
 
 /// 导入文件夹 refuses folders with more documents than this.
 pub(crate) const IMPORT_FOLDER_LIMIT: usize = 2000;
@@ -126,21 +125,43 @@ impl Drop for NoCloudDownloads {
 /// A Markdown file as a new Markdown document inside `parent`; `root`: the
 /// folder being imported, where `![[picture.png]]` embeds are also looked up.
 pub(crate) fn import_markdown(store: &mut crate::store::Store, path: &Path, root: Option<&Path>, parent: Option<&str>) -> anyhow::Result<String> {
-    let (mut doc, front) = read_markdown(path, root)?;
-    crate::editor::image::localize_pasted_images(store.library_root(), &mut doc.blocks);
+    let (doc, front) = read_markdown(path, root, &crate::store::Store::assets_in(store.top_dir()))?;
     store.create_markdown_in(&doc, &front, parent)
 }
 
-/// `import_markdown`'s document and front matter, before the library is touched.
-fn read_markdown(path: &Path, root: Option<&Path>) -> anyhow::Result<(Document, String)> {
+/// `import_markdown`'s document and front matter, its pictures copied into
+/// `assets` (the importing library's: not whichever is in front meanwhile).
+fn read_markdown(path: &Path, root: Option<&Path>, assets: &Path) -> anyhow::Result<(Document, String)> {
     let bytes = crate::store::read_bounded(path, IMPORT_FILE_LIMIT)?;
     let text = String::from_utf8_lossy(&bytes);
     let text = text.trim_start_matches('\u{feff}');
+    // Markdown 思源 exported: its attribute lists, references, tags and embeds become plain Markdown.
+    let siyuan = fdl_core::siyuan::markdown_text(text);
+    let text = siyuan.as_deref().unwrap_or(text);
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().trim().to_string();
     let mut doc = crate::markdown::parse_file(text, &stem, path.parent());
-    if let Some(dir) = path.parent() { crate::markdown::wiki_images(&mut doc.blocks, dir, root); }
+    if let Some(dir) = path.parent() { crate::markdown::wiki_images(&mut doc.blocks, dir, root); assets_above(&mut doc.blocks, dir, root); }
+    crate::editor::image::localize_images_in(assets, &mut doc.blocks);
     if doc.blocks.is_empty() { doc.blocks.push(Block::text("")); }
     Ok((doc, crate::markdown::front_matter(text).0.to_string()))
+}
+
+/// Pictures at `assets/…` that are not beside the file: 思源 exports a
+/// notebook's pages in folders and its pictures once, in `assets/` at the
+/// top. Looked up in the folders above, up to `root` (the folder being
+/// imported; one level for a lone file).
+fn assets_above(blocks: &mut [Block], dir: &Path, root: Option<&Path>) {
+    for b in blocks.iter_mut() {
+        assets_above(&mut b.children, dir, root);
+        if let BlockKind::Table(t) = &mut b.kind { for c in t.rows.iter_mut().flatten() { assets_above(&mut c.blocks, dir, root); } }
+        let BlockKind::Image { src, .. } = &mut b.kind else { continue };
+        let Some(rest) = Path::new(src.as_str()).strip_prefix(dir.join("assets")).ok().map(Path::to_path_buf) else { continue };
+        if Path::new(src.as_str()).fs_exists() { continue }
+        let top = root.unwrap_or_else(|| dir.parent().unwrap_or(dir));
+        if let Some(found) = dir.ancestors().skip(1).take_while(|d| d.starts_with(top)).map(|d| d.join("assets").join(&rest)).find(|p| p.fs_is_file()) {
+            *src = found.to_string_lossy().to_string();
+        }
+    }
 }
 
 /// One scanned folder as a library folder under `parent`; its id. Needs no
@@ -157,15 +178,65 @@ fn tree(store: &mut crate::store::Store, t: &Scanned, root: &Path, parent: Optio
     // In the folder's order, as its documents are: made together, unplaced
     // folders would fall back to random ids.
     if parent.is_some() { let _ = store.set_parent(&id, parent); }
+    // Made when the folder was, else when the first file in it was.
+    if let Some(made) = fdl_core::vfs::made_time(&t.dir).or_else(|| first_made(t)) { let _ = store.update_meta(&id, |m| m.created = made); }
     for sub in &t.dirs { tree(store, sub, root, Some(&id), failed); }
     for p in &t.docs {
         let made = if crate::local_files::is_markdown_path(p) {
-            let read = { let _local = NoCloudDownloads::new(); read_markdown(p, Some(root)) };
+            let read = { let _local = NoCloudDownloads::new(); read_markdown(p, Some(root), &crate::store::Store::assets_in(store.top_dir())) };
             read.and_then(|(doc, front)| store.create_markdown_in(&doc, &front, Some(&id)))
         } else { store.import_into(p, Some(&id)) };
-        if made.is_err() { *failed += 1; }
+        match made { Ok(doc) => keep_times(store, &doc, p), Err(_) => *failed += 1 }
     }
     Some(id)
+}
+
+/// One file (导入, a drop) as a new document in folder `parent`, with the file's times.
+pub(crate) fn import_file(store: &mut crate::store::Store, p: &Path, parent: Option<&str>) -> anyhow::Result<String> {
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
+    let id = match ext.as_str() {
+        _ if crate::local_files::is_markdown_path(p) => import_markdown(store, p, None, parent),
+        e if MARKDOWN_EXTS.contains(&e) => markdown_document(p, &crate::store::Store::assets_in(store.top_dir())).map_err(anyhow::Error::from).and_then(|doc| store.create_from_in(&doc, parent)),
+        "xml" => store.import_into(p, parent),
+        "csv" | "tsv" if crate::DATATABLE => import_csv(store, p, parent),
+        _ => Err(anyhow::anyhow!("文件格式不支持")),
+    }?;
+    keep_times(store, &id, p);
+    Ok(id)
+}
+
+/// The document `id` just made from file `src` keeps its times: those its
+/// Markdown front matter gives (`markdown::front_matter_times`), else the
+/// file's (`vfs::file_times`); its own file is changed then too. With
+/// neither it keeps the import's time.
+pub(crate) fn keep_times(store: &mut crate::store::Store, id: &str, src: &Path) {
+    let front = if store.is_markdown(id) { crate::markdown::front_matter_times(&store.front_matter_of(id)) } else { (None, None) };
+    // A page 思源 exported keeps its times in its own attribute list, which the import took out.
+    let front = match front {
+        (None, None) if crate::local_files::is_markdown_path(src) => crate::store::read_bounded(src, IMPORT_FILE_LIMIT).map(|b| fdl_core::siyuan::markdown_times(&String::from_utf8_lossy(&b))).unwrap_or_default(),
+        f => f,
+    };
+    let Some((made, changed)) = times(fdl_core::vfs::file_times(src), front) else { return };
+    if let Some(p) = store.file_path(id) { let _ = fdl_core::vfs::set_modified(&p, changed); }
+    let _ = store.update_meta(id, |m| { m.created = made; m.modified = changed; });
+}
+
+/// Made and changed from the file's times and the front matter's, which
+/// win where they parse. Never changed before made: a file made after its
+/// last change (a copy) was made then; a page whose front matter says it
+/// was made later than its file or front matter says it changed, changed then.
+fn times(file: Option<(u64, u64)>, (made, changed): (Option<u64>, Option<u64>)) -> Option<(u64, u64)> {
+    if file.is_none() && made.is_none() && changed.is_none() { return None; }
+    let now = fdl_core::time::now();
+    let (file_made, file_changed) = file.unwrap_or((now, now));
+    let changed = changed.unwrap_or(file_changed);
+    let made = made.unwrap_or(file_made.min(changed));
+    Some((made, changed.max(made)))
+}
+
+/// When the first file a scanned folder holds was made, at any depth.
+fn first_made(t: &Scanned) -> Option<u64> {
+    t.docs.iter().filter_map(|p| fdl_core::vfs::file_times(p).map(|(made, _)| made)).chain(t.dirs.iter().filter_map(first_made)).min()
 }
 
 /// What a folder import left behind, for its toast.
@@ -291,8 +362,8 @@ fn resolve_images(blocks: &mut [Block], base: &Path) {
 }
 
 /// A Markdown / TXT file as a page: titled after the file, its leading
-/// `# 标题` dropped when it repeats the name.
-pub fn markdown_document(path: &Path) -> std::io::Result<Document> {
+/// `# 标题` dropped when it repeats the name; its pictures copied into `assets`.
+pub fn markdown_document(path: &Path, assets: &Path) -> std::io::Result<Document> {
     let bytes = fdl_core::vfs::read(path)?;
     let text = String::from_utf8_lossy(&bytes);
     let text = text.trim_start_matches('\u{feff}');
@@ -306,7 +377,7 @@ pub fn markdown_document(path: &Path) -> std::io::Result<Document> {
         resolve_images(&mut blocks, dir);
         crate::markdown::wiki_images(&mut blocks, dir, None);
     }
-    crate::editor::image::localize_pasted_images(&crate::store::Store::root_dir(), &mut blocks);
+    crate::editor::image::localize_images_in(assets, &mut blocks);
     if blocks.is_empty() {
         blocks.push(Block::text(""));
     }
@@ -316,7 +387,7 @@ pub fn markdown_document(path: &Path) -> std::io::Result<Document> {
 fn write_markdown_export(root: &Path, doc: &Document, subs: &[String], path: &Path, all: bool) -> anyhow::Result<usize> {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("doc");
     let assets = format!("{stem}.assets");
-    let out = crate::markdown::export(doc, &crate::markdown::Options { library_root: Some(root), sub_pages: subs, assets: all.then_some(assets.as_str()), ..Default::default() });
+    let out = crate::markdown::export(doc, &crate::markdown::Options { library_dir: Some(root), sub_pages: subs, assets: all.then_some(assets.as_str()), ..Default::default() });
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut missing = out.missing;
     fdl_core::vfs::write(path, &out.text)?;
@@ -526,7 +597,7 @@ impl Workspace {
         if !self.save_before(cx, move |w, window, cx| w.import_paths(&again, retry.clone(), open, window, cx)) {
             return;
         }
-        let Some((key, mut writer)) = self.store.tree_writer(parent.as_deref()) else { return self.show_toast_kind(ToastKind::Error, &crate::shared_store::no_root().to_string(), cx) };
+        let Some((_, mut writer)) = self.store.tree_writer(parent.as_deref()) else { return self.show_toast_kind(ToastKind::Error, &crate::shared_store::no_folder().to_string(), cx) };
         let Some(task_guard) = self.store.begin_file_task() else { return };
         let parent = self.store.real_parent(parent.as_deref()).map(str::to_string);
         let paths = paths.to_vec();
@@ -536,29 +607,17 @@ impl Workspace {
             let mut failed = false;
             let batch = writer.begin_batch().is_ok();
             for p in &paths {
-                let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
-                let made = match ext.as_str() {
-                    _ if crate::local_files::is_markdown_path(p) => import_markdown(&mut writer, p, None, parent.as_deref()),
-                    e if MARKDOWN_EXTS.contains(&e) => markdown_document(p).map_err(anyhow::Error::from).and_then(|doc| writer.create_from_in(&doc, parent.as_deref())),
-                    "xml" => writer.import_into(p, parent.as_deref()),
-                    "csv" | "tsv" if crate::DATATABLE => import_csv(&mut writer, p, parent.as_deref()),
-                    _ => Err(anyhow::anyhow!("文件格式不支持")),
-                };
-                match made { Ok(id) => last = Some(id), Err(_) => failed = true }
+                match import_file(&mut writer, p, parent.as_deref()) { Ok(id) => last = Some(id), Err(_) => failed = true }
             }
             if batch && writer.end_batch().is_err() { failed = true; }
-            let entries = writer.list();
-            (ImportedFiles { last, failed, changes: journal.take() }, entries)
+            ImportedFiles { last, failed, changes: journal.take() }
         });
         self.show_toast_kind(ToastKind::Info, crate::settings::tr("正在导入…", "Importing…"), cx);
         cx.spawn_in(window, async move |this, cx| {
-            let (imported, entries) = task.await;
+            let imported = task.await;
             drop(task_guard);
             let _ = this.update_in(cx, |w, window, cx| {
-                let entries = w.store.merge_entries(&key, entries);
-                w.sync_peers(cx, &entries, None);
-                w.entries = entries;
-                w.sort();
+                w.reread_after_import(cx);
                 w.remember_file_changes(imported.changes, crate::settings::tr("导入", "Import"));
                 if let Some(id) = imported.last.filter(|_| open) { w.open(&id, window, cx); }
                 if imported.failed { w.show_toast_kind(ToastKind::Error, crate::settings::text("导入失败，请检查文件格式"), cx); }
@@ -578,14 +637,16 @@ impl Workspace {
         let (folders, file_extensions): (bool, &[&str]) = match kind {
             ImportKind::Markdown => (false, &["md", "markdown", "mdown"]),
             ImportKind::Folder => (true, &[]),
+            // A workspace or notebook folder, or a `.sy.zip`.
+            ImportKind::SiYuan => (true, &["zip"]),
             ImportKind::DocxXml => (false, &["xml"]),
             ImportKind::Csv => (false, &["csv", "tsv"]),
         };
         #[cfg(target_os = "ios")]
         let _ = file_extensions;
         let options = PathPromptOptions {
-            files: !folders, directories: folders, multiple: !folders, prompt: Some(crate::settings::text("导入").into()),
-            #[cfg(not(target_os = "ios"))] extensions: (!folders).then(|| file_extensions.iter().map(|e| SharedString::from(*e)).collect()),
+            files: !folders || !file_extensions.is_empty(), directories: folders, multiple: !folders, prompt: Some(crate::settings::text("导入").into()),
+            #[cfg(not(target_os = "ios"))] extensions: (!file_extensions.is_empty()).then(|| file_extensions.iter().map(|e| SharedString::from(*e)).collect()),
         };
         let prompt = picked.is_none().then(|| cx.prompt_for_paths(options));
         cx.spawn_in(window, async move |this, cx| {
@@ -596,6 +657,7 @@ impl Workspace {
             let Some(paths) = paths.filter(|p| !p.is_empty()) else { return };
             let _ = this.update_in(cx, |w, window, cx| match kind {
                 ImportKind::Folder => w.import_folder(&paths[0], parent.clone(), true, window, cx),
+                ImportKind::SiYuan => w.import_siyuan(&paths[0], parent.clone(), window, cx),
                 _ => w.import_paths(&paths, parent.clone(), true, window, cx),
             });
         })
@@ -605,19 +667,29 @@ impl Workspace {
     /// The 导入 menu under the header icon.
     pub(crate) fn render_import_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (parent, pos) = self.import_menu.clone()?;
-        let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::design::MenuItem::new(id).icon(glyph).label(label);
-        let item = |id: &'static str, glyph: &'static str, label: &'static str, kind: ImportKind| {
-            let parent = parent.clone();
-            row(id, glyph, label).on_click(cx.listener(move |w, _, window, cx| w.open_import_kind(kind, parent.clone(), window, cx)))
-        };
         Some(deferred(anchored().anchor(Anchor::TopRight).position(pos).snap_to_window_with_margin(px(8.)).child(
             crate::design::Popover::new("import-items").menu().min_w(px(210.))
                 .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.import_menu = None; cx.notify(); }))
-                .child(item("import-md", "doc-md", crate::settings::tr("导入 Markdown 文件…", "Import Markdown Files…"), ImportKind::Markdown))
-                .child(item("import-folder", "folder", crate::settings::tr("导入文件夹…", "Import Folder…"), ImportKind::Folder))
-                .child(item("import-xml", "doc", crate::settings::tr("导入 DocxXML…", "Import DocxXML…"), ImportKind::DocxXml))
-                .when(crate::DATATABLE, |d| d.child(item("import-csv", "datatable", crate::settings::tr("从 CSV 新建数据表…", "New Data Table from CSV…"), ImportKind::Csv))),
+                .children(self.import_items(parent, cx)),
         )).with_priority(3).into_any_element())
+    }
+
+    /// The 导入 menu's rows, bringing things into `parent` (None: the top-level folder in front): that menu, and
+    /// the end of a top-level folder's "+" menu in the sidebar.
+    pub(crate) fn import_items(&self, parent: Option<String>, cx: &mut Context<Self>) -> Vec<crate::design::MenuItem> {
+        let item = |id: &'static str, glyph: &'static str, label: &'static str, kind: ImportKind| {
+            let parent = parent.clone();
+            crate::design::MenuItem::new(id).icon(glyph).label(label)
+                .on_click(cx.listener(move |w, _, window, cx| { w.create_menu = None; w.open_import_kind(kind, parent.clone(), window, cx) }))
+        };
+        let mut out = vec![
+            item("import-md", "doc-md", crate::settings::tr("导入 Markdown 文件…", "Import Markdown Files…"), ImportKind::Markdown),
+            item("import-folder", "folder", crate::settings::tr("导入文件夹…", "Import Folder…"), ImportKind::Folder),
+            item("import-siyuan", "doc-blocks", crate::settings::tr("导入思源笔记…", "Import from SiYuan…"), ImportKind::SiYuan),
+            item("import-xml", "doc", crate::settings::tr("导入 DocxXML…", "Import DocxXML…"), ImportKind::DocxXml),
+        ];
+        if crate::DATATABLE { out.push(item("import-csv", "datatable", crate::settings::tr("从 CSV 新建数据表…", "New Data Table from CSV…"), ImportKind::Csv)); }
+        out
     }
 
     /// The header's … menu: open this folder (None: the library) in the
@@ -688,12 +760,12 @@ impl Workspace {
         // Scanning and writing hundreds of files takes seconds (an fsync each),
         // so it runs on its own store off the window's thread; the library
         // lock keeps it one write, as `tree_writer` does for drags.
-        let Some((key, mut writer)) = self.store.tree_writer(parent.as_deref()) else { return self.show_toast_kind(ToastKind::Error, &crate::shared_store::no_root().to_string(), cx) };
+        let Some((_, mut writer)) = self.store.tree_writer(parent.as_deref()) else { return self.show_toast_kind(ToastKind::Error, &crate::shared_store::no_folder().to_string(), cx) };
         let Some(task_guard) = self.store.begin_file_task() else { return };
         let parent = self.store.real_parent(parent.as_deref()).map(str::to_string);
         let dir = dir.to_path_buf();
         let task = cx.background_executor().spawn(async move {
-            let imported = match scan_folder(&dir, 0) {
+            match scan_folder(&dir, 0) {
                 None => Imported::Empty { cloud: 0 },
                 Some(tree) if tree.files == 0 => Imported::Empty { cloud: tree.cloud },
                 Some(tree) if tree.files > IMPORT_FOLDER_LIMIT => Imported::TooMany(tree.files),
@@ -708,21 +780,68 @@ impl Workspace {
             let saved = if batch { writer.end_batch() } else { Ok(()) };
             Imported::Done { top, failed, cloud: tree.cloud, saved, changes: journal.take() }
                 }
-            };
-            match imported {
-                Imported::Empty { .. } | Imported::TooMany(_) => (imported, Vec::new()),
-                Imported::Done { .. } => (imported, writer.list()),
             }
         });
         self.show_toast_kind(ToastKind::Info, crate::settings::tr("正在导入…", "Importing…"), cx);
         cx.spawn_in(window, async move |this, cx| {
-            let (imported, entries) = task.await;
+            let imported = task.await;
             drop(task_guard);
-            let _ = this.update_in(cx, |w, window, cx| { let entries = if entries.is_empty() { entries } else { w.store.merge_entries(&key, entries) }; w.finish_import_folder(imported, entries, open, then, window, cx) });
+            let _ = this.update_in(cx, |w, window, cx| w.finish_import_folder(imported, open, then, window, cx));
         }).detach();
     }
 
-    fn finish_import_folder(&mut self, imported: Imported, entries: Vec<crate::store::Entry>, open: bool, then: Option<AfterImport>, window: &mut Window, cx: &mut Context<Self>) {
+    /// 导入思源笔记: a workspace, notebook or `.sy.zip` into `parent`, off the
+    /// window's thread on its own store as `import_folder_then` does.
+    pub(crate) fn import_siyuan(&mut self, path: &Path, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.store.file_task_busy() || self.file_history.busy || self.tree_writes_pending() { return; }
+        if !fdl_core::siyuan::recognizes(path) {
+            return self.show_toast_kind(ToastKind::Error, crate::settings::tr("这不是思源笔记的工作空间、笔记本文件夹或 .sy.zip 文件", "This is not a SiYuan workspace, notebook folder or .sy.zip file"), cx);
+        }
+        let (again, retry) = (path.to_path_buf(), parent.clone());
+        if !self.save_before(cx, move |w, window, cx| w.import_siyuan(&again, retry.clone(), window, cx)) { return; }
+        let Some((_, mut writer)) = self.store.tree_writer(parent.as_deref()) else { return self.show_toast_kind(ToastKind::Error, &crate::shared_store::no_folder().to_string(), cx) };
+        let Some(task_guard) = self.store.begin_file_task() else { return };
+        let parent = self.store.real_parent(parent.as_deref()).map(str::to_string);
+        let path = path.to_path_buf();
+        let task = cx.background_executor().spawn(async move {
+            let journal = writer.track_file_changes();
+            let batch = writer.begin_batch().is_ok();
+            let done = crate::siyuan::import(&mut writer, &path, parent.as_deref());
+            let saved = if batch { writer.end_batch() } else { Ok(()) };
+            (done.and_then(|d| saved.map(|_| d)), journal.take())
+        });
+        self.show_toast_kind(ToastKind::Info, crate::settings::tr("正在导入…", "Importing…"), cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let (done, changes) = task.await;
+            drop(task_guard);
+            let _ = this.update_in(cx, |w, window, cx| {
+                w.reread_after_import(cx);
+                w.remember_file_changes(changes, crate::settings::tr("导入思源笔记", "Import from SiYuan"));
+                match done {
+                    Ok((top, report)) => {
+                        if let Some(id) = &top { w.reveal_in_tree(id); w.open(id, window, cx); }
+                let (error, text) = crate::siyuan::summary(&report);
+                        w.show_toast_kind(if error { ToastKind::Error } else { ToastKind::Info }, &text, cx);
+                    }
+                    Err(e) => w.show_toast_kind(ToastKind::Error, &crate::localized_format!("导入未能完成：{}", "Import could not finish: {}", crate::settings::diagnostic(&e.to_string())), cx),
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+
+    /// After an import written off the window's thread, its file task let go (`open` waits while
+    /// one runs): the library read again rather than the writer's list merged in, since the
+    /// window's copy learns of new pages only when it next reads the disk, and opening one
+    /// before that finds nothing. 2000 notes take about 90 ms.
+    fn reread_after_import(&mut self, cx: &mut Context<Self>) {
+        let entries = self.store.list();
+        self.sync_peers(cx, &entries, None);
+        self.entries = entries;
+        self.sort();
+    }
+
+    fn finish_import_folder(&mut self, imported: Imported, open: bool, then: Option<AfterImport>, window: &mut Window, cx: &mut Context<Self>) {
         let (top, failed, cloud, saved, changes) = match imported {
             Imported::Empty { cloud } => {
                 let msg = if cloud > 0 { cloud_skipped(cloud) } else { crate::settings::tr("这个文件夹里没有 Markdown 或 XML 文件", "This folder has no Markdown or XML files").to_string() };
@@ -735,9 +854,7 @@ impl Workspace {
             }
             Imported::Done { top, failed, cloud, saved, changes } => (top, failed, cloud, saved, changes),
         };
-        self.sync_peers(cx, &entries, None);
-        self.entries = entries;
-        self.sort();
+        self.reread_after_import(cx);
         self.remember_file_changes(changes, crate::settings::tr("导入文件夹", "Import folder"));
         if let Some(id) = top {
             if let Some(then) = then { then(self, &id); }
@@ -824,7 +941,7 @@ impl Workspace {
 impl Workspace {
     pub(crate) fn check_export_safety(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::model::*;
-        let root = crate::store::Store::root_dir();
+        let root = crate::store::Store::active_dir();
         assert!(std::env::var_os("FDL_SCRIPT").is_some() && std::env::var_os("QUIET_MD_HOME").is_some());
         fdl_core::vfs::create_dir_all(root.join("assets")).unwrap();
         fdl_core::vfs::write(root.join("assets/report.pdf"), b"attachment-content").unwrap();
@@ -880,6 +997,41 @@ mod tests {
         std::fs::remove_dir_all(tmp).unwrap();
     }
 
+    /// An Obsidian vault imported: its `![[picture.png]]` embeds — in the
+    /// attachment folder, by a path, by a name only, with a width — are pictures
+    /// copied into the library, written as Markdown writes one; `![[Note]]` stays.
+    #[test]
+    fn imported_vault_embeds_become_library_pictures() {
+        let tmp = fdl_core::vfs::temp_dir().join(format!("quiet-vault-embeds-{}", uuid::Uuid::new_v4()));
+        let v = tmp.join("vault");
+        for d in [".obsidian", "attachments", "pics", "notes/deep"] { std::fs::create_dir_all(v.join(d)).unwrap(); }
+        std::fs::write(v.join(".obsidian/app.json"), r#"{"attachmentFolderPath":"attachments"}"#).unwrap();
+        for f in ["attachments/red.png", "pics/green.png", "notes/deep/blue.png"] { image::RgbImage::new(2, 2).save(v.join(f)).unwrap(); }
+        std::fs::write(v.join("notes/Embeds.md"), "![[red.png]]\n\n![[red.png|300]]\n\n![[pics/green.png]]\n\n![[blue.png]]\n\n![[Other]]\n").unwrap();
+        // Its pictures go to the library it imports into, whichever is in front (none here).
+        let mut store = crate::store::Store::open_at(tmp.join("library")).unwrap();
+        let tree = super::scan_folder(&v, 0).unwrap();
+        let mut failed = 0;
+        store.batch(|s| super::import_tree(s, &tree, None, &mut failed)).unwrap().unwrap();
+        assert_eq!(failed, 0);
+        let e = store.list().into_iter().find(|e| e.title == "Embeds").unwrap();
+        let text = std::fs::read_to_string(store.file_path(&e.id).unwrap()).unwrap();
+        let assets = crate::store::Store::assets_in(&tmp.join("library"));
+        let doc = store.load(&e.id).unwrap();
+        let pics: Vec<(std::path::PathBuf, Option<f32>)> = doc.blocks.iter().filter_map(|b| match &b.kind {
+            BlockKind::Image { src, width, .. } => Some((std::path::PathBuf::from(src), *width)),
+            _ => None,
+        }).collect();
+        assert_eq!(pics.iter().map(|p| p.1).collect::<Vec<_>>(), [None, Some(300.), None, None], "{text}");
+        assert!(pics.iter().all(|(p, _)| p.starts_with(&assets) && p.is_file()), "{text}");
+        assert!(text.contains("width=\"300\"") && text.trim_end().ends_with("![[Other]]") && !text.contains("![[red"), "{text}");
+        // Relative to the file, so the library can move: `.assets/…` beside it, or `../.assets/…` from a folder.
+        let rel = store.file_path(&e.id).unwrap().parent().unwrap().strip_prefix(tmp.join("library")).unwrap().components().count();
+        let up = "../".repeat(rel);
+        assert!(!text.contains(&*tmp.to_string_lossy()) && text.matches(&format!("({up}.assets/")).count() == 3 && text.contains(&format!("src=\"{up}.assets/")), "{text}");
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
     #[test]
     fn notes_left_in_icloud_are_counted_not_read() {
         let tmp = fdl_core::vfs::temp_dir().join(format!("quiet-icloud-{}", uuid::Uuid::new_v4()));
@@ -923,7 +1075,7 @@ mod tests {
         fdl_core::vfs::create_dir_all(&dir).unwrap();
         let path = dir.join("周报.md");
         fdl_core::vfs::write(&path, "\u{feff}# 周报\n\n第一段\n\n- a\n- b\n\n![图](https://e.com/a.png)\n\n## 小结\n").unwrap();
-        let doc = markdown_document(&path).unwrap();
+        let doc = markdown_document(&path, &dir.join("assets")).unwrap();
         assert_eq!(doc.title.text, "周报");
         let kinds: Vec<_> = doc.blocks.iter().map(|b| std::mem::discriminant(&b.kind)).collect();
         assert_eq!(kinds.len(), 5);
@@ -933,5 +1085,226 @@ mod tests {
         assert!(matches!(doc.blocks[4].kind, BlockKind::Heading { level: 2, .. }));
         assert_eq!(percent_decode("a%20b%E5%9B%BE.png"), "a b图.png");
         let _ = fdl_core::vfs::remove_dir_all(dir);
+    }
+
+    /// A temporary library and a folder of files to import.
+    fn places(name: &str) -> (std::path::PathBuf, std::path::PathBuf, crate::store::Store) {
+        let tmp = fdl_core::vfs::temp_dir().join(format!("quiet-times-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(tmp.join("from")).unwrap();
+        let store = crate::store::Store::open_at(tmp.join("library")).unwrap();
+        (tmp.clone(), tmp.join("from"), store)
+    }
+
+    /// `text` written at `path`, last changed at unix second `t`.
+    fn aged(path: &std::path::Path, text: &str, t: u64) {
+        if let Some(d) = path.parent() { std::fs::create_dir_all(d).unwrap(); }
+        std::fs::write(path, text).unwrap();
+        fdl_core::vfs::set_modified(path, t).unwrap();
+    }
+
+    fn mtime(p: &std::path::Path) -> u64 { std::fs::metadata(p).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() }
+
+    const THEN: u64 = 1_600_000_000;
+
+    #[test]
+    fn imported_files_keep_their_times() {
+        let (tmp, from, mut store) = places("files");
+        let mut files = vec![("周报.md", "# 周报\n\nbody\n"), ("notes.markdown", "body"), ("plain.txt", "body"), ("page.xml", "<doc><title>page</title><body><p>body</p></body></doc>")];
+        if crate::DATATABLE { files.push(("rows.csv", "name,n\na,1\n")); }
+        for (k, (name, text)) in files.iter().enumerate() {
+            let src = from.join(name);
+            let t = THEN + k as u64 * 1000;
+            aged(&src, text, t);
+            let id = super::import_file(&mut store, &src, None).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+            let entry = store.list().into_iter().find(|e| e.id == id).unwrap();
+            // Made before its last change here: the change time is both.
+            assert_eq!((entry.meta.created, entry.meta.modified), (t, t), "{name}");
+            assert_eq!(mtime(&store.file_path(&id).unwrap()), t, "{name}: its file too");
+        }
+        // Read again from disk, as the next launch does.
+        let mut again = crate::store::Store::open_at(tmp.join("library")).unwrap();
+        assert!(again.list().iter().all(|e| e.meta.folder.is_some() || (THEN..THEN + 5000).contains(&e.meta.created)));
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn made_is_the_creation_time_where_the_system_keeps_one() {
+        let (tmp, from, mut store) = places("created");
+        let src = from.join("later.md");
+        let later = fdl_core::time::now() + 86_400;
+        aged(&src, "body", later);
+        // macOS and Windows keep when a file was made; Linux may not (statx).
+        let made = std::fs::metadata(&src).unwrap().created().ok().map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let id = super::import_file(&mut store, &src, None).unwrap();
+        let m = store.list().into_iter().find(|e| e.id == id).unwrap().meta;
+        assert_eq!((m.created, m.modified), (made.unwrap_or(later), later));
+        if cfg!(any(target_os = "macos", windows)) { assert!(made.is_some() && m.created < later); }
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn a_folder_import_keeps_each_files_times() {
+        // 导入文件夹, a dropped folder, and 欢迎页's Obsidian / Typora import (import_tree).
+        let (tmp, from, mut store) = places("folder");
+        aged(&from.join("vault/a.md"), "a", THEN);
+        aged(&from.join("vault/sub/b.md"), "b", THEN + 60);
+        aged(&from.join("vault/sub/c.xml"), "<doc><title>c</title><body><p>c</p></body></doc>", THEN + 120);
+        let tree = super::scan_folder(&from.join("vault"), 0).unwrap();
+        let mut failed = 0;
+        store.batch(|s| super::import_tree(s, &tree, None, &mut failed)).unwrap().unwrap();
+        assert_eq!(failed, 0);
+        let entries = store.list();
+        for (title, t) in [("a", THEN), ("b", THEN + 60), ("c", THEN + 120)] {
+            let e = entries.iter().find(|e| e.title == title).unwrap();
+            assert_eq!((e.meta.created, e.meta.modified), (t, t), "{title}");
+            assert_eq!(mtime(&store.file_path(&e.id).unwrap()), t);
+        }
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn a_copy_of_a_local_file_keeps_its_times() {
+        // 导入到文档库 and a 本机文件 row dropped on the tree: a Markdown copy.
+        let (tmp, from, mut store) = places("local");
+        let src = from.join("本机.md");
+        aged(&src, "# 本机\n\nbody\n", THEN);
+        let local = store.open_local(&src).unwrap();
+        let doc = store.load(&local).unwrap();
+        let copy = store.create_markdown(&doc, &store.front_matter_of(&local)).unwrap();
+        let path = store.local_path(&local).unwrap();
+        super::keep_times(&mut store, &copy, &path);
+        let m = store.list().into_iter().find(|e| e.id == copy).unwrap().meta;
+        assert_eq!((m.created, m.modified), (THEN, THEN));
+        assert_eq!(mtime(&src), THEN, "the original is left alone");
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn without_the_files_times_an_import_keeps_its_own() {
+        let (tmp, _, mut store) = places("gone");
+        let before = fdl_core::time::now();
+        let id = store.create_from(&fdl_core::model::Document::default()).unwrap();
+        super::keep_times(&mut store, &id, &tmp.join("no such file.md"));
+        let m = store.list().into_iter().find(|e| e.id == id).unwrap().meta;
+        assert!(m.created >= before && m.modified >= before);
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn front_matter_times_come_first() {
+        let (tmp, from, mut store) = places("front");
+        let t = |s| fdl_core::time::parse_date(s).unwrap();
+        let import = |store: &mut crate::store::Store, name: &str, text: &str, changed: u64| {
+            let src = from.join(name);
+            aged(&src, text, changed);
+            let id = super::import_file(store, &src, None).unwrap();
+            let e = store.list().into_iter().find(|e| e.id == id).unwrap();
+            let file = store.file_path(&id).unwrap();
+            ((e.meta.created, e.meta.modified), mtime(&file), std::fs::read_to_string(file).unwrap())
+        };
+        // Both given: both used, the library's file changed then too, the front matter kept as written.
+        let front = "---\ncreated: 2024-03-05\nupdated: \"2024-03-06T10:00:00+08:00\"\ntags: [a]\n---\n";
+        let (times, file_time, text) = import(&mut store, "both.md", &format!("{front}\nbody\n"), THEN);
+        assert_eq!(times, (t("2024-03-05"), t("2024-03-06T10:00:00+08:00")));
+        assert_eq!(file_time, t("2024-03-06T10:00:00+08:00"));
+        assert!(text.starts_with(front), "{text}");
+        // Only `date`: made then, changed when the file was …
+        let later = t("2025-01-01T00:00:00Z");
+        assert_eq!(import(&mut store, "dated.md", "---\ndate: 2024-03-05 14:30\n---\nbody\n", later).0, (t("2024-03-05 14:30"), later));
+        // … but not before it was made.
+        assert_eq!(import(&mut store, "early.md", "---\ndate: 2024-03-05\n---\nbody\n", THEN).0, (t("2024-03-05"), t("2024-03-05")));
+        // Only `lastmod`: made as the file was, no later than that.
+        assert_eq!(import(&mut store, "lastmod.md", "---\nlastmod: 2024-03-07\n---\nbody\n", THEN).0, (THEN, t("2024-03-07")));
+        // Nothing that parses: the file's times, as before.
+        assert_eq!(import(&mut store, "bad.md", "---\ndate: someday\ncreated: {{date}}\n---\nbody\n", THEN).0, (THEN, THEN));
+        assert_eq!(import(&mut store, "none.md", "body\n", THEN).0, (THEN, THEN));
+        // Not Markdown: no front matter is read.
+        assert_eq!(import(&mut store, "plain.txt", "---\ndate: 2024-03-05\n---\nbody\n", THEN).0, (THEN, THEN));
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn a_folder_import_keeps_when_its_folders_were_made() {
+        let (tmp, from, mut store) = places("folders");
+        aged(&from.join("vault/a.md"), "a", THEN + 500);
+        aged(&from.join("vault/sub/b.md"), "b", THEN);
+        aged(&from.join("vault/sub/deep/c.md"), "c", THEN + 900);
+        // Imported a second later than the folders were made, so the two differ.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let tree = super::scan_folder(&from.join("vault"), 0).unwrap();
+        let mut failed = 0;
+        store.batch(|s| super::import_tree(s, &tree, None, &mut failed)).unwrap().unwrap();
+        let entries = store.list();
+        for (name, dir, earliest) in [("vault", "vault", THEN), ("sub", "vault/sub", THEN), ("deep", "vault/sub/deep", THEN + 900)] {
+            let e = entries.iter().find(|e| e.meta.folder.is_some() && e.title == name).unwrap();
+            // Where the system keeps when a folder was made, that; else its first file's time.
+            let want = fdl_core::vfs::made_time(&from.join(dir)).unwrap_or(earliest);
+            assert_eq!(e.meta.created, want, "{name}");
+            if cfg!(any(target_os = "macos", windows)) { assert!(e.meta.created > earliest, "{name}: the folder was made now"); }
+        }
+        assert_eq!(super::first_made(&tree), Some(THEN), "the fallback: the first file in it, at any depth");
+        assert_eq!(super::first_made(&tree.dirs[0].dirs[0]), Some(THEN + 900));
+        // Kept: the next look finds the same.
+        let again = crate::store::Store::open_at(tmp.join("library")).unwrap().list();
+        let vault = |l: &[crate::store::Entry]| l.iter().find(|e| e.meta.folder.is_some() && e.title == "vault").unwrap().meta.created;
+        assert_eq!(vault(&again), vault(&entries));
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn pictures_copied_in_keep_their_change_time() {
+        let (tmp, from, _store) = places("pictures");
+        // Into this library's assets, never the real library's (nor the global one in front).
+        let assets = crate::store::Store::assets_in(&tmp.join("library"));
+        let pic = from.join("photo.png");
+        image::RgbImage::new(2, 2).save(&pic).unwrap();
+        fdl_core::vfs::set_modified(&pic, THEN).unwrap();
+        let b = crate::editor::image::image_block_from_file_in(&assets, &pic).unwrap();
+        let BlockKind::Image { src, .. } = &b.kind else { panic!() };
+        let copy = std::path::Path::new(src);
+        assert!(copy.starts_with(&assets) && copy != pic, "{src}");
+        assert_eq!((mtime(copy), mtime(&pic)), (THEN, THEN));
+        // A Markdown file's picture, imported with it.
+        aged(&from.join("page.md"), "![](photo.png)\n", THEN + 60);
+        let (doc, _) = super::read_markdown(&from.join("page.md"), None, &assets).unwrap();
+        let BlockKind::Image { src, .. } = &doc.blocks[0].kind else { panic!("{:?}", doc.blocks[0].kind) };
+        assert_eq!(mtime(std::path::Path::new(src)), THEN);
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn siyuan_markdown_comes_in_as_plain_markdown_with_its_times() {
+        let (tmp, from, mut store) = places("siyuan-md");
+        // 思源's 导出 Markdown of a notebook: pages in folders, pictures once in `assets/` at the top.
+        let nb = from.join("笔记本");
+        std::fs::create_dir_all(nb.join("assets")).unwrap();
+        image::RgbImage::new(2, 2).save(nb.join("assets").join("图-20240101120000-abcdefg.png")).unwrap();
+        aged(&nb.join("文档").join("页.md"), "# 标题\n{: id=\"20240101120000-aaaaaaa\"}\n\n见 ((20240101120000-bbbbbbb \"另一篇\"))，#读书#。\n\n![图](assets/图-20240101120000-abcdefg.png)\n\n{{SELECT * FROM blocks WHERE content LIKE '%x%'}}\n\n{: id=\"20240101120000-ccccccc\" title=\"页\" type=\"doc\" updated=\"20240305081500\"}\n", THEN);
+        let t = super::scan_folder(&nb, 0).unwrap();
+        let mut failed = 0;
+        super::import_tree(&mut store, &t, None, &mut failed);
+        assert_eq!(failed, 0);
+        let page = store.list().into_iter().find(|e| e.title == "页").unwrap();
+        assert_eq!((page.meta.created, page.meta.modified), (fdl_core::siyuan::time("20240101120000").unwrap(), fdl_core::siyuan::time("20240305081500").unwrap()));
+        let doc = store.load(&page.id).unwrap();
+        let texts: Vec<&str> = doc.blocks.iter().map(|b| b.text.text.as_str()).collect();
+        assert_eq!(&texts[..2], ["标题", "见 另一篇，#读书。"]);
+        let BlockKind::Image { src, .. } = &doc.blocks[2].kind else { panic!("{:?}", doc.blocks[2].kind) };
+        assert!(std::path::Path::new(src).is_file() && !src.contains("笔记本"), "{src}");
+        assert!(matches!(&doc.blocks[3].kind, BlockKind::Code { lang, .. } if lang == "SQL"), "{:?}", doc.blocks[3].kind);
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn other_markdown_reads_as_before() {
+        let (tmp, from, _store) = places("plain-md");
+        for (k, text) in ["# Heading\n\n## Two #\n\nC# and F#; issue #12 and #34.\n", "A [link](http://x/#a#b), {curly}, {: not an attribute list}, ((parens)).\n\n- [ ] task\n\n```\n{: id=\"20240101120000-aaaaaaa\"}\n#code#\n```\n", "Text#with#hashes and ![pic](assets/none.png)\n"].iter().enumerate() {
+            let path = from.join(format!("{k}.md"));
+            aged(&path, text, THEN);
+            let (doc, _) = super::read_markdown(&path, None, &crate::store::Store::assets_in(&tmp.join("library"))).unwrap();
+            let plain = crate::markdown::parse_file(text, &k.to_string(), Some(&from));
+            assert_eq!(crate::docxml::serialize(&doc), crate::docxml::serialize(&plain), "{text}");
+        }
+        std::fs::remove_dir_all(tmp).unwrap();
     }
 }

@@ -296,7 +296,7 @@ pub(crate) fn files_popup(_v: &TableView, t: &Table, rec: RecId, fid: FieldId, c
                     });
                 })))
             .on_click(cx.listener(move |_, _, _, cx| {
-                let abs = crate::store::Store::root_dir().join(&path);
+                let abs = crate::store::Store::active_dir().join(&path);
                 cx.open_url(&format!("file://{}", abs.display()));
             })));
     }
@@ -316,7 +316,7 @@ fn add_files(_v: &mut TableView, rec: RecId, fid: FieldId, window: &mut Window, 
         let paths = match prompt { Some(p) => p.await.ok().and_then(Result::ok).flatten(), None => picked };
         let Some(paths) = paths else { return };
         let _ = this.update(cx, |v, cx| {
-            let root = crate::store::Store::root_dir();
+            let root = crate::store::Store::active_dir();
             let mut added = vec![];
             for p in paths {
                 let Some(name) = p.file_name().map(|n| n.to_string_lossy().to_string()) else { continue };

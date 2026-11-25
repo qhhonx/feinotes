@@ -1,0 +1,23 @@
+# Hold the page thumb and drag it from the top to the end and back, 4 pt a
+# step (docs/PERFORMANCE.md, "Dragging the scrollbar").
+resize 1280 800
+wait 900
+key cmd-j
+type 产品知识库
+wait 700
+key enter
+wait 2500
+move 640 400
+wait 300
+down 1276 64
+bench 90 dragby 0 4
+shot mid
+bench 90 dragby 0 4
+shot end
+bench 90 dragby 0 -4
+shot back-mid
+bench 90 dragby 0 -4
+shot top
+up 1276 64
+wait 500
+shot released

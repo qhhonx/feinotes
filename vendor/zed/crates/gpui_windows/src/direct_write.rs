@@ -316,16 +316,14 @@ impl DirectWriteState {
             let font_set = &system_font_collection.GetFontSet()?;
             let mut unicode_ranges = Vec::new();
             for family_name in fallback_list {
-                let family_name = HSTRING::from(family_name);
-                let Some(fonts) = font_set
-                    .GetMatchingFonts(
-                        &family_name,
-                        DWRITE_FONT_WEIGHT_NORMAL,
-                        DWRITE_FONT_STRETCH_NORMAL,
-                        DWRITE_FONT_STYLE_NORMAL,
-                    )
-                    .log_err()
-                else {
+                // quiet.md: by any of the family's names (`matching_fonts`).
+                let Some((fonts, family_name)) = matching_fonts(
+                    system_font_collection,
+                    font_set,
+                    family_name,
+                    DWRITE_FONT_WEIGHT_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL,
+                ) else {
                     continue;
                 };
                 let Ok(font_face) = fonts.GetFontFaceReference(0) else {
@@ -389,16 +387,9 @@ impl DirectWriteState {
             gpui::font_name_with_fallbacks_shared(&family, &system_ui_font_name)
         };
         let fontset = unsafe { collection.GetFontSet().log_err()? };
-        let font_family_h = HSTRING::from(family.as_str());
-        let font = unsafe {
-            fontset
-                .GetMatchingFonts(
-                    &font_family_h,
-                    font_weight_to_dwrite(weight),
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    font_style_to_dwrite(style),
-                )
-                .log_err()?
+        // quiet.md: by any of the family's names (`matching_fonts`).
+        let (font, font_family_h) = unsafe {
+            matching_fonts(collection, &fontset, family.as_str(), font_weight_to_dwrite(weight), font_style_to_dwrite(style))?
         };
         let total_number = unsafe { font.GetFontCount() };
         for index in 0..total_number {
@@ -1764,6 +1755,99 @@ const fn make_direct_write_tag(tag_name: &str) -> DWRITE_FONT_FEATURE_TAG {
 }
 
 #[inline]
+/// quiet.md: the fonts of `family` in `fontset`, and the name that found
+/// them. A font set matches a family by its name in this system's language
+/// only, so on a Chinese Windows "Microsoft YaHei" finds nothing (微软雅黑
+/// does), and a family saved on an English system or a Mac would quietly be
+/// lost: when the name finds nothing, the family's names in its other
+/// languages are tried.
+unsafe fn matching_fonts(
+    collection: &IDWriteFontCollection1,
+    fontset: &IDWriteFontSet,
+    family: &str,
+    weight: DWRITE_FONT_WEIGHT,
+    style: DWRITE_FONT_STYLE,
+) -> Option<(IDWriteFontSet, HSTRING)> {
+    let find = |name: &HSTRING| unsafe {
+        fontset
+            .GetMatchingFonts(name, weight, DWRITE_FONT_STRETCH_NORMAL, style)
+            .ok()
+            .filter(|fonts| fonts.GetFontCount() > 0)
+    };
+    let name = HSTRING::from(family);
+    if let Some(fonts) = find(&name) {
+        return Some((fonts, name));
+    }
+    unsafe { family_names(collection, family) }
+        .into_iter()
+        .map(|other| HSTRING::from(other.as_str()))
+        .find_map(|other| find(&other).map(|fonts| (fonts, other)))
+}
+
+/// quiet.md: the other names, in every language, of the family one of whose
+/// names is `family` (`other_names`): the collection's own lookup first,
+/// else every family's names.
+unsafe fn family_names(collection: &IDWriteFontCollection1, family: &str) -> Vec<String> {
+    let names_of = |family: IDWriteFontFamily1| unsafe { family.GetFamilyNames().ok().map(|n| all_names(&n)).unwrap_or_default() };
+    let mut index = 0u32;
+    let mut exists = BOOL(0);
+    let found = unsafe { collection.FindFamilyName(&HSTRING::from(family), &mut index, &mut exists) }.is_ok() && exists.as_bool();
+    if found && let Ok(f) = unsafe { collection.GetFontFamily(index) } {
+        return other_names(family, [names_of(f)]);
+    }
+    let count = unsafe { collection.GetFontFamilyCount() };
+    other_names(family, (0..count).filter_map(|i| unsafe { collection.GetFontFamily(i) }.ok()).map(names_of))
+}
+
+/// quiet.md: every name in `names`, whatever its language.
+unsafe fn all_names(names: &IDWriteLocalizedStrings) -> Vec<String> {
+    (0..unsafe { names.GetCount() })
+        .filter_map(|i| {
+            let len = unsafe { names.GetStringLength(i) }.ok()? as usize;
+            let mut buf = vec![0u16; len + 1];
+            unsafe { names.GetString(i, &mut buf) }.ok()?;
+            Some(String::from_utf16_lossy(&buf[..len]))
+        })
+        .collect()
+}
+
+/// quiet.md: of the families' names (each family's in all its languages),
+/// those of the first family `family` is one of, ignoring case, other than
+/// `family` itself and each once: what to look for when `family` finds nothing.
+fn other_names(family: &str, families: impl IntoIterator<Item = Vec<String>>) -> Vec<String> {
+    let low = family.to_lowercase();
+    let Some(names) = families.into_iter().find(|names| names.iter().any(|n| n.to_lowercase() == low)) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for n in names {
+        let l = n.to_lowercase();
+        if l != low && !out.iter().any(|o| o.to_lowercase() == l) {
+            out.push(n);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod family_name_tests {
+    use super::other_names;
+
+    fn s(v: &[&str]) -> Vec<String> { v.iter().map(|x| x.to_string()).collect() }
+
+    #[test]
+    fn a_family_is_found_by_its_name_in_any_language() {
+        let families = || vec![s(&["Segoe UI"]), s(&["微软雅黑", "Microsoft YaHei"]), s(&["宋体", "SimSun"])];
+        assert_eq!(other_names("Microsoft YaHei", families()), s(&["微软雅黑"]));
+        assert_eq!(other_names("microsoft yahei", families()), s(&["微软雅黑"]), "any case");
+        assert_eq!(other_names("宋体", families()), s(&["SimSun"]));
+        assert!(other_names("Segoe UI", families()).is_empty(), "one name: nothing else to try");
+        assert!(other_names("PingFang SC", families()).is_empty(), "not installed");
+        // Each other name once, the asked one never.
+        assert_eq!(other_names("MS Gothic", [s(&["ＭＳ ゴシック", "MS Gothic", "ms gothic", "ＭＳ ゴシック"])]), s(&["ＭＳ ゴシック"]));
+    }
+}
+
 fn get_name(string: IDWriteLocalizedStrings, locale: &HSTRING) -> Result<String> {
     let mut locale_name_index = 0u32;
     let mut exists = BOOL(0);

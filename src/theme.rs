@@ -435,8 +435,6 @@ impl Theme {
     pub fn sidebar_field_edge() -> Hsla { ca(craft::B500, 0.6) }
     pub fn sidebar_field_ring() -> Hsla { ca(craft::B500, 0.16) }
     pub fn sidebar_landed() -> Hsla { ca(craft::N1000, 0.07) }
-    /// Indent guides in the folder tree (#329): a hairline a shade lighter than table grid lines.
-    pub fn sidebar_guide() -> Hsla { ca(craft::N1000, 0.08) }
     /// Section headers on the sidebar.
     pub fn sidebar_section() -> Hsla { c(0x333739) }
     /// Normal monochrome icons: #191919 measured from the supplied Claude Code screenshot.

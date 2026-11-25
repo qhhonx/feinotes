@@ -297,10 +297,15 @@ pub fn key_of(cx: &App, id: &str) -> String {
 pub fn rows(cx: &App) -> Vec<(String, String, String)> {
     let Some(s) = cx.try_global::<Shortcuts>() else { return vec![] };
     let mut rows: Vec<(usize, String, String, String)> = vec![];
-    for b in &s.base {
-        let name = b.action().name();
+    // One row per action: the text fields (`input::`) and the board bind their own 复制, 全选…
+    // under the same names, so a title already listed by the editor or the app is skipped
+    // (theirs first, whatever order the keymap holds them in).
+    let mine = |n: &str| n.starts_with("editor::") || n.starts_with("workspace::");
+    let mut names: Vec<&str> = s.base.iter().map(|b| b.action().name()).collect();
+    names.sort_by_key(|n| !mine(n));
+    for name in names {
         if let Some(title) = label(name) {
-            if rows.iter().any(|(_, id, _, _)| id == name) { continue; }
+            if rows.iter().any(|(_, id, t, _)| id == name || t == title) { continue; }
             rows.push((info(name).unwrap().0, name.into(), title.into(), key_of(cx, name)));
         }
     }

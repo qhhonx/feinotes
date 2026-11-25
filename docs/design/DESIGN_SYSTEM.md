@@ -72,12 +72,14 @@ shadcn Neutral 主题的语义色，浅色、深色各一套，用 `theme::dark(
 - **深色弹层 #262626、弹层上的 `accent` #404040。** shadcn 的深色页面是 #0a0a0a、弹层 #171717；我们的深色页面是 #1c1c1c，比它的弹层还亮，弹层只能升一档。画在弹层上的 `accent` 跟着升一档（shadcn 官网自己的深色 accent）。
 - **深色弹层、对话框、卡片上的文字按钮提一档。** shadcn 用 `muted`（悬停 `muted/50`）。我们的深色弹层本身就是 `muted` 的颜色，画上去看不见，所以在这些面上（`base::raised()`）悬停用白 6%（`accent_hover`）、在用用 `accent`。浅色和页面上照 shadcn。
 - **浅色输入框铺白底。** shadcn 是透明。GPUI 会把阴影画在元素底下，透明底会透出 shadow-xs 的灰。深色输入框是半透明的 `input/30`，同理去掉 shadow-xs（描边按钮、复选框、开关、outline 的 Toggle 也一样）。
-- **块手柄 26 高、42 / 28 宽。** shadcn 的组合（`ButtonGroup` 加两个 outline `icon-xs`）是 24 × 48。编辑器按固定尺寸摆手柄（和块的首行垂直居中、表格的手柄放在列选择条那一行），尺寸不动，外观照 shadcn。
+- **块手柄 26 高、42 / 28 宽。** shadcn 的组合（`ButtonGroup` 加两个 outline `icon-xs`）是 24 × 48；我们合成一个按钮，中间不画接缝（维护者 2026-11-24：它是一个控件）。编辑器按固定尺寸摆手柄（和块的首行垂直居中、表格的手柄放在列选择条那一行），尺寸不动，外观照 shadcn。
 - **500 字重。** shadcn 的按钮、标签、标题、菜单标签是 font-medium。GPUI 用系统字体时 500 和 400 一样，第 3 批另做（打包有中等字重的界面字体）。
 - **菜单快捷键的字距**（`tracking-widest`）：GPUI 没有 letter-spacing，把字符拆开、每个后面空 0.1em 来模拟。
 - **对话框遮罩的模糊**（`backdrop-blur-xs`）：GPUI 画不了背景模糊，只有黑 10%。
 - **提示气泡不自动换行**（`max-w-xs`）：气泡按行量宽来定位，调用方用 `\n` 分行。
 - **按钮、开关等没有 `focus-visible` 焦点环**：这些控件不接键盘焦点。
+
+- **只有图标的 xs 按钮，图标 16。** shadcn 的 icon-xs 是 `size-3`（12）。侧栏行上的 …、新建、关闭 × 这些地方原来都是 15–16，缩到 12 又小又细（维护者 2026-11-24）。带文字的 xs 仍是 12。
 
 **待维护者决定（不在上面三类里，这次没改）：** 工具栏按钮 28 高（`ButtonSize::Tool`）。shadcn 只有 24（icon-xs）和 32（icon-sm）。应用里约 37 处默认用它，改高会动到多处按固定尺寸算的位置。
 
@@ -165,8 +167,8 @@ shadcn 的表头、标签、按钮是 500。GPUI 用系统字体时，500 和 40
 | `swatch` | — | 颜色块；选中时 2pt 的环，用边框画（半透明） |
 | `tag` / `link_chip` / `person` | Badge | 高 20，胶囊，12 号字 |
 | `popover` | DropdownMenuContent / PopoverContent | `popover` 底，圆角 8，`shadow::popover()`，无描边 |
-| `menu_row` / `menu_item` / `list_row` / `menu_title` / `menu_rule` | DropdownMenuItem / Label / Separator | 32 高、圆角 6；亮的行 `accent` 底、`accent-foreground` 字；不可用整行 50%；分隔线 `border`，通栏 |
-| 编辑器的浮动工具条、块手柄 | Toggle、ButtonGroup、Popover 拼成（`design::toolbar`） | 工具条 popover 底、内边距 4、工具 32 高、间距 4；按下 / 展开 `muted`，不加阴影；块手柄是两段 outline icon-xs |
+| `menu_row` / `menu_item` / `list_row` / `menu_title` / `menu_rule` | DropdownMenuItem / Label / Separator | 32 高、圆角 6；亮的行 `accent` 底、`accent-foreground` 字；不可用整行 50%；分隔线 `border`，0.5pt，左右各收进 12（和行里的图标、文字对齐；维护者 2026-11-24 定的） |
+| 编辑器的浮动工具条、块手柄 | Toggle、ButtonGroup、Popover 拼成（`design::toolbar`） | 工具条 popover 底、内边距 4、工具 32 高、间距 4；按下 / 展开 `muted`，不加阴影；块手柄是一个 outline xs 按钮，类型图标和 ⋮⋮ 之间不画线 |
 | `inset_list` | — | 弹窗里嵌的列表：菜单的外观、0.5px 环，不浮起 |
 | `panel_title` / `close_btn` / `kbd` / `chip_x` | — | 面板标题、关闭按钮、快捷键、选项上的 × |
 

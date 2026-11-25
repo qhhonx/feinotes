@@ -1,0 +1,46 @@
+# Browsing a vault of 15,000 Markdown notes (docs/PERFORMANCE.md, "Large libraries").
+# Library: python3 tools/perf/gen_library.py --vault 15000 <dir>. Its Inbox (3,016 notes) changed last:
+# the window opens on Inbox's page, Inbox open in the sidebar (about 3,500 rows).
+# Each `bench 60 noop` times frames once the view has settled (4 s after each step).
+wait 4000
+# Close the 更新说明 card a new library shows over the sidebar.
+click 251 372
+move 700 790
+wait 500
+shot big-0-open
+bench 60 noop
+# Inbox closed in the sidebar (about 460 rows) ...
+row Inbox
+wait 4000
+move 700 790
+shot big-1-closed
+bench 60 noop
+# ... and open again.
+row Inbox
+wait 4000
+move 700 790
+shot big-2-open
+bench 60 noop
+wheel 150 400 300
+wait 200
+wheel 150 400 300
+wait 1000
+move 700 790
+shot big-3-scrolled
+bench 60 noop
+# 主页, with the Inbox's folder card.
+row Home
+wait 4000
+move 700 790
+shot big-4-home
+bench 60 noop
+wheel 700 400 600
+wait 1000
+shot big-5-home-scrolled
+bench 60 noop
+# A note from the Inbox: whichever row is at this height.
+click 150 400
+wait 4000
+move 700 790
+shot big-6-doc
+bench 60 noop

@@ -750,13 +750,23 @@ fragment float4 polychrome_sprite_fragment(
     texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
   constexpr sampler atlas_texture_sampler(mag_filter::linear,
                                           min_filter::linear);
-  float4 color =
-      atlas_texture.sample(atlas_texture_sampler, input.tile_position);
+  // quiet.md: keep the linear filter inside the sprite's tile. An image drawn
+  // larger than its pixels (a 2x SVG on a 3x screen) puts its edge pixels'
+  // samples less than half a texel inside the tile, and the filter mixed in
+  // the neighbouring tile's edge: a faint line along the image's side.
+  // Samples at least half a texel in (an image at 1:1 or smaller) are unchanged.
+  PolychromeSprite sprite = sprites[input.sprite_id & ~SIMPLE_PRIMITIVE_FLAG];
+  float2 atlas_size = float2(atlas_texture.get_width(), atlas_texture.get_height());
+  float2 tile_min = float2(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y);
+  float2 tile_max = tile_min + float2(sprite.tile.bounds.size.width, sprite.tile.bounds.size.height);
+  float2 lo = (tile_min + 0.5) / atlas_size;
+  float2 hi = max(lo, (tile_max - 0.5) / atlas_size);
+  float4 color = atlas_texture.sample(atlas_texture_sampler,
+                                      clamp(input.tile_position, lo, hi));
   if ((input.sprite_id & SIMPLE_PRIMITIVE_FLAG) != 0u) {
     return float4(color.rgb, color.a * input.opacity);
   }
 
-  PolychromeSprite sprite = sprites[input.sprite_id];
   if (sprite.grayscale) {
     float grayscale = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
     color.r = grayscale;

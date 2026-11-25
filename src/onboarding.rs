@@ -99,9 +99,11 @@ pub fn paint_texture(img: std::sync::Arc<RenderImage>, b: Bounds<Pixels>, window
 /// a ring every point out to 18 with copies no more than 2.5 apart, each
 /// ring turned half a step from the last, fading on a bell curve with a
 /// long soft tail: their overlap blurs out from every stroke's edge
-/// without steps you can see.
+/// without steps you can see. Every copy stays on one line: the box is as
+/// wide as the word, so a copy set off to the right had less room than its
+/// width and wrapped its t onto a second line (#417).
 pub fn wordmark(alpha: f32) -> Div {
-    let word = |a: f32| div().text_size(px(92.)).line_height(px(110.)).font_weight(FontWeight::MEDIUM).text_color(hsla(0., 0., 1., a)).child("Quiet");
+    let word = |a: f32| div().text_size(px(92.)).line_height(px(110.)).font_weight(FontWeight::MEDIUM).whitespace_nowrap().text_color(hsla(0., 0., 1., a)).child("Quiet");
     let mut halo = div().relative();
     for ring in 1..=18 {
         let r = ring as f32;
@@ -243,13 +245,18 @@ fn discover(library: PathBuf) -> Vec<Found> {
     for d in subdirs(&mobile.join("iCloud~com~logseq~logseq/Documents")) { candidates.push(("Logseq", d)); }
     candidates.push(("iA Writer", mobile.join("27N4MQEA55~pro~writer/Documents")));
     candidates.push(("Typora", mobile.join("iCloud~abnerworks~Typora/Documents")));
+    // 思源笔记's workspaces: the default one, and those its workspace.json lists. Not Markdown: always imported as copies.
+    candidates.push((SIYUAN, home.join("SiYuan")));
+    if let Ok(list) = fdl_core::vfs::read(home.join(".config/siyuan/workspace.json")) && let Ok(v) = serde_json::from_slice::<Vec<String>>(&list) {
+        for p in v { candidates.push((SIYUAN, PathBuf::from(p))); }
+    }
     let mut out: Vec<Found> = vec![];
     for (app, path) in candidates {
         if !path.fs_is_dir() || path.starts_with(&library) || library.starts_with(&path) { continue }
         let key = fdl_core::vfs::canonicalize(&path).unwrap_or_else(|_| path.clone());
         if out.iter().any(|f| fdl_core::vfs::canonicalize(&f.path).unwrap_or_else(|_| f.path.clone()) == key) { continue }
         let mut budget = 20_000;
-        let count = count_md(&path, 6, &mut budget);
+        let count = if app == SIYUAN { if fdl_core::siyuan::recognizes(&path) { fdl_core::siyuan::count_docs(&path, budget) } else { 0 } } else { count_md(&path, 6, &mut budget) };
         if count == 0 { continue }
         let name = found_name(app, &path, &mobile);
         out.push(Found { app, name, path, count });
@@ -257,6 +264,9 @@ fn discover(library: PathBuf) -> Vec<Found> {
     out.sort_by_key(|a| std::cmp::Reverse(a.count));
     out
 }
+
+/// `Found::app` for a 思源笔记 workspace, shown as 思源笔记.
+const SIYUAN: &str = "SiYuan";
 
 /// The name a found folder shows and is imported under: its own, except an
 /// app's iCloud folder, which is just "Documents" and goes by the app's name.
@@ -327,7 +337,7 @@ fn short_path(p: &Path) -> String {
 
 /// A picked folder as a library, used as it is: its Markdown and DocxXML
 /// files show up as documents (#282). Only the home folder and a disk's
-/// root get a Quiet.md folder inside; scanning all of either is never meant.
+/// top-level folder get a Quiet.md folder inside; scanning all of either is never meant.
 pub(crate) fn library_in(dir: PathBuf) -> PathBuf {
     let broad = dir.parent().is_none() || dirs::home_dir().is_some_and(|h| h == dir);
     if broad && !crate::store::Store::is_library(&dir) { dir.join("Quiet.md") } else { dir }
@@ -352,7 +362,7 @@ pub struct Onboarding {
     /// Over a running app's window (⌘⌥⇧O, Settings): a look only, nothing is written.
     replay: bool,
     page: Page,
-    /// 新建文件夹: where a new, empty root folder would go.
+    /// 新建文件夹: where a new, empty top-level folder would go.
     root: PathBuf,
     /// 打开文件夹: folders already on this computer, opened where they are
     /// (W12, the main choice); none means the new folder above.
@@ -407,7 +417,7 @@ impl Onboarding {
             cx.background_executor().timer(Duration::from_secs_f32(1. / fps)).await;
             if this.update(cx, |_, cx| cx.notify()).is_err() { break }
         });
-        let root = crate::store::Store::root_dir();
+        let root = crate::store::Store::active_dir();
         let lib = root.clone();
         cx.spawn(async move |this, cx| {
             let found = cx.background_executor().spawn(async move { discover(lib) }).await;
@@ -548,28 +558,30 @@ impl Onboarding {
             if let Some((_, t)) = self.film_tex.take() { let _ = window.drop_image(t); }
             return cx.emit(Done);
         }
-        // 工作区: the folders picked open where they are, else a new one (W12).
+        // 主页: the folders picked open where they are, else a new one (W12).
         let fixed = std::env::var_os("QUIET_MD_HOME").is_some();
-        // A test run's one folder (`QUIET_MD_HOME`) is the root; it gets the guides as a new folder would.
-        let home = crate::store::Store::legacy_root();
-        let new_root = (self.open.is_empty() && !fixed).then(|| self.root.clone());
-        let existed = crate::guides::seeded(new_root.as_ref().unwrap_or(&home)).unwrap_or(false);
+        // A test run's one folder (`QUIET_MD_HOME`) is the top-level folder; it gets the guides as a new folder would.
+        let home = crate::store::Store::legacy_dir();
+        let new_top = (self.open.is_empty() && !fixed).then(|| self.root.clone());
+        let existed = crate::guides::seeded(new_top.as_ref().unwrap_or(&home)).unwrap_or(false);
         if fixed && !self.scripted { let _ = crate::guides::initialize(&home); }
-        let mut ws = fdl_core::workspace::Workspace::load();
+        let mut ws = fdl_core::home::Home::load();
         let mut failed: Vec<String> = vec![];
-        if let Some(root) = &new_root {
+        if let Some(root) = &new_top {
             let made = if self.scripted { Ok(()) } else { crate::guides::initialize(root) };
-            if let Err(e) = made.map_err(|e| e.to_string()).and_then(|_| ws.add(root).map(|_| ()).or_else(|e| match e { fdl_core::workspace::AddError::Open(_) => Ok(()), e => Err(e.to_string()) })) {
+            if let Err(e) = made.map_err(|e| e.to_string()).and_then(|_| ws.add(root).map(|_| ()).or_else(|e| match e { fdl_core::home::AddError::Open(_) => Ok(()), e => Err(e.to_string()) })) {
                 self.error = Some(format!("{}{e}", tr("无法在这里创建文件夹：", "Couldn't create the folder here: ")));
                 return cx.notify();
             }
         }
-        let others: Vec<PathBuf> = self.open.iter().cloned().chain(if self.copy && new_root.is_some() { vec![] } else { self.imports().into_iter().map(|(p, _)| p).collect() }).collect();
+        // 思源笔记 can only come in as copies, whichever way the rest go.
+        let siyuan: Vec<(PathBuf, Option<String>)> = self.imports().into_iter().filter(|(p, _)| fdl_core::siyuan::recognizes(p)).collect();
+        let others: Vec<PathBuf> = self.open.iter().cloned().chain(if self.copy && new_top.is_some() { vec![] } else { self.imports().into_iter().map(|(p, _)| p).filter(|p| !siyuan.iter().any(|(s, _)| s == p)).collect() }).collect();
         for d in others {
-            if let Err(e) = ws.add(&d) && !matches!(e, fdl_core::workspace::AddError::Open(_) | fdl_core::workspace::AddError::Inside(_)) { failed.push(format!("{}：{e}", short_path(&d))); }
+            if let Err(e) = ws.add(&d) && !matches!(e, fdl_core::home::AddError::Open(_) | fdl_core::home::AddError::Inside(_)) { failed.push(format!("{}：{e}", short_path(&d))); }
         }
         PENDING.store(false, Ordering::Relaxed);
-        let target = new_root.clone();
+        let target = new_top.clone();
         cx.set_global(crate::shared_store::SharedStore::with_workspace(ws));
         crate::settings::load();
         save_lang(self.lang);
@@ -577,7 +589,8 @@ impl Onboarding {
         crate::settings::sync_dark(cx);
         crate::themes::load(&crate::settings::prefs().theme_id(), false, || cx.text_system().all_font_names());
         let open_error = (!failed.is_empty()).then(|| crate::localized_format!("有文件夹没能打开：{}", "Some folders could not be opened: {}", failed.join("；")));
-        let imports = if self.copy { self.imports() } else { vec![] };
+        let imports = if self.copy { self.imports() } else { siyuan.clone() };
+        let target = target.or_else(|| (!siyuan.is_empty()).then(|| self.open.first().cloned().or_else(|| fixed.then(|| home.clone()))).flatten());
         let Some(target) = target.filter(|_| !imports.is_empty()) else { return self.hand_over(existed, open_error, window, cx); };
         // Copy the notes in before the main window opens, off the main thread,
         // so the button's spinner keeps moving.
@@ -702,7 +715,7 @@ impl Onboarding {
 
     fn import_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut pick_rows = vec![
-            row(tr("打开其他文件夹", "Open another folder"), Some(tr("Obsidian、Typora 或任何放着 Markdown 的文件夹", "Obsidian, Typora or any folder of Markdown").into()),
+            row(tr("打开其他文件夹", "Open another folder"), Some(tr("Obsidian、Typora、思源笔记或任何放着 Markdown 的文件夹", "Obsidian, Typora, SiYuan or any folder of Markdown").into()),
                 soft_button("onb-pick", tr("选择…", "Choose…")).on_click(cx.listener(|w, _, window, cx| w.pick_folder(Pick::More, window, cx)))).into_any_element(),
         ];
         for (i, p) in self.picked.iter().enumerate() {
@@ -716,8 +729,10 @@ impl Onboarding {
             let shown = if self.show_all || found.len() <= FOUND_SHOWN + 1 { found.len() } else { FOUND_SHOWN };
             let mut rows: Vec<AnyElement> = found.iter().take(shown).enumerate().map(|(i, f)| {
                 let on = self.chosen.get(i).copied().unwrap_or(false);
-                let title = if f.app == "Markdown" || f.name == f.app { f.name.clone() } else { format!("{} · {}", f.app, f.name) };
-                let desc = crate::localized_count!(f.count, "{} · {} 篇 Markdown", "{} · {} Markdown file", "{} · {} Markdown files", where_short(&f.path), f.count);
+                let app = if f.app == SIYUAN { tr("思源笔记", "SiYuan") } else { f.app };
+                let title = if f.app == "Markdown" || f.name == f.app { app.to_string() } else { format!("{} · {}", app, f.name) };
+                let desc = if f.app == SIYUAN { crate::localized_count!(f.count, "{} · {} 篇思源笔记文档", "{} · {} SiYuan document", "{} · {} SiYuan documents", where_short(&f.path), f.count) }
+                    else { crate::localized_count!(f.count, "{} · {} 篇 Markdown", "{} · {} Markdown file", "{} · {} Markdown files", where_short(&f.path), f.count) };
                 div().id(("onb-found", i)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
                     .on_click(cx.listener(move |w, _, _, cx| { if let Some(c) = w.chosen.get_mut(i) { *c = !*c; } cx.notify(); }))
                     .child(row(title, Some(desc.into()), Checkbox::new(on))).into_any_element()
@@ -781,9 +796,17 @@ impl Onboarding {
 /// Copy each folder into the library (one write for all of them); what went
 /// wrong, for a toast in the main window.
 fn import_all(root: &Path, dirs: &[(PathBuf, Option<String>)]) -> Option<String> {
-    let mut store = match crate::store::Store::open_root(root) { Ok(s) => s, Err(e) => return Some(e.to_string()) };
+    let mut store = match crate::store::Store::open_top_folder(root) { Ok(s) => s, Err(e) => return Some(e.to_string()) };
     let (mut failed, mut cloud, batch) = (0, 0, store.begin_batch().is_ok());
+    let mut notes: Vec<String> = vec![];
     for (dir, name) in dirs {
+        if fdl_core::siyuan::recognizes(dir) {
+            match crate::siyuan::import(&mut store, dir, None) {
+                Ok((_, r)) => if let (true, text) = crate::siyuan::summary(&r) { notes.push(text) },
+                Err(e) => notes.push(e.to_string()),
+            }
+            continue;
+        }
         match crate::transfer::scan_folder(dir, 0) {
             Some(t) if t.files > crate::transfer::IMPORT_FOLDER_LIMIT => failed += t.files,
             Some(mut t) => {
@@ -797,7 +820,7 @@ fn import_all(root: &Path, dirs: &[(PathBuf, Option<String>)]) -> Option<String>
     let saved = if batch { store.end_batch() } else { Ok(()) };
     match saved {
         Err(e) => Some(crate::localized_format!("导入未能完成：{}", "Import could not finish: {}", crate::settings::diagnostic(&e.to_string()))),
-        Ok(()) => crate::transfer::import_problems(failed, cloud),
+        Ok(()) => { notes.extend(crate::transfer::import_problems(failed, cloud)); (!notes.is_empty()).then(|| notes.join(tr("；", "; "))) }
     }
 }
 

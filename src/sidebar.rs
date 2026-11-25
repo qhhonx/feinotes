@@ -1,6 +1,6 @@
 //! Left pane: document list with search. Rows, sections and footer, sunken:
 //! no panel, border or shadow, straight on the window surface (only the note
-//! floats). 30pt rows on a 31pt pitch, selection pill radius 9.
+//! floats). 30pt rows 1pt apart (`ROW_GAP`), selection pill radius 9.
 
 use crate::app::{Confirm, RowMenu, View, Workspace};
 use crate::settings::display_title;
@@ -35,14 +35,14 @@ const fn row_menu_height(items: usize, dividers: usize) -> f32 {
 
 /// Sidebar geometry (measured from the window edge), shared by the
 /// document sidebar and 设置's: selection pills start 14pt in, every row is
-/// 30pt with radius 9 on a 31pt pitch, glyphs (18pt) centre at 37pt and
+/// 30pt with radius 9, `ROW_GAP` (1) apart, glyphs (18pt) centre at 37pt and
 /// labels start at 54pt; groups are 16pt apart, a section header is 34pt
 /// (6 above its 28pt label).
 pub(crate) const SB_X: f32 = 14.;
 pub(crate) const ROW_H: f32 = 30.;
 const DOC_ROW_H: f32 = ROW_H;
 pub(crate) const ROW_R: f32 = 9.;
-pub(crate) const ROW_GAP: f32 = 1.;
+pub(crate) const ROW_GAP: f32 = crate::design::G.sidebar_gap;
 pub(crate) const ROW_ICON: f32 = 18.;
 pub(crate) const GROUP_GAP: f32 = 16.;
 pub(crate) const SECTION_H: f32 = 34.;
@@ -109,6 +109,7 @@ pub(crate) fn footer_row(id: &'static str, glyph: &'static str, label: &'static 
         .hover(|s| s.bg(hover()))
         .child(div().size(px(20.)).flex_none().flex().items_center().justify_center().mr(px(9.)).child(icon(glyph, ROW_ICON, Theme::icon())))
         .child(label)
+        .relative().children(crate::devtools::row_probe(label))
 }
 
 /// The footer's divider and padding around `row`.
@@ -169,6 +170,7 @@ impl Workspace {
         self.sidebar_selection_row = self.resolve_sidebar_entry(&entries, shared_rows.as_deref(), &pinned, cx);
         self.more_bounds.borrow_mut().clear();
         self.settle_sidebar_drop(cx);
+        crate::devtools::rows_begin(window);
 
         let header = div()
             .h(px(crate::app::HEADER_H))
@@ -222,6 +224,8 @@ impl Workspace {
 
         let mut list = div().flex().flex_col().px(px(SB_X)).pb(px(8.));
         // Pinned docs are shortcuts: they stay in 我的文档 too.
+        let order = self.home.order_rule();
+        pinned.sort_by(|a,b| order.cmp(a,b));
         if !pinned.is_empty() {
             list = list.child(self.section(0, crate::settings::text("置顶"), cx));
             if !self.folded[0] {
@@ -240,14 +244,10 @@ impl Workspace {
         // as rows of the tree under 文件夹; none, a way to open one.
         let roots = self.store.roots();
         if roots.is_empty() {
-            list = list.child(self.empty_roots(cx));
+            list = list.child(self.empty_home(cx));
         } else {
-            let title = if crate::FEI_NOTES { crate::settings::tr("我的文档", "My documents") }
-                else if roots.len() == 1 { &roots[0].1 } else { crate::settings::tr("文件夹", "Folders") };
-            list = list.child(self.section(1, title, cx).rounded(px(ROW_R)).when(self.sidebar_drop_top(), |d| d.bg(Theme::sidebar_selected())));
-            if !self.folded[1] {
-                list = list.child(self.render_folder_rows(window, cx));
-            }
+            list = list.child(self.section(1, crate::settings::text("我的文档"), cx));
+            list = list.child(self.render_folder_rows(window, cx));
         }
         // 本机文件: Markdown files and folders edited where they are, outside the
         // library. Files or folders from the Finder let go here open the same way.
@@ -409,6 +409,19 @@ impl Workspace {
         if idx == 1 && self.batch.is_some() && !self.shared_batch() {
             let ids = self.personal_navigation_entries(cx).into_iter().take(BATCH_LIMIT).map(|entry| entry.id).collect();
             return self.batch_section(false, ids, cx);
+        }
+        if idx == 1 {
+            return div().h(px(SECTION_H)).pt(px(SECTION_TOP)).flex()
+                .child(div().id("section-library").flex_1().min_w_0().h(px(SECTION_H - SECTION_TOP - ROW_GAP)).pl(px(8.))
+                    .flex().items_center().rounded(px(ROW_R)).cursor_pointer()
+                    .relative().children(crate::devtools::row_probe(crate::settings::label(title.as_ref())))
+                    .hover(|s| s.bg(hover())).when(self.sidebar_drop_top(), |d| d.bg(selection_fill()))
+                    .text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).font_weight(FontWeight::SEMIBOLD)
+                    .text_color(section_color()).child(crate::settings::label(title.as_ref()))
+                    .on_click(cx.listener(|w,_,window,cx| w.personal_action(window,cx,|w,window,cx| {
+                        w.home.tab = crate::home::HomeTab::Recent; w.navigate_home(window,cx);
+                    }))))
+                .child(self.section_batch_button(false,cx)).child(self.section_add_button(false,cx));
         }
         self.section_heading(Some(idx), title, self.folded[idx], false, cx)
             .when(idx == 1, |row| row.child(self.section_batch_button(false, cx)).child(self.section_add_button(false, cx)))
@@ -741,32 +754,10 @@ impl Workspace {
             }))
     }
 
-    /// Hover "+" on a document (新建子文档, #357): a new page under it, straight away.
-    fn child_button(&self, e: &Entry, key: &str, cx: &mut Context<Self>) -> Stateful<Div> {
-        let id = e.id.clone();
-        div()
-            .id(SharedString::from(format!("child-{key}-{}", e.id)))
-            .size(px(22.))
-            .p(px(3.))
-            .flex_none()
-            .rounded(px(6.))
-            .opacity(self.folder_drag.reveal(&e.id))
-            .hover(|s| s.bg(Theme::sidebar_selected()))
-            .child(icon("plus", 16., Theme::icon()))
-            .tip(crate::settings::tr("新建子文档", "New child page"), None)
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |w, _, window, cx| {
-                cx.stop_propagation();
-                w.row_menu = None;
-                w.new_child(&id, window, cx);
-            }))
-    }
-
     pub(crate) fn folder_row_actions(&self, entry: &Entry, key: &str, target: Option<crate::folders::CreateTarget>, cx: &mut Context<Self>) -> Div {
         div().absolute().top_0().bottom_0().right_0().flex().items_center()
             .child(self.more_button(entry, key, cx))
-            .when_some(target, |d, target| d.child(self.add_button(entry, key, true, target.clone(), cx).ml(px(2.)))
-                .child(self.add_button(entry, key, false, target, cx).ml(px(2.)).mr(px(4.))))
+            .when_some(target, |d, target| d.child(self.add_button(entry, key, false, target, cx).ml(px(2.)).mr(px(4.))))
     }
 
     pub(crate) fn sidebar_rename(&self, id: &str, section: SidebarSection) -> Option<&crate::app::Rename> {
@@ -833,7 +824,6 @@ impl Workspace {
         let note = e.note.as_deref();
         let selected = self.sidebar_row_selected(section, note.unwrap_or(&e.id));
         let folder = e.meta.folder.is_some() && e.note.is_none();
-        let child = key == "doc" && self.takes_children(&e.id);
         let lib_batch = self.batch.is_some() && key == "doc";
         let renaming = self.sidebar_rename(&e.id, section).is_some();
         let float = key == "doc" && !lib_batch && !renaming;
@@ -846,7 +836,7 @@ impl Workspace {
         let personal_menu = self.personal_sidebar_menu_id(e, key);
         let menu_open = self.row_menu.as_ref().is_some_and(|m| m.id == personal_menu.as_deref().unwrap_or(&e.id) && !m.batch && m.pos.x < px(0.))
             || self.create_menu.as_ref().is_some_and(|(item, _)| target.as_ref() == Some(item));
-        let give = if float { (if folder { 74. } else if child { 52. } else { 28. }) * if menu_open { 1. } else { self.folder_drag.reveal(&e.id) } } else { 0. };
+        let give = if float { (if folder { 52. } else { 28. }) * if menu_open { 1. } else { self.folder_drag.reveal(&e.id) } } else { 0. };
         let title = div().flex_1().min_w_0().flex().mr(px(give)).child(self.sidebar_title(e, section, selected, drop_target, cx));
         // 批量操作: 我的文档 rows get a checkbox and lose "…"; checked rows are tinted.
         let batch = self.batch.as_ref().filter(|_| key == "doc" && !self.shared_batch());
@@ -856,6 +846,7 @@ impl Workspace {
             .h(px(DOC_ROW_H))
             .w_full()
             .relative()
+            .children(crate::devtools::row_probe(display_title(&e.title)))
             .flex()
             .items_center()
             // In 我的文档 the selection pill and the hover wash are drawn under the row (`sidebar_drag.rs`).
@@ -895,7 +886,7 @@ impl Workspace {
                                 .with_transformation(Transformation::rotate(radians(if open { std::f32::consts::FRAC_PI_2 } else { 0. }))))))
                     }
                     // A document with children: its own icon, turning into the chevron on hover like a folder's.
-                    _ if note.is_some() && !drop_target => {
+                    _ if note.is_some() => {
                         let face = div().absolute().inset_0().flex().items_center().justify_center().opacity(1. - chevron);
                         d.child(match &e.icon {
                             Some(em) if !e.meta.markdown => face.text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).child(em.clone()),
@@ -905,19 +896,16 @@ impl Workspace {
                             .child(icon("disclosure", ROW_ICON, Theme::icon())
                                 .with_transformation(Transformation::rotate(radians(if open { std::f32::consts::FRAC_PI_2 } else { 0. }))))))
                     }
-                    _ if note.is_some() => d.child(icon("folder-input", ROW_ICON, Theme::icon())),
                     _ if e.meta.named_by_file() => d.child(icon(crate::search::file_glyph(&e.meta), ROW_ICON, Theme::icon())),
                     Some(em) => d.text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).child(em.clone()),
                     None => d.child(icon("doc", ROW_ICON, Theme::icon())),
                 })
             })
             .child(title)
-            // A folder's "…", "new folder" and "+" sit in the same columns as the header's
-            // 批量操作, 新建文件夹 and 新建文档.
+            // Both sidebar sections share the folder's ellipsis and single creation menu.
             .when(float && folder, |d| d.child(self.folder_row_actions(e, key, target.filter(|target| self.can_create_folder(target, cx)), cx)))
             .when(float && !folder, |d| d.child(div().absolute().top_0().bottom_0().right_0().flex().items_center()
-                .child(self.more_button(e, key, cx))
-                .when(child, |d| d.child(self.child_button(e, key, cx).ml(px(2.)).mr(px(4.))))))
+                .child(self.more_button(e, key, cx))))
             .when(!renaming && key != "doc" && batch.is_none(), |d| d.child(self.more_button(e, key, cx)))
     }
 
@@ -953,7 +941,7 @@ impl Workspace {
                 return self.shared_child_row_menu(&m, shared_id, room, cx);
             }
         }
-        if let Some(key) = crate::shared_store::root_of_row(&m.id).map(str::to_string) { return self.root_row_menu(&key, m, cx); }
+        if let Some(key) = crate::shared_store::root_of_row(&m.id).map(str::to_string) { return self.top_row_menu(&key, m, cx); }
         if !m.batch && self.entries.iter().any(|e| e.id == m.id && e.meta.folder.is_some() && e.note.is_none()) { return self.folder_row_menu(m, cx); }
         if !m.batch && self.entries.iter().any(|e| e.id == m.id && e.meta.local()) { return self.local_row_menu(m, cx); }
         // A document with children (a folder with a 正文, #357): the document's menu, its

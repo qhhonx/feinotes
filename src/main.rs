@@ -58,6 +58,9 @@ mod devtools {
     pub fn start(_: &mut gpui::Window, _: &mut gpui::App) {}
     pub fn take_pick() -> Option<Vec<std::path::PathBuf>> { None }
     pub fn file_drag() -> bool { false }
+    pub fn rows_begin(_: &gpui::Window) {}
+    pub fn row_probe(_: impl Into<gpui::SharedString>) -> Option<gpui::AnyElement> { None }
+    pub fn anchor_probe(_: impl Into<gpui::SharedString>) -> Option<gpui::AnyElement> { None }
 }
 mod design;
 mod docinfo;
@@ -79,6 +82,7 @@ mod native_header;
 mod mermaid;
 mod printing;
 mod search;
+mod siyuan;
 #[cfg(not(any(target_family = "wasm", target_os = "ios")))]
 mod selftest;
 #[cfg(any(target_family = "wasm", target_os = "ios"))]
@@ -242,7 +246,7 @@ pub(crate) fn start(existed: bool, scripted: bool, into: Option<&mut Window>, in
     cx.global::<shared_store::SharedStore>().each(|s| moved.extend(s.migrated.take()));
     for r in moved { changelog::migrated(&r); }
     // The root in front brings its own look (W21).
-    settings::root_switched(cx);
+    settings::top_switched(cx);
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     if !cloud_restore::local_only() && let Err(err) = cloud_sync::start(cx) { logging::fatal("无法打开同步测试库 / Could not open the sync test library", &err); }
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -393,7 +397,7 @@ fn finish_launch(incoming: local_files::Incoming, into: Option<&mut Window>, cx:
     let existed = if FEI_NOTES {
         guides::seeded(&root).unwrap_or(false)
     } else {
-        (!fixed && fdl_core::vfs::PathExt::fs_exists(fdl_core::workspace::Workspace::roots_file().as_path())) || guides::seeded(&root).unwrap_or(false)
+        (!fixed && fdl_core::vfs::PathExt::fs_exists(fdl_core::home::Home::list_file().as_path())) || guides::seeded(&root).unwrap_or(false)
     };
     let onboard = !cfg!(all(target_os = "macos", feature = "cloudkit-restore")) && onboarding::wanted(existed, scripted);
     let seed = if FEI_NOTES { !scripted && !in_shared_note() } else { fixed && (!scripted || selftest::active()) };

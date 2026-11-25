@@ -6,6 +6,7 @@ use crate::feishu_theme::{self as theme, craft};
 use crate::editor_theme::Theme;
 use gpui::*;
 use std::cell::Cell;
+use std::time::{Duration, Instant};
 
 const W: f32 = 4.;
 const W_HOT: f32 = 6.;
@@ -18,10 +19,73 @@ const HIT_W: f32 = 12.;
 pub struct Scrollbar {
     /// The pointer was over the thumb last frame.
     hot: Cell<bool>,
-    /// While dragging: pointer offset into the thumb, and the content and
-    /// thumb heights at the press (held still so the thumb stays under the
-    /// pointer as newly measured blocks refine the estimate).
+    /// The page thumb while dragged.
+    held: Cell<Option<Grab>>,
+    /// A wide table's thumb while dragged: pointer offset into the thumb, and
+    /// its width (the middle is unused).
     grab: Cell<Option<(Pixels, Pixels, Pixels)>>,
+}
+
+/// A thumb being dragged. It stays under the pointer, and the page follows
+/// it: unmeasured rows count at the average height, so the estimated length
+/// changes as they come on screen, and the page is aimed again until it sits
+/// where the thumb says. (Holding the length from the press instead, a first
+/// screen of tall blocks put the end of the page a third down the track, and
+/// the thumb would go no further.) Each move already aims by the latest
+/// estimate; aiming again lays out rows nobody sees, so it waits until the
+/// pointer rests, or the button is let go (the thumb is held where it is
+/// until the page is there).
+#[derive(Clone, Copy)]
+struct Grab {
+    /// Pointer offset into the thumb.
+    dy: Pixels,
+    /// Thumb height at the press.
+    h: Pixels,
+    /// Where the thumb is, 0 (top) to 1 (end).
+    f: f32,
+    /// Re-aims left before the estimate is taken as it is.
+    tries: u8,
+    /// The last move.
+    moved: Instant,
+    /// The button is still down (else the page is settling after it).
+    down: bool,
+}
+
+const TRIES: u8 = 8;
+/// How far beyond the window the page lays out rows (`ListState::new`): none
+/// while the thumb is held, where every frame lands somewhere new and rows
+/// nobody sees were most of the frame.
+pub(super) const OVERDRAW: f32 = 600.;
+/// How long the pointer rests before the page is aimed again.
+const REST: Duration = Duration::from_millis(80);
+
+/// The thumb's top within the track and its height, for the scroll `offset`
+/// in `content` seen through `view` on a `track` this tall; `None` when it
+/// all fits. A held thumb is where it was dragged to.
+fn thumb(offset: Pixels, content: Pixels, view: Pixels, track: Pixels, grab: Option<Grab>) -> Option<(Pixels, Pixels)> {
+    if content <= view + px(1.) {
+        return None;
+    }
+    let h = grab.map_or_else(|| (view * (view / content)).max(px(MIN_H)).min(track), |g| g.h);
+    let f = grab.map_or_else(|| (offset / (content - view)).clamp(0., 1.), |g| g.f);
+    Some(((track - h) * f, h))
+}
+
+/// Where a thumb at `f` puts the page in `content`: the end is the real end,
+/// which the estimate may put short of it.
+fn aim(f: f32, content: Pixels, view: Pixels) -> Pixels {
+    if f >= 1. { px(f32::MAX) } else { (content - view) * f }
+}
+
+/// Whether the page has drifted from a held thumb (the estimate changed).
+fn drifted(g: &Grab, offset: Pixels, content: Pixels, view: Pixels) -> bool {
+    g.f < 1. && g.tries > 0 && (offset - aim(g.f, content, view)).abs() > px(0.5)
+}
+
+/// Where to aim the page again at `now`, if anywhere: not while the pointer
+/// is moving (its moves aim the page).
+fn reaim(g: &Grab, offset: Pixels, content: Pixels, view: Pixels, now: Instant) -> Option<Pixels> {
+    (drifted(g, offset, content, view) && (!g.down || now.duration_since(g.moved) >= REST)).then(|| aim(g.f, content, view))
 }
 
 impl Editor {
@@ -39,28 +103,42 @@ impl Editor {
                     let view = list.viewport_bounds().size.height;
                     (-list.scroll_px_offset_for_scrollbar().y, view + list.max_offset_for_scrollbar().y, view)
                 };
-                let (content, h) = match sb.grab.get() {
-                    Some((_, content, h)) => (content, h),
-                    None => (content, (view * (view / content)).max(px(MIN_H)).min(bounds.size.height)),
-                };
-                if content <= view + px(1.) {
-                    return None;
+                let mut grab = sb.held.get();
+                if let Some(g) = grab {
+                    if let Some(to) = reaim(&g, offset, content, view, Instant::now()) {
+                        sb.held.set(Some(Grab { tries: g.tries - 1, ..g }));
+                        #[cfg(not(target_os = "ios"))]
+                        list.scroll_to_estimated_offset(to);
+                        #[cfg(target_os = "ios")]
+                        list.set_offset_from_scrollbar(point(px(0.), -to));
+                        window.refresh();
+                    } else if !g.down {
+                        // Let go and settled: the estimate has the thumb again.
+                        sb.held.set(None);
+                        #[cfg(not(target_os = "ios"))]
+                        list.set_overdraw(px(OVERDRAW));
+                        grab = None;
+                    }
                 }
-                let travel = bounds.size.height - h;
-                let top = bounds.top() + travel * (offset / (content - view)).clamp(0., 1.);
+                let (y, h) = thumb(offset, content, view, bounds.size.height, grab)?;
+                let top = bounds.top() + y;
+                let f = if bounds.size.height > h { y / (bounds.size.height - h) } else { 0. };
                 let zone = Bounds::new(point(bounds.right() - px(HIT_W), top), size(px(HIT_W), h));
-                Some((top, h, content, view, window.insert_hitbox(zone, HitboxBehavior::BlockMouseExceptScroll)))
+                Some((top, h, f, window.insert_hitbox(zone, HitboxBehavior::BlockMouseExceptScroll)))
             },
             move |bounds, state, window, _| {
                 let sb = sb2;
-                let Some((top, h, content, view, hitbox)) = state else {
-                    sb.grab.set(None);
+                let Some((top, h, f, hitbox)) = state else {
+                    if sb.held.take().is_some() {
+                        #[cfg(not(target_os = "ios"))]
+                        list2.set_overdraw(px(OVERDRAW));
+                    }
                     return;
                 };
                 window.set_cursor_style(CursorStyle::Arrow, &hitbox);
                 let hovered = hitbox.is_hovered(window);
                 sb.hot.set(hovered);
-                let dragging = sb.grab.get().is_some();
+                let dragging = sb.held.get().is_some_and(|g| g.down);
                 let w = if hovered || dragging { W_HOT } else { W };
                 // Black at 22%, darker under the pointer and while held.
                 let color = if dragging {
@@ -75,9 +153,13 @@ impl Editor {
 
                 window.on_mouse_event({
                     let (sb, hitbox) = (sb.clone(), hitbox.clone());
+                    #[cfg(not(target_os = "ios"))]
+                    let list = list2.clone();
                     move |ev: &MouseDownEvent, phase, window, cx| {
                         if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left && hitbox.is_hovered(window) {
-                            sb.grab.set(Some((ev.position.y - top, content, h)));
+                            sb.held.set(Some(Grab { dy: ev.position.y - top, h, f, tries: TRIES, moved: Instant::now(), down: true }));
+                            #[cfg(not(target_os = "ios"))]
+                            list.set_overdraw(px(0.));
                             cx.stop_propagation();
                             window.refresh();
                         }
@@ -85,26 +167,34 @@ impl Editor {
                 });
                 window.on_mouse_event({
                     let (sb, hitbox, list) = (sb.clone(), hitbox.clone(), list2.clone());
-                    move |ev: &MouseMoveEvent, phase, window, _| {
+                    move |ev: &MouseMoveEvent, phase, window, cx| {
                         if phase != DispatchPhase::Bubble {
                             return;
                         }
-                        match sb.grab.get() {
-                            Some((dy, _, h)) if ev.pressed_button == Some(MouseButton::Left) => {
-                                let travel = (bounds.size.height - h).max(px(1.));
-                                let f = ((ev.position.y - dy - bounds.top()) / travel).clamp(0., 1.);
-                                // At the end, go to the real bottom: the rows there may not
-                                // be measured yet, so the estimate can stop short.
+                        match sb.held.get().filter(|g| g.down) {
+                            Some(g) if ev.pressed_button == Some(MouseButton::Left) => {
+                                let travel = (bounds.size.height - g.h).max(px(1.));
+                                let f = ((ev.position.y - g.dy - bounds.top()) / travel).clamp(0., 1.);
+                                sb.held.set(Some(Grab { f, tries: TRIES, moved: Instant::now(), ..g }));
                                 #[cfg(not(target_os = "ios"))]
-                                list.scroll_to_estimated_offset(if f >= 1. { px(f32::MAX) } else { (content - view) * f });
+                                let (_, content, view) = list.estimated_scroll_metrics();
                                 #[cfg(target_os = "ios")]
-                                if f >= 1. { list.scroll_to_end(); }
-                                else { list.set_offset_from_scrollbar(point(px(0.), -(content - view) * f)); }
+                                let (content, view) = { let view = list.viewport_bounds().size.height; (view + list.max_offset_for_scrollbar().y, view) };
+                                #[cfg(not(target_os = "ios"))]
+                                list.scroll_to_estimated_offset(aim(f, content, view));
+                                #[cfg(target_os = "ios")]
+                                list.set_offset_from_scrollbar(point(px(0.), -aim(f, content, view)));
                                 window.refresh();
+                                // A frame once the pointer rests, to aim the page again.
+                                window.spawn(cx, async move |cx| {
+                                    cx.background_executor().timer(REST).await;
+                                    let _ = cx.update(|window, _| window.refresh());
+                                })
+                                .detach();
                             }
                             // The button went up somewhere we didn't see.
-                            Some(_) => {
-                                sb.grab.set(None);
+                            Some(g) => {
+                                sb.held.set(Some(Grab { down: false, ..g }));
                                 window.refresh();
                             }
                             None if hitbox.is_hovered(window) != sb.hot.get() => window.refresh(),
@@ -115,7 +205,8 @@ impl Editor {
                 window.on_mouse_event({
                     let sb = sb.clone();
                     move |ev: &MouseUpEvent, phase, window, _| {
-                        if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left && sb.grab.take().is_some() {
+                        if phase == DispatchPhase::Bubble && ev.button == MouseButton::Left && let Some(g) = sb.held.get().filter(|g| g.down) {
+                            sb.held.set(Some(Grab { down: false, ..g }));
                             window.refresh();
                         }
                     }
@@ -215,4 +306,57 @@ pub(super) fn table_scrollbar(handle: ScrollHandle, sb: std::rc::Rc<Scrollbar>) 
             });
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Grab, REST, TRIES, aim, drifted, reaim, thumb};
+    use gpui::px;
+    use std::time::Instant;
+
+    fn held(f: f32) -> Option<Grab> { Some(Grab { dy: px(0.), h: px(40.), f, tries: TRIES, moved: Instant::now(), down: true }) }
+
+    #[test]
+    fn the_thumb_reaches_the_end_with_the_page() {
+        let (view, track) = (px(600.), px(600.));
+        // At the end of the page the thumb is at the end of the track, whatever the length.
+        for content in [px(1200.), px(24_000.), px(250_000.)] {
+            let (y, h) = thumb(content - view, content, view, track, None).unwrap();
+            assert_eq!(y + h, track, "{content:?}");
+            assert_eq!(thumb(px(0.), content, view, track, None).unwrap().0, px(0.));
+        }
+        assert!(thumb(px(0.), px(600.5), view, track, None).is_none(), "it all fits");
+        // Held, it is where the pointer put it, not where a changing estimate says.
+        let (y, h) = thumb(px(5_000.), px(250_000.), view, track, held(1.)).unwrap();
+        assert_eq!((y + h, h), (track, px(40.)));
+        assert_eq!(thumb(px(0.), px(9_000.), view, track, held(0.5)).unwrap().0, px(280.));
+    }
+
+    #[test]
+    fn a_held_thumb_takes_the_page_with_it() {
+        let view = px(600.);
+        // The end of the track is the real end, which the estimate may put short of it.
+        assert_eq!(aim(1., px(10_000.), view), px(f32::MAX));
+        assert_eq!(aim(0.5, px(10_600.), view), px(5_000.));
+        // The estimate shrank as rows were measured: the page is aimed again …
+        let g = held(0.5).unwrap();
+        assert!(drifted(&g, px(5_000.), px(4_600.), view));
+        assert!(!drifted(&g, px(2_000.), px(4_600.), view));
+        // … but not past the end (the real end is the end), nor for ever.
+        assert!(!drifted(&held(1.).unwrap(), px(0.), px(4_600.), view));
+        assert!(!drifted(&Grab { tries: 0, ..g }, px(5_000.), px(4_600.), view));
+    }
+
+    /// Aiming again lays out rows nobody sees: a moving pointer's own moves
+    /// aim the page, so only a resting pointer, or a thumb let go, aims again.
+    #[test]
+    fn the_page_is_aimed_again_only_at_rest() {
+        let view = px(600.);
+        let g = held(0.5).unwrap();
+        let (offset, content) = (px(5_000.), px(4_600.));
+        assert_eq!(reaim(&g, offset, content, view, g.moved), None, "moving");
+        assert_eq!(reaim(&g, offset, content, view, g.moved + REST), Some(px(2_000.)), "resting");
+        assert_eq!(reaim(&Grab { down: false, ..g }, offset, content, view, g.moved), Some(px(2_000.)), "let go");
+        assert_eq!(reaim(&g, px(2_000.), content, view, g.moved + REST), None, "already there");
+    }
 }

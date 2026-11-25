@@ -1,0 +1,175 @@
+{
+	"spec": 1,
+	"id": "20240101000700-avbooks",
+	"name": "书单",
+	"viewID": "20240101000710-viewaaa",
+	"keyIDs": null,
+	"keyValues": [
+		{
+			"key": {
+				"id": "k-name",
+				"name": "书名",
+				"type": "block",
+				"icon": "",
+				"desc": ""
+			},
+			"values": [
+				{
+					"id": "v1",
+					"keyID": "k-name",
+					"blockID": "row-1",
+					"type": "block",
+					"block": {
+						"id": "20240101000100-docaaaa",
+						"content": "全部块类型"
+					}
+				},
+				{
+					"id": "v2",
+					"keyID": "k-name",
+					"blockID": "row-2",
+					"type": "block",
+					"isDetached": true,
+					"block": {
+						"content": "三体"
+					}
+				}
+			]
+		},
+		{
+			"key": {
+				"id": "k-score",
+				"name": "评分",
+				"type": "number",
+				"icon": "",
+				"desc": "",
+				"numberFormat": ""
+			},
+			"values": [
+				{
+					"id": "v3",
+					"keyID": "k-score",
+					"blockID": "row-2",
+					"type": "number",
+					"number": {
+						"content": 9.5,
+						"isNotEmpty": true
+					}
+				}
+			]
+		},
+		{
+			"key": {
+				"id": "k-tags",
+				"name": "分类",
+				"type": "mSelect",
+				"icon": "",
+				"desc": ""
+			},
+			"values": [
+				{
+					"id": "v4",
+					"keyID": "k-tags",
+					"blockID": "row-2",
+					"type": "mSelect",
+					"mSelect": [
+						{
+							"content": "科幻",
+							"color": "1"
+						},
+						{
+							"content": "长篇",
+							"color": "2"
+						}
+					]
+				}
+			]
+		},
+		{
+			"key": {
+				"id": "k-done",
+				"name": "读完",
+				"type": "checkbox",
+				"icon": "",
+				"desc": ""
+			},
+			"values": [
+				{
+					"id": "v5",
+					"keyID": "k-done",
+					"blockID": "row-1",
+					"type": "checkbox",
+					"checkbox": {
+						"checked": true
+					}
+				}
+			]
+		},
+		{
+			"key": {
+				"id": "k-url",
+				"name": "链接",
+				"type": "url",
+				"icon": "",
+				"desc": ""
+			},
+			"values": [
+				{
+					"id": "v6",
+					"keyID": "k-url",
+					"blockID": "row-2",
+					"type": "url",
+					"url": {
+						"content": "https://example.com/santi"
+					}
+				}
+			]
+		}
+	],
+	"views": [
+		{
+			"id": "20240101000710-viewaaa",
+			"icon": "",
+			"name": "表格",
+			"hideAttrViewName": false,
+			"desc": "",
+			"type": "table",
+			"table": {
+				"spec": 0,
+				"id": "t1",
+				"columns": [
+					{
+						"id": "k-name",
+						"wrap": false,
+						"hidden": false,
+						"pin": false,
+						"width": ""
+					},
+					{
+						"id": "k-tags",
+						"hidden": false
+					},
+					{
+						"id": "k-score",
+						"hidden": false
+					},
+					{
+						"id": "k-done",
+						"hidden": false
+					},
+					{
+						"id": "k-url",
+						"hidden": true
+					}
+				],
+				"rowIds": [
+					"row-2",
+					"row-1"
+				],
+				"filters": [],
+				"sorts": [],
+				"pageSize": 50
+			}
+		}
+	]
+}

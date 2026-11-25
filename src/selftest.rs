@@ -280,7 +280,7 @@ impl Run {
     /// An empty library is seeded with 开始指南, and the window draws.
     async fn first_launch(&mut self) -> Step {
         self.until("the guides in the list", 30, |w, _, _| !w.entries.is_empty()).await?;
-        let root = crate::store::Store::root_dir();
+        let root = crate::store::Store::active_dir();
         if !crate::guides::seeded(&root).map_err(|e| e.to_string())? { return Err("library not marked as seeded".into()) }
         let ids: Vec<String> = self.ws(|w, _, _| w.entries.iter().filter(|e| e.meta.folder.is_none()).map(|e| e.id.clone()).collect())?;
         if ids.len() < 3 { return Err(format!("only {} guide documents", ids.len())) }
@@ -432,7 +432,8 @@ impl Run {
         self.cx.update(crate::update::download);
         self.until("the download", 30, |_, _, cx| { state = crate::update::state(cx); !matches!(state, crate::update::State::Downloading(_) | crate::update::State::Available(_)) }).await?;
         match &state {
-            crate::update::State::Failed(e) if e.ends_with("signature") => {}
+            // Turned down twice: the second download goes past caches.
+            crate::update::State::Failed(e) if e.contains("signature") => {}
             s => return Err(format!("a package signed by another key ended in {s:?}")),
         }
         let bytes = std::fs::read(dir.join(format!("{name}.part"))).map_err(|e| format!("downloaded package: {e}"))?;
@@ -500,7 +501,8 @@ fn serve_update(name: &str, signature: &str) -> std::io::Result<String> {
                 match stream.read(&mut buf[got..]) { Ok(0) | Err(_) => break, Ok(n) => got += n }
             }
             let req = String::from_utf8_lossy(&buf[..got]);
-            let path = req.split_whitespace().nth(1).unwrap_or("");
+            // As a CDN does: the query (the updater's `nocache=` retry) is not part of the file.
+            let path = req.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("");
             let reply = match files.iter().find(|(p, _)| p == path) {
                 Some((_, body)) => [format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes(), body.clone()].concat(),
                 None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),

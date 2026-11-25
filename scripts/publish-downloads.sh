@@ -1,7 +1,9 @@
 #!/bin/bash
 # Upload release packages to the download.quiet.md R2 bucket: an immutable copy under v<version>/ and the
-# fixed latest/ link the site and README point at. Pass the macOS ZIP, the Windows installer, or both:
-#   scripts/publish-downloads.sh dist-release.XXXX/quiet-md-0.1.2-macos-arm64.zip dist/windows/signed/quiet-md-0.1.2-windows-x64-setup.exe
+# fixed latest/ link the site and README point at. Pass any of the packages, e.g. a Mac's DMG and ZIP and the installer:
+#   scripts/publish-downloads.sh dist-release.XXXX/quiet-md-0.1.2-macos-arm64.{dmg,zip} dist/windows/signed/quiet-md-0.1.2-windows-x64-setup.exe
+# On macOS the DMG is the download (latest/quiet-md-macos-<arch>.dmg) and the ZIP the updater's package: only the
+# ZIP writes latest/update-macos-*.json, so publish both (the ZIP's latest/ link stays for older links).
 # Each package is signed with minisign (MINISIGN_KEY, default ~/.minisign/quiet-md.key) and checked against
 # packaging/update-key.pub; latest/update-<platform>.json, written last, is what the app's updater reads.
 # The key's password comes from the login keychain when stored there once, else minisign asks:
@@ -16,7 +18,7 @@
 set -euo pipefail
 export PYTHONIOENCODING=utf-8
 cd "$(dirname "$0")/.."
-[ $# -ge 1 ] || { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+[ $# -ge 1 ] || { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 bucket=quiet-md-downloads
 host=https://download.quiet.md
 wrangler=${WRANGLER:-npx -y wrangler@4}
@@ -114,6 +116,8 @@ publish_fonts
 for file in "$@"; do
   name=$(basename "$file")
   case "$name" in
+    quiet-md-*-macos-arm64.dmg) platform=; latest=quiet-md-macos-arm64.dmg; type=application/x-apple-diskimage ;;
+    quiet-md-*-macos-x86_64.dmg) platform=; latest=quiet-md-macos-x86_64.dmg; type=application/x-apple-diskimage ;;
     quiet-md-*-macos-arm64.zip) platform=macos-arm64; latest=quiet-md-macos-arm64.zip; type=application/zip ;;
     quiet-md-*-macos-x86_64.zip) platform=macos-x86_64; latest=quiet-md-macos-x86_64.zip; type=application/zip ;;
     quiet-md-*-windows-x64-setup.exe) platform=windows-x64; latest=quiet-md-windows-x64-setup.exe; type=application/vnd.microsoft.portable-executable ;;
@@ -140,6 +144,13 @@ for file in "$@"; do
   # latest/ keeps a stable URL; the download still saves under the versioned file name.
   put "latest/$latest" "$file" "$type" "public, max-age=300" "attachment; filename=\"$name\""
   size=$(stat -f %z "$file")
+  if [ -z "$platform" ]; then  # A download only: the updater never reads it.
+    [ -n "${DRY_RUN:-}" ] && continue
+    curl -sfI "$host/latest/$latest?check=$RANDOM" | tr -d '\r' | grep -qi "^content-length: $size$" \
+      && curl -sfI "$host/v$version/$name" | tr -d '\r' | grep -qi "^content-length: $size$" \
+      || { echo "$name is not served as expected" >&2; exit 1; }
+    echo "$host/latest/$latest -> $name ($size bytes)"; continue
+  fi
   manifest="$work/update-$platform.json"
   python3 - "$version" "$host/v$version/$name" "$size" "$sig" > "$manifest" <<'PYTHON'
 import json, sys

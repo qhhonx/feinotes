@@ -16,6 +16,37 @@ pub use std::fs::*;
 #[cfg(target_family = "wasm")]
 pub use mem::*;
 
+/// Whether `path` is a placeholder whose contents are still only in the
+/// cloud (iCloud's optimized storage, #406): reading it blocks until it is
+/// downloaded, so nothing reads one on the main thread or in a background
+/// scan; stat and listing a folder don't download. macOS: the stat flag
+/// `SF_DATALESS`; false elsewhere. The one place that decides it (sync 1d
+/// may ask the file provider instead, and Windows' RECALL_ON_DATA_ACCESS).
+pub fn is_dataless(path: &Path) -> bool {
+    #[cfg(test)]
+    if DATALESS.with(|d| d.borrow().iter().any(|p| p == path)) { return true }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::macos::fs::MetadataExt;
+        const SF_DATALESS: u32 = 0x4000_0000;
+        std::fs::symlink_metadata(path).is_ok_and(|m| m.st_flags() & SF_DATALESS != 0)
+    }
+    #[cfg(not(target_os = "macos"))]
+    { let _ = path; false }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Files this test treats as cloud-only placeholders.
+    static DATALESS: std::cell::RefCell<Vec<std::path::PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Treat `path` as a cloud-only placeholder in this test thread (or no longer).
+#[cfg(test)]
+pub fn set_dataless(path: &Path, on: bool) {
+    DATALESS.with(|d| { let mut d = d.borrow_mut(); d.retain(|p| p != path); if on { d.push(path.to_path_buf()); } });
+}
+
 pub trait PathExt {
     fn fs_exists(&self) -> bool;
     fn fs_try_exists(&self) -> io::Result<bool>;
@@ -68,6 +99,38 @@ pub fn temp_dir() -> PathBuf {
 pub fn process_id() -> u32 {
     #[cfg(not(target_family = "wasm"))] { std::process::id() }
     #[cfg(target_family = "wasm")] { 1 }
+}
+
+/// When the file at `path` was made and last changed, in unix seconds, for
+/// an import to keep. Made: its creation time where the system keeps one
+/// (macOS, Windows; Linux on file systems with statx), else the change time,
+/// and never later than that (a copied file is made after its last change).
+/// None in the web build, or when neither can be read.
+pub fn file_times(path: &Path) -> Option<(u64, u64)> {
+    #[cfg(not(target_family = "wasm"))] {
+        let m = std::fs::metadata(path).ok()?;
+        let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs());
+        let modified = m.modified().ok().and_then(secs)?;
+        let made = m.created().ok().and_then(secs).unwrap_or(modified).min(modified);
+        Some((made, modified))
+    }
+    #[cfg(target_family = "wasm")] { let _ = path; None }
+}
+
+/// When the file or folder at `path` was made, in unix seconds, where the
+/// system keeps that (macOS, Windows; Linux on file systems with statx).
+pub fn made_time(path: &Path) -> Option<u64> {
+    #[cfg(not(target_family = "wasm"))] { std::fs::metadata(path).ok()?.created().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs()) }
+    #[cfg(target_family = "wasm")] { let _ = path; None }
+}
+
+/// Set the change time of the file at `path` to unix second `secs`, as a
+/// copy that keeps it (the web build keeps no times).
+pub fn set_modified(path: &Path, secs: u64) -> io::Result<()> {
+    #[cfg(not(target_family = "wasm"))] {
+        std::fs::File::options().write(true).open(path)?.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+    }
+    #[cfg(target_family = "wasm")] { let _ = (path, secs); Ok(()) }
 }
 
 /// Whether `path` is a lazy file still being fetched (web build): the UI shows

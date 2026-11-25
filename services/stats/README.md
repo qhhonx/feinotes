@@ -1,6 +1,6 @@
 # quiet-md-stats
 
-A Cloudflare Worker that runs once a day (00:30 UTC) and stores Quiet.md's statistics in the D1 database `quiet-md-stats`. It has no routes and serves no requests: downloads and update checks never pass through it. It reads what Cloudflare and GitHub already count and keeps daily aggregates, which those services don't keep for long (Cloudflare's per-path analytics: 31 days; GitHub: a running total only). No IP addresses are stored.
+A Cloudflare Worker that runs once a day (00:30 UTC) and stores Quiet.md's statistics in the D1 database `quiet-md-stats`. Downloads and update checks never pass through it. Its one route, `POST telemetry.quiet.md/v1/cli`, takes the `quiet` command line tool's daily usage counts (`crates/cli/src/usage.rs`) into `cli_reports`. It reads what Cloudflare and GitHub already count and keeps daily aggregates, which those services don't keep for long (Cloudflare's per-path analytics: 31 days; GitHub: a running total only). No IP addresses are stored.
 
 ## What it records
 
@@ -20,8 +20,16 @@ Every number is a row of `metrics`: `(day, metric, dims, value, source)`, `day` 
 | `github.stars`, `github.forks`, `github.watchers`, `github.open_issues` | the repository's counts when collected (open issues include PRs) | none |
 | `site.visitors` | distinct IPs that loaded quiet.md's home page, crawlers left out | country |
 | `site.pageviews` | home page loads, crawlers left out | none |
+| `cli.users` | installs of `quiet` that reported using it that day (random install id) | os |
+| `cli.new` | installs whose first reported day it is | none |
+| `cli.runs` | `quiet` commands run (MCP tool calls included; a script is one) | os |
+| `cli.errors` | commands that failed | none |
+| `cli.commands` | runs per command name | command |
+| `cli.versions` | installs per `quiet` version | version |
 
 `channel` is `update` for the in-app updater (curl fetching the versioned `v<x.y.z>/` package its manifest names) and `cdn` for everything else on download.quiet.md: the site, the README and release-note links opened in a browser. The free plan's analytics have no query string or referer, so those links are not told apart.
+
+`cli_reports` keeps one row per UTC day and install: version, os, arch, runs, errors and runs per command (JSON). A client sends finished days when it next runs, so each collection recomputes the `cli.*` metrics of the last 7 days. The route stores no IP and checks every report (shape, a uuid v4 id, days from 40 back to tomorrow, known command names); anything else is a 400.
 
 `downloads_daily` sums `cdn.downloads` and `github.downloads` per day, platform and channel (`cdn`, `update`, `github`). `runs` logs every collection with its row count or error.
 
@@ -35,10 +43,10 @@ npx wrangler@4 d1 execute quiet-md-stats --remote --command "SELECT * FROM runs 
 From this directory:
 
 ```sh
-npx wrangler@4 d1 migrations apply quiet-md-stats --remote   # schema changes: add a file to migrations/
+npx wrangler@4 d1 migrations apply quiet-md-stats --remote   # schema changes: add a file to migrations/ (0002: cli_reports)
 npx wrangler@4 secret put CF_API_TOKEN                       # API token: Zone › Analytics › Read on quiet.md
 npx wrangler@4 secret put GITHUB_TOKEN                       # optional: any token, for GitHub's higher rate limit
-npx wrangler@4 deploy
+npx wrangler@4 deploy                                        # also attaches telemetry.quiet.md
 ```
 
 Each run fills in every Cloudflare day since the last successful one, up to `MAX_DAYS` (3) per run. After a longer gap, or for the first fill, run the same collector from a machine:

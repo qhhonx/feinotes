@@ -393,9 +393,9 @@ impl Store {
         let index = read_map(&db, "library_entries")?;
         let trash = read_map(&db, "library_trash")?;
         let key = library_key(&root);
-        let mut store = Self { sqlite: Some(sqlite), flat: true, migrated: None, batch: Default::default(), file_changes: vec![], root, index, foreign: Default::default(), trash, warnings: vec![],
+        let mut store = Self { sqlite: Some(sqlite), flat: true, migrated: None, batch: Default::default(), file_changes: vec![], top_dir: root, index, foreign: Default::default(), trash, warnings: vec![],
             loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), view: Default::default(),
-            v5: false, me: Default::default(), clock: Default::default(), seen: Default::default(), merged: Default::default(), key };
+            v5: false, me: Default::default(), clock: Default::default(), seen: Default::default(), merged: Default::default(), key, place_by_hand: true, v6: false, seen_trash: Default::default(), purging: Default::default(), synced: Default::default() };
         store.restore_recoveries();
         Ok(store)
     }
@@ -569,7 +569,7 @@ impl Store {
         let new = uuid::Uuid::new_v4().to_string();
         let batch = format!("shared-recovery-{new}"); let prefix = Path::new("assets").join(&batch);
         let stage = root.join(format!(".{batch}")); let assets = root.join(&prefix);
-        meta.parent = None; meta.share_root = None; meta.root_order = None; meta.order = 0; meta.opened = 0; meta.pinned = false; meta.starred = 0;
+        meta.parent = None; meta.share_root = None; meta.top_order = None; meta.order = 0; meta.opened = 0; meta.pinned = false; meta.starred = 0;
         let result = (|| {
             stage_copy_assets(&mut doc, &source, &stage, &prefix, &HashMap::from([(id.to_owned(), new.clone())]))?;
             write_document(&tx, &new, true, &doc, &front)?;
@@ -611,7 +611,7 @@ impl Store {
         let mut meta: Meta = serde_json::from_str(&meta)?;
         anyhow::ensure!(meta.folder.is_none() && !meta.local(), "只能复制已保存的文档");
         meta.parent = None;
-        meta.root_order = None;
+        meta.top_order = None;
         meta.order = 0;
         meta.opened = 0;
         meta.pinned = false;
@@ -710,14 +710,14 @@ impl Store {
     }
 
     pub(super) fn check_shared_writer(&self, structural_target: Option<&str>) -> Result<()> {
-        if !self.root.join("shared-note.json").is_file() { return Ok(()); }
+        if !self.top_dir.join("shared-note.json").is_file() { return Ok(()); }
         let library = self.sqlite.as_ref().context("Shared database unavailable")?;
         let db = library.read()?;
-        let descriptor: serde_json::Value = serde_json::from_slice(&std::fs::read(self.root.join("shared-note.json"))?)?;
+        let descriptor: serde_json::Value = serde_json::from_slice(&std::fs::read(self.top_dir.join("shared-note.json"))?)?;
         let scope = &descriptor["scope"];
         let access: Option<Vec<u8>> = db.query_row("SELECT value FROM state WHERE key='shared_access'", [], |r| r.get(0)).optional()?;
         let writable = match access { Some(value) => matches!(serde_json::from_slice::<String>(&value)?.as_str(), "owner" | "readWrite"), None => scope["owner"].is_null() };
-        anyhow::ensure!(writable && !self.root.join("shared-note-ended").exists(), "共享访问为只读 / This share is read-only");
+        anyhow::ensure!(writable && !self.top_dir.join("shared-note-ended").exists(), "共享访问为只读 / This share is read-only");
         if scope["folder"].as_bool() == Some(true) && structural_target.is_some() {
             anyhow::ensure!(structural_target != scope["note"].as_str(), "请从共享菜单管理顶层文件夹 / Manage the root from the sharing menu");
         }
@@ -799,16 +799,16 @@ impl Store {
                     while let Some(part) = parts.next()? { body.push_str(part.get_ref(0)?.as_str()?); }
                 }
                 entries.push(Entry { id, meta: meta.clone(), title: row.get(1)?, icon: row.get(2)?, body: body.into(),
-                    reminders: serde_json::from_str(&row.get::<_, String>(4)?)?, links: serde_json::from_str(&row.get::<_, String>(5)?)?, note: None, root: String::new() });
+                    reminders: serde_json::from_str(&row.get::<_, String>(4)?)?, links: serde_json::from_str(&row.get::<_, String>(5)?)?, note: None, top: String::new() });
             }
         }
         tx.commit()?;
         for (id, meta) in &self.index {
             if let Some(title) = &meta.folder {
-                entries.push(Entry { id: id.clone(), meta: meta.clone(), title: title.clone(), icon: None, body: Default::default(), reminders: vec![], links: vec![], note: None, root: String::new() });
+                entries.push(Entry { id: id.clone(), meta: meta.clone(), title: title.clone(), icon: None, body: Default::default(), reminders: vec![], links: vec![], note: None, top: String::new() });
             } else if meta.local() && let Ok(doc) = self.load(id) {
                 entries.push(Entry { id: id.clone(), meta: meta.clone(), title: doc.title.text.clone(), icon: doc.icon.clone(), body: doc.plain_text().into(),
-                    reminders: doc.reminders(), links: doc.doc_links(), note: None, root: String::new() });
+                    reminders: doc.reminders(), links: doc.doc_links(), note: None, top: String::new() });
             }
         }
         entries.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1131,15 +1131,22 @@ mod tests {
         check_file_import(5)
     }
 
+    #[test]
+    fn format6_import_preserves_source_links_tree_trash_and_assets() -> Result<()> {
+        check_file_import(6)
+    }
+
     fn check_file_import(format: u32) -> Result<()> {
         let temp = isolated_sqlite("file-import")?;
         let input = Temp(std::env::temp_dir().join(format!("quiet-file-source-{}", uuid::Uuid::new_v4())));
-        let mut source = super::super::tests::STAY_4.with(|flag| {
-            let old = flag.replace(format == 4);
+        let mut source = super::super::tests::STAY_4.with(|four| super::super::tests::STAY_5.with(|five| {
+            let old_four = four.replace(format == 4);
+            let old_five = five.replace(format == 5);
             let result = Store::open_at(input.0.clone());
-            flag.set(old);
+            four.set(old_four);
+            five.set(old_five);
             result
-        })?;
+        }))?;
         assert_eq!(Store::format_at(&input.0), format);
         let folder = source.create_folder("目录", None)?;
         let target = source.create_from(&docxml::parse("<title>目标</title><p>target</p>")?)?;
@@ -1206,9 +1213,16 @@ mod tests {
         other.save(&id, &external)?;
         assert!(store.save(&id, &restore).is_err());
         assert_eq!(store.load(&id)?.title.text, "别处改题");
-        let md = store.create_markdown(&docxml::parse("<title>Markdown</title><p>正文</p>")?, "---\nkind: test\n---\n")?;
+        let markdown = crate::markdown::parse_file("# Markdown\n\n正文\n\n![图](assets/images/pixel.png)\n", "Markdown", None);
+        let md = store.create_markdown(&markdown, "---\nkind: test\n---\n")?;
         store.save_version_now(&md)?;
-        assert!(store.version_text(&md, &store.versions(&md)[0].name)?.contains("kind: test"));
+        let md_version = store.versions(&md)[0].name.clone();
+        assert!(store.version_text(&md, &md_version)?.contains("kind: test"));
+        for snapshot in [store.version_document(&md, &md_version)?, store.restore_version(&md, &md_version)?] {
+            assert_eq!(snapshot.title.text, "Markdown");
+            assert!(snapshot.plain_text().contains("正文"));
+            assert_eq!(snapshot.asset_sources(), markdown.asset_sources());
+        }
         store.delete(&md, None)?;
         assert!(store.versions(&md).is_empty());
         store.restore(&md)?;
@@ -1326,13 +1340,13 @@ mod tests {
         legacy.set_parent(&id, Some(&folder))?;
         let archived = legacy.create_markdown(&docxml::parse("<title>已删除</title><p>旧稿</p>")?, "---\nstatus: draft\n---\n")?;
         legacy.delete(&archived, None)?;
-        std::fs::create_dir_all(legacy.root.join("assets/files"))?;
-        std::fs::write(legacy.root.join("assets/files/test.txt"), "附件原件")?;
-        let original_index = std::fs::read(legacy.root.join("index.json"))?;
+        std::fs::create_dir_all(legacy.top_dir.join("assets/files"))?;
+        std::fs::write(legacy.top_dir.join("assets/files/test.txt"), "附件原件")?;
+        let original_index = std::fs::read(legacy.top_dir.join("index.json"))?;
 
-        assert_eq!(Store::import_legacy_copy(&root, &legacy.root)?, 3);
-        assert!(Store::import_legacy_copy(&root, &legacy.root).is_err());
-        assert_eq!(std::fs::read(legacy.root.join("index.json"))?, original_index);
+        assert_eq!(Store::import_legacy_copy(&root, &legacy.top_dir)?, 3);
+        assert!(Store::import_legacy_copy(&root, &legacy.top_dir).is_err());
+        assert_eq!(std::fs::read(legacy.top_dir.join("index.json"))?, original_index);
         let mut store = Store::open_sqlite_at(root.clone())?;
         let entries = store.list();
         assert_eq!(entries.len(), 2);

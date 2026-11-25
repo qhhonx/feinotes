@@ -18,6 +18,9 @@ use web_time::Instant;
 
 /// Width of the row bar / height of the column bar.
 const BAR: f32 = 10.;
+/// How far into a cell from its left border a press selects the cell: its
+/// left padding (8 in the Feishu style, 10 otherwise), so never on text.
+const CELL_EDGE: f32 = 8.;
 /// Outer corner radius of the cell grid.
 /// `top: 26px` for the pinned header row.
 const STICKY_TOP: f32 = 26.;
@@ -109,6 +112,28 @@ impl Editor {
             Some(if v < segs[0].0 { 0 } else { segs.len() - 1 })
         };
         Some((find(false, p.y)?, find(true, p.x)?))
+    }
+
+    /// The cell whose left edge is under `p`, from the cell holding block
+    /// `id` outwards (a table inside a cell is checked before the outer one):
+    /// a press within `CELL_EDGE` of a cell's left border, in its padding,
+    /// selects that one cell, as in Feishu. The column resizer keeps the
+    /// border's own 3px.
+    pub(super) fn cell_edge_at(&self, id: BlockId, p: Point<Pixels>) -> Option<CellSel> {
+        let mut at = self.core.cell_of(id);
+        while let Some((table, _, _)) = at {
+            if let Some((r, c)) = self.slot_at(table, p, false)
+                && let Some(t) = self.core.table(table)
+            {
+                let (r, c) = t.origin(r, c);
+                let left = self.tables.geo.borrow().get(&(table, true, c)).map(|b| b.left());
+                if left.is_some_and(|l| p.x >= l && p.x < l + px(CELL_EDGE)) {
+                    return Some(CellSel { table, anchor: (r, c), head: (r, c), kind: CellSelKind::Range });
+                }
+            }
+            at = self.core.cell_of(table);
+        }
+        None
     }
 
     /// A text drag that reaches another cell of its table selects cells

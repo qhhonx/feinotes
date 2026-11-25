@@ -25,42 +25,54 @@ pub(crate) struct Tree<'a> {
 
 impl<'a> Tree<'a> {
     pub fn new(entries: &'a [Entry]) -> Self {
-        let ids: HashSet<&str> = entries.iter().filter(|e| e.meta.folder.is_some()).map(|e| e.id.as_str()).collect();
-        let parent = |e: &'a Entry| e.meta.parent.as_deref().filter(|p| ids.contains(p) && *p != e.id);
+        Self::with_order(entries, None)
+    }
+
+    /// 我的文档 ordered by the page list's setting (`order`), or — when it is
+    /// not given — by the arrangement the user dragged into place.
+    pub fn with_order(entries: &'a [Entry], order: Option<crate::home::Order>) -> Self {
+        // Only folders take children. Every step over all entries is one lookup in
+        // this small table, not a set of every id: the tree is rebuilt each frame
+        // the sidebar draws, and a vault of 15,000 notes made that 5 ms a frame.
+        let mut fids: Vec<&str> = vec![];
+        let mut folder: rustc_hash::FxHashMap<&str, usize> = Default::default();
+        for e in entries.iter().filter(|e| e.meta.folder.is_some()) {
+            folder.entry(e.id.as_str()).or_insert_with(|| { fids.push(e.id.as_str()); fids.len() - 1 });
+        }
+        let parent = |e: &'a Entry| e.meta.parent.as_deref().filter(|p| *p != e.id).and_then(|p| folder.get(p).copied());
         let notes: HashMap<&str, &str> = entries.iter().filter_map(|e| Some((e.id.as_str(), e.note.as_deref()?))).collect();
         let is_note: HashSet<&str> = notes.values().copied().collect();
-        let mut roots: Vec<&Entry> = vec![];
-        let mut kids: HashMap<&str, Vec<&Entry>> = HashMap::new();
         // 本机文件 are not in 我的文档: the sidebar lists them on their own.
-        for e in entries.iter().filter(|e| !e.meta.local() && !is_note.contains(e.id.as_str())) {
+        let shown = |e: &&'a Entry| !e.meta.local() && (is_note.is_empty() || !is_note.contains(e.id.as_str()));
+        let mut roots: Vec<&Entry> = vec![];
+        let mut kids: Vec<Vec<&Entry>> = vec![vec![]; fids.len()];
+        let mut lifted: Vec<(&Entry, usize)> = vec![];
+        for e in entries.iter().filter(shown) {
             match parent(e) {
-                Some(p) => kids.entry(p).or_default().push(e),
+                Some(p) => { kids[p].push(e); lifted.push((e, p)); }
                 None => roots.push(e),
             }
         }
-        // Lift pages unreachable from the top level (cycles).
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut stack: Vec<&str> = roots.iter().map(|e| e.id.as_str()).collect();
-        while let Some(id) = stack.pop() {
-            if seen.insert(id) {
-                stack.extend(kids.get(id).map_or(vec![], |v| v.iter().map(|e| e.id.as_str()).collect()));
+        // Lift pages unreachable from the top level (cycles), in list order.
+        let mut seen = vec![false; fids.len()];
+        let mut stack: Vec<usize> = roots.iter().filter_map(|e| folder.get(e.id.as_str()).copied()).collect();
+        while let Some(f) = stack.pop() {
+            if !std::mem::replace(&mut seen[f], true) {
+                stack.extend(kids[f].iter().filter_map(|e| folder.get(e.id.as_str()).copied()));
             }
         }
-        for e in entries.iter().filter(|e| !e.meta.local() && !is_note.contains(e.id.as_str())) {
-            if !seen.contains(e.id.as_str()) {
-                seen.insert(&e.id);
-                if let Some(v) = parent(e).and_then(|p| kids.get_mut(p)) {
-                    v.retain(|x| x.id != e.id);
-                }
-                roots.push(e);
-            }
-        }
+        roots.extend(lifted.into_iter().filter(|(_, p)| !seen[*p]).map(|(e, _)| e));
         // `Meta::place`, then the id: the list is re-read often (each time the
         // window comes back) and must come out the same every time.
-        roots.sort_by(|a, b| (a.meta.place(), &a.id).cmp(&(b.meta.place(), &b.id)));
-        for v in kids.values_mut() {
-            v.sort_by(|a, b| (a.meta.place(), &a.id).cmp(&(b.meta.place(), &b.id)));
-        }
+        let place = |a: &Entry, b: &Entry| (a.meta.place(), &a.id).cmp(&(b.meta.place(), &b.id));
+        // `sort_by` hands out `&&Entry`; the comparisons take `&Entry`.
+        let cmp = |a: &&Entry, b: &&Entry| match order {
+            Some(o) => o.cmp(a, b),
+            None => place(a, b),
+        };
+        roots.sort_by(cmp);
+        let kids = kids.into_iter().enumerate().filter(|(f, v)| seen[*f] && !v.is_empty())
+            .map(|(f, mut v)| { v.sort_by(cmp); (fids[f], v) }).collect();
         Tree { roots, kids, notes }
     }
 
@@ -96,6 +108,27 @@ impl<'a> Tree<'a> {
         }
         out
     }
+}
+
+/// A hash of everything of the entries that the sidebar's rows and Home's cards
+/// show or are ordered by: all but the body, links and reminders. Each field is named, so a new one is decided here.
+pub(crate) fn shape_key(entries: &[Entry]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = rustc_hash::FxHasher::default();
+    entries.len().hash(&mut h);
+    for Entry { id, meta, title, icon, body: _, reminders: _, links: _, note, top } in entries {
+        let crate::store::Meta { folder, top_order, created, modified, pinned, opened, width, catalogue_closed, parent, order, starred, reading, info, refs_hidden, markdown, path, name, rel, kind, share_root } = meta;
+        (id, title, icon, note, top, folder, top_order, created, modified, pinned, opened, share_root).hash(&mut h);
+        (catalogue_closed, parent, order, starred, reading, refs_hidden, markdown, path, name, rel).hash(&mut h);
+        (std::mem::discriminant(width), info.hidden, info.created, info.modified, std::mem::discriminant(kind)).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// What a sidebar row or a Home card shows of `e`: its links, reminders and body stay behind.
+pub(crate) fn face(e: &Entry) -> Entry {
+    Entry { id: e.id.clone(), meta: e.meta.clone(), title: e.title.clone(), icon: e.icon.clone(), body: Default::default(),
+        reminders: vec![], links: vec![], note: e.note.clone(), top: e.top.clone() }
 }
 
 /// The 移动到 dialog.
@@ -143,7 +176,7 @@ impl Workspace {
     pub(crate) fn takes_children(&self, id: &str) -> bool {
         self.entries.iter().find(|e| e.id == id).is_some_and(|e| match e.meta.folder {
             Some(_) => e.note.is_some(),
-            None => !e.meta.local() && e.meta.kind.is_doc() && self.store.can_have_children(id),
+            None => !e.meta.local() && e.meta.kind.is_doc() && !e.meta.markdown && self.store.can_have_children(id),
         })
     }
 
@@ -476,5 +509,100 @@ impl Workspace {
             .with_priority(3)
             .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Tree;
+    use std::collections::{HashMap, HashSet};
+    use crate::store::Entry;
+    use crate::home::{HomeSort, Order, SortDir};
+    use crate::store::Meta;
+
+    // The tree as it was built before #big-library-perf, to hold the faster one to.
+    impl<'a> Tree<'a> {
+    fn old(entries: &'a [Entry], order: Option<crate::home::Order>) -> Self {
+        let ids: HashSet<&str> = entries.iter().filter(|e| e.meta.folder.is_some()).map(|e| e.id.as_str()).collect();
+        let parent = |e: &'a Entry| e.meta.parent.as_deref().filter(|p| ids.contains(p) && *p != e.id);
+        let notes: HashMap<&str, &str> = entries.iter().filter_map(|e| Some((e.id.as_str(), e.note.as_deref()?))).collect();
+        let is_note: HashSet<&str> = notes.values().copied().collect();
+        let mut roots: Vec<&Entry> = vec![];
+        let mut kids: HashMap<&str, Vec<&Entry>> = HashMap::new();
+        // 本机文件 are not in 我的文档: the sidebar lists them on their own.
+        for e in entries.iter().filter(|e| !e.meta.local() && !is_note.contains(e.id.as_str())) {
+            match parent(e) {
+                Some(p) => kids.entry(p).or_default().push(e),
+                None => roots.push(e),
+            }
+        }
+        // Lift pages unreachable from the top level (cycles).
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&str> = roots.iter().map(|e| e.id.as_str()).collect();
+        while let Some(id) = stack.pop() {
+            if seen.insert(id) {
+                stack.extend(kids.get(id).map_or(vec![], |v| v.iter().map(|e| e.id.as_str()).collect()));
+            }
+        }
+        for e in entries.iter().filter(|e| !e.meta.local() && !is_note.contains(e.id.as_str())) {
+            if !seen.contains(e.id.as_str()) {
+                seen.insert(&e.id);
+                if let Some(v) = parent(e).and_then(|p| kids.get_mut(p)) {
+                    v.retain(|x| x.id != e.id);
+                }
+                roots.push(e);
+            }
+        }
+        // `Meta::place`, then the id: the list is re-read often (each time the
+        // window comes back) and must come out the same every time.
+        let place = |a: &Entry, b: &Entry| (a.meta.place(), &a.id).cmp(&(b.meta.place(), &b.id));
+        // `sort_by` hands out `&&Entry`; the comparisons take `&Entry`.
+        let cmp = |a: &&Entry, b: &&Entry| match order {
+            Some(o) => o.cmp(a, b),
+            None => place(a, b),
+        };
+        roots.sort_by(cmp);
+        for v in kids.values_mut() {
+            v.sort_by(cmp);
+        }
+        Tree { roots, kids, notes }
+    }
+    }
+
+    fn entry(id: String, folder: bool, parent: Option<String>, place: u64) -> Entry {
+        let meta = Meta { folder: folder.then(|| id.clone()), parent, top_order: Some(place % 7), modified: place, created: place / 3, ..Meta::default() };
+        Entry { id, meta, title: format!("t{}", place % 5), icon: None, body: "".into(), reminders: vec![], links: vec![], note: None, top: String::new() }
+    }
+
+    fn shape<'a>(t: &Tree<'a>, entries: &[Entry]) -> (Vec<(String, usize)>, Vec<(String, Vec<String>)>) {
+        let rows = t.rows(|_| true).into_iter().map(|(e, d)| (e.id.clone(), d)).collect();
+        let kids = entries.iter().map(|e| (e.id.clone(), t.children(Some(&e.id)).iter().map(|c| c.id.clone()).collect())).collect();
+        (rows, kids)
+    }
+
+    /// Same rows, depths and children as the old build, on random libraries
+    /// with cycles, pages that are their own parent, 本机文件 and folders' 正文.
+    #[test]
+    fn same_tree_as_before() {
+        let mut seed = 7u64;
+        let mut next = |n: u64| { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (seed >> 33) % n };
+        let orders = [None, Some(Order { field: HomeSort::Title, dir: SortDir::Asc, folders_first: true }),
+            Some(Order { field: HomeSort::Modified, dir: SortDir::Desc, folders_first: false })];
+        for round in 0..300 {
+            let n = 1 + next(60) as usize;
+            let mut entries: Vec<Entry> = (0..n).map(|i| {
+                let parent = match next(5) { 0 | 1 => None, 2 => Some(format!("e{}", next(n as u64 + 3))), _ => Some(format!("e{}", next(n as u64))) };
+                entry(format!("e{i}"), next(3) == 0, parent, next(40))
+            }).collect();
+            for _ in 0..next(3) { let i = next(n as u64) as usize; entries[i].meta.path = Some("/x".into()); }
+            for _ in 0..next(3) {
+                let (f, d) = (next(n as u64) as usize, next(n as u64) as usize);
+                if entries[f].meta.folder.is_some() && f != d { entries[f].note = Some(entries[d].id.clone()); }
+            }
+            for order in orders {
+                let (a, b) = (Tree::with_order(&entries, order), Tree::old(&entries, order));
+                assert_eq!(shape(&a, &entries), shape(&b, &entries), "round {round}");
+            }
+        }
     }
 }

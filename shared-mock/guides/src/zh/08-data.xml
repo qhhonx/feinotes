@@ -10,7 +10,7 @@
 <h1>导出</h1><p>打开文档的“更多”菜单，或右键点击侧栏中的条目，选择下载格式。</p><h2>PDF</h2><p>PDF 导出按 A4 纸张排版，保留文档样式、图片和表格。适合分享只读副本，或检查打印效果。</p><h2>Markdown</h2><grid><column width-ratio="0.5"><h3>仅文本</h3><p>导出单个 Markdown 文件，不复制图片和附件。</p></column><column width-ratio="0.5"><h3>所有内容</h3><p>导出 Markdown 文件和一个资源文件夹。图片和附件以相对路径链接。</p></column></grid>
 <p>有些富文本排版在 Markdown 中没有完全对应的写法：</p><table><colgroup><col width="220"/><col width="470"/></colgroup><tbody><tr><td><p>高亮块</p></td><td><p>以高亮块图标开头的引用</p></td></tr><tr><td><p>公式</p></td><td><p>用美元符号包裹的 LaTeX</p></td></tr><tr><td><p>表格</p></td><td><p>用竖线分隔的表格；单元格中的多个段落用换行分隔</p></td></tr><tr><td><p>分栏</p></td><td><p>各栏内容依次排列，而不是并排</p></td></tr><tr><td><p>颜色和精细排版</p></td><td><p>无法全部保留；在意外观时，请导出 PDF</p></td></tr></tbody></table>
 <h2>打印</h2><p>在文档菜单中选择“打印”，会打开系统的打印对话框。可以在那里选择打印机，或存储为 PDF。</p>
-<h1>文档文件夹</h1><p>默认位置是 <code>~/Documents/Quiet.md</code>，首次打开 Quiet.md 时也可以另选位置。在 设置 › 文档库 中可以看到它在哪里。它就是一个普通文件夹，你在访达里看到的，就是侧栏里显示的。</p><pre lang="plaintext" caption="~/Documents/Quiet.md"><code>Quiet.md/
+<h1>文档文件夹</h1><p>默认位置是 <code>~/Documents/Quiet.md</code>，首次打开 Quiet.md 时也可以另选位置。在 设置 › 文档库 中可以看到它在哪里。它就是一个普通文件夹，你在访达里看到的，就是侧栏里显示的。想同时使用另一个文件夹，点击侧栏里“主页”下面的“添加文件夹”（或按 <code>⌘ ⇧ O</code>）选择它：它会和这个文件夹并列显示在侧栏里，文件仍留在原处。</p><pre lang="plaintext" caption="~/Documents/Quiet.md"><code>Quiet.md/
 ├── 工作/              侧栏里的文件夹，在这里也是文件夹
 │   ├── 周会.xml       每篇文档一个文件，以标题命名
 │   └── 计划.md        Markdown 文档仍是 Markdown

@@ -3,11 +3,12 @@
 # python3 tools/harness/run.py tools/harness/examples/board_edit.txt
 move 700 700
 wait 1500
-# 侧栏「+」› 画板（新建后直接打开整窗画板）
-click 251 106
+# 侧栏「+」› 画板（新建后在笔记区打开）；之后的坐标从画板左上角算起
+anchor create-sidebar
 wait 300
-click 295 208
+click 295 236
 wait 1200
+origin board
 shot board-0-empty
 key r
 drag 300 200 450 300
@@ -24,7 +25,7 @@ drag 500 600 640 660
 # 箭头类型：肘形（属性面板第三个）
 key a
 wait 300
-click 102 306
+click 123 381
 wait 100
 drag 445 260 800 500
 wait 200
@@ -58,17 +59,18 @@ wait 200
 clip clear
 key cmd-a
 key cmd-c
-move 900 300
+move 680 300
 key cmd-v
 wait 200
 shot board-7-pasted
 key cmd-a
 key cmd-g
-click 1200 760
+click 950 400
 wait 200
 key escape
 wait 600
 shot board-8-closed
-click 70 128
+origin window
+row Untitled board
 wait 1200
 shot board-9-reopened

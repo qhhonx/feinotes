@@ -657,7 +657,7 @@ mod tests {
             r.set(1, s(name));
             other.records.push(r);
         }
-        Base { tables: vec![t, other], next_id: 100 }
+        Base { tables: vec![t, other], ..Default::default() }
     }
 
     fn s(t: &str) -> Value { Value::Text(t.into()) }
@@ -1257,7 +1257,7 @@ mod tests {
         let mut rnd = move |n: u64| { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed % n };
         let rows: Vec<Vec<(FieldId, Value)>> = (0..100_000).map(|_| vec![
             (TEXT, s(&format!("Item {} of batch {}", rnd(50_000), rnd(100)))),
-            (STATUS, match rnd(4) { 0 => Value::Empty, k => sel(&[TODO + k as u32 - 1]) }),
+            (STATUS, match rnd(4) { 0 => Value::Empty, k => sel(&[TODO + k - 1]) }),
             (QTY, if rnd(20) == 0 { Value::Empty } else { n(rnd(1000) as f64) }),
             (DUE, Value::Date(ms(2026, 1, 1) + rnd(365) as i64 * DAY)),
         ]).collect();

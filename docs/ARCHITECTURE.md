@@ -2,19 +2,20 @@
 
 Quiet.md is a single-process GPUI application with roughly 90,000 lines of Rust, including roughly 26,000 for whiteboards. A document is a tree of blocks in memory (`model.rs`) and a DocxXML file on disk (`docxml.rs`). The editor renders the tree as a virtualized list.
 
-The Cargo workspace contains two crates:
+The Cargo workspace contains three crates:
 
 - **`crates/core` (`fdl_core`, about 36,000 lines, including 20,000 for whiteboards)** contains the document model, DocxXML, editing and undo, the on-disk library, Markdown and HTML import, Markdown export, and whiteboard models and algorithms. It builds and tests independently of GPUI with `cargo test -p fdl_core`. The fuzzer lives here too.
 - **The root crate (`quiet_md`)** owns windows, views, rendering, menus and overlays. `main.rs` re-exports the core modules at the crate root, and `editor/mod.rs` re-exports `editor::core` and `editor::table_ops`. The application can therefore use paths such as `crate::model` and `super::core`.
+- **`crates/cli` (`quiet_cli`, the `quiet` binary)** is the library from the command line, for people and agents. Each command is one operation of `Session` (`session.rs`) with JSON in and out: documents and blocks there, 数据表 rows in `tables.rs`, boards in `boards.rs`, versions, the trash and import in `library.rs`. `quiet run` gives the same operations to a JavaScript script in an embedded QuickJS (`js.rs`, `prelude.js`) with no files or network; `quiet mcp` (`mcp.rs`) serves them as two MCP tools. Changes stay in memory until the command or script ends, then are written in one commit through `Store` (its write lock, versions and link rewriting); a file changed on disk in the meantime stops the commit. Edits go through `editor::Core`, as in the app. Block refs carry a fingerprint of the block (`#3~k7f2`) so a ref from an earlier read finds its block or fails. `src/guide.md` is the agents' guide, printed by `quiet skill`; `help.rs` holds each command's help. See [the CLI design](design/CLI.md).
 
-Dependencies flow from the application to core. Within the workspace, core may reference only core modules.
+Dependencies flow from the application and the CLI to core. Within the workspace, core may reference only core modules.
 
 ```text
 main.rs — window
   ├─ onboarding.rs — first launch, replaced by Workspace in the same window after library selection
   └─ app.rs — Workspace (window root view)
        ├─ store.rs — library directories and .quiet/meta/ (see FORMAT.md) [core]
-       ├─ meta.rs — FORMAT 5: metadata split by device, merged field by field [core]
+       ├─ meta.rs — FORMAT 5/6: metadata, deletions and hand order split by device, merged field by field [core]
        ├─ sidebar / home / search / trash / tree / docmenu / docinfo / modes
        └─ editor::Editor (view.rs) — open document
             └─ editor::Core (core.rs) — document, selection and undo stack [core]
@@ -100,6 +101,7 @@ This approach copies the entire document at each history step. A historical benc
 | `model.rs` | Document model, inline object types and `display_title` |
 | `docxml.rs` | DocxXML parsing and serialization, including `to_inline` for inline objects |
 | `store.rs` | Library I/O, index recovery, trash, settings and `image_path` |
+| `home.rs` | `Home`, the one root: the top-level folders on 主页 (`TopFolder`, each its own `Store` and `.quiet/`), this computer's list of them (`folders.json`), nesting checks and ids unique across them. See docs/design/workspaces.md |
 | `paste.rs` | HTML and Markdown to blocks, shared by paste and import |
 | `markdown.rs` | Markdown export |
 | `lang.rs` | Code language table |
@@ -121,6 +123,7 @@ Whiteboard and history modules in core:
 | Lines and text | `linear`, `binding`, `elbow`, `heading`, `arrow_text`, `text`, `text_wrapping`, `text_measure`, `text_edit`, `list_marker` |
 | Undo and actions | `history` (store, delta, history), `actions.rs` and `actions/` (one function per upstream action) |
 | Output | `display` (shared backend display list), `export_svg` |
+| `remote/` | Git sync without git (docs/design/sync.md §2.1): `SyncRemote` and its GitHub REST client (`github.rs`, HTTP through curl in `curl.rs`, tarballs in `tar.rs`), an in-memory `FakeRemote`, and `engine.rs`, one pull → merge → push of a folder; not wired into the app yet |
 | `versions.rs` | Directory-indexed document snapshots, throttling, quotas and trash integration |
 | `diff.rs` / `changes.rs` | Dependency-free line LCS and block-level LCS for snapshot highlighting |
 | `merge.rs` | Three-way merge of two versions of a document by block, for sync (docs/design/sync.md §3.2); not wired into the app yet |
@@ -132,6 +135,7 @@ Whiteboard and history modules in core:
 | `main.rs` | Entry point, `FDL_SCRIPT` mode (devtools builds only), `--self-test` and core module re-exports |
 | `guides.rs` | Seeds an empty library with the bundled Getting Started guides once |
 | `app.rs` | `Workspace`, the two-pane window, open/create/save/delete actions, save state and reminder scheduling |
+| `shared_store.rs` | The `Home` the windows share: each call goes to the top-level folder a document is in; with two or more, each folder shows as a row of the sidebar tree (`top_row`) |
 | `html.rs` / `printing.rs` / `transfer.rs` | HTML/PDF export, printing and import/export UI |
 | `clipboard.rs` | System clipboard HTML and the simulated clipboard in script mode |
 | `sidebar.rs` / `tree.rs` | Sidebar and document tree, including child pages (a folder's own document, see FORMAT.md and core's `subdocs.rs`) and Move to |

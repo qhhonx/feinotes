@@ -4,13 +4,100 @@ of everyday team documents plus a 1,000,000-character knowledge-base
 compilation that the benchmark opens, types into and scrolls.
 
     python3 tools/perf/gen_library.py /tmp/quiet-perf/library
+    python3 tools/perf/gen_library.py --tall-start /tmp/quiet-perf/tall
+    python3 tools/perf/gen_library.py --vault 15000 /tmp/quiet-big/vault   # 15,000 Markdown notes
+
+`--tall-start` opens the compilation with three images, a 60-row table
+and two 120-line code blocks: rows far taller than the rest, which the
+scrollbar's length estimate starts from (the scrollbar-drag benchmark).
 
 All content is synthetic. Deterministic (fixed seed)."""
 import json, os, random, sys, time
 from xml.sax.saxutils import escape as esc
 
+def vault(out, n):
+    """An Obsidian-style vault of n Markdown notes in nested folders, with
+    [[wiki links]], relative Markdown links, image embeds, tags and front
+    matter, plus a `.obsidian/` folder: the big-library test."""
+    R = random.Random(20261125)
+    TOP = ["Projects", "Areas", "Resources", "Archive", "Journal", "Reading", "Meetings", "Inbox", "Zettel", "工作", "学习", "生活"]
+    SUB = ["2021", "2022", "2023", "2024", "Clients", "Ideas", "Drafts", "Notes", "读书", "周报", "会议", "草稿", "Research", "People"]
+    WORDS = ("editor latency render layout cache index search folder sidebar library sync merge outline table image link "
+             "note draft review plan budget week month quarter design system token theme preview export import").split()
+    CJK = "我们团队产品设计研发用户编辑器数据层搜索结果排序规则离线状态保存逻辑块级菜单交互评论提及通知节奏权限模型边界模板中心分类方式图片上传压缩参数"
+
+    def words(k):
+        return " ".join(R.choice(WORDS) for _ in range(k))
+
+    def cjk(k):
+        return "".join(R.choice(CJK) for _ in range(k))
+
+    # Folder tree: 12 top folders, 3–8 subfolders each, some a level deeper.
+    folders = []
+    for t in TOP:
+        folders.append(t)
+        for s in R.sample(SUB, R.randint(3, 8)):
+            folders.append(f"{t}/{s}")
+            if R.random() < 0.4:
+                for d in range(R.randint(2, 5)):
+                    folders.append(f"{t}/{s}/{s}-{d + 1}")
+    for f in folders:
+        os.makedirs(os.path.join(out, f), exist_ok=True)
+    os.makedirs(os.path.join(out, "attachments"), exist_ok=True)
+    os.makedirs(os.path.join(out, ".obsidian"), exist_ok=True)
+    with open(os.path.join(out, ".obsidian", "app.json"), "w") as fh:
+        fh.write('{"attachmentFolderPath":"attachments"}\n')
+
+    # A few tiny PNGs the notes embed (1×1, valid).
+    PNG = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+                        "1f15c4890000000d49444154789c6360f8cf00000301010018dd8db00000000049454e44ae426082")
+    images = [f"attachments/img-{i:03}.png" for i in range(200)]
+    for p in images:
+        with open(os.path.join(out, p), "wb") as fh:
+            fh.write(PNG)
+
+    notes = []
+    for i in range(n):
+        # Obsidian vaults often have one flat folder holding thousands of notes.
+        r = R.random()
+        folder = "" if r < 0.03 else "Inbox" if r < 0.23 else R.choice(folders)
+        title = (cjk(R.randint(2, 6)) + " " if R.random() < 0.4 else "") + words(R.randint(1, 4)).title() + f" {i}"
+        notes.append((folder, title))
+
+    for i, (folder, title) in enumerate(notes):
+        lines = ["---", f"tags: [{R.choice(WORDS)}, {R.choice(WORDS)}]", f"created: 2024-{R.randint(1, 12):02}-{R.randint(1, 28):02}", "---", "",
+                 f"# {title}", ""]
+        for _ in range(R.randint(2, 12)):
+            r = R.random()
+            if r < 0.15:
+                lines.append(f"## {words(R.randint(1, 3)).title()}")
+            elif r < 0.3:
+                lines += [f"- {words(R.randint(3, 8))} [[{R.choice(notes)[1]}]]" for _ in range(R.randint(2, 5))]
+            elif r < 0.37:
+                lines.append(f"![[{os.path.basename(R.choice(images))}]]")
+            elif r < 0.42:
+                f2, t2 = R.choice(notes)
+                rel = os.path.relpath(os.path.join(f2, t2 + ".md"), folder or ".").replace(" ", "%20")
+                lines.append(f"See [{t2}]({rel}).")
+            else:
+                lines.append(f"{words(R.randint(8, 40))} {cjk(R.randint(0, 40))} #{R.choice(WORDS)}")
+            lines.append("")
+        with open(os.path.join(out, folder, title + ".md"), "w") as fh:
+            fh.write("\n".join(lines))
+    # Inbox changed last, so it is the first row of the sidebar (tools/harness/examples/big-library.txt).
+    t = time.time() + 60
+    os.utime(os.path.join(out, "Inbox"), (t, t))
+    print(f"{n} notes in {len(folders)} folders under {out}")
+
+
+if sys.argv[1:2] == ["--vault"]:
+    vault(sys.argv[3] if len(sys.argv) > 3 else "/tmp/quiet-big/vault", int(sys.argv[2]))
+    sys.exit()
+
 R = random.Random(20261023)
-out = sys.argv[1] if len(sys.argv) > 1 else "/tmp/fdl-promo/lib"
+tall = "--tall-start" in sys.argv
+args = [a for a in sys.argv[1:] if a != "--tall-start"]
+out = args[0] if args else "/tmp/fdl-promo/lib"
 os.makedirs(f"{out}/docs", exist_ok=True)
 os.makedirs(f"{out}/assets", exist_ok=True)
 
@@ -170,7 +257,15 @@ while n < 1_000_000:
     x = "".join(sec)
     parts.append(x)
     n += text_len(x)
-doc("产品知识库 · 合订本（100 万字）", "".join(parts))
+def tall_start():
+    img = '<img href="assets/weekly-active.png" width="680" caption="图 1 · 近 12 周活跃用户"/>'
+    rows = "".join(f"<tr><td><p>模块 {i}</p></td><td><p>负责人 {i}</p></td><td><p>{i}%</p></td><td><p>备注 {i}：这一行写得比较长，让表格单元格换行，从而让整张表很高。</p></td></tr>" for i in range(60))
+    tab = ('<table><colgroup><col width="180"/><col width="120"/><col width="120"/><col width="200"/></colgroup><thead><tr><th><p>模块</p></th><th><p>负责人</p></th>'
+           '<th><p>进度</p></th><th><p>备注</p></th></tr></thead><tbody>' + rows + "</tbody></table>")
+    src = '<pre lang="rust"><code>' + "\n".join(f"let line_{i} = compute({i});" for i in range(120)) + "</code></pre>"
+    return img + img + tab + src + img + src
+
+doc("产品知识库 · 合订本（100 万字）", (tall_start() if tall else "") + "".join(parts))
 
 index = {}
 t0 = int(time.time()) - 600

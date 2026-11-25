@@ -459,7 +459,8 @@ fn fetch_manifest() -> Result<Option<Manifest>, Error> {
 /// The newest version on offer, validated, whichever it is.
 fn read_manifest(platform: &str) -> Result<Manifest, String> {
     let url = format!("{}/update-{platform}.json", override_url().as_deref().unwrap_or(BASE).trim_end_matches('/'));
-    let body = curl(&["--max-time", "20", &url])?;
+    // Past any cache: an older manifest would point at an older package.
+    let body = curl(&[NO_CACHE, &["--max-time", "20", &url]].concat())?;
     let m: Manifest = serde_json::from_slice(&body).map_err(|e| format!("{}: {e}", crate::settings::tr("更新信息无法识别", "Unrecognised update information")))?;
     validate(&m, platform, override_url().is_some())?;
     Ok(m)
@@ -501,16 +502,9 @@ fn fetch_package(m: &Manifest) -> Result<PathBuf, String> {
     { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)); }
     let file = dir.join(&name);
     let part = dir.join(format!("{name}.part"));
-    // curl gets no path: a Windows curl.exe reads its arguments in the ANSI
-    // code page, which cannot spell every user folder name (中文 included).
-    let out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
-    curl_to(&["--max-time", "900", &m.url], Stdio::from(out))?;
-    let bytes = std::fs::read(&part).map_err(|e| e.to_string())?;
     let failed = |what: &str| format!("{}: {what}", crate::settings::tr("更新包校验失败", "The update package failed verification"));
-    if bytes.len() as u64 != m.size { return Err(failed("size")) }
     let key = public_key().ok_or_else(|| failed("key"))?;
-    if !signed(&bytes, &m.signature, &name, &key) { return Err(failed("signature")) }
-    drop(bytes);
+    download_verified(m, &name, &key, &part)?;
     std::fs::rename(&part, &file).map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
     {
@@ -528,11 +522,38 @@ fn fetch_package(m: &Manifest) -> Result<PathBuf, String> {
     Ok(file)
 }
 
+/// curl's headers asking every cache on the way for a fresh copy.
+const NO_CACHE: &[&str] = &["-H", "Cache-Control: no-cache", "-H", "Pragma: no-cache"];
+
+/// Downloads `m`'s package into `part` and checks its size and its signature
+/// by `key` under `name`. A package that does not match is fetched once more
+/// past every cache (the headers, and a query no cache has seen): a package
+/// replaced under the same URL can linger in a CDN's `immutable` cache while
+/// the manifest is new (0.1.14).
+fn download_verified(m: &Manifest, name: &str, key: &minisign_verify::PublicKey, part: &Path) -> Result<(), String> {
+    let wrong = |bytes: &[u8]| if bytes.len() as u64 != m.size { Some("size") } else if !signed(bytes, &m.signature, name, key) { Some("signature") } else { None };
+    let mut what = "";
+    for fresh in [false, true] {
+        // curl gets no path: a Windows curl.exe reads its arguments in the ANSI
+        // code page, which cannot spell every user folder name (中文 included).
+        let out = std::fs::File::create(part).map_err(|e| e.to_string())?;
+        let url = if fresh { uncached(&m.url) } else { m.url.clone() };
+        let args = [if fresh { NO_CACHE } else { &[] }, &["--max-time", "900", &url]].concat();
+        curl_to(&args, Stdio::from(out))?;
+        let bytes = std::fs::read(part).map_err(|e| e.to_string())?;
+        match wrong(&bytes) { None => return Ok(()), Some(w) => what = w }
+    }
+    Err(format!("{} ({what})", crate::settings::tr("下载到的安装包和预期不一致，可能是网络缓存造成的。可以到官网下载最新版直接安装。", "The downloaded update doesn't match what was expected, possibly because of a network cache. You can download the latest version from the website and install it directly.")))
+}
+
+/// `url` with a query no cache has seen.
+fn uncached(url: &str) -> String { format!("{url}{}nocache={}", if url.contains('?') { '&' } else { '?' }, uuid::Uuid::new_v4().simple()) }
+
 fn curl(args: &[&str]) -> Result<Vec<u8>, String> { curl_to(args, Stdio::piped()) }
 
 /// `stdout`: piped (returned) or a file to download into.
 fn curl_to(args: &[&str], stdout: Stdio) -> Result<Vec<u8>, String> {
-    let out = curl_command(override_url().is_some()).args(args)
+    let out = curl_command(override_url().is_some() || cfg!(test)).args(args)
         .stdin(Stdio::null()).stdout(stdout).stderr(Stdio::piped()).output()
         .map_err(|e| format!("curl: {e}"))?;
     if out.status.success() { return Ok(out.stdout) }
@@ -707,7 +728,11 @@ fn start_installer(new: &Path) -> Result<(), String> {
     }
     // The folder must take the new bundle (a standard user cannot write to /Applications).
     let probe = parent.join(format!(".quiet.md-update-{}", fdl_core::vfs::process_id()));
-    if std::fs::create_dir(&probe).is_err() {
+    if let Err(e) = std::fs::create_dir(&probe) {
+        // Opened straight from the mounted .dmg (/Volumes/…, a read-only volume).
+        if e.kind() == std::io::ErrorKind::ReadOnlyFilesystem {
+            return Err(crate::settings::tr("Quiet.md 正在安装盘里运行。请先把它拖到「应用程序」文件夹，从那里打开后再更新", "Quiet.md is running from the installer disk image. Drag it to the Applications folder, open it from there, then update").into());
+        }
         return Err(crate::localized_format!("没有写入 {} 的权限，请从网站下载新版本", "No permission to write to {}. Download the new version from the website instead.", parent.display()));
     }
     let _ = std::fs::remove_dir(&probe);
@@ -803,7 +828,7 @@ fn start_installer(_: &Path) -> Result<(), String> { Err("unsupported".into()) }
 
 #[cfg(test)]
 mod tests {
-    use super::{newer, offers, policy_comment, reg_proxy, required_version, scutil_proxy, signed, validate, verify_policy, Manifest, Policy, Proxy};
+    use super::{download_verified, newer, offers, policy_comment, reg_proxy, required_version, scutil_proxy, signed, uncached, validate, verify_policy, Manifest, Policy, Proxy};
 
     fn proxy(url: &str, bypass: &str) -> Option<Proxy> { Some(Proxy { url: url.into(), bypass: bypass.into() }) }
 
@@ -901,6 +926,58 @@ FuE4L1zQnqL1nA/5xffpEtZyK2ca882Q1joA5X11poZ1xezdAlEMfn/36MJc5C60clQFec4vQf66MoxP
         // Rewriting the trusted comment breaks the signature.
         let renamed = TEST_SIG.replace("0.2.0", "0.9.0");
         assert!(!signed(b"quiet.md", &renamed, "quiet-md-0.9.0-macos-arm64.zip", &key));
+    }
+
+    /// An http server on this machine answering one request per body, in
+    /// turn; what it was asked (request line and headers), when it is done.
+    fn serve(bodies: Vec<&'static [u8]>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", listener.local_addr().unwrap());
+        let seen = std::thread::spawn(move || bodies.into_iter().map(|body| {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(conn.try_clone().unwrap());
+            let mut asked = String::new();
+            loop { let mut line = String::new(); if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" { break } asked += &line; }
+            write!(conn, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+            conn.write_all(body).unwrap();
+            asked
+        }).collect());
+        (url, seen)
+    }
+
+    #[test]
+    fn a_package_that_does_not_match_is_fetched_again_past_caches() {
+        let key = minisign_verify::PublicKey::from_base64(TEST_KEY).unwrap();
+        let name = "quiet-md-0.2.0-macos-arm64.zip";
+        let dir = fdl_core::vfs::temp_dir().join(format!("quiet-update-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let part = dir.join(format!("{name}.part"));
+        // A stale copy first (a cache's), then the real one.
+        let (url, seen) = serve(vec![b"stale package", b"quiet.md"]);
+        let m = manifest("0.2.0", &url, name);
+        assert_eq!(download_verified(&m, name, &key, &part), Ok(()));
+        assert_eq!(std::fs::read(&part).unwrap(), b"quiet.md");
+        let asked = seen.join().unwrap();
+        assert!(!asked[0].contains("nocache") && !asked[0].to_lowercase().contains("cache-control"), "the first try is a plain one: {}", asked[0]);
+        assert!(asked[1].starts_with("GET /v0.2.0/quiet-md-0.2.0-macos-arm64.zip?nocache="), "{}", asked[1]);
+        let low = asked[1].to_lowercase();
+        assert!(low.contains("cache-control: no-cache") && low.contains("pragma: no-cache"), "{}", asked[1]);
+        // Wrong twice (same size, not signed): the error says what to do.
+        let (url, seen) = serve(vec![b"quiet.mD", b"quiet.mD"]);
+        let err = download_verified(&manifest("0.2.0", &url, name), name, &key, &part).unwrap_err();
+        assert_eq!(seen.join().unwrap().len(), 2);
+        assert!(err.contains("network cache") || err.contains("网络缓存"), "{err}");
+        assert!(err.ends_with("(signature)"), "{err}");
+        assert_eq!(std::fs::read(&part).unwrap(), b"quiet.mD", "the second copy stays to look at (the next download clears it)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_cache_queries_join_what_is_there() {
+        assert!(uncached("https://download.quiet.md/v1/a.zip").starts_with("https://download.quiet.md/v1/a.zip?nocache="));
+        assert!(uncached("https://x.example/a.zip?sig=1").starts_with("https://x.example/a.zip?sig=1&nocache="));
+        assert_ne!(uncached("u"), uncached("u"));
     }
 
     #[test]

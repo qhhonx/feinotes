@@ -1415,7 +1415,7 @@ impl Editor {
 
     // ---- toolbar
 
-    /// 裁剪 · 重置图片 | 添加描述 | 左 · 中 · 右 above the selected image.
+    /// 裁剪 · 重置图片 | 添加描述 | 左 · 中 · 右 | 复制 above the selected image.
     #[cfg(not(target_os = "ios"))]
     pub(super) fn image_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let focused = self.focus.is_focused(window);
@@ -1531,6 +1531,16 @@ impl Editor {
                     ),
             );
             widths.push(tw::TOGGLE);
+        }
+        if !cropping {
+            bar = bar.child(sep()).child(
+                btn("itb-copy", "copy")
+                    .tip_above(crate::settings::text("复制"), None)
+                    .on_mouse_down(MouseButton::Left, act(|e, id, _, cx| {
+                        if e.copy_image(id, cx) { e.toast_kind(ToastKind::Success, crate::settings::text("已复制图片"), cx); }
+                    })),
+            );
+            widths.extend([tw::SEPARATOR, tw::BUTTON]);
         }
         let (_, w) = toolbar_layout(&widths);
         let x = clampf(f32::from(rect.center().x) - w / 2., f32::from(viewport.left()) + 8., f32::from(viewport.right()) - w - 8.);
@@ -2319,15 +2329,19 @@ fn download(url: &str, dest: &Path) -> bool {
     #[cfg(target_os = "ios")]
     let fetched = download_ios(url,&tmp,false);
     #[cfg(not(target_os = "ios"))]
-    let fetched = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "60", "-o"])
+    let fetched = {
+    let mut curl = std::process::Command::new("curl");
+    curl.args(["-fsSL", "--max-time", "60", "-o"])
         .arg(&tmp)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
+        .stderr(std::process::Stdio::null());
+    // No console window flashing up on Windows (#415).
+    #[cfg(target_os = "windows")]
+    { use std::os::windows::process::CommandExt; curl.creation_flags(0x0800_0000); }
+    curl.status().is_ok_and(|s| s.success())
+    };
     let ok = fetched
         && image::ImageReader::open(&tmp).ok().and_then(|r| r.with_guessed_format().ok()).and_then(|r| r.into_dimensions().ok()).is_some()
         && fdl_core::vfs::rename(&tmp, dest).is_ok();
@@ -2409,9 +2423,16 @@ pub(crate) fn clipboard_image_data(img: &gpui::Image) -> Result<(std::borrow::Co
 
 /// `image_block_from` for a file that has a name of its own, which its copy keeps.
 fn image_block_named(root: &Path, bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Block, &'static str> {
-    let path = store_image_named(root, bytes, ext, name)?;
+    let mut block = image_block_in(&Store::assets_in(root), bytes, ext, name)?;
+    if let BlockKind::Image { src, .. } = &mut block.kind { *src = crate::store::asset_source_in(root, Path::new(src)); }
+    Ok(block)
+}
+
+/// An importer owns its destination assets; it need not be the active library.
+fn image_block_in(assets: &Path, bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Block, &'static str> {
+    let path = store_image_in(assets, bytes, ext, name)?;
     let mut b = Block::new(
-        BlockKind::Image { src_kind: "src".into(), src: crate::store::asset_source_in(root, &path), width: None, height: None, caption: None, crop: None },
+        BlockKind::Image { src_kind: "src".into(), src: path.to_string_lossy().into_owned(), width: None, height: None, caption: None, crop: None },
         RichText::default(),
     );
     b.align = Align::Center;
@@ -2424,7 +2445,9 @@ pub(crate) fn store_image(root: &Path, bytes: &[u8], ext: &str) -> Result<PathBu
 /// `store_image`; an image with a `name` (a picked or dropped file) is kept
 /// as `<8 hex>-<name>.<ext>`, so its name survives in the library and in the
 /// copy beside a Markdown file. A pasted one is just `<uuid>.<ext>`.
-pub(crate) fn store_image_named(root: &Path, bytes: &[u8], ext: &str, name: Option<&str>) -> Result<PathBuf, &'static str> {
+pub(crate) fn store_image_named(root: &Path, bytes: &[u8], ext: &str, name: Option<&str>) -> Result<PathBuf, &'static str> { store_image_in(&Store::assets_in(root), bytes, ext, name) }
+
+fn store_image_in(assets: &Path, bytes: &[u8], ext: &str, name: Option<&str>) -> Result<PathBuf, &'static str> {
     let ext = ext.to_ascii_lowercase();
     if !FORMATS.contains(&ext.as_str()) {
         return Err(BAD_FORMAT);
@@ -2441,14 +2464,19 @@ pub(crate) fn store_image_named(root: &Path, bytes: &[u8], ext: &str, name: Opti
     let name: Option<String> = name.map(|n| n.chars().map(|c| if matches!(c, '/' | '\\' | ':') || c.is_control() { '_' } else { c }).take(80).collect::<String>())
         .map(|n| n.trim().trim_start_matches('.').to_string()).filter(|n| !n.is_empty());
     let file = match name { Some(n) => format!("{}-{n}.{ext}", &id[..8]), None => format!("{id}.{ext}") };
-    let dir = Store::assets_in(root);
-    fdl_core::vfs::create_dir_all(&dir).map_err(|_| BAD_DIMS)?;
-    let path = dir.join(file);
+    let _ = fdl_core::vfs::create_dir_all(assets);
+    let path = assets.join(file);
     fdl_core::vfs::write(&path, bytes).map_err(|_| BAD_DIMS)?;
     Ok(path)
 }
 
 pub(super) fn image_block_from_file(root: &Path, p: &Path) -> Result<Block, &'static str> {
+    let mut block = image_block_from_file_in(&Store::assets_in(root), p)?;
+    if let BlockKind::Image { src, .. } = &mut block.kind { *src = crate::store::asset_source_in(root, Path::new(src)); }
+    Ok(block)
+}
+
+pub(crate) fn image_block_from_file_in(assets: &Path, p: &Path) -> Result<Block, &'static str> {
     let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
     if !p.fs_is_file() || !FORMATS.contains(&ext.as_str()) {
         return Err(BAD_FORMAT);
@@ -2457,7 +2485,10 @@ pub(super) fn image_block_from_file(root: &Path, p: &Path) -> Result<Block, &'st
         return Err(TOO_BIG);
     }
     let bytes = fdl_core::vfs::read(p).map_err(|_| BAD_DIMS)?;
-    image_block_named(root, &bytes, &ext, p.file_stem().and_then(|s| s.to_str()))
+    let b = image_block_in(assets, &bytes, &ext, p.file_stem().and_then(|s| s.to_str()))?;
+    // The copy in the assets keeps the picture's change time, as a copy in the Finder does.
+    if let (BlockKind::Image { src, .. }, Some((_, changed))) = (&b.kind, fdl_core::vfs::file_times(p)) { let _ = fdl_core::vfs::set_modified(Path::new(src), changed); }
+    Ok(b)
 }
 
 /// One line of pasted text that is nothing but a local image file path
@@ -2465,13 +2496,20 @@ pub(super) fn image_block_from_file(root: &Path, p: &Path) -> Result<Block, &'st
 /// that exists. WeChat puts such a line in the pasteboard instead of
 /// image data (#252).
 pub(crate) fn local_image_path(line: &str) -> Option<PathBuf> {
-    let s = line.trim();
-    let decoded = s.strip_prefix("file://").map(crate::markdown::percent_decode);
-    let s = decoded.as_deref().unwrap_or(s);
+    let p = local_file(line.trim())?;
+    is_local_image_file(&p).then_some(p)
+}
+
+/// The file a picture's source names on this computer, if it is an absolute
+/// path: `/…`, Windows' `C:\…`, `C:/…` or `\\server\…`, or a `file://` URL
+/// (`file:///C:/…` on Windows). None for a URL, `data:` or a relative path.
+pub(crate) fn local_file(src: &str) -> Option<PathBuf> {
+    let decoded = src.strip_prefix("file://").map(crate::markdown::percent_decode);
+    let s = decoded.as_deref().unwrap_or(src);
     #[cfg(windows)]
     let s = if decoded.is_some() && s.starts_with('/') && s.as_bytes().get(2) == Some(&b':') { &s[1..] } else { s };
     let p = Path::new(s);
-    is_local_image_file(p).then(|| p.to_path_buf())
+    (p.fs_is_absolute() && (decoded.is_some() || !src.contains("://"))).then(|| p.to_path_buf())
 }
 
 pub(super) fn is_local_image_file(p: &Path) -> bool {
@@ -2493,13 +2531,17 @@ pub fn cached_remote_in(root: &Path, url: &str) -> Option<PathBuf> {
 
 /// Pasted HTML images: `data:` URIs and local files become owned assets;
 /// unreadable ones are dropped. Remote images stay remote.
-pub(crate) fn localize_pasted_images(root: &Path, blocks: &mut Vec<Block>) {
+pub(crate) fn localize_pasted_images(root: &Path, blocks: &mut Vec<Block>) { localize_images_at(&Store::assets_in(root), Some(root), blocks) }
+
+pub(crate) fn localize_images_in(assets: &Path, blocks: &mut Vec<Block>) { localize_images_at(assets, None, blocks) }
+
+fn localize_images_at(assets: &Path, root: Option<&Path>, blocks: &mut Vec<Block>) {
     use base64::Engine;
     blocks.retain_mut(|b| {
-        localize_pasted_images(root, &mut b.children);
+        localize_images_at(assets, root, &mut b.children);
         if let BlockKind::Table(t) = &mut b.kind {
             for cell in t.rows.iter_mut().flatten() {
-                localize_pasted_images(root, &mut cell.blocks);
+                localize_images_at(assets, root, &mut cell.blocks);
                 if cell.blocks.is_empty() && !cell.is_covered() {
                     cell.blocks.push(Block::text(""));
                 }
@@ -2510,15 +2552,21 @@ pub(crate) fn localize_pasted_images(root: &Path, blocks: &mut Vec<Block>) {
             let Some((head, payload)) = data.split_once(',') else { return false };
             let ext = head.split(';').next().unwrap_or_default().replace("jpeg", "jpg");
             let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(payload.trim()) else { return false };
-            image_block_from(root, &bytes, &ext)
-        } else if src.starts_with('/') {
-            image_block_from_file(root, Path::new(src.as_str()))
+            match root { Some(root) => image_block_from(root, &bytes, &ext), None => image_block_in(assets, &bytes, &ext, None) }
+        } else if let Some(file) = local_file(src) {
+            match root { Some(root) => image_block_from_file(root, &file), None => image_block_from_file_in(assets, &file) }
         } else {
             return true;
         };
+        // The copy keeps the width and caption the page gave the picture (`<img width>`, `![[a.png|300]]`).
+        let (old_width, old_caption) = match &b.kind { BlockKind::Image { width, caption, .. } => (*width, caption.clone()), _ => (None, None) };
         match local {
             Ok(n) => {
                 b.kind = n.kind;
+                if let BlockKind::Image { width, height, caption, .. } = &mut b.kind {
+                    if old_width.is_some() { (*width, *height) = (old_width, None); }
+                    if old_caption.is_some() { *caption = old_caption; }
+                }
                 true
             }
             Err(_) => false,
@@ -2623,7 +2671,7 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::{cap, clipboard_image_data, decode, decode_png, local_image_path, pasted_remote, shrunk, BAD_DIMS};
+    use super::{cap, clipboard_image_data, decode, decode_png, local_file, local_image_path, pasted_remote, shrunk, BAD_DIMS};
     use crate::model::{Block, BlockKind, RichText};
     use gpui::ImageFormat;
 
@@ -2796,5 +2844,20 @@ mod tests {
         assert_eq!(ext, "gif");
         assert!(matches!(bytes, std::borrow::Cow::Borrowed(_)));
         assert_eq!(&*bytes, img.bytes);
+    }
+
+    /// An absolute path is a local file on every platform's own terms (Windows'
+    /// `C:\…` and `C:/…` too), so an import copies it in; URLs and relative paths are not.
+    #[test]
+    fn local_file_takes_every_absolute_path() {
+        let here = std::env::temp_dir().join("pic.png");
+        assert_eq!(local_file(&here.to_string_lossy()), Some(here.clone()));
+        for no in ["https://e.com/a.png", "data:image/png;base64,AAAA", "pics/a.png", "./a.png", "..\\a.png"] { assert_eq!(local_file(no), None, "{no}"); }
+        #[cfg(unix)]
+        assert_eq!(local_file("file:///tmp/a%20b.png"), Some(std::path::PathBuf::from("/tmp/a b.png")));
+        #[cfg(windows)]
+        for (src, want) in [(r"C:\Users\a\pic.png", r"C:\Users\a\pic.png"), ("C:/Users/a/pic.png", "C:/Users/a/pic.png"), (r"\\server\share\pic.png", r"\\server\share\pic.png"), ("file:///C:/Users/a%20b/pic.png", "C:/Users/a b/pic.png")] {
+            assert_eq!(local_file(src), Some(std::path::PathBuf::from(want)), "{src}");
+        }
     }
 }

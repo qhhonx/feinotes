@@ -41,7 +41,15 @@ pub(crate) struct HomeFolders {
     pub(crate) file_drop: Option<FileDrop>,
     /// Last-frame window bounds of the folder and document cards, by entry id.
     bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+    /// The folder cards' papers and counts, kept while the entries' shape (`tree::shape_key`) holds.
+    papers: RefCell<Papers>,
 }
+
+/// Each folder's children (indices into the entries, in their order), and
+/// each card's papers and count by (folder, front paper). Looking for a
+/// card's papers walked every entry once per folder under it, each frame.
+#[derive(Default)]
+struct Papers { key: Option<u64>, children: HashMap<String, Vec<usize>>, cards: HashMap<(String, Option<String>), (Vec<Entry>, usize)> }
 
 struct FolderFx {
     /// Hover: the papers rise, the front leans back.
@@ -255,34 +263,46 @@ fn glass(o: Point<Pixels>, p: &Pose, window: &mut Window) {
 }
 
 impl Workspace {
-    fn folder_papers(entries: &[Entry], id: &str, front: Option<&String>) -> (Vec<Entry>, usize) {
-        let n = entries.iter().filter(|e| e.meta.parent.as_deref() == Some(id)).count();
+    fn folder_papers(&self, entries: &[Entry], id: &str, front: Option<&String>) -> (Vec<Entry>, usize) {
+        let key = crate::tree::shape_key(entries);
+        let mut p = self.home.folders.papers.borrow_mut();
+        if p.key != Some(key) {
+            let mut children: HashMap<String, Vec<usize>> = HashMap::new();
+            for (i, e) in entries.iter().enumerate() {
+                if let Some(parent) = &e.meta.parent { children.entry(parent.clone()).or_default().push(i); }
+            }
+            *p = Papers { key: Some(key), children, cards: HashMap::new() };
+        }
+        if let Some(c) = p.cards.get(&(id.to_string(), front.cloned())) { return c.clone(); }
+        let n = p.children.get(id).map_or(0, Vec::len);
         // Papers stand for documents. A folder drawn as a paper reads as a note
         // with the folder's name on it, so only documents are painted — but a
         // folder usually holds folders for a while before a document appears,
         // and its documents usually sit deeper, so look all the way down and
         // paint the newest ones (#123).
-        let mut kids: Vec<Entry> = vec![];
-        Self::documents_below(entries, id, &mut kids, 0);
+        let mut kids: Vec<&Entry> = vec![];
+        Self::documents_below(entries, &p.children, id, &mut kids, 0);
         kids.sort_by(|a, b| {
             let lead = |e: &Entry| front.is_some_and(|f| *f == e.id);
             lead(b).cmp(&lead(a)).then(b.meta.opened.max(b.meta.modified).cmp(&a.meta.opened.max(a.meta.modified)))
         });
-        kids.truncate(PAPERS);
-        (kids, n)
+        let card = (kids.into_iter().take(PAPERS).cloned().collect(), n);
+        p.cards.insert((id.to_string(), front.cloned()), card.clone());
+        card
     }
 
     /// Every document anywhere under `id`, newest first once sorted by the caller.
-    fn documents_below(entries: &[Entry], id: &str, out: &mut Vec<Entry>, depth: usize) {
+    fn documents_below<'a>(entries: &'a [Entry], children: &HashMap<String, Vec<usize>>, id: &str, out: &mut Vec<&'a Entry>, depth: usize) {
         // A folder that contains itself would otherwise recurse forever.
         if depth > 32 {
             return;
         }
-        for e in entries.iter().filter(|e| e.meta.parent.as_deref() == Some(id)) {
+        for &i in children.get(id).map_or(&[][..], Vec::as_slice) {
+            let e = &entries[i];
             if e.meta.folder.is_some() {
-                Self::documents_below(entries, &e.id, out, depth + 1);
+                Self::documents_below(entries, children, &e.id, out, depth + 1);
             } else {
-                out.push(e.clone());
+                out.push(e);
             }
         }
     }
@@ -300,7 +320,7 @@ impl Workspace {
         let private_tree = id.starts_with("collection-").then(|| self.organized_shared_entries(cx));
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let entries = private_tree.as_deref().unwrap_or(entries);
-        let (kids, count) = Self::folder_papers(entries, &id, front.as_ref());
+        let (kids, count) = self.folder_papers(entries, &id, front.as_ref());
 
         // ---- Springs.
         let fx = self.home.folders.fx.entry(id.clone()).or_insert_with(FolderFx::new);
@@ -773,7 +793,7 @@ impl Workspace {
         if !matches!(self.view, crate::app::View::Home | crate::app::View::Folder) { self.home.folders.file_drop = None; return None; }
         let dragging = cx.has_active_drag() || crate::devtools::file_drag();
         let target_title = |w: &Self, id: Option<&String>| id.and_then(|id| w.entries.iter().find(|e| &e.id == id)).map(|e| display_title(&e.title))
-            .unwrap_or_else(|| w.top_name());
+            .unwrap_or_else(|| w.home_name());
         let page = if self.view == crate::app::View::Folder { self.folder_current.clone() } else { None };
         let d = self.home.folders.file_drop.as_ref()?;
         let place = target_title(self, d.landed.clone().flatten().as_ref().or(d.over.as_ref()).or(page.as_ref()));

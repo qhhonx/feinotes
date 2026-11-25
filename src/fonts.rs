@@ -39,16 +39,55 @@ pub fn added(family: &str) {
 }
 
 /// Whether `family` is installed, ignoring case (the platform's spelling of a
-/// family need not match the one saved).
+/// family need not match the one saved). On Windows also by its name in
+/// another language (`other_name`).
 pub fn installed(family: &str, cx: &App) -> bool {
-    families(cx).iter().any(|f| f.eq_ignore_ascii_case(family))
+    families(cx).iter().any(|f| f.eq_ignore_ascii_case(family)) || other_name(family, cx)
 }
 
 /// Known to be missing: the list has been read and lacks it. Before the list
 /// is read nothing is known, and the family is used as saved.
 fn missing(family: &str) -> bool {
     FAMILIES.read().unwrap().as_ref().is_some_and(|l| !l.iter().any(|f| f.eq_ignore_ascii_case(family)))
+        && !OTHER_NAMES.read().unwrap().iter().any(|f| f.eq_ignore_ascii_case(family))
 }
+
+/// Families installed under a name the list does not show (`other_name`).
+static OTHER_NAMES: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+/// Windows lists each family by its name in the system's language: on a
+/// Chinese one 微软雅黑, not Microsoft YaHei, which a library synced from a
+/// Mac or an English system has saved. Such a family is still installed
+/// when the text system finds it by that name (`resolves`); it is noted, so
+/// `store` keeps it. Elsewhere the list is the answer, as before.
+fn other_name(family: &str, cx: &App) -> bool {
+    if !cfg!(target_os = "windows") || family.trim().is_empty() { return false }
+    if OTHER_NAMES.read().unwrap().iter().any(|f| f.eq_ignore_ascii_case(family)) { return true }
+    if families(cx).iter().any(|f| f.eq_ignore_ascii_case(family)) || !resolves(family, cx) { return false }
+    OTHER_NAMES.write().unwrap().push(family.to_string());
+    true
+}
+
+/// Whether the text system finds `family` itself: a family it does not have
+/// resolves to the same fallback face as any other it does not have.
+fn resolves(family: &str, cx: &App) -> bool {
+    let ts = cx.text_system();
+    ts.resolve_font(&gpui::font(family.to_string())) != ts.resolve_font(&gpui::font("Quiet.md: no such family"))
+}
+
+static CJK_PUNCT_MISSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Find out once whether this system has `CJK_PUNCT_FONT` (a Mac always
+/// does). Until then it is taken to.
+pub fn check_cjk_punct(cx: &App) {
+    use std::sync::atomic::Ordering;
+    static CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if cfg!(any(target_os = "macos", target_os = "ios")) || CHECKED.swap(true, Ordering::Relaxed) { return }
+    CJK_PUNCT_MISSING.store(!resolves(crate::editor_ui::CJK_PUNCT_FONT, cx), Ordering::Relaxed);
+}
+
+/// Whether `CJK_PUNCT_FONT` is here to draw (`check_cjk_punct`).
+pub fn cjk_punct_installed() -> bool { !CJK_PUNCT_MISSING.load(std::sync::atomic::Ordering::Relaxed) }
 
 /// Put `family` in one of the font settings' slots (`theme::ui_family`,
 /// `themes::doc_font`): empty, or a family that has been uninstalled since it
@@ -79,6 +118,7 @@ pub struct Glyphs { pub cjk_punct: bool, pub quotes: bool }
 pub fn probe(family: &str, cx: &App) {
     let family = family.trim();
     if family.is_empty() || OWN_GLYPHS.read().unwrap().iter().any(|(f, _)| f == family) { return }
+    other_name(family, cx);
     // a downloaded font still loading: probed once it is registered (`added`)
     if crate::font_downloads::by_family(family).is_some_and(|e| !crate::font_downloads::registered(&e.id) && !installed(family, cx)) { return }
     let ts = cx.text_system();

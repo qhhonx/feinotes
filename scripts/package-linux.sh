@@ -14,6 +14,7 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/$name/bin" "$stage/$name/share/applications" "$stage/$name/share/icons/hicolor/512x512/apps"
 install -m755 "${CARGO_TARGET_DIR:-target}/dist/quiet_md" "$stage/$name/bin/quiet_md"
+install -m755 "${CARGO_TARGET_DIR:-target}/dist/quiet" "$stage/$name/bin/quiet"
 install -m644 packaging/linux/com.s1dashu.quietmd.desktop "$stage/$name/share/applications/"
 "$resize" assets/branding/app-icon.png -resize 512x512 "$stage/$name/share/icons/hicolor/512x512/apps/com.s1dashu.quietmd.png"
 install -m644 LICENSE "$stage/$name/"

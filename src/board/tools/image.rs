@@ -64,7 +64,7 @@ pub fn insert_images(me: &mut BoardView, images: Vec<(Vec<u8>, String, Option<St
     let mut units = vec![];
     for (bytes, ext, name) in images {
         let Ok(path) = crate::editor::image::store_image_named(&me.library_root, &bytes, &ext, name.as_deref()) else { continue };
-        let rel = path.strip_prefix(&me.library_root).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_else(|_| path.to_string_lossy().into_owned());
+        let rel = fdl_core::paths::portable_in(&path, &me.library_root).unwrap_or_else(|| path.to_string_lossy().into_owned());
         let id = generate_id_from_file(&bytes);
         let mime = normalize_file_mime_type(&format!("x.{ext}"), "", &bytes);
         let natural = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format().ok().and_then(|r| r.into_dimensions().ok()).map(|(w, h)| (w as f64, h as f64));

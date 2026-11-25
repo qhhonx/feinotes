@@ -247,7 +247,7 @@ impl Writer<'_> {
             // A 画板 as an inline SVG of its scene (images inlined).
             BlockKind::Board(bd) => {
                 if !bd.elements.is_empty() {
-                    let _ = write!(out, "<div class=\"board\">{}</div>", bd.svg_in(&crate::store::Store::root_dir()));
+                    let _ = write!(out, "<div class=\"board\">{}</div>", bd.svg_in(&crate::store::Store::active_dir()));
                 }
             }
             BlockKind::Countdown(c) => {

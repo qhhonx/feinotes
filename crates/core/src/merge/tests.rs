@@ -158,7 +158,7 @@ fn a_long_document_merges_quickly() {
 
 // ------------------------------------------------------------ random merges
 
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
     fn next(&mut self) -> u64 {
@@ -167,14 +167,14 @@ impl Rng {
         self.0 ^= self.0 >> 27;
         self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
     }
-    fn below(&mut self, n: usize) -> usize { (self.next() % n.max(1) as u64) as usize }
+    pub(crate) fn below(&mut self, n: usize) -> usize { (self.next() % n.max(1) as u64) as usize }
     fn chance(&mut self, percent: u64) -> bool { self.next() % 100 < percent }
     fn word(&mut self) -> String { (0..6).map(|_| char::from(b'a' + self.below(26) as u8)).collect() }
 }
 
 fn seeds() -> u64 { std::env::var("FDL_FUZZ_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(200) }
 
-const NESTED: &str = r#"<title>随机 <b>合并</b></title>
+pub(crate) const NESTED: &str = r#"<title>随机 <b>合并</b></title>
 <h1>标题一</h1>
 <p>普通 <b>加粗</b> <em>斜体</em> 😀</p>
 <ul><li>一<ul><li>一.一</li><li>一.二</li></ul></li><li>二</li></ul>
@@ -229,7 +229,7 @@ fn valid(blocks: &[Block]) -> bool {
     blocks.iter().all(|b| (b.children.is_empty() || b.kind.nests() || b.kind.is_container()) && valid(&b.children))
 }
 
-fn edited(base: &Document, rng: &mut Rng) -> Document {
+pub(crate) fn edited(base: &Document, rng: &mut Rng) -> Document {
     let mut d = base.clone();
     for _ in 0..rng.below(4) { mutate(&mut d, rng) }
     d

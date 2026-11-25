@@ -2409,6 +2409,52 @@ impl Core {
         true
     }
 
+    /// Side drops accept a single image and a root image or an existing grid column.
+    pub fn can_move_image_beside(&self, image: BlockId, target: BlockId) -> bool {
+        if image == target || !matches!(self.kind_of(image), Some(BlockKind::Image { .. }))
+            || !matches!(self.kind_of(target), Some(BlockKind::Image { .. })) { return false; }
+        match self.parent_of(target) {
+            None => true,
+            Some(col) if matches!(col.kind, BlockKind::Column { .. }) => self.parent_of(col.id)
+                .is_some_and(|grid| matches!(grid.kind, BlockKind::Grid) && grid.children.len() < MAX_COLUMNS),
+            _ => false,
+        }
+    }
+
+    /// Move an image to a neighbouring column, creating a grid when needed.
+    /// The image id, dimensions and caption survive, and the entire move undoes once.
+    pub fn move_image_beside(&mut self, image: BlockId, target: BlockId, before: bool) -> bool {
+        if !self.can_move_image_beside(image, target) { return false; }
+        let column = self.parent_of(target).map(|b| b.id);
+        let grid = column.and_then(|col| self.parent_of(col).map(|b| b.id));
+        self.checkpoint(EditKind::Other);
+        let moved = self.remove_subtree(image).unwrap();
+        let new_column = Block::new(BlockKind::Column { ratio: 0.5 }, RichText::default()).with_children(vec![moved]);
+        if let (Some(grid), Some(column)) = (grid, column) {
+            let g = self.block_mut(grid).unwrap();
+            let at = g.children.iter().position(|c| c.id == column).unwrap() + usize::from(!before);
+            let ratio = 1. / (g.children.len() as f32 + 1.);
+            for col in &mut g.children {
+                if let BlockKind::Column { ratio: r } = &mut col.kind { *r *= 1. - ratio; }
+            }
+            let mut new_column = new_column;
+            new_column.kind = BlockKind::Column { ratio };
+            g.children.insert(at, new_column);
+        } else {
+            let grid = Block::new(BlockKind::Grid, RichText::default());
+            let slot = self.block_mut(target).unwrap();
+            let original = std::mem::replace(slot, grid);
+            let old_column = Block::new(BlockKind::Column { ratio: 0.5 }, RichText::default()).with_children(vec![original]);
+            slot.children = if before { vec![new_column, old_column] } else { vec![old_column, new_column] };
+        }
+        self.normalize();
+        self.clear_block_sel();
+        self.cell_sel = None;
+        self.sel = Selection::caret(Pos::new(image, 0));
+        self.fix_selection();
+        true
+    }
+
     /// New blocks (dropped files) placed relative to `target`, as one edit.
     pub fn insert_blocks_at(&mut self, blocks: Vec<Block>, target: BlockId, place: DropPlace) {
         if blocks.is_empty() || self.path(target).is_none() {
@@ -3952,6 +3998,33 @@ mod tests {
         assert!(c.block(h).unwrap().folded);
         assert_eq!(c.doc.icon.as_deref(), Some("🐱"));
         assert!(xml(&c).contains("<p>a</p>"), "{}", xml(&c));
+    }
+
+    /// Side drops preserve images and captions across new/existing grids and undo.
+    #[test]
+    fn image_side_drop_creates_and_extends_grid() {
+        for before in [false, true] {
+            let mut c = doc("<img src=\"a.png\" caption=\"A\"/><p>Middle</p><img src=\"b.png\" caption=\"B\"/><img src=\"c.png\"/>");
+            let (a, b, third) = (c.doc.blocks[0].id, c.doc.blocks[2].id, c.doc.blocks[3].id);
+            let original = xml(&c);
+            assert!(!c.move_image_beside(a, a, before));
+            assert!(c.move_image_beside(b, a, before));
+            let g = &c.doc.blocks[0];
+            assert_eq!(g.children[usize::from(!before)].children[0].id, b);
+            let pair = xml(&c);
+            c.undo();
+            assert_eq!(xml(&c), original);
+            c.redo();
+            assert_eq!(xml(&c), pair);
+            assert!(c.move_image_beside(third, a, before));
+            assert_eq!(c.doc.blocks[0].children.len(), 3);
+            assert!(c.move_image_beside(b, third, before));
+            assert_eq!(c.doc.blocks[0].children.len(), 3);
+            let saved = xml(&c);
+            assert_eq!(crate::docxml::serialize(&crate::docxml::parse(&saved).unwrap()), saved);
+            assert_eq!(c.block(a).unwrap().id, a);
+            assert_eq!(c.block(b).unwrap().id, b);
+        }
     }
 
     #[test]

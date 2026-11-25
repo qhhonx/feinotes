@@ -1,0 +1,27 @@
+{
+	"ID": "20240101000400-inboxdd",
+	"Spec": "2",
+	"Type": "NodeDocument",
+	"Properties": {
+		"id": "20240101000400-inboxdd",
+		"title": "随手记",
+		"type": "doc",
+		"updated": "20240401120000"
+	},
+	"Children": [
+		{
+			"ID": "20240101001062-paaaaaa",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20240101001062-paaaaaa",
+				"updated": "20240102090000"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "收件箱里的一条"
+				}
+			]
+		}
+	]
+}

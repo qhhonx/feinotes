@@ -530,11 +530,11 @@ impl Workspace {
                 div().id(("history-row", i)).group(group.clone()).flex_none().mx(px(dmenu::PAD))
                     .h(px(if label.is_some() { 48. } else { 36. })).px(px(8.))
                     .flex().flex_row().items_center().gap(px(10.)).rounded(px(crate::design::G.menu_row_r))
-                    .when(on, |d| d.bg(Theme::primary_fill_1()))
+                    .when(on, |d| d.bg(crate::design::color::accent()))
                     .when(!editing && !on, |d| d.hover(|s| s.bg(Theme::fill_hover())))
                     .when(!editing, |d| d.cursor_pointer().on_click(cx.listener(move |w: &mut Workspace, _, window, cx| w.preview_version(&click_name, window, cx))))
                     .when(editing, |d| d.bg(Theme::fill_hover()))
-                    .child(div().flex_none().w(px(40.)).text_size(px(13.)).text_color(if on { Theme::primary() } else { Theme::text() })
+                    .child(div().flex_none().w(px(40.)).text_size(px(13.)).text_color(crate::design::color::foreground())
                         .when(on, |d| d.font_weight(FontWeight::MEDIUM)).child(hhmm(v.ms / 1000)))
                     .child(match field {
                         Some(field) => div().flex_1().min_w_0().child(field).into_any_element(),

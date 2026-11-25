@@ -49,7 +49,7 @@ The declared macOS minimum is 13, not yet verified on real hardware. Intel packa
 
 ### macOS
 
-`scripts/release.sh` builds for the local architecture, generates the app icon, signs with a Developer ID Application certificate, submits for Apple notarization, staples the ticket and runs a Gatekeeper check, then writes a ZIP and its SHA-256. It does not upload to GitHub or launch the app.
+`scripts/release.sh` builds for the local architecture, generates the app icon, signs with a Developer ID Application certificate, submits for Apple notarization, staples the ticket and runs a Gatekeeper check, then writes a ZIP and a DMG, each with its SHA-256. The DMG (the app beside an Applications shortcut, itself signed, notarized and stapled) is the download people install from; the ZIP holds the same app and is what in-app updates fetch. It does not upload to GitHub or launch the app.
 
 Install the signing certificate, with its private key, in the login keychain and set up a notarytool keychain profile, then run:
 
@@ -68,7 +68,7 @@ scripts/release.sh
 MACOS_TARGET=x86_64-apple-darwin scripts/release.sh
 ```
 
-Each run keeps its output in a separate `dist-release.*` directory. Intel ZIPs use `macos-x86_64`; Apple Silicon ZIPs keep `macos-arm64`. CI builds both on its existing ARM runner and verifies the binary architectures and signatures. `SIGNING_IDENTITY=-` skips notarization and creates ad-hoc signed `-unsigned.zip` validation packages, which must not be distributed and are rejected by `publish-downloads.sh`.
+Each run keeps its output in a separate `dist-release.*` directory. Intel packages use `macos-x86_64`; Apple Silicon packages keep `macos-arm64`. CI builds both on its existing ARM runner and verifies the binary architectures and signatures. `SIGNING_IDENTITY=-` skips notarization and creates ad-hoc signed `-unsigned.zip` and `-unsigned.dmg` validation packages, which must not be distributed and are rejected by `publish-downloads.sh`.
 
 ### Windows
 
@@ -93,7 +93,7 @@ On every platform, never commit credentials, private keys or certificate files.
 
 ### Uploads and in-app updates
 
-`scripts/publish-downloads.sh <package>…` uploads packages to `v<version>/` and `latest/` on `download.quiet.md`, signs them with minisign, and finally writes `latest/update-<platform>.json` (`macos-arm64`, `macos-x86_64`, `windows-x64`). That manifest is what the app reads. It checks 10 seconds after launch and every 12 hours after that, and again when a window comes to the front more than an hour after the last check (this can be turned off in Settings › General); **Check for Updates…** in the menu checks right away. The download starts only when the user clicks. The app verifies the minisign signature (its trusted comment must be the package's file name); on macOS the new package must also be signed by the same team as the running app. It then quits, swaps the package and reopens. See `src/update.rs`.
+`scripts/publish-downloads.sh <package>…` uploads packages to `v<version>/` and `latest/` on `download.quiet.md`, signs them with minisign, and finally writes `latest/update-<platform>.json` (`macos-arm64`, `macos-x86_64`, `windows-x64`). On macOS pass both the DMG and the ZIP: the site and README link to `latest/quiet-md-macos-<arch>.dmg`, while the manifest always names the ZIP. That manifest is what the app reads. It checks 10 seconds after launch and every 12 hours after that, and again when a window comes to the front more than an hour after the last check (this can be turned off in Settings › General); **Check for Updates…** in the menu checks right away. The download starts only when the user clicks. The app verifies the minisign signature (its trusted comment must be the package's file name); on macOS the new package must also be signed by the same team as the running app. It then quits, swaps the package and reopens. See `src/update.rs`.
 
 Generate the update signing key once (`brew install minisign`), keep the private key outside the repository and commit the public key:
 

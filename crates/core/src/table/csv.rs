@@ -107,7 +107,7 @@ pub fn import(base: &mut Base, name: &str, text: &str) -> Table {
     let header = if rows.is_empty() { vec![] } else { rows.remove(0) };
     let cols = rows.iter().map(Vec::len).max().unwrap_or(0).max(header.len()).max(1);
     let name = safe_name(name, "数据表", |n| base.tables.iter().any(|t| t.name.eq_ignore_ascii_case(n)));
-    let mut t = Table { id: base.new_id(), name, next_rec: 1, next_auto: 1, ..Default::default() };
+    let mut t = Table { id: base.new_id(), name, next_auto: 1, ..Default::default() };
     for c in 0..cols {
         let cells = || rows.iter().filter_map(move |r| r.get(c)).map(String::as_str);
         let mut ty = field::infer_type(cells());
@@ -124,13 +124,14 @@ pub fn import(base: &mut Base, name: &str, text: &str) -> Table {
         t.fields.push(Field { id: base.new_id(), name, ty, opts, desc: String::new() });
     }
     let now = field::now();
-    for row in &rows {
-        let mut r = Record { id: t.next_rec, created: now, modified: now, auto: t.next_auto, ..Default::default() };
-        for (f, cell) in t.fields.iter_mut().zip(row) { r.set(f.id, field::parse_new(f, cell, &mut base.next_id)); }
+    let mut ids = base.take_ids();
+    for (row, ord) in rows.iter().zip(super::order::keys_between(None, None, rows.len())) {
+        let mut r = Record { id: ids.fresh(), created: now, modified: now, auto: t.next_auto, ord, ..Default::default() };
+        for (f, cell) in t.fields.iter_mut().zip(row) { r.set(f.id, field::parse_new(f, cell, &mut ids)); }
         t.records.push(r);
-        t.next_rec += 1;
         t.next_auto += 1;
     }
+    base.ids = ids;
     t.views.push(View { id: base.new_id(), name: "表格视图".into(), kind: ViewKind::Grid, opts: ViewOpts { frozen: 1, ..Default::default() } });
     t
 }
@@ -216,7 +217,7 @@ mod tests {
     #[test]
     fn import_guesses_types_and_mends_names() {
         let mut base = Base::blank(0);
-        let before = base.next_id;
+        let before: std::collections::HashSet<u64> = base.all_ids().collect();
         let mut text = String::from("\u{feff}书名,状态,页数,开始,读完,链接,状态,,_内部,id,占比\n");
         for i in 0..9 {
             text.push_str(&format!("书 {i},{},{},2026-01-{:02}{},{},https://example.com/{i},x{i},备注,q,{i},{}%\n",
@@ -226,7 +227,8 @@ mod tests {
         let t = import(&mut base, "未命名数据表", &text);
         // the name is free in the base, ids are fresh
         assert_eq!(t.name, "未命名数据表 2");
-        assert!(t.id > before && t.fields.iter().all(|f| f.id > before) && base.next_id >= t.views[0].id);
+        let ids: Vec<u64> = [t.id].into_iter().chain(t.fields.iter().flat_map(|f| [f.id].into_iter().chain(f.opts.options.iter().map(|o| o.id)))).chain([t.views[0].id]).collect();
+        assert!(ids.iter().all(|i| !before.contains(i) && (1..ID_LIMIT).contains(i)) && ids.len() == ids.iter().collect::<std::collections::HashSet<_>>().len());
         let names: Vec<&str> = t.fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["书名", "状态", "页数", "开始", "读完", "链接", "状态 2", "字段8", "内部", "id 2", "占比"]);
         assert!(names.iter().all(|n| crate::table::sqlite_name_ok(n)));
@@ -234,7 +236,8 @@ mod tests {
         use FieldType::*;
         assert_eq!(types, [Text, SingleSelect, Number, Date, Checkbox, Url, Text, SingleSelect, SingleSelect, Number, Number]);
         assert_eq!(t.records.len(), 9);
-        assert_eq!((t.next_rec, t.next_auto), (10, 10));
+        assert_eq!(t.next_auto, 10);
+        assert!(t.records.windows(2).all(|w| w[0].ord < w[1].ord && w[0].id != w[1].id));
         let (state, pages, start, done, share) = (&t.fields[1], &t.fields[2], &t.fields[3], &t.fields[4], &t.fields[10]);
         assert_eq!(state.opts.options.iter().map(|o| o.name.as_str()).collect::<Vec<_>>(), ["想读", "在读", "读完"]);
         assert_eq!(state.opts.options.iter().map(|o| o.color).collect::<Vec<_>>(), [0, 1, 2]);

@@ -803,6 +803,14 @@ impl ListState {
         self.0.borrow().last_layout_bounds.unwrap_or_default()
     }
 
+    /// quiet.md: change how much is rendered beyond the visible area (see
+    /// `new`). Dragging a scrollbar thumb across a long list lands somewhere
+    /// new every frame, and laying out rows nobody sees there is most of the
+    /// frame; with none, only the visible rows are laid out.
+    pub fn set_overdraw(&self, overdraw: Pixels) {
+        self.0.borrow_mut().overdraw = overdraw;
+    }
+
     /// quiet.md: (scroll offset, content height, viewport height) for a
     /// scrollbar. Only items that have been on screen are measured, so every
     /// other one counts at the average measured height.

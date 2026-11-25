@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.zip"><img src="docs/images/download-macos.svg" height="56" alt="macOS용 다운로드"></a>
+  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.dmg"><img src="docs/images/download-macos.svg" height="56" alt="macOS용 다운로드"></a>
   &nbsp;
   <a href="https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe"><img src="docs/images/download-windows.svg" height="56" alt="Windows용 다운로드"></a>
   &nbsp;
@@ -94,7 +94,7 @@
 ## 다운로드
 
 <p align="center">
-  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.zip"><img src="docs/images/download-macos.svg" height="56" alt="macOS용 다운로드"></a>
+  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.dmg"><img src="docs/images/download-macos.svg" height="56" alt="macOS용 다운로드"></a>
   &nbsp;
   <a href="https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe"><img src="docs/images/download-windows.svg" height="56" alt="Windows용 다운로드"></a>
   &nbsp;
@@ -103,12 +103,12 @@
 
 | 플랫폼 | 패키지 | 요구 사항 |
 |---|---|---|
-| **macOS**(Apple Silicon) | [quiet-md-macos-arm64.zip](https://download.quiet.md/latest/quiet-md-macos-arm64.zip) | macOS 13 이상 |
+| **macOS**(Apple Silicon) | [quiet-md-macos-arm64.dmg](https://download.quiet.md/latest/quiet-md-macos-arm64.dmg) | macOS 13 이상 |
 | **Windows**(x64) | [quiet-md-windows-x64-setup.exe](https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe) | Windows 10 버전 1809 이상 |
 | **Linux**(x86_64, 실험적) | [quiet-md-x86_64.AppImage](https://download.quiet.md/latest/quiet-md-x86_64.AppImage) | glibc 2.35 이상(Ubuntu 22.04 이상) |
-| **macOS**(Intel) | [quiet-md-macos-x86_64.zip](https://download.quiet.md/latest/quiet-md-macos-x86_64.zip) | macOS 13 이상 |
+| **macOS**(Intel) | [quiet-md-macos-x86_64.dmg](https://download.quiet.md/latest/quiet-md-macos-x86_64.dmg) | macOS 13 이상 |
 
-- **macOS**: 압축을 풀고 `quiet.md.app`을 응용 프로그램 폴더로 끌어다 놓습니다. 앱은 Apple의 서명과 공증을 받았습니다.
+- **macOS**: `.dmg`를 열고 `quiet.md.app`을 옆의 응용 프로그램 바로 가기로 끌어다 놓은 뒤, 응용 프로그램 폴더에서 엽니다. 앱과 디스크 이미지는 Apple의 서명과 공증을 받았습니다. Releases 페이지의 `.zip`은 같은 앱이며, 앱 내 업데이트가 내려받는 파일입니다.
 - **Windows**: 설치 프로그램을 실행합니다. 기본적으로 현재 사용자에게만 설치되며, 제거해도 노트는 지워지지 않습니다. 처음 실행할 때 SmartScreen 창이 뜨면 **추가 정보 → 실행**을 누르세요.
 - **Linux**(실험적): `chmod +x quiet-md-*.AppImage` 후 실행합니다. FUSE가 없으면 `--appimage-extract-and-run`을 붙이세요. AppImage 0.1.10부터는 앱 안에서 업데이트할 수 있고, 그 이전 Linux 버전은 한 번 직접 설치해야 합니다. 직접 써 보는 테스트는 지금까지 Wayland의 Omarchy에서만 했습니다. 자세한 내용은 [Linux 안내](CONTRIBUTING.md#linux-experimental)를 참고하세요.
 
@@ -173,5 +173,5 @@ Quiet.md를 함께 만들어 주신 모든 분께 감사드립니다. 이슈와 
 
 다음은 MIT 라이선스에 포함되지 않으므로, 포크에서는 다른 것으로 바꿔야 합니다.
 
-- `assets/icons/`에 있는 Nucleo 아이콘 67개는 Nucleo 상용 라이선스를 따릅니다. 아이콘만 따로 추출하거나 재배포하지 마세요.
+- `assets/icons/`에 있는 Nucleo 아이콘 71개는 Nucleo 상용 라이선스를 따릅니다. 아이콘만 따로 추출하거나 재배포하지 마세요.
 - "Quiet.md"라는 이름과 앱 아이콘.

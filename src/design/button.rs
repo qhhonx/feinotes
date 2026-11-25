@@ -46,8 +46,9 @@ pub enum ButtonSize {
 
 impl ButtonSize {
     fn h(self) -> f32 { let g = geo(); match self { ButtonSize::Default => g.button_h, ButtonSize::Sm => g.button_sm_h, ButtonSize::Tool => g.tool_h, ButtonSize::Xs => 24., ButtonSize::Lg => 40. } }
-    /// `[&_svg]:size-4`, `size-3` at xs.
-    fn icon(self) -> f32 { match self { ButtonSize::Xs => 12., _ => 16. } }
+    /// `[&_svg]:size-4`, `size-3` at xs beside a label. An icon-only xs button keeps the 16pt glyph
+    /// (maintainer 2026-11-24: shadcn's 12 read thin and small where the app had 15–16).
+    fn icon(self, square: bool) -> f32 { match self { ButtonSize::Xs if !square => 12., _ => 16. } }
     /// px-2.5, px-2 at xs.
     fn px(self) -> f32 { match self { ButtonSize::Default | ButtonSize::Sm | ButtonSize::Lg => geo().button_px, ButtonSize::Tool | ButtonSize::Xs => 8. } }
     /// The side a glyph is on (`has-data-[icon=inline-start]`): pl-2, pl-1.5 at sm and xs.
@@ -140,9 +141,9 @@ impl RenderOnce for Button {
             };
             // `active:translate-y-px`, not on a menu's trigger (`aria-haspopup`): those come `selected` while open
             let d = d.when(!disabled && !selected && !placed, |d| d.relative().active(|s| s.top(px(1.))));
-            d.when_some(icon_l, |d, n| d.child(if editor { crate::editor_ui::icon(&n, sz.icon(), fg) } else { icon(&n, sz.icon(), fg) }))
+            d.when_some(icon_l, |d, n| d.child(if editor { crate::editor_ui::icon(&n, sz.icon(square), fg) } else { icon(&n, sz.icon(square), fg) }))
                 .when_some(label_s, |d, s| d.child(label(s)))
-                .when_some(icon_r, |d, n| d.child(icon(&n, sz.icon(), fg)))
+                .when_some(icon_r, |d, n| d.child(icon(&n, sz.icon(square), fg)))
         })
     }
 }

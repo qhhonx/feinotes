@@ -1,6 +1,7 @@
 //! Dropping onto the sidebar's 我的文档: files from the Finder are imported
-//! into the folder under the pointer (a document row: its folder; elsewhere:
-//! the top), and a 本机文件 row carried up into the tree is imported there.
+//! into the folder under the pointer, or between the rows there (a document
+//! row only opens a slot beside it, #418), and a 本机文件 row carried up into
+//! the tree is imported there.
 use fdl_core::vfs::PathExt as _;
 use crate::app::Workspace;
 use crate::settings::tr;
@@ -80,7 +81,7 @@ impl Workspace {
     /// The place a drop goes, for the dialog and the toast.
     pub(crate) fn drop_place(&self, target: &SidebarDropAt) -> String {
         target.parent.as_ref().and_then(|t| self.entries.iter().find(|e| &e.id == t)).map(|e| crate::settings::display_title(&e.title))
-            .unwrap_or_else(|| self.top_name())
+            .unwrap_or_else(|| self.home_name())
     }
 
     /// 导入 confirmed: bring it in where it was dropped.
@@ -133,6 +134,7 @@ impl Workspace {
         let front = self.store.front_matter_of(id);
         match self.store.create_markdown_in(&doc, &front, target.parent.as_deref()) {
             Ok(new) => {
+                if let Some(src) = self.store.local_path(id) { self.keep_times(&new, &src); }
                 self.place_dropped(&[new], &target);
                 self.landed_in(target.parent.as_deref());
                 let place = self.drop_place(&target);
@@ -158,7 +160,6 @@ impl Workspace {
     /// The folder that took a drop opens and bounces.
     fn landed_in(&mut self, folder: Option<&str>) {
         if let Some(f) = folder { self.expanded.insert(f.to_string()); self.folder_drag.kick(f, 4.5); }
-        self.folded[1] = false;
     }
 
     /// Nothing is being dragged any more: forget the drop target.

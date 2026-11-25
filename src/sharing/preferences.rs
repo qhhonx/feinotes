@@ -50,7 +50,7 @@ impl Preferences {
         entry.meta.starred = self.get("star", &entry.id);
         let rank = self.get("rank", &entry.id);
         if entry.meta.parent.is_some() { entry.meta.order = rank; }
-        else { entry.meta.root_order = (rank > 0).then_some(rank); }
+        else { entry.meta.top_order = (rank > 0).then_some(rank); }
     }
 
     pub(crate) fn toggle(&mut self, id: &str, pin: bool) {

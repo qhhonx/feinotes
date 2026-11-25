@@ -38,7 +38,7 @@ impl Organizer {
         self.0.iter().filter_map(|(id, placement)| {
             let title = placement.title.clone()?;
             Some(Entry { id: id.clone(), title: title.clone(), meta: Meta { folder: Some(title), parent: placement.parent.clone(), ..Default::default() },
-                icon: None, body: "".into(), reminders: vec![], links: vec![], note: None, root: String::new() })
+                icon: None, body: "".into(), reminders: vec![], links: vec![], note: None, top: String::new() })
         })
     }
 }

@@ -93,7 +93,7 @@ pub fn main() {
     gpui_platform::web_init();
     status("Loading…");
     wasm_bindgen_futures::spawn_local(async {
-        let root = store::Store::root_dir();
+        let root = store::Store::active_dir();
         let url = library_url();
         let (library, fonts) = futures::join!(fetch(&url), futures::future::join_all(FONTS.iter().map(|f| fetch_font(f))));
         match library.and_then(|b| unpack(&b, &root)) {

@@ -8,6 +8,15 @@
 //!   key press through AppKit, so the active input method sees it) |
 //!   activate (make the window key; takes focus) | quit |
 //!   pick <path>[|<path>...] (answers the next file dialog instead of showing it)
+//!   row <title> | rrow <title> | hoverrow <title> (click, right-click or hover the sidebar row
+//!   with that title: 主页, 我的文档, a document or folder, 设置, a page in 设置's list…, or
+//!   the menu item (`design::MenuItem`: the + menu's 画板, a board's right-click menu); the
+//!   topmost if several; no row shown by that title ends the run with exit code 3) |
+//!   anchor <name> (click the middle of a tracked control, e.g. `create-sidebar`: 我的文档's "+",
+//!   `doc-font-picker` / `ui-font-picker`: 外观's font lists, `font-del-<id>`: a downloaded font's delete) |
+//!   showing <title> (the document or folder page in front has that title; else the run ends with exit code 3) |
+//!   origin board | origin window (the points of the mouse and file steps after it count from the open
+//!   画板's top-left corner, or again from the window's; no board open ends the run with exit code 3)
 //!   filedrag x y <path>[|<path>...] / filedrop x y / fileleave (files dragged in from the Finder)
 //! For profiling: bench <n> <step> (runs the step n times, drawing a frame
 //!   synchronously after each, and prints step / frame / editor-render times) |
@@ -62,6 +71,8 @@ static PICK: Mutex<Option<Vec<std::path::PathBuf>>> = Mutex::new(None);
 static BENCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Where the scripted drag is (`down`, `dragto`, `dragby`).
 static DRAG_AT: Mutex<(f32, f32)> = Mutex::new((0., 0.));
+/// Where the points of later steps count from (`origin board`), in window coordinates.
+static ORIGIN: Mutex<(f32, f32)> = Mutex::new((0., 0.));
 /// Modifier keys held for the mouse steps that follow (`mods shift cmd` / `mods none`), as NSEvent flags.
 static MODS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -153,6 +164,65 @@ pub fn start(window: &mut Window, cx: &mut App) {
             let Some((handle, ns_view)) = CURRENT.with(|c| c.get()) else { break };
             let _ = ns_view;
             let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
+            // `row` / `rrow` / `hoverrow <title>`, `anchor <name>`: the same step at that row's (or control's)
+            // middle, looked up in a fresh frame. Not there: stop rather than click into nothing.
+            let resolved;
+            let (cmd, rest) = match cmd {
+                "row" | "rrow" | "hoverrow" | "anchor" => {
+                    let name = rest.trim();
+                    let at = handle.update(cx, |root, window, cx| {
+                        // This frame's rows only: a sidebar row or menu not drawn since stays out.
+                        rows_begin(window);
+                        window.refresh();
+                        window.draw(cx).clear(cx);
+                        if cmd != "anchor" { return row_center(window, name); }
+                        let ws = root.downcast::<crate::app::Workspace>().map_err(|_| "no workspace window".to_string())?;
+                        let b = ws.read(cx).home.anchor(name).or_else(|| probed_anchor(window, name)).ok_or(format!("no anchor {name:?}"))?;
+                        Ok((f32::from(b.center().x).round(), f32::from(b.center().y).round()))
+                    }).unwrap_or_else(|e| Err(e.to_string()));
+                    match at {
+                        Ok((x, y)) => {
+                            eprintln!("devtools: {cmd} {name:?} at {x} {y}");
+                            resolved = format!("{x} {y}");
+                            (match cmd { "rrow" => "rclick", "hoverrow" => "move", _ => "click" }, resolved.as_str())
+                        }
+                        Err(e) => {
+                            eprintln!("devtools: {cmd}: {e}");
+                            std::process::exit(3);
+                        }
+                    }
+                }
+                "origin" => {
+                    let at = match rest.trim() {
+                        "window" => Ok((0., 0.)),
+                        "board" => handle.update(cx, |root, window, cx| {
+                            if window.needs_draw() { window.draw(cx).clear(cx); }
+                            let ws = root.downcast::<crate::app::Workspace>().map_err(|_| "no workspace window".to_string())?;
+                            let b = ws.read(cx).editor.as_ref().and_then(|e| e.read(cx).board_view()).ok_or("no board open")?.read(cx).bounds.get();
+                            Ok((f32::from(b.origin.x).round(), f32::from(b.origin.y).round()))
+                        }).unwrap_or_else(|e| Err(e.to_string())),
+                        o => Err(format!("unknown origin {o:?}")),
+                    };
+                    match at {
+                        Ok(o) => { eprintln!("devtools: origin {} at {} {}", rest.trim(), o.0, o.1); *ORIGIN.lock().unwrap() = o; continue }
+                        Err(e) => { eprintln!("devtools: origin: {e}"); std::process::exit(3); }
+                    }
+                }
+                // `showing <title>`: the document (or folder page) in front has that title; else stop as `row` does.
+                "showing" => {
+                    let want = rest.trim();
+                    let shown = handle.update(cx, |root, _, cx| {
+                        let ws = root.downcast::<crate::app::Workspace>().ok()?;
+                        let w = ws.read(cx);
+                        let id = match w.view { crate::app::View::Doc => w.current.as_deref()?, crate::app::View::Folder => w.folder_current.as_deref()?, _ => return None };
+                        w.entries.iter().find(|e| e.id == id).map(|e| e.title.trim().to_string())
+                    }).ok().flatten();
+                    if shown.as_deref() == Some(want) { eprintln!("devtools: showing {want:?}"); continue }
+                    eprintln!("devtools: showing: wanted {want:?}, in front: {shown:?}");
+                    std::process::exit(3);
+                }
+                _ => { resolved = shifted(cmd, rest); (cmd, resolved.as_str()) }
+            };
             if cmd == "wait" {
                 // Draw invalidated frames ourselves: the display link stops
                 // while the screen is locked, and nothing would render.
@@ -206,8 +276,11 @@ pub fn start(window: &mut Window, cx: &mut App) {
                     let at = |q: f64| v.get(((v.len() as f64 - 1.) * q).round() as usize).copied().unwrap_or(0.);
                     format!("p50 {:.2} p95 {:.2} max {:.2}", at(0.5), at(0.95), at(1.))
                 };
+                let mean = samples.iter().map(|s| s.1).sum::<f64>() / samples.len().max(1) as f64;
+                let drops = samples.iter().filter(|s| s.1 > 1000. / 60.).count();
+                let drops120 = samples.iter().filter(|s| s.1 > 1000. / 120.).count();
                 eprintln!(
-                    "bench {step:?} x{}: step [{}] frame [{}] editor render [{}] ms",
+                    "bench {step:?} x{}: frame mean {mean:.2} drops {drops} over 8.3 {drops120}: step [{}] frame [{}] editor render [{}] ms",
                     samples.len(),
                     stat(|s| s.0),
                     stat(|s| s.1),
@@ -287,6 +360,15 @@ pub fn start(window: &mut Window, cx: &mut App) {
             }
             #[cfg(target_os = "macos")]
             if cmd == "mark" || cmd == "commit" {
+                // A frame first, as one always comes between a click and a
+                // person's typing: a click that opens a text field (the
+                // board's text tool) gets its input handler when that paints,
+                // and text sent before it went nowhere.
+                let _ = handle.update(cx, |_, window, cx| {
+                    if window.needs_draw() {
+                        window.draw(cx).clear(cx);
+                    }
+                });
                 native::ime(ns_view, cmd == "commit", rest);
                 cx.background_executor().timer(Duration::from_millis(120)).await;
                 continue;
@@ -448,6 +530,83 @@ pub fn start(window: &mut Window, cx: &mut App) {
         }
     })
     .detach();
+}
+
+type Drawn = std::cell::RefCell<std::collections::HashMap<WindowId, Vec<(String, Bounds<Pixels>)>>>;
+
+thread_local! {
+    /// The sidebar rows drawn in each window's last frame: title, and the part of the row on screen.
+    static ROWS: Drawn = Default::default();
+    /// Controls that `anchor_probe` named, the same way (the app's own anchors are `Home::anchor`).
+    static ANCHORS: Drawn = Default::default();
+}
+
+/// The sidebar is being built for a new frame: forget the last one's rows.
+pub fn rows_begin(window: &Window) {
+    let id = window.window_handle().window_id();
+    ROWS.with(|r| r.borrow_mut().insert(id, vec![]));
+    ANCHORS.with(|r| r.borrow_mut().insert(id, vec![]));
+}
+
+fn probe(list: &'static std::thread::LocalKey<Drawn>, title: SharedString) -> Option<AnyElement> {
+    Some(canvas(move |b, window, _| {
+        let shown = window.content_mask().bounds.intersect(&b);
+        if shown.size.width > px(2.) && shown.size.height > px(2.) {
+            list.with(|r| r.borrow_mut().entry(window.window_handle().window_id()).or_default().push((title.to_string(), shown)));
+        }
+    }, |_, _, _, _| {}).absolute().inset_0().into_any_element())
+}
+
+/// Put inside a (relative) sidebar row or menu item (`design::MenuItem` does): records where
+/// `title`'s row is drawn, for `row` and friends.
+pub fn row_probe(title: impl Into<SharedString>) -> Option<AnyElement> { probe(&ROWS, title.into()) }
+
+/// Put inside a (relative) control to click by `anchor <name>`, where the app keeps no anchor
+/// of its own (外观's font pickers, a downloaded font's delete button).
+pub fn anchor_probe(name: impl Into<SharedString>) -> Option<AnyElement> { probe(&ANCHORS, name.into()) }
+
+/// The middle of the control `anchor_probe` named `name` in this frame.
+fn probed_anchor(window: &Window, name: &str) -> Option<Bounds<Pixels>> {
+    ANCHORS.with(|r| r.borrow().get(&window.window_handle().window_id()).and_then(|v| v.iter().find(|(t, _)| t == name).map(|(_, b)| *b)))
+}
+
+/// The middle of the topmost sidebar row titled `title` in the window's last frame.
+fn row_center(window: &Window, title: &str) -> Result<(f32, f32), String> {
+    ROWS.with(|r| {
+        let r = r.borrow();
+        let rows = r.get(&window.window_handle().window_id()).map_or(&[][..], |v| &v[..]);
+        rows.iter().filter(|(t, _)| t == title).min_by(|a, b| a.1.origin.y.partial_cmp(&b.1.origin.y).unwrap())
+            .map(|(_, b)| (f32::from(b.center().x).round(), f32::from(b.center().y).round()))
+            .ok_or_else(|| format!("no sidebar row or menu item titled {title:?}; shown: {:?}", rows.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>()))
+    })
+}
+
+/// `rest` of a step with its points moved by `ORIGIN`: the first point of the pointer and file steps,
+/// both of `drag`'s, the inner step of `bench`. Offsets (`dragby`, wheel deltas) stay as written.
+fn shifted(cmd: &str, rest: &str) -> String {
+    let (ox, oy) = *ORIGIN.lock().unwrap();
+    if (ox, oy) == (0., 0.) { return rest.to_string() }
+    let points = match cmd {
+        "move" | "click" | "dclick" | "rclick" | "down" | "dragto" | "up" | "mdown" | "mdragto" | "mup" | "wheel" | "pinch" | "glide" | "scroll" | "filedrag" | "filedrop" => 1,
+        "drag" => 2,
+        "bench" => {
+            let (n, step) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+            let (scmd, srest) = step.split_once(' ').unwrap_or((step, ""));
+            return format!("{n} {scmd} {}", shifted(scmd, srest));
+        }
+        _ => 0,
+    };
+    if points == 0 { return rest.to_string() }
+    let mut out = vec![];
+    let mut tail = rest.trim_start();
+    for i in 0..points * 2 {
+        let (v, t) = tail.split_once(' ').unwrap_or((tail, ""));
+        let Ok(v) = v.parse::<f32>() else { break };
+        out.push((v + if i % 2 == 0 { ox } else { oy }).to_string());
+        tail = t.trim_start();
+    }
+    if !tail.is_empty() { out.push(tail.to_string()); }
+    out.join(" ")
 }
 
 fn nums(s: &str) -> Vec<f32> {
@@ -989,12 +1148,13 @@ fn start_recording(handle: AnyWindowHandle, path: &str, cx: &mut AsyncApp) -> st
         let mut next = 0u64;
         while let Ok((t, w, h, mut px)) = rx.recv() {
             let enc = ffmpeg.get_or_insert_with(|| {
-                std::process::Command::new("ffmpeg")
-                    .args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgra", "-s", &format!("{w}x{h}"), "-r", &fps.to_string(), "-i", "-"])
+                let mut c = std::process::Command::new("ffmpeg");
+                c.args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgra", "-s", &format!("{w}x{h}"), "-r", &fps.to_string(), "-i", "-"])
                     .args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "6", "-pix_fmt", "yuv444p", &out])
-                    .stdin(std::process::Stdio::piped())
-                    .spawn()
-                    .expect("ffmpeg")
+                    .stdin(std::process::Stdio::piped());
+                #[cfg(target_os = "windows")]
+                { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
+                c.spawn().expect("ffmpeg")
             });
             for p in px.as_chunks_mut::<4>().0 {
                 p[3] = 255;

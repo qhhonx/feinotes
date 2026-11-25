@@ -24,7 +24,7 @@
 | 不可用 | `disabled:opacity-50` | 整体 50% | 一致 |
 | 按下 | `active:not-aria-[haspopup]:translate-y-px` | 按下时下移 1pt（菜单触发器 `selected` 时、调用方绝对定位时不移） | 改（新增） |
 | 图标颜色 | `[&_svg]` 继承 `currentColor` | 和文字同色 | 改（原来是 `muted-foreground`） |
-| 图标尺寸 | `size-4`；xs / icon-xs `size-3` | 16；Xs 12 | 改（Xs 原来 14） |
+| 图标尺寸 | `size-4`；xs / icon-xs `size-3` | 16；带文字的 Xs 12，只有图标的 Xs（icon-xs）16 | 维护者 2026-11-24：icon-xs 的 12 在侧栏、关闭 × 等处又小又细，回到应用原来的 16 |
 | 焦点环 | `focus-visible:ring-3 ring-ring/50` | 无 | 保留 C（按钮不接键盘焦点，没有 focus-visible） |
 | default 变体 | `.cn-button-variant-default` bg-primary，悬停 primary/80 | 同 | 一致 |
 | outline | `border-border bg-background hover:bg-muted`，深色 `bg-input/30 border-input hover:bg-input/50`，`aria-expanded:bg-muted`，shadow-xs | 同 | 一致 |
@@ -68,7 +68,7 @@
 | inset | `data-inset:pl-8` | `.inset()`：留 16 + 间距 8，等于 32 | 一致 |
 | checkbox / radio item | `pr-8 pl-2`，指示 `absolute right-2`，CheckIcon `size-4` | 末尾 16 宽的位，✓ 16，和文字同色 | 改（✓ 原来 14） |
 | label | `.cn-dropdown-menu-label` px-2 py-1.5 text-xs font-medium muted | 28 高、左 12（含菜单 p-1）、12 号 muted | 一致；字重保留 C |
-| separator | `.cn-dropdown-menu-separator` bg-border -mx-1 my-1 h-px | 通栏，上下 4，`border` | 一致 |
+| separator | `.cn-dropdown-menu-separator` bg-border -mx-1 my-1 h-px | 0.5pt，左右各收进 12，上下 4，`border` | 改（维护者 2026-11-24：细线、不顶到头） |
 | shortcut | `.cn-dropdown-menu-shortcut` ml-auto text-xs tracking-widest muted，高亮时 accent-foreground | ml-auto、12 号、每个字后加 1.2pt 间距（0.1em），高亮时 `accent-foreground` | 改（原来没有字距、不变色）；字距用分字排开模拟，保留 C（GPUI 没有 letter-spacing） |
 | sub-trigger | `.cn-dropdown-menu-sub-trigger`：`data-open:bg-accent text-accent-foreground`，chevron size-4 ml-auto 继承颜色 | `MenuItem::open(true)` 一直亮；chevron 16，和文字同色 | 改（新增 `.open()`；chevron 原来 14、muted） |
 | 高亮规则 | Radix：同一菜单最多一行亮；指针离开所有行时都不亮；键盘移动时键盘行亮 | 同 | 改（原来指针离开后会回到 `selected` 行） |
@@ -219,7 +219,7 @@
 | 工具条里的按下、展开 | Toggle `aria-pressed`、Button `aria-expanded`：bg-muted，无阴影 | 同；原来按下的工具是 `accent` 底，下拉箭头开着时翻成朝上 | 改（箭头不再翻转：shadcn 的触发器箭头不变） |
 | 工具条按钮尺寸 | Toggle sm 36 × 32；Button icon-sm 32；带箭头的 sm 按钮 pl-1.5 pr-1.5 | 同（下拉触发器 48、分体 A▾ 64） | 改（原来 24 高的 Xs 按钮、18 的图标、间距 8、内边距 8） |
 | 下拉箭头 | lucide ChevronDown size-4，继承颜色 | `chevron-down` 16，foreground | 改（原来 12 的 caret，muted） |
-| 块手柄 | `ButtonGroup` + `Button variant="outline" size="icon-xs"`（24 方形，圆角 min(md, 8)，图标 size-3） | 两段 outline：1px 边、`background` 底、shadow-xs、圆角 8、图标 12；悬停 outline 的悬停色；菜单开着 `muted` | 改（原来 1px `line_border`、圆角 6、悬停和开着都是 `handle_active`、图标 14） |
+| 块手柄 | `ButtonGroup` + `Button variant="outline" size="icon-xs"`（24 方形，圆角 min(md, 8)，图标 size-3） | 一个 outline 按钮（维护者 2026-11-24：不画两段之间的接缝）：1px 边、`background` 底、shadow-xs、圆角 8、图标 12；悬停 outline 的悬停色；菜单开着 `muted` | 改（原来 1px `line_border`、圆角 6、悬停和开着都是 `handle_active`、图标 14） |
 | 块手柄尺寸 | 24 × 48（两个 icon-xs） | 26 高，42 宽（24 + 18），空行 + 28 宽 | 保留 C：编辑器按这些固定尺寸摆手柄（和首行垂直居中、表格手柄在列选择条那一行） |
 | 块手柄悬停 | 每个按钮各自悬停 | 两半一起亮 | 我们的：整块是一个控件（按下就是拖动或开菜单），不分左右 |
 | 字数小块 | 无 | outline xs 按钮的外观（1px `border`、shadow-xs、8、text-xs muted、`background` 底） | 我们的；改（原来 `button_border`、`shadow_button`） |

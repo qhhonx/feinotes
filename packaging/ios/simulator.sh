@@ -12,7 +12,8 @@ cd "$(git rev-parse --show-toplevel)"
 dev=${1:-booted}
 profile=${PROFILE:-debug}
 flag=(); [[ $profile == release ]] && flag=(--release)
-IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --target aarch64-apple-ios-sim $flag
+# Only the app: the workspace's quiet CLI embeds QuickJS, which has no iOS bindings.
+IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build -p quiet_md --target aarch64-apple-ios-sim $flag
 app=target/ios/$profile/Quiet.md.app
 mkdir -p $app
 cp target/aarch64-apple-ios-sim/$profile/quiet_md $app/quiet_md

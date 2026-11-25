@@ -11,10 +11,11 @@ use std::collections::{HashMap, HashSet};
 impl Doc {
     pub fn table(&self, t: TableId) -> Option<&Table> { self.base.table(t) }
 
-    /// A record for `t`, not yet in it: fresh id, the fields' default values.
-    fn blank_record(&self, t: &Table, n: u64) -> Record {
+    /// A record for `t`, not yet in it: id `id` (`Base::new_rec_ids`), the fields' default values.
+    /// It gets its sort key where it is inserted.
+    fn blank_record(&self, t: &Table, id: RecId, n: u64) -> Record {
         let now = field::now();
-        let mut r = Record { id: t.next_rec + n, created: now, modified: now, auto: t.next_auto + n, ..Default::default() };
+        let mut r = Record { id, created: now, modified: now, auto: t.next_auto + n, ..Default::default() };
         for f in t.fields.iter().filter(|f| !f.ty.computed() && !f.opts.default.is_empty()) {
             let v = if f.ty.is_date() && f.opts.default == "now" { Value::Date(if f.opts.time { now - now.rem_euclid(60_000) } else { field::today() }) } else { field::parse(f, &f.opts.default) };
             r.set(f.id, v);
@@ -25,10 +26,11 @@ impl Doc {
     /// Insert `n` empty records at row `at` (None: the end), `with` cells set
     /// on each (a group's value, a filter's). Returns their ids.
     pub fn add_records(&mut self, tid: TableId, at: Option<usize>, n: usize, with: &[(FieldId, Value)]) -> Vec<RecId> {
+        let new = self.base.new_rec_ids(tid, n);
         let Some(t) = self.base.table(tid) else { return vec![] };
         let at = at.unwrap_or(t.records.len()).min(t.records.len());
         let recs: Vec<(usize, Record)> = (0..n).map(|i| {
-            let mut r = self.blank_record(t, i as u64);
+            let mut r = self.blank_record(t, new[i], i as u64);
             for (f, v) in with { if t.field(*f).is_some_and(|f| !f.ty.computed()) { r.set(*f, v.clone()); } }
             (at + i, r)
         }).collect();
@@ -39,11 +41,13 @@ impl Doc {
 
     /// Copies of `ids`, each under its original.
     pub fn duplicate_records(&mut self, tid: TableId, ids: &[RecId]) -> Vec<RecId> {
+        let count = self.base.table(tid).map_or(0, |t| t.records.iter().filter(|r| ids.contains(&r.id)).count());
+        let new = self.base.new_rec_ids(tid, count);
         let Some(t) = self.base.table(tid) else { return vec![] };
         let mut recs = vec![];
         let mut n = 0;
         for (i, r) in t.records.iter().enumerate().filter(|(_, r)| ids.contains(&r.id)) {
-            let mut c = self.blank_record(t, n);
+            let mut c = self.blank_record(t, new[n as usize], n);
             c.cells = r.cells.iter().filter(|(f, _)| t.field(**f).is_some_and(|f| !f.ty.computed())).map(|(f, v)| (*f, v.clone())).collect();
             n += 1;
             recs.push((i + n as usize, c));
@@ -71,7 +75,8 @@ impl Doc {
     }
 
     /// Move `ids` (kept in their order) so they sit before the record now at row `to`.
-    /// Nothing happens (false) when they are there already.
+    /// Nothing happens (false) when they are there already. Only the moved
+    /// rows get new sort keys, between the two rows they land between.
     pub fn move_records(&mut self, tid: TableId, ids: &[RecId], to: usize) -> bool { self.move_records_in(tid, ids, to, false) }
 
     /// `move_records`, joined to the previous undo step.
@@ -83,9 +88,12 @@ impl Doc {
         let moved: Vec<RecId> = t.records.iter().map(|r| r.id).filter(|id| ids.contains(id)).collect();
         let mut order: Vec<RecId> = t.records.iter().map(|r| r.id).filter(|id| !ids.contains(id)).collect();
         let at = before.and_then(|b| order.iter().position(|id| *id == b)).unwrap_or(order.len());
+        let ord = |id: Option<&RecId>| id.and_then(|id| t.record(*id)).map(|r| r.ord.as_str());
+        let keys = super::order::keys_between(ord(at.checked_sub(1).and_then(|i| order.get(i))), ord(order.get(at)), moved.len());
+        let n = moved.len();
         order.splice(at..at, moved);
         if order.iter().copied().eq(t.records.iter().map(|r| r.id)) { return false }
-        let ops = vec![BaseOp::Table(tid, Op::SetOrder(order))];
+        let ops = vec![BaseOp::Table(tid, Op::Move(order[at..at + n].iter().copied().zip(keys).collect()))];
         if joined { self.run_joined(ops) } else { self.run(ops) }
     }
 
@@ -161,6 +169,10 @@ impl Doc {
         f.opts.back = None;
         let cells: Vec<(RecId, Value)> = if f.ty.computed() { vec![] } else { t.records.iter().filter_map(|r| r.cells.get(&fid).map(|v| (r.id, v.clone()))).collect() };
         let view_ops: Vec<Op> = t.views.iter().filter(|v| v.opts.order.contains(&fid)).cloned().collect::<Vec<_>>().into_iter().map(Op::SetView).collect();
+        // the copy's options are its own: ids of their own, its cells following
+        let fresh: HashMap<OptId, OptId> = f.opts.options.iter().map(|o| o.id).collect::<Vec<_>>().into_iter().map(|o| (o, self.base.new_id())).collect();
+        for o in &mut f.opts.options { o.id = fresh[&o.id]; }
+        let cells = cells.into_iter().map(|(r, v)| (r, match v { Value::Select(ids) => Value::Select(ids.iter().map(|i| *fresh.get(i).unwrap_or(i)).collect()), v => v })).collect();
         f.id = self.base.new_id();
         let id = f.id;
         let mut ops = vec![Op::InsertField { at: at + 1, field: f, cells }];
@@ -186,11 +198,12 @@ impl Doc {
         if at == 0 && !(new.ty.textual() || matches!(new.ty, FieldType::Number | FieldType::Date | FieldType::Formula | FieldType::AutoNumber | FieldType::Currency | FieldType::Phone | FieldType::Email)) { new.ty = old.ty; }
         if new == old { return false; }
         let mut ops: Vec<BaseOp> = vec![];
-        let mut next_id = self.base.next_id;
+        let mut ids = self.base.take_ids();
+        let Some(t) = self.base.table(tid) else { self.base.ids = ids; return false };
         let gone_opts = old.opts.options.iter().any(|o| new.option(o.id).is_none());
         let cells = if new.ty != old.ty || (new.ty == FieldType::Link && new.opts.link_table != old.opts.link_table) {
             if new.ty != old.ty && !new.ty.select() { new.opts.options.clear(); }
-            Some(t.records.iter().filter_map(|r| { let v = field::convert(&old, &mut new, r.get(old.id), &mut next_id); (!v.is_empty()).then_some((r.id, v)) }).collect::<Vec<_>>())
+            Some(t.records.iter().filter_map(|r| { let v = field::convert(&old, &mut new, r.get(old.id), &mut ids); (!v.is_empty()).then_some((r.id, v)) }).collect::<Vec<_>>())
         } else if gone_opts && new.ty.select() {
             Some(t.records.iter().filter_map(|r| match r.get(old.id) {
                 Value::Select(ids) => { let v = Value::Select(ids.iter().copied().filter(|id| new.option(*id).is_some()).collect()).normal(); (!v.is_empty()).then_some((r.id, v)) }
@@ -212,7 +225,7 @@ impl Doc {
             }
         }
         ops.insert(0, BaseOp::Table(tid, Op::SetField { field: new, cells }));
-        self.base.next_id = next_id;
+        self.base.ids = ids;
         self.run(ops)
     }
 
@@ -308,11 +321,12 @@ impl Doc {
     /// the anchor down in view order, `fields` the columns from the anchor
     /// right. Rows past the end are appended; options a select lacks are added.
     pub fn paste(&mut self, tid: TableId, rows: &[RecId], fields: &[FieldId], text: &[Vec<String>]) -> bool {
-        let Some(t) = self.base.table(tid) else { return false };
-        let mut next_id = self.base.next_id;
-        let mut ops: Vec<Op> = vec![];
         let extra = text.len().saturating_sub(rows.len());
-        let mut new_recs: Vec<(usize, Record)> = (0..extra).map(|i| (t.records.len() + i, self.blank_record(t, i as u64))).collect();
+        let new = self.base.new_rec_ids(tid, extra);
+        let mut ids = self.base.take_ids();
+        let Some(t) = self.base.table(tid) else { self.base.ids = ids; return false };
+        let mut ops: Vec<Op> = vec![];
+        let mut new_recs: Vec<(usize, Record)> = (0..extra).map(|i| (t.records.len() + i, self.blank_record(t, new[i], i as u64))).collect();
         let mut fields_now: HashMap<FieldId, Field> = HashMap::new();
         let mut cells = vec![];
         for (ri, line) in text.iter().enumerate() {
@@ -320,7 +334,7 @@ impl Doc {
                 let Some(fid) = fields.get(ci) else { break };
                 let Some(f) = t.field(*fid).filter(|f| !f.ty.computed()) else { continue };
                 let f = fields_now.entry(*fid).or_insert_with(|| f.clone());
-                let v = field::parse_new(f, s, &mut next_id);
+                let v = field::parse_new(f, s, &mut ids);
                 match rows.get(ri) {
                     Some(rid) => cells.push((*rid, *fid, v)),
                     None => new_recs[ri - rows.len()].1.set(*fid, v),
@@ -331,7 +345,7 @@ impl Doc {
         if !new_recs.is_empty() { ops.push(Op::InsertRecords(new_recs)); }
         let mut ops: Vec<BaseOp> = ops.into_iter().map(|o| BaseOp::Table(tid, o)).collect();
         ops.extend(self.cell_ops(tid, cells));
-        self.base.next_id = next_id;
+        self.base.ids = ids;
         self.run(ops)
     }
 

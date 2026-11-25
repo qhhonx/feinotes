@@ -2,7 +2,7 @@
 
 状态：已定稿，未实现。日期 2026-11-22。决策 M1–M11 由用户确认全部按推荐（2026-11-22），验证计划（第 7 节）已获准开始。本稿用中文写，以后按仓库惯例译成英文。
 
-同步部分以 `docs/design/sync.md`（worktree `sync-plan-8ba6b6`）为准，工作区和多根文件夹以 `docs/design/workspaces.md`（worktree `workspace-model-a1ccf8`）为准，本稿只写移动端需要它们提供什么。
+同步部分以 `docs/design/sync.md`（worktree `sync-plan-8ba6b6`）为准，主页和多个顶层文件夹以 `docs/design/workspaces.md`（worktree `workspace-model-a1ccf8`）为准，本稿只写移动端需要它们提供什么。
 
 两条贯穿全稿的原则（用户定的）：
 - **尽量控制包体积、少引入额外依赖。** 验证时记录 `gpui_ios` 加进 vendor 后新增的依赖和 iOS 包的大小（见第 7 节产出）。
@@ -196,18 +196,18 @@ iOS 本身不需要新的同步机制：**iCloud 云盘把文件夹同步过来�
 
 **推荐：默认 iCloud 容器；未登录 iCloud 时用沙盒；"打开其他文件夹"放到第二版。** Mac 端配合：设置里加"移到 iCloud 云盘（和 iPhone/iPad 共用）"，把库移动到容器路径；新建库时也给这个选项。这和 sync.md D12"第一期任意文件夹"不冲突，容器只是一个推荐位置。
 
-和工作区模型（`docs/design/workspaces.md` 第 4 节，worktree `workspace-model-a1ccf8`）的对应关系：
+和顶层文件夹模型（`docs/design/workspaces.md` 第 4 节，worktree `workspace-model-a1ccf8`）的对应关系：
 
-- 工作区是本机的一组根文件夹，每台设备各一份，不同步，每个根一个 `Store`。所有根地位平等（工作区决策 W4）。**iOS 第一版的工作区固定只有一个根**：iCloud 容器里的那个文件夹，没登录 iCloud 时用沙盒里的。iOS 上不提供移除，因为第一版没有别的根可以加。这是第一版的产品范围，不代表这个根有特殊地位。直接用 core 里同一个工作区门面（`workspace.rs`，不依赖 GPUI），不另写单库代码。
-- 第二版"打开其他文件夹"就是往工作区里加一个根。`roots.json` 的每一项预留 `bookmark` 字段，存安全作用域书签；书签只在本机有效，正好对应根列表不同步。
-- 全局设置（偏好、主题、快捷键、界面状态）不放在任何根里，存在本机，iOS 上就是 App 沙盒。跨设备同步设置由 sync.md 的 D5 决定。
-- 桌面上指向其他根的跨根链接，在 iOS 上会变成断链。所以工作区方案第一步不允许新建跨根链接；以后允许时也只写相对路径，并给出提示。断链分两种状态（工作区方案已采纳）：目标解析后不落在任何已打开的根里，提示"这篇文档在没有打开的文件夹里"；落在已打开的根里、但文件不存在，才提示"已删除或移走"。
-- `roots.json` 每项是 `{name, path, bookmark, added}`。iOS 上只认 `bookmark`，每次启动重新解析；书签失效就把这个根当成不可用，侧栏显示灰色，并提供"重新查找"。
-- 工作区决策 W17：引导页里"新建文件夹"在 Mac 上的默认位置，推荐登录 iCloud 时用这个容器。**它和本稿 6.2 的推荐都取决于第 7 节第 3 天的容器验证**；验证通过之前，默认位置维持 `~/Documents/Quiet.md`。
+- 主页是本机的一组顶层文件夹，每台设备各一份，不同步，每个顶层文件夹一个 `Store`。所有顶层文件夹地位平等（workspaces.md 决策 W4）。**iOS 第一版的主页固定只有一个顶层文件夹**：iCloud 容器里的那个文件夹，没登录 iCloud 时用沙盒里的。iOS 上不提供移除，因为第一版没有别的顶层文件夹可以加。这是第一版的产品范围，不代表这个顶层文件夹有特殊地位。直接用 core 里同一个主页门面（`workspace.rs`，不依赖 GPUI），不另写单库代码。
+- 第二版"打开其他文件夹"就是往主页里加一个顶层文件夹。`folders.json` 的每一项预留 `bookmark` 字段，存安全作用域书签；书签只在本机有效，正好对应顶层文件夹列表不同步。
+- 全局设置（偏好、主题、快捷键、界面状态）不放在任何文件夹里，存在本机，iOS 上就是 App 沙盒。跨设备同步设置由 sync.md 的 D5 决定。
+- 桌面上指向其他顶层文件夹的跨文件夹链接，在 iOS 上会变成断链。所以顶层文件夹方案第一步不允许新建跨文件夹链接；以后允许时也只写相对路径，并给出提示。断链分两种状态（顶层文件夹方案已采纳）：目标解析后不落在任何已打开的文件夹里，提示"这篇文档在没有打开的文件夹里"；落在已打开的文件夹里、但文件不存在，才提示"已删除或移走"。
+- `folders.json` 每项是 `{name, path, bookmark, added}`。iOS 上只认 `bookmark`，每次启动重新解析；书签失效就把这个顶层文件夹当成不可用，侧栏显示灰色，并提供"重新查找"。
+- workspaces.md 决策 W17：引导页里"新建文件夹"在 Mac 上的默认位置，推荐登录 iCloud 时用这个容器。**它和本稿 6.2 的推荐都取决于第 7 节第 3 天的容器验证**；验证通过之前，默认位置维持 `~/Documents/Quiet.md`。
 
 ### 6.3 分发
 
-- 签名团队用现有的 `9UXM7M6CX5`。Bundle id 建议和 Mac 共用 `com.s1dashu.quietmd`，以后可以做 Mac App Store 的通用购买；如果担心和现有 Developer ID 版冲突，iOS 用 `com.s1dashu.quietmd.ios` 也行（见决策 M8）。`CFBundleDisplayName` 定为「Quiet.md」，和 Mac 的 `scripts/package.sh`、`release.sh` 保持一致。iCloud 容器在文件 App 和访达里的名字、工作区里这个根的显示名（workspaces.md W20），都取自这个值。
+- 签名团队用现有的 `9UXM7M6CX5`。Bundle id 建议和 Mac 共用 `com.s1dashu.quietmd`，以后可以做 Mac App Store 的通用购买；如果担心和现有 Developer ID 版冲突，iOS 用 `com.s1dashu.quietmd.ios` 也行（见决策 M8）。`CFBundleDisplayName` 定为「Quiet.md」，和 Mac 的 `scripts/release.sh` 保持一致。iCloud 容器在文件 App 和访达里的名字、主页里这个顶层文件夹的显示名（workspaces.md W20），都取自这个值。
 - 要在开发者后台建：App ID（iCloud Documents 能力）、iCloud 容器 `iCloud.com.s1dashu.quietmd`、App Store Connect 的 App 记录。
 - 先内部测试（TestFlight 内部测试员，不需要审核），稳定后开外部测试（要过 Beta 审核）。
 - 工程：`packaging/ios/`，XcodeGen 生成工程，`build-rust.sh` 编 `aarch64-apple-ios` 和 `aarch64-apple-ios-sim` 的 staticlib；最低系统版本建议 iOS 17（feinotes 同样是 17，`gpui_ios` 代码里也照顾到了 15/16）。
@@ -246,9 +246,9 @@ iOS 本身不需要新的同步机制：**iCloud 云盘把文件夹同步过来�
    - Mac 访达里 iCloud 云盘下是否出现 `Quiet.md` 文件夹（**Mac 上不装任何带容器权限的 App 时**）；
    - Mac 上的非沙盒进程按路径读写，iPad 侧能否收到变化，文件协调和 `NSFileVersion` 冲突是否照常；
    - 开着"优化 Mac 存储"时，容器里的文件会不会变成占位文件。
-   - 初步证据（2026-11-22，本机实测）：`~/Library/Mobile Documents/` 下有只在 iPhone 上装过的 App 的容器，比如 `iCloud~com~lamborghini~connectedcar`、`iCloud~host~exp~Exponent`，这些 App 在 Mac 上都没装，容器却照样出现了。非沙盒进程调用 `FileManager.displayName(atPath:)` 和 URL 的 `localizedName`，返回的都是 App 名。说明第一项（容器出现在 Mac 上）和工作区方案 W20（根的显示名就用系统给容器的显示名）大概率成立，还要验证双向写入。另外，在 iOS 模拟器里也要调一次 `localizedName`，确认返回的是 App 名。
+   - 初步证据（2026-11-22，本机实测）：`~/Library/Mobile Documents/` 下有只在 iPhone 上装过的 App 的容器，比如 `iCloud~com~lamborghini~connectedcar`、`iCloud~host~exp~Exponent`，这些 App 在 Mac 上都没装，容器却照样出现了。非沙盒进程调用 `FileManager.displayName(atPath:)` 和 URL 的 `localizedName`，返回的都是 App 名。说明第一项（容器出现在 Mac 上）和顶层文件夹方案 W20（顶层文件夹的显示名就用系统给容器的显示名）大概率成立，还要验证双向写入。另外，在 iOS 模拟器里也要调一次 `localizedName`，确认返回的是 App 名。
    - 三项和 sync.md D12 的实测清单相同，做一次两边都用。不通过就退回 D12 的备选：桌面端加 iCloud 权限，并验证 Developer ID 签名能否使用。
-   - 通过：两边互相看到对方的修改。这一条决定本稿 6.2 的推荐能否成立，也决定工作区方案的 W17（Mac 上新建文件夹默认放进容器）。即使前两天就决定了路线，这一条也值得单独做。
+   - 通过：两边互相看到对方的修改。这一条决定本稿 6.2 的推荐能否成立，也决定顶层文件夹方案的 W17（Mac 上新建文件夹默认放进容器）。即使前两天就决定了路线，这一条也值得单独做。
 
 ### 产出
 

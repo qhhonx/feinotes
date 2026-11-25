@@ -71,9 +71,13 @@ class Host(http.server.SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
+        # Paced by the clock (see board_font.py): short sleeps can last several times longer.
+        start = time.monotonic()
         for i in range(0, len(data), 1 << 16):
             self.wfile.write(data[i:i + (1 << 16)])
-            time.sleep((1 << 16) / RATE)
+            ahead = start + (i + (1 << 16)) / RATE - time.monotonic()
+            if ahead > 0:
+                time.sleep(ahead)
 
     def log_message(self, *a):
         pass
@@ -92,6 +96,19 @@ def run(tag, script, lib, cache, url):
 
 def prefs(lib):
     return json.loads((lib / ".quiet/preferences.json").read_text())
+
+
+def doc_family(lib):
+    """The document font the app opens `lib` with: the top-level folder's look
+    (settings.rs `load`, W21): the newest `look.` fields of `_root` in the
+    devices' meta files, when there are any, else preferences.json."""
+    look = {}
+    for f in (lib / ".quiet/meta").glob("*.json"):
+        for k, (v, t) in json.loads(f.read_text()).get("items", {}).get("_root", {}).items():
+            if k.startswith("look.") and t >= look.get(k, (None, -1))[1]:
+                look[k] = (v, t)
+    look = {k[5:]: v for k, (v, t) in look.items() if v is not None}
+    return look.get("doc_family", "") if look else prefs(lib).get("doc_family", "")
 
 
 def base_library():
@@ -119,10 +136,11 @@ def with_prefs(lib, name, **kv):
     return dst
 
 
-# window coordinates (points) of 设置 › 外观 › 文档字体 and its list
-OPEN_LIST = "key cmd-,\nwait 600\nclick 85 136\nwait 600\nclick 1050 461\nwait 600\ntype WenKai\nwait 350\n"
-WENKAI_TRASH = (1033, 536)
-BACK = "key escape\nwait 300\nclick 62 775\nwait 800\n"
+# 设置 › 外观 › 文档字体's list, searched down to 霞鹜文楷 (it sits below the
+# fold otherwise); its row and its delete button, by name
+OPEN_LIST = "key cmd-,\nwait 600\nrow 外观\nwait 600\nanchor doc-font-picker\nwait 600\ncommit 霞鹜\nwait 400\n"
+WENKAI_ROW, WENKAI_TRASH = "row 霞鹜文楷", "anchor font-del-lxgw-wenkai"
+BACK = "key escape\nwait 300\nrow 返回\nwait 800\n"
 
 
 def flow(url):
@@ -131,9 +149,9 @@ def flow(url):
     shutil.rmtree(cache, ignore_errors=True)
     wenkai = next(e for e in catalog if e["id"] == "lxgw-wenkai")
 
-    a = run("1-download", "move 700 700\nwait 1500\n" + OPEN_LIST + "shot 1a-list\nkey down\nkey enter\nwait 2500\nshot 1b-progress\nwait 12000\nshot 1c-done\n" + BACK + "move 1250 780\nwait 500\nshot 1d-article\n", lib, cache, url)
+    a = run("1-download", "move 700 700\nwait 1500\n" + OPEN_LIST + f"shot 1a-list\n{WENKAI_ROW}\nwait 2500\nshot 1b-progress\nwait 6000\nshot 1c-done\n" + BACK + "move 1250 780\nwait 500\nshot 1d-article\n", lib, cache, url)
     assert sorted(hits) == sorted(f"/{f['name']}" for f in wenkai["files"]), hits
-    assert prefs(a / "lib")["doc_family"] == "LXGW WenKai"
+    assert doc_family(a / "lib") == "LXGW WenKai", "kept for the next launch"
     assert all((cache / f["name"]).stat().st_size == f["size"] for f in wenkai["files"])
 
     hits.clear()
@@ -143,11 +161,11 @@ def flow(url):
 
     gone = work / "cache-gone"
     shutil.rmtree(gone, ignore_errors=True)
-    c = run("3-missing", "move 1250 780\nwait 2500\nshot 3a-article\n" + "key cmd-,\nwait 600\nclick 85 136\nwait 800\nshot 3b-settings\n", a / "lib", gone, url)
-    assert hits == [] and prefs(c / "lib")["doc_family"] == "LXGW WenKai", "kept, not fetched behind the reader's back"
+    c = run("3-missing", "move 1250 780\nwait 2500\nshot 3a-article\n" + "key cmd-,\nwait 600\nrow 外观\nwait 800\nshot 3b-settings\n", a / "lib", gone, url)
+    assert hits == [] and doc_family(c / "lib") == "LXGW WenKai", "kept, not fetched behind the reader's back"
 
-    d = run("4-delete", "move 700 700\nwait 2500\n" + OPEN_LIST + f"click {WENKAI_TRASH[0]} {WENKAI_TRASH[1]}\nwait 800\nshot 4-deleted\n", a / "lib", cache, url)
-    assert prefs(d / "lib")["doc_family"] == "" and not any(cache.glob("lxgw-wenkai-*"))
+    d = run("4-delete", "move 700 700\nwait 2500\n" + OPEN_LIST + f"{WENKAI_TRASH}\nwait 800\nshot 4-deleted\n", a / "lib", cache, url)
+    assert doc_family(d / "lib") == "" and not any(cache.glob("lxgw-wenkai-*"))
     print(f"doc fonts: ok ({work})")
 
 

@@ -1,0 +1,27 @@
+list-set-overdraw
+
+`ListState::set_overdraw` changes how much is laid out beyond the visible
+area after construction. Dragging a scrollbar thumb across a long list lands
+somewhere new every frame, and laying out rows nobody sees there was most of
+the frame; the editor sets none while its thumb is held. Lists that never
+call it behave as before.
+
+diff --git a/crates/gpui/src/elements/list.rs b/crates/gpui/src/elements/list.rs
+index ec99a49cca9fb11e1245cd7805aab9f26bb749f3..0daf65fcefd40ae2dcbf360935dd69082501eaa2 100644
+--- a/crates/gpui/src/elements/list.rs
++++ b/crates/gpui/src/elements/list.rs
+@@ -803,6 +803,14 @@ impl ListState {
+         self.0.borrow().last_layout_bounds.unwrap_or_default()
+     }
+ 
++    /// quiet.md: change how much is rendered beyond the visible area (see
++    /// `new`). Dragging a scrollbar thumb across a long list lands somewhere
++    /// new every frame, and laying out rows nobody sees there is most of the
++    /// frame; with none, only the visible rows are laid out.
++    pub fn set_overdraw(&self, overdraw: Pixels) {
++        self.0.borrow_mut().overdraw = overdraw;
++    }
++
+     /// quiet.md: (scroll offset, content height, viewport height) for a
+     /// scrollbar. Only items that have been on screen are measured, so every
+     /// other one counts at the average measured height.

@@ -14,7 +14,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from hlib import doc_file
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageOps
 
 here = Path(__file__).resolve().parent
 repo = here.parent.parent
@@ -22,12 +22,22 @@ BIN = os.environ.get("FDL_BIN") or str(repo / "target/release/quiet_md")
 REF = os.environ.get("FDL_REF_BIN")
 work = Path(tempfile.mkdtemp(prefix="quiet-gpui-patches-"))
 doc_id = "aaaaaaaa-0000-0000-0000-000000000001"
+# Device pixels per pt in the captures: the screen's backing scale (2 on a Retina display, 1 on others),
+# read from the first run's 1280pt-wide `scale` shot.
+S = None
+
+
+def prefs(lib, appearance="light"):
+    """Light unless asked (the ink checks read dark pixels on a light page, whatever the system look); no
+    "updated to" card over the sidebar, no updater, no global hotkey."""
+    (lib / "preferences.json").write_text(json.dumps({"appearance": appearance, "seen_version": "9.9.9", "auto_update": False, "quick_hotkey": False}))
 
 
 def library(name, xml, extra=None):
     """A one-document library (old layout; the app moves it to FORMAT 4)."""
     lib = work / "src" / name
     (lib / "docs").mkdir(parents=True, exist_ok=True)
+    prefs(lib)
     (lib / "index.json").write_text(json.dumps({doc_id: {"created": 1, "modified": 1, "opened": 1}}))
     (lib / "docs" / f"{doc_id}.xml").write_text(xml)
     if extra: extra(lib)
@@ -39,7 +49,7 @@ def run(binary, tag, lib, steps, env=None):
     last second) RSS in MB."""
     folder = work / tag
     script = folder.with_suffix(".txt")
-    script.write_text("resize 1280 800\nwait 1500\nmove 1270 790\nwait 300\n" + steps + "\n")
+    script.write_text("resize 1280 800\nwait 1500\nmove 1270 790\nwait 300\nshot scale\n" + steps + "\n")
     proc = subprocess.Popen([sys.executable, str(here / "run.py"), str(script), str(lib), str(folder)],
                             env=dict(os.environ, FDL_BIN=binary, FDL_NOBLINK="1", **(env or {})))
     rss = []
@@ -50,14 +60,18 @@ def run(binary, tag, lib, steps, env=None):
             if kb and int(kb) > 0: rss.append(int(kb) / 1024)
         time.sleep(0.1)
     assert proc.returncode == 0, f"{tag}: run.py failed"
+    global S
+    S = S or Image.open(folder / "scale.png").width // 1280
     tail = sorted(rss[-10:])
     return folder, (max(rss) if rss else 0, tail[len(tail) // 2] if tail else 0)
 
 
 def bands(path, x0=280):
-    """Rows of ink in the document pane (left of x0 pt is the sidebar): [(top, bottom, left, right, ink)] in device px; ink in fully dark pixels."""
+    """Rows of ink in the document pane (left of x0 pt is the sidebar): [(top, bottom, left, right, ink)] in device px; ink in fully dark pixels
+    (light ones on a dark page)."""
     im = Image.open(path).convert("L")
-    s = 2  # captures are at the 2x screen's scale
+    if im.getpixel((im.width - 4, im.height - 4)) < 128: im = ImageOps.invert(im)
+    s = S
     box = (round(x0 * s), round(60 * s), im.width - round(14 * s), im.height)
     px = im.crop(box).load()
     w, h = box[2] - box[0], box[3] - box[1]
@@ -97,7 +111,7 @@ def same_layout(a, b, tol=3):
 
 
 def ink(path, box):
-    im = Image.open(path).convert("L").crop([round(v * 2) for v in box])
+    im = Image.open(path).convert("L").crop([round(v * S) for v in box])
     return sum(255 - v for v in im.getdata())
 
 
@@ -183,26 +197,26 @@ def italic_leans(folder):
     def lean(band):
         top, bot, l, r, _ = band
         mid = (top + bot) // 2
-        x0 = 280 * 2
+        x0 = 280 * S
         def first(y0, y1):
-            xs = [x for y in range(y0, y1) for x in range(x0 + l, x0 + r + 1) if im.getpixel((x, y + 120)) < 200]
+            xs = [x for y in range(y0, y1) for x in range(x0 + l, x0 + r + 1) if im.getpixel((x, y + 60 * S)) < 200]
             return sum(xs) / len(xs) if xs else 0
         return first(top, mid) - first(mid, bot)
     it, up = lean(b[1]), lean(b[2])
-    return None if it - up > 2 else f"italic row leans {it:.1f}px, upright {up:.1f}px"
+    return None if it - up > S else f"italic row leans {it:.1f}px, upright {up:.1f}px"
 
 
 def column_widths(folder):
     """Vertical table borders 85 / 300 / 150 pt apart."""
     im = Image.open(folder / "w1280.png").convert("RGB")
     b = [x for x in bands(folder / "w1280.png") if x[1] - x[0] > 10]
-    y = b[1][1] + 120 + 4  # in the first row's padding, under its text
-    xs = [x for x in range(560, im.width - 40) if max(im.getpixel((x, y))) < 235 and min(im.getpixel((x, y))) > 150]
+    y = b[1][1] + 60 * S + 2 * S  # in the first row's padding, under its text
+    xs = [x for x in range(280 * S, im.width - 20 * S) if max(im.getpixel((x, y))) < 235 and min(im.getpixel((x, y))) > 150]
     runs = []
     for x in xs:
         if runs and runs[-1][-1] >= x - 1: runs[-1].append(x)
         else: runs.append([x])
-    edges = [r[0] / 2 for r in runs]
+    edges = [r[0] / S for r in runs]
     gaps = [round(edges[i + 1] - edges[i]) for i in range(len(edges) - 1)]
     want = [85, 300, 150]
     for i in range(len(gaps) - 2):
@@ -218,7 +232,7 @@ def text_cases():
 
 def dark_cjk():
     """0016: the same CJK text in the dark theme (smoothing does not depend on the colour)."""
-    lib = library("cjk-dark", TEXT["cjk"][1], lambda l: (l / "preferences.json").write_text(json.dumps({"theme": "dark"})))
+    lib = library("cjk-dark", TEXT["cjk"][1], lambda l: prefs(l, "dark"))
     compare("cjk-dark", "0016", ["w1280"], "shot w1280", lib)
 
 
@@ -246,11 +260,11 @@ def thumb(path):
     """The scrollbar thumb: (top, height) in pt, from the column near the right edge."""
     im = Image.open(path).convert("L")
     best = None
-    for x in range(1270 * 2, 1280 * 2):
+    for x in range(1270 * S, 1280 * S):
         ys = [y for y in range(0, im.height - 4) if im.getpixel((x, y)) < 230]
         if len(ys) > 20 and (best is None or len(ys) > best[1] - best[0]):
             best = (ys[0], ys[-1])
-    return None if best is None else (round(best[0] / 2), round((best[1] - best[0]) / 2))
+    return None if best is None else (round(best[0] / S), round((best[1] - best[0]) / S))
 
 
 def scrollbar():
@@ -360,6 +374,7 @@ def home_images():
             imgs.append(f'<p>Paragraph {k} of document {d}.</p>\n<img src="assets/{name}" width="600" height="400"/>')
         (lib / "docs" / f"{did}.xml").write_text(f"<title>Doc {d}</title>\n" + "\n".join(imgs) + "\n")
     (lib / "index.json").write_text(json.dumps(index))
+    prefs(lib)
     steps = "click 66 67\nwait 3000\nmove 1270 790\nwait 300\nshot home\nwheel 700 400 600\nwait 1500\nshot home2"
     new, mem = run(BIN, "home-images-new", lib, steps)
     detail, ok = f"peak {mem[0]:.0f} MB, settled {mem[1]:.0f} MB", True
@@ -414,9 +429,11 @@ def nested_deferred():
     """A deferred inside a deferred (#327): the board's canvas background picker opens from the main menu.
     GPUI 0.2 asserted "cannot call defer_draw during deferred drawing" and the app aborted."""
     xml = "<title>Board host</title>\n<p>text</p>\n"
-    # sidebar + › Board (opens the new board in the note pane), the main menu, the picker's trigger
-    steps = ("click 251 106\nwait 300\nclick 295 208\nwait 1200\nclick 314 74\nwait 400\nshot n0\n"
-             "move 497 239\nwait 1200\nclick 497 239\nwait 500\nshot n1\nwait 300")
+    # sidebar + › Board (opens the new board in the note pane), the main menu, the picker's trigger: the last
+    # of 画布背景's row of swatches, after the five presets. Coordinates, not `anchor`: the reference build
+    # (FDL_REF_BIN) may predate it.
+    steps = ("click 250 136\nwait 300\nclick 295 236\nwait 1200\nclick 314 74\nwait 400\nshot n0\n"
+             "move 505 227\nwait 1200\nclick 505 227\nwait 500\nshot n1\nwait 300")
     def check(folder):
         log = (folder / "log").read_text(errors="replace")
         if "PANIC" in log: return "panicked: " + log[log.index("PANIC"):][:200]

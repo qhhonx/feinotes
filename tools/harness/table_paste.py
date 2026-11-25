@@ -98,7 +98,8 @@ doc = ET.fromstring("<doc>" + visible_files(undone, ".xml")[0].read_text() + "</
 assert all(not "".join(p.itertext()) for p in doc.findall("p"))
 print("undo: restored empty paste target", flush=True)
 verify(run("redo", paste + "key cmd-z\nwait 200\nkey cmd-shift-z"), expected)
-imported = run("import", f"pick {clipboard}\nkey cmd-shift-i")
+# Import writes in the background without replacing the current page.
+imported = run("import", f"pick {clipboard}\nkey cmd-shift-i\nwait 3000\nclick 60 166")
 files = visible_files(imported, ".md")
 assert len(files) == 1 and files[0].read_bytes() == clipboard.read_bytes()
 # Markdown files store text, not column widths. Check the rendered grid's

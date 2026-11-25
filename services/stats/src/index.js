@@ -15,6 +15,14 @@
 //     github.downloads_total release asset counters at collection time  {platform, version, asset}
 //     github.downloads       their increase since the previous snapshot  {platform, version}
 //     github.stars, github.forks, github.watchers, github.open_issues (issues and PRs)  {}
+//   cli         what `quiet` (the command line tool) reports to POST telemetry.quiet.md/v1/cli,
+//               kept per day and random install id in cli_reports, summed here
+//     cli.users              installs that ran quiet that day  {os}
+//     cli.new                installs whose first reported day it is  {}
+//     cli.runs               commands run  {os}
+//     cli.errors             commands that failed  {}
+//     cli.commands           runs per command name  {command}
+//     cli.versions           installs per quiet version  {version}
 //
 // channel: "update" is the in-app updater (curl fetching a versioned v<x.y.z>/ package,
 // the URL its manifest names); "cdn" is everything else on download.quiet.md, i.e. the
@@ -23,14 +31,53 @@
 
 const HOST = 'download.quiet.md', SITE = 'quiet.md';
 const CRAWLER = /bot|crawl|spider|slurp|curl|wget|python|go-http|java\/|headless|preview|monitor|scan/i;
-const PLATFORMS = { 'macos-arm64.zip': 'macos-arm64', 'windows-x64-setup.exe': 'windows-x64', 'macos-x86_64.zip': 'macos-x86_64', 'x86_64.AppImage': 'linux-x86_64' };
+const PLATFORMS = { 'macos-arm64.dmg': 'macos-arm64', 'macos-arm64.zip': 'macos-arm64', 'windows-x64-setup.exe': 'windows-x64', 'macos-x86_64.dmg': 'macos-x86_64', 'macos-x86_64.zip': 'macos-x86_64', 'x86_64.AppImage': 'linux-x86_64' };
 const PAGE = 5000; // Bound each analytics response; split full windows below.
 
 export default {
   async scheduled(_event, env, ctx) {
     ctx.waitUntil(collect(env));
   },
+  // The one thing it serves: `quiet`'s daily usage counts (crates/cli/src/usage.rs).
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    if (url.pathname !== '/v1/cli') return new Response('Not found', { status: 404 });
+    if (req.method !== 'POST') return new Response('POST only', { status: 405 });
+    const text = await req.text();
+    if (text.length > 32768) return new Response('Too large', { status: 413 });
+    let body;
+    try { body = JSON.parse(text); } catch { return new Response('Not JSON', { status: 400 }); }
+    const rows = cliRows(body, new Date());
+    if (!rows) return new Response('Bad report', { status: 400 });
+    const at = new Date().toISOString();
+    const upsert = env.DB.prepare(`INSERT INTO cli_reports (day, install, version, os, arch, runs, errors, commands, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (day, install) DO UPDATE SET version = excluded.version, os = excluded.os, arch = excluded.arch, runs = excluded.runs, errors = excluded.errors, commands = excluded.commands, received_at = excluded.received_at`);
+    if (rows.length) await env.DB.batch(rows.map((r) => upsert.bind(r.day, body.id, body.version, body.os, body.arch, r.runs, r.errors, r.commands, at)));
+    return new Response(null, { status: 204 });
+  },
 };
+
+const CLI_OS = new Set(['macos', 'windows', 'linux', 'freebsd']);
+const count = (n, max = 1e6) => Number.isInteger(n) && n >= 0 && n <= max;
+
+/// A report's days, checked; null when anything in it is off. Days run from 40 days
+/// back to tomorrow (a client's clock may be ahead).
+export function cliRows(b, now) {
+  if (!b || b.v !== 1 || typeof b.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(b.id)) return null;
+  if (typeof b.version !== 'string' || !/^\d+\.\d+\.\d+[\w.+-]{0,24}$/.test(b.version)) return null;
+  if (!CLI_OS.has(b.os) || typeof b.arch !== 'string' || !/^[a-z0-9_]{1,16}$/.test(b.arch)) return null;
+  if (!Array.isArray(b.days) || b.days.length > 40) return null;
+  const from = dayOf(new Date(now.getTime() - 40 * 86400e3)), to = dayOf(new Date(now.getTime() + 86400e3));
+  const out = [];
+  for (const d of b.days) {
+    if (!d || typeof d.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d.day) || d.day < from || d.day > to) return null;
+    if (!count(d.runs) || !count(d.errors) || d.errors > d.runs || !d.commands || typeof d.commands !== 'object') return null;
+    const cmds = Object.entries(d.commands);
+    if (cmds.length > 64 || cmds.some(([k, n]) => !/^[a-z]{1,16}( [a-z]{1,16})?$/.test(k) || !count(n))) return null;
+    out.push({ day: d.day, runs: d.runs, errors: d.errors, commands: key(d.commands) });
+  }
+  return out;
+}
 
 export async function collect(env, now = new Date()) {
   const yesterday = dayOf(new Date(now.getTime() - 86400e3));
@@ -47,6 +94,27 @@ export async function collect(env, now = new Date()) {
   }
   // GitHub: one snapshot per day, filed under yesterday (the run is just after midnight UTC).
   await run(env, 'github', yesterday, () => github(env, yesterday));
+  // quiet's reports arrive when its user next runs it, often days later: the last week again.
+  for (let day = dayOf(new Date(now.getTime() - 7 * 86400e3)); day <= yesterday; day = next(day)) {
+    await run(env, 'cli', day, () => cli(env, day));
+  }
+}
+
+/// The day's cli_reports as cli.* metrics.
+async function cli(env, day) {
+  const q = (sql) => env.DB.prepare(sql).bind(day);
+  const [byOs, fresh, versions, commands] = (await env.DB.batch([
+    q('SELECT os, COUNT(*) AS users, SUM(runs) AS runs, SUM(errors) AS errors FROM cli_reports WHERE day = ? GROUP BY os'),
+    q('SELECT COUNT(*) AS n FROM (SELECT install, MIN(day) AS first FROM cli_reports GROUP BY install) WHERE first = ?'),
+    q('SELECT version, COUNT(*) AS n FROM cli_reports WHERE day = ? GROUP BY version'),
+    q('SELECT j.key AS command, SUM(j.value) AS n FROM cli_reports, json_each(cli_reports.commands) AS j WHERE day = ? GROUP BY j.key'),
+  ])).map((r) => r.results);
+  const rows = [];
+  for (const r of byOs) rows.push(['cli.users', key({ os: r.os }), r.users], ['cli.runs', key({ os: r.os }), r.runs]);
+  if (byOs.length) rows.push(['cli.errors', '{}', byOs.reduce((a, r) => a + r.errors, 0)], ['cli.new', '{}', fresh[0]?.n || 0]);
+  for (const r of versions) rows.push(['cli.versions', key({ version: r.version }), r.n]);
+  for (const r of commands) rows.push(['cli.commands', key({ command: r.command }), r.n]);
+  return replace(env, day, 'cli', rows);
 }
 
 async function run(env, source, day, f) {
@@ -62,12 +130,13 @@ async function run(env, source, day, f) {
 // ---- Cloudflare ----
 
 /// What a request to download.quiet.md is: a manifest, a package, or noise (null).
+/// A re-upload goes to v<x.y.z>-r<n>/ (published packages are cached as immutable), counted as x.y.z.
 export function classify(path, userAgent) {
   let m = path.match(/^\/latest\/update-(.+)\.json$/);
   if (m) return { kind: 'check', platform: m[1] };
-  m = path.match(/^\/latest\/quiet-md-(macos-arm64\.zip|macos-x86_64\.zip|windows-x64-setup\.exe|x86_64\.AppImage)$/);
+  m = path.match(/^\/latest\/quiet-md-(macos-arm64\.(?:dmg|zip)|macos-x86_64\.(?:dmg|zip)|windows-x64-setup\.exe|x86_64\.AppImage)$/);
   if (m) return { kind: 'download', platform: PLATFORMS[m[1]], version: 'latest', channel: 'cdn' };
-  m = path.match(/^\/v(\d+\.\d+\.\d+)\/quiet-md-(\d+\.\d+\.\d+)-(macos-arm64\.zip|macos-x86_64\.zip|windows-x64-setup\.exe|x86_64\.AppImage)$/);
+  m = path.match(/^\/v(\d+\.\d+\.\d+)(?:-r\d+)?\/quiet-md-(\d+\.\d+\.\d+)-(macos-arm64\.(?:dmg|zip)|macos-x86_64\.(?:dmg|zip)|windows-x64-setup\.exe|x86_64\.AppImage)$/);
   if (m && m[1] === m[2]) return { kind: 'download', platform: PLATFORMS[m[3]], version: m[1], channel: /^curl\//.test(userAgent || '') ? 'update' : 'cdn' };
   return null;
 }

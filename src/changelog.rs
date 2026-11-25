@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::prelude::*;
-use gpui::{div, px, relative, AnyElement, ClickEvent, FontWeight, Window, App};
+use gpui::{div, linear_color_stop, linear_gradient, px, relative, AnyElement, ClickEvent, FontWeight, ScrollHandle, Window, App};
 
 use crate::design::{Button, Card};
 use crate::theme::Theme;
@@ -169,12 +169,21 @@ pub fn card(on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> 
         if moved.is_some() && zh == REAL_FOLDERS { continue }
         list = list.child(line(crate::settings::tr(zh, en).into()));
     }
+    // The list's scroll position, kept between frames: the fade below shows while more is under it.
+    thread_local! { static SCROLL: ScrollHandle = ScrollHandle::new(); }
+    let scroll = SCROLL.with(|h| h.clone());
+    let more = scroll.max_offset().y > px(0.5) && scroll.offset().y > -scroll.max_offset().y + px(0.5);
+    let face = crate::theme::raised(crate::design::color::card());
     // A card; at most half the sidebar, a longer list scrolls inside it.
     Some(Card::new("changelog").flex_none().max_h(relative(0.5)).min_w_0().overflow_hidden().mx(px(crate::sidebar::SB_X - 4.)).mb(px(2.)).pl(px(12.)).pr(px(6.)).pt(px(8.)).pb(px(10.))
         .child(div().flex_none().w_full().min_w_0().flex().items_center().justify_between()
             .child(div().text_size(px(13.)).line_height(px(20.)).font_weight(FontWeight::SEMIBOLD).child(title))
             .child(Button::close("changelog-close")
                 .on_click(move |e, w, cx| { PENDING.store(false, Ordering::Relaxed); *MIGRATED.lock().unwrap() = None; on_close(e, w, cx); })))
-        .child(div().id("changelog-list").flex_1().min_h_0().overflow_y_scroll().child(list))
+        .child(div().relative().flex_1().min_h_0().flex().flex_col()
+            .child(div().id("changelog-list").flex_1().min_h_0().overflow_y_scroll().track_scroll(&scroll).child(list))
+            // A line cut by the card's bottom edge fades out instead; gone once the list is at its end.
+            .when(more, |d| d.child(div().absolute().left_0().right_0().bottom_0().h(px(24.))
+                .bg(linear_gradient(180., linear_color_stop(face.opacity(0.), 0.), linear_color_stop(face, 1.))))))
         .into_any_element())
 }

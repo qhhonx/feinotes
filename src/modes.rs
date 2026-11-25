@@ -4,7 +4,7 @@
 use crate::app::Workspace;
 use crate::theme::Theme;
 use crate::design::{MenuItem, Popover};
-use crate::ui::{TipExt, TitleBarExt, ToastKind, icon};
+use crate::ui::{TipExt, TitleBarExt, ToastKind};
 use gpui::{prelude::FluentBuilder, *};
 
 actions!(workspace, [EditMode, ReadMode, ToggleShortcuts]);
@@ -26,8 +26,8 @@ const DRAWER_W: f32 = 314.;
 type Row = Option<(&'static str, &'static str, &'static str)>;
 
 const STANDARD: &[Row] = &[
-    Some(("keyboard", "阅读模式切回编辑", "E")), Some(("keyboard", "复制 / 剪切 / 粘贴", "⌘C / ⌘X / ⌘V")),
-    Some(("keyboard", "全选", "⌘A")), Some(("keyboard", "逐字扩选", "⇧← / ⇧→")), Some(("keyboard", "逐行扩选", "⇧↑ / ⇧↓")),
+    // 复制, 剪切, 粘贴 and 全选 are the live rows above (with the user's keys), not repeated here.
+    Some(("keyboard", "阅读模式切回编辑", "E")), Some(("keyboard", "逐字扩选", "⇧← / ⇧→")), Some(("keyboard", "逐行扩选", "⇧↑ / ⇧↓")),
     Some(("keyboard", "选到行首 / 行尾", "⌘⇧← / ⌘⇧→")), Some(("keyboard", "选到文档开头 / 结尾", "⌘⇧↑ / ⌘⇧↓")),
 ];
 const MARKDOWN: &[Row] = &[
@@ -54,29 +54,47 @@ const MARKDOWN: &[Row] = &[
 fn rows(list: &[Row]) -> Vec<AnyElement> {
     list.iter()
         .map(|r| match r {
-            None => div().h(px(24.)).into_any_element(),
-            Some((ic, desc, keys)) => div()
-                .flex()
-                .items_center()
-                .py(px(10.))
-                .border_b_1()
-                .border_color(crate::design::color::border())
-                .child(div().flex_none().mr(px(8.)).child(icon(ic, 16., crate::design::color::muted_foreground())))
-                .child(div().flex_none().mr(px(16.)).text_size(px(13.)).line_height(px(18.)).child(crate::settings::text(desc)))
-                .child(div().flex_1().min_w_0().flex().justify_end().text_size(px(12.)).line_height(px(18.)).text_color(Theme::text_caption()).child(crate::shortcuts::keys(crate::settings::text(keys))))
-                .into_any_element(),
+            None => div().h(px(12.)).into_any_element(),
+            Some((ic, desc, keys)) => row(crate::settings::text(desc), (*ic != "keyboard").then_some(*ic), seq(crate::shortcuts::keys(crate::settings::text(keys)))),
         })
         .collect()
 }
 
-/// A shortcut as key caps (`KbdGroup`); 未设置 as text.
+/// One line: shadcn's small `Item` without its frame — an optional muted glyph, the action in
+/// `text-sm`, its keys on the right.
+fn row(title: impl Into<SharedString>, glyph: Option<&'static str>, keys: AnyElement) -> AnyElement {
+    let g = crate::design::geo();
+    div().min_h(px(32.)).py(px(4.)).flex().items_center().gap(px(g.menu_gap))
+        .children(glyph.map(|ic| div().flex_none().child(crate::design::icon(ic, 16., crate::design::color::muted_foreground()))))
+        .child(div().flex_1().min_w_0().text_size(px(g.text)).line_height(px(crate::design::text::SM_LINE)).text_color(crate::design::color::foreground()).child(title.into()))
+        .child(div().flex_none().max_w(px(150.)).flex().flex_wrap().justify_end().items_center().gap(px(4.)).child(keys))
+        .into_any_element()
+}
+
+/// A sequence (`# 空格`, `- 空格 或 * 空格`, `⌘C / ⌘X / ⌘V`): each way to type it a `Kbd`, the
+/// language's "or" (as the translated string has it) or the / between. The 键盘快捷键 rows
+/// go without the keyboard glyph, as the ones above them.
+fn seq(keys: &'static str) -> AnyElement {
+    const OR: &[&str] = &[" / ", " 或 ", " or ", " o ", " ou ", " または ", " 또는 ", " veya ", " أو "];
+    let sep = OR.iter().find(|o| keys.contains(**o)).copied();
+    let parts: Vec<&str> = match sep { Some(o) => keys.split(o).collect(), None => vec![keys] };
+    let mut d = div().flex().flex_wrap().justify_end().items_center().gap(px(4.));
+    for (i, k) in parts.into_iter().enumerate() {
+        if i > 0 { d = d.child(div().text_size(px(crate::design::geo().text_xs)).text_color(crate::design::color::muted_foreground()).child(sep.unwrap_or("").trim())); }
+        d = d.child(crate::design::Kbd::new(k));
+    }
+    d.into_any_element()
+}
+
 fn caps(key: &str) -> AnyElement {
-    if key.is_empty() { return div().text_color(crate::design::color::muted_foreground()).child(crate::shortcuts::pretty(key)).into_any_element() }
+    if key.is_empty() { return div().text_size(px(crate::design::geo().text_xs)).text_color(crate::design::color::muted_foreground()).child(crate::shortcuts::pretty(key)).into_any_element() }
     crate::design::KbdGroup::new(crate::shortcuts::strokes(key)).into_any_element()
 }
 
+/// A section's heading: a group label (`text-xs`, `muted-foreground`, medium), as a menu's.
 fn section(title: &'static str) -> Div {
-    div().text_size(px(13.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).pb(px(16.)).child(title)
+    let g = crate::design::geo();
+    div().pb(px(4.)).text_size(px(g.text_xs)).line_height(px(crate::design::text::XS_LINE)).font_weight(FontWeight::SEMIBOLD).text_color(crate::design::color::muted_foreground()).child(title)
 }
 
 impl Workspace {
@@ -186,11 +204,14 @@ impl Workspace {
         Some(deferred(anchored().position(point(at.left(), at.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 
-    /// The 快捷键 drawer to the right of the page, below the top bar.
+    /// The 快捷键 drawer to the right of the page, below the top bar: shadcn's `Sheet` (side
+    /// right) — `background`, a `border` on its open side, the title in `font-semibold` beside a
+    /// ghost ✕, then the keys in labelled groups split by a `Separator`.
     pub(crate) fn render_shortcuts(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.shortcuts {
             return None;
         }
+        let g = crate::design::geo();
         Some(
             div()
                 .id("shortcuts")
@@ -201,19 +222,17 @@ impl Workspace {
                 .flex_col()
                 .border_l_1()
                 .border_color(crate::design::color::border())
-                .bg(crate::theme::raised(Theme::bg_body()))
+                .bg(crate::design::color::background())
                 .child(
                     div()
                         .flex_none()
-                        .h(px(49.))
-                        .px(px(17.))
-                        .py(px(12.))
+                        .h(px(52.))
+                        .pl(px(16.))
+                        .pr(px(10.))
                         .flex()
                         .items_center()
-                        .border_b_1()
-                        .border_color(crate::design::color::border())
-                        .child(div().flex_1().text_size(px(15.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).child(crate::settings::tr("快捷键", "Keyboard shortcuts")))
-                        .child(crate::design::Button::close("shortcuts-close").on_click(cx.listener(|w, _, _, cx| {
+                        .child(div().flex_1().text_size(px(16.)).line_height(px(24.)).font_weight(FontWeight::SEMIBOLD).text_color(crate::design::color::foreground()).child(crate::settings::tr("快捷键", "Keyboard shortcuts")))
+                        .child(crate::design::Button::ghost("shortcuts-close").sized(crate::design::ButtonSize::Sm).icon("x").on_click(cx.listener(|w, _, _, cx| {
                             w.shortcuts = false;
                             cx.notify();
                         }))),
@@ -224,21 +243,20 @@ impl Workspace {
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
-                        .pt(px(24.))
+                        .pt(px(4.))
                         .px(px(16.))
                         .pb(px(24.))
-                        .text_color(Theme::text())
                         .child(section(crate::settings::text("键盘快捷键")))
-                        .children(crate::shortcuts::rows(cx).into_iter().map(|(_, title, key)| div().flex().items_center().justify_between().gap(px(12.)).py(px(10.)).text_size(px(12.)).child(title).child(caps(&key)).into_any_element()))
+                        .children(crate::shortcuts::rows(cx).into_iter().map(|(_, title, key)| row(title, None, caps(&key))))
                         .children(rows(STANDARD))
-                        .child(section("Markdown").mt(px(32.)))
+                        .child(crate::design::Separator::new().my(px(16.)))
+                        .child(section("Markdown"))
                         .child(
                             div()
-                                .mt(px(-4.))
-                                .pb(px(16.))
-                                .text_size(px(12.))
-                                .line_height(px(18.))
-                                .text_color(Theme::text_caption())
+                                .pb(px(8.))
+                                .text_size(px(g.text_xs))
+                                .line_height(px(crate::design::text::XS_LINE + 2.))
+                                .text_color(crate::design::color::muted_foreground())
                                 .child(crate::settings::text("Markdown 是一种快速输入带格式文本的方式，让你书写文档时行云流水，一气呵成，例如输入#空格，即可输入一级标题。")),
                         )
                         .children(rows(MARKDOWN)),

@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.zip"><img src="docs/images/download-macos.svg" height="56" alt="Descargar para macOS"></a>
+  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.dmg"><img src="docs/images/download-macos.svg" height="56" alt="Descargar para macOS"></a>
   &nbsp;
   <a href="https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe"><img src="docs/images/download-windows.svg" height="56" alt="Descargar para Windows"></a>
   &nbsp;
@@ -94,7 +94,7 @@ En el primer inicio, Quiet.md busca tus bibliotecas de Obsidian, Logseq, iA Writ
 ## Descarga
 
 <p align="center">
-  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.zip"><img src="docs/images/download-macos.svg" height="56" alt="Descargar para macOS"></a>
+  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.dmg"><img src="docs/images/download-macos.svg" height="56" alt="Descargar para macOS"></a>
   &nbsp;
   <a href="https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe"><img src="docs/images/download-windows.svg" height="56" alt="Descargar para Windows"></a>
   &nbsp;
@@ -103,12 +103,12 @@ En el primer inicio, Quiet.md busca tus bibliotecas de Obsidian, Logseq, iA Writ
 
 | Plataforma | Paquete | Requisitos |
 |---|---|---|
-| **macOS** (Apple Silicon) | [quiet-md-macos-arm64.zip](https://download.quiet.md/latest/quiet-md-macos-arm64.zip) | macOS 13 o posterior |
+| **macOS** (Apple Silicon) | [quiet-md-macos-arm64.dmg](https://download.quiet.md/latest/quiet-md-macos-arm64.dmg) | macOS 13 o posterior |
 | **Windows** (x64) | [quiet-md-windows-x64-setup.exe](https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe) | Windows 10 versión 1809 o posterior |
 | **Linux** (x86_64, experimental) | [quiet-md-x86_64.AppImage](https://download.quiet.md/latest/quiet-md-x86_64.AppImage) | glibc 2.35 o posterior (Ubuntu 22.04 o más reciente) |
-| **macOS** (Intel) | [quiet-md-macos-x86_64.zip](https://download.quiet.md/latest/quiet-md-macos-x86_64.zip) | macOS 13 o posterior |
+| **macOS** (Intel) | [quiet-md-macos-x86_64.dmg](https://download.quiet.md/latest/quiet-md-macos-x86_64.dmg) | macOS 13 o posterior |
 
-- **macOS**: descomprime el archivo y arrastra `quiet.md.app` a Aplicaciones. La app está firmada y notarizada por Apple.
+- **macOS**: abre el `.dmg`, arrastra `quiet.md.app` al acceso directo de Aplicaciones que hay al lado y ábrela desde Aplicaciones. La app y la imagen de disco están firmadas y notarizadas por Apple. El `.zip` de la página de Releases contiene la misma app; es lo que descargan las actualizaciones integradas.
 - **Windows**: ejecuta el instalador. Por defecto se instala solo para el usuario actual, y desinstalarla nunca borra tus notas. Si aparece SmartScreen en el primer arranque, haz clic en **Más información → Ejecutar de todas formas**.
 - **Linux** (experimental): `chmod +x quiet-md-*.AppImage` y ejecútala; sin FUSE, añade `--appimage-extract-and-run`. La AppImage admite actualizaciones desde la app a partir de la 0.1.10; las versiones de Linux anteriores necesitan una instalación manual una sola vez. Por ahora solo se ha probado a mano en Omarchy con Wayland; consulta las [notas para Linux](CONTRIBUTING.md#linux-experimental).
 
@@ -173,5 +173,5 @@ El código se publica bajo la licencia [MIT](LICENSE). El código, las fuentes y
 
 Lo siguiente no está cubierto por la licencia MIT y debe sustituirse en los forks:
 
-- Los 67 iconos de Nucleo en `assets/icons/` están bajo una licencia comercial de Nucleo. No los extraigas ni los redistribuyas por separado.
+- Los 71 iconos de Nucleo en `assets/icons/` están bajo una licencia comercial de Nucleo. No los extraigas ni los redistribuyas por separado.
 - El nombre “Quiet.md” y el icono de la app.

@@ -378,13 +378,13 @@ impl Workspace {
             return;
         }
         let Some(task_guard) = self.store.begin_file_task() else { return };
-        // Each root's 回收站 is its own: one writer, and one write, per root.
+        // Each top-level folder's 回收站 is its own: one writer, and one write, per top-level folder.
         let mut writers: Vec<(String, crate::store::Store, Vec<String>)> = vec![];
         for id in &ids {
-            let Some(key) = self.store.trash_root(id) else { continue };
+            let Some(key) = self.store.trash_top(id) else { continue };
             match writers.iter_mut().find(|(k, _, _)| *k == key) {
                 Some((_, _, v)) => v.push(id.clone()),
-                None => if let Some(w) = self.store.root_writer(&key) { writers.push((key, w, vec![id.clone()])); },
+                None => if let Some(w) = self.store.top_writer(&key) { writers.push((key, w, vec![id.clone()])); },
             }
         }
         let task = cx.background_executor().spawn(async move {
@@ -537,7 +537,7 @@ impl Workspace {
             Confirm::EmptyTrash => self.empty_trash(window, cx),
             Confirm::RemoveUnused(files) => self.remove_unused_assets(files, window, cx),
             Confirm::Migrate(_) => self.migrate_library(window,cx),
-            Confirm::RemoveRoot(key, _) => self.remove_root(&key, window, cx),
+            Confirm::RemoveFolder(key, _) => self.remove_folder(&key, window, cx),
             Confirm::Import { what,target } => self.import_dropped(what,target,window,cx),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::DiscardOfflineRecovery(id) => self.resolve_offline_recovery(&id, false, window, cx),
@@ -672,7 +672,7 @@ impl Workspace {
                     false,
                 )
             }
-            Confirm::RemoveRoot(_, name) => (
+            Confirm::RemoveFolder(_, name) => (
                 crate::localized_format!("从侧栏移除「{}」？", "Remove “{}” from the sidebar?", name),
                 crate::settings::tr("只是从侧栏去掉，文件夹里的文件不会删除。以后重新打开这个文件夹，置顶、历史版本和回收站都还在。", "It only leaves the sidebar; nothing in the folder is deleted. Open the folder again later and its pins, history and Trash are still there.").to_string(),
                 crate::settings::tr("移除", "Remove"),

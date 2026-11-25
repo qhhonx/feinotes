@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.zip"><img src="docs/images/download-macos.svg" height="56" alt="macOS 版をダウンロード"></a>
+  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.dmg"><img src="docs/images/download-macos.svg" height="56" alt="macOS 版をダウンロード"></a>
   &nbsp;
   <a href="https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe"><img src="docs/images/download-windows.svg" height="56" alt="Windows 版をダウンロード"></a>
   &nbsp;
@@ -94,7 +94,7 @@
 ## ダウンロード
 
 <p align="center">
-  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.zip"><img src="docs/images/download-macos.svg" height="56" alt="macOS 版をダウンロード"></a>
+  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.dmg"><img src="docs/images/download-macos.svg" height="56" alt="macOS 版をダウンロード"></a>
   &nbsp;
   <a href="https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe"><img src="docs/images/download-windows.svg" height="56" alt="Windows 版をダウンロード"></a>
   &nbsp;
@@ -103,12 +103,12 @@
 
 | プラットフォーム | パッケージ | 要件 |
 |---|---|---|
-| **macOS**（Apple シリコン） | [quiet-md-macos-arm64.zip](https://download.quiet.md/latest/quiet-md-macos-arm64.zip) | macOS 13 以降 |
+| **macOS**（Apple シリコン） | [quiet-md-macos-arm64.dmg](https://download.quiet.md/latest/quiet-md-macos-arm64.dmg) | macOS 13 以降 |
 | **Windows**（x64） | [quiet-md-windows-x64-setup.exe](https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe) | Windows 10 バージョン 1809 以降 |
 | **Linux**（x86_64、試験的） | [quiet-md-x86_64.AppImage](https://download.quiet.md/latest/quiet-md-x86_64.AppImage) | glibc 2.35 以降（Ubuntu 22.04 以降） |
-| **macOS**（Intel） | [quiet-md-macos-x86_64.zip](https://download.quiet.md/latest/quiet-md-macos-x86_64.zip) | macOS 13 以降 |
+| **macOS**（Intel） | [quiet-md-macos-x86_64.dmg](https://download.quiet.md/latest/quiet-md-macos-x86_64.dmg) | macOS 13 以降 |
 
-- **macOS**: 展開して、`quiet.md.app` をアプリケーションフォルダーにドラッグします。アプリは Apple によって署名・公証されています。
+- **macOS**: `.dmg` を開き、`quiet.md.app` を隣の「アプリケーション」へのショートカットにドラッグして、アプリケーションフォルダーから開きます。アプリとディスクイメージは Apple によって署名・公証されています。Releases ページの `.zip` は同じアプリで、アプリ内アップデートがダウンロードするものです。
 - **Windows**: インストーラーを実行します。デフォルトでは現在のユーザーだけにインストールされ、アンインストールしてもノートが削除されることはありません。初回の起動時に SmartScreen が表示された場合は、**詳細情報 → 実行** をクリックしてください。
 - **Linux**（試験的）: `chmod +x quiet-md-*.AppImage` を実行してから起動します。FUSE がない場合は `--appimage-extract-and-run` を付けてください。AppImage 0.1.10 以降はアプリ内更新に対応します。以前の Linux 版からは一度手動でインストールしてください。現在の対話的なテストは Wayland 上の Omarchy のみです。詳しくは [Linux の説明](CONTRIBUTING.md#linux-experimental)を参照してください。
 
@@ -173,5 +173,5 @@ Quiet.md の開発に協力してくださったすべての方に感謝しま�
 
 次のものは MIT ライセンスの対象外で、フォークでは置き換える必要があります。
 
-- `assets/icons/` にある 67 個の Nucleo アイコンは、Nucleo の商用ライセンスのもとにあります。単独で取り出したり再配布したりしないでください。
+- `assets/icons/` にある 71 個の Nucleo アイコンは、Nucleo の商用ライセンスのもとにあります。単独で取り出したり再配布したりしないでください。
 - 「Quiet.md」という名前と、アプリのアイコン。

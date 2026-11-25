@@ -352,6 +352,8 @@ impl Editor {
     }
 
     pub(super) fn insert_new_reminder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A Markdown file can't keep a reminder (⌘⌥W included).
+        if self.markdown { return; }
         if let Some(p) = self.core.insert_reminder(&default_reminder(now())) {
             self.changed(window, cx);
             self.open_reminder(p, cx);

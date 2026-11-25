@@ -6,11 +6,11 @@ pub struct FileState {
     pub folder: bool,
     pub parent: Option<String>,
     pub order: u64,
-    pub root_order: Option<u64>,
+    pub top_order: Option<u64>,
 }
 impl FileState {
-    pub fn of(e: &Entry) -> Self { Self { title: e.title.clone(), folder: e.meta.folder.is_some(), parent: e.meta.parent.clone(), order: e.meta.order, root_order: e.meta.root_order } }
-    fn place(&self) -> (&Option<String>, u64, Option<u64>) { (&self.parent, self.order, self.root_order) }
+    pub fn of(e: &Entry) -> Self { Self { title: e.title.clone(), folder: e.meta.folder.is_some(), parent: e.meta.parent.clone(), order: e.meta.order, top_order: e.meta.top_order } }
+    fn place(&self) -> (&Option<String>, u64, Option<u64>) { (&self.parent, self.order, self.top_order) }
 }
 
 #[derive(Clone)]
@@ -43,7 +43,7 @@ impl Store {
         changes
     }
 
-    /// Record into `changes` too: one journal across the 工作区's roots.
+    /// Record into `changes` too: one journal across every top-level folder.
     pub fn share_file_changes(&mut self, changes: &FileChanges) {
         self.file_changes.retain(|w| w.strong_count() > 0);
         self.file_changes.push(std::sync::Arc::downgrade(&changes.0));
@@ -52,7 +52,7 @@ impl Store {
     pub(super) fn file_state(&self, id: &str) -> Option<FileState> {
         let m = self.index.get(id)?;
         let title = m.folder.clone().or_else(|| self.load(id).ok().map(|d| d.title.text))?;
-        Some(FileState { title, folder: m.folder.is_some(), parent: m.parent.clone(), order: m.order, root_order: m.root_order })
+        Some(FileState { title, folder: m.folder.is_some(), parent: m.parent.clone(), order: m.order, top_order: m.top_order })
     }
 
     pub(super) fn record_file_change(&self, id: &str, before: Option<FileState>) {
@@ -67,9 +67,9 @@ impl Store {
         if !self.file_changes.iter().any(|w| w.strong_count() > 0) { return; }
         for (id, m) in &self.index {
             let old = previous.get(id);
-            if old.is_some_and(|o| (&o.parent, o.order, o.root_order) == (&m.parent, m.order, m.root_order)) { continue; }
+            if old.is_some_and(|o| (&o.parent, o.order, o.top_order) == (&m.parent, m.order, m.top_order)) { continue; }
             let before = old.and_then(|o| self.file_state(id).map(|mut state| {
-                state.parent = o.parent.clone(); state.order = o.order; state.root_order = o.root_order; state
+                state.parent = o.parent.clone(); state.order = o.order; state.top_order = o.top_order; state
             }));
             self.record_file_change(id, before);
         }
@@ -108,7 +108,7 @@ impl Store {
             if let Some(expected) = from {
                 let m = &self.index[&c.id];
                 if to.as_ref().is_none_or(|t| t.place() != expected.place()) {
-                    anyhow::ensure!((&m.parent, m.order, m.root_order) == expected.place(), "文件位置已被其他操作改变，请先刷新");
+                    anyhow::ensure!((&m.parent, m.order, m.top_order) == expected.place(), "文件位置已被其他操作改变，请先刷新");
                 }
                 if let Some(target) = to && target.title != expected.title {
                     let title = if let Some(name) = &m.folder { name.clone() } else { self.load(&c.id)?.title.text };
@@ -124,12 +124,12 @@ impl Store {
                     let saved = self.trash.get(&c.id).ok_or_else(|| anyhow::anyhow!("恢复内容已不在回收站，无法重做或撤销"))?;
                     anyhow::ensure!(target.folder || self.trash_path(&c.id).fs_is_file(), "恢复内容已不在回收站，无法重做或撤销");
                     let mut meta = saved.meta.clone();
-                    meta.parent = target.parent.clone(); meta.order = target.order; meta.root_order = target.root_order;
+                    meta.parent = target.parent.clone(); meta.order = target.order; meta.top_order = target.top_order;
                     projected.insert(c.id.clone(), meta);
                 }
                 (Some(from), Some(to)) if from.place() != to.place() => {
                     let m = projected.get_mut(&c.id).unwrap();
-                    m.parent = to.parent.clone(); m.order = to.order; m.root_order = to.root_order;
+                    m.parent = to.parent.clone(); m.order = to.order; m.top_order = to.top_order;
                 }
                 _ => {}
             }
@@ -159,7 +159,7 @@ impl Store {
             let mut back: Vec<(&str, &FileState)> = pairs.iter().filter_map(|(c, (f, t))| if f.is_none() { t.as_ref().map(|t| (c.id.as_str(), t)) } else { None }).collect();
             back.sort_by_key(|(id, _)| depth(&projected, id));
             for (id, target) in back {
-                self.untrash(id, target.parent.clone(), Some((target.order, target.root_order)))?;
+                self.untrash(id, target.parent.clone(), Some((target.order, target.top_order)))?;
             }
             // Moves and renames.
             for (c, (from, to)) in &pairs {
@@ -182,7 +182,7 @@ impl Store {
                     if let Some(m) = self.index.get_mut(&c.id) { m.modified = now(); }
                 }
                 if let Some(m) = self.index.get_mut(&c.id) && from.place() != to.place() {
-                    m.parent = to.parent.clone(); m.order = to.order; m.root_order = to.root_order;
+                    m.parent = to.parent.clone(); m.order = to.order; m.top_order = to.top_order;
                 }
             }
             // What goes to the 回收站, deepest first; the root is the outermost
@@ -218,7 +218,7 @@ impl Store {
             if let Some(expected) = from {
                 let m = &self.index[&c.id];
                 if to.as_ref().is_none_or(|t| t.place() != expected.place()) {
-                    anyhow::ensure!((&m.parent, m.order, m.root_order) == expected.place(), "文件位置已被其他操作改变，请先刷新");
+                    anyhow::ensure!((&m.parent, m.order, m.top_order) == expected.place(), "文件位置已被其他操作改变，请先刷新");
                 }
                 if let Some(target) = to && target.title != expected.title {
                     let title = if let Some(name) = &m.folder { name.clone() } else { self.load(&c.id)?.title.text };
@@ -244,12 +244,12 @@ impl Store {
                         moves.push((c.id.clone(), false));
                     }
                     let mut meta = saved.meta;
-                    meta.parent = target.parent.clone(); meta.order = target.order; meta.root_order = target.root_order;
+                    meta.parent = target.parent.clone(); meta.order = target.order; meta.top_order = target.top_order;
                     index.insert(c.id.clone(), meta);
                 }
                 (Some(from), Some(to)) => {
                     let m = index.get_mut(&c.id).unwrap();
-                    if from.place() != to.place() { m.parent = to.parent.clone(); m.order = to.order; m.root_order = to.root_order; }
+                    if from.place() != to.place() { m.parent = to.parent.clone(); m.order = to.order; m.top_order = to.top_order; }
                     if from.title != to.title {
                         if to.folder { m.folder = Some(to.title.clone()); }
                         else {

@@ -91,7 +91,7 @@ pub(crate) fn prepare(root: &Path) -> Result<PathBuf> {
         let title = "长标题验收 · 从主页到搜索都应能看懂这个文档的共享与置顶状态 · 窄窗口里仍能打开更多操作 · Windows, Mac and Mobile document title layout · 第四季度工作记录";
         let document = store.create_from(&Document { title: crate::model::RichText::plain(title),
             blocks: vec![crate::model::Block::text("仅供测试的正文。")], ..Default::default() })?;
-        store.update_meta(&document, |meta| { meta.pinned = true; meta.root_order = Some(0); })?;
+        store.update_meta(&document, |meta| { meta.pinned = true; meta.top_order = Some(0); })?;
         let room = original::prepare_local(&personal, &document, title.into(), false)?;
         fs::write(room_root(&personal, &room.scope.note)?.join("seed-published"), b"synthetic shared owner")?;
     }

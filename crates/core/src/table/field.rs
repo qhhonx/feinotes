@@ -189,14 +189,13 @@ pub fn split_list(t: &str) -> Vec<String> {
 }
 
 /// `parse`, adding the options a select doesn't have yet (paste, import, a type change).
-pub fn parse_new(f: &mut Field, text: &str, next_id: &mut u32) -> Value {
+pub fn parse_new(f: &mut Field, text: &str, ids: &mut IdGen) -> Value {
     if f.ty.select() {
         let names = if f.ty == FieldType::SingleSelect { vec![text.trim().to_string()] } else { split_list(text) };
         for n in names.iter().filter(|n| !n.is_empty()) {
             if f.option_named(n).is_none() {
-                *next_id += 1;
                 let color = (f.opts.options.len() % 10) as u8;
-                f.opts.options.push(SelectOption { id: *next_id, name: n.clone(), color });
+                f.opts.options.push(SelectOption { id: ids.fresh(), name: n.clone(), color });
             }
         }
     }
@@ -205,7 +204,7 @@ pub fn parse_new(f: &mut Field, text: &str, next_id: &mut u32) -> Value {
 
 /// A value of `old` as a value of `new` (改字段类型): by its text, except
 /// where the text would lose it.
-pub fn convert(old: &Field, new: &mut Field, v: &Value, next_id: &mut u32) -> Value {
+pub fn convert(old: &Field, new: &mut Field, v: &Value, ids: &mut IdGen) -> Value {
     if v.is_empty() || new.ty.computed() { return Value::Empty; }
     match (v, new.ty) {
         (Value::Number(n), t) if t.numeric() && old.ty.numeric() => match t {
@@ -227,7 +226,7 @@ pub fn convert(old: &Field, new: &mut Field, v: &Value, next_id: &mut u32) -> Va
         (Value::Date(ms), _) if new.ty.textual() => Value::Text(format_date(*ms, old.opts.date, old.opts.time)),
         _ => {
             let text = match v { Value::Number(n) => plain_number(*n), Value::Date(ms) => iso(*ms, false), _ => show(None, old, v) };
-            parse_new(new, &text, next_id)
+            parse_new(new, &text, ids)
         }
     }
 }
@@ -348,18 +347,22 @@ mod tests {
     #[test]
     fn selects_parse_and_convert() {
         let mut s = f(FieldType::MultiSelect);
-        let mut next = 10;
-        assert_eq!(parse_new(&mut s, "红, 蓝，红", &mut next), Value::Select(vec![11, 12]));
-        assert_eq!(display(&Table::default(), &s, &Value::Select(vec![12, 11])), "蓝, 红");
+        let mut next = IdGen::seeded(1);
+        let v = parse_new(&mut s, "红, 蓝，红", &mut next);
+        let (r, b) = (s.option_named("红").unwrap().id, s.option_named("蓝").unwrap().id);
+        assert!(r != b && (1..ID_LIMIT).contains(&r) && (1..ID_LIMIT).contains(&b));
+        assert_eq!(v, Value::Select(vec![r, b]));
+        assert_eq!(display(&Table::default(), &s, &Value::Select(vec![b, r])), "蓝, 红");
         assert_eq!(parse(&s, "绿"), Value::Empty);
         // 多选 → 单选 keeps the first; → 文本 its names; 文本 → 单选 makes options
         let mut single = Field { ty: FieldType::SingleSelect, ..s.clone() };
-        assert_eq!(convert(&s, &mut single, &Value::Select(vec![12, 11]), &mut next), Value::Select(vec![12]));
+        assert_eq!(convert(&s, &mut single, &Value::Select(vec![b, r]), &mut next), Value::Select(vec![b]));
         let mut text = f(FieldType::Text);
-        assert_eq!(convert(&s, &mut text, &Value::Select(vec![11, 12]), &mut next), Value::Text("红, 蓝".into()));
+        assert_eq!(convert(&s, &mut text, &Value::Select(vec![r, b]), &mut next), Value::Text("红, 蓝".into()));
         let mut sel = f(FieldType::SingleSelect);
-        assert_eq!(convert(&text, &mut sel, &Value::Text("新".into()), &mut next), Value::Select(vec![13]));
+        let v = convert(&text, &mut sel, &Value::Text("新".into()), &mut next);
         assert_eq!(sel.opts.options[0].name, "新");
+        assert!(v == Value::Select(vec![sel.opts.options[0].id]) && ![r, b].contains(&sel.opts.options[0].id));
         let mut num = f(FieldType::Number);
         assert_eq!(convert(&text, &mut num, &Value::Text("1,200".into()), &mut next), Value::Number(1200.));
         let mut date = f(FieldType::Date);

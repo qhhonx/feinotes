@@ -1,0 +1,220 @@
+{
+	"ID": "20240101000200-docbbbb",
+	"Spec": "2",
+	"Type": "NodeDocument",
+	"Properties": {
+		"id": "20240101000200-docbbbb",
+		"title": "引用与嵌入",
+		"type": "doc",
+		"updated": "20240305081500"
+	},
+	"Children": [
+		{
+			"ID": "20240101001055-paaaaaa",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20240101001055-paaaaaa",
+				"updated": "20240102090000"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "文档引用："
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "block-ref",
+					"TextMarkTextContent": "全部块类型",
+					"TextMarkBlockRefID": "20240101000100-docaaaa",
+					"TextMarkBlockRefSubtype": "d"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "；自定义锚文本："
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "block-ref",
+					"TextMarkTextContent": "那篇长文",
+					"TextMarkBlockRefID": "20240101000100-docaaaa",
+					"TextMarkBlockRefSubtype": "s"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "。"
+				}
+			]
+		},
+		{
+			"ID": "20240101001056-paaaaaa",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20240101001056-paaaaaa",
+				"updated": "20240102090000"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "标题引用："
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "block-ref",
+					"TextMarkTextContent": "引用目标",
+					"TextMarkBlockRefID": "20240101000500-headref",
+					"TextMarkBlockRefSubtype": "d"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "；块引用："
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "block-ref strong",
+					"TextMarkTextContent": "可被引用的段落",
+					"TextMarkBlockRefID": "20240101000600-blockrf",
+					"TextMarkBlockRefSubtype": "s"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "；失效引用："
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "block-ref",
+					"TextMarkTextContent": "已删除的块",
+					"TextMarkBlockRefID": "20240101009999-missing",
+					"TextMarkBlockRefSubtype": "s"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "。"
+				}
+			]
+		},
+		{
+			"ID": "20240101001057-paaaaaa",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20240101001057-paaaaaa",
+				"updated": "20240102090000"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "本页块引用："
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "block-ref",
+					"TextMarkTextContent": "下面这段",
+					"TextMarkBlockRefID": "20240101000800-selfref",
+					"TextMarkBlockRefSubtype": "s"
+				},
+				{
+					"Type": "NodeText",
+					"Data": "。"
+				}
+			]
+		},
+		{
+			"ID": "20240101000800-selfref",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20240101000800-selfref",
+				"updated": "20240102090000"
+			},
+			"Children": [
+				{
+					"Type": "NodeText",
+					"Data": "下面这段"
+				}
+			]
+		},
+		{
+			"ID": "20240101001058-emaaaaa",
+			"Type": "NodeBlockQueryEmbed",
+			"Data": "{{select * from blocks where id='20240101000500-headref'}}",
+			"Properties": {
+				"id": "20240101001058-emaaaaa"
+			},
+			"Children": [
+				{
+					"Type": "NodeOpenBrace"
+				},
+				{
+					"Type": "NodeOpenBrace"
+				},
+				{
+					"Type": "NodeBlockQueryEmbedScript",
+					"Data": "select * from blocks where id='20240101000500-headref'"
+				},
+				{
+					"Type": "NodeCloseBrace"
+				},
+				{
+					"Type": "NodeCloseBrace"
+				}
+			]
+		},
+		{
+			"ID": "20240101001059-emaaaaa",
+			"Type": "NodeBlockQueryEmbed",
+			"Data": "{{SELECT * FROM blocks WHERE content LIKE '%读书%'}}",
+			"Properties": {
+				"id": "20240101001059-emaaaaa"
+			},
+			"Children": [
+				{
+					"Type": "NodeOpenBrace"
+				},
+				{
+					"Type": "NodeOpenBrace"
+				},
+				{
+					"Type": "NodeBlockQueryEmbedScript",
+					"Data": "SELECT * FROM blocks WHERE content LIKE '%读书%'"
+				},
+				{
+					"Type": "NodeCloseBrace"
+				},
+				{
+					"Type": "NodeCloseBrace"
+				}
+			]
+		},
+		{
+			"ID": "20240101001060-paaaaaa",
+			"Type": "NodeParagraph",
+			"Properties": {
+				"id": "20240101001060-paaaaaa",
+				"updated": "20240102090000"
+			},
+			"Children": [
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "tag",
+					"TextMarkTextContent": "读书"
+				},
+				{
+					"Type": "NodeText",
+					"Data": " "
+				},
+				{
+					"Type": "NodeTextMark",
+					"TextMarkType": "tag",
+					"TextMarkTextContent": "待整理"
+				}
+			]
+		},
+		{
+			"ID": "20240101001061-avaaaaa",
+			"Type": "NodeAttributeView",
+			"AttributeViewID": "20240101000700-avbooks",
+			"AttributeViewType": "table",
+			"Properties": {
+				"custom-sy-av-view": "20240101000710-viewaaa"
+			}
+		}
+	]
+}

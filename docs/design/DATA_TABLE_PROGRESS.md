@@ -1,5 +1,7 @@
 # 数据表 v2：做到哪了（交接）
 
+> 已被 [DATA_TABLE_DIRECTION.md](DATA_TABLE_DIRECTION.md) 取代，文件格式以 DIRECTION 为准（3.4 节）。下面是 2026-11-18 的交接记录，留作历史。
+
 状态：2026-11-18。工作目录 `.claude/worktrees/bitable`，分支 `feat/bitable`（从 origin/main 80e61057 建）。**全部改动都没有提交**，留在工作区。
 `scripts/check.sh` 通过（测试 + 两遍 clippy 零警告）。设计见 DATA_TABLE_V2.md，飞书实测见 feishu-research/REPORT.md（767 行，176 张截图）。
 第一版（照飞书描 UI 的那版）的源码在 `target/old-datatable/`（不进仓库），已不用。

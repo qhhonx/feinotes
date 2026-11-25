@@ -45,3 +45,164 @@ printf '{"english":true,"theme":"craft"}\n' > /tmp/quiet-perf/library/preference
 python3 tools/harness/run.py tools/harness/examples/readme-performance.txt /tmp/quiet-perf/library /tmp/quiet-perf/run
 grep -a bench /tmp/quiet-perf/run/log
 ```
+
+## Dragging the scrollbar
+
+[scrollbar-drag.txt](../tools/harness/examples/scrollbar-drag.txt) opens the 1,000,000-character compilation, presses the page thumb and drags it 4 pt a step: 90 steps to halfway, 90 to the end, then 180 back to the top, with `bench` drawing a frame after each step. Every step lands on rows that may not have been laid out yet, so this is the editor's most expensive scrolling. `mean` is the average frame and `drops` the frames over 16.7 ms (one 60 Hz frame); screenshots at halfway, the end and the top check that the thumb is under the pointer and the page where the thumb says.
+
+Two documents: the compilation as generated, and with `--tall-start` (three images, a 60-row table and two 120-line code blocks first). The thumb's length estimate counts rows not yet laid out at the average height of those on screen, so a tall first screen overestimates the document many times over.
+
+Measured 2026-11-25 on an Apple M6 Mac mini (16 GiB, macOS 27.2.1), 1280 × 800 pt window, Craft theme, `--features devtools` release builds. Frame mean / drops (of 90) per quarter of the drag:
+
+| Build | Document | Down 1 | Down 2 | Up 1 | Up 2 | Thumb under the pointer |
+|---|---|---:|---:|---:|---:|---|
+| v0.1.14 | as generated | 12.96 / 8 | 13.72 / 12 | 11.50 / 3 | 14.96 / 28 | yes |
+| v0.1.14 | tall start | 5.85 / 6 | 3.03 / 0 | 3.00 / 0 | 6.34 / 9 | no: the page reaches its end at 1/10 of the track, the thumb stops there |
+| 6df2232 | as generated | 14.21 / 21 | 14.90 / 19 | 12.03 / 6 | 11.16 / 1 | yes |
+| 6df2232 | tall start | 3.25 / 5 | 3.35 / 0 | 1.84 / 0 | 3.47 / 4 | no (as v0.1.14) |
+| 67d6145 | as generated | 16.19 / 33 | 23.19 / 79 | 11.02 / 4 | 10.83 / 7 | yes |
+| 67d6145 | tall start | 16.70 / 24 | 26.23 / 83 | 23.57 / 75 | 15.83 / 32 | yes |
+| this change | as generated | 12.77 / 7 | 15.20 / 23 | 11.88 / 6 | 9.81 / 0 | yes |
+| this change | tall start | 13.10 / 8 | 14.93 / 19 | 11.18 / 4 | 10.26 / 1 | yes |
+
+- With a tall start, v0.1.14 and 6df2232 are fast only because the page stops moving: holding the length estimated at the press, it reaches its end a tenth of the way down, and the rest of the drag redraws the same rows.
+- 67d6145 made the page follow the thumb to the end, and aimed the page again on every frame in which newly measured rows had changed the estimate. During a drag that is nearly every frame, so each one laid out a second set of rows nobody saw: about 10 ms more a frame going down, and most frames dropped.
+- Now a move aims the page by the latest estimate, and it is aimed again only once the pointer rests (80 ms) or the thumb is let go, the thumb held in place until the page is there. Frames are back to v0.1.14's; the thumb stays under the pointer, the end of the track is the end of the document, and letting go mid-drag leaves the thumb where it was (same pixels before and after).
+- The rest of the cost, about 12 ms a frame going down, is laying out a screen of rows not seen before (text shaping); it has not changed since v0.1.14. The editor's own `render` stays under 0.2 ms.
+
+Reproduce (the same temporary libraries; `run.py` copies them per run):
+
+```sh
+cargo build --release --locked --features devtools
+python3 tools/perf/gen_library.py /tmp/quiet-perf/library
+python3 tools/perf/gen_library.py --tall-start /tmp/quiet-perf/tall
+for lib in library tall; do
+  printf '{"english":true,"theme":"craft"}\n' > /tmp/quiet-perf/$lib/preferences.json
+  python3 tools/harness/run.py tools/harness/examples/scrollbar-drag.txt /tmp/quiet-perf/$lib /tmp/quiet-perf/drag-$lib
+  grep -a bench /tmp/quiet-perf/drag-$lib/log
+done
+```
+
+### Toward 120 Hz
+
+The same replay, aiming at 8.3 ms (one 120 Hz frame). A sampling profile of the drag (`sample`, main thread) put about 60% of the frame in `CTLineCreateWithAttributedString`, and most of that not in shaping but in CoreText setting up fonts: `TFont::InitShapingGlyphs`, `InitASCIIDataCache` and variable-font advances (`HVAR`), work CoreText keeps on each CTFont object. GPUI made a new sized CTFont for every run of every line, and CoreText made new fallback faces for the Chinese text of every line. Three changes:
+
+1. Each font is made once per size (vendor patch 0080 reuse-coretext-fonts). The ASCII and HVAR setup left the profile.
+2. The face CoreText fell back to for a CJK character is kept and set on that character in later lines (same patch), so CoreText no longer falls back, and makes new faces, line after line. Shaping went from about 415 to 105 samples in the same 10 s of dragging. It is the face CoreText chose itself: one picked with `CTFontCreateForString` instead lost a bold heading's weight.
+3. While the thumb is held the page lays out no rows beyond the window (`ListState::set_overdraw`, vendor patch 0081; 600 pt above and below otherwise), and goes back to 600 pt once the thumb is let go and the page has settled.
+
+Measured 2026-11-25 on the same Mac mini, but with another build of the app busy in the background (30-40% CPU) the whole time: main (c6498c2) ran 1.3-1.5× slower than in the table above, and single runs varied by up to 2×. Each build was therefore run three times, alternating with the other. Per quarter of the drag, over the three runs: frame mean, mean P95, and frames over 8.3 ms and over 16.7 ms (of 270):
+
+| Build | Document | Down 1 | Down 2 | Up 1 | Up 2 | Whole drag |
+|---|---|---|---|---|---|---|
+| main | as generated | 16.6 / 35.2 / 267 / 72 | 20.2 / 37.4 / 266 / 147 | 18.6 / 33.2 / 244 / 138 | 16.5 / 30.6 / 244 / 108 | mean 18.0 ms; 95% over 8.3, 43% over 16.7 |
+| this change | as generated | 6.1 / 14.5 / 55 / 10 | 4.7 / 9.0 / 44 / 0 | 6.2 / 10.9 / 94 / 0 | 4.6 / 8.8 / 34 / 0 | mean 5.4 ms; 21% over 8.3, 0.9% over 16.7 |
+| main | tall start | 14.3 / 27.8 / 247 / 62 | 20.4 / 32.1 / 270 / 184 | 18.9 / 28.1 / 260 / 162 | 18.2 / 28.3 / 244 / 159 | mean 17.9 ms; 95% over 8.3, 53% over 16.7 |
+| this change | tall start | 7.1 / 14.3 / 80 / 9 | 5.9 / 10.7 / 82 / 0 | 7.1 / 10.8 / 118 / 0 | 4.6 / 9.0 / 56 / 0 | mean 6.2 ms; 31% over 8.3, 0.8% over 16.7 |
+
+- Frames are about three times faster, and 60 Hz drops are nearly gone. The 120 Hz target is met on average but not yet at P95 (9-11 ms past the first quarter, on this busy machine). What is left is shaping characters seen for the first time (their fallback face too), taffy layout of the new rows and painting.
+- The thumb stays under the pointer, the end of the track is the end of the document, and letting go mid-drag leaves the thumb where it was, on both documents.
+- Rendering is unchanged: screenshots of the compilation (top and three wheel positions), the guides (Writing and formatting, Welcome, Playground), and a Chinese page with quotes in the default face, Songti SC, PingFang SC, Hiragino Sans GB and Heiti SC are identical to main's, pixel for pixel (`tools/harness/compare.py`).
+- Wheel scrolling did not slow down: five alternating runs of 300 steps of 40 pt each way, mean 3.48 / 2.90 ms (down / up) against main's 3.57 / 2.92, with fewer frames over 8.3 ms (65 against 160). Opening the compilation, first frame 30.8-34.0 ms against 33.2-35.8. Typing and backspacing ([readme-performance.txt](../tools/harness/examples/readme-performance.txt)) are unchanged within the noise.
+
+## Large libraries
+
+A user who imported an Obsidian vault of more than 15,000 Markdown notes found browsing almost unusable. This section measures that case before and after the fix on `perf/big-library`.
+
+### Environment
+
+| Item | Value |
+|---|---|
+| Date | 2026-11-25 |
+| Source | `ce2dd1d` (before) and `perf/big-library` on top of it (after), `cargo build --release --locked --features devtools` |
+| Machine | Mac mini, Apple M6 (2 performance and 4 efficiency cores), 16 GiB, macOS 27.2 |
+| Window | 1280 × 800 pt at 2× scale |
+| Library | `gen_library.py --vault 15000`: 15,000 Markdown notes in 174 folders up to three deep, one flat `Inbox` of 3,016 notes, 200 images, wiki links, relative Markdown links, tags and front matter, plus `.obsidian/` |
+
+### Method
+
+[big-library.txt](../tools/harness/examples/big-library.txt) opens the vault and times idle frames with `bench 60 noop` in seven views, each 4 seconds after getting there so that card previews have loaded. `Inbox` changed last, so the window opens on its page with `Inbox` open in the sidebar:
+
+| View | What is on screen |
+|---|---|
+| Inbox open | The `Inbox` page of 3,016 cards, `Inbox` open in the sidebar (about 3,500 rows) |
+| Inbox closed | The same page, `Inbox` closed in the sidebar (about 460 rows) |
+| Opened again | As the first |
+| Sidebar scrolled | The same, the sidebar scrolled |
+| Home | 主页 with the `Inbox` folder card |
+| Home scrolled | The same, 主页 scrolled |
+| Document | A note from `Inbox` |
+
+Each build ran the script five times, the two builds alternating (`ce2dd1d` has no `row` step yet, so both were driven by the same clicks given as coordinates). On this machine the main thread runs either on a performance core or, when those are busy, on an efficiency core, where every frame takes two to three times as long; a run can switch between the two at any point, and a library of 300 notes shows the same two levels. The frame table gives the best P50 of the five runs, which is the frame on a performance core, and the median of the five P50s.
+
+Because frame times move with the machine's load, four views were also profiled with `sample` for 8 seconds of `bench 1500 noop`: the main thread's share of samples in `Window::draw`, `Workspace::render` and `render_sidebar`, times the mean frame, is the time each of them takes in a frame. These numbers change much less from run to run.
+
+### Results
+
+Frame P50 in milliseconds, best of five runs (median of five):
+
+| View | Before | After | 300 notes, before |
+|---|---:|---:|---:|
+| Inbox open | 15.8 (16.0) | 9.5 (10.5) | 6.4 |
+| Inbox closed | 21.1 (28.7) | 10.1 (20.6) | 6.8 |
+| Opened again | 23.6 (29.7) | 7.2 (20.8) | 8.6 |
+| Sidebar scrolled | 24.6 (29.0) | 7.7 (22.6) | 10.3 |
+| Home | 29.5 (30.4) | 9.6 (23.9) | 8.4 |
+| Home scrolled | 27.2 (29.2) | 10.2 (22.1) | 13.5 |
+| Document | 24.8 (26.8) | 2.7 (11.3) | 7.3 |
+
+The last column is the same script on `gen_library.py --vault 300` (best of three). After the fix a frame in the 15,000-note vault costs about what it costs in a library of 300 notes.
+
+Main-thread time per frame in milliseconds, before → after (`sample`):
+
+| View | `Window::draw` | `Workspace::render` | of which `render_sidebar` |
+|---|---:|---:|---:|
+| Inbox open | 7.2 → 0.9 | 6.7 → 0.6 | 6.7 → 0.5 |
+| Inbox closed | 8.1 → 2.7 | 6.7 → 1.2 | 6.1 → 0.9 |
+| Home | 7.9 → 1.9 | 5.2 → 0.5 | 5.1 → 0.4 |
+| Document | 5.0 → 1.4 | 4.8 → 0.9 | 4.7 → 0.8 |
+
+Before the fix, most of each frame went to work that grows with the library and was redone on every frame, even with nothing changing:
+
+- The sidebar copied all 15,000 entries and sorted them to order the pinned ones, rebuilt the whole page tree, hashing every id, twice (once more for a drag that was not happening), and copied the entry of every row in the tree, links and reminders included.
+- A folder card on Home walked every entry once for each folder under it and copied every document below it, to paint the newest four.
+- Home and a folder's page copied and sorted their whole level, 3,016 entries for `Inbox`, and copied it once more for the grid.
+
+Now only the pinned entries are sorted, and the rest is built once and kept until something it shows changes (`tree::shape_key`, a hash of every field the rows and cards show or are sorted by), so an unchanged frame does none of it. The tree build itself looks up only the folders instead of every id. What is left of `render_sidebar` is mostly `shape_key` (about 0.25 ms a frame) and the rows' spring state. Screenshots of every view above, the row menu and `examples/menus.txt` are pixel-identical before and after (`compare.py`).
+
+### Still on the main thread
+
+These grow with the library too. Times are for the 15,000-note vault, with a library of 300 notes in parentheses, taken directly from `Store` ([store_bench.rs](../crates/core/examples/store_bench.rs), median of 15):
+
+| Operation | When | Before | After |
+|---|---|---:|---:|
+| `Store::list`, the first time | Opening a library for the first time: every note is read | 2.0 s | 2.0 s |
+| `Store::list` | Every time the window comes forward (`app.rs`, window activation), and 2 s after files change on disk | 70-78 ms (4 ms) | 38-44 ms (3 ms) |
+| `Store::save_editor` | Every autosave while typing | 52-57 ms (8 ms) | 12 ms (8 ms) |
+
+Measured 2026-11-25 on the Mac mini above, five runs alternating between `86317e7` and `perf/meta-cache`. Saving waits on the disk (the note and this device's 4.5 MB metadata file, each written with a backup and `fsync`): with other builds busy on the same disk it took 64-143 ms before and 20-79 ms after.
+
+Before, every `list` and every save started with `Store::begin_write` merging every device's metadata again (`load_meta`: a copy of the merged view, the index rebuilt from it, every entry turned into JSON fields and compared), and every save compared the whole index before writing (`save_meta`): about half of `list` and most of a save. In a loop of `list` and save, `begin_write` took 2,083 of 5,093 samples before and 91 of about 5,000 after.
+
+Now memory is known to be what the disk says while nothing has changed since this store last read or wrote it, and then nothing is read again:
+
+- No device file in `.quiet/meta/` was added, removed or rewritten: each is compared by name, size, modification time and, since a sync (iCloud, a git checkout, `rsync -t`) can put a file back with the time it had where it was written, its inode and change time (ctime), which every write or replacing rename moves and nothing sets back. Windows has no change time, so a hash of each file's contents stands in (a placeholder still in the cloud is not read). Any difference reads every file again, as before.
+- No read on the way took in another device's write that memory has not (a setting saved outside `begin_write` merges what it finds).
+- This computer's file about the library, the index, the entries kept for others and the 回收站 are as they were when last read or written; a change not written (a failed write) reads everything again.
+- `list` left nothing out: an entry whose file is not here (another device's, still on its way) is kept on disk but not in memory, so the next write reads everything again and the file keeps its settings when it arrives. A library with such entries is as fast as before, not faster.
+
+A save compares only the entries that changed since the last write and the folders they left or went to (their order keys), not the whole index. Tests check both against the old way: in the test build every skipped read is compared with reading everything again, and every save with comparing the whole index.
+
+What is left of `list` is finding the files (`layout::scan` and a `stat` for each note, most of its 40 ms); of a save, writing this device's metadata file whole, as FORMAT 6 keeps it. The first `list` of a new library still reads every note on the main thread.
+
+### Reproduce
+
+```sh
+cargo build --release --locked --features devtools
+python3 tools/perf/gen_library.py --vault 15000 /tmp/quiet-big/vault
+python3 tools/harness/run.py tools/harness/examples/big-library.txt /tmp/quiet-big/vault /tmp/quiet-big/run
+grep -a bench /tmp/quiet-big/run/log
+# list and save: on a copy, opened once by the app or by the first run
+cp -R /tmp/quiet-big/vault /tmp/quiet-big/store
+QUIET_MD_HOME=/tmp/quiet-big/store cargo run --release -p fdl_core --example store_bench /tmp/quiet-big/store
+```

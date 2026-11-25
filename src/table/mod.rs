@@ -77,8 +77,9 @@ impl BaseState {
 
     #[cfg(not(target_family = "wasm"))]
     fn read(&mut self) {
-        match sqlite::load(&self.path) {
-            Ok(base) => { self.doc.replace(base); self.error = None; self.stamp = sqlite::stamp(&self.path); }
+        match sqlite::load_marked(&self.path) {
+            // what the file lacks (sort keys of a format 1 file, rows added elsewhere) is written now
+            Ok((base, dirty)) => { self.doc.replace(base); self.doc.dirty = dirty; self.error = None; self.stamp = sqlite::stamp(&self.path); self.write(); }
             Err(e) => self.error = Some(format!("{}：{e}", crate::settings::label("无法读取数据表")).into()),
         }
     }

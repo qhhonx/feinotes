@@ -388,7 +388,7 @@ impl Editor {
             .when(tabs, |d| {
                 d.child(
                     div().flex_none().h(px(if mobile { 42. } else { TABS_H })).pl(px(inset+1.)).flex().child(
-                        div().pt(px(if mobile { 10. } else { 20. })).pb(px(12.)).text_size(px(13.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::primary_500()).child(crate::settings::text("表情符号")),
+                        div().pt(px(if mobile { 10. } else { 20. })).pb(px(12.)).text_size(px(13.)).line_height(px(22.)).font_weight(FontWeight::SEMIBOLD).text_color(crate::design::color::foreground()).child(crate::settings::text("表情符号")),
                     ),
                 )
                 .child(

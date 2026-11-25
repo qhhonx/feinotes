@@ -23,8 +23,10 @@ pub const PAD: f32 = G.menu_pad;
 /// A row's height.
 pub const ROW_H: f32 = G.menu_row_h;
 /// A separator with its margin (my-1).
-pub const SEP_H: f32 = 1. + 2. * SEP_MY;
+pub const SEP_H: f32 = SEP_W + 2. * SEP_MY;
 const SEP_MY: f32 = 4.;
+/// The rule's thickness: a 0.5pt hairline (maintainer 2026-11-24; shadcn's is 1px).
+const SEP_W: f32 = 0.5;
 /// A label row's height (py-1.5 over text-xs).
 pub const LABEL_H: f32 = 28.;
 /// A menu's least width (`min-w-32`).
@@ -244,8 +246,9 @@ impl RenderOnce for MenuItem {
         let fill = if danger { color::destructive_soft() } else { color::accent() };
         let two_lines = self.description.is_some();
         let MenuItem { base, icon: ic, editor_icon, leading, label: lab, description, extra, shortcut, checked, submenu, inset, .. } = self;
+        let probe = lab.clone().and_then(crate::devtools::row_probe);
         under(base, |d| {
-            d.flex_none().when(!two_lines, |d| d.h(px(g.menu_row_h))).when(two_lines, |d| d.min_h(px(g.menu_row_h)).py(px(6.)))
+            d.relative().children(probe).flex_none().when(!two_lines, |d| d.h(px(g.menu_row_h))).when(two_lines, |d| d.min_h(px(g.menu_row_h)).py(px(6.)))
                 .mx(px(g.menu_pad)).px(px(g.menu_row_px)).flex().items_center().gap(px(g.menu_gap)).rounded(px(g.menu_row_r))
                 .text_size(px(g.text)).line_height(px(super::text::SM_LINE)).text_color(fg)
                 .when(off, |d| d.opacity(0.5)).when(!off, |d| d.cursor_pointer())
@@ -295,12 +298,14 @@ impl RenderOnce for MenuLabel {
     }
 }
 
-/// A rule between groups of rows (`DropdownMenuSeparator`: `border`, my-1, edge to edge).
+/// A rule between groups of rows (`DropdownMenuSeparator`'s `border`, my-1). Maintainer's change
+/// 2026-11-24: a 0.5pt hairline held in to the rows' content (their icon's and label's edge)
+/// rather than shadcn's 1px edge to edge.
 #[derive(IntoElement, Default)]
 pub struct MenuSeparator;
 impl MenuSeparator { pub fn new() -> Self { MenuSeparator } }
 impl RenderOnce for MenuSeparator {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        div().flex_none().h(px(1.)).my(px(SEP_MY)).mx(px(geo().rule_inset)).bg(color::border())
+        div().flex_none().h(px(SEP_W)).my(px(SEP_MY)).mx(px(geo().rule_inset)).bg(color::border())
     }
 }

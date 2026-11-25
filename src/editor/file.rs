@@ -992,6 +992,8 @@ impl Editor {
     /// Copies `paths` into the library off the main thread, then inserts
     /// them at `target` (or the caret).
     pub(super) fn import_files(&mut self, paths: Vec<PathBuf>, target: Option<(BlockId, DropPlace)>, window: &mut Window, cx: &mut Context<Self>) {
+        // A Markdown file keeps no attachments (dropped images still come in as images).
+        if self.markdown { return; }
         #[cfg(target_os = "ios")]
         let stamp = super::format_mobile::SelectionStamp::capture(self,"file-import");
         #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]

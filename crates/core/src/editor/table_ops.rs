@@ -56,7 +56,7 @@ pub fn first_row_text(t: &Table) -> Vec<BlockId> {
     out
 }
 
-fn text_blocks(blocks: &[Block], out: &mut Vec<BlockId>) {
+pub(super) fn text_blocks(blocks: &[Block], out: &mut Vec<BlockId>) {
     for b in blocks {
         if b.kind.has_text() {
             out.push(b.id);
@@ -151,6 +151,16 @@ impl Core {
         if let Some(id) = first_leaf(&t.rows[r][c].blocks) {
             self.sel = Selection::caret(Pos::new(id, 0));
         }
+    }
+
+    /// Shift+↑/↓ from the first / last text block of a cell leaves the cell's
+    /// text: that one cell becomes the selection (Feishu). None anywhere else.
+    pub fn cell_edge_sel(&self, id: BlockId, down: bool) -> Option<CellSel> {
+        let (table, r, c) = self.cell_of(id)?;
+        let mut ids = vec![];
+        text_blocks(&self.table(table)?.rows.get(r)?.get(c)?.blocks, &mut ids);
+        let edge = if down { ids.last() } else { ids.first() };
+        (edge == Some(&id)).then_some(CellSel { table, anchor: (r, c), head: (r, c), kind: CellSelKind::Range })
     }
 
     pub fn select_cells(&mut self, s: CellSel) {
@@ -525,5 +535,32 @@ mod tests {
         let t = c.table(id).unwrap();
         assert_eq!((t.rows[0][0].rowspan, t.rows[1][0].is_covered()), (2, true));
         assert_eq!((text(&c, id, 0, 0), text(&c, id, 0, 1), text(&c, id, 2, 0)), ("20|30".into(), "21".into(), "00".into()));
+    }
+
+    #[test]
+    fn shift_past_a_cells_edge_selects_just_that_cell() {
+        let (mut c, id) = core_with(2, 2);
+        let cell = |c: &Core, r: usize, col: usize| c.table(id).unwrap().rows[r][col].blocks.iter().map(|b| b.id).collect::<Vec<_>>();
+        // A second paragraph in cell (1, 0): only its first block leaves upward, only its last downward.
+        let extra = Block::text("more");
+        let (first, last) = (cell(&c, 1, 0)[0], extra.id);
+        if let BlockKind::Table(t) = &mut c.doc.blocks[0].kind { t.rows[1][0].blocks.push(extra); }
+        let one = CellSel { table: id, anchor: (1, 0), head: (1, 0), kind: CellSelKind::Range };
+        assert_eq!(c.cell_edge_sel(first, false), Some(one));
+        assert_eq!(c.cell_edge_sel(first, true), None);
+        assert_eq!(c.cell_edge_sel(last, true), Some(one));
+        assert_eq!(c.cell_edge_sel(last, false), None);
+        // Text outside a table has no cell to select.
+        let after = c.doc.blocks[1].id;
+        assert_eq!(c.cell_edge_sel(after, true), None);
+        // The single cell then takes what a dragged rectangle takes: a background.
+        c.select_cells(c.cell_edge_sel(last, true).unwrap());
+        assert_eq!(c.selected_cells(), vec![(1, 0)]);
+        c.table_set_bg(Some(ColorName("light-blue".into())));
+        let t = c.table(id).unwrap();
+        assert_eq!(t.rows[1][0].bg, Some(ColorName("light-blue".into())));
+        assert!(t.rows[0][0].bg.is_none() && t.rows[1][1].bg.is_none());
+        c.undo();
+        assert!(c.table(id).unwrap().rows[1][0].bg.is_none());
     }
 }

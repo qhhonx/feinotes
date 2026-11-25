@@ -58,7 +58,7 @@ impl Workspace {
         let (dirs, files): (Vec<PathBuf>, Vec<PathBuf>) = paths.iter().cloned().partition(|p| p.fs_is_dir());
         let (md, other): (Vec<PathBuf>, Vec<PathBuf>) = files.into_iter().partition(|p| is_markdown_path(p));
         if !other.is_empty() { self.import_paths(&other, None, true, window, cx); }
-        if !dirs.is_empty() { self.add_roots(&dirs, window, cx); }
+        if !dirs.is_empty() { self.add_folders(&dirs, window, cx); }
         let mut last = None;
         for p in &md {
             match self.store.open_local(p) {
@@ -89,7 +89,7 @@ impl Workspace {
             // `[[page]]`, looked up across the vault the way Obsidian does.
             Some(raw) => {
                 let (name, anchor) = crate::markdown::wiki_parts(raw);
-                let vault = crate::markdown::wiki_vault(&source, self.store.folder_dir(None).as_deref(), &self.store.root_dirs());
+                let vault = crate::markdown::wiki_vault(&source, self.store.folder_dir(None).as_deref(), &self.store.top_dirs());
                 (crate::markdown::resolve_wiki(name, &source, &vault).unwrap_or_default(), anchor.to_string())
             }
             None => {
@@ -128,6 +128,11 @@ impl Workspace {
         }
     }
 
+    /// A copy `id` of 本机文件 `src` keeps its times, as an import does.
+    pub(crate) fn keep_times(&mut self, id: &str, src: &std::path::Path) {
+        let _ = self.store.with(Some(id), |s| { crate::transfer::keep_times(s, id, src); Ok(()) });
+    }
+
     /// 导入到文档库: a Markdown copy at the top of 我的文档.
     pub(crate) fn import_local(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.row_menu = None;
@@ -135,6 +140,7 @@ impl Workspace {
         let front = self.store.front_matter_of(id);
         match self.store.create_markdown(&doc, &front) {
             Ok(new) => {
+                if let Some(src) = self.store.local_path(id) { self.keep_times(&new, &src); }
                 self.entries = self.store.list();
                 self.sort();
                 self.open(&new, window, cx);

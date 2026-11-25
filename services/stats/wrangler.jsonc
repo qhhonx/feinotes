@@ -5,6 +5,8 @@
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
   "workers_dev": false,
+  // quiet's daily usage counts come in here (POST /v1/cli); nothing else is served.
+  "routes": [{ "pattern": "telemetry.quiet.md", "custom_domain": true }],
   // 00:30 UTC: yesterday's analytics are complete by then.
   "triggers": { "crons": ["30 0 * * *"] },
   "d1_databases": [

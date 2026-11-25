@@ -8,7 +8,7 @@ wait 1200
 move 1090 690
 wait 400
 SHOT home
-click 120 232
+row Blocks: lists, quotes and callouts
 wait 1200
 move 1270 790
 wait 400

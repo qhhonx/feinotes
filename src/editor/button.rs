@@ -350,6 +350,7 @@ impl Editor {
     // ---- 按钮设置
 
     pub(super) fn insert_new_button(&mut self, action: ButtonAction, window: &mut Window, cx: &mut Context<Self>) {
+        if self.markdown { return; }
         let mut button = InlineButton::new(action);
         button.text = crate::settings::label(action.label());
         if let Some(p) = self.core.insert_button(&button) {

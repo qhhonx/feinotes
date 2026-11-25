@@ -388,12 +388,12 @@ impl Editor {
                 .items_center()
                 .cursor_pointer()
                 .text_size(px(15.))
-                .text_color(if active { Theme::primary_500() } else { Theme::text_caption() })
+                .text_color(if active { crate::design::color::foreground() } else { Theme::text_caption() })
                 .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
                 .when(!active, |d| d.hover(|s| s.text_color(Theme::text())))
                 .child(label)
                 .when(active, |d| {
-                    d.child(div().absolute().bottom_0().left_0().right_0().h(px(2.)).rounded(px(1.)).bg(Theme::primary()))
+                    d.child(div().absolute().bottom_0().left_0().right_0().h(px(2.)).rounded(px(1.)).bg(crate::design::color::foreground()))
                 })
                 .on_click(cx.listener(move |e, _, window, cx| {
                     if let Some(f) = &mut e.find {

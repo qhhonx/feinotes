@@ -64,7 +64,7 @@ impl Workspace {
         }
         let file_before = self.store.track_file_changes();
         let made = if parent.is_some() {
-            // In a folder: written into that folder's root at once.
+            // In a folder: written into that folder's top-level folder at once.
             let doc = crate::model::Document::default();
             if markdown { self.store.create_markdown_in(&doc, "", parent.as_deref()) } else { self.store.create_from_in(&doc, parent.as_deref()) }
         } else if markdown {
@@ -110,7 +110,7 @@ impl Workspace {
                 self.home.sort_menu = false;
                 self.entries = self.store.list();
                 self.sort();
-                match &parent { Some(p) => { self.expanded.insert(p.clone()); } None => self.folded[1] = false }
+                if let Some(p) = &parent { self.expanded.insert(p.clone()); }
                 self.search.update(cx, |s, cx| s.set_text("", cx));
                 self.open(&id, window, cx);
             }
@@ -134,7 +134,7 @@ impl Workspace {
                 self.home.sort_menu = false;
                 self.entries = self.store.list();
                 self.sort();
-                match &parent { Some(p) => { self.expanded.insert(p.clone()); } None => self.folded[1] = false }
+                if let Some(p) = &parent { self.expanded.insert(p.clone()); }
                 self.search.update(cx, |s, cx| s.set_text("", cx));
                 self.open(&id, window, cx);
             }
@@ -275,7 +275,6 @@ impl Workspace {
             Ok(id) => {
                 self.entries = self.store.list(); self.sort();
                 if let Some(p) = parent { self.expanded.insert(p); }
-                self.folded[1] = false;
                 // Select and open the new folder (like 新建文档), then focus its name
                 // field. open_folder focuses the pane, so start_rename must follow it.
                 if self.open_folder(&id, window, cx) && name.is_none() {
@@ -295,7 +294,10 @@ impl Workspace {
         let can_create_folder = self.can_create_folder(&target, cx);
         let folder_target = target.clone();
         let personal = matches!(target, CreateTarget::PersonalSidebar(_));
-        let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::design::MenuItem::new(id).icon(glyph).label(label);
+        let row = |id: &'static str, glyph: &'static str, label: &'static str| {
+            let kind = match glyph { "doc-md" => "markdown", "whiteboard" => "board", "table" => "datatable", other => other };
+            crate::design::MenuItem::new(id).leading(img(format!("illus/kinds/{kind}.svg")).flex_none().size(px(18.))).label(label)
+        };
         let menu = crate::design::Popover::new("create-items").menu().min_w(px(180.))
             .on_mouse_down_out(cx.listener(move |w, event: &MouseDownEvent, _, cx| {
                 let row_slot = match &w.create_menu {
@@ -396,8 +398,8 @@ impl Workspace {
         // A root's own row (two or more roots) is the first crumb, by name.
         let path: Vec<_> = self.ancestors(&id).into_iter().filter(|e| crate::shared_store::root_of_row(&e.id).is_none()).collect();
         // The path starts at its root folder, by that folder's name (W5).
-        let root = self.entries.iter().find(|e| e.id == id).map(|e| e.root.clone()).unwrap_or_default();
-        let root_title = if crate::FEI_NOTES { self.breadcrumb_library_title().to_string() } else { self.root_name(&root) };
+        let root = self.entries.iter().find(|e| e.id == id).map(|e| e.top.clone()).unwrap_or_default();
+        let root_title = if crate::FEI_NOTES { self.breadcrumb_library_title().to_string() } else { self.folder_name(&root) };
         let first = link("home".into(), root_title, None).into_any_element();
         // A root's own page is the root: its name is the page's title, not a crumb before it.
         let own = crate::shared_store::root_of_row(&id).is_some();
@@ -439,13 +441,13 @@ impl Workspace {
             .child(div().id("folder-view-switch").no_drag().ml(px(12.)).child(self.view_switch(cx)));
         let children = self.level_entries(Some(&id));
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let children = children.into_iter().map(|mut entry| {
+        let children = std::rc::Rc::new(children.iter().cloned().map(|mut entry| {
             if let Some((pinned, starred)) = self.shared_child_marks(&entry.id, cx) {
                 entry.meta.pinned = pinned;
                 entry.meta.starred = starred;
             }
             entry
-        }).collect::<Vec<_>>();
+        }).collect::<Vec<_>>());
         let body = if children.is_empty() {
             crate::trash::empty_state("illus/empty-list.svg", tr("这个文件夹还是空的", "This folder is empty")).into_any_element()
         } else if self.home.grid {
@@ -462,13 +464,14 @@ impl Workspace {
         let folder = if personal { CreateTarget::PersonalSidebar(Some(folder)) } else { CreateTarget::Library(Some(folder)) };
         let row = |id: &'static str, glyph: &'static str, label: &'static str| crate::design::MenuItem::new(id).icon(glyph).label(label);
         let pos = if m.pos.x < px(0.) { point(-m.pos.x, m.pos.y + px(22.)) } else { m.pos };
+        let create = !(m.pos.x < px(0.));
         vec![deferred(anchored().anchor(m.corner).position(pos).snap_to_window_with_margin(px(8.)).child(crate::design::Popover::new("folder-row-menu").menu().min_w(px(190.))
             .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }))
-            .child(row("fr-new-doc", "doc", tr("新建文档", "New document")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None;
+            .when(create, |d| d.child(row("fr-new-doc", "doc", tr("新建文档", "New document")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None;
                 let doc = doc.clone();
                 if personal { w.personal_action(window, cx, move |w, window, cx| w.new_child(&doc, window, cx)); }
-                else { w.new_child(&doc, window, cx); } })))
-            .when(self.can_create_folder(&folder, cx), |d| d.child(row("fr-new-folder", "folder", tr("新建文件夹", "New folder")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.new_folder(folder.clone(), None, window, cx); }))))
+                else { w.new_child(&doc, window, cx); } }))))
+            .when(create && self.can_create_folder(&folder, cx), |d| d.child(row("fr-new-folder", "folder", tr("新建文件夹", "New folder")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.new_folder(folder.clone(), None, window, cx); }))))
             .child(row("fr-rename", "square-pen", tr("重命名", "Rename")).on_click(cx.listener(move |w, _, window, cx| {
                 let rename = rename.clone();
                 if personal { w.personal_action(window, cx, move |w, window, cx| w.start_rename(&rename, window, cx)); }

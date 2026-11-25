@@ -357,7 +357,7 @@ impl Editor {
                 .text_size(px(size.min(13.)))
                 .line_height(px(line.min(20.)))
                 .cursor_pointer()
-                .text_color(if active { Theme::primary() } else { Theme::text_caption() })
+                .text_color(if active { crate::design::color::foreground() } else { Theme::text_caption() })
                 .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
                 .when(!active, |d| d.hover(|s| s.text_color(Theme::text())))
                 .on_click(cx.listener(move |e, _, _, cx| {
@@ -365,7 +365,7 @@ impl Editor {
                     cx.notify();
                 }))
                 .child(ui_text(format!("{name} ({n})")))
-                .when(active, |d| d.child(div().absolute().left_0().right_0().bottom(px(-1.)).h(px(2.)).rounded(px(1.)).bg(Theme::primary())))
+                .when(active, |d| d.child(div().absolute().left_0().right_0().bottom(px(-1.)).h(px(2.)).rounded(px(1.)).bg(crate::design::color::foreground())))
         };
         let help = div()
             .id("refs-help")
@@ -522,7 +522,7 @@ impl Editor {
                     .mt(px(4.))
                     .text_size(px(size.min(13.)))
                     .line_height(px(line.min(20.)))
-                    .text_color(Theme::link())
+                    .text_color(crate::design::color::foreground())
                     .cursor_pointer()
                     .on_click(cx.listener(move |e, _, _, cx| {
                         e.links.more[more_ix] = true;

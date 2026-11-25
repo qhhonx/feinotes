@@ -62,7 +62,7 @@ impl Workspace {
             body = body.child(div().px(px(24.)).pt(px(12.)).child(caption(tr(
                 "共享列表暂未更新。飞记会自动重试。", "The shared list could not update. Fei Notes will retry."))));
         }
-        body.child(if self.home.grid { self.render_home_grid(entries, false, window, cx) } else { self.render_home_list(entries, false, cx) }).into_any_element()
+        body.child(if self.home.grid { self.render_home_grid(&std::rc::Rc::new(entries.to_vec()), false, window, cx) } else { self.render_home_list(entries, false, cx) }).into_any_element()
     }
 
     #[cfg(target_os = "ios")]
@@ -168,7 +168,7 @@ impl Workspace {
             .when(writable, |body| {
                 let rename = entry.clone(); let rename_room = room.clone();
                 let moving = entry.clone(); let move_room = room.clone();
-                body.children(self.shared_folder_create_rows(&room, &entry, cx))
+                body.when(menu.pos.x >= px(0.), |d| d.children(self.shared_folder_create_rows(&room, &entry, cx)))
                     .child(shared_menu_item("shared-folder-rename", "square-pen", tr("重命名", "Rename"))
                         .on_click(cx.listener(move |w, _, window, cx|
                             w.edit_shared_folder(rename_room.clone(), rename.clone(), SharedFolderEdit::Rename, window, cx))))
@@ -253,7 +253,8 @@ impl Workspace {
                     .on_click(cx.listener(move |w, _, _, cx| w.copy_shared_documents(vec![copy.clone()], cx))));
         }
         let rename = if folder && writable {
-            body = body.children(self.shared_folder_create_rows(&room, &target, cx)).child(rename).child(shared_menu_divider());
+            body = body.when(menu.pos.x >= px(0.), |d| d.children(self.shared_folder_create_rows(&room, &target, cx)))
+                .child(rename).child(shared_menu_divider());
             None
         } else { (!folder && writable).then_some(rename) };
         body = body.child(row("shared-row-pin", if entry.meta.pinned { "pin-off" } else { "pin" }, pin_label(entry.meta.pinned))

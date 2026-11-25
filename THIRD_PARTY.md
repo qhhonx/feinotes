@@ -466,6 +466,9 @@ GPUI and its Zed dependencies (the `gpui*`, `collections`, `refineable`, `derive
 | rgb | 0.8.53 | MIT |
 | roxmltree | 0.20.0 | MIT OR Apache-2.0 |
 | roxmltree | 0.21.2 | MIT OR Apache-2.0 |
+| rquickjs | 0.14.0 | MIT |
+| rquickjs-core | 0.14.0 | MIT |
+| rquickjs-sys | 0.14.0 | MIT |
 | rsqlite-vfs | 0.2.0 | MIT |
 | rusqlite | 0.43.0 | MIT |
 | rustc-demangle | 0.1.28 | MIT/Apache-2.0 |
@@ -753,7 +756,7 @@ The whiteboard (`crates/core/src/board/` and `src/board/`) ports code from the p
 | [points-on-path](https://github.com/pshihn/points-on-path) | 0.2.1 | MIT (Preet Shihn) | Path sampling in `rough/path_data.rs` |
 | [path-data-parser](https://github.com/pshihn/path-data-parser) | 0.1.0 | MIT (Preet Shihn) | SVG path parsing and normalization in `rough/path_data.rs` |
 | [perfect-freehand](https://github.com/steveruizok/perfect-freehand) | 1.2.0 | MIT (Steve Ruiz) | Stroke outlines in `freehand.rs` |
-| [fractional-indexing](https://github.com/rocicorp/fractional-indexing) (via Excalidraw's bundled copy) | — | CC0 | `fractional_index.rs` |
+| [fractional-indexing](https://github.com/rocicorp/fractional-indexing) (via Excalidraw's bundled copy) | — | CC0 | `fractional_index.rs` (also the 数据表's row order, `table/order.rs`) |
 | [nanoid](https://github.com/ai/nanoid) | — | MIT (Andrey Sitnik) | ID alphabet only, in `random.rs` |
 
 Excalidraw license notice:
@@ -812,7 +815,7 @@ Upstream distributes the Excalidraw board fonts as WOFF2 subsets by Unicode rang
 | Asset | License |
 |---|---|
 | `assets/editor-icons/`（编辑器与文档里的 175 个图标） | 包括 Lucide 图标（ISC，其中源自 Feather 的部分保留 MIT 许可），其余按同一 24px / 2px 描边规格绘制。见同目录 `LICENSE-lucide`。 |
-| `assets/icons/`（界面外壳的 80 个图标（原清单与新增 Lucide `chevron-left.svg`）） | 69 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，包含接受邀请入口的 `mail-check.svg` 和画板入口的 `whiteboard.svg`；各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 11 个项目自绘的 MIT 图标（包含共享文件夹 `folder-shared.svg` 和 `folder-shared-open.svg`、`globe.svg` 与共享按钮的后备图标 `share.svg`）。 |
+| `assets/icons/`（界面外壳的 95 个顶层 SVG，包含 10 个 `ft-*.svg`） | 70 个使用或改编自 [Lucide 0.468.0](https://github.com/lucide-icons/lucide/tree/0.468.0/icons)，包含接受邀请入口的 `mail-check.svg` 和画板入口的 `whiteboard.svg`；各 SVG 标注来源，使用 ISC 并保留 Feather 部分的 MIT 许可。见同目录 `LICENSE-lucide`。另有 25 个项目自绘的 MIT 图标（包含共享文件夹 `folder-shared.svg` 和 `folder-shared-open.svg`、`globe.svg` 与共享按钮的后备图标 `share.svg`、上游原创 MIT 的 `doc-blocks.svg` 与 `doc-table.svg`）。 |
 | macOS 共享按钮的 `square.and.arrow.up` | 通过 AppKit 的 [系统符号 API](https://developer.apple.com/documentation/appkit/nsimage/init(systemsymbolname:accessibilitydescription:)) 在运行时获取；不随仓库或发行包分发 Apple 图形素材。 |
 | Native iPhone/iPad controls and shared-documents badge | UIKit obtains SF Symbols at runtime using `UIImage(systemName:)`. The badge background is drawn by this project. No Apple symbol artwork is stored in the repository or bundled as a resource. |
 | `packaging/macos/fei-notes.png` | 飞记的应用图标，随飞记构建嵌入。 |

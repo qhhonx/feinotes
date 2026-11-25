@@ -10,8 +10,10 @@ work=$(mktemp -d /tmp/quiet-shots.XXXXXX)
 python3 shared-mock/guides/build.py "$work/lib" >/dev/null
 # seen_version: no 已更新到 card over the sidebar.
 ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
-printf '{"english":true,"theme":"feishu","feishu":true,"seen_version":"%s"}\n' "$ver" > "$work/lib/preferences.json"
-printf '{"sidebar_width":240}\n' > "$work/lib/settings.json"
+# Under QUIET_MD_HOME the settings live in the library's .quiet (Store::settings_dir);
+# the theme there is also what the library's look starts from (Store::look_at).
+printf '{"english":true,"theme":"feishu","feishu":true,"seen_version":"%s"}\n' "$ver" > "$work/lib/.quiet/preferences.json"
+printf '{"sidebar_width":240}\n' > "$work/lib/.quiet/settings.json"
 sed 's/^SHOT \(.*\)$/deskshot \1 48/' shared-mock/guides/shots/steps.txt > "$work/steps.txt"
 swiftc -O shared-mock/guides/backdrop.swift -o "$work/backdrop" 2>/dev/null
 wall=$(swift -e 'import AppKit; print(NSWorkspace.shared.desktopImageURL(for: NSScreen.screens[0])!.path)' 2>/dev/null)
@@ -26,7 +28,7 @@ for n in home toolbar slash; do
   [ -f "$work/run/$n.png" ] || { echo "shots.sh: $n.png missing (see $work/run/log)" >&2; exit 1; }
   sips -Z 1600 -s format jpeg -s formatOptions 80 "$work/run/$n.png" --out "shared-mock/guides/assets/$n.jpg" >/dev/null
 done
-for n in home editor; do
+for n in home; do
   [ -f "$work/run/$n.png" ] || { echo "shots.sh: $n.png missing" >&2; exit 1; }
   sips -s format jpeg -s formatOptions 85 "$work/run/$n.png" --out "docs/images/$n.jpg" >/dev/null
 done

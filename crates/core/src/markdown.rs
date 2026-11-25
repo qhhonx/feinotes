@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// 导出 Markdown 设置.
 #[derive(Default)]
 pub struct Options<'a> {
-    pub library_root: Option<&'a std::path::Path>,
+    pub library_dir: Option<&'a std::path::Path>,
     /// Titles of the document's child pages (what 子页面列表 shows).
     pub sub_pages: &'a [String],
     /// 所有内容: images are kept, local ones copied into this folder next to
@@ -30,6 +30,14 @@ pub struct Options<'a> {
     pub original: Option<&'a str>,
     /// With `in_place` and no `base`: local sources as absolute paths (复制为 Markdown).
     pub absolute: bool,
+    /// The file's folder and its vault, when its `![[picture.png]]` embeds are
+    /// read as pictures (`wiki_images`): `original` is read the same way, so an
+    /// untouched embed is matched and written back as `![[…]]`.
+    pub wiki: Option<(&'a Path, Option<&'a Path>)>,
+    /// The folder of a library Markdown file written in place (`base` is None
+    /// there): its pictures and files are written relative to it, as `base`'s
+    /// are, and the original's relative sources read from it (`resolve_present`).
+    pub dir: Option<&'a Path>,
 }
 
 pub struct Export {
@@ -61,11 +69,38 @@ pub fn export(doc: &Document, opts: &Options) -> Export {
     Export { text: out, files: w.files, generated: w.generated, missing: w.missing }
 }
 
+/// What of `blocks` a Markdown file can keep, for pasting into one: 高亮块
+/// and 分栏 give way to what they hold; attachments, 画板, 数据表, 倒计时,
+/// 子页面列表 and unknown blocks are left out, and so are inline 提醒,
+/// buttons and file cards.
+pub fn keepable(blocks: Vec<Block>) -> Vec<Block> {
+    let mut out = vec![];
+    for mut b in blocks {
+        match &mut b.kind {
+            BlockKind::Callout { .. } | BlockKind::Grid | BlockKind::Column { .. } => {
+                if !b.text.text.is_empty() { out.push(Block { kind: BlockKind::Text, children: vec![], ..b.clone() }); }
+                out.extend(keepable(b.children));
+                continue;
+            }
+            BlockKind::File(_) | BlockKind::Board(_) | BlockKind::DataTable(_) | BlockKind::Countdown(_) | BlockKind::SubPageList | BlockKind::Raw { .. } => continue,
+            BlockKind::Table(t) => for c in t.rows.iter_mut().flatten() { c.blocks = keepable(std::mem::take(&mut c.blocks)); },
+            _ => {}
+        }
+        let objects: Vec<std::ops::Range<usize>> = b.text.spans()
+            .filter(|(_, m)| m.inline.as_ref().is_some_and(|o| matches!(o.kind, InlineKind::Reminder(_) | InlineKind::Button(_) | InlineKind::File(_))))
+            .map(|(r, _)| r).collect();
+        for r in objects.into_iter().rev() { b.text.replace(r, &RichText::default()); }
+        b.children = keepable(std::mem::take(&mut b.children));
+        out.push(b);
+    }
+    out
+}
+
 /// 复制为 Markdown (#60): `blocks` (and the title, for a whole document) as
 /// Markdown text. Equations stay LaTeX; local images and attachments are
 /// linked by their absolute paths, nothing is copied.
-pub fn clipboard(title: Option<&str>, blocks: &[Block], library_root: &Path) -> String {
-    let opts = Options { in_place: true, absolute: true, library_root: Some(library_root), ..Default::default() };
+pub fn clipboard(title: Option<&str>, blocks: &[Block], library_dir: &Path) -> String {
+    let opts = Options { in_place: true, absolute: true, library_dir: Some(library_dir), ..Default::default() };
     let mut w = Writer { opts: &opts, files: vec![], generated: vec![], missing: 0 };
     let mut out = title.map(str::trim).filter(|t| !t.is_empty()).map(|t| format!("# {}\n\n", escape(t))).unwrap_or_default();
     out.push_str(&w.blocks(blocks));
@@ -147,6 +182,12 @@ impl Writer<'_> {
                 indent(&format!("{emoji} {body}"), "> ")
             }
             BlockKind::Divider => "---".into(),
+            // A width Markdown has no room for: an `<img>` line, as GitHub writes one (and as it is read).
+            BlockKind::Image { src, caption, width: Some(w), .. } if self.opts.in_place => {
+                let attr = |s: &str| s.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;");
+                let alt = caption.as_deref().filter(|c| !c.is_empty()).map(|c| format!(" alt=\"{}\"", attr(c))).unwrap_or_default();
+                format!("<img src=\"{}\"{alt} width=\"{}\">", attr(&self.keep(src, true)), w.round())
+            }
             BlockKind::Image { src, caption, .. } if self.opts.in_place => {
                 format!("![{}]({})", escape(caption.as_deref().unwrap_or_default()), link_target(&self.keep(src, true)))
             }
@@ -167,7 +208,7 @@ impl Writer<'_> {
                 Some(dir) => {
                     let n = self.generated.len() / 2 + 1;
                     let (svg, file) = (format!("{dir}/board-{n}.svg"), format!("{dir}/board-{n}.excalidraw"));
-                    let root = self.opts.library_root.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::root_dir);
+                    let root = self.opts.library_dir.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::active_dir);
                     self.generated.push((svg.clone(), bd.svg_in(&root)));
                     self.generated.push((file.clone(), bd.file_json()));
                     format!("[![]({})]({})", link_target(&svg), link_target(&file))
@@ -175,7 +216,7 @@ impl Writer<'_> {
                 None => bd.plain_text().lines().map(escape).collect::<Vec<_>>().join("<br>"),
             },
             // A 数据表: the shown view as a Markdown table.
-            BlockKind::DataTable(t) => crate::table::block_markdown(&self.opts.library_root.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::root_dir), t),
+            BlockKind::DataTable(t) => crate::table::block_markdown(&self.opts.library_dir.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::active_dir), t),
             BlockKind::File(f) => self.file_link(f).map(|url| format!("[{}]({url})", escape(&f.name))).unwrap_or_else(|| escape(&f.name)),
             BlockKind::SubPageList => {
                 self.opts.sub_pages.iter().map(|t| format!("- {}", escape(&crate::model::display_title(t)))).collect::<Vec<_>>().join("\n")
@@ -197,26 +238,28 @@ impl Writer<'_> {
     }
 
     /// A source as the file being written should say it: relative to the
-    /// file's folder when under it; a library asset (`.assets/…`) stays
-    /// relative in the library and becomes absolute outside it.
+    /// file's folder (`base`, or `dir` in the library), with `/` and `../` as
+    /// needed, so it still works when the folder moves; a library asset used by
+    /// a file outside the library is copied beside it. Absolute only where no
+    /// relative path reaches (another drive) or when asked to (`absolute`).
     fn keep(&mut self, src: &str, image: bool) -> String {
         if src.contains("://") && !src.starts_with("file://") || src.starts_with("data:") {
             return src.to_string();
         }
-        if self.opts.base.is_none() && !self.opts.absolute { return src.to_string() }
+        if self.opts.base.is_none() && self.opts.dir.is_none() && !self.opts.absolute { return src.to_string() }
         let raw = Path::new(src.strip_prefix("file://").unwrap_or(src));
-        let root = self.opts.library_root.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::root_dir);
+        let root = self.opts.library_dir.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::active_dir);
         // Relative sources left after `parse_file` are the library's (`.assets/…`).
         let abs = if raw.fs_is_absolute() { raw.to_path_buf() } else { root.join(raw) };
-        let Some(base) = self.opts.base else { return abs.to_string_lossy().into_owned() };
+        let Some(base) = self.opts.base.or(self.opts.dir) else { return abs.to_string_lossy().into_owned() };
         if let Ok(rel) = abs.strip_prefix(base) {
             return rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
         }
         // The library's own image or attachment: a copy beside the file.
         let assets = crate::store::Store::assets_in(&root);
-        match self.opts.name.filter(|_| abs.starts_with(&assets) && abs.fs_is_file()) {
+        match self.opts.name.filter(|_| self.opts.base.is_some() && abs.starts_with(&assets) && abs.fs_is_file()) {
             Some(name) => self.beside(&abs, base, name, image),
-            None => abs.to_string_lossy().into_owned(),
+            None => crate::paths::portable(&abs, base).unwrap_or_else(|| abs.to_string_lossy().into_owned()),
         }
     }
 
@@ -261,7 +304,7 @@ impl Writer<'_> {
         if src.starts_with("http://") || src.starts_with("https://") || src.starts_with("data:image/") {
             return src.to_string();
         }
-        let Some(path) = crate::store::export_path_in(self.opts.library_root.unwrap_or(&crate::store::Store::root_dir()), src) else { self.missing += 1; return String::new() };
+        let Some(path) = crate::store::export_path_in(self.opts.library_dir.unwrap_or(&crate::store::Store::active_dir()), src) else { self.missing += 1; return String::new() };
         if let Some((_, rel)) = self.files.iter().find(|(p, _)| *p == path) {
             return rel.clone();
         }
@@ -279,6 +322,31 @@ impl Writer<'_> {
 }
 
 /// A link target that survives the parser: spaces and parentheses escaped.
+/// `b` (or a block in it) is a picture whose relative source is not beside the
+/// file (`resolve_present` left it) but is the library's own.
+fn stale(b: &Block, opts: &Options) -> bool {
+    let root = opts.library_dir.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::active_dir);
+    let here = |src: &str| !src.contains("://") && !src.starts_with("data:") && !Path::new(src).fs_is_absolute() && crate::paths::resolve(&percent_decode(src), &root).fs_is_file();
+    matches!(&b.kind, BlockKind::Image { src, .. } if here(src)) || b.children.iter().any(|c| stale(c, opts))
+        || matches!(&b.kind, BlockKind::Table(t) if t.rows.iter().flatten().any(|c| c.blocks.iter().any(|c| stale(c, opts))))
+}
+
+/// `resolve_images` for a library Markdown file: a relative source is read
+/// from the file's folder when the file is there; otherwise it stays as it
+/// was, the library's own (`.assets/…`, as older builds wrote it).
+pub fn resolve_present(blocks: &mut [Block], dir: &Path) {
+    for b in blocks.iter_mut() {
+        resolve_present(&mut b.children, dir);
+        if let BlockKind::Table(t) = &mut b.kind {
+            for cell in t.rows.iter_mut().flatten() { resolve_present(&mut cell.blocks, dir); }
+        }
+        let BlockKind::Image { src, .. } = &mut b.kind else { continue };
+        if src.contains("://") || src.starts_with("data:") || Path::new(src.as_str()).fs_is_absolute() { continue }
+        let path = crate::paths::lexical(&dir.join(percent_decode(src)));
+        if path.fs_is_file() { *src = path.to_string_lossy().into_owned(); }
+    }
+}
+
 fn link_target(s: &str) -> String {
     s.replace(' ', "%20").replace('(', "%28").replace(')', "%29")
 }
@@ -297,6 +365,28 @@ pub fn front_matter(text: &str) -> (&str, &str) {
         }
     }
     ("", text)
+}
+
+/// When front matter (`front_matter`'s first part) says its page was made
+/// and last changed, in unix seconds, for an import to keep. Keys are read
+/// in any case, with `-`, `_` and spaces ignored, the first that parses
+/// winning: made from `created`, `createdAt`, `date created`,
+/// `creation_date`, then `date` (Obsidian, Jekyll, Hugo); changed from
+/// `updated`, `modified`, `lastmod`, `updatedAt`, `last_modified`,
+/// `last_modified_at`, `date modified`, `date updated`.
+pub fn front_matter_times(front: &str) -> (Option<u64>, Option<u64>) {
+    const MADE: [&str; 5] = ["created", "createdat", "datecreated", "creationdate", "date"];
+    const CHANGED: [&str; 8] = ["updated", "modified", "lastmod", "updatedat", "lastmodified", "lastmodifiedat", "datemodified", "dateupdated"];
+    // Top-level `key: value` lines; a value in quotes may hold ` #`.
+    let fields: Vec<(String, &str)> = front.lines().skip(1).filter(|l| !l.starts_with([' ', '\t', '#', '-'])).filter_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        let key: String = k.trim().trim_matches(['"', '\'']).chars().filter(|c| !matches!(c, '-' | '_' | ' ')).flat_map(char::to_lowercase).collect();
+        let v = v.trim();
+        let v = if v.starts_with(['"', '\'']) { v } else { v.split(" #").next().unwrap_or(v).trim() };
+        Some((key, v))
+    }).collect();
+    let first = |keys: &[&str]| keys.iter().find_map(|k| fields.iter().filter(|(f, _)| f == k).find_map(|(_, v)| crate::time::parse_date(v)));
+    (first(&MADE), first(&CHANGED))
 }
 
 /// `%20` and friends in a link.
@@ -345,7 +435,8 @@ const PICTURES: [&str; 6] = ["jpeg", "jpg", "png", "gif", "webp", "bmp"];
 /// On import: a paragraph that is just `![[name.png]]` (or `![[name.png|300]]`)
 /// — how Obsidian and its exports embed a picture — as that picture. Looked up
 /// the way Obsidian does: beside the page, in the vault's attachment folder,
-/// at the vault's top, then anywhere in the vault by a name only one file has.
+/// at the vault's top, then anywhere in the vault by name, the file with the
+/// shortest path (several that short: none, it can't be told which).
 /// The vault is the nearest folder above the page holding `.obsidian`, else
 /// `root` (the folder being imported). What can't be found or shown
 /// (`![[page#heading]]`, a missing file, an svg) stays the text it was.
@@ -367,13 +458,20 @@ pub fn wiki_images(blocks: &mut [Block], page_dir: &Path, root: Option<&Path>) {
             // A name the folders a person sees have nothing for is looked for
             // in the hidden ones (#227); one they do have stays decided by
             // them, so a copy in `.cache` cannot make it ambiguous.
-            match names.get(&key).map(Vec::as_slice) {
-                Some([one]) => Some(one.clone()),
-                Some(_) => None,
-                None => match hidden_names(v).get(&key)?.as_slice() { [one] => Some(one.clone()), _ => None },
+            match names.get(&key) {
+                Some(all) => shortest(all),
+                None => shortest(hidden_names(v).get(&key)?),
             }
         })
     });
+}
+
+/// Of files with one name, the one with the fewest folders above it; none on a tie.
+fn shortest(all: &[PathBuf]) -> Option<PathBuf> {
+    let depth = |p: &PathBuf| p.components().count();
+    let min = all.iter().map(depth).min()?;
+    let mut at = all.iter().filter(|p| depth(p) == min);
+    match (at.next(), at.next()) { (Some(one), None) => Some(one.clone()), _ => None }
 }
 
 fn wiki_walk(blocks: &mut [Block], find: &mut dyn FnMut(&str) -> Option<PathBuf>) {
@@ -555,7 +653,7 @@ pub fn write_file(doc: &Document, front: &str, base: Option<&Path>) -> String {
 /// `write_file` with the copies to make beside a 本机文件 (`Export::files`,
 /// relative to the file's folder).
 pub fn write_file_with(doc: &Document, front: &str, opts: &Options) -> Export {
-    let opts = Options { in_place: true, library_root: opts.library_root, base: opts.base, name: opts.name, copied: opts.copied, original: opts.original, ..Default::default() };
+    let opts = Options { in_place: true, library_dir: opts.library_dir, base: opts.base, name: opts.name, copied: opts.copied, original: opts.original, wiki: opts.wiki, dir: opts.dir, ..Default::default() };
     let mut w = Writer { opts: &opts, files: vec![], generated: vec![], missing: 0 };
     let pieces = w.pieces(&doc.blocks);
     let canonical = joined(&pieces);
@@ -585,6 +683,8 @@ fn preserve(original: &str, pieces: &[Piece], opts: &Options, strict: bool) -> S
     let (mut blocks, spans) = crate::paste::markdown_to_blocks_with_lines(&norm, crate::paste::Off { file: true, alt: true, ..Default::default() });
     if blocks.len() != spans.len() { return joined(pieces); }
     if let Some(dir) = opts.base { resolve_images(&mut blocks, dir); }
+    if let Some(dir) = opts.dir { resolve_present(&mut blocks, dir); }
+    if let Some((dir, vault)) = opts.wiki { wiki_images(&mut blocks, dir, vault); }
     // The file's blocks as written now, each with the lines it came from.
     let mut old: Vec<(String, (usize, usize))> = vec![];
     {
@@ -601,6 +701,9 @@ fn preserve(original: &str, pieces: &[Piece], opts: &Options, strict: bool) -> S
             }
             let s = w.block(b, seq);
             if s.is_empty() && !list { continue; }
+            // A picture found only from the library (the file moved, or an older build
+            // wrote `.assets/…`) is written again, relative to the file: never kept as it was.
+            let s = if opts.dir.is_some() && stale(b, opts) { format!("{s}\u{0}") } else { s };
             old.push((s, *span));
             prev_list = list;
         }
@@ -673,6 +776,8 @@ fn joined(pieces: &[Piece]) -> String {
 fn reads_as(body: &str, canonical: &str, opts: &Options) -> bool {
     let mut blocks = crate::paste::markdown_to_blocks(body, crate::paste::Off { file: true, alt: true, ..Default::default() });
     if let Some(dir) = opts.base { resolve_images(&mut blocks, dir); }
+    if let Some(dir) = opts.dir { resolve_present(&mut blocks, dir); }
+    if let Some((dir, vault)) = opts.wiki { wiki_images(&mut blocks, dir, vault); }
     let mut w = Writer { opts, files: vec![], generated: vec![], missing: 0 };
     joined(&w.pieces(&blocks)) == canonical
 }
@@ -875,6 +980,26 @@ fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn front_matter_says_when_a_page_was_made_and_changed() {
+        use super::front_matter_times as times;
+        let t = |s| crate::time::parse_date(s);
+        // Obsidian and Hugo spellings, any case; the first that parses wins.
+        assert_eq!(times("---\ncreated: 2024-03-05\nupdated: 2024-03-06T10:00:00Z\n---\n"), (t("2024-03-05"), t("2024-03-06T10:00:00Z")));
+        assert_eq!(times("---\ntitle: x\ndate: 2024-03-05T14:30:00+08:00\nlastmod: 2024-04-01\n---\n"), (t("2024-03-05T14:30:00+08:00"), t("2024-04-01")));
+        assert_eq!(times("---\nCreatedAt: \"2024-03-05\"\nUpdated_At: '2024-03-07'\n---\n"), (t("2024-03-05"), t("2024-03-07")));
+        assert_eq!(times("---\ndate created: 2024-03-05\ndate modified: 2024-03-08 # by Linter\n---\n"), (t("2024-03-05"), t("2024-03-08")));
+        assert_eq!(times("---\nlast_modified_at: 2024-03-09\n---\n"), (None, t("2024-03-09")));
+        // `created` before `date`, whichever comes first in the file.
+        assert_eq!(times("---\ndate: 2020-01-01\ncreated: 2024-03-05\n---\n").0, t("2024-03-05"));
+        // One that does not parse gives way to the next, or to nothing.
+        assert_eq!(times("---\ncreated: last spring\ndate: 2024-03-05\n---\n").0, t("2024-03-05"));
+        assert_eq!(times("---\ncreated: last spring\nmodified: {{date}}\n---\n"), (None, None));
+        // Nested keys, list items and comments are not the page's.
+        assert_eq!(times("---\nmeta:\n  created: 2024-03-05\n# date: 2024-03-05\ntags:\n- date: 2024-03-05\n---\n"), (None, None));
+        assert_eq!(times(""), (None, None));
+    }
+
     use super::*;
 
     #[test]
@@ -889,11 +1014,11 @@ mod tests {
         let mut table = Table { rows: vec![vec![TableCell::empty()]], ..Default::default() };
         table.rows[0][0].blocks = vec![Block::new(BlockKind::Text, text.clone())];
         let doc = Document { blocks: vec![Block::new(BlockKind::Text, text), Block::new(BlockKind::Table(table), RichText::default())], ..Default::default() };
-        let out = export(&doc, &Options { assets: Some("out.assets"), library_root: Some(&root), ..Default::default() });
+        let out = export(&doc, &Options { assets: Some("out.assets"), library_dir: Some(&root), ..Default::default() });
         assert_eq!(out.files.len(), 1);
         assert_eq!(out.missing, 0);
         assert_eq!(out.text.matches("[Report \\[1\\]](out.assets/report%20%281%29.pdf)").count(), 2);
-        let plain = export(&doc, &Options { library_root: Some(&root), ..Default::default() });
+        let plain = export(&doc, &Options { library_dir: Some(&root), ..Default::default() });
         assert!(plain.files.is_empty());
         assert!(!plain.text.contains("out.assets"));
         crate::vfs::remove_dir_all(root).unwrap();
@@ -1012,6 +1137,21 @@ mod tests {
         let t = &doc.blocks[0].text;
         assert!(t.spans().all(|(_, m)| m.underline) && t.spans().any(|(r, m)| m.bold && &t.text[r] == "b"), "{t:?}");
         assert_eq!(to_markdown(&Document { blocks: doc.blocks.clone(), ..Default::default() }), "<u>a</u> **<u>b</u>** [<u>c</u>](https://x.y)\n");
+    }
+
+    /// Pasting into a Markdown file keeps what it can hold and nothing it can't.
+    #[test]
+    fn keepable_leaves_out_what_markdown_drops() {
+        let xml = "<title>T</title>\n<p>交付 <time expire-time=\"1761200000000\" notify-time=\"1761199700000\" should-notify=\"false\">x</time> 前</p>\n<callout emoji=\"💡\">\n  <p>提示</p>\n</callout>\n<grid>\n  <column width-ratio=\"0.5\">\n    <p>左</p>\n  </column>\n  <column width-ratio=\"0.5\">\n    <blockquote>\n      <p>右引</p>\n    </blockquote>\n  </column>\n</grid>\n<countdown duration=\"60000\" start-time=\"0\" notify=\"false\" color=\"blue\" timing=\"false\"/>\n<p>公式 <latex>x^2</latex></p>\n";
+        let doc = crate::docxml::parse(xml).unwrap();
+        assert!(doc.blocks.iter().any(|b| matches!(b.kind, BlockKind::Countdown(_))), "{:?}", doc.blocks);
+        let kept = keepable(doc.blocks);
+        let out = crate::docxml::serialize(&Document { blocks: kept.clone(), ..Default::default() });
+        assert!(!out.contains("<time") && !out.contains("<callout") && !out.contains("<grid") && !out.contains("<countdown"), "{out}");
+        assert!(out.contains("<p>交付  前</p>") && out.contains("<p>提示</p>") && out.contains("<p>左</p>") && out.contains("<blockquote>") && out.contains("<latex>x^2</latex>"), "{out}");
+        // Saved as Markdown and read back, nothing more goes missing.
+        let md = write_file(&Document { blocks: kept.clone(), ..Default::default() }, "", None);
+        assert_eq!(crate::docxml::serialize(&parse_file(&md, "", None)).matches("<p>").count(), out.matches("<p>").count(), "{md}");
     }
 
     #[test]
@@ -1162,6 +1302,104 @@ mod tests {
         let mut blocks = crate::paste::markdown_to_blocks("![[att.png]]\n", crate::paste::Off { file: true, ..Default::default() });
         wiki_images(&mut blocks, &notes, None);
         assert!(matches!(&blocks[0].kind, BlockKind::Image { src, .. } if Path::new(src) == root.join("files/att.png")), "{blocks:?}");
+        let _ = crate::vfs::remove_dir_all(&root);
+    }
+
+    /// A name several files have is the one with the shortest path, as in
+    /// Obsidian; two equally short stay the text they were.
+    #[test]
+    fn wiki_embeds_take_the_shortest_path_of_a_shared_name() {
+        let root = crate::vfs::temp_dir().join(format!("fdl-shortest-{}", uuid::Uuid::new_v4()));
+        let notes = root.join("notes");
+        for d in ["notes", ".obsidian", "a/b/c", "d", "e"] { crate::vfs::create_dir_all(root.join(d)).unwrap(); }
+        for f in ["a/b/c/pic.png", "d/pic.png", "d/tie.png", "e/tie.png"] { crate::vfs::write(root.join(f), b"png").unwrap(); }
+        let mut doc = parse_file("![[pic.png]]\n\n![[tie.png]]\n", "page", Some(&notes));
+        wiki_images(&mut doc.blocks, &notes, None);
+        assert!(matches!(&doc.blocks[0].kind, BlockKind::Image { src, .. } if Path::new(src) == root.join("d/pic.png")), "{:?}", doc.blocks[0]);
+        assert_eq!(doc.blocks[1].text.text, "![[tie.png]]");
+        let _ = crate::vfs::remove_dir_all(&root);
+    }
+
+    /// Read with `wiki` (as a library document is), the embeds are pictures;
+    /// written back with the file as `original`, they keep `![[…]]`, also when
+    /// a block beside them changed. Another picture in one's place is `![](…)`.
+    #[test]
+    fn wiki_embeds_round_trip_in_place() {
+        let root = crate::vfs::temp_dir().join(format!("fdl-embed-rt-{}", uuid::Uuid::new_v4()));
+        let notes = root.join("notes");
+        for d in ["notes", ".obsidian", "files"] { crate::vfs::create_dir_all(root.join(d)).unwrap(); }
+        crate::vfs::write(root.join(".obsidian/app.json"), r#"{"attachmentFolderPath":"files"}"#).unwrap();
+        crate::vfs::write(root.join("files/a.png"), b"png").unwrap();
+        let src = "intro\n\n![[a.png|300]]\n\n![[a.png]]\n\n![[Note]]\n\nend\n";
+        let opts = |o| Options { wiki: Some((notes.as_path(), None)), original: Some(o), dir: Some(&notes), ..Default::default() };
+        // As `Store::parse_doc` reads a library file.
+        let read = |text: &str| { let mut d = parse_file(text, "t", None); resolve_present(&mut d.blocks, &notes); wiki_images(&mut d.blocks, &notes, None); d };
+        let mut doc = read(src);
+        assert_eq!(doc.blocks.iter().filter(|b| matches!(b.kind, BlockKind::Image { .. })).count(), 2);
+        assert_eq!(write_file_with(&doc, "", &opts(src)).text, src);
+        doc.blocks[0] = Block::text("first");
+        let out = write_file_with(&doc, "", &opts(src)).text;
+        assert_eq!(out, src.replace("intro", "first"));
+        // Read again, it is the same document; and stable from then on.
+        assert_eq!(write_file_with(&read(&out), "", &opts(&out)).text, out);
+        // Another picture in its place is written the way Markdown writes one,
+        // relative to the file's folder (`../`, `/`), never as an absolute path.
+        crate::vfs::write(root.join("files/b.png"), b"png").unwrap();
+        if let BlockKind::Image { src, .. } = &mut doc.blocks[2].kind { *src = root.join("files").join("b.png").to_string_lossy().into_owned(); }
+        let out = write_file_with(&doc, "", &opts(src)).text;
+        assert_eq!(out, src.replace("intro", "first").replace("![[a.png]]", "![](../files/b.png)"));
+        assert_relative(&out);
+        // Read again (relative to the file's folder), it is the same picture.
+        let again = read(&out);
+        assert!(matches!(&again.blocks[2].kind, BlockKind::Image { src, .. } if Path::new(src) == root.join("files").join("b.png")), "{:?}", again.blocks[2]);
+        // A width Markdown can't hold is an `<img>` line, which reads back with it.
+        if let BlockKind::Image { width, .. } = &mut doc.blocks[1].kind { *width = Some(120.); }
+        let out = write_file_with(&doc, "", &opts(src)).text;
+        assert!(out.contains("<img src=\"../files/a.png\" width=\"120\">"), "{out}");
+        assert_relative(&out);
+        let a = root.join("files").join("a.png");
+        assert!(read(&out).blocks.iter().any(|b| matches!(&b.kind, BlockKind::Image { src, width: Some(w), .. } if Path::new(src) == a && *w == 120.)));
+        // Written fresh (an import into the library): the width as `<img>`, the rest as `![](…)`, both relative.
+        let out = write_file_with(&read(src), "", &Options { dir: Some(&notes), ..Default::default() }).text;
+        assert!(out.contains("<img src=\"../files/a.png\" width=\"300\">") && out.contains("![](../files/a.png)"), "{out}");
+        assert_relative(&out);
+        let _ = crate::vfs::remove_dir_all(&root);
+    }
+
+    /// No picture in `out` is an absolute path: no drive (`C:`), no leading `/` or `\\`.
+    fn assert_relative(out: &str) {
+        let srcs = out.lines().filter_map(|l| l.split_once("](").map(|(_, r)| r.trim_end_matches(')')).or_else(|| l.split_once("src=\"").map(|(_, r)| r.split('"').next().unwrap())));
+        for s in srcs {
+            let drive = s.as_bytes().get(1) == Some(&b':') && s.as_bytes()[0].is_ascii_alphabetic();
+            assert!(!drive && !s.starts_with('/') && !s.starts_with('\\') && !s.contains('\\'), "{s} in {out}");
+        }
+    }
+
+    /// Written in place, a picture is relative to the Markdown file's folder:
+    /// one below it as `pics/a.png`, one beside a parent as `../files/b.png`,
+    /// on any platform with `/`. A local file (`base`) the same way.
+    #[test]
+    fn in_place_pictures_are_relative_to_the_file() {
+        let root = crate::vfs::temp_dir().join(format!("fdl-relative-{}", uuid::Uuid::new_v4()));
+        let notes = root.join("notes");
+        for d in ["notes/pics", "files", "far/away"] { crate::vfs::create_dir_all(root.join(d)).unwrap(); }
+        for f in ["notes/pics/a.png", "files/b.png", "far/away/c.png"] { crate::vfs::write(root.join(f), b"png").unwrap(); }
+        let pic = |p: PathBuf, w: Option<f32>| Block::new(BlockKind::Image { src_kind: "src".into(), src: p.to_string_lossy().into_owned(), width: w, height: None, caption: None, crop: None }, RichText::default());
+        let doc = Document { blocks: vec![pic(notes.join("pics").join("a.png"), None), pic(root.join("files").join("b.png"), Some(50.)), pic(root.join("far").join("away").join("c.png"), None)], ..Default::default() };
+        let want = "![](pics/a.png)\n\n<img src=\"../files/b.png\" width=\"50\">\n\n![](../far/away/c.png)\n";
+        assert_eq!(write_file_with(&doc, "", &Options { dir: Some(&notes), ..Default::default() }).text, want);
+        assert_eq!(write_file(&doc, "", Some(&notes)), want);
+        assert_relative(want);
+        // Read back from the file's folder, each is the picture it was.
+        let mut back = parse_file(want, "t", None);
+        resolve_present(&mut back.blocks, &notes);
+        let srcs: Vec<_> = back.blocks.iter().filter_map(|b| match &b.kind { BlockKind::Image { src, .. } => Some(PathBuf::from(src)), _ => None }).collect();
+        assert_eq!(srcs, [notes.join("pics/a.png"), root.join("files/b.png"), root.join("far/away/c.png")]);
+        // A local file's `../` source, read with `resolve_images`, is written back as it was.
+        let mut local = parse_file("![](../files/b.png)\n", "t", Some(&notes));
+        local.blocks[0].align = Align::Left;
+        assert_eq!(write_file(&local, "", Some(&notes)), "![](../files/b.png)\n");
+        assert!(srcs.iter().all(|p| p.fs_is_file()));
         let _ = crate::vfs::remove_dir_all(&root);
     }
 

@@ -57,7 +57,7 @@ fn fields(meta: &Meta, life: Life) -> Result<Fields> {
     fields.remove("parent");
     fields.remove("order");
     fields.remove("root_order");
-    fields.insert("location".into(), json!([meta.parent, meta.order, meta.root_order]));
+    fields.insert("location".into(), json!([meta.parent, meta.order, meta.top_order]));
     fields.insert("life".into(), json!(life));
     Ok(fields)
 }
@@ -161,7 +161,7 @@ pub fn project(db: &Connection, doc: &LoroDoc, shared_folder: bool) -> Result<bo
         }
         meta.parent = parent;
         meta.order = order;
-        meta.root_order = root_order;
+        meta.top_order = root_order;
         if meta.folder.is_none() && life != Life::Purged {
             let body: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM library_documents WHERE id = ?1)", [&id], |row| row.get(0))?;
             let held: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM notes WHERE id = ?1 AND held <> 0)", [&id], |row| row.get(0))?;

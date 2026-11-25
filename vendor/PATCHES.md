@@ -1,6 +1,6 @@
 # Vendored patches
 
-Quiet.md takes GPUI from the [Zed repository](https://github.com/zed-industries/zed). The tree in `vendor/zed` combines a pinned upstream snapshot and an ordered local patch series. `vendor/zed/upstream.toml` records the commit and selected crates. Numbered patches in `vendor/zed/patches` produce `vendor/zed/crates`, which the app consumes through Cargo path dependencies. Patched sites carry a `quiet.md:` comment.
+Quiet.md takes GPUI from the [Zed repository](https://github.com/zed-industries/zed). The tree in `vendor/zed` combines a pinned upstream snapshot and an ordered local patch series. `vendor/zed/upstream.toml` records the commit and selected crates. Numbered patches in `vendor/zed/patches`, applied in number order, produce `vendor/zed/crates`, which the app consumes through Cargo path dependencies. Patched sites carry a `quiet.md:` comment.
 
 Vendoring the selected crates avoids fetching the entire Zed repository for a contributor's first build or CI run.
 
@@ -24,15 +24,30 @@ The root Cargo.toml excludes the vendored crates from workspace tests and clippy
 # Define a shell function so the same commands work in sh and zsh.
 vendor_sync() { cargo run -q --manifest-path tools/vendor-sync/Cargo.toml -- "$@"; }
 vendor_sync check                       # Compare the tree against upstream plus all patches
-vendor_sync save <name> -m "<message>"  # Append a patch containing the current edits
-vendor_sync save <existing-name>        # Regenerate a patch, retain its message, move it last
+vendor_sync save <name> -m "<message>"  # New patch with the current edits, numbered highest + 1
+vendor_sync save <name> --number 0062 -m "<message>" # New patch with a number from your range
+vendor_sync save <existing-name>        # Regenerate a patch in place, retain its number and message
 vendor_sync sync                        # Rebuild vendor/zed/crates from upstream.toml
 vendor_sync sync --rev <commit-or-main> # Update the pinned revision and report failed patches
 vendor_sync sync --rev main --keep-going # Skip failed patches and write the remaining results
 vendor_sync refresh                     # Refresh diff line numbers and context at the current snapshot
 ```
 
-The tool keeps a blob-filtered Zed clone in `~/.cache/quiet-md/zed` (override with `QUIET_MD_ZED_DIR`) and sparsely checks out the selected crates. Intermediate files go in `target/vendor-sync`. Patches apply in order via `git apply --3way`, with one commit per patch.
+The tool keeps a blob-filtered Zed clone in `~/.cache/quiet-md/zed` (override with `QUIET_MD_ZED_DIR`) and sparsely checks out the selected crates. Intermediate files go in `target/vendor-sync`. Patches apply in number order via `git apply --3way`, with one commit per patch.
+
+## Patch numbers
+
+A patch keeps its number and file name for good: `save` and `refresh` never renumber the series, so gaps are normal. Branches that add patches at the same time take numbers from separate ranges, so their patches never collide when merged:
+
+| Range | Line of work |
+|---|---|
+| 0046–0059 | Component library (design system) |
+| 0060–0079 | Sync and iOS (mobile line) |
+| 0080 and up | Performance |
+
+Patches 0001–0045 came before the ranges were handed out. A new patch takes `--number <n>` from its line's range. Without `--number` it takes the highest number in the series + 1. `save` refuses a number that is already taken and never overwrites another patch, and it refuses to renumber an existing patch.
+
+A patch numbered before others is saved so that the later patches still apply after it: `save` takes the edits relative to every other patch, then removes the later patches' changes from the diff. If the edits touch the same lines as a later patch, `save` stops and writes nothing; save them with a number after that patch, or fold them into it. After writing, `save` rebuilds the series and confirms it reproduces `vendor/zed/crates`.
 
 For a new patch, edit files under `vendor/zed/crates` (use `Cargo.toml.orig` for manifest edits), run `vendor_sync save <name> -m "<message>"`, then `vendor_sync sync` to regenerate manifests and `vendor_sync check`. Save one related change at a time: each save includes all outstanding edits in the tree.
 
@@ -93,6 +108,10 @@ Snapshot: Zed `e2f00a41ac67` (2026-11-15). Legacy numbers refer to the GPUI 0.2.
 | 0045 windows-render-to-image | New | `gpui_windows/window.rs`, `gpui_windows/directx_renderer.rs` | Offscreen `render_to_image` is no longer limited to `test-support` builds, as on macOS. The release self-test (`src/selftest.rs`) checks that the window draws and saves a PNG of a failing scenario. |
 | 0046 shadow-spread-corners | New | `gpui/window.rs` | GPUI kept a drop shadow's corner radii when the spread grew it, so a ring drawn by a spread shadow (a field's 3pt focus halo) was thicker at the corners than along the sides. Grow the radii with the spread as CSS does: the radius plus the spread, easing to sharp for a sharp corner and shrinking to zero for a negative spread. |
 | 0047 continuous-corners | New | `gpui_apple/shaders.metal` | Experiment (2026-11-23, not on main): draw every rounded corner as a continuous corner, as Apple does. A corner of radius r starts 1.528 r from the corner instead of r and is a superellipse in that box, its exponent chosen so the curve crosses the diagonal where the circle of radius r does; curvature eases in from the straight sides. When the box must shrink to fit (a pill) the exponent falls back to 2, the circle. The p-norm is divided by its gradient's length so antialiasing stays one pixel wide. Metal only; the Windows and wgpu shaders still draw circles. |
+| 0060 ios-image-tile-edge | New | `gpui_apple/shaders.metal` | The polychrome sprite fragment clamps its atlas sample to half a texel inside the sprite's tile. `img()` rasterizes an SVG at 2x, so on a 3x screen (iPhone) it is drawn larger than its pixels: the edge pixels' samples fell less than half a texel inside the tile and the linear filter mixed in the neighbouring tile's edge, a grey 1px line down the left side of 收藏's empty-state picture. Images at 1:1 or smaller already sample at least half a texel in, so the desktop's 2x SVGs and photos are unchanged. Patches 0060–0079 belong to the mobile line (feat/mobile). |
+| 0080 reuse-coretext-fonts | New | `gpui_apple/text_system.rs` | `layout_line` made a new CTFont for every run of every line, and CoreText fell back to new CJK faces for every line too; CoreText keeps a font's shaping tables, ASCII advances and fallback faces on the CTFont, so each line set them all up again. Each font is now made once per size, and the face CoreText fell back to for a CJK character (Han, kana, CJK and full-width punctuation) is kept per font, size and character and set on that character in later lines. It is CoreText's own face, so weight and variation stay as CoreText chose them. About a third of the time laying out new text (docs/PERFORMANCE.md, "Dragging the scrollbar"); glyphs, positions and faces are unchanged (`kept_cjk_fallbacks_shape_like_coretext`). |
+| 0081 list-set-overdraw | New | `gpui/elements/list.rs` | `ListState::set_overdraw` changes after construction how much is laid out beyond the visible area. The editor sets none while its scrollbar thumb is held, where every frame lands somewhere new and rows nobody sees were most of the frame, and puts it back when the thumb is let go. Lists that never call it (iOS included) behave as before. |
+| 0085 windows-font-family-names | New | `gpui_windows/direct_write.rs` | A DirectWrite font set matches a family by its name in the system's language only: on a Chinese Windows "Microsoft YaHei" and "SimSun" found nothing (微软雅黑 and 宋体 did), so a document font saved on a Mac or an English system, or a family named in code, quietly fell back to the default face. When a name finds nothing, `matching_fonts` tries the family's names in its other languages: the collection's `FindFamilyName`, else every family's names (`other_names`, unit-tested). Font fallback lists match the same way. Numbered 0085: 0048–0084 are taken by other branches. |
 
 ## Retired patches
 

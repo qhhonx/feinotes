@@ -1,0 +1,147 @@
+reuse-coretext-fonts
+
+Keep the CTFonts that lay out text instead of making new ones per line.
+CoreText keeps a font's shaping tables, ASCII advances and fallback faces on
+the CTFont object, so a fresh copy per line set them all up again.
+
+- Each font at each size it is laid out in is made once (`sized`).
+- The face CoreText falls back to for a CJK character (Han, kana, CJK and
+  full-width punctuation) the font has no glyph for is kept, as CoreText made
+  it, per font, size and character (`cjk_fallbacks`), and set on that
+  character in later lines, so CoreText does not fall back again. Taking
+  CoreText's own face keeps weight and variation (a bold heading's fallback
+  is bold); `CTFontCreateForString` did not.
+
+Laying out text not seen before (dragging the scrollbar of a long Chinese
+document) took about a third of the time. Rendering is unchanged (same
+glyphs, positions and faces; docs/PERFORMANCE.md).
+
+diff --git a/crates/gpui_apple/src/text_system.rs b/crates/gpui_apple/src/text_system.rs
+index c3b3c5c412f4081f1e33e2fdfeadad901810b0a2..ced18e9fc92552e13035646b5ab1780938cc2ff6 100644
+--- a/crates/gpui_apple/src/text_system.rs
++++ b/crates/gpui_apple/src/text_system.rs
+@@ -82,6 +82,24 @@ struct AppleTextSystemState {
+     /// browsers do.
+     oblique: HashSet<FontId>,
+     oblique_twins: HashMap<FontId, FontId>,
++    /// quiet.md: each font at each size it was laid out in. CoreText keeps its
++    /// shaping tables, ASCII advances and fallback faces on the CTFont object,
++    /// so a fresh copy per line set them all up again: most of the time spent
++    /// laying out text not seen before (scrolling a long document).
++    sized: HashMap<(FontId, u32), CTFont>,
++    /// quiet.md: the face CoreText fell back to for a CJK character a sized
++    /// font has no glyph for, as CoreText made it (weight and all), given to
++    /// later lines instead of letting it fall back again: every line made new
++    /// fallback CTFonts and set up their shaping tables again, a quarter of
++    /// laying out Chinese text.
++    cjk_fallbacks: HashMap<(FontId, u32, char), CTFont>,
++}
++
++/// quiet.md: characters whose fallback face is kept (`cjk_fallbacks`): Han,
++/// kana, CJK and full-width punctuation. They stand alone (no combining
++/// marks, variation selectors or emoji sequences, which are left to CoreText).
++fn is_cjk_char(ch: char) -> bool {
++    matches!(ch, '\u{2E80}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{FE10}'..='\u{FE1F}' | '\u{FE30}'..='\u{FE4F}' | '\u{FF00}'..='\u{FFEF}')
+ }
+ 
+ /// WebKit's synthetic oblique, 14°.
+@@ -100,6 +118,8 @@ impl AppleTextSystem {
+             postscript_names_by_font_id: HashMap::default(),
+             oblique: HashSet::default(),
+             oblique_twins: HashMap::default(),
++            sized: HashMap::default(),
++            cjk_fallbacks: HashMap::default(),
+         }))
+     }
+ }
+@@ -620,6 +640,8 @@ impl AppleTextSystemState {
+     fn layout_line(&mut self, text: &str, font_size: Pixels, font_runs: &[FontRun]) -> LineLayout {
+         // UTF-16 ends of the runs that ask for italics.
+         let mut italic_ranges: SmallVec<[(isize, isize); 4]> = SmallVec::new();
++        // quiet.md: UTF-16 ranges of the runs, with their font and size (`cjk_fallbacks`).
++        let mut sized_ranges: SmallVec<[(isize, isize, FontId, u32, CTFont); 4]> = SmallVec::new();
+         // Construct the attributed string, converting UTF8 ranges to UTF16 ranges.
+         let mut string = CFMutableAttributedString::new();
+         let mut max_ascent = 0.0f32;
+@@ -650,6 +672,7 @@ impl AppleTextSystemState {
+                 let font = &self.fonts[run.font_id.0];
+ 
+                 let font_metrics = font.metrics();
++                let fonts = &self.fonts;
+                 let font_scale = f32::from(font_size) / font_metrics.units_per_em as f32;
+                 max_ascent = max_ascent.max(font_metrics.ascent * font_scale);
+                 max_descent = max_descent.max(-font_metrics.descent * font_scale);
+@@ -659,13 +682,39 @@ impl AppleTextSystemState {
+                 } else {
+                     font_size
+                 };
++                let sized = self
++                    .sized
++                    .entry((run.font_id, f32::from(font_size).to_bits()))
++                    .or_insert_with(|| fonts[run.font_id.0].native_font().clone_with_font_size(font_size.into()))
++                    .clone();
+                 unsafe {
+-                    string.set_attribute(
+-                        cf_range,
+-                        kCTFontAttributeName,
+-                        &font.native_font().clone_with_font_size(font_size.into()),
+-                    );
++                    string.set_attribute(cf_range, kCTFontAttributeName, &sized);
+                 }
++                let size_bits = f32::from(font_size).to_bits();
++                // CJK characters the font has no glyph for get the face
++                // CoreText fell back to before (`cjk_fallbacks`).
++                if text_run.chars().any(is_cjk_char) && length == text_run.encode_utf16().count() as isize {
++                    let mut at = utf16_start;
++                    let mut pending: Option<(isize, isize, CTFont)> = None;
++                    for ch in text_run.chars() {
++                        let n = ch.len_utf16() as isize;
++                        let face = if is_cjk_char(ch) { self.cjk_fallbacks.get(&(run.font_id, size_bits, ch)).cloned() } else { None };
++                        match (&mut pending, face) {
++                            (Some((_, end, f)), Some(face)) if *end == at && f.as_concrete_TypeRef() == face.as_concrete_TypeRef() => *end += n,
++                            (_, face) => {
++                                if let Some((a, b, f)) = pending.take() {
++                                    unsafe { string.set_attribute(CFRange::init(a, b - a), kCTFontAttributeName, &f) };
++                                }
++                                pending = face.map(|f| (at, at + n, f));
++                            }
++                        }
++                        at += n;
++                    }
++                    if let Some((a, b, f)) = pending {
++                        unsafe { string.set_attribute(CFRange::init(a, b - a), kCTFontAttributeName, &f) };
++                    }
++                }
++                sized_ranges.push((utf16_start, utf16_end, run.font_id, size_bits, sized));
+                 if length > 0 {
+                     break_ligature = !break_ligature;
+                 }
+@@ -684,7 +733,14 @@ impl AppleTextSystemState {
+                     .downcast::<CTFont>()
+                     .unwrap()
+             };
+-            let mut font_id = self.id_for_native_font(font);
++            // quiet.md: CoreText fell back from the run's font: keep the face for its CJK characters.
++            let first16 = run.string_indices().first().copied().unwrap_or(-1);
++            let fell_back = sized_ranges
++                .iter()
++                .find(|r| (r.0..r.1).contains(&first16))
++                .filter(|r| r.4.as_concrete_TypeRef() != font.as_concrete_TypeRef())
++                .map(|r| (r.2, r.3));
++            let mut font_id = self.id_for_native_font(font.clone());
+             // A fallback face for italic text that has no italic of its own.
+             let first = run.string_indices().first().copied().unwrap_or(-1);
+             if !self.is_italic(font_id)
+@@ -716,6 +772,12 @@ impl AppleTextSystemState {
+                     ix_converter = StringIndexConverter::new(text);
+                 }
+                 ix_converter.advance_to_utf16_ix(glyph_utf16_ix);
++                if let Some((from, size_bits)) = fell_back
++                    && let Some(ch) = text[ix_converter.utf8_ix..].chars().next()
++                    && is_cjk_char(ch)
++                {
++                    self.cjk_fallbacks.entry((from, size_bits, ch)).or_insert_with(|| font.clone());
++                }
+                 glyphs.push(ShapedGlyph {
+                     id: GlyphId(glyph_id as u32),
+                     position: point(position.x as f32, position.y as f32).map(px),

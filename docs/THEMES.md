@@ -82,7 +82,7 @@ Override `--token-<name>` in `:root` for block hover and selection colors, table
 
 ## Scope
 
-Themes style the document. The sidebar, menus and settings have their own appearance. For example, the indent guides in the sidebar's folder tree use the app's `Theme::sidebar_guide()` token, not a CSS variable, and follow light or dark mode with the rest of the sidebar. Choose System, Light or Dark in Settings › Appearance to set the application appearance. CSS also leaves block structure, such as code toolbars and table row and column tools, under the editor's control.
+Themes style the document. The sidebar, menus and settings have their own appearance. Choose System, Light or Dark in Settings › Appearance to set the application appearance. CSS also leaves block structure, such as code toolbars and table row and column tools, under the editor's control.
 
 Choosing an installed font in Settings › Appearance › Document font draws the body text, the title and the headings in it, so this file's `font-family` for `.page`, `.title` and `h1`–`h9` has no effect while one is chosen; Theme default goes back. `pre` keeps its own font.
 

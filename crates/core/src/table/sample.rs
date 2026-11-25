@@ -4,6 +4,7 @@
 use super::field;
 use super::model::*;
 use super::ops::Doc;
+use super::order;
 
 const DAY: i64 = 86_400_000;
 
@@ -45,7 +46,8 @@ const TASKS: &[(&str, usize)] = &[
 pub fn demo(now: i64) -> Base {
     use FieldType::*;
     let today = now.div_euclid(DAY) * DAY;
-    let mut b = Base::default();
+    // the same ids for the same `now`; a file gets a generator of its own when it is read
+    let mut b = Base { ids: IdGen::seeded(now as u64), ..Default::default() };
     let (tasks, projects) = (b.new_id(), b.new_id());
 
     let name = fld(&mut b, "任务名称", Text);
@@ -138,15 +140,18 @@ pub fn demo(now: i64) -> Base {
         }),
         view(&mut b, "看板", ViewKind::Kanban, ViewOpts { frozen: 1, stack: Some(status.id), hidden: [url.id, created.id, no.id, spent.id, lead.id].into_iter().collect(), ..Default::default() }),
     ];
+    // the records keep the small ids the links above name; their keys number them in order
+    order::repair(&mut task_rows);
+    order::repair(&mut project_rows);
     let project_views = vec![view(&mut b, "表格", ViewKind::Grid, ViewOpts { frozen: 1, ..Default::default() })];
     b.tables.push(Table {
         id: tasks, name: "项目任务".into(),
         fields: vec![name, status, tags, owner, start, due, hours, budget, progress, priority, late, url, project, lead, left, spent, no, created],
-        next_rec: task_rows.len() as u64 + 1, next_auto: task_rows.len() as u64 + 1, records: task_rows, views,
+        next_auto: task_rows.len() as u64 + 1, records: task_rows, views,
     });
     b.tables.push(Table {
         id: projects, name: "项目".into(), fields: vec![pname, stage, plead, kickoff, ptasks, count, total],
-        next_rec: project_rows.len() as u64 + 1, next_auto: project_rows.len() as u64 + 1, records: project_rows, views: project_views,
+        next_auto: project_rows.len() as u64 + 1, records: project_rows, views: project_views,
     });
     Doc::new(b).base
 }
@@ -159,7 +164,7 @@ const NOTES: &[&str] = &["已和对方确认，等回复", "需要补充材料�
 /// from a fixed seed: the same base every time (timing, stress tests).
 pub fn large(rows: usize) -> Base {
     use FieldType::*;
-    let mut b = Base::default();
+    let mut b = Base { ids: IdGen::seeded(0x5EED), ..Default::default() };
     let id = b.new_id();
     let name = fld(&mut b, "名称", Text);
     let status = { let f = fld(&mut b, "状态", SingleSelect); choices(&mut b, f, &[("待处理", 9), ("处理中", 4), ("已完成", 2), ("已取消", 0), ("已归档", 7)]) };
@@ -200,7 +205,8 @@ pub fn large(rows: usize) -> Base {
         if rnd(3) != 0 { r.set(note.id, text(NOTES[rnd(NOTES.len())])); }
         records.push(r);
     }
-    b.tables.push(Table { id, name: "大表".into(), fields: vec![name, status, tags, owner, day, amount, price, progress, rating, done, url, note], next_rec: rows as u64 + 1, next_auto: rows as u64 + 1, records, views: vec![view] });
+    order::repair(&mut records);
+    b.tables.push(Table { id, name: "大表".into(), fields: vec![name, status, tags, owner, day, amount, price, progress, rating, done, url, note], next_auto: rows as u64 + 1, records, views: vec![view] });
     b
 }
 
@@ -224,11 +230,11 @@ mod tests {
         }
         // names the file can carry, ids all different
         assert!(b.tables.iter().all(|t| crate::table::sqlite_name_ok(&t.name) && t.fields.iter().all(|f| crate::table::sqlite_name_ok(&f.name))));
-        let mut ids: Vec<u32> = b.tables.iter().flat_map(|t| t.fields.iter().flat_map(|f| f.opts.options.iter().map(|o| o.id).chain([f.id])).chain(t.views.iter().map(|v| v.id)).chain([t.id])).collect();
+        let mut ids: Vec<u64> = b.tables.iter().flat_map(|t| t.fields.iter().flat_map(|f| f.opts.options.iter().map(|o| o.id).chain([f.id])).chain(t.views.iter().map(|v| v.id)).chain([t.id])).collect();
         let n = ids.len();
         ids.sort();
         ids.dedup();
-        assert!(ids.len() == n && ids.iter().all(|i| *i > 0 && *i <= b.next_id));
+        assert!(ids.len() == n && ids.iter().all(|i| (1..ID_LIMIT).contains(i)));
         // the two sides of the link agree, and the lookups computed
         let (link, back) = (t.field_named("所属项目").unwrap(), p.field_named("任务").unwrap());
         for r in &t.records {
@@ -254,7 +260,7 @@ mod tests {
     fn large_is_the_size_asked() {
         let b = large(1000);
         assert_eq!(b, large(1000));
-        assert_eq!((b.tables.len(), b.tables[0].records.len(), b.tables[0].fields.len(), b.tables[0].next_rec), (1, 1000, 12, 1001));
+        assert_eq!((b.tables.len(), b.tables[0].records.len(), b.tables[0].fields.len(), b.tables[0].next_auto), (1, 1000, 12, 1001));
         assert_eq!(large(0).tables[0].records.len(), 0);
         assert_eq!(large(10).tables[0].records, b.tables[0].records[..10]);
     }

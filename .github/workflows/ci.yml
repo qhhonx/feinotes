@@ -17,7 +17,8 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Only PRs cancel superseded runs; a push to main always finishes, so every main sha gets a result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
@@ -85,7 +86,7 @@ jobs:
         if: steps.filter.outputs.skip != 'true'
         run: |
           sudo softwareupdate --install-rosetta --agree-to-license
-          cargo test --release --locked --target x86_64-apple-darwin --bin quiet_md update::tests
+          cargo test --release --locked --no-fail-fast --target x86_64-apple-darwin --bin quiet_md update::tests
 
       # The packages as shipped, end to end (src/selftest.rs): unpacked into a
       # path with spaces and CJK, each runs its built-in scenarios on a

@@ -445,8 +445,8 @@ impl Editor {
                 .cursor_pointer()
                 .when(on, |d| {
                     d.font_weight(FontWeight::SEMIBOLD)
-                        .text_color(Theme::primary_500())
-                        .child(div().absolute().bottom(px(-0.5)).left_0().right_0().h(px(2.)).rounded(px(1.)).bg(Theme::primary()))
+                        .text_color(crate::design::color::foreground())
+                        .child(div().absolute().bottom(px(-0.5)).left_0().right_0().h(px(2.)).rounded(px(1.)).bg(crate::design::color::foreground()))
                 })
                 .when(!on, |d| d.text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::text())))
                 .child(label)

@@ -396,13 +396,15 @@ fn opacity(value: Option<f64>, fallback: f64, w: f32, cx: &Context<BoardView>) -
     let v = value.unwrap_or(fallback).clamp(0., 100.);
     let f = (v / 100.) as f32;
     const THUMB: f32 = 16.;
+    // what the drag last set: several moves can land before the panel renders again, and `value` is the frame's
+    let last = Rc::new(std::cell::Cell::new(value));
     let set = move |x: Pixels, bounds: Bounds<Pixels>, me: &mut BoardView, window: &mut Window, cx: &mut Context<BoardView>| {
         let t = ((f32::from(x - bounds.left()) - THUMB / 2.) / (f32::from(bounds.size.width) - THUMB)).clamp(0., 1.);
         let nv = ((t * 10.).round() * 10.) as f64;
-        if value != Some(nv) { me.run(BoardAction::Opacity(nv), window, cx) }
+        if slid_to(&last, nv) { me.run(BoardAction::Opacity(nv), window, cx) }
     };
     let bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
-    let (b1, b2, b3) = (bounds.clone(), bounds.clone(), bounds.clone());
+    let (b1, b2, b3, set2) = (bounds.clone(), bounds.clone(), bounds.clone(), set.clone());
     let track_after = style::panel_button_bg();
     let track_to = if value.is_some() { style::slider_track() } else { track_after };
     let thumb_x = (w - THUMB) * f;
@@ -416,10 +418,13 @@ fn opacity(value: Option<f64>, fallback: f64, w: f32, cx: &Context<BoardView>) -
         .when(v > 0., |d| d.child(div().absolute().bottom_0().left(px(thumb_x + THUMB / 2. - 12.)).w(px(24.)).flex().justify_center().child(format!("{}", v.round() as i64))))
         // one undo step per drag: the steps aren't captured till the release
         .on_mouse_down(MouseButton::Left, cx.listener(move |me, ev: &MouseDownEvent, window, cx| { me.begin_slider(); set(ev.position.x, b2.get(), me, window, cx) }))
-        .on_mouse_move(cx.listener(move |me, ev: &MouseMoveEvent, window, cx| if ev.pressed_button == Some(MouseButton::Left) && me.sliding() { set(ev.position.x, b3.get(), me, window, cx) }))
+        .on_mouse_move(cx.listener(move |me, ev: &MouseMoveEvent, window, cx| if ev.pressed_button == Some(MouseButton::Left) && me.sliding() { set2(ev.position.x, b3.get(), me, window, cx) }))
         .on_mouse_up(MouseButton::Left, cx.listener(|me, _, _, cx| me.end_slider(cx)))
         .on_mouse_up_out(MouseButton::Left, cx.listener(|me, _, _, cx| me.end_slider(cx))))
 }
+
+/// The slider moved to `nv`: it differs from what was last set (the frame's value at first).
+fn slid_to(last: &std::cell::Cell<Option<f64>>, nv: f64) -> bool { last.replace(Some(nv)) != Some(nv) }
 
 /// What the panel shows, worked out from the selection (each value is
 /// `getFormValue`'s; `None` is a mixed selection).
@@ -664,4 +669,20 @@ pub(crate) fn render(me: &BoardView, window: &mut Window, cx: &mut Context<Board
         .child(island("board-props", 0.).max_w(px(MAX_W)).max_h(max_h).flex().flex_col()
             .child(div().id("board-props-scroll").max_h(max_h).overflow_y_scroll().p(px(PAD)).child(body.w(px(cw)))))
         .into_any_element())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slid_to;
+    use std::cell::Cell;
+
+    #[test]
+    fn a_slider_dragged_back_within_one_frame_lands_where_it_was_let_go() {
+        // the frame showed 100; one burst of moves: 60, 90, back to 100, 100 again
+        let last = Cell::new(Some(100.));
+        assert_eq!([60., 90., 100., 100.].map(|v| slid_to(&last, v)), [true, true, true, false]);
+        // a mixed selection (no value) takes the first step whatever it is
+        let mixed = Cell::new(None);
+        assert!(slid_to(&mixed, 100.));
+    }
 }
