@@ -246,7 +246,7 @@ fn number_formats(auto: bool) -> Vec<(String, Option<u8>, NumberStyle)> {
     out.push((label("整数"), Some(0), NumberStyle::Plain));
     out.push((label("千分位"), Some(0), NumberStyle::Thousands));
     out.push((label("千分位（小数点）"), Some(2), NumberStyle::Thousands));
-    for p in 1..=9u8 { out.push((format!("{} {p} {}", label("保留"), label("位小数")), Some(p), NumberStyle::Plain)); }
+    for p in 1..=9u8 { out.push((crate::localized_count!(p, "保留 {p} 位小数", "{p} decimal place", "{p} decimal places"), Some(p), NumberStyle::Plain)); }
     out.push((label("百分比"), Some(0), NumberStyle::Percent));
     out.push((label("百分比（小数点）"), Some(2), NumberStyle::Percent));
     out

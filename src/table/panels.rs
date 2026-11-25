@@ -401,13 +401,17 @@ fn filter_panel(t: &Table, view: &View, panel: &Panel, room: f32, cx: &Context<T
     let mut p = shell("tb-panel-filter", if f.conds.is_empty() { EMPTY_W } else { 560. }, room, cx).p(px(crate::design::geo().popover_pad)).gap(px(crate::design::geo().panel_gap)).child(title("设置筛选条件"));
     if f.conds.len() >= 2 {
         let all = f.all;
+        // One sentence with the 所有/任一 box where its placeholder falls.
+        let sentence = crate::localized_format!("符合以下{}条件", "Match {} of the following conditions", '\u{1}');
+        let (before, after) = sentence.split_once('\u{1}').unwrap_or((sentence.as_str(), ""));
+        let (before, after) = (before.trim().to_string(), after.trim().to_string());
         p = p.child(div().flex().items_center().gap(px(8.)).text_color(Theme::text_caption())
-            .child(label("符合以下"))
+            .when(!before.is_empty(), |d| d.child(before))
             .child(select_box("tb-pf-all", label(if all { "所有" } else { "任一" })).flex_none().w(px(76.)).on_click(cx.listener(move |v, ev: &ClickEvent, _, cx| {
                 let items = vec![DropItem::new(label("所有")).on(all), DropItem::new(label("任一")).on(!all)];
                 v.open_dropdown(below(ev), 96., items, |v, k, _, cx| v.edit_view(cx, |view| view.opts.filter.all = k == 0), cx);
             })))
-            .child(label("条件")));
+            .when(!after.is_empty(), |d| d.child(after)));
     }
     for (i, c) in f.conds.iter().enumerate() {
         p = p.child(div().flex().items_center().gap(px(8.))

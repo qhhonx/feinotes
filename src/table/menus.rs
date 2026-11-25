@@ -125,7 +125,7 @@ pub(crate) fn selection_bar(v: &TableView, _t: &Table, cx: &Context<TableView>) 
     if n == 0 { return None; }
     let btn = |id: &'static str, glyph: &'static str, text: &str, danger: bool| ghost_btn(id, glyph, label(text)).variant(if danger { crate::design::ButtonVariant::Destructive } else { crate::design::ButtonVariant::Ghost });
     Some(div().absolute().bottom(px(16.)).left_0().right_0().flex().justify_center().child(crate::design::Popover::new("tb-selbar").occlude().h(px(44.)).px(px(12.)).flex().items_center().gap(px(8.))
-        .child(div().text_color(Theme::text()).child(format!("{} {n} {}", label("已选"), label("条记录"))))
+        .child(div().text_color(Theme::text()).child(crate::localized_count!(n, "已选 {n} 条记录", "{n} record selected", "{n} records selected")))
         .child(div().w(px(1.)).h(px(16.)).bg(Theme::line_divider()))
         .child(btn("tb-sel-dup", "copy", "创建副本", false).on_click(cx.listener(|v, _, _, cx| { let (tid, ids) = (v.table, v.rows_sel.iter().copied().collect::<Vec<_>>()); v.edit(cx, |d| d.duplicate_records(tid, &ids)); })))
         .child(btn("tb-sel-del", "bin", "删除", true).on_click(cx.listener(|v, _, window, cx| delete_rows(v, window, cx))))
@@ -241,9 +241,9 @@ fn field_menu(v: &TableView, t: &Table, view: &View, fid: FieldId, pos: Point<Pi
         .child(menu_item("tb-fm-group", "view-list", label("按此字段分组"), false).on_click(cx.listener(move |v, _, window, cx| { v.edit_view(cx, |view| view.opts.groups = vec![SortBy { field: fid, desc: false }]); close(v, window, cx); })))
         // with several columns selected (this one among them) hide and delete act on all of them but the title
         .when(!picked.is_empty(), |d| { let (n, hide, del) = (picked.len(), picked.clone(), picked.clone()); d.child(menu_rule())
-            .child(menu_item("tb-fm-hide", "eye", if n > 1 { format!("{} {n} {}", label("隐藏"), label("个字段")) } else { label("隐藏字段/列") }, false)
+            .child(menu_item("tb-fm-hide", "eye", if n > 1 { crate::localized_format!("隐藏 {n} 个字段", "Hide {n} fields") } else { label("隐藏字段/列") }, false)
                 .on_click(cx.listener(move |v, _, window, cx| { let ids = hide.clone(); v.edit_view(cx, |view| view.opts.hidden.extend(ids)); v.col_sel.clear(); close(v, window, cx); })))
-            .child(menu_item("tb-fm-del", "bin", if n > 1 { format!("{} {n} {}", label("删除"), label("个字段")) } else { label("删除字段/列") }, true)
+            .child(menu_item("tb-fm-del", "bin", if n > 1 { crate::localized_format!("删除 {n} 个字段", "Delete {n} fields") } else { label("删除字段/列") }, true)
                 .on_click(cx.listener(move |v, _, window, cx| { close(v, window, cx); notes::remove_fields(v, del.clone(), window, cx); }))) })
         .into_any_element()
 }
@@ -274,7 +274,7 @@ fn cell_menu(v: &TableView, t: &Table, view: &View, rec: RecId, cx: &Context<Tab
         .child(menu_item("tb-cm-paste", "file-text", label("粘贴"), false).on_click(cx.listener(|v, _, window, cx| { keys::paste(v, cx); v.close_popup(window, cx); })))
         .child(menu_item("tb-cm-dup", "copy", label("创建副本"), false).on_click(cx.listener(move |v, _, window, cx| { let ids = target_rows(v, Some(rec), cx); v.edit(cx, |d| d.duplicate_records(tid, &ids)); v.close_popup(window, cx); })))
         .child(menu_rule())
-        .child(menu_item("tb-cm-del", "bin", if n > 1 { format!("{} {n} {}", label("删除"), label("条记录")) } else { label("删除记录") }, true).on_click(cx.listener(move |v, _, window, cx| {
+        .child(menu_item("tb-cm-del", "bin", if n > 1 { crate::localized_format!("删除 {n} 条记录", "Delete {n} records") } else { label("删除记录") }, true).on_click(cx.listener(move |v, _, window, cx| {
             let ids = target_rows(v, Some(rec), cx);
             v.close_popup(window, cx);
             notes::remove_records(v, ids, window, cx);

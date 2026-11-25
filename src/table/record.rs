@@ -214,7 +214,7 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, r: &Rec
     let mut list = div().w_full().flex().flex_col().gap(px(2.)).child(title_el).children(shown.into_iter().map(row));
     if !hidden.is_empty() {
         list = list.child(div().px(px(16.)).pt(px(8.)).flex().child(crate::design::Button::ghost("tb-rec-hidden").sized(crate::design::ButtonSize::Xs)
-            .icon(if ui.show_hidden { "triangle-down" } else { "triangle-right" }).label(format!("{} {}", hidden.len(), label("个隐藏字段")))
+            .icon(if ui.show_hidden { "triangle-down" } else { "triangle-right" }).label({ let n = hidden.len(); crate::localized_count!(n, "{n} 个隐藏字段", "{n} hidden field", "{n} hidden fields") })
             .on_click(cx.listener(|v, _, _, cx| { v.record.show_hidden = !v.record.show_hidden; cx.notify(); }))));
         if ui.show_hidden { list = list.children(hidden.into_iter().map(row)); }
     }
