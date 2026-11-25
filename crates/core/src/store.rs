@@ -2377,6 +2377,23 @@ impl Store {
                 Err(e) => self.warnings.push(format!("未能更新文档中的链接（{}）：{e}", self.index[&k].rel)),
             }
         }
+        // 数据表's 笔记 cells are paths too, relative to the table's file: they follow a note
+        // that moved, and a table that did.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let was: HashMap<&str, &str> = old_rel.iter().map(|(old, new)| (new.as_str(), old.as_str())).collect();
+            let tables: Vec<String> = self.index.iter().filter(|(_, m)| m.folder.is_none() && !m.local() && m.kind == DocKind::Table).map(|(_, m)| m.rel.clone()).collect();
+            for now in tables {
+                let before = was.get(now.as_str()).copied().unwrap_or(now.as_str());
+                let (from, to) = (parent_rel(before), parent_rel(&now));
+                let r = crate::table::sqlite::rewrite_notes(&self.abs(&now), |href| {
+                    let target = layout::resolve(from, href)?;
+                    let new = layout::relative(to, &moved(&target).unwrap_or(target));
+                    (new != href).then_some(new)
+                });
+                if let Err(e) = r { self.warnings.push(format!("未能更新数据表中的笔记路径（{now}）：{e}")); }
+            }
+        }
         #[cfg(unix)]
         for dir in &synced { crate::vfs::File::open(dir).and_then(|f| f.sync_all())?; }
         #[cfg(not(unix))]
@@ -6820,6 +6837,93 @@ mod tests {
         crate::vfs::create_dir_all(lib.0.join("板")).unwrap();
         crate::vfs::write(lib.0.join("板/板.excalidraw"), crate::whiteboard::Board::default().file_json()).unwrap();
         assert!(s.list().iter().find(|e| e.meta.rel == "板").unwrap().note.is_none());
+    }
+
+    /// A 数据表 with 笔记 columns lives in a folder of its name with its notes
+    /// (`Store::table_folder`): the folder shows as the table, renames with it,
+    /// goes to the 回收站 and back with it, and the paths in its 笔记 cells
+    /// follow whatever moves.
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn a_table_lives_with_its_notes() {
+        use crate::table::{sqlite, Doc, FieldOpts, FieldType, Value};
+        let lib = Lib::new("table-folder");
+        let mut s = lib.open();
+        let outside = s.create_from(&doc("别处的笔记")).unwrap();
+        let table = s.create_table_in("书单", &crate::table::Base::blank(0), None).unwrap();
+        assert!(s.abs("书单.sqlite").fs_is_file() && s.folder_of_note(&table).is_none() && !s.can_have_children(&table));
+        // the table's cells: a note beside it, one elsewhere
+        let cells = |s: &Store, rel: &str| -> Vec<String> {
+            let b = sqlite::load(&s.abs(rel)).unwrap();
+            let t = &b.tables[0];
+            let f = t.fields.iter().find(|f| f.ty == FieldType::Note).unwrap().id;
+            t.records.iter().filter_map(|r| match r.get(f) { Value::Text(h) => Some(h.clone()), _ => None }).collect()
+        };
+        let point = |s: &Store, rel: &str, hrefs: &[&str]| {
+            let mut d = Doc::new(sqlite::load(&s.abs(rel)).unwrap());
+            let t = d.base.tables[0].id;
+            let f = d.add_field(t, None, "读书笔记", FieldType::Note, FieldOpts::default()).unwrap();
+            let rows: Vec<_> = d.base.tables[0].records.iter().map(|r| r.id).collect();
+            d.set_cells(t, hrefs.iter().enumerate().map(|(i, h)| (rows[i], f, Value::Text(h.to_string()))).collect());
+            sqlite::save(&s.abs(rel), &d.base, &d.dirty).unwrap();
+        };
+        point(&s, "书单.sqlite", &["别处的笔记.xml"]);
+        // its first 笔记 column: into a folder of its name, which takes its place; the path out of it follows
+        let journal = s.track_file_changes();
+        let folder = s.table_folder(&table).unwrap();
+        assert!(s.abs("书单/书单.sqlite").fs_is_file() && !s.abs("书单.sqlite").fs_exists());
+        assert_eq!(cells(&s, "书单/书单.sqlite"), ["../别处的笔记.xml"]);
+        assert_eq!((s.folder_of_note(&table).as_deref(), s.note_of(&folder).as_deref()), (Some(folder.as_str()), Some(table.as_str())));
+        assert_eq!(s.table_folder(&table).unwrap(), folder, "already there");
+        // listed as one row: the table (its name, its kind), the notes under it
+        let note = s.create_from_in(&doc("三体"), Some(&folder)).unwrap();
+        assert!(s.abs("书单/三体.xml").fs_is_file());
+        let list = s.list();
+        let row = list.iter().find(|e| e.id == folder).unwrap();
+        assert_eq!((row.note.as_deref(), row.title.as_str(), row.meta.kind, row.meta.folder.is_some()), (Some(table.as_str()), "书单", DocKind::Table, true));
+        assert_eq!(list.iter().find(|e| e.id == note).unwrap().meta.parent.as_deref(), Some(folder.as_str()));
+        // a note renamed, a note moved out: the cells follow
+        let mut d = Doc::new(sqlite::load(&s.abs("书单/书单.sqlite")).unwrap());
+        let (t, f) = (d.base.tables[0].id, d.base.tables[0].fields.iter().find(|f| f.ty == FieldType::Note).unwrap().id);
+        let second = d.base.tables[0].records[1].id;
+        d.base.writer = crate::table::Writer("agent:整理".into());
+        d.set_cells(t, vec![(second, f, Value::Text("三体.xml".into()))]);
+        sqlite::save(&s.abs("书单/书单.sqlite"), &d.base, &d.dirty).unwrap();
+        s.rename(&note, "三体 II").unwrap();
+        assert_eq!(cells(&s, "书单/书单.sqlite"), ["../别处的笔记.xml", "三体 II.xml"]);
+        // the row whose cell followed was changed by the app, and says so beside when
+        let by = |s: &Store| sqlite::load(&s.abs("书单/书单.sqlite")).unwrap().tables[0].records.iter().map(|r| r.updated_by.clone().unwrap_or_default()).collect::<Vec<_>>();
+        assert_eq!(by(&s)[..2], ["user", "user"]);
+        s.rename(&outside, "搬走的").unwrap();
+        s.set_parent(&note, None).unwrap();
+        assert_eq!(cells(&s, "书单/书单.sqlite"), ["../搬走的.xml", "../三体 II.xml"]);
+        s.set_parent(&note, Some(&folder)).unwrap();
+        // the table renamed (through its row or itself): folder and file keep one name, the paths still right
+        s.rename(&folder, "读过的书").unwrap();
+        assert!(s.abs("读过的书/读过的书.sqlite").fs_is_file() && s.abs("读过的书/三体 II.xml").fs_is_file() && !s.abs("书单").fs_exists());
+        assert_eq!(cells(&s, "读过的书/读过的书.sqlite"), ["../搬走的.xml", "三体 II.xml"]);
+        assert_eq!(s.note_of(&folder).as_deref(), Some(table.as_str()));
+        // moved into another folder: the notes go with it
+        let shelf = s.create_folder("架", None).unwrap();
+        s.set_parent(&folder, Some(&shelf)).unwrap();
+        assert!(s.abs("架/读过的书/读过的书.sqlite").fs_is_file() && s.abs("架/读过的书/三体 II.xml").fs_is_file());
+        assert_eq!(cells(&s, "架/读过的书/读过的书.sqlite"), ["../../搬走的.xml", "三体 II.xml"]);
+        // deleted: the notes go with the table, and come back with it
+        s.delete(&folder, None).unwrap();
+        assert!(!s.abs("架/读过的书").fs_exists() && s.abs("搬走的.xml").fs_is_file());
+        assert!(s.list().iter().all(|e| e.id != note && e.id != table));
+        s.restore(&folder).unwrap();
+        assert!(s.abs("架/读过的书/读过的书.sqlite").fs_is_file() && s.abs("架/读过的书/三体 II.xml").fs_is_file());
+        assert_eq!(s.list().iter().find(|e| e.id == folder).unwrap().note.as_deref(), Some(table.as_str()));
+        drop(journal);
+        // a folder that holds a document of its name too: the document is its 正文, the table a child
+        crate::vfs::write(s.abs("架/读过的书/读过的书.xml"), docxml::serialize(&doc("读过的书"))).unwrap();
+        let list = s.list();
+        let page = list.iter().find(|e| e.meta.rel == "架/读过的书/读过的书.xml").unwrap();
+        assert_eq!(list.iter().find(|e| e.id == folder).unwrap().note.as_deref(), Some(page.id.as_str()));
+        // a 画板 or a Markdown file is never moved into a folder this way
+        let md = s.create_markdown(&doc("纯文本"), "").unwrap();
+        assert!(s.table_folder(&md).is_err() && s.table_folder(&outside).is_err());
     }
 
     /// What is done in the Finder shows: new folders and files, removed ones,

@@ -160,7 +160,8 @@ impl Workspace {
     /// Whether 新建子文档 is offered on `id`'s row: a document of the library, or one with children.
     pub(crate) fn takes_children(&self, id: &str) -> bool {
         self.entries.iter().find(|e| e.id == id).is_some_and(|e| match e.meta.folder {
-            Some(_) => e.note.is_some(),
+            // a folder with a 正文 page takes pages under it; one a 数据表 lives in (with its 笔记) doesn't
+            Some(_) => e.note.as_ref().is_some_and(|n| self.entries.iter().find(|x| &x.id == n).is_none_or(|x| x.meta.kind.is_doc())),
             None => !e.meta.local() && e.meta.kind.is_doc() && !e.meta.markdown && self.store.can_have_children(id),
         })
     }

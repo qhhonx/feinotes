@@ -348,16 +348,36 @@ static DOC_STEP: AtomicI32 = AtomicI32::new(0);
 /// The `Preferences::doc_size` choices and their step: 小 / 标准 / 大 / 特大,
 /// like 界面字号's −1 / +2 with one more step up.
 pub fn doc_step(pref: &str) -> i32 { match pref { "small" => -1, "large" => 2, "xlarge" => 4, _ => 0 } }
+/// The presets in 外观's order (小 / 标准 / 大 / 特大) as `doc_size` stores them.
+pub const DOC_PRESETS: [&str; 4] = ["small", "", "large", "xlarge"];
+/// A custom 正文字号's range, in pt.
+pub const DOC_MIN: f32 = 12.;
+pub const DOC_MAX: f32 = 24.;
+/// A custom 正文字号 (自定义): `doc_size` holds the size in pt ("17") where a preset holds its name.
+/// An older version reads the number as no preset, 标准, and carries on.
+pub fn custom_size(pref: &str) -> Option<f32> { pref.trim().parse::<f32>().ok().filter(|n| (DOC_MIN..=DOC_MAX).contains(n)).map(f32::round) }
+/// A custom 正文字号 in force, in pt (0: a preset, `DOC_STEP`).
+static DOC_ABS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 pub fn set_doc_size(pref: &str) {
-    if DOC_STEP.swap(doc_step(pref), Ordering::Relaxed) != doc_step(pref) { touch(); }
+    let abs = custom_size(pref).unwrap_or(0.).to_bits();
+    let step = DOC_STEP.swap(doc_step(pref), Ordering::Relaxed) != doc_step(pref);
+    if step | (DOC_ABS.swap(abs, Ordering::Relaxed) != abs) { touch(); }
 }
+/// The body size `pref` gives in a theme whose own is `body`: a preset's step from it, or the custom size.
+pub fn doc_size_pt(pref: &str, body: f32) -> f32 { custom_size(pref).unwrap_or(body + doc_step(pref) as f32) }
 
 /// A type metric of the note (font size or line height) at the reader's
 /// 正文字号, for the active theme.
 pub fn doc_len(n: f32) -> f32 { doc_len_in(active(), n) }
 
 /// `doc_len` for a theme that need not be the active one (外观's sample).
-pub fn doc_len_in(st: &Style, n: f32) -> f32 { scale_len(n, st.num("page.size"), DOC_STEP.load(Ordering::Relaxed)) }
+pub fn doc_len_in(st: &Style, n: f32) -> f32 {
+    let body = st.num("page.size");
+    // a custom size is absolute: its step is from this theme's body, so every theme lands on it
+    let abs = f32::from_bits(DOC_ABS.load(Ordering::Relaxed));
+    let step = if abs > 0. { (abs - body).round() as i32 } else { DOC_STEP.load(Ordering::Relaxed) };
+    scale_len(n, body, step)
+}
 
 /// Whole pixels keep baselines crisp; step 0 returns `n` untouched.
 fn scale_len(n: f32, body: f32, step: i32) -> f32 {
@@ -896,6 +916,17 @@ const FEISHU_DESCRIPTION: &str = "飞书文档的正文样式：16 / 26，标题
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn doc_size_presets_and_custom() {
+        // the presets keep their names (and an older library's values); a number is a custom size
+        for (pref, pt) in [("small", 15.), ("", 16.), ("large", 18.), ("xlarge", 20.), ("17", 17.), ("12", 12.), ("24", 24.)] {
+            assert_eq!(super::doc_size_pt(pref, 16.), pt, "{pref:?}");
+        }
+        assert_eq!(super::custom_size("small"), None);
+        assert_eq!(super::custom_size("30"), None);
+        assert_eq!(super::custom_size(" 18 "), Some(18.));
+    }
+
     #[test]
     fn document_size_scales_by_the_body_step() {
         // Empty (and anything unknown) is the theme's size, untouched.

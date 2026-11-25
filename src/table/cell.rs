@@ -43,7 +43,7 @@ pub(crate) fn value_view(base: &Base, f: &Field, v: &Value, wrap: bool) -> AnyEl
 }
 
 /// A grid cell's content: `value_view`, with the checkbox and the stars taking clicks.
-pub(crate) fn content(_v: &TableView, base: &Base, _t: &Table, f: &Field, r: &Record, row_h: f32, cx: &Context<TableView>) -> AnyElement {
+pub(crate) fn content(v: &TableView, base: &Base, _t: &Table, f: &Field, r: &Record, row_h: f32, cx: &Context<TableView>) -> AnyElement {
     let val = r.get(f.id);
     let cell: CellId = (r.id, f.id);
     match f.ty {
@@ -70,6 +70,7 @@ pub(crate) fn content(_v: &TableView, base: &Base, _t: &Table, f: &Field, r: &Re
                     }))
             })).into_any_element()
         }
+        FieldType::Note => match val { Value::Text(href) => notes::cell_view(v, href), _ => div().into_any_element() },
         _ => value_view(base, f, val, row_h > one_line_h()),
     }
 }

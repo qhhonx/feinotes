@@ -20,6 +20,7 @@ mod fields;
 mod grid;
 mod keys;
 mod menus;
+mod notes;
 mod panels;
 mod record;
 
@@ -154,6 +155,22 @@ pub enum TableEvent {
     Expand,
     /// The table or view shown changed: the block remembers which.
     Shown,
+    /// 笔记: open this note over the whole pane (整页打开).
+    OpenNote(String),
+    /// 笔记: a note was made, trashed or restored; the library's lists are stale.
+    LibraryChanged,
+    /// 笔记: the note in the record panel was saved.
+    NoteSaved(Box<NoteSaved>),
+}
+
+/// A note as its save left it, for the rows that list it.
+#[derive(Clone)]
+pub struct NoteSaved {
+    pub id: String,
+    pub title: String,
+    pub icon: Option<String>,
+    pub body: std::sync::Arc<str>,
+    pub meta: crate::store::Meta,
 }
 
 /// A cell: record and field.
@@ -171,13 +188,18 @@ pub(crate) enum Drag {
     ColWidth { field: FieldId, x0: f32, w0: f32, w: f32 },
     /// Extending the selection.
     Select,
-    /// The fill handle: from the selection to this record's row.
-    Fill(RecId),
-    /// A header pressed, then (past a few pixels) dragged: `to` is the gap
-    /// it would drop into, as a column index. Released unmoved, it was a click.
-    ColMove { field: FieldId, x0: f32, x: f32, to: Option<usize> },
-    /// Row handles dragged: lands before the record at place `to` of the view's order.
-    RowMove { ids: Vec<RecId>, to: usize, y0: f32, y: f32, moved: bool },
+    /// A picked header pressed, then (past a few pixels) dragged: `to` is the gap
+    /// it would drop into, as a column index. Released unmoved, it was a click: on the one picked
+    /// header (`rename`), its name is edited.
+    ColMove { field: FieldId, x0: f32, x: f32, off: f32, to: Option<usize>, rename: bool },
+    /// Pressed on a header not picked, then dragged along the headers: the columns from `from` to the one under the pointer are picked.
+    ColSelect { from: FieldId },
+    /// Row handles dragged (as a folder's rows in the sidebar): the rows ride the pointer, `off` above it
+    /// in the list's own coordinates; a gap at place `to` of the rows left holds where they will land,
+    /// the others closing up round it as it moves.
+    RowMove { ids: Vec<RecId>, to: usize, y0: f32, y: f32, off: f32, moved: bool },
+    /// A scroll thumb dragged: `across` the bottom one; the pointer and the scroll where it was pressed, scroll per point.
+    Thumb { across: bool, p0: f32, s0: f32, per: f32 },
 }
 
 /// What floats over the view. One at a time, with at most one `Dropdown` on top of it.
@@ -189,9 +211,10 @@ pub(crate) enum Popup {
     Date { rec: RecId, field: FieldId, year: i64, month: u32 },
     Links { rec: RecId, field: FieldId },
     Files { rec: RecId, field: FieldId },
+    /// 指向已有笔记: the library's documents, searched.
+    NotePick { rec: RecId, field: FieldId },
     Panel(panels::Panel),
-    /// The view list under a table-in-a-page's view name.
-    Stat(FieldId),
+    /// The 「…」 menu: export, copy as Markdown.
     More,
 }
 
@@ -219,7 +242,11 @@ impl DropItem {
 }
 
 /// Renaming in place: a view tab, a table tab.
-pub(crate) enum Rename { Table(TableId) }
+pub(crate) enum Rename { Table(TableId), Field(FieldId) }
+
+/// `TableView::slide`: the springs, and the last frame's time for their step.
+#[derive(Default)]
+pub(crate) struct SlideFx { pub rows: HashMap<RecId, crate::sidebar_drag::Spring<1>>, pub cols: HashMap<FieldId, crate::sidebar_drag::Spring<1>>, pub gap: Option<crate::sidebar_drag::Spring<1>>, pub last: Option<web_time::Instant> }
 
 pub struct TableView {
     pub state: Entity<BaseState>,
@@ -239,7 +266,7 @@ pub struct TableView {
     /// Each shown record's place in `result.records`, and that place's row in `result.rows` (`usize::MAX`: folded away).
     pub(crate) order: Rc<HashMap<RecId, usize>>,
     pub(crate) row_of: Rc<Vec<usize>>,
-    result_key: (u64, TableId, ViewId, i64),
+    result_key: (u64, TableId, ViewId, i64, u64),
     pub(crate) sel: Option<Sel>,
     pub(crate) rows_sel: HashSet<RecId>,
     /// Selected columns (header clicks; ⇧ extends, ⌘ adds or takes away), in the order picked.
@@ -258,11 +285,24 @@ pub struct TableView {
     /// 记录详情.
     pub(crate) expanded: Option<RecId>,
     pub(crate) record: record::RecordUi,
+    /// 笔记 cells: the library's documents they point at, the note open in the record panel.
+    pub(crate) notes: notes::NotesUi,
     /// 表内搜索: the text, its matches, the current one.
     pub(crate) find: Option<Find>,
     pub(crate) find_input: Entity<TextField>,
     /// The column whose right edge is under the pointer (its width can be dragged there).
     pub(crate) grip_hover: Option<FieldId>,
+    /// Rows on their way to their places (dragged rows' neighbours making room, the dropped ones going
+    /// in), each a spring on its top in the list's coordinates, as the sidebar's rows; and the gap's.
+    pub(crate) slide: std::cell::RefCell<SlideFx>,
+    /// 适应内容: each cell's lines as last measured, by its text and its column's width (`grid::fit_heights`).
+    pub(crate) fit_lines: HashMap<CellId, (u64, u32, u8)>,
+    /// The buttons a menu hangs from, as last laid out (`anchor`), and the open popup's corner at its
+    /// point when it hangs from one (`hang_popup`); a popup opened at the pointer has none.
+    pub(crate) anchors: Rc<std::cell::RefCell<HashMap<SharedString, Bounds<Pixels>>>>,
+    pub(crate) popup_corner: Option<Anchor>,
+    /// The grid's scroll thumbs' fades, down and across (`design::scroll::Fade`).
+    pub(crate) bar_fades: Rc<[crate::design::scroll::Fade; 2]>,
     _refresh: Task<()>,
     _subs: Vec<Subscription>,
 }
@@ -308,8 +348,10 @@ impl TableView {
         subs.push(cx.on_focus_out(&aux.focus_handle(cx), window, |v, _, _, cx| v.finish_rename(true, cx)));
         // another program may write the file: look again every couple of seconds while shown
         let refresh = cx.spawn(async move |this, cx| loop {
+            // (笔记 cells know their notes from the first frame on)
+            if this.update(cx, |v, cx| if v.notes.unseen() { notes::refresh(v, cx) }).is_err() { break; }
             cx.background_executor().timer(Duration::from_secs(2)).await;
-            if this.update(cx, |v, cx| v.state.update(cx, |s, cx| s.refresh(cx))).is_err() { break; }
+            if this.update(cx, |v, cx| { v.state.update(cx, |s, cx| s.refresh(cx)); notes::refresh(v, cx); }).is_err() { break; }
         });
         let (table, view) = {
             let base = &state.read(cx).doc.base;
@@ -317,11 +359,11 @@ impl TableView {
         };
         TableView {
             state, focus: cx.focus_handle(), table, view, full, standalone, height: shown.height,
-            result: Default::default(), tops: Default::default(), order: Default::default(), row_of: Default::default(), result_key: (u64::MAX, 0, 0, 0),
+            result: Default::default(), tops: Default::default(), order: Default::default(), row_of: Default::default(), result_key: (u64::MAX, 0, 0, 0, 0),
             sel: None, rows_sel: HashSet::new(), col_sel: vec![], editing: None, input, aux, scroll: point(0., 0.),
             body: Rc::new(Cell::new(Bounds::default())), drag: None, popup: None, dropdown: None, rename: None,
-            expanded: None, record: Default::default(), find: None, find_input,
-            grip_hover: None, _refresh: refresh, _subs: subs,
+            expanded: None, record: Default::default(), notes: Default::default(), find: None, find_input,
+            grip_hover: None, slide: Default::default(), fit_lines: HashMap::new(), anchors: Default::default(), popup_corner: None, bar_fades: Default::default(), _refresh: refresh, _subs: subs,
         }
     }
 
@@ -359,14 +401,18 @@ impl TableView {
         if t.view(self.view).is_none() { self.view = t.views.first().map_or(0, |v| v.id); }
         let Some(v) = t.view(self.view) else { return };
         let today = field::today();
-        let key = (st.doc.rev, self.table, self.view, today);
+        // 适应内容: the rows are laid out again when a column's width changes too (as saved: not while dragged)
+        let fit = v.opts.row_height == RowHeight::Fit;
+        let widths = if fit { use std::hash::{Hash, Hasher}; let mut h = std::collections::hash_map::DefaultHasher::new(); for f in t.visible_fields(v) { f.id.hash(&mut h); t.width(v, f.id).to_bits().hash(&mut h); } h.finish() | 1 } else { 0 };
+        let key = (st.doc.rev, self.table, self.view, today, widths);
         if key != self.result_key {
             let result = query::run(base, t, v);
             let mut tops = Vec::with_capacity(result.rows.len() + 1);
             let (mut y, h) = (0., row_px(v.opts.row_height));
-            for r in &result.rows {
+            let fitted = fit.then(|| grid::fit_heights(&mut self.fit_lines, base, t, v, &result, cx));
+            for (ri, r) in result.rows.iter().enumerate() {
                 tops.push(y);
-                y += match r { query::Row::Group(_) => group_h(), query::Row::Record(_) => h };
+                y += match r { query::Row::Group(_) => group_h(), query::Row::Record(_) => fitted.as_ref().map_or(h, |f| f[ri]) };
             }
             tops.push(y);
             let order: HashMap<RecId, usize> = result.records.iter().enumerate().map(|(p, i)| (t.records[*i].id, p)).collect();
@@ -400,10 +446,32 @@ impl TableView {
     pub(crate) fn open_popup(&mut self, pos: Point<Pixels>, popup: Popup, cx: &mut Context<Self>) {
         self.dropdown = None;
         self.popup = Some((pos, popup));
+        self.popup_corner = None;
         cx.notify();
     }
 
+    /// A button's menu or panel, hung from the button as last laid out (`design::hang`), never the
+    /// pointer; a button not laid out yet opens nothing. `open` opens it at the point given.
+    pub(crate) fn hang_popup(&mut self, key: &str, align: crate::design::Align, open: impl FnOnce(&mut Self, Point<Pixels>)) {
+        let Some(b) = self.anchors.borrow().get(key).copied() else { return };
+        let (pos, corner) = crate::design::hang(b, align, None);
+        open(self, pos);
+        self.popup_corner = Some(corner);
+    }
+
+    /// The open popup's room to the window's edge, for its `Popover::fit` (`design::room`).
+    pub(crate) fn popup_room(&self) -> f32 {
+        self.popup.as_ref().map_or(600., |(pos, _)| crate::design::room(*pos, self.popup_corner.unwrap_or(Anchor::TopLeft)))
+    }
+
+    /// Records where the button it is laid over is, for `hang_popup` (`key` its id).
+    pub(crate) fn anchor(&self, key: impl Into<SharedString>) -> AnyElement {
+        let (record, key) = (self.anchors.clone(), key.into());
+        canvas(move |b, _, _| { record.borrow_mut().insert(key.clone(), b); }, |_, _, _, _| {}).absolute().inset_0().into_any_element()
+    }
+
     pub(crate) fn close_popup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        panels::closing(self, cx);
         if self.popup.take().is_some() || self.dropdown.take().is_some() {
             if !self.input.read(cx).is_focused(window) { window.focus(&self.focus, cx); }
             cx.notify();
@@ -415,12 +483,13 @@ impl TableView {
         cx.notify();
     }
 
-    pub(crate) fn undo(&mut self, cx: &mut Context<Self>) { self.edit(cx, |d| d.undo()); }
-    pub(crate) fn redo(&mut self, cx: &mut Context<Self>) { self.edit(cx, |d| d.redo()); }
+    pub(crate) fn undo(&mut self, cx: &mut Context<Self>) { let before = notes::pointed(self, cx); self.edit(cx, |d| d.undo()); notes::after_history(self, before, cx); }
+    pub(crate) fn redo(&mut self, cx: &mut Context<Self>) { let before = notes::pointed(self, cx); self.edit(cx, |d| d.redo()); notes::after_history(self, before, cx); }
 
     /// Keep a cell being edited and a name being typed, without a window at hand: the page is about
     /// to be left or saved, and the view may be dropped with no focus change to commit them.
     pub fn commit_pending(&mut self, cx: &mut Context<Self>) {
+        notes::save(self, cx);
         if let Some(cell) = self.editing.take() {
             let text = self.input.read(cx).text.clone();
             let tid = self.table;
@@ -500,10 +569,33 @@ impl TableView {
         if save && !name.is_empty() {
             match r {
                 Rename::Table(t) => { self.edit(cx, |d| d.rename_table(t, &name)); }
+                Rename::Field(f) => {
+                    let tid = self.table;
+                    let field = self.state.read(cx).doc.base.table(tid).and_then(|t| t.field(f)).cloned();
+                    if let Some(mut field) = field.filter(|x| x.name != name) { field.name = name; self.edit(cx, |d| d.change_field(tid, field)); }
+                }
             }
             cx.emit(TableEvent::Shown);
         }
         cx.notify();
+    }
+
+    /// 「+」 in the header: a 文本 column at the end, picked, its name in its box to type over;
+    /// scrolled into sight.
+    pub(crate) fn add_text_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_edit(true, window, cx);
+        let tid = self.table;
+        let Some(fid) = self.edit(cx, |d| d.add_field(tid, None, "", FieldType::Text, field::default_opts(FieldType::Text))) else { return };
+        self.col_sel = vec![fid];
+        self.sel = None;
+        self.rows_sel.clear();
+        self.scroll.x = f32::MAX;
+        let state = self.state.clone();
+        if let Some(t) = state.read(cx).doc.base.table(tid) && let Some(view) = t.view(self.view) {
+            let cols = self.cols(t, view);
+            self.clamp_scroll(&cols, row_px(view.opts.row_height));
+        }
+        self.begin_rename(Rename::Field(fid), window, cx);
     }
 
     pub(crate) fn begin_rename(&mut self, r: Rename, window: &mut Window, cx: &mut Context<Self>) {
@@ -511,12 +603,15 @@ impl TableView {
             let base = &self.state.read(cx).doc.base;
             match r {
                 Rename::Table(t) => base.table(t).map(|t| t.name.clone()),
+                Rename::Field(f) => base.table(self.table).and_then(|t| t.field(f)).map(|f| f.name.clone()),
             }
         };
         let Some(name) = name else { return };
         self.popup = None;
         // the name at the size it shows in, all of it selected
-        self.aux.update(cx, |t, cx| { t.size = 14.; t.line_height = 20.; t.set_placeholder("", cx); t.set_text(&name, cx); t.select_all_text(cx); });
+        // a column's name at the header's own size (it is edited in place), a table's at 14
+        let size = if matches!(r, Rename::Field(_)) { text_sm() } else { 14. };
+        self.aux.update(cx, |t, cx| { t.size = size; t.font = matches!(r, Rename::Field(_)).then_some(crate::theme::DOC_UI_FONT); t.line_height = 20.; t.set_placeholder("", cx); t.set_text(&name, cx); t.select_all_text(cx); });
         window.focus(&self.aux.focus_handle(cx), cx);
         self.rename = Some(r);
         cx.notify();
@@ -563,15 +658,26 @@ impl Render for TableView {
         let side = self.expanded.and_then(|r| t.record(r)).map(|r| record::render(self, base, t, v, r, window, cx));
         let body = div().flex_1().min_h_0().flex()
             .child(div().relative().flex_1().min_w_0().h_full().flex().flex_col().child(main).children(menus::find_bar(self, cx)).children(menus::selection_bar(self, t, cx)))
-            .children(side);
+            .children(side)
+            .children(notes::ask(self, window, cx));
         // In a page, as 飞书 docx embeds a base: one quiet header line (the table's
         // name; its tools only while the pointer is over the table), no frame
         // around the block, and as tall as its rows. Full pane: the whole chrome.
         let root = if self.full {
-            root.child(menus::bar(self, t, v, cx)).child(body)
+            // a sheet of its own under the page's header: squircle corners and a 0.5pt hairline
+            // (as Home's cards), set in from the pane's edges
+            const GAP: f32 = 8.;
+            const RADIUS: f32 = crate::design::R + 4.;
+            // Home's document cards' shadow (`theme::shadow_sheet`), not cast down but all round
+            let around: Vec<BoxShadow> = crate::theme::shadow_sheet().into_iter().map(|mut s| { s.offset = point(px(0.), px(0.)); s }).collect();
+            root.p(px(GAP)).child(div().relative().flex_1().min_h_0()
+                .child(div().absolute().inset_0().rounded(px(RADIUS)).shadow(around))
+                .child(crate::ui::squircle_surface(RADIUS, Theme::bg_body()).absolute().inset_0())
+                .child(div().absolute().inset_0().rounded(px(RADIUS)).overflow_hidden().flex().flex_col().child(menus::bar(self, t, v, cx)).child(body))
+                .child(crate::ui::squircle_outline(RADIUS, 0.5, crate::theme::Theme::line_sheet())))
         } else {
             let rows = self.tops.last().copied().unwrap_or(0.) + add_row_h();
-            let h = INLINE_HEAD_H + header_h() + rows.min(INLINE_MAX_ROWS_H) + footer_h() + 2.;
+            let h = INLINE_HEAD_H + header_h() + rows.min(INLINE_MAX_ROWS_H) + 2.;
             self.height = h;
             root.group("tb-block").h(px(h))
                 .child(menus::inline_header(self, t, v, cx))

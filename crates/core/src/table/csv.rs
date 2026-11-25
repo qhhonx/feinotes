@@ -126,13 +126,14 @@ pub fn import(base: &mut Base, name: &str, text: &str) -> Table {
     let now = field::now();
     let mut ids = base.take_ids();
     for (row, ord) in rows.iter().zip(super::order::keys_between(None, None, rows.len())) {
-        let mut r = Record { id: ids.fresh(), created: now, modified: now, auto: t.next_auto, ord, ..Default::default() };
+        let by = Some(base.writer.0.clone());
+        let mut r = Record { id: ids.fresh(), created: now, modified: now, created_by: by.clone(), updated_by: by, auto: t.next_auto, ord, ..Default::default() };
         for (f, cell) in t.fields.iter_mut().zip(row) { r.set(f.id, field::parse_new(f, cell, &mut ids)); }
         t.records.push(r);
         t.next_auto += 1;
     }
     base.ids = ids;
-    t.views.push(View { id: base.new_id(), name: "表格视图".into(), kind: ViewKind::Grid, opts: ViewOpts { frozen: 1, ..Default::default() } });
+    t.views.push(View { id: base.new_id(), name: "表格视图".into(), kind: ViewKind::Grid, opts: ViewOpts::default() });
     t
 }
 
@@ -250,7 +251,7 @@ mod tests {
         assert_eq!(r.get(done.id), &Value::Bool(true));
         assert_eq!(t.records[1].get(done.id), &Value::Empty);
         assert_eq!((share.opts.style, r.get(share.id)), (NumberStyle::Percent, &Value::Number(0.2)));
-        assert_eq!((t.views.len(), t.views[0].kind, t.views[0].opts.frozen), (1, ViewKind::Grid, 1));
+        assert_eq!((t.views.len(), t.views[0].kind, t.views[0].opts.frozen), (1, ViewKind::Grid, 0));
 
         // TSV and `;` are told apart by the first line; nothing at all is still a table
         let t = import(&mut base, "_x", "a\tb\nx,y\t2\n");

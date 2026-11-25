@@ -111,6 +111,7 @@ fn lookup(base: &Base, t: &Table, f: &Field) -> Vec<Value> {
 fn portable(base: &Base, target: &Field, v: &Value) -> Value {
     match v {
         Value::Select(_) | Value::Links(_) | Value::Files(_) | Value::List(_) => Value::Text(field::display_in(base, target, v)),
+        Value::Text(_) if target.ty == FieldType::Note => Value::Text(field::display_in(base, target, v)),
         v => v.clone(),
     }
 }
