@@ -141,7 +141,7 @@ pub fn pending(path: &Path) -> bool {
 }
 
 #[cfg(target_family = "wasm")]
-pub use mem::{add_lazy, set_fetcher};
+pub use mem::{add_lazy, finish_lazy, set_fetcher};
 
 /// Puts a file into the in-memory library (web build), creating its folders.
 #[cfg(target_family = "wasm")]
@@ -214,26 +214,49 @@ mod mem {
 
     // Lazy files (pictures): known by path, fetched the first time something
     // asks about them. Until they arrive they don't exist (`pending` is true).
-    enum Lazy { Remote(String), Loading }
+    enum Lazy { Remote(String), Loading(String) }
     static LAZY: LazyLock<Mutex<BTreeMap<PathBuf, Lazy>>> = LazyLock::new(Default::default);
     static FETCHER: Mutex<Option<fn(PathBuf, String)>> = Mutex::new(None);
 
     /// `path` will be fetched from `url` on first use, by the fetcher.
     pub fn add_lazy(path: &Path, url: String) { LAZY.lock().unwrap().insert(norm(path), Lazy::Remote(url)); }
-    /// Fetches a lazy file; it calls `super::seed` with the bytes when they arrive.
+    /// Fetches a lazy file, then calls `finish_lazy` with the result.
     pub fn set_fetcher(f: fn(PathBuf, String)) { *FETCHER.lock().unwrap() = Some(f); }
     pub(super) fn pending(p: &Path) -> bool {
         let p = norm(p);
         let mut lazy = LAZY.lock().unwrap();
         let start = match lazy.get_mut(&p) {
-            Some(l @ Lazy::Remote(_)) => match std::mem::replace(l, Lazy::Loading) { Lazy::Remote(url) => Some(url), Lazy::Loading => None },
-            Some(Lazy::Loading) => None,
+            Some(state @ Lazy::Remote(_)) => {
+                let Lazy::Remote(url) = state else { unreachable!() };
+                let url = url.clone();
+                *state = Lazy::Loading(url.clone());
+                Some(url)
+            }
+            Some(Lazy::Loading(_)) => None,
             None => return false,
         };
         drop(lazy);
         if let (Some(url), Some(fetch)) = (start, *FETCHER.lock().unwrap()) { fetch(p, url) }
         true
     }
+    /// Settle a request even when the browser could not fetch the data.
+    /// A file written in the meantime removed its lazy entry and wins.
+    pub fn finish_lazy(path: &Path, url: &str, bytes: Option<Vec<u8>>) -> bool {
+        let path = norm(path);
+        // Keep the same lock order as write(), including while settling the
+        // request, so a new local file cannot race with a late response.
+        with(|m| {
+            let mut lazy = LAZY.lock().unwrap();
+            if !matches!(lazy.get(&path), Some(Lazy::Loading(active)) if active == url) { return false }
+            lazy.remove(&path);
+            if let (Some(bytes), Some(parent)) = (bytes, path.parent())
+                && !m.contains_key(&path) && fill_dirs(m, parent).is_ok() {
+                m.insert(path, Node::File(Arc::new(Mutex::new(bytes)), SystemTime::now()));
+            }
+            true
+        })
+    }
+
     fn arrived(p: &Path) { LAZY.lock().unwrap().remove(p); }
 
     pub fn metadata<P: AsRef<Path>>(p: P) -> io::Result<Metadata> {
@@ -283,16 +306,18 @@ mod mem {
     }
     pub fn create_dir_all<P: AsRef<Path>>(p: P) -> io::Result<()> {
         let p = norm(p.as_ref());
-        with(|m| {
-            for a in p.ancestors().collect::<Vec<_>>().into_iter().rev() {
-                match m.get(a) {
-                    Some(Node::Dir(_)) => {}
-                    Some(Node::File(..)) => return Err(io::Error::new(io::ErrorKind::NotADirectory, "not a directory")),
-                    None => { m.insert(a.to_path_buf(), Node::Dir(SystemTime::now())); }
-                }
+        with(|m| fill_dirs(m, &p))
+    }
+
+    fn fill_dirs(m: &mut BTreeMap<PathBuf, Node>, p: &Path) -> io::Result<()> {
+        for a in p.ancestors().collect::<Vec<_>>().into_iter().rev() {
+            match m.get(a) {
+                Some(Node::Dir(_)) => {}
+                Some(Node::File(..)) => return Err(io::Error::new(io::ErrorKind::NotADirectory, "not a directory")),
+                None => { m.insert(a.to_path_buf(), Node::Dir(SystemTime::now())); }
             }
-            Ok(())
-        })
+        }
+        Ok(())
     }
     pub fn remove_file<P: AsRef<Path>>(p: P) -> io::Result<()> {
         let p = norm(p.as_ref());

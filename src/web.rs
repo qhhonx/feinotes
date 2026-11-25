@@ -75,14 +75,26 @@ fn register_lazy(root: &std::path::Path, base: &str) {
         fdl_core::vfs::add_lazy(&root.join(rel), url);
     }
     fdl_core::vfs::set_fetcher(|path, url| wasm_bindgen_futures::spawn_local(async move {
-        match fetch(&url).await {
-            Ok(bytes) => { fdl_core::vfs::seed(&path, bytes); ARRIVED.store(true, std::sync::atomic::Ordering::Relaxed); }
-            Err(e) => log::warn!("{e}"),
+        let mut result = fetch(&url).await;
+        if result.is_err() {
+            // Give a transient network failure one retry. The lazy entry
+            // stays pending in the meantime, so repeated paints share it.
+            let (send, wait) = futures::channel::oneshot::channel();
+            let wake = wasm_bindgen::closure::Closure::once_into_js(move || { let _ = send.send(()); });
+            if let Some(window) = web_sys::window()
+                && window.set_timeout_with_callback_and_timeout_and_arguments_0(wake.unchecked_ref(), 350).is_ok() {
+                let _ = wait.await;
+                result = fetch(&url).await;
+            }
+        }
+        if let Err(e) = &result { log::warn!("{e}"); }
+        if fdl_core::vfs::finish_lazy(&path, &url, result.ok()) {
+            ARRIVED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }));
 }
 
-/// Set when a lazy file arrived: the windows redraw to show it.
+/// Set when a lazy request settles, so the windows redraw the image or its missing state.
 static ARRIVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn status(text: &str) {
