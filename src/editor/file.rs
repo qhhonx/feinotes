@@ -196,11 +196,12 @@ impl FileUi {
     }
 
     fn size(&self, p: &Path) -> Option<u64> {
-        if let Some(s) = self.sizes.borrow().get(p) {
+        // A browser asset may arrive after its card was first drawn.
+        if !cfg!(target_family = "wasm") && let Some(s) = self.sizes.borrow().get(p) {
             return *s;
         }
         let s = fdl_core::vfs::metadata(p).ok().filter(|m| m.fs_is_file()).map(|m| m.len());
-        self.sizes.borrow_mut().insert(p.to_path_buf(), s);
+        if !cfg!(target_family = "wasm") { self.sizes.borrow_mut().insert(p.to_path_buf(), s); }
         s
     }
 
@@ -300,11 +301,11 @@ fn file_block_from_path(p: &Path) -> Option<Block> {
 }
 
 /// Opens the attachment right away (the card's 预览, the video's play).
-fn open_listener(p: Option<PathBuf>, cx: &mut Context<Editor>) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static {
+fn open_listener(file: FileBlock, cx: &mut Context<Editor>) -> impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static {
     cx.listener(move |e: &mut Editor, _: &MouseDownEvent, window, cx| {
         cx.stop_propagation();
         window.prevent_default();
-        e.open_file(p.as_deref(), cx);
+        e.open_attachment(&file, cx);
     })
 }
 
@@ -341,7 +342,8 @@ impl R<'_> {
         let path = local_path(f);
         let size = path.as_ref().and_then(|p| ed.file.size(p));
         let kind = kind_of(&f.name);
-        let preview = (f.view == FileView::Preview && size.is_some()).then(|| preview_of(&f.name)).flatten();
+        let preview = (!cfg!(target_family = "wasm") && f.view == FileView::Preview && size.is_some())
+            .then(|| preview_of(&f.name)).flatten();
         // The card rim: a hairline, a step darker under the pointer, the
         // accent once selected.
         let border = if selected {
@@ -362,12 +364,12 @@ impl R<'_> {
         });
         // A click on the selected attachment (any click when reading) opens it.
         let open_on_click = {
-            let p = path.clone();
+            let file = f.clone();
             cx.listener(move |e: &mut Editor, ev: &MouseDownEvent, window, cx| {
                 if ev.click_count == 1 && !ev.modifiers.shift && (e.read_only || e.active_file(e.focus.is_focused(window)) == Some(id)) {
                     cx.stop_propagation();
                     window.prevent_default();
-                    e.open_file(p.as_deref(), cx);
+                    e.open_attachment(&file, cx);
                 }
             })
         };
@@ -487,7 +489,7 @@ impl R<'_> {
                             .bg(if video { gpui::black() } else { Theme::bg_body() })
                             .child(pic)
                             .when(video, |d| {
-                                let l = open_listener(path.clone(), cx);
+                                let l = open_listener(f.clone(), cx);
                                 d.child(
                                     div().absolute().inset_0().flex().items_center().justify_center().child(
                                         div()
@@ -549,13 +551,18 @@ impl R<'_> {
                     .into_any_element()
             }
             _ => {
-                let missing = size.is_none();
+                let on_demand = path.as_deref().is_some_and(fdl_core::vfs::is_lazy);
+                let missing = size.is_none() && !on_demand;
                 let desc = match size {
                     Some(n) => format_size(n),
+                    None if on_demand => crate::settings::text("下载").into(),
                     None => crate::settings::text("文件不存在").into(),
                 };
+                let web = cfg!(target_family = "wasm");
                 let av = matches!(kind, Kind::Video | Kind::Audio);
-                let l = open_listener(path.clone(), cx);
+                let (action, glyph) = if web { ("下载", "download") }
+                    else if av { ("播放", "circle-play") } else { ("预览", "eye-open") };
+                let l = open_listener(f.clone(), cx);
                 let btn = div()
                     .id(("file-open", id.0))
                     .size(px(34.))
@@ -566,8 +573,8 @@ impl R<'_> {
                     .rounded(px(RADIUS))
                     .cursor_pointer()
                     .hover(|s| s.bg(Theme::fill_hover()))
-                    .tip_above(if av { crate::settings::text("播放") } else { crate::settings::text("预览") }, None)
-                    .child(icon(if av { "circle-play" } else { "eye-open" }, 20., if missing { Theme::text_disabled() } else { Theme::icon() }))
+                    .tip_above(crate::settings::text(action), None)
+                    .child(icon(glyph, 20., if missing { Theme::text_disabled() } else { Theme::icon() }))
                     .on_mouse_down(MouseButton::Left, l);
                 // The file card: white, hairline, crisp radius 5, the button drop.
                 div()
@@ -638,14 +645,38 @@ impl Editor {
         .then_some(h)
     }
 
-    pub(super) fn open_file(&mut self, p: Option<&Path>, cx: &mut Context<Self>) {
-        match p.filter(|p| p.fs_is_file()) {
-            Some(p) => quick_look(p),
+    pub(super) fn open_attachment(&mut self, f: &FileBlock, cx: &mut Context<Self>) {
+        #[cfg(target_family = "wasm")]
+        self.download_file(f, cx);
+        #[cfg(not(target_family = "wasm"))]
+        match local_path(f).filter(|p| p.fs_is_file()) {
+            Some(p) => quick_look(&p),
             None => self.toast(crate::settings::text("文件不存在"), cx),
         }
     }
 
+    #[cfg(target_family = "wasm")]
+    pub(super) fn download_file(&mut self, f: &FileBlock, cx: &mut Context<Self>) {
+        if f.src_kind == "token" { return self.toast(crate::settings::text("文件不存在"), cx) }
+        let root = Store::active_dir();
+        let pending = crate::web::archive::request_sources([f.src.as_str()], &root);
+        let (src, name) = (f.src.clone(), f.name.clone());
+        cx.spawn(async move |this, cx| {
+            crate::web::archive::wait_for_assets(pending, cx.background_executor()).await;
+            let _ = this.update(cx, |e, cx| {
+                let Some(path) = crate::store::export_path_in(&root, &src) else {
+                    return e.toast(crate::settings::text("文件不存在"), cx);
+                };
+                let bytes = crate::store::read_bounded(&path, crate::store::EXPORT_FILE_LIMIT);
+                if !bytes.is_ok_and(|bytes| crate::web_download::download_attachment(&name, &bytes).is_ok()) {
+                    e.toast(crate::settings::text("文件读取失败"), cx);
+                }
+            });
+        }).detach();
+    }
+
     /// 下载: a copy where the save panel says (Downloads first).
+    #[cfg(not(target_family = "wasm"))]
     pub(super) fn download_file(&mut self, f: &FileBlock, cx: &mut Context<Self>) {
         let Some(src) = local_path(f).filter(|p| p.fs_is_file()) else { return self.toast(crate::settings::text("文件不存在"), cx) };
         let picked = crate::devtools::take_pick().and_then(|p| p.into_iter().next());
@@ -766,9 +797,8 @@ impl Editor {
             return None;
         }
         let Some(BlockKind::File(f)) = self.core.kind_of(id) else { return None };
-        let preview = preview_of(&f.name);
+        let preview = if cfg!(target_family = "wasm") { None } else { preview_of(&f.name) };
         let view = f.view;
-        let path = local_path(f);
         let act = |f: fn(&mut Editor, BlockId, &mut Window, &mut Context<Editor>)| {
             cx.listener(move |e: &mut Editor, _: &MouseDownEvent, window, cx| {
                 cx.stop_propagation();
@@ -783,14 +813,14 @@ impl Editor {
         });
         let mut widths = vec![];
         if preview.is_some_and(|k| k != Kind::Audio) {
-            let p = path.clone();
+            let file = f.clone();
             bar = bar.child(
                 tool_btn("ftb-full").editor_icon("maximize").tip_above(crate::settings::text("全屏"), None).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |e, _, window, cx| {
                         cx.stop_propagation();
                         window.prevent_default();
-                        e.open_file(p.as_deref(), cx);
+                        e.open_attachment(&file, cx);
                     }),
                 ),
             );
@@ -849,7 +879,7 @@ impl Editor {
     /// 预览视图, centred 4px above it.
     pub(super) fn file_card(&self, p: Pos, f: &FileBlock, cx: &mut Context<Self>) -> Option<AnyElement> {
         let r = self.probed(Probe::Button(p))?;
-        let preview = previewable(&f.name);
+        let preview = !cfg!(target_family = "wasm") && previewable(&f.name);
         // 下载 | 文本视图 卡片视图 (预览视图): the views are toggles, this one pressed
         let n = if preview { 3 } else { 2 };
         let (_, w) = toolbar_layout(&[&[tw::BUTTON, tw::SEPARATOR][..], &vec![tw::TOGGLE; n]].concat());

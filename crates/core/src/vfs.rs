@@ -133,6 +133,13 @@ pub fn set_modified(path: &Path, secs: u64) -> io::Result<()> {
     #[cfg(target_family = "wasm")] { let _ = (path, secs); Ok(()) }
 }
 
+/// Whether the browser library has registered this file for later loading.
+/// A status check alone does not start a request.
+pub fn is_lazy(path: &Path) -> bool {
+    #[cfg(target_family = "wasm")] { mem::is_lazy(path) }
+    #[cfg(not(target_family = "wasm"))] { let _ = path; false }
+}
+
 /// Whether `path` is a lazy file still being fetched (web build): the UI shows
 /// it as loading, not missing. Always false on the desktop.
 pub fn pending(path: &Path) -> bool {
@@ -158,6 +165,8 @@ mod mem {
     use std::path::{Component, Path, PathBuf};
     use std::sync::{Arc, LazyLock, Mutex};
     use web_time::SystemTime;
+
+    pub(super) fn is_lazy(p: &Path) -> bool { LAZY.lock().unwrap().contains_key(&norm(p)) }
 
     enum Node { Dir(SystemTime), File(Arc<Mutex<Vec<u8>>>, SystemTime) }
 

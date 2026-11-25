@@ -235,7 +235,7 @@ impl Editor {
             return;
         }
         if let Some(f) = self.core.file_at(at) {
-            return self.open_file(super::file::local_path(&f).as_deref(), cx);
+            return self.open_attachment(&f, cx);
         }
         if let Some(l) = self.core.doc_link_at(at) {
             if super::text::DOC_TITLES.with(|t| t.borrow().contains_key(&l.id)) {
