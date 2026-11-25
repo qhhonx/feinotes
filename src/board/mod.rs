@@ -18,6 +18,8 @@
 pub mod action;
 pub mod canvas;
 pub mod chrome;
+#[cfg(target_family = "wasm")]
+mod download;
 pub mod fonts;
 pub mod font_hint;
 pub mod frame_name;
@@ -81,6 +83,8 @@ pub(crate) fn lctx<'a>(app: &AppState, hooks: &'a Hooks<'a>, new: bool) -> linea
 }
 
 pub struct BoardView {
+    #[cfg(target_family = "wasm")]
+    pub(crate) export_name: String,
     /// The live scene, deleted elements included (history needs them).
     pub scene: Scene,
     pub files: BTreeMap<String, FileData>,
@@ -182,6 +186,8 @@ impl BoardView {
         app.apply_exported(&board.app);
         let bd = Arc::unwrap_or_clone(board);
         let mut v = BoardView {
+            #[cfg(target_family = "wasm")]
+            export_name: String::new(),
             scene: Scene::new(bd.elements), files: bd.files, app, height: bd.height, store: Store::new(), history: History::new(),
             m: render::measure(window), painter: Rc::new(RefCell::new({ let mut p = render::Painter::default(); p.screen_frame_names = true; p })), focus: cx.focus_handle(), bounds: Rc::default(), gesture: None, space: false, fitted: false,
             linear: None, multi: None, suggested: None, snap_lines: vec![], text: None, frame_name: None, frame_labels: vec![], font_cache: None, font_previewing: false, refocus: false, hover_cursor: CursorStyle::Arrow, pointer: point(px(0.), px(0.)),
@@ -403,6 +409,23 @@ impl BoardView {
         let used: rustc_hash::FxHashSet<&str> = elements.iter().filter_map(|e| e.image().and_then(|i| i.file_id.as_deref())).collect();
         let files = self.files.iter().filter(|(k, _)| used.contains(k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
         Arc::new(Board { elements, files, app: self.app.for_export(), height: self.height })
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn download_board(&mut self, format: download::Format, window: &mut Window, cx: &mut Context<Self>) {
+        self.finish_pending(window, cx);
+        let board = self.board();
+        let root = crate::store::Store::active_dir();
+        let sources = board.files.values().filter(|file| file.data_url.is_none()).filter_map(|file| file.path.as_deref());
+        let pending = crate::web::archive::request_sources(sources, &root);
+        if pending.is_empty() {
+            format.save(self, board, |file| crate::web::archive::board_image(file, &root), cx);
+        } else {
+            cx.spawn(async move |this, cx| {
+                crate::web::archive::wait_for_assets(pending, cx.background_executor()).await;
+                let _ = this.update(cx, |view, cx| format.save(view, board, |file| crate::web::archive::board_image(file, &root), cx));
+            }).detach();
+        }
     }
 
     /// Ends what's pending before another action: text editing, a line

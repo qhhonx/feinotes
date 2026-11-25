@@ -1124,14 +1124,20 @@ impl Document {
     }
 
     /// Each source a page keeps a file by (images, attachments as blocks and
-    /// inline, the cover) handed to `f`, which gives the one to keep instead or
-    /// None to leave it. An inline file's element keeps its other attributes.
+    /// inline, whiteboard images, and the cover) handed to `f`, which gives
+    /// the one to keep instead or None to leave it. An inline file's element
+    /// keeps its other attributes.
     pub fn map_sources(&mut self, mut f: impl FnMut(&str) -> Option<String>) {
         fn walk(blocks: &mut [Block], f: &mut dyn FnMut(&str) -> Option<String>) {
             for b in blocks {
                 match &mut b.kind {
                     BlockKind::Image { src, .. } => if let Some(new) = f(src) { *src = new },
                     BlockKind::File(file) if file.src_kind == "path" => if let Some(new) = f(&file.src) { file.src = new },
+                    BlockKind::Board(board) => {
+                        for file in std::sync::Arc::make_mut(board).files.values_mut() {
+                            if let Some(new) = file.path.as_deref().and_then(&mut *f) { file.path = Some(new); }
+                        }
+                    }
                     BlockKind::Table(t) => for cell in t.rows.iter_mut().flatten() { walk(&mut cell.blocks, f) },
                     _ => {}
                 }
@@ -1156,6 +1162,7 @@ impl Document {
         let mut out = vec![];
         self.for_each_block(|b| {
             match &b.kind {
+                BlockKind::Board(board) => out.extend(board.files.values().filter_map(|f| f.path.clone())),
                 BlockKind::Image { src, .. } => out.push(src.clone()),
                 BlockKind::File(f) if f.src_kind == "path" => out.push(f.src.clone()),
                 _ => {}
@@ -1175,6 +1182,19 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_sources_rewrites_whiteboard_files() {
+        let scene = r#"{"elements":[{"id":"i","type":"image","x":0,"y":0,"width":96,"height":48,"fileId":"pic","status":"saved","scale":[1,1]}],"files":{"pic":{"id":"pic","mimeType":"image/png","path":".assets/pic.png","created":1}}}"#;
+        let original = crate::whiteboard::Board::from_scene(scene, 300.).unwrap();
+        let mut doc = crate::whiteboard::file_doc(original, "Board");
+        let before = doc.clone();
+        doc.map_sources(|path| (path == ".assets/pic.png").then(|| "assets/pic.png".into()));
+        assert_eq!(before.asset_sources(), [".assets/pic.png"]);
+        assert_eq!(doc.asset_sources(), ["assets/pic.png"]);
+        let reopened = crate::docxml::parse(&crate::docxml::serialize(&doc)).unwrap();
+        assert_eq!(reopened.asset_sources(), ["assets/pic.png"]);
+    }
 
     #[test]
     fn rich_text_replace_and_marks() {

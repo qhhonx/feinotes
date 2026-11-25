@@ -353,12 +353,7 @@ fn image(uri: &str, width: Option<f32>, height: Option<f32>, crop: Option<[f32; 
 /// downloaded for display. Other remote images stay links.
 fn data_uri(src: &str) -> Option<String> {
     use base64::Engine;
-    if src.starts_with("data:") {
-        let encoded = ["data:image/png;base64,", "data:image/jpeg;base64,", "data:image/jpg;base64,", "data:image/gif;base64,", "data:image/webp;base64,", "data:image/bmp;base64,"]
-            .iter().find_map(|prefix| src.strip_prefix(prefix))?;
-        return (encoded.len() <= 28 * 1024 * 1024 && base64::engine::general_purpose::STANDARD.decode(encoded).is_ok())
-            .then(|| src.to_string());
-    }
+    if src.starts_with("data:") { return inline_image(src); }
     let remote = src.starts_with("http://") || src.starts_with("https://");
     let path = if remote { crate::editor::image::cached_remote(src) } else { crate::store::export_path(src) };
     let Some(bytes) = path.and_then(|p| crate::store::read_bounded(&p, 20 * 1024 * 1024).ok()) else {
@@ -370,6 +365,14 @@ fn data_uri(src: &str) -> Option<String> {
         Err(_) => "image/png",
     };
     Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
+pub(crate) fn inline_image(src: &str) -> Option<String> {
+    use base64::Engine;
+    let encoded = ["data:image/png;base64,", "data:image/jpeg;base64,", "data:image/jpg;base64,", "data:image/gif;base64,", "data:image/webp;base64,", "data:image/bmp;base64,"]
+        .iter().find_map(|prefix| src.strip_prefix(prefix))?;
+    (encoded.len() <= 28 * 1024 * 1024 && base64::engine::general_purpose::STANDARD.decode(encoded).is_ok())
+        .then(|| src.to_string())
 }
 
 fn code(lang: &str, text: &str) -> String {

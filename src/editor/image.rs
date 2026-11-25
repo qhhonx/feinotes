@@ -1702,13 +1702,13 @@ impl Editor {
         {
             let result = if crop == FULL {
                 fdl_core::vfs::read(&path).ok().and_then(|bytes| {
-                    crate::web::download_file(&format!("image.{ext}"), &bytes, fmt.map_or("application/octet-stream", |f| f.to_mime_type())).ok()
+                    crate::web_download::download_file(&format!("image.{ext}"), &bytes, fmt.map_or("application/octet-stream", |f| f.to_mime_type())).ok()
                 })
             } else {
                 shrunk(&path, 0).ok().and_then(|(im, _, _)| {
                     let mut bytes = std::io::Cursor::new(Vec::new());
                     image_crop(im, crop).write_to(&mut bytes, image::ImageFormat::Png).ok()?;
-                    crate::web::download_file("image.png", &bytes.into_inner(), "image/png").ok()
+                    crate::web_download::download_file("image.png", &bytes.into_inner(), "image/png").ok()
                 })
             };
             if result.is_none() { self.toast_kind(ToastKind::Error, crate::settings::text("导出失败，请重试"), cx); }

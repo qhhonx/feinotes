@@ -80,6 +80,8 @@ impl Editor {
     pub(super) fn open_board(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(BlockKind::Board(bd)) = self.core.block(id).map(|b| b.kind.clone()) else { return };
         let view = cx.new(|cx| BoardView::new(bd, window, cx));
+        #[cfg(target_family = "wasm")]
+        view.update(cx, |view, _| view.export_name = crate::settings::display_title(&self.core.doc.title.text));
         let sub = cx.subscribe_in(&view, window, move |e, view, ev: &BoardEvent, window, cx| match ev {
             BoardEvent::Close => {
                 let board = view.read(cx).board();

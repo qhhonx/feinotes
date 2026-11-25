@@ -430,7 +430,7 @@ impl Workspace {
                 self.export_browser_archive(doc, subs, title, window, cx);
             } else {
                 let out = crate::markdown::export(&doc, &crate::markdown::Options { sub_pages: &subs, ..Default::default() });
-                if crate::web::download_file(&format!("{title}.md"), out.text.as_bytes(), "text/markdown;charset=utf-8").is_err() {
+                if crate::web_download::download_file(&format!("{title}.md"), out.text.as_bytes(), "text/markdown;charset=utf-8").is_err() {
                     self.show_toast_kind(ToastKind::Error, crate::settings::text("导出失败，请重试"), cx);
                 }
             }
@@ -488,7 +488,7 @@ impl Workspace {
             let archive = crate::web::archive::pack(&doc, &root, &subs, &title);
             let _ = this.update_in(cx, |w, _, cx| {
                 let result = archive.and_then(|archive| {
-                    crate::web::download_file(&archive.filename, &archive.bytes, "application/zip")
+                    crate::web_download::download_file(&archive.filename, &archive.bytes, "application/zip")
                         .map_err(|_| anyhow::anyhow!("Could not start browser download"))?;
                     Ok(archive.missing)
                 });

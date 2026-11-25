@@ -4,8 +4,8 @@
 //! menu in the app's look (`design::Popover`, `MenuItem`: icon, text,
 //! shortcut). The default items we support: 帮助 and 重置画布
 //! (with its confirm dialog) and the canvas background (`ChangeCanvasBackground`).
-//! Differs: no open / save / export / search / socials / theme items (the
-//! app's header, above the board, has the way back and the document menu).
+//! Web downloads the whole canvas as SVG or Excalidraw. The app header
+//! above the board has the way back and the document menu.
 
 use super::*;
 use crate::board::action::BoardAction;
@@ -52,6 +52,17 @@ pub(crate) fn main_menu(me: &BoardView, window: &mut Window, cx: &mut Context<Bo
                 .child(div().mb(px(4.)).ml(px(8.)).text_size(px(14.)).line_height(style::lh(14.)).text_color(style::on_surface()).child(tr("画布背景", "Canvas background")))
                 .child(div().px(px(10.)).child(super::color_picker::color_picker("board-canvas-bg", None, Pop::CanvasBackground, Some(me.app_state().view_background_color.clone()),
                     super::colors::CANVAS_BACKGROUND_PICKS, BoardAction::ViewBackgroundColor, me.elements(), window, cx))));
+        #[cfg(target_family = "wasm")]
+        let menu = {
+            use super::super::download::Format;
+            let save = |format: Format| cx.listener(move |me: &mut BoardView, _: &ClickEvent, window, cx| {
+                set_pop(None, cx);
+                me.download_board(format, window, cx);
+            });
+            menu.child(dropdown_separator())
+                .child(dropdown_item("board-mm-svg", Some("download"), Format::Svg.label(), None, false).on_click(save(Format::Svg)))
+                .child(dropdown_item("board-mm-excalidraw", Some("download"), Format::Excalidraw.label(), None, false).on_click(save(Format::Excalidraw)))
+        };
         // below the trigger, left edges aligned (`sideOffset` 8)
         col = col.child(div().absolute().top(px(style::LG_BUTTON + 8.)).left_0().child(deferred(anchored().snap_to_window_with_margin(px(8.)).child(menu)).with_priority(3)));
     }

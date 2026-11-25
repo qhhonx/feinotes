@@ -1,25 +1,29 @@
 //! Prepare only the selected document's local, lazily loaded assets.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use fdl_core::{board::types::FileData, markdown, model::{BlockKind, Document}, paths, store, vfs::{self, PathExt as _}};
+use fdl_core::{board::types::FileData, markdown, model::Document, paths, store, vfs::{self, PathExt as _}};
 use std::{collections::BTreeSet, path::{Path, PathBuf}, time::Duration};
 
 pub(crate) fn request_assets(doc: &Document, root: &Path) -> BTreeSet<PathBuf> {
-    let mut pending = BTreeSet::new();
-    let mut request = |src: &str| {
-        if store::export_path_in(root, src).is_some() { return; }
+    request_sources(doc.asset_sources().iter().map(String::as_str), root)
+}
+
+pub(crate) fn request_sources<'a>(sources: impl IntoIterator<Item = &'a str>, root: &Path) -> BTreeSet<PathBuf> {
+    sources.into_iter().filter_map(|src| {
+        if store::export_path_in(root, src).is_some() { return None; }
         let raw = src.strip_prefix("file://").unwrap_or(src);
-        if raw.is_empty() || raw.contains("://") || raw.starts_with("data:") { return; }
+        if raw.is_empty() || raw.contains("://") || raw.starts_with("data:") { return None; }
         let path = paths::lexical(&paths::resolve(raw, root));
-        if path.starts_with(root) && vfs::pending(&path) { pending.insert(path); }
-    };
-    for src in doc.asset_sources() { request(&src); }
-    doc.for_each_block(|block| if let BlockKind::Board(board) = &block.kind {
-        for file in board.files.values().filter(|f| f.data_url.is_none()) {
-            if let Some(src) = &file.path { request(src); }
-        }
-    });
-    pending
+        (path.starts_with(root) && vfs::pending(&path)).then_some(path)
+    }).collect()
+}
+
+pub(crate) fn board_image(file: &FileData, root: &Path) -> Option<String> {
+    if let Some(data) = &file.data_url { return crate::html::inline_image(data); }
+    let path = store::export_path_in(root, file.path.as_deref()?)?;
+    let bytes = store::read_bounded(&path, 20 * 1024 * 1024).ok()?;
+    let mime = image::guess_format(&bytes).ok()?.to_mime_type();
+    Some(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
 }
 
 pub(crate) async fn wait_for_assets(mut pending: BTreeSet<PathBuf>, executor: &gpui::BackgroundExecutor) {
