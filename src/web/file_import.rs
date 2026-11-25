@@ -2,7 +2,7 @@
 //! Stage them in a temporary VFS tree for the regular importers.
 
 use std::{collections::{BTreeMap, BTreeSet}, path::{Path, PathBuf}, sync::Arc};
-use fdl_core::{model::Document, store::Store, vfs::PathExt as _};
+use fdl_core::{browser_import::Kind, model::Document, paths, store::Store, vfs::{self, PathExt as _}};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
@@ -86,13 +86,13 @@ pub(crate) async fn stage_drop(files: JsFuture) -> Result<Option<(Arc<Staging>, 
 }
 
 async fn stage_tree(selected: Vec<(String, web_sys::File)>, separate_roots: bool) -> Result<Option<(Arc<Staging>, PathBuf)>, JsValue> {
-    use crate::transfer::{IMPORT_FOLDER_LIMIT, importable};
+    use crate::transfer::IMPORT_FOLDER_LIMIT;
     if selected.is_empty() { return Ok(None); }
     let mut root = String::new();
-    let mut documents = 0;
+    let mut documents = Vec::new();
     let mut files = BTreeMap::new();
     let mut initial = BTreeSet::new();
-    let mut xml = Vec::new();
+    let mut images = BTreeSet::new();
     for (rel, file) in selected {
         let parts = fdl_core::paths::selection_parts(&rel).filter(|parts| parts.len() >= 2).ok_or_else(invalid_path)?;
         if root.is_empty() { root = parts[0].to_owned(); }
@@ -100,36 +100,62 @@ async fn stage_tree(selected: Vec<(String, web_sys::File)>, separate_roots: bool
         if parts[1..].iter().any(|p| matches!(*p, "node_modules" | "target")) { continue; }
         let path = Path::new(&rel);
         let hidden = parts[1..].iter().any(|p| p.starts_with('.'));
-        let doc = !hidden && importable(path);
+        let kind = if hidden { None } else { Kind::of(path) };
         let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
-        let image = crate::editor::image::FORMATS.iter().any(|kind| ext.eq_ignore_ascii_case(kind));
+        let image = crate::editor::image::FORMATS.iter().any(|format| ext.eq_ignore_ascii_case(format));
         let settings = if separate_roots && parts.len() > 2 { &parts[2..] } else { &parts[1..] };
-        if doc || image || settings == [".obsidian", "app.json"] { initial.insert(rel.clone()); }
-        if doc && ext.eq_ignore_ascii_case("xml") { xml.push(rel.clone()); }
-        documents += usize::from(doc);
-        if documents > IMPORT_FOLDER_LIMIT { return Err(JsValue::from_str("Too many selected documents")); }
+        if let Some(kind) = kind {
+            initial.insert(rel.clone());
+            documents.push((rel.clone(), kind));
+        } else if settings == [".obsidian", "app.json"] {
+            initial.insert(rel.clone());
+        } else if image {
+            images.insert(rel.clone());
+        }
+        if documents.len() > IMPORT_FOLDER_LIMIT { return Err(JsValue::from_str("Too many selected documents")); }
         if files.insert(rel, file).is_some() { return Err(invalid_path()); }
     }
     let staging = Staging::new(separate_roots);
     let dir = staging.root.join(root);
     fdl_core::vfs::create_dir_all(&dir).map_err(|error| JsValue::from_str(&error.to_string()))?;
-    if documents == 0 { return Ok(Some((staging, dir))); }
+    if documents.is_empty() { return Ok(Some((staging, dir))); }
     let mut bytes = 0.;
     for rel in initial {
         let file = files.remove(&rel).ok_or_else(invalid_path)?;
         stage_folder_file(&staging, &rel, file, &mut bytes).await?;
     }
-    // Markdown import already knows about images beside or above the page.
-    // Other sidecars are copied only when a selected DocxXML names them.
+    // Obsidian and SiYuan look up images in the selected folder. Let them see
+    // its image names first, then read bytes only for references that resolved.
+    for rel in &images {
+        let path = staging.root.join(rel);
+        let parent = path.parent().ok_or_else(invalid_path)?;
+        vfs::create_dir_all(parent).and_then(|()| vfs::write(&path, [])).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    }
     let mut attachments = BTreeSet::new();
-    for rel in xml {
-        let Ok(mut doc) = read_docxxml(&staging.root.join(&rel)) else { continue };
+    for (rel, kind) in documents {
+        let staged = staging.root.join(&rel);
+        let source_root = staging.markdown_root(&rel);
+        let doc = match kind {
+            Kind::Markdown => crate::transfer::staged_markdown(&staged, &source_root),
+            Kind::DocxXml => read_docxxml(&staged),
+        };
+        let Ok(mut doc) = doc else { continue };
         doc.map_sources(|src| {
-            if let Some(path) = staging.selected_asset(&rel, src, |p| files.contains_key(p) || staging.root.join(p).fs_is_file()) {
-                attachments.insert(path);
-            }
+            let found = match kind {
+                Kind::DocxXml => staging.selected_asset(&rel, src, |p| files.contains_key(p) || staging.root.join(p).fs_is_file()),
+                Kind::Markdown => {
+                    let path = paths::lexical(Path::new(src));
+                    if !path.starts_with(&source_root) { return None; }
+                    path.strip_prefix(&staging.root).ok().and_then(Path::to_str)
+                        .and_then(|rel| images.get(rel)).cloned()
+                }
+            };
+            if let Some(path) = found { attachments.insert(path); }
             None
         });
+    }
+    for rel in images.difference(&attachments) {
+        vfs::remove_file(staging.root.join(rel)).map_err(|e| JsValue::from_str(&e.to_string()))?;
     }
     for rel in attachments {
         if let Some(file) = files.remove(&rel) { stage_folder_file(&staging, &rel, file, &mut bytes).await?; }
@@ -152,6 +178,15 @@ fn read_docxxml(path: &Path) -> anyhow::Result<Document> {
 }
 
 impl Staging {
+    fn markdown_root(&self, rel: &str) -> PathBuf {
+        let mut parts = rel.split('/');
+        let root = self.root.join(parts.next().unwrap_or_default());
+        if self.separate_roots && let (Some(group), Some(_)) = (parts.next(), parts.next()) {
+            return root.join(group);
+        }
+        root
+    }
+
     fn selected_asset(&self, rel: &str, src: &str, mut exists: impl FnMut(&str) -> bool) -> Option<String> {
         let mut dir = fdl_core::paths::selection_parts(rel)?;
         dir.pop()?;

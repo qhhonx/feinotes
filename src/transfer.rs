@@ -157,6 +157,14 @@ pub(crate) fn import_markdown(store: &mut crate::store::Store, path: &Path, root
 /// `import_markdown`'s document and front matter, its pictures copied into
 /// `assets` (the importing library's: not whichever is in front meanwhile).
 fn read_markdown(path: &Path, root: Option<&Path>, assets: &Path) -> anyhow::Result<(Document, String)> {
+    let (mut doc, front) = parse_markdown_file(path, root)?;
+    // A browser picker only grants access to this temporary selection.
+    crate::editor::image::localize_images_under(assets, &mut doc.blocks, root.filter(|_| cfg!(target_family = "wasm")));
+    if doc.blocks.is_empty() { doc.blocks.push(Block::text("")); }
+    Ok((doc, front))
+}
+
+fn parse_markdown_file(path: &Path, root: Option<&Path>) -> anyhow::Result<(Document, String)> {
     let bytes = crate::store::read_bounded(path, IMPORT_FILE_LIMIT)?;
     let text = String::from_utf8_lossy(&bytes);
     let text = text.trim_start_matches('\u{feff}');
@@ -166,10 +174,15 @@ fn read_markdown(path: &Path, root: Option<&Path>, assets: &Path) -> anyhow::Res
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().trim().to_string();
     let mut doc = crate::markdown::parse_file(text, &stem, path.parent());
     if let Some(dir) = path.parent() { crate::markdown::wiki_images(&mut doc.blocks, dir, root); assets_above(&mut doc.blocks, dir, root); }
-    // A browser picker only grants access to this temporary selection.
-    crate::editor::image::localize_images_under(assets, &mut doc.blocks, root.filter(|_| cfg!(target_family = "wasm")));
-    if doc.blocks.is_empty() { doc.blocks.push(Block::text("")); }
     Ok((doc, crate::markdown::front_matter(text).0.to_string()))
+}
+
+#[cfg(target_family = "wasm")]
+pub(crate) fn staged_markdown(path: &Path, root: &Path) -> anyhow::Result<Document> {
+    if crate::local_files::is_markdown_path(path) {
+        return parse_markdown_file(path, Some(root)).map(|(doc, _)| doc);
+    }
+    Ok(parse_markdown_page(path, Some(root))?)
 }
 
 /// Pictures at `assets/…` that are not beside the file: 思源 exports a
@@ -403,6 +416,13 @@ pub fn markdown_document(path: &Path, assets: &Path) -> std::io::Result<Document
 }
 
 fn markdown_document_under(path: &Path, assets: &Path, root: Option<&Path>) -> std::io::Result<Document> {
+    let mut doc = parse_markdown_page(path, root)?;
+    crate::editor::image::localize_images_under(assets, &mut doc.blocks, root);
+    if doc.blocks.is_empty() { doc.blocks.push(Block::text("")); }
+    Ok(doc)
+}
+
+fn parse_markdown_page(path: &Path, root: Option<&Path>) -> std::io::Result<Document> {
     let bytes = fdl_core::vfs::read(path)?;
     let text = String::from_utf8_lossy(&bytes);
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().trim();
@@ -412,7 +432,6 @@ fn markdown_document_under(path: &Path, assets: &Path, root: Option<&Path>) -> s
         resolve_images(&mut doc.blocks, dir);
         crate::markdown::wiki_images(&mut doc.blocks, dir, root);
     }
-    crate::editor::image::localize_images_under(assets, &mut doc.blocks, root);
     Ok(doc)
 }
 
@@ -1190,6 +1209,18 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{BlockKind, markdown_document, percent_decode};
+
+    #[test]
+    fn a_page_stays_editable_when_its_only_image_is_missing() {
+        let dir = fdl_core::vfs::temp_dir().join(format!("quiet-import-empty-{}", uuid::Uuid::new_v4()));
+        fdl_core::vfs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Empty.txt");
+        fdl_core::vfs::write(&path, "![Missing](missing.png)").unwrap();
+        let doc = markdown_document(&path, &dir.join("assets")).unwrap();
+        fdl_core::vfs::remove_dir_all(&dir).unwrap();
+        assert!(matches!(doc.blocks.as_slice(), [block] if block.text.text.is_empty() && matches!(block.kind, BlockKind::Text)));
+    }
+
 
     #[test]
     fn importing_many_small_notes_preserves_the_tree() {
