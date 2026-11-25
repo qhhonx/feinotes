@@ -124,6 +124,9 @@ pub struct Preferences {
     /// 外观 › 窗口背景: paint the window opaque instead of letting the desktop
     /// show through the sidebar material.
     pub opaque_window: bool,
+    /// 外观 › 文档大纲 off: no heading outline (nor its button) beside the page.
+    #[serde(default)]
+    pub hide_outline: bool,
     /// 外观 › 界面字号: "small" or "large"; empty is the 13pt standard.
     pub ui_font: String,
     /// 外观 › 界面字体: the family the sidebar, menus and settings are drawn in
@@ -197,7 +200,7 @@ fn system_lang() -> Lang {
 impl Default for Preferences {
     fn default() -> Self {
         let lang = system_lang();
-        Preferences { theme: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), start_home: false, browser: String::new(), opaque_window: false, ui_font: String::new(), ui_family: String::new(), doc_family: String::new(), doc_size: String::new(), migrate_later: 0, find_regex: false, backspace_to_title: true, cjk_spacing: false, font_favorites: vec![], recent_doc_fonts: vec![], recent_ui_fonts: vec![], quick_note_folder: String::new() }
+        Preferences { theme: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), start_home: false, browser: String::new(), opaque_window: false, hide_outline: false, ui_font: String::new(), ui_family: String::new(), doc_family: String::new(), doc_size: String::new(), migrate_later: 0, find_regex: false, backspace_to_title: true, cjk_spacing: false, font_favorites: vec![], recent_doc_fonts: vec![], recent_ui_fonts: vec![], quick_note_folder: String::new() }
     }
 }
 
@@ -1680,6 +1683,8 @@ impl Workspace {
                                 .child(div().w(px(56.)).flex().items_center().justify_center().text_size(px(theme::ui_font())).text_color(Theme::text()).child(format!("{pt} pt")))
                                 .child(button("doc-size-plus", "+").on_click(cx.listener(step(1.))))))
                     }).into_any_element(),
+                    row(tr("文档大纲", "Outline"), desc(tr("在正文左侧显示标题目录。", "Shows the headings beside the text.")),
+                        switch("pref-outline", !prefs().hide_outline).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.hide_outline = !p.hide_outline, cx)))).into_any_element(),
                     row(tr("文档主题", "Document theme"), None, picker).into_any_element(),
                     sample.into_any_element(),
                 ].into_iter().chain(THEME_CSS.then(|| {

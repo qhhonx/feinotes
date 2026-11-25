@@ -6,7 +6,7 @@
 use fdl_core::vfs::{PathExt as _, KindExt as _};
 use crate::app::Workspace;
 use crate::settings::display_title;
-use crate::model::{Block, BlockKind, Document, RichText};
+use crate::model::{Block, BlockKind, Document};
 use crate::printing::{self, Job};
 use crate::design::{Button, Dialog, scrim};
 use crate::ui::{TipExt, ToastKind};
@@ -99,7 +99,10 @@ pub(crate) fn scan_folder(dir: &Path, depth: usize) -> Option<Scanned> {
     Some(t)
 }
 
-pub(crate) fn importable(p: &Path) -> bool { crate::local_files::is_markdown_path(p) || p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml")) }
+pub(crate) fn importable(p: &Path) -> bool {
+    if cfg!(target_family = "wasm") { return fdl_core::browser_import::Kind::of(p).is_some(); }
+    crate::local_files::is_markdown_path(p) || p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml"))
+}
 
 /// Kept only in iCloud (or another File Provider): 优化存储 took the file or
 /// folder off this Mac (#352) and reading it would start a download, which
@@ -146,6 +149,7 @@ impl Drop for NoCloudDownloads {
 /// A Markdown file as a new Markdown document inside `parent`; `root`: the
 /// folder being imported, where `![[picture.png]]` embeds are also looked up.
 pub(crate) fn import_markdown(store: &mut crate::store::Store, path: &Path, root: Option<&Path>, parent: Option<&str>) -> anyhow::Result<String> {
+    let root = if cfg!(target_family = "wasm") { root.or_else(|| path.parent()) } else { root };
     let (doc, front) = read_markdown(path, root, &crate::store::Store::assets_in(store.top_dir()))?;
     store.create_markdown_in(&doc, &front, parent)
 }
@@ -214,6 +218,9 @@ fn tree_contents(store: &mut crate::store::Store, t: &Scanned, root: Option<&Pat
         let made = if crate::local_files::is_markdown_path(p) {
             let read = { let _local = NoCloudDownloads::new(); read_markdown(p, Some(root.unwrap_or(&t.dir)), &crate::store::Store::assets_in(store.top_dir())) };
             read.and_then(|(doc, front)| store.create_markdown_in(&doc, &front, parent))
+        } else if cfg!(target_family = "wasm") && fdl_core::browser_import::Kind::of(p) == Some(fdl_core::browser_import::Kind::Markdown) {
+            markdown_document_under(p, &crate::store::Store::assets_in(store.top_dir()), Some(root.unwrap_or(&t.dir)))
+                .map_err(anyhow::Error::from).and_then(|doc| store.create_from_in(&doc, parent))
         } else { docxxml(store, p, parent) };
         match made { Ok(doc) => keep_times(store, &doc, p), Err(_) => *failed += 1 }
     }
@@ -391,24 +398,22 @@ fn resolve_images(blocks: &mut [Block], base: &Path) {
 /// A Markdown / TXT file as a page: titled after the file, its leading
 /// `# 标题` dropped when it repeats the name; its pictures copied into `assets`.
 pub fn markdown_document(path: &Path, assets: &Path) -> std::io::Result<Document> {
+    let root = if cfg!(target_family = "wasm") { path.parent() } else { None };
+    markdown_document_under(path, assets, root)
+}
+
+fn markdown_document_under(path: &Path, assets: &Path, root: Option<&Path>) -> std::io::Result<Document> {
     let bytes = fdl_core::vfs::read(path)?;
     let text = String::from_utf8_lossy(&bytes);
-    let text = text.trim_start_matches('\u{feff}');
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().trim().to_string();
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().trim();
     let off = crate::paste::Off { file: true, ..Default::default() };
-    let mut blocks = crate::paste::markdown_to_blocks(text, off);
-    if blocks.first().is_some_and(|b| matches!(b.kind, BlockKind::Heading { level: 1, .. }) && b.text.text.trim() == stem) {
-        blocks.remove(0);
-    }
+    let mut doc = crate::markdown::import_page(&text, stem, off);
     if let Some(dir) = path.parent() {
-        resolve_images(&mut blocks, dir);
-        crate::markdown::wiki_images(&mut blocks, dir, None);
+        resolve_images(&mut doc.blocks, dir);
+        crate::markdown::wiki_images(&mut doc.blocks, dir, root);
     }
-    crate::editor::image::localize_images_in(assets, &mut blocks);
-    if blocks.is_empty() {
-        blocks.push(Block::text(""));
-    }
-    Ok(Document { title: RichText::plain(stem), icon: None, cover: None, blocks })
+    crate::editor::image::localize_images_under(assets, &mut doc.blocks, root);
+    Ok(doc)
 }
 
 impl Workspace {

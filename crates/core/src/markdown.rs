@@ -632,6 +632,17 @@ fn walk_names(vault: &Path, hidden: bool) -> Names {
     out
 }
 
+/// Import Markdown into an editor page, using the filename for the title
+/// and suppressing a repeated first heading. Asset lookup is the caller's.
+pub fn import_page(text: &str, title: &str, off: crate::paste::Off) -> Document {
+    let mut blocks = crate::paste::markdown_to_blocks(text.trim_start_matches('\u{feff}'), off);
+    if blocks.first().is_some_and(|b| matches!(b.kind, BlockKind::Heading { level: 1, .. }) && b.text.text.trim() == title) {
+        blocks.remove(0);
+    }
+    if blocks.is_empty() { blocks.push(Block::text("")); }
+    Document { title: RichText::plain(title), icon: None, cover: None, blocks }
+}
+
 /// A Markdown file as a page: `title` is its name (a Markdown file has no
 /// title of its own), the body every line after the front matter. `base`:
 /// the folder of a file outside the library, which relative images resolve

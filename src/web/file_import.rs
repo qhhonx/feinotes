@@ -6,36 +6,15 @@ use fdl_core::{model::Document, store::Store, vfs::PathExt as _};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
 
-#[wasm_bindgen(inline_js = r#"
-export function pickQuietImport(accept, directory) {
-  return new Promise((resolve, reject) => {
-    const input = document.createElement("input");
-    input.type = "file";
-    if (directory) {
-      if (!("webkitdirectory" in input)) { reject(new Error("Folder selection is unavailable")); return; }
-      input.webkitdirectory = true;
-    } else {
-      input.accept = accept;
-      input.multiple = true;
-    }
-    input.hidden = true;
-    const settle = files => { input.remove(); resolve(files); };
-    input.onchange = () => settle(Array.from(input.files));
-    input.oncancel = () => settle([]);
-    document.body.append(input);
-    try { if (input.showPicker) input.showPicker(); else input.click(); }
-    catch (error) { input.remove(); reject(error); }
-  });
-}
-"#)]
+#[wasm_bindgen(module = "/src/web/file_picker.js")]
 extern "C" {
-    #[wasm_bindgen(js_name = pickQuietImport)]
-    fn pick_import(accept: &str, directory: bool) -> js_sys::Promise;
+    #[wasm_bindgen(js_name = pickBrowserFiles)]
+    fn pick_import(accept: &str, directory: bool, input: &JsValue) -> js_sys::Promise;
 }
 
 /// Open the picker while the click still has browser user activation.
 pub(crate) fn select(accept: Option<&str>) -> JsFuture {
-    JsFuture::from(pick_import(accept.unwrap_or_default(), accept.is_none()))
+    JsFuture::from(pick_import(accept.unwrap_or_default(), accept.is_none(), &JsValue::UNDEFINED))
 }
 
 pub(crate) struct Staging {
@@ -169,7 +148,7 @@ async fn stage_folder_file(staging: &Staging, rel: &str, file: web_sys::File, by
 
 fn read_docxxml(path: &Path) -> anyhow::Result<Document> {
     let xml = fdl_core::vfs::read_to_string(path)?;
-    Ok(fdl_core::docxml::parse(xml.trim_start_matches('\u{feff}'))?)
+    Ok(fdl_core::browser_import::parse_docxxml(&xml)?)
 }
 
 impl Staging {

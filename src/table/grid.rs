@@ -776,11 +776,26 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, window:
     if sliding { window.request_animation_frame(); }
     let empty = v.result.records.is_empty() && !t.records.is_empty();
 
-    let max_x = (cols.total + ADD_FIELD_W - vs.width).max(0.);
-    let max_y = (v.content_h(row_h) + v.slack() - vs.height).max(0.);
+    // the scroll lanes: a side whose way the grid overflows keeps a lane its thumb runs in, clear of the
+    // cells (the shared bar's rule, `design::scroll::room_for`), shown or hidden alike, so nothing shifts
+    // as the thumb comes and goes. Whether it overflows is judged on the room with no lanes at all.
+    let (lane, (lx0, ly0)) = (crate::design::scroll::room_for(0.), v.lanes.get());
+    let (fw, fh) = (vs.width + lx0, vs.height + ly0);
+    let (wide, tall) = (cols.total + ADD_FIELD_W, v.content_h(row_h) + v.slack());
+    let mut nx = wide > fw;
+    let ny = tall > fh - if nx { lane } else { 0. };
+    nx = nx || wide > fw - if ny { lane } else { 0. };
+    let ny = ny || tall > fh - if nx { lane } else { 0. };
+    let (lx, ly) = (if ny { lane } else { 0. }, if nx { lane } else { 0. });
+    v.lanes.set((lx, ly));
+    let vs = size(fw - lx, fh - ly);
+    let max_x = (wide - vs.width).max(0.);
+    let max_y = (tall - vs.height).max(0.);
+    let corner = if inline { frame_r() } else { SHEET_R };
     div().id("tb-grid").relative().flex_1().min_h_0().flex().flex_col()
         // in a page, a frame around the header and the rows only
         .child(div().relative().flex_1().min_h_0().flex().flex_col().when(inline, |d| d.rounded(px(frame_r())).bg(Theme::bg_body()).shadow(crate::design::shadow::frame()))
+          .child(div().relative().flex_1().min_h_0().flex().flex_col().mr(px(lx)).mb(px(ly)).when(lx + ly > 0., |d| d.overflow_hidden())
             .child(header)
             .child(body.when(empty, |d| d.child(div().absolute().left_0().right_0().top(px(48.)).flex().justify_center().text_color(Theme::text_placeholder()).child(crate::settings::label("没有符合筛选条件的记录")))))
             // the frame only while the grid has the keys (or a cell, menu or list of its own is open):
@@ -792,8 +807,8 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, window:
                 .child(div().absolute().top_0().bottom_0().left(px(-24.)).w(px(24.)).bg(Theme::bg_body()).shadow(crate::design::shadow::sticky()))))
             .children(col_edge(v, &cols))
             .children(col_grips(v, &cols, &fields, cx))
-            .children(edit_overlay(v, &cols, &fields))
-            .children(scrollbars(v, max_x, max_y, vs, cols.frozen_w, inline, cx)))
+            .children(edit_overlay(v, &cols, &fields)))
+            .children(scrollbars(v, max_x, max_y, size(fw, header_h() + fh), (lx, ly), corner, cols.frozen_w, cx)))
         .on_scroll(cx.listener(move |v, ev: &ScrollEvent, _, cx| {
             let d = ev.delta.pixel_delta(px(20.));
             let (mut dx, mut dy) = (f32::from(d.x), f32::from(d.y));
@@ -808,21 +823,26 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, window:
         .into_any_element()
 }
 
-/// Thin scroll thumbs along the right and bottom edges of the body, each dragged to scroll (a band
-/// wider than the thumb takes the press). `quiet`: only while the pointer is over the block (a table in a page).
-fn scrollbars(v: &TableView, max_x: f32, max_y: f32, vs: Size<f32>, frozen_w: f32, _quiet: bool, cx: &Context<TableView>) -> Vec<AnyElement> {
-    use crate::design::scroll::{BAR, MIN, PAD, THUMB, thumb_color};
+/// The scroll thumbs, each in its lane along the right and bottom of the grid (`size`: all of it, the
+/// header and the lanes too), dragged to scroll (a band wider than the thumb takes the press). They run
+/// on the straight edges only: down from under the header, across from past the frozen columns, and
+/// short of the sheet's `corner` or the other lane.
+fn scrollbars(v: &TableView, max_x: f32, max_y: f32, size_: Size<f32>, (lx, ly): (f32, f32), corner: f32, frozen_w: f32, cx: &Context<TableView>) -> Vec<AnyElement> {
+    use crate::design::scroll::{BAR, MIN, PAD, THUMB, ends_for, thumb_color};
     let mut out = vec![];
-    // the thumbs' places (from the grid's top left), and a band as wide as the shared bar takes the press
-    let down = (max_y > 0.).then(|| {
-        let track = vs.height;
-        let len = (track * track / (track + max_y)).max(MIN);
-        (header_h() + (track - len) * (v.scroll.y / max_y), len, max_y / (track - len).max(1.))
+    let end = |other: f32| if other > 0. { other } else { ends_for(corner) };
+    // the thumbs' places (from the grid's top left)
+    let down = (max_y > 0. && lx > 0.).then(|| {
+        let (from, to) = (header_h() + PAD, size_.height - end(ly));
+        let track = (to - from).max(MIN);
+        let len = (track * track / (track + max_y)).max(MIN).min(track);
+        (from + (track - len) * (v.scroll.y / max_y), len, max_y / (track - len).max(1.))
     });
-    let across = (max_x > 0.).then(|| {
-        let track = vs.width - frozen_w;
-        let len = (track * track / (track + max_x)).max(MIN);
-        (frozen_w + (track - len) * (v.scroll.x / max_x), len, max_x / (track - len).max(1.))
+    let across = (max_x > 0. && ly > 0.).then(|| {
+        let (from, to) = (frozen_w + PAD, size_.width - end(lx));
+        let track = (to - from).max(MIN);
+        let len = (track * track / (track + max_x)).max(MIN).min(track);
+        (from + (track - len) * (v.scroll.x / max_x), len, max_x / (track - len).max(1.))
     });
     if let Some((top, len, per)) = down {
         out.push(div().id("tb-thumb-y").absolute().right_0().top(px(top)).w(px(BAR)).h(px(len))

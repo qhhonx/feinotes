@@ -204,7 +204,9 @@ impl Editor {
             self.cat_entries = Rc::new(entries(&self.core.doc));
         }
         let o = f32::from(self.pane_size().width);
-        self.layout = page_layout(o, self.column_max(), !self.cat_entries.is_empty(), self.cat_pinned);
+        // 外观 › 文档大纲 off: as a document without headings, no outline and no button
+        let shown = !crate::settings::prefs().hide_outline && !self.cat_entries.is_empty();
+        self.layout = page_layout(o, self.column_max(), shown, self.cat_pinned);
     }
 
     /// Scroll-spy: the last heading at most 90px below the viewport top. A

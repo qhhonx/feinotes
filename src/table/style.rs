@@ -39,6 +39,8 @@ impl Theme {
 /// The row's start (as 飞书's 多维表格): its number in the rows shown, a checkbox in its place while the
 /// row is hovered or ticked, the handle before it and 展开 after it on hover.
 pub const GUTTER_W: f32 = 56.;
+/// The table page's sheet's corners (squircle), which the grid's scroll thumbs keep clear of.
+pub const SHEET_R: f32 = crate::design::R + 4.;
 /// Field header row (Vega's table head, h-10).
 pub fn header_h() -> f32 { geo().table_head }
 /// A row's height: the view's choice, the two short ones Vega's (36 / 44).

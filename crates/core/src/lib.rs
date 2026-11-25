@@ -4,6 +4,7 @@
 
 pub mod board;
 pub mod changes;
+pub mod browser_import;
 pub mod data_images;
 pub mod diff;
 pub mod docxml;

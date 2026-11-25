@@ -1487,4 +1487,6 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("删除 {n} 条记录", "Eliminar {n} registros"),
     ("{n} 个隐藏字段", "{n|one:# campo oculto|other:# campos ocultos}"),
     ("符合以下{}条件", "Cumplir {} condiciones siguientes"),
+    ("文档大纲", "Esquema"),
+    ("在正文左侧显示标题目录。", "Muestra los títulos junto al texto."),
 ];

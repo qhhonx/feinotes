@@ -1498,4 +1498,6 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("删除 {n} 条记录", "{n} kaydı sil"),
     ("{n} 个隐藏字段", "{n} gizli alan"),
     ("符合以下{}条件", "Koşulların {} sağlansın"),
+    ("文档大纲", "Ana hat"),
+    ("在正文左侧显示标题目录。", "Başlıkları metnin yanında gösterir."),
 ];

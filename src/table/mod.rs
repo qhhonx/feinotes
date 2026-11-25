@@ -278,6 +278,9 @@ pub struct TableView {
     pub(crate) scroll: Point<f32>,
     /// The grid body's bounds in the window, as last painted.
     pub(crate) body: Rc<Cell<Bounds<Pixels>>>,
+    /// The scroll lanes the grid keeps clear of cells (right, bottom): `design::scroll::room_for(0)`
+    /// along a side whose way the rows or columns overflow, as last laid out.
+    pub(crate) lanes: Cell<(f32, f32)>,
     pub(crate) drag: Option<Drag>,
     pub(crate) popup: Option<(Point<Pixels>, Popup)>,
     pub(crate) dropdown: Option<Dropdown>,
@@ -361,7 +364,7 @@ impl TableView {
             state, focus: cx.focus_handle(), table, view, full, standalone, height: shown.height,
             result: Default::default(), tops: Default::default(), order: Default::default(), row_of: Default::default(), result_key: (u64::MAX, 0, 0, 0, 0),
             sel: None, rows_sel: HashSet::new(), col_sel: vec![], editing: None, input, aux, scroll: point(0., 0.),
-            body: Rc::new(Cell::new(Bounds::default())), drag: None, popup: None, dropdown: None, rename: None,
+            body: Rc::new(Cell::new(Bounds::default())), lanes: Cell::new((0., 0.)), drag: None, popup: None, dropdown: None, rename: None,
             expanded: None, record: Default::default(), notes: Default::default(), find: None, find_input,
             grip_hover: None, slide: Default::default(), fit_lines: HashMap::new(), anchors: Default::default(), popup_corner: None, bar_fades: Default::default(), _refresh: refresh, _subs: subs,
         }
@@ -668,7 +671,7 @@ impl Render for TableView {
             // (as Home's cards), set in from the pane's edges by the header's own margin round
             // its buttons (8pt): below them on top, so the sheet starts at the header's foot
             const GAP: f32 = (crate::app::HEADER_H - crate::app::HEADER_ACTIONS_H) / 2.;
-            const RADIUS: f32 = crate::design::R + 4.;
+            const RADIUS: f32 = SHEET_R;
             // Home's document cards' shadow (`theme::shadow_sheet`), not cast down but all round
             let around: Vec<BoxShadow> = crate::theme::shadow_sheet().into_iter().map(|mut s| { s.offset = point(px(0.), px(0.)); s }).collect();
             root.px(px(GAP)).pb(px(GAP)).child(div().relative().flex_1().min_h_0()
@@ -678,7 +681,7 @@ impl Render for TableView {
                 .child(crate::ui::squircle_outline(RADIUS, 0.5, crate::theme::Theme::line_sheet())))
         } else {
             let rows = self.tops.last().copied().unwrap_or(0.) + add_row_h();
-            let h = INLINE_HEAD_H + header_h() + rows.min(INLINE_MAX_ROWS_H) + 2.;
+            let h = INLINE_HEAD_H + header_h() + rows.min(INLINE_MAX_ROWS_H) + 2. + self.lanes.get().1;
             self.height = h;
             root.group("tb-block").h(px(h))
                 .child(menus::inline_header(self, t, v, cx))
