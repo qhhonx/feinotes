@@ -1,0 +1,140 @@
+:root {
+  color-scheme: light dark;
+  font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --page: light-dark(#eef3fa, #161c26);
+  --surface: light-dark(#fff, #202835);
+  --ink: light-dark(#182639, #eff4fa);
+  --muted: light-dark(#526276, #b3c0d0);
+  --stroke: light-dark(#d5deea, #48586c);
+  --accent: light-dark(#2754d2, #a9bfff);
+  --accent-hover: light-dark(#2046b3, #c0cfff);
+  --accent-ink: light-dark(#fff, #172a58);
+  --hover: light-dark(#f3f6fc, #2b374a);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  display: grid;
+  place-items: center;
+  min-block-size: 100vh;
+  min-block-size: 100svh;
+  margin: 0;
+  padding: 20px;
+  background: var(--page);
+  color: var(--ink);
+}
+
+.invitation {
+  inline-size: min(100%, 34rem);
+  padding: clamp(24px, 5vw, 42px);
+  border: 1px solid var(--stroke);
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: 0 14px 38px -21px rgb(14 32 64 / 35%);
+  text-align: center;
+}
+
+.invite-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: .9375rem;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.invitation h1 {
+  margin: 20px 0 6px;
+  font-size: clamp(1.65rem, 4vw, 2rem);
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+#invite-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: .9375rem;
+}
+
+.invite-actions:not([hidden]) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-block: 24px 20px;
+}
+
+.invite-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  min-block-size: 48px;
+  padding: 7px;
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  color: var(--ink);
+  font-size: .875rem;
+  font-weight: 650;
+  text-align: center;
+  text-decoration: none;
+}
+
+.invite-button span { grid-column: 2; }
+.invite-button:hover { background: var(--hover); }
+
+.invite-button-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.invite-button-primary:hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+
+.invite-beta {
+  grid-column: 3;
+  justify-self: center;
+  padding-inline: 4px;
+  border-radius: 4px;
+  background: var(--hover);
+  color: var(--muted);
+  font-size: .625rem;
+  font-weight: 600;
+}
+
+.invite-options:not([hidden]) {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 24px;
+  font-size: .8125rem;
+}
+
+.invite-options a {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: 32px;
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: .22em;
+}
+
+.invitation a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.invitation noscript {
+  display: block;
+  margin-block-start: 16px;
+  font-size: .8125rem;
+  color: var(--muted);
+}
+
+@media (max-width: 500px) {
+  .invite-actions:not([hidden]) { grid-template-columns: 1fr; }
+}
