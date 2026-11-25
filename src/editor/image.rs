@@ -633,8 +633,8 @@ impl ImageUi {
         if let Some(d) = self.dims.borrow().get(p) {
             return *d;
         }
-        let d = image::ImageReader::open(p)
-            .ok()
+        let d = fdl_core::vfs::File::open(p).ok()
+            .map(|f| image::ImageReader::new(std::io::BufReader::new(f)))
             .and_then(|r| r.with_guessed_format().ok())
             .and_then(|r| r.into_dimensions().ok())
             .map(|(w, h)| (w as f32, h as f32));
