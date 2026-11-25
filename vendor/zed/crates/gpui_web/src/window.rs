@@ -290,30 +290,30 @@ impl WebWindow {
             let dpr = inner.browser_window.device_pixel_ratio();
             let dpr_f32 = dpr as f32;
 
-            let (physical_width, physical_height, logical_width, logical_height) =
-                if inner.has_device_pixel_support {
-                    let size: web_sys::ResizeObserverSize = entry
-                        .device_pixel_content_box_size()
-                        .get(0)
-                        .unchecked_into();
-                    let pw = size.inline_size() as u32;
-                    let ph = size.block_size() as u32;
-                    let lw = pw as f64 / dpr;
-                    let lh = ph as f64 / dpr;
-                    (pw, ph, lw as f32, lh as f32)
-                } else {
-                    // Safari fallback: use contentRect (always CSS px).
-                    let rect = entry.content_rect();
-                    let lw = rect.width() as f32;
-                    let lh = rect.height() as f32;
-                    let pw = (lw as f64 * dpr).round() as u32;
-                    let ph = (lh as f64 * dpr).round() as u32;
-                    (pw, ph, lw, lh)
-                };
+            // quiet.md: Chrome can report device-pixel sizes at the host DPR
+            // while a viewport override advertises a different DPR. Always
+            // take layout bounds from the CSS box. Keep the observed backing
+            // size only when it agrees with the CSS box within pixel rounding.
+            let rect = entry.content_rect();
+            let (logical_width, logical_height) = (rect.width(), rect.height());
+            let expected_width = (logical_width * dpr).round() as u32;
+            let expected_height = (logical_height * dpr).round() as u32;
+            let observed = inner.has_device_pixel_support.then(|| {
+                entry.device_pixel_content_box_size().get(0)
+                    .dyn_into::<web_sys::ResizeObserverSize>().ok()
+            }).flatten();
+            let (physical_width, physical_height) = observed
+                .map(|size| (size.inline_size() as u32, size.block_size() as u32))
+                .filter(|&(width, height)| {
+                    width.abs_diff(expected_width) <= 1 && height.abs_diff(expected_height) <= 1
+                })
+                .unwrap_or((expected_width, expected_height));
+            let (logical_width, logical_height) = (logical_width as f32, logical_height as f32);
 
             let scale_changed = inner.notify_scale.replace(false);
             let prev = inner.last_physical_size.get();
-            let size_changed = prev != (physical_width, physical_height);
+            let size_changed = prev != (physical_width, physical_height)
+                || inner.state.borrow().bounds.size != Size { width: px(logical_width), height: px(logical_height) };
 
             if !scale_changed && !size_changed {
                 return;
