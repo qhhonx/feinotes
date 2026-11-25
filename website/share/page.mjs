@@ -1,4 +1,4 @@
-import {invitation} from './links.mjs?v=share6';
+import {invitation} from './links.mjs?v=share7';
 const english = !navigator.language.toLowerCase().startsWith('zh');
 if (english) {
   document.documentElement.lang = 'en';
@@ -10,6 +10,7 @@ const status = document.getElementById('invite-status');
 try {
   const link = invitation(location.href);
   document.getElementById('open-app').href = link.app;
+  document.getElementById('open-web').href = link.browser;
   document.getElementById('invite-open').hidden = false;
   document.getElementById('invite-options').hidden = false;
   const opening = () => { status.textContent = english ? 'Opening Fei Notes…' : '正在打开飞记…'; };
@@ -31,7 +32,7 @@ try {
     try { location.assign(link.app); } catch { /* Keep the manual button available. */ }
   }, 0);
   setTimeout(() => {
-    if (document.visibilityState === 'visible') status.textContent = english ? 'If Fei Notes did not open, use the button below.' : '若未打开，请点击下方按钮。';
+    if (document.visibilityState === 'visible') status.textContent = english ? 'Choose how to open this invitation.' : '请选择打开方式。';
   }, 1800);
 } catch {
   status.textContent = english ? 'This invitation link is invalid. Ask the sender for a new link.' : '邀请链接无效，请向邀请者索取新的链接。';

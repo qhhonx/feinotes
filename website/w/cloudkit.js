@@ -1,3 +1,4 @@
+import {cloudInvitationURL} from './invitation-link.mjs';
 import {b64Bytes,bytesB64} from './storage.js';
 import {createPresenceReader} from './shared-presence.js';
 import {commitSharedEdits,retentionFence} from './shared-write.js';
@@ -561,12 +562,10 @@ function needsAttachment(record, paths) {
 }
 const uuid=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 export function parseInvitation(value){
-  const link=value.trim();
-  const branded=/^(?:https:\/\/feinotes\.app\/share\/\?|feinotes:\/\/share\/\?)([cg])=([A-Za-z0-9_-]{1,256})$/.exec(link);
-  if(branded)return {region:branded[1]==='c'?'china':'global',guid:branded[2]};
-  const apple=/^https:\/\/(?:www\.)?icloud\.com(\.cn)?\/share\/([A-Za-z0-9_-]{1,256})(?:#[^\s]*)?$/.exec(link);
-  if(apple&&link.length<=4096)return {region:apple[1]?'china':'global',guid:apple[2]};
-  throw new Error('请粘贴完整的飞记或 iCloud 共享邀请链接');
+  const link=new URL(cloudInvitationURL(value.trim()));
+  const guid=link.pathname.slice('/share/'.length);
+  if(!/^[A-Za-z0-9_-]{1,256}$/.test(guid))throw new Error('此链接需要在飞记 App 中打开');
+  return {region:link.hostname.endsWith('.cn')?'china':'global',guid};
 }
 function sharedScope(zone){
   const {zoneName,ownerRecordName}=zone??{};

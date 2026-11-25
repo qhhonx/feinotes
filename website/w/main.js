@@ -1,3 +1,4 @@
+import {invitationAppURL,invitationFromFragment} from './invitation-link.mjs';
 import * as wasm from './wasm/feinotes.js';
 import {loadWorkspaceEngine} from './workspace-engine.js';
 import {openDatabase,readLibrary,writeLibrary,saveRestoredLibrary,listRestoredLibraries,bytesB64,b64Bytes} from './storage.js';
@@ -114,9 +115,8 @@ let demoShares;
 const invitationPreview=!localPreview||parameters.get('invite-preview')!=='0';
 const canAcceptInvitation=demo||(!cloudReadOnly&&localPreview&&parameters.get('invite-preview')==='1');
 const openInvitationInApp='请先在飞记 App 接受邀请，加入后可回到网页版打开共享。';
-const shareFragment=/^#[cg]=[A-Za-z0-9_-]{1,256}$/;
-let incomingInvitation=!demo&&!restoredWorkspace&&invitationPreview&&shareFragment.test(location.hash)
-  ?'https://feinotes.app/share/?'+location.hash.slice(1):null;
+let incomingInvitation=!demo&&!restoredWorkspace&&invitationPreview
+  ?invitationFromFragment(location.hash):null;
 let inspectedInvitation,invitationBusy=false,invitationRevision=0,checkInvitationAfterSignIn=false;
 const objectFragment=/^#object=([A-Za-z0-9_-]{44})$/.exec(location.hash);
 let pendingObject=!demo&&!restoredWorkspace&&objectFragment?decodeObjectId(objectFragment[1]):null;
@@ -1093,6 +1093,7 @@ function invalidateInvitation(){
   $('invitation-details').textContent='';
   $('invitation-accept').hidden=true;
   $('invitation-switch-account').hidden=true;
+  $('invitation-open-app').hidden=true;
 }
 function showInvitation(link){
   if(!invitationPreview||$('invitation').open)return;
@@ -1114,7 +1115,7 @@ function invitationError(error,fallback){
   const code=[error?.serverErrorCode,error?.ckErrorCode].find(value=>typeof value==='string'&&/^[A-Z][A-Z0-9_]{0,60}$/.test(value));
   if(code==='INVITATION_ACCOUNT_REQUIRED'||['ACCESS_DENIED','PERMISSION_FAILURE','NOT_AUTHORIZED','FORBIDDEN'].includes(code)){
     $('invitation-switch-account').hidden=false;
-    return '此 Apple 账号无法访问这项共享。请切换到受邀账号，或请邀请者检查共享权限。';
+    return '此 Apple 账号无法访问这项共享。请确认 Apple 账号有访问权限，或用飞记 App 检查邀请。';
   }
   if(['NOT_FOUND','UNKNOWN_ITEM','ZONE_NOT_FOUND','ZONE_DELETED'].includes(code))
     return '找不到这项共享。请向邀请者确认链接是否有效。';
@@ -1129,9 +1130,14 @@ async function inspectInvitation(){
   checkInvitationAfterSignIn=false;
   invalidateInvitation();
   const value=$('invitation-link').value.trim();
+  const openApp=$('invitation-open-app');
+  if(!demo){
+    try{openApp.href=invitationAppURL(value);openApp.hidden=false;}
+    catch{$('invitation-status').textContent='请粘贴完整的飞记或 iCloud 共享邀请链接。';return;}
+  }
   let parsed;
   try{parsed=parseInvitation(value);}
-  catch{$('invitation-status').textContent='请粘贴完整的飞记或 iCloud 共享邀请链接。';return;}
+  catch{$('invitation-status').textContent='请用飞记 App 打开此邀请。';return;}
   if(!demo&&!navigator.onLine){
     $('invitation-status').textContent='联网后可检查邀请。';
     return;
@@ -1165,6 +1171,7 @@ async function inspectInvitation(){
     $('invitation-status').textContent=accepted?'此账号已接受邀请。':canAcceptInvitation?'确认后将在飞记中打开。':openInvitationInApp;
     $('invitation-accept').textContent=accepted?'打开共享':'接受并打开';
     $('invitation-accept').hidden=!accepted&&!canAcceptInvitation;
+    openApp.hidden=accepted||demo;
     openAccepted=!!incomingInvitation&&accepted;
   }catch(error){
     if(revision===invitationRevision&&cloud===transport)$('invitation-status').textContent=invitationError(error,'无法验证此邀请，请核对 Apple 账号和链接');
@@ -1205,6 +1212,7 @@ async function openInspectedInvitation(){
     if(!current())return;
     if(wasm.open_shared(JSON.stringify(request.scope)))$('invitation').close();
     else{
+      $('invitation-open-app').hidden=demo;
       $('invitation-status').textContent='邀请已接受，正文暂时无法打开。';
       $('invitation-accept').textContent='重试打开';
     }
@@ -1213,8 +1221,10 @@ async function openInspectedInvitation(){
       if(request.scope&&!isExpiredSession(error)){
         $('invitation-status').textContent=invitationError(error,'邀请已接受，共享内容暂时无法打开，请重试');
         $('invitation-accept').textContent='重试打开';
+        $('invitation-open-app').hidden=demo;
       }else{
         invalidateInvitation();
+        $('invitation-open-app').hidden=demo;
         $('invitation-status').textContent=invitationError(error,'暂时无法确认邀请状态，请先重新检查邀请');
       }
     }
@@ -1239,7 +1249,7 @@ $('invitation').addEventListener('close',()=>{
   invalidateInvitation();
   $('invitation-link').value='';
   if(incomingInvitation){
-    if(shareFragment.test(location.hash))history.replaceState(history.state,'',location.pathname+location.search);
+    if(invitationFromFragment(location.hash))history.replaceState(history.state,'',location.pathname+location.search);
     incomingInvitation=null;
   }
   if(!demo&&transport&&!checkedAt)void refreshShared();
@@ -1910,6 +1920,7 @@ function applyLanguage(language){
   const lang=language==='zh'?'zh-CN':language;
   if(document.documentElement.lang===lang)return;
   document.documentElement.lang=lang;
+  $('invitation-open-app').textContent=lang==='en'?'Open in Fei Notes':'用飞记打开';
   updateTabTitle();
   for(const [id,label] of Object.entries(cloudLabels)){
     if(id!=='apple-sign-in-button'||!authorization)$(id).textContent=cloudText(label);
