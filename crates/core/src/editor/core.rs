@@ -2030,10 +2030,8 @@ impl Core {
     /// history). A caret inside the code it hides leaves for the block itself.
     /// Returns whether anything changed.
     pub fn set_code_folded(&mut self, id: BlockId, folded: bool) -> bool {
+        if !self.block(id).is_some_and(|b| matches!(b.kind, BlockKind::Code { .. }) && b.folded != folded) { return false; }
         let Some(b) = self.block_mut(id) else { return false };
-        if !matches!(b.kind, BlockKind::Code { .. }) || b.folded == folded {
-            return false;
-        }
         b.folded = folded;
         self.generation += 1;
         self.dirty = true;
@@ -3764,6 +3762,22 @@ mod tests {
             assert!(c.undo());
             assert_eq!(c.doc.title.text, title);
         }
+    }
+
+    #[test]
+    fn unchanged_code_fold_keeps_pending_edit_generation_valid() {
+        let mut c = doc("<title>T</title><p>a</p><pre lang=\"plaintext\"><code>x</code></pre>");
+        let code = id(&c, 2);
+        let generation = c.generation;
+        for block in [code, TITLE, id(&c, 1)] {
+            assert!(!c.set_code_folded(block, false));
+            assert_eq!(c.generation, generation);
+        }
+        assert!(c.set_code_folded(code, true));
+        let folded_generation = c.generation;
+        assert!(folded_generation > generation);
+        assert!(!c.set_code_folded(code, true));
+        assert_eq!(c.generation, folded_generation);
     }
 
     /// A code block's fold is saved with the document, outside the edit history.
