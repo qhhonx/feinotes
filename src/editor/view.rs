@@ -176,6 +176,8 @@ pub struct Editor {
     /// Last-frame layout lookups the overlays were positioned from.
     pub probes: RefCell<Vec<(super::overlays::Probe, Option<Bounds<Pixels>>)>>,
     pub marked: Option<(BlockId, Range<usize>)>,
+    #[cfg(target_family = "wasm")]
+    composition_start: Option<Core>,
     pub dragging: bool,
     /// A touch long press selected a word and its drag extends the selection (iOS).
     pub(super) long_press: bool,
@@ -449,6 +451,8 @@ impl Editor {
             content_origin: Rc::new(Cell::new(Point::default())),
             probes: RefCell::new(vec![]),
             marked: None,
+            #[cfg(target_family = "wasm")]
+            composition_start: None,
             dragging: false,
             long_press: false,
             drag_at: None,
@@ -611,13 +615,42 @@ impl Editor {
         let at = self.core.sel.head.block;
         if self.core.block(at).is_some_and(|b| b.folded && matches!(b.kind, crate::model::BlockKind::Code { .. })) { self.core.select_block(at); }
         self.core.break_coalescing();
-        self.marked = None;
+        self.take_marked_text();
         self.menu = None;
         self.slash = None;
         self.cat_generation = None;
         self.ro_doc = self.read_only.then(|| self.core.doc.clone());
         self.refresh_find(false, cx);
         cx.notify();
+    }
+
+    pub(super) fn take_marked_text(&mut self) -> Option<(BlockId, Range<usize>)> {
+        #[cfg(target_family = "wasm")]
+        { self.composition_start = None; }
+        self.marked.take()
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn restore_before_composition(&mut self) -> bool {
+        let Some(mut core) = self.composition_start.take() else { return false };
+        self.marked = None;
+        core.generation = self.core.generation.wrapping_add(1);
+        self.core = core;
+        true
+    }
+
+    #[cfg(target_family = "wasm")]
+    pub(super) fn cancel_background_composition(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.restore_before_composition() { return false; }
+        self.refresh_find(false, cx);
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn document_for_save(&self) -> &crate::model::Document {
+        #[cfg(target_family = "wasm")]
+        if let Some(start) = &self.composition_start { return &start.doc; }
+        &self.core.doc
     }
 
     pub fn changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -632,7 +665,7 @@ impl Editor {
     fn changed_with_scroll(&mut self, intent: ScrollIntent, window: &mut Window, cx: &mut Context<Self>) {
         let reveal = intent == ScrollIntent::RevealCaret;
         // `$x$` typed delimiters first turns into an equation once the caret leaves it.
-        self.core.equation_on_leave();
+        if self.marked.is_none() { self.core.equation_on_leave(); }
         if reveal { self.core.reveal_caret(); }
         // A folded code block opens once the caret is inside it.
         if reveal && !self.core.in_block_mode() && self.core.set_code_folded(self.core.sel.head.block, false) {
@@ -713,7 +746,7 @@ impl Editor {
         }
         self.core.pending_marks = None;
         self.core.break_coalescing();
-        self.marked = None;
+        self.take_marked_text();
         if extend {
             self.toolbar_hidden = false;
         }
@@ -2192,7 +2225,7 @@ impl Editor {
         }
         self.cancel_crop(cx);
         self.slash = None;
-        self.marked = None;
+        self.take_marked_text();
         self.core.undo();
         self.changed(window, cx);
     }
@@ -2203,7 +2236,7 @@ impl Editor {
         }
         self.cancel_crop(cx);
         self.slash = None;
-        self.marked = None;
+        self.take_marked_text();
         self.core.redo();
         self.changed(window, cx);
     }
@@ -2510,7 +2543,7 @@ impl Editor {
         self.menu_hovered = false;
         self.slash = None;
         self.toolbar_hidden = false;
-        self.marked = None;
+        self.take_marked_text();
         self.tables.danger = false;
         self.hide_link_card(cx);
         self.link_ui.target = None;
@@ -2591,7 +2624,7 @@ impl Editor {
         self.menu = None;
         self.menu_hovered = false;
         self.slash = None;
-        self.marked = None;
+        self.take_marked_text();
         self.hide_link_card(cx);
         if self.read_only {
             // Nothing to change, but what is selected can still be copied.
@@ -2641,7 +2674,7 @@ impl Editor {
                 self.core.clear_block_sel();
                 self.goal_x = None;
                 self.slash = None;
-                self.marked = None;
+                self.take_marked_text();
                 let r = core::word_at(&text, pos.offset);
                 self.set_caret(Pos::new(pos.block, r.start), false);
                 self.core.sel.head = Pos::new(pos.block, r.end);
@@ -3015,16 +3048,27 @@ impl EntityInputHandler for Editor {
     }
 
     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.marked = None;
+        self.take_marked_text();
     }
 
     fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.pointer_hidden = true;
-        if self.core.in_block_mode() {
+        if self.read_only || self.core.in_block_mode() {
+            return;
+        }
+        #[cfg(target_family = "wasm")]
+        if range.is_none() && self.composition_start.is_some() {
+            if text.is_empty() {
+                self.cancel_background_composition(cx);
+            } else if self.restore_before_composition() {
+                self.core.break_coalescing();
+                self.type_text(text, window, cx);
+                self.core.break_coalescing();
+            }
             return;
         }
         let head = self.core.sel.head.block;
-        if let Some((b, r)) = self.marked.take() {
+        if let Some((b, r)) = self.take_marked_text() {
             self.core.sel = Selection { anchor: Pos::new(b, r.start), head: Pos::new(b, r.end) };
         } else if let Some(r16) = range
             && let Some(t) = self.head_text()
@@ -3047,8 +3091,16 @@ impl EntityInputHandler for Editor {
         cx: &mut Context<Self>,
     ) {
         self.pointer_hidden = true;
-        if self.core.in_block_mode() {
+        if self.read_only || self.core.in_block_mode() {
             return;
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            if text.is_empty() {
+                self.cancel_background_composition(cx);
+                return;
+            }
+            if self.marked.is_none() { self.composition_start = Some(self.core.clone()); }
         }
         if self.core.text_of(self.core.sel.head.block).is_none() || self.core.sel.head.block != self.core.sel.anchor.block {
             // Atomic caret or a cross-block selection: clear it first.

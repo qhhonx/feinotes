@@ -1419,7 +1419,7 @@ impl Workspace {
         let delay = SAVE_DELAY.min(left);
         // Keep the list title live while typing; the body/snippet updates on save.
         if let (Some(id), Some(ed)) = (&self.current, &self.editor) {
-            let title = ed.read(cx).core.doc.title.text.clone();
+            let title = ed.read(cx).document_for_save().title.text.clone();
             if let Some(e) = self.entries.edit().iter_mut().find(|e| &e.id == id) {
                 e.title = title;
             }
@@ -1537,7 +1537,7 @@ impl Workspace {
         // A rename or move on its way lands first: this save then goes where the file is.
         self.settle_tree_writes(cx);
         self.follow_moved_links(cx);
-        let doc = &ed.read(cx).core.doc;
+        let doc = ed.read(cx).document_for_save();
         let (title, icon, body, reminders, links) = (doc.title.text.clone(), doc.icon.clone(), doc.plain_text(), doc.reminders(), doc.doc_links());
         match self.store.with(Some(&id), |s| s.save_editor_naming_later(&id, doc)) {
             Ok((meta, name_due)) => {

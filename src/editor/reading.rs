@@ -34,12 +34,14 @@ impl Editor {
         if self.read_only == on {
             return;
         }
+        #[cfg(target_family = "wasm")]
+        if on { self.cancel_background_composition(cx); }
         self.read_only = on;
         self.ro_doc = on.then(|| self.core.doc.clone());
         self.core.break_coalescing();
         self.menu = None;
         self.slash = None;
-        self.marked = None;
+        self.take_marked_text();
         self.hover = None;
         self.img.hover = None;
         self.gap_hover = None;
