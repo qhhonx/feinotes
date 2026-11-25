@@ -11,6 +11,46 @@ pub struct Options<'a> {
     pub sub_pages: &'a [String],
 }
 
+enum Images<'a> {
+    Library(&'a std::path::Path),
+    #[cfg(target_family = "wasm")]
+    Browser(&'a dyn Fn(&str) -> Option<String>),
+}
+
+impl Images<'_> {
+    fn uri(&self, src: &str) -> Option<String> {
+        match self {
+            Self::Library(root) => data_uri(root, src),
+            #[cfg(target_family = "wasm")]
+            Self::Browser(read) => browser_image(src, *read),
+        }
+    }
+
+    fn board(&self, board: &crate::whiteboard::Board) -> String {
+        match self {
+            Self::Library(root) => board.svg_in(root),
+            #[cfg(target_family = "wasm")]
+            Self::Browser(read) => board.svg(&crate::whiteboard::ApproxMeasure, &|file| browser_board_image(file, *read)),
+        }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn browser_image(src: &str, read: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    if src.starts_with("data:") { return inline_image(src); }
+    let encoded = read(src)?;
+    if encoded.len() > 28 * 1024 * 1024 { return None; }
+    let bytes = STANDARD.decode(&encoded).ok()?;
+    let mime = image::guess_format(&bytes).ok()?.to_mime_type();
+    Some(format!("data:{mime};base64,{encoded}"))
+}
+
+#[cfg(target_family = "wasm")]
+pub(crate) fn browser_board_image(file: &fdl_core::board::types::FileData, read: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    file.data_url.as_deref().and_then(inline_image).or_else(|| browser_image(file.path.as_deref()?, read))
+}
+
 const CSS: &str = r#"
 * { box-sizing: border-box; }
 html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -79,14 +119,23 @@ a { color: #0f5492; text-decoration: underline; text-underline-offset: 2px; }
 "#;
 
 /// The document as a standalone page, always in the light colours (it is printed or opened elsewhere).
-pub fn to_html(doc: &Document, opts: &Options) -> String { crate::theme::light(|| page(doc, opts)) }
+pub fn to_html(doc: &Document, opts: &Options) -> String {
+    crate::theme::light(|| page(doc, opts.sub_pages, Images::Library(&crate::store::Store::active_dir()), ""))
+}
 
-fn page(doc: &Document, opts: &Options) -> String {
+#[cfg(target_family = "wasm")]
+pub(crate) fn browser_print(doc: &Document, sub_pages: &[String], read: &dyn Fn(&str) -> Option<String>) -> String {
+    // The print frame doesn't need scripts, remote resources or document navigation.
+    const PRINT_HEAD: &str = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'\"><style>@page { size: A4; margin: 40pt 48pt; } .cover, .img, .board, tr { break-inside: avoid; }</style>";
+    crate::theme::light(|| page(doc, sub_pages, Images::Browser(read), PRINT_HEAD))
+}
+
+fn page(doc: &Document, sub_pages: &[String], images: Images<'_>, extra_head: &str) -> String {
     let title = crate::settings::display_title(&doc.title.text);
     let mut out = String::new();
-    let _ = write!(out, "<!DOCTYPE html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><title>{}</title><style>{CSS}</style></head><body>", esc(&title));
+    let _ = write!(out, "<!DOCTYPE html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\">{extra_head}<title>{}</title><style>{CSS}</style></head><body>", esc(&title));
     if let Some(c) = &doc.cover
-        && let Some(uri) = data_uri(&c.src)
+        && let Some(uri) = images.uri(&c.src)
     {
         let _ = write!(out, "<div class=\"cover\" style=\"background-image:url('{uri}')\"></div>");
     }
@@ -94,14 +143,15 @@ fn page(doc: &Document, opts: &Options) -> String {
         let _ = write!(out, "<div class=\"icon\">{}</div>", esc(i));
     }
     let _ = write!(out, "<h1 class=\"title\">{}</h1>", esc(&title));
-    let w = Writer { opts, headings: crate::editor::core::heading_orders(&doc.blocks) };
+    let w = Writer { sub_pages, images, headings: crate::editor::core::heading_orders(&doc.blocks) };
     w.blocks(&doc.blocks, 0, &mut out);
     out.push_str("</body></html>\n");
     out
 }
 
 struct Writer<'a> {
-    opts: &'a Options<'a>,
+    sub_pages: &'a [String],
+    images: Images<'a>,
     headings: rustc_hash::FxHashMap<BlockId, String>,
 }
 
@@ -201,7 +251,7 @@ impl Writer<'_> {
             BlockKind::Divider => out.push_str("<hr>"),
             BlockKind::Image { src, width, height, caption, crop, .. } => {
                 let _ = write!(out, "<div class=\"img\"{align}>");
-                match data_uri(src) {
+                match self.images.uri(src) {
                     Some(uri) => out.push_str(&image(&uri, *width, *height, *crop)),
                     None => {
                         let _ = write!(out, "<div class=\"raw\">{}</div>", esc(crate::settings::tr("图片不可用", "Image unavailable")));
@@ -230,8 +280,12 @@ impl Writer<'_> {
                 out.push_str("</div>");
             }
             // A 数据表 as a plain table of the view it shows.
-            BlockKind::DataTable(t) => {
-                let grid = fdl_core::table::block_grid(&crate::store::Store::active_dir(), t);
+            BlockKind::DataTable(table) => {
+                let grid = match self.images {
+                    Images::Library(root) => fdl_core::table::block_grid(root, table),
+                    #[cfg(target_family = "wasm")]
+                    Images::Browser(_) => vec![],
+                };
                 if !grid.is_empty() {
                     out.push_str("<table>");
                     for (i, row) in grid.iter().enumerate() {
@@ -245,7 +299,7 @@ impl Writer<'_> {
             // A 画板 as an inline SVG of its scene (images inlined).
             BlockKind::Board(bd) => {
                 if !bd.elements.is_empty() {
-                    let _ = write!(out, "<div class=\"board\">{}</div>", bd.svg_in(&crate::store::Store::active_dir()));
+                    let _ = write!(out, "<div class=\"board\">{}</div>", self.images.board(bd));
                 }
             }
             BlockKind::Countdown(c) => {
@@ -263,7 +317,7 @@ impl Writer<'_> {
             }
             BlockKind::SubPageList => {
                 out.push_str("<div class=\"subpages\">");
-                for t in self.opts.sub_pages {
+                for t in self.sub_pages {
                     let _ = write!(out, "<div>📄 {}</div>", esc(&crate::settings::display_title(t)));
                 }
                 out.push_str("</div>");
@@ -351,11 +405,13 @@ fn image(uri: &str, width: Option<f32>, height: Option<f32>, crop: Option<[f32; 
 
 /// An image source as a data URI: local files, and remote images already
 /// downloaded for display. Other remote images stay links.
-fn data_uri(src: &str) -> Option<String> {
+fn data_uri(root: &std::path::Path, src: &str) -> Option<String> {
     use base64::Engine;
-    if src.starts_with("data:") { return inline_image(src); }
+    if src.starts_with("data:") {
+        return inline_image(src);
+    }
     let remote = src.starts_with("http://") || src.starts_with("https://");
-    let path = if remote { crate::editor::image::cached_remote(src) } else { crate::store::export_path(src) };
+    let path = if remote { crate::editor::image::cached_remote(src) } else { crate::store::export_path_in(root, src) };
     let Some(bytes) = path.and_then(|p| crate::store::read_bounded(&p, 20 * 1024 * 1024).ok()) else {
         return remote.then(|| src.replace('"', "%22"));
     };
@@ -475,10 +531,10 @@ mod tests {
 
     #[test]
     fn exports_reject_active_data_and_unsafe_links() {
-        assert!(data_uri("data:text/html;base64,PHNjcmlwdD4=").is_none());
-        assert!(data_uri("data:image/svg+xml;base64,PHN2Zz4=").is_none());
-        assert!(data_uri("data:image/png;base64,\" onerror=\"alert(1)").is_none());
-        assert!(data_uri("data:image/png;base64,aGVsbG8=").is_some());
+        assert!(data_uri(std::path::Path::new("/nonexistent"), "data:text/html;base64,PHNjcmlwdD4=").is_none());
+        assert!(data_uri(std::path::Path::new("/nonexistent"), "data:image/svg+xml;base64,PHN2Zz4=").is_none());
+        assert!(data_uri(std::path::Path::new("/nonexistent"), "data:image/png;base64,\" onerror=\"alert(1)").is_none());
+        assert!(data_uri(std::path::Path::new("/nonexistent"), "data:image/png;base64,aGVsbG8=").is_some());
         let mut text = RichText::default();
         text.push("click", Marks { link: Some("javascript:alert(1)".into()), ..Default::default() });
         assert_eq!(inline(&text), "click");

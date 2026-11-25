@@ -1047,6 +1047,8 @@ impl Workspace {
         if let Some(previous) = &self.current
             && self.document_peers(previous, window, cx).is_empty() { self.store.forget_loaded(previous); }
         self.editor = Some(editor);
+        #[cfg(target_family = "wasm")]
+        if self.current.as_deref() != Some(id) { crate::web_print::cancel(); }
         self.current = Some(id.to_string());
         // Pasted images, 数据表 and 画板 belong to this document's top-level folder, and it has its own look.
         if self.store.set_active(id) { cx.defer(crate::settings::top_switched); }

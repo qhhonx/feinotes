@@ -11,7 +11,9 @@ The website's [example notebooks](../site/public/notebooks/) run Quiet.md itself
 - **Shortcuts.** Mac browsers use macOS bindings (⌘), and other platforms use PC bindings (`shortcuts::mac()`).
 - **Startup.** The web app opens on Home (desktop reopens the last document), so visitors see the whole notebook first.
 - **Boards.** Pictures decode on the main thread once downloaded, with no worker threads. The board fonts leave out the 14 MB Xiaolai (`build.rs`); Chinese uses the browser's font.
-- Global hotkeys, automatic updates, printing, system notifications, Quick Look and Show in Finder are desktop-only. The web entry point is `src/web.rs`.
+- **Printing.** The document menu opens the browser print dialog over the same A4 layout as desktop. The print page embeds available local images and does not load remote resources.
+- **Downloads.** Export Markdown alone or with attachments in a ZIP. The viewer can download photos, and the board menu downloads SVG or Excalidraw.
+- Global hotkeys, automatic updates, system notifications, Quick Look and Show in Finder are desktop-only. The web entry point is `src/web.rs`.
 
 ## Build
 

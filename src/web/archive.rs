@@ -18,12 +18,14 @@ pub(crate) fn request_sources<'a>(sources: impl IntoIterator<Item = &'a str>, ro
     }).collect()
 }
 
-pub(crate) fn board_image(file: &FileData, root: &Path) -> Option<String> {
-    if let Some(data) = &file.data_url { return crate::html::inline_image(data); }
-    let path = store::export_path_in(root, file.path.as_deref()?)?;
+pub(crate) fn encoded_image(src: &str, root: &Path) -> Option<String> {
+    let path = store::export_path_in(root, src)?;
     let bytes = store::read_bounded(&path, 20 * 1024 * 1024).ok()?;
-    let mime = image::guess_format(&bytes).ok()?.to_mime_type();
-    Some(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
+    Some(STANDARD.encode(bytes))
+}
+
+pub(crate) fn board_image(file: &FileData, root: &Path) -> Option<String> {
+    crate::html::browser_board_image(file, &|src| encoded_image(src, root))
 }
 
 pub(crate) async fn wait_for_assets(mut pending: BTreeSet<PathBuf>, executor: &gpui::BackgroundExecutor) {

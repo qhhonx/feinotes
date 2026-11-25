@@ -269,7 +269,7 @@ impl Workspace {
                     })),
             ))
             .child(divider())
-            .when(crate::printing::SUPPORTED, |d| d.child(
+            .when(crate::printing::SUPPORTED || cfg!(target_family = "wasm"), |d| d.child(
                 menu_item("dm-print", "printer", crate::settings::text("打印"), false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(move |w, _, window, cx| w.print_doc(&print_id, window, cx))),

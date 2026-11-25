@@ -100,6 +100,8 @@ mod update;
 mod web;
 #[cfg(target_family = "wasm")]
 mod web_download;
+#[cfg(target_family = "wasm")]
+mod web_print;
 
 use fdl_core::{docxml, lang, markdown, model, palette, paste, store, time, whiteboard};
 

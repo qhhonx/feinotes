@@ -553,7 +553,34 @@ impl Workspace {
         .detach();
     }
 
+    #[cfg(target_family = "wasm")]
+    pub fn print_doc(&mut self, id: &str, _: &mut Window, cx: &mut Context<Self>) {
+        self.close_menus();
+        if self.current.as_deref() != Some(id) { return; }
+        if !self.flush(cx) {
+            self.show_toast_kind(ToastKind::Error, crate::settings::tr("请先完成当前文档的编辑", "Finish editing the document before printing"), cx);
+            return;
+        }
+        let Some(doc) = self.doc_of(id, cx) else { return; };
+        let root = crate::store::Store::active_dir();
+        let subs = self.sub_page_titles(id);
+        let sources = doc.asset_sources();
+        let pending = crate::web::archive::request_sources(sources.iter().map(String::as_str).chain(doc.cover.iter().map(|cover| cover.src.as_str())), &root);
+        let id = id.to_owned();
+        cx.spawn(async move |this, cx| {
+            crate::web::archive::wait_for_assets(pending, cx.background_executor()).await;
+            let Ok(Some(html)) = this.update(cx, |workspace, _| {
+                (workspace.current.as_deref() == Some(&id) && workspace.view == crate::app::View::Doc)
+                    .then(|| crate::html::browser_print(&doc, &subs, &|src| crate::web::archive::encoded_image(src, &root)))
+            }) else { return; };
+            if let Err(message) = crate::web_print::print(&html).await {
+                let _ = this.update(cx, |workspace, cx| workspace.show_toast_kind(ToastKind::Error, message, cx));
+            }
+        }).detach();
+    }
+
     /// 打印: the system print panel over the same A4 layout as PDF.
+    #[cfg(not(target_family = "wasm"))]
     pub fn print_doc(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.close_menus();
         if !printing::SUPPORTED {
