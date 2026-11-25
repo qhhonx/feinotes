@@ -508,6 +508,8 @@ impl Workspace {
                     crate::app::DropImport::Local(id) => crate::localized_format!("「{}」", "“{}”", title_of(id)),
                     crate::app::DropImport::Files(p) if p.len() == 1 => crate::localized_format!("「{}」", "“{}”", p[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
                     crate::app::DropImport::Files(p) => crate::localized_format!("这 {} 项", "these {} items", p.len()),
+                    #[cfg(target_family = "wasm")]
+                    crate::app::DropImport::Browser(files) => crate::localized_count!(files.count, "这 {} 项", "{} item", "these {} items", files.count),
                 };
                 (
                     crate::localized_format!("是否将{}导入到「{}」？", "Import {} into “{}”?", what_s, place),

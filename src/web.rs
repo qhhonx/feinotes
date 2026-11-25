@@ -5,7 +5,7 @@
 //! canvas text (gpui_web).
 
 pub(crate) mod file_import;
-mod file_drop;
+pub(crate) mod file_drop;
 
 use crate::*;
 use std::borrow::Cow;

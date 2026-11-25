@@ -68,7 +68,7 @@ impl Workspace {
     }
 
     /// 是否导入: asked before anything from outside comes into the library.
-    fn ask_import(&mut self, what: crate::app::DropImport, target: SidebarDropAt, cx: &mut Context<Self>) {
+    pub(crate) fn ask_import(&mut self, what: crate::app::DropImport, target: SidebarDropAt, cx: &mut Context<Self>) {
         self.row_menu = None;
         self.confirm = Some(crate::app::Confirm::Import { what, target });
         cx.notify();
@@ -85,6 +85,13 @@ impl Workspace {
         match what {
             crate::app::DropImport::Files(paths) => self.import_dropped_files(paths, target, window, cx),
             crate::app::DropImport::Local(id) => self.import_dropped_local(&id, target, window, cx),
+            #[cfg(target_family = "wasm")]
+            crate::app::DropImport::Browser(files) => {
+                if let Some(parent) = target.parent {
+                    self.landed_in(Some(&parent));
+                    files.import(self, parent, window, cx);
+                }
+            }
         }
     }
 

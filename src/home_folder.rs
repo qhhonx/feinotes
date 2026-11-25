@@ -663,10 +663,8 @@ impl Workspace {
     }
 
     #[cfg(target_family = "wasm")]
-    pub(crate) fn browser_drop_parent(&self, at: Point<Pixels>, window: &Window) -> Option<String> {
-        if !matches!(self.view, crate::app::View::Home | crate::app::View::Folder)
-            || self.confirm.is_some() || self.store.loading() || self.store.file_task_busy() || self.file_history.busy
-            || self.sidebar_open && at.x < px(self.sidebar_w(window)) { return None; }
+    pub(crate) fn browser_drop_parent(&self, at: Point<Pixels>) -> Option<String> {
+        if !matches!(self.view, crate::app::View::Home | crate::app::View::Folder) { return None; }
         let page = if self.view == crate::app::View::Folder { self.folder_current.clone() } else { None };
         self.drop_folder_at(at).or(page).or_else(|| self.store.active_top().map(|key| crate::shared_store::top_row(&key)))
     }

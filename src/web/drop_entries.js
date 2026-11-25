@@ -53,6 +53,7 @@ export function listenQuietFileDrop(destination, maxEntries) {
             name === "node_modules" || name === "target" ||
             name.startsWith(".") && name !== ".assets" && name !== ".obsidian"
         );
-        destination(x, y, readDropEntries(entries, {entries: maxEntries, depth: 32}, skip, () => true));
+        const read = () => readDropEntries(entries, {entries: maxEntries, depth: 32}, skip, () => true);
+        destination(x, y, read, entries.length);
     });
 }

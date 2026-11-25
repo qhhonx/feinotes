@@ -333,7 +333,12 @@ pub enum Confirm {
 
 /// What a sidebar drop would import: files and folders from the Finder, or a 本机文件.
 #[derive(Clone, Debug)]
-pub enum DropImport { Files(Vec<std::path::PathBuf>), Local(String) }
+pub enum DropImport {
+    Files(Vec<std::path::PathBuf>),
+    Local(String),
+    #[cfg(target_family = "wasm")]
+    Browser(crate::web::file_drop::BrowserDrop),
+}
 
 /// What to do once the open document is safely on disk (or its changes given up).
 pub type AfterSave = Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
