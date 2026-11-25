@@ -884,13 +884,18 @@ impl WebWindowInner {
                     .take_while(|(old_unit, new_unit)| old_unit == new_unit)
                     .count()
             });
+            // quiet.md: Shared text inside the pre-edit selection is still
+            // part of a replacement. Only trim an unchanged prefix before it.
+            let (element_selection_start, element_selection_end) =
+                this.ime_mirror.stored_selection();
             let prefix_length = old_units
                 .iter()
                 .zip(&new_units)
                 .take_while(|(old_unit, new_unit)| old_unit == new_unit)
                 .count()
                 .min(old_units.len() - suffix_length)
-                .min(new_units.len() - suffix_length);
+                .min(new_units.len() - suffix_length)
+                .min(element_selection_start as usize);
 
             let inserted_text = String::from_utf16_lossy(
                 &new_units[prefix_length..new_units.len() - suffix_length],
@@ -900,8 +905,6 @@ impl WebWindowInner {
             // The edit's shape relative to the element's pre-edit selection.
             // The element is private to the IME and these syncs, so the
             // stored selection is exact.
-            let (element_selection_start, element_selection_end) =
-                this.ime_mirror.stored_selection();
             let removed_before_selection =
                 (element_selection_start as usize).saturating_sub(prefix_length);
             let removed_after_selection =
