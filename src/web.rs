@@ -4,72 +4,12 @@
 //! monospace font are fetched too, and CJK text falls back to the browser's
 //! canvas text (gpui_web).
 
+pub(crate) mod file_import;
+
 use crate::*;
 use std::borrow::Cow;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
-
-#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
-export function pickQuietDocuments(accept) {
-  return new Promise((resolve, reject) => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = accept;
-    input.multiple = true;
-    input.hidden = true;
-    const settle = files => { input.remove(); resolve(files); };
-    input.onchange = () => settle(Array.from(input.files));
-    input.oncancel = () => settle([]);
-    document.body.append(input);
-    try { if (input.showPicker) input.showPicker(); else input.click(); }
-    catch (error) { input.remove(); reject(error); }
-  });
-}
-"#)]
-extern "C" {
-    #[wasm_bindgen::prelude::wasm_bindgen(js_name = pickQuietDocuments)]
-    fn pick_documents(accept: &str) -> js_sys::Promise;
-}
-
-pub(crate) struct ImportStaging(std::path::PathBuf);
-
-impl Drop for ImportStaging {
-    fn drop(&mut self) { let _ = fdl_core::vfs::remove_dir_all(&self.0); }
-}
-
-/// Open the browser picker while the click still has user activation.
-pub(crate) fn select_documents(accept: &str) -> JsFuture {
-    JsFuture::from(pick_documents(accept))
-}
-
-/// Copy selected files into an isolated in-memory directory for the regular importer.
-pub(crate) async fn stage_documents(files: JsFuture, max_bytes: u64)
-    -> Result<Option<(std::sync::Arc<ImportStaging>, Vec<std::path::PathBuf>)>, wasm_bindgen::JsValue> {
-    use std::path::{Path, PathBuf};
-    use wasm_bindgen::JsValue;
-    let files = files.await?.dyn_into::<js_sys::Array>()?;
-    if files.length() == 0 { return Ok(None) }
-    let staging = std::sync::Arc::new(ImportStaging(PathBuf::from("/.quiet-web-import").join(uuid::Uuid::new_v4().to_string())));
-    let mut paths = Vec::new();
-    let mut total = 0.;
-    for (index, item) in files.iter().enumerate() {
-        let file = item.dyn_into::<web_sys::File>()?;
-        let name = file.name();
-        let component = Path::new(&name).file_name().and_then(|name| name.to_str());
-        if component != Some(name.as_str()) || name.contains('\\') || file.size() > max_bytes as f64 {
-            return Err(JsValue::from_str("invalid or oversized document file"));
-        }
-        total += file.size();
-        if total > (max_bytes * 2) as f64 { return Err(JsValue::from_str("document selection is too large")); }
-        let buffer = JsFuture::from(file.array_buffer()).await?;
-        let folder = staging.0.join(index.to_string());
-        let path = folder.join(name);
-        fdl_core::vfs::create_dir_all(folder).and_then(|_| fdl_core::vfs::write(&path, js_sys::Uint8Array::new(&buffer).to_vec()))
-            .map_err(|error| JsValue::from_str(&error.to_string()))?;
-        paths.push(path);
-    }
-    Ok(Some((staging, paths)))
-}
 
 /// Fonts next to the page, in `fonts/`: what the first screen draws with
 /// (web/index.html preloads these, alongside the wasm)…

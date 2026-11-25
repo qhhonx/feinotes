@@ -1,6 +1,2 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M10 4h12M10 12h12M10 20h12"/>
-  <path d="M2.4 3.1L3.9 2v5" stroke-width="1.4"/>
-  <path d="M2.3 10.8a1.3 1.3 0 0 1 2.6.2c0 .6-.4 1-.8 1.5L2.3 14.4h2.9" stroke-width="1.4"/>
-  <path d="M2.4 17.4h2.6l-1.4 1.8a1.4 1.4 0 1 1-1.3 2.3" stroke-width="1.4"/>
-</svg>
+<!-- Nucleo UI Outline 18 v1.5.0: OrderedList. Copyright Nucleo. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2.5,11.661c.259-.921,1.152-1.425,2.116-1.411,.965,.014,1.872,.446,1.929,1.411s-.965,1.612-2.023,2.044c-1.058,.432-1.936,.835-2.023,2.044H6.548" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></path><line x1="9.5" y1="5.25" x2="16.25" y2="5.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><line x1="9.5" y1="12.75" x2="16.25" y2="12.75" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></line><path d="M4.75,7.5V2s-.63,1.108-1.967,1.364" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"></path></svg>

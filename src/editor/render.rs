@@ -814,6 +814,9 @@ impl R<'_> {
             font: None,
             italic: false,
             font_runs: None,
+            metrics: None,
+            breaks: None,
+            shift: Point::default(),
         };
         // Line numbers follow the wrapped rows of the last layout.
         let rows_per_line: Vec<usize> = {
@@ -2246,6 +2249,9 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
             font: None,
             italic: false,
             font_runs: None,
+            metrics: None,
+            breaks: None,
+            shift: Point::default(),
         };
         // Line numbers follow the wrapped rows of the last layout.
         let rows_per_line: Vec<usize> = {

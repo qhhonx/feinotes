@@ -242,6 +242,7 @@ pub struct MenuItem {
     extra: Vec<AnyElement>,
     shortcut: Option<SharedString>,
     checked: Option<bool>,
+    switch: Option<bool>,
     submenu: bool,
     inset: bool,
     selected: bool,
@@ -256,7 +257,7 @@ impl ParentElement for MenuItem {
 
 impl MenuItem {
     pub fn new(id: impl Into<ElementId>) -> Self {
-        MenuItem { base: div().id(id), icon: None, editor_icon: false, leading: None, label: None, description: None, extra: vec![], shortcut: None, checked: None,
+        MenuItem { base: div().id(id), icon: None, editor_icon: false, leading: None, label: None, description: None, extra: vec![], shortcut: None, checked: None, switch: None,
             submenu: false, inset: false, selected: false, open: false, destructive: false, disabled: false }
     }
     pub fn label(mut self, s: impl Into<SharedString>) -> Self { self.label = Some(s.into()); self }
@@ -272,6 +273,10 @@ impl MenuItem {
     pub fn shortcut(mut self, s: impl Into<SharedString>) -> Self { self.shortcut = Some(s.into()); self }
     /// One of a set of choices: a check at the end when on; when off, its room kept.
     pub fn checked(mut self, on: bool) -> Self { self.checked = Some(on); self }
+    /// A setting the row turns on and off: a `Switch` at the end, sliding when it flips. A switch row
+    /// keeps its menu open (Radix's CheckboxItem with `onSelect` prevented): its click toggles and
+    /// nothing else, so callers must not close the menu from it; Esc and a click outside still do.
+    pub fn switch(mut self, on: bool) -> Self { self.switch = Some(on); self }
     /// Opens a submenu: a chevron at the end.
     pub fn submenu(mut self, on: bool) -> Self { self.submenu = on; self }
     /// Keeps a glyph's room before the label though there is none (`data-inset`).
@@ -297,7 +302,8 @@ impl RenderOnce for MenuItem {
         let caption = if lit && !danger { fg } else { color::muted_foreground() };
         let fill = if danger { color::destructive_soft() } else { color::accent() };
         let two_lines = self.description.is_some();
-        let MenuItem { base, icon: ic, editor_icon, leading, label: lab, description, extra, shortcut, checked, submenu, inset, .. } = self;
+        let MenuItem { base, icon: ic, editor_icon, leading, label: lab, description, extra, shortcut, checked, switch, submenu, inset, .. } = self;
+        let key = id.clone();
         let probe = lab.clone().and_then(crate::devtools::row_probe);
         under(base, |d| {
             d.relative().children(probe).flex_none().when(!two_lines, |d| d.h(px(g.menu_row_h))).when(two_lines, |d| d.min_h(px(g.menu_row_h)).py(px(6.)))
@@ -321,6 +327,7 @@ impl RenderOnce for MenuItem {
                 .when_some(shortcut, |d, s| d.child(shortcut_text(s, caption)))
                 .when_some(checked, |d, on| d.child(div().flex_none().w(px(16.)).flex().justify_center().when(on, |d| d.child(icon("check", 16., fg)))))
                 .when(submenu, |d| d.child(icon("chevron-right", 16., fg)))
+                .when_some(switch, |d, on| d.child(match key { Some(k) => super::Switch::new(on).keyed(k), None => super::Switch::new(on) }))
         })
     }
 }

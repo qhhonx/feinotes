@@ -41,21 +41,48 @@ impl RenderOnce for Checkbox {
 /// off (`input/80` in the dark); the thumb `background`, in the dark `foreground` off and
 /// `primary-foreground` on.
 #[derive(IntoElement)]
-pub struct Switch { base: Div, on: bool, disabled: bool }
+pub struct Switch { base: Div, on: bool, disabled: bool, key: Option<ElementId> }
 impl Styled for Switch { fn style(&mut self) -> &mut StyleRefinement { self.base.style() } }
 impl Switch {
-    pub fn new(on: bool) -> Self { Switch { base: div(), on, disabled: false } }
+    pub fn new(on: bool) -> Self { Switch { base: div(), on, disabled: false, key: None } }
     pub fn disabled(mut self, on: bool) -> Self { self.disabled = on; self }
+    /// Slides to a new state where it is (shadcn's `transition-all`) rather than jumping: the switch
+    /// remembers its last state under `key` and eases the thumb and the track over `SLIDE` when it flips.
+    pub fn keyed(mut self, key: impl Into<ElementId>) -> Self { self.key = Some(key.into()); self }
+}
+
+/// How long a keyed switch takes to slide (Radix's thumb `transition-transform`, about 150ms).
+const SLIDE: std::time::Duration = std::time::Duration::from_millis(150);
+
+fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
+    let (a, b): (Rgba, Rgba) = (a.into(), b.into());
+    Rgba { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: a.a + (b.a - a.a) * t }.into()
 }
 impl RenderOnce for Switch {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (g, dark, on) = (geo(), crate::theme::dark(), self.on);
-        let thumb = if !dark { color::popover() } else if on { color::primary_foreground() } else { color::foreground() };
+        let thumb_of = |on: bool| if !dark { color::popover() } else if on { color::primary_foreground() } else { color::foreground() };
+        let track_of = |on: bool| if on { color::primary() } else { color::switch_off() };
+        // 0 off, 1 on; a keyed switch that just flipped is part way there
+        let t = match self.key {
+            Some(key) => {
+                let st = window.use_keyed_state((key, "switch"), cx, |_, _| (on, std::time::Instant::now() - SLIDE));
+                let (was, at) = *st.read(cx);
+                let at = if was != on { let now = std::time::Instant::now(); st.update(cx, |s, _| *s = (on, now)); now } else { at };
+                let k = (at.elapsed().as_secs_f32() / SLIDE.as_secs_f32()).min(1.);
+                if k < 1. { window.request_animation_frame(); }
+                // ease-out, as Radix's default easing reads
+                let e = 1. - (1. - k) * (1. - k);
+                if on { e } else { 1. - e }
+            }
+            None => if on { 1. } else { 0. },
+        };
+        let travel = g.switch_w - 2. - g.thumb;
         let mut d = self.base;
         let caller = std::mem::take(d.style());
         let mut d = d.flex_none().w(px(g.switch_w)).h(px(g.switch_h)).px(px(1.)).rounded_full().flex().items_center()
-            .bg(if on { color::primary() } else { color::switch_off() }).shadow(shadow::xs()).when(on, |d| d.justify_end()).when(self.disabled, |d| d.opacity(0.5))
-            .child(div().size(px(g.thumb)).rounded_full().bg(thumb));
+            .bg(mix(track_of(false), track_of(true), t)).shadow(shadow::xs()).when(self.disabled, |d| d.opacity(0.5))
+            .child(div().ml(px(travel * t)).size(px(g.thumb)).rounded_full().bg(mix(thumb_of(false), thumb_of(true), t)));
         d.style().refine(&caller);
         d
     }

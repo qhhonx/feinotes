@@ -27,7 +27,8 @@ impl Source {
             Source::Markdown => tr("选择文件夹", "Choose a folder"),
         }
     }
-    pub(crate) fn icon(self) -> &'static str { match self { Source::Obsidian => "library", Source::SiYuan => "doc-blocks", Source::Typora => "doc-md", Source::Markdown => "folder" } }
+    /// Every source is a folder picked on this computer: one folder glyph for all (the maintainer, 2026-11-25).
+    pub(crate) fn icon(self) -> &'static str { "folder" }
     /// The import that brings it in: 思源笔记 its own, the rest a folder of Markdown.
     pub(crate) fn kind(self) -> ImportKind { if self == Source::SiYuan { ImportKind::SiYuan } else { ImportKind::Folder } }
     /// Short: a stable name for ids and scripts.

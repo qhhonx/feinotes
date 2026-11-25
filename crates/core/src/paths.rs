@@ -62,6 +62,20 @@ pub fn lexical(path: &Path) -> PathBuf {
     out
 }
 
+/// A browser-selected relative path, in the `webkitRelativePath` spelling.
+/// Keep the original parts so callers can preserve the folder hierarchy.
+pub fn selection_parts(path: &str) -> Option<Vec<&str>> {
+    if path.len() > 4096 { return None; }
+    let parts: Vec<_> = path.split('/').collect();
+    (parts.len() <= 34 && parts.iter().all(|part| selection_component(part))).then_some(parts)
+}
+
+/// One name in a browser file selection.
+pub fn selection_component(name: &str) -> bool {
+    !name.is_empty() && !matches!(name, "." | "..") && !name.contains([':', '\\', '/'])
+        && !name.chars().any(char::is_control)
+}
+
 /// Two parts of a path name the same thing: a drive letter in either case.
 fn same_part(a: &Component, b: &Component) -> bool {
     match (a, b) {
@@ -78,6 +92,15 @@ mod tests {
     fn here(rest: &str) -> PathBuf {
         let base = if cfg!(windows) { PathBuf::from("C:\\lib") } else { PathBuf::from("/lib") };
         parts(rest).fold(base, |p, s| p.join(s))
+    }
+
+
+    #[test]
+    fn browser_selection_keeps_its_root_and_relative_names() {
+        assert_eq!(selection_parts("资料/nested/notes.md").as_deref(), Some(&["资料", "nested", "notes.md"][..]));
+        for path in ["", "/notes.md", "资料/../notes.md", "资料//notes.md", "资料/x\\y.md", "C:/notes.md"] {
+            assert_eq!(selection_parts(path), None, "{path}");
+        }
     }
 
     #[test]

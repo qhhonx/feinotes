@@ -3,10 +3,12 @@
 # python3 tools/harness/run.py tools/harness/examples/board_edit.txt
 move 700 700
 wait 1500
-# 侧栏「+」› 画板（新建后在笔记区打开）；之后的坐标从画板左上角算起
-anchor create-sidebar
+# 文件夹「lib」页面的「+」› 画板（新建后在笔记区打开）；之后的坐标从画板左上角算起
+row lib
+wait 800
+anchor create-folder
 wait 300
-click 295 236
+row Board
 wait 1200
 origin board
 shot board-0-empty

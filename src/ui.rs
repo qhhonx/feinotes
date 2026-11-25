@@ -271,14 +271,12 @@ pub trait TitleBarExt: InteractiveElement + Sized {
 
 impl<E: InteractiveElement> TitleBarExt for E {}
 
-/// Windows has a fourth button, 窗口保持在最前 (`on_top::title_button`).
-pub(crate) const WINDOW_CONTROLS_W: f32 = if cfg!(target_os = "windows") { 209. } else if cfg!(target_os = "linux") { 163. } else { 0. };
+pub(crate) const WINDOW_CONTROLS_W: f32 = if cfg!(any(target_os = "windows", target_os = "linux")) { 163. } else { 0. };
 pub(crate) fn header_right_inset() -> f32 {
     if cfg!(any(target_os = "windows", target_os = "linux")) { WINDOW_CONTROLS_W } else { (crate::app::HEADER_H - crate::app::HEADER_ACTIONS_H) / 2. }
 }
 
-/// `extra` goes left of minimize.
-pub(crate) fn window_controls(window: &Window, extra: Option<AnyElement>) -> Option<Div> {
+pub(crate) fn window_controls(window: &Window) -> Option<Div> {
     if !cfg!(any(target_os = "windows", target_os = "linux")) { return None; }
     // Windows must receive mouse-down to arm its native caption buttons.
     let button = |id: &'static str, area: WindowControlArea, label: &'static str| {
@@ -297,7 +295,6 @@ pub(crate) fn window_controls(window: &Window, extra: Option<AnyElement>) -> Opt
     // Native hit-test areas preserve Snap Layouts and the normal WM_CLOSE save guard.
     Some(div().absolute().top_0().right_0().h(px(crate::app::HEADER_H)).flex().items_center().title_bar()
         .child(div().mx(px(12.)).w(px(1.)).h(px(18.)).bg(Theme::line_divider()))
-        .children(extra)
         .child(button("window-minimize", WindowControlArea::Min, crate::settings::tr("最小化", "Minimize"))
             .child(icon("minus", 18., Theme::icon())))
         .child(button("window-maximize", WindowControlArea::Max, if maximized { crate::settings::tr("还原", "Restore") } else { crate::settings::tr("最大化", "Maximize") }).child(icon(if maximized { "copy" } else { "expand" }, 18., Theme::icon())))
@@ -748,6 +745,14 @@ pub fn wave_fill(fraction: f32, color: Hsla) -> impl IntoElement {
     }).absolute().inset_0()
 }
 
+
+/// A path as people read it: the home folder as "~".
+pub(crate) fn tilde(p: &std::path::Path) -> String {
+    match dirs::home_dir().and_then(|h| p.strip_prefix(&h).ok().map(|r| r.to_path_buf())) {
+        Some(r) => format!("~/{}", r.display()),
+        None => p.display().to_string(),
+    }
+}
 
 /// The breadcrumbs' size in every page header (a document's, a folder's, 主页's): shadcn's
 /// Breadcrumb, text-sm.

@@ -27,7 +27,7 @@ use super::scene::Scene;
 use super::sticky::{StickyNoteLayoutOpts, get_sticky_note_layout};
 use super::text::*;
 use super::text_measure::{Font, Measure, get_approx_min_line_height, get_approx_min_line_width, get_line_height_in_px, get_line_width, normalize_text};
-use super::text_wrapping::{get_wrapped_text_lines, js_space};
+use super::text_wrapping::{WrappedTextLine, get_wrapped_text_lines, js_space};
 use super::types::{BoundElement, BoundType, Element, TextAlign, VerticalAlign};
 use super::utils::ElementsMap;
 use super::viewport::{Canvas, Viewport, scene_coords_to_viewport_coords};
@@ -306,12 +306,19 @@ fn line_is_rtl(text: &str, offset: usize) -> bool {
     super::display::is_rtl(&text[start..end])
 }
 
+/// The editor's lines: `value` wrapped where the board wraps the text (at
+/// the text's width when it wraps). The caret math works in them and the
+/// editor breaks its rows where they start.
+pub fn editor_lines(m: &dyn Measure, b: &TextBox, value: &str, wraps: bool) -> Vec<WrappedTextLine> {
+    get_wrapped_text_lines(m, value, b.font, if wraps { b.width } else { f64::INFINITY })
+}
+
 /// `getCaretIndexFromInitialSceneCoords`: the caret offset closest to a
 /// scene point (a click that started the edit).
 pub fn caret_index_at(m: &dyn Measure, b: &TextBox, value: &str, point: Point, wraps: bool) -> usize {
     let [ux, uy] = point_rotate_rads(point, [b.x + b.width / 2., b.y + b.height / 2.], -b.angle);
     let (lx, ly) = (ux - b.x, uy - b.y);
-    let lines = get_wrapped_text_lines(m, value, b.font, if wraps { b.width } else { f64::INFINITY });
+    let lines = editor_lines(m, b, value, wraps);
     let i = ((ly / b.line_height_px).floor().min(lines.len() as f64 - 1.)).max(0.) as usize;
     let line = &lines[i];
     if line.text.is_empty() { return line.start; }
@@ -330,7 +337,7 @@ pub fn caret_index_at(m: &dyn Measure, b: &TextBox, value: &str, point: Point, w
 /// `getCaretViewportBounds`: the caret's line-high stroke on screen
 /// (`[left, top, right, bottom]`, via `to_view`).
 pub fn caret_viewport_bounds(m: &dyn Measure, b: &TextBox, value: &str, caret: usize, wraps: bool, to_view: impl Fn(Point) -> Point) -> [f64; 4] {
-    let lines = get_wrapped_text_lines(m, value, b.font, if wraps { b.width } else { f64::INFINITY });
+    let lines = editor_lines(m, b, value, wraps);
     // at a soft break, the caret shows at the start of the next line
     let i = lines.iter().rposition(|l| l.start <= caret).unwrap_or(0);
     let line = &lines[i];

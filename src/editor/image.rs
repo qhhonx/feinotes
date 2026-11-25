@@ -30,7 +30,7 @@ use web_time::Instant;
 pub(super) const MIN: f32 = 32.;
 /// Size of an image whose pixels can't be measured.
 const FALLBACK: (f32, f32) = (480., 270.);
-const FORMATS: [&str; 6] = ["jpeg", "jpg", "png", "gif", "webp", "bmp"];
+pub(crate) const FORMATS: [&str; 6] = ["jpeg", "jpg", "png", "gif", "webp", "bmp"];
 const MAX_BYTES: u64 = 20 * 1024 * 1024;
 pub(super) const BAD_FORMAT: &str = "图片格式仅支持 jpeg、jpg、png、gif、webp、bmp";
 const BAD_DIMS: &str = "识别图片宽高失败";
@@ -2425,12 +2425,16 @@ pub(crate) fn localize_pasted_images(blocks: &mut Vec<Block>) { localize_images_
 
 /// `localize_pasted_images` into `assets` (an import's library's).
 pub(crate) fn localize_images_in(assets: &Path, blocks: &mut Vec<Block>) {
+    localize_images_under(assets, blocks, None);
+}
+
+pub(crate) fn localize_images_under(assets: &Path, blocks: &mut Vec<Block>, root: Option<&Path>) {
     use base64::Engine;
     blocks.retain_mut(|b| {
-        localize_images_in(assets, &mut b.children);
+        localize_images_under(assets, &mut b.children, root);
         if let BlockKind::Table(t) = &mut b.kind {
             for cell in t.rows.iter_mut().flatten() {
-                localize_images_in(assets, &mut cell.blocks);
+                localize_images_under(assets, &mut cell.blocks, root);
                 if cell.blocks.is_empty() && !cell.is_covered() {
                     cell.blocks.push(Block::text(""));
                 }
@@ -2444,6 +2448,7 @@ pub(crate) fn localize_images_in(assets: &Path, blocks: &mut Vec<Block>) {
             image_block_named(assets, &bytes, &ext, None)
         } else if let Some(file) = local_file(src) {
             // Any absolute path, Windows' `C:\…` too: never left pointing at the folder it came from.
+            if root.is_some_and(|dir| !fdl_core::paths::lexical(&file).starts_with(dir)) { return false; }
             image_block_from_file_in(assets, &file)
         } else {
             return true;

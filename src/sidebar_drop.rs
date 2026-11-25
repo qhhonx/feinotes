@@ -142,7 +142,7 @@ impl Workspace {
         if target.slot.is_some() {
             for id in ids { let _ = self.store.move_in_tree(id, target.parent.as_deref(), target.before.as_deref()); }
         }
-        self.entries = self.store.list();
+        self.entries.set(self.store.list());
         self.sort();
         // Part of the import: undo checks every place it recorded.
         self.amend_file_record(ids, journal.take());

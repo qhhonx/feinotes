@@ -22,7 +22,7 @@ if b'devtools: cannot read' not in open(binary, 'rb').read():
     sys.exit(f'{binary} has no script driver: build it with `cargo build --release --features devtools`')
 env = {'HOME': os.path.expanduser('~'), 'QUIET_MD_HOME': lib, 'FDL_SCRIPT': script,
        'FDL_SHOTS': work, 'PATH': '/opt/homebrew/bin:/usr/bin:/bin'}
-for k in ('FDL_BOARD_PROF', 'FDL_BOARD_RENDER', 'FDL_TRACE', 'FDL_NOPARK', 'FDL_WINDOW_CAPTURE', 'FDL_NOBLINK', 'FDL_ANIMATE', 'FDL_RECORD_FPS', 'FDL_RECORD_START', 'TMPDIR', 'QUIET_MD_ONBOARDING', 'QUIET_MD_UPDATE_URL', 'QUIET_MD_FONT_URL', 'QUIET_MD_FONT_DIR', 'QUIET_MD_TRIAL_FONTS', 'QUIET_MD_FOLDERS', 'QUIET_MD_COMPONENTS'):
+for k in ('FDL_BOARD_PROF', 'FDL_BOARD_RENDER', 'FDL_TRACE', 'FDL_NOPARK', 'FDL_WINDOW_CAPTURE', 'FDL_NOBLINK', 'FDL_ANIMATE', 'FDL_RECORD_FPS', 'FDL_RECORD_START', 'TMPDIR', 'QUIET_MD_ONBOARDING', 'QUIET_MD_UPDATE_URL', 'QUIET_MD_FONT_URL', 'QUIET_MD_FONT_DIR', 'QUIET_MD_TRIAL_FONTS', 'QUIET_MD_FOLDERS', 'QUIET_MD_COMPONENTS', 'FDL_TREE_WRITE_DELAY'):
     if k in os.environ: env[k] = os.environ[k]
 code = subprocess.run(binary, env=env, cwd=work, stdout=open(os.path.join(work, 'log'), 'w'), stderr=subprocess.STDOUT).returncode
 # 3: a `row` / `anchor` step found nothing to click (the reason is in the log).

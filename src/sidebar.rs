@@ -37,6 +37,7 @@ const _: () = assert!(row_sub_top(0.) == 168.5);
 /// (6 above its 28pt label).
 pub(crate) const SB_X: f32 = 14.;
 pub(crate) const ROW_H: f32 = 30.;
+
 const DOC_ROW_H: f32 = ROW_H;
 pub(crate) const ROW_R: f32 = 9.;
 pub(crate) const ROW_GAP: f32 = crate::design::G.sidebar_gap;
@@ -124,7 +125,7 @@ impl Workspace {
             .child(div().flex_1())
             .children(crate::settings::update_pill(cx));
 
-        // The nav: 主页, then 添加文件夹 (another folder beside the default one, as
+        // The nav: 主页, then 打开文件夹 (another folder beside the default one, as
         // 文件 › 打开文件夹… does). 36px items, a tint when selected. Their icon
         // column (x 17) is shared with 搜索 and the doc rows.
         let home_on = self.view == View::Home;
@@ -146,11 +147,11 @@ impl Workspace {
             .child(label)
             .relative().children(crate::devtools::row_probe(label));
         let nav = div().flex_none().pt(px(4.)).pb(px(4.)).px(px(SB_X)).flex().flex_col().gap(px(ROW_GAP))
-            .child(item("nav-home", "home", crate::settings::tr("主页", "Home"), home_on).on_click(cx.listener(|w, _, _, cx| w.show_view(View::Home, cx))))
-            .child(item("nav-add-folder", "folder-plus", crate::settings::tr("添加文件夹", "Add a folder"), false)
-                .tip(crate::settings::tr("添加文件夹", "Add a folder"), Some(crate::shortcuts::hint("workspace::OpenFolder", "⌘ + Shift + O")))
-                .on_click(cx.listener(|w, _, window, cx| w.open_folder_dialog(window, cx))));
+            .child(item("nav-home", "home", crate::settings::tr("主页", "Home"), home_on).on_click(cx.listener(|w, _, _, cx| w.show_view(View::Home, cx))));
 
+        // 置顶 and 我的文档's heading stand still above the list, as 我的文档's own header (the
+        // maintainer, 2026-11-25): the rows scroll under it, and so does the scrollbar's track.
+        let mut fixed = div().flex_none().flex().flex_col().px(px(SB_X));
         let mut list = div().flex().flex_col().px(px(SB_X)).pb(px(8.));
         // Pinned docs are shortcuts: they stay in 我的文档 too.
         // 置顶 follows the same order as the lists below it. Only the pinned are
@@ -159,13 +160,13 @@ impl Workspace {
         let mut pinned: Vec<&Entry> = self.entries.iter().filter(|e| e.meta.pinned).collect();
         pinned.sort_by(|a, b| order.cmp(a, b));
         if !pinned.is_empty() {
-            list = list.child(self.section(0, crate::settings::text("置顶"), cx));
+            fixed = fixed.child(self.section(0, crate::settings::text("置顶"), cx));
             if !self.folded[0] {
                 for e in pinned {
-                    list = list.child(self.doc_row(e, "pinned", 0, false, cx));
+                    fixed = fixed.child(self.doc_row(e, "pinned", 0, false, cx));
                 }
             }
-            list = list.child(div().h(px(GROUP_GAP - SECTION_TOP)));
+            fixed = fixed.child(div().h(px(GROUP_GAP - SECTION_TOP)));
         }
         // 主页: one top-level folder shows its contents under 我的文档; several show as rows
         // of the tree there; none, a way to open one.
@@ -174,7 +175,7 @@ impl Workspace {
             list = list.child(self.empty_home(cx));
         } else {
             // One top-level folder or several, the heading is 我的文档 (#421); it never folds.
-            list = list.child(self.section(1, crate::settings::text("我的文档"), cx));
+            fixed = fixed.child(self.section(1, crate::settings::text("我的文档"), cx));
             list = list.child(self.render_folder_rows(window, cx));
         }
         // The first listing still running: grey rows in place of the tree, fading out over it once it is here.
@@ -237,6 +238,7 @@ impl Workspace {
             .flex_col()
             .child(header)
             .child(nav)
+            .child(fixed)
             .child(self.sidebar_drop_zone(div().id("doc-list").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.list_scroll).child(list).child(crate::design::scroll::bar("doc-list", &self.list_scroll, 0.)), cx))
             .children(crate::changelog::card(cx.listener(|_, _, _, cx| cx.notify())))
             .child(footer)
@@ -387,7 +389,7 @@ impl Workspace {
                     .child(trigger("section-add", "plus").ml(px(2.)).mr(px(4.)).child(self.home.track("create-sidebar")).selected(create_open).tip(crate::settings::tr("新建", "New"), None)
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(cx.listener(|w, _: &ClickEvent, _, cx| { cx.stop_propagation(); let Some(b) = w.home.anchor("create-sidebar") else { return }; let pos = crate::design::hang(b, crate::design::Align::Start, None).0; w.create_menu = if w.create_menu.is_some() { None } else { Some((None, pos)) }; cx.notify(); })))
-                    .on_click(cx.listener(|w, _, _, cx| { w.home.tab = crate::home::HomeTab::Recent; w.home.sort_menu = false; w.show_view(View::Home, cx); })),
+                    .on_click(cx.listener(|w, _, _, cx| { w.home.tab = crate::home::HomeTab::Recent; w.show_view(View::Home, cx); })),
             );
         }
         row.child(
@@ -447,7 +449,7 @@ impl Workspace {
         for id in &ids {
             self.copy_doc(id, cx);
         }
-        self.entries = self.store.list();
+        self.entries.set(self.store.list());
         self.sort();
         self.batch = None;
         self.row_menu = None;
@@ -690,7 +692,7 @@ impl Workspace {
                     _ if folder => {
                         let s = if key == "doc" { self.folder_drag.pop(&e.id) } else { 1. };
                         d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(1. - chevron)
-                            .child(icon(if drop_target { "folder-input" } else if open { "folder-open" } else { "folder" }, ROW_ICON, Theme::icon())
+                            .child(icon(if drop_target { "folder-input" } else { "folder" }, ROW_ICON, Theme::icon())
                                 .with_transformation(Transformation::scale(size(s, s)))))
                         .when(chevron > 0.005, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(chevron)
                             .child(icon("disclosure", ROW_ICON, Theme::icon())

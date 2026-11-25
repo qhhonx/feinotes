@@ -6,7 +6,7 @@ impl Store {
     pub fn tree_writer(&self) -> Self {
         Self { file_changes: vec![], top_dir: self.top_dir.clone(), index: self.index.clone(), foreign: self.foreign.clone(), trash: self.trash.clone(), flat: self.flat,
             loaded: Default::default(), copied: Default::default(), parsed: self.parsed.clone(), checked: self.checked.clone(), writes: Default::default(), warnings: vec![], migrated: None, batch: Default::default(), view: Default::default(),
-            v5: self.v5, me: self.me.clone(), clock: self.clock.clone(), seen: self.seen.clone(), merged: self.merged.clone(), key: self.key.clone(), place_by_hand: self.place_by_hand, v6: self.v6, seen_trash: self.seen_trash.clone(), purging: Default::default(), synced: Default::default() }
+            v5: self.v5, me: self.me.clone(), clock: self.clock.clone(), seen: self.seen.clone(), merged: self.merged.clone(), key: self.key.clone(), place_by_hand: self.place_by_hand, v6: self.v6, seen_trash: self.seen_trash.clone(), purging: Default::default(), synced: Default::default(), name_later: Default::default() , here: self.here.clone() , clean_due: None }
     }
 
     pub fn take_warnings(&mut self) -> Vec<String> { std::mem::take(&mut self.warnings) }

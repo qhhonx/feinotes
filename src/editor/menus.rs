@@ -172,8 +172,8 @@ pub const SLASH_ITEMS: &[SlashItem] = &[
         group: 1,
         keywords: &["gongshi", "gs", "latex", "formula", "equation", "math"],
     },
-    SlashItem { kind: SlashKind::DataTable, label: "数据表", icon: "table", color: TEAL, group: 1, keywords: &["数据表", "多维表格", "shujubiao", "sjb", "duoweibiaoge", "database", "bitable", "datatable", "base"] },
-    SlashItem { kind: SlashKind::Board, label: "画板", icon: "palette", color: GREEN, group: 1, keywords: &["画板", "huaban", "hb", "board", "whiteboard", "excalidraw", "draw"] },
+    SlashItem { kind: SlashKind::DataTable, label: "数据表", icon: "doc-table", color: TEAL, group: 1, keywords: &["数据表", "多维表格", "shujubiao", "sjb", "duoweibiaoge", "database", "bitable", "datatable", "base"] },
+    SlashItem { kind: SlashKind::Board, label: "画板", icon: "board", color: GREEN, group: 1, keywords: &["画板", "huaban", "hb", "board", "whiteboard", "excalidraw", "draw"] },
     SlashItem { kind: SlashKind::Button, label: "按钮", icon: "button", color: BLUE, group: 1, keywords: &["按钮", "anniu", "an", "button"] },
     SlashItem {
         kind: SlashKind::Reminder,

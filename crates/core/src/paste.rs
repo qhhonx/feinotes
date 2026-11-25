@@ -983,6 +983,13 @@ fn md_blocks(lines: &[&str], off: Off, mut spans: Option<&mut Vec<(usize, usize)
         }
         let ind = indent_of(line);
         let body = line.trim();
+        // An empty paragraph, as Markdown files are written (`markdown::BLANK`).
+        if body == crate::markdown::BLANK {
+            out.push(Block::text(""));
+            last_list = false;
+            i += 1;
+            continue;
+        }
         if let Some((b, n)) = display_math(&lines[i..]) {
             out.push(b);
             i += n;
@@ -1312,6 +1319,17 @@ pub fn is_numeric_math(src: &str) -> bool {
 /// rules of the live shortcuts (`~x~` is underline), and paired `<u>…</u>`
 /// (how Markdown export writes underline; no other HTML). Paste turns escapes,
 /// images and `<…>` autolinks off.
+/// A numeric character reference at the start of `s` (`&#32;`, `&#xA0;`):
+/// the character and the reference's length.
+pub(crate) fn char_ref(s: &str) -> Option<(char, usize)> {
+    let body = s.strip_prefix("&#")?;
+    let (hex, digits) = match body.strip_prefix(['x', 'X']) { Some(h) => (true, h), None => (false, body) };
+    let n = digits.bytes().take_while(|b| if hex { b.is_ascii_hexdigit() } else { b.is_ascii_digit() }).count();
+    if n == 0 || n > if hex { 6 } else { 7 } || digits.as_bytes().get(n) != Some(&b';') { return None; }
+    let ch = char::from_u32(u32::from_str_radix(&digits[..n], if hex { 16 } else { 10 }).ok()?).filter(|&c| c != '\0')?;
+    Some((ch, s.len() - digits.len() + n + 1))
+}
+
 pub fn md_inline(s: &str) -> RichText {
     let mut out = RichText::default();
     let mut plain = String::new();
@@ -1331,6 +1349,18 @@ pub fn md_inline(s: &str) -> RichText {
         if c == '\\' && let Some(next) = rest[1..].chars().next().filter(char::is_ascii_punctuation) {
             plain.push(next);
             i += 1 + next.len_utf8();
+            continue;
+        }
+        // `<br>`, a line break inside the block, and `&#32;`, a character
+        // (a space a line would lose), as Markdown files are written.
+        if c == '<' && let Some(t) = ["<br>", "<br/>", "<br />"].into_iter().find(|t| rest.get(..t.len()).is_some_and(|r| r.eq_ignore_ascii_case(t))) {
+            plain.push('\n');
+            i += t.len();
+            continue;
+        }
+        if c == '&' && let Some((ch, n)) = char_ref(rest) {
+            plain.push(ch);
+            i += n;
             continue;
         }
         // Code span.

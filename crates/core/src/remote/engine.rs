@@ -37,7 +37,10 @@ pub fn synced(path: &str) -> bool {
     match parts[..] {
         [".gitignore"] => true,
         [".quiet", "format.json"] => true,
+        // FORMAT 5's whole file per device; FORMAT 6's shards in a folder per
+        // device. Not a conversion's `<id>.tmp/` or the `<id>.json.single` it keeps.
         [".quiet", "meta", file] => file.ends_with(".json"),
+        [".quiet", "meta", dev, file] => !dev.ends_with(".tmp") && file.ends_with(".json"),
         // FORMAT 5's shared trash index and the copy FORMAT 6 keeps of it are this computer's.
         [".quiet", "trash", "index.json" | "index.json.v5"] => false,
         [".quiet", "trash" | "themes", _, ..] => true,
@@ -52,6 +55,7 @@ pub fn synced(path: &str) -> bool {
 fn skipped_dir(path: &str) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
     match parts[..] {
+        [".quiet", "meta", dev, ..] if dev.ends_with(".tmp") => true,
         [".quiet"] | [".assets"] | [".quiet", "meta" | "trash" | "themes", ..] => false,
         [".assets", "thumbs", ..] => true,
         [".assets", ..] => false,
@@ -84,6 +88,7 @@ const GITIGNORE_END: &str = "# <<< Quiet.md";
 const GITIGNORE: &[&str] = &[
     ".quiet/.lock", ".quiet/index.json", ".quiet/index.json.bak", ".quiet/*.corrupt-*", ".quiet/settings.json",
     ".quiet/history/", ".quiet/history-trash/", ".quiet/before-folders-*/", ".quiet/trash/index.json", ".quiet/trash/index.json.v5", ".assets/thumbs/",
+    ".quiet/meta/*.json.single", ".quiet/meta/*.tmp/",
     "*.sqlite-journal", "*.tmp", ".DS_Store", "Thumbs.db",
 ];
 

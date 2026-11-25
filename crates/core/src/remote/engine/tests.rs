@@ -9,6 +9,7 @@ fn only_quiet_mds_files_are_synced() {
     for p in [
         "周报.xml", "a/b/提案.md", "白板.excalidraw", "表.sqlite", "README.MD", ".gitignore",
         ".assets/a1b2.png", ".assets/x/y.pdf", ".quiet/format.json", ".quiet/meta/device-1.json",
+        ".quiet/meta/device-1/device.json", ".quiet/meta/device-1/3f.json", ".quiet/meta/device-1/07 2.json",
         ".quiet/trash/周报.xml", ".quiet/trash/a/b.png", ".quiet/themes/暖色.json",
     ] { assert!(synced(p), "{p}") }
     for p in [
@@ -16,7 +17,11 @@ fn only_quiet_mds_files_are_synced() {
         ".quiet/meta/x.txt", ".quiet/trash", ".assets/thumbs/a.png", ".assets", "表.sqlite-journal", "周报.xml.1234.tmp",
         ".DS_Store", "a/.DS_Store", "Thumbs.db", ".git/config", ".obsidian/x.md", "a/.hidden/x.xml", "photo.png", "notes.txt",
         "a/.gitignore", "x.lock", ".quiet/trash/index.json", ".quiet/trash/index.json.v5",
+        ".quiet/meta/device-1.json.single", ".quiet/meta/device-1.tmp/07.json", ".quiet/meta/device-1.tmp/device.json",
+        ".quiet/meta/device-1/07.json.bak", ".quiet/meta/device-1/07.json.1234.tmp", ".quiet/meta/device-1/x/07.json",
     ] { assert!(!synced(p), "{p}") }
+    // A conversion's folder is not even looked into.
+    assert!(skipped_dir(".quiet/meta/device-1.tmp") && !skipped_dir(".quiet/meta/device-1"));
 }
 
 #[test]
@@ -271,6 +276,29 @@ fn first_sync_three_ways() {
     assert_eq!(o.conflicts, vec![("周报.xml".to_string(), "周报（冲突 · Windows）.xml".to_string(), 1)]);
     assert_eq!(c.files(), map(&[("周报.xml", "other"), ("周报（冲突 · Windows）.xml", "1"), ("自己的.md", "mine"), (".assets/a.png", "png")]));
     assert_eq!(remote_text(&r), map(&[("周报.xml", "other"), ("自己的.md", "mine"), (".assets/a.png", "png")]));
+}
+
+/// FORMAT 6: each device's shards go both ways, a shard per file as any
+/// other; the copy a conversion keeps and its half-made folder stay here.
+#[test]
+fn metadata_shards_sync_and_the_conversions_leftovers_stay() {
+    let (r, a, b) = (FakeRemote::new(), Device::new("MacBook"), Device::new("iPad"));
+    a.write(".quiet/format.json", "{\"format\":6}");
+    a.write(".quiet/meta/aaaa/device.json", "{\"id\":\"aaaa\"}");
+    a.write(".quiet/meta/aaaa/07.json", "{\"v\":1}");
+    a.write(".quiet/meta/aaaa/07.json.bak", "old");
+    a.write(".quiet/meta/aaaa.json.single", "whole");
+    a.write(".quiet/meta/aaaa.tmp/07.json", "half");
+    a.sync(&r);
+    b.write(".quiet/meta/bbbb/3f.json", "{\"v\":1}");
+    b.sync(&r);
+    a.sync(&r);
+    let want = map(&[(".quiet/format.json", "{\"format\":6}"), (".quiet/meta/aaaa/device.json", "{\"id\":\"aaaa\"}"), (".quiet/meta/aaaa/07.json", "{\"v\":1}"), (".quiet/meta/bbbb/3f.json", "{\"v\":1}")]);
+    assert_eq!((remote_text(&r), b.files()), (want.clone(), want));
+    assert_eq!(a.read(".quiet/meta/bbbb/3f.json").as_deref(), Some("{\"v\":1}"));
+    // A later write of one shard moves that shard alone.
+    a.write(".quiet/meta/aaaa/07.json", "{\"v\":1,\"items\":{}}");
+    assert_eq!(a.sync(&r).uploaded, [".quiet/meta/aaaa/07.json"].map(String::from));
 }
 
 #[test]

@@ -312,7 +312,7 @@ impl Workspace {
         self.unsaved = false;
         self.status = crate::app::SaveStatus::Saved;
         self.sync_document(window, cx);
-        self.entries = self.store.list();
+        self.entries.set(self.store.list());
         self.sort();
         self.show_toast_kind(crate::editor_ui::ToastKind::Success, crate::settings::tr("已恢复到所选版本", "Restored that version"), cx);
     }
@@ -327,7 +327,7 @@ impl Workspace {
             let title = if tag.is_empty() { base } else { crate::localized_format!("{}（{}）", "{} ({})", base, tag) };
             match self.store.copy_table_version(&id, &name, &title) {
                 Ok(new) => {
-                    self.entries = self.store.list();
+                    self.entries.set(self.store.list());
                     self.sort();
                     self.close_history(cx);
                     self.open(&new, window, cx);
@@ -347,7 +347,7 @@ impl Workspace {
                 doc.title = crate::model::RichText::plain(title);
                 match self.store.create_from(&doc) {
                     Ok(new) => {
-                        self.entries = self.store.list();
+                        self.entries.set(self.store.list());
                         self.sort();
                         self.close_history(cx);
                         self.open(&new, window, cx);
