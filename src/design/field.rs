@@ -27,14 +27,14 @@ pub enum FieldSize {
 /// in the dark, the pointer's fill (`input/50`); open, it looks as it does shut (the list takes the
 /// keyboard, so the trigger has no ring).
 #[derive(IntoElement)]
-pub struct Field { base: Stateful<Div>, size: FieldSize, focused: bool, select: bool, disabled: bool, invalid: bool, children: Vec<AnyElement> }
+pub struct Field { base: Stateful<Div>, size: FieldSize, focused: bool, select: bool, disabled: bool, invalid: bool, focus_color: Option<Hsla>, children: Vec<AnyElement> }
 element!(Field);
 impl ParentElement for Field {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) { self.children.extend(elements) }
 }
 
 impl Field {
-    pub fn new(id: impl Into<ElementId>) -> Self { Field { base: div().id(id), size: FieldSize::Default, focused: false, select: false, disabled: false, invalid: false, children: vec![] } }
+    pub fn new(id: impl Into<ElementId>) -> Self { Field { base: div().id(id), size: FieldSize::Default, focused: false, select: false, disabled: false, invalid: false, focus_color: None, children: vec![] } }
     /// A select's trigger: the field's box with a chevron at the end.
     pub fn select(id: impl Into<ElementId>) -> Self { let mut f = Self::new(id); f.select = true; f }
     /// A select showing `value` (the small one, as in a panel line).
@@ -44,6 +44,8 @@ impl Field {
     pub fn sized(mut self, s: FieldSize) -> Self { self.size = s; self }
     /// The keyboard is in it.
     pub fn focused(mut self, on: bool) -> Self { self.focused = on; self }
+    /// Overrides the focus ring with the current surface's theme accent.
+    pub fn focus_color(mut self, color: Hsla) -> Self { self.focus_color = Some(color); self }
     /// A select whose list is open: as shadcn's trigger, no change to the box (kept so callers can say).
     pub fn open(self, _on: bool) -> Self { self }
     pub fn disabled(mut self, on: bool) -> Self { self.disabled = on; self }
@@ -57,10 +59,11 @@ impl RenderOnce for Field {
         let h = match self.size { FieldSize::Default => g.field_h, FieldSize::Sm => g.field_sm_h };
         let r = match self.size { FieldSize::Default => g.field_r, FieldSize::Sm => g.field_sm_r };
         let (focused, select, off, bad, children) = (self.focused, self.select, self.disabled, self.invalid, self.children);
+        let focus_color = self.focus_color;
         under(self.base, |d| {
             let d = d.flex_none().h(px(h)).pl(px(g.field_px)).pr(px(if select { 8. } else { g.field_px })).flex().items_center().gap(px(6.)).rounded(px(r)).border_1()
                 .text_size(px(g.text)).text_color(color::foreground()).bg(color::field()).when(off, |d| d.opacity(0.5));
-            let d = edge(d, focused, bad);
+            let d = edge(d, focused, bad, focus_color);
             d.when(select && !off, |d| d.cursor_pointer().hover(|s| s.bg(color::field_hover())))
                 .children(children)
                 .when(select, |d| d.child(icon("chevron-down", 16., color::muted_foreground()).ml_auto()))
@@ -70,13 +73,16 @@ impl RenderOnce for Field {
 
 /// A field's edge: `ring` and a 3pt `ring/50` halo with the keyboard in it; `destructive` (`/50` in
 /// the dark) and a `destructive/20` (`/40`) halo when invalid; else `input` with shadow-xs.
-fn edge(d: Stateful<Div>, focused: bool, bad: bool) -> Stateful<Div> {
+fn edge(d: Stateful<Div>, focused: bool, bad: bool, focus_color: Option<Hsla>) -> Stateful<Div> {
     let dark = crate::theme::dark();
     if bad {
         let halo = super::alpha(color::destructive(), if dark { 0.4 } else { 0.2 });
         let d = d.border_color(if dark { super::alpha(color::destructive(), 0.5) } else { color::destructive() });
         d.shadow(vec![shadow::ring(halo, 3.)])
-    } else if focused { d.border_color(color::ring()).shadow(vec![shadow::ring(color::focus_ring(), 3.)]) } else { d.border_color(color::input()).shadow(shadow::xs()) }
+    } else if focused {
+        let color = focus_color.unwrap_or_else(color::ring);
+        d.border_color(color).shadow(vec![shadow::ring(super::alpha(color, 0.5), 3.)])
+    } else { d.border_color(color::input()).shadow(shadow::xs()) }
 }
 
 /// A box that holds more than a line (`Textarea`: `rounded-md`, px-2.5 py-2, at least 64 tall).
@@ -95,7 +101,7 @@ impl RenderOnce for Textarea {
         under(self.base, |d| {
             let d = d.min_h(px(64.)).px(px(g.area_pad)).py(px(8.)).rounded(px(g.area_r)).bg(color::field()).border_1().text_size(px(g.text)).text_color(color::foreground())
                 .when(off, |d| d.opacity(0.5));
-            edge(d, focused, bad)
+            edge(d, focused, bad, None)
         })
     }
 }

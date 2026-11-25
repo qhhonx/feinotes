@@ -1286,11 +1286,8 @@ impl Workspace {
         let b = *self.pref_anchors.borrow().get(m.id)?;
         let rows = m.labels.iter().enumerate().map(|(i, label)| {
             let g = SharedString::from(format!("{}-opt-{i}", m.id));
-            ui::menu_row(g.clone(), g.clone())
-                .h(px(crate::mobile::control(ui::MENU_ROW_H)))
-                .when(i == m.focused, |d| d.bg(Theme::fill_hover()))
-                .child(div().flex_1().min_w_0().overflow_hidden().child(ui::menu_label(label.clone(), g.clone(), gpui::white())))
-                .child(div().flex_none().w(px(14.)).when(i == m.selected, |d| d.child(ui::menu_glyph("check", 14., g.clone()))))
+            MenuItem::new(g).label(label.clone()).selected(i == m.focused).checked(i == m.selected)
+                .h(px(crate::mobile::control(crate::design::menu::ROW_H)))
                 .on_hover(cx.listener(move |w, hovered: &bool, _, cx| if *hovered && let Some(m) = &mut w.pref_menu && m.focused != i { m.focused = i; cx.notify(); }))
                 .on_click(cx.listener(move |w, _, _, cx| w.pick_pref(i, cx)))
         }).collect::<Vec<_>>();
@@ -1571,11 +1568,8 @@ impl Workspace {
         let current = prefs().lang();
         let rows = Lang::ALL.map(|l| {
             let g = SharedString::from(format!("lang-opt-{}", l.code()));
-            ui::menu_row(g.clone(), g.clone())
-                .h(px(crate::mobile::control(ui::MENU_ROW_H)))
-                .when(l == focused, |d| d.bg(Theme::fill_hover()))
-                .child(div().flex_1().min_w_0().overflow_hidden().child(ui::menu_label(l.name(), g.clone(), gpui::white())))
-                .child(div().flex_none().w(px(14.)).when(l == current, |d| d.child(ui::menu_glyph("check", 14., g.clone()))))
+            MenuItem::new(g).label(l.name()).selected(l == focused).checked(l == current)
+                .h(px(crate::mobile::control(crate::design::menu::ROW_H)))
                 .on_hover(cx.listener(move |w, hovered: &bool, _, cx| if *hovered && w.lang_menu != Some(l) { w.lang_menu = Some(l); cx.notify(); }))
                 .on_click(cx.listener(move |w, _, _, cx| { w.lang_menu = None; w.set_pref(|p| p.set_lang(l), cx) }))
         });
@@ -1586,8 +1580,8 @@ impl Workspace {
                 w.lang_menu = None;
                 cx.notify();
             }))
-            .child(div().id("lang-menu-list").w(px(160.)).py(px(ui::MENU_PAD_Y)).flex().flex_col()
-                .when(cfg!(target_os = "ios"), |d| d.max_h(px(360.)).overflow_y_scroll()).children(rows));
+            .when(cfg!(target_os = "ios"), |d| d.max_h(px(360.)).overflow_y_scroll())
+            .children(rows);
         Some(deferred(anchored().anchor(Anchor::TopRight).position(point(b.right(), b.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 

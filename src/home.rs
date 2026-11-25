@@ -18,7 +18,7 @@ use crate::editor::image::picture;
 use crate::theme::{self, Theme};
 use crate::trash::{empty_state, list_header_text, list_line, page_header, row_hover};
 use crate::design::Popover;
-use crate::ui::{ROW_RADIUS, TipExt, icon, menu_glyph, menu_label, menu_row, ui_text};
+use crate::ui::{ROW_RADIUS, TipExt, icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::RefCell;
 use std::collections::{HashMap};
@@ -1400,11 +1400,14 @@ impl Workspace {
                             })));
                     }
                 }
-                let g = SharedString::from("home-folders-first");
-                menu = menu.when(self.home.tab == HomeTab::Recent, |d| d.child(menu_row(g.clone(), g.clone()).when(self.home.order() == HomeSort::Manual, |d| d.opacity(0.4))
-                    .child(menu_label(crate::settings::tr("文件夹优先", "Folders first"), g.clone(), gpui::white()).flex_1())
-                    .when(self.home.folders_first && self.home.order() != HomeSort::Manual, |d| d.child(menu_glyph("check", 14., g)))
-                    .on_click(cx.listener(|w, _, _, cx| { if w.home.sort == HomeSort::Manual { return; } w.home.folders_first = !w.home.folders_first; w.save_home(); w.home.sort_menu = false; cx.notify(); }))));
+                let manual = self.home.order() == HomeSort::Manual;
+                menu = menu.when(self.home.tab == HomeTab::Recent, |menu| menu.child(
+                    crate::design::MenuItem::new("home-folders-first")
+                        .label(crate::settings::tr("文件夹优先", "Folders first"))
+                        .checked(self.home.folders_first && !manual)
+                        .disabled(manual)
+                        .on_click(cx.listener(|w, _, _, cx| { if w.home.sort == HomeSort::Manual { return; } w.home.folders_first = !w.home.folders_first; w.save_home(); w.home.sort_menu = false; cx.notify(); })),
+                ));
                 out.push(place(point(b.right(), b.bottom() + px(4.)), Anchor::TopRight, menu));
             }
         out

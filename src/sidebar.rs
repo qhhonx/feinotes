@@ -6,8 +6,8 @@ use crate::app::{Confirm, RowMenu, View, Workspace};
 use crate::settings::display_title;
 use crate::store::Entry;
 use crate::theme::{self, Theme};
-use crate::design::{Button, MenuLabel, Popover};
-use crate::ui::{TipExt, TitleBarExt, icon, popover, ui_text};
+use crate::design::{Button, MenuItem, MenuLabel, MenuSeparator, Popover};
+use crate::ui::{TipExt, TitleBarExt, icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,16 +20,14 @@ impl SidebarEntry {
     pub fn new(section: SidebarSection, id: &str) -> Self { Self { section, id: id.into() } }
 }
 
-/// Row "…" menu geometry: 32pt rows, 11pt dividers, 6pt padding inside
-/// a 1pt border.
+/// Row "…" menu placement uses the design menu's rendered dimensions.
 pub(crate) const ROW_MENU_W: f32 = 180.;
-const ROW_ITEM: f32 = crate::ui::MENU_ROW_H;
-const ROW_DIVIDER: f32 = 11.;
 const ROW_ITEMS: usize = 8;
 const ROW_DIVIDERS: usize = 2;
 
 const fn row_menu_height(items: usize, dividers: usize) -> f32 {
-    2. + crate::ui::MENU_PAD_Y * 2. + items as f32 * ROW_ITEM + dividers as f32 * ROW_DIVIDER
+    use crate::design::menu::{PAD, ROW_H, SEP_H};
+    PAD * 2. + items as f32 * ROW_H + dividers as f32 * SEP_H
 }
 
 
@@ -957,23 +955,15 @@ impl Workspace {
                 && cx.global::<crate::shared_store::SharedStore>().can_have_children(&m.id)
         });
         // The context menu: rows on the quiet hover fill.
-        let item_c = |id: &'static str, ic: &'static str, label: &'static str, color: Hsla, icon_color: Hsla| {
-            let g = SharedString::from(id);
-            crate::ui::menu_row(id, g.clone())
-                .mx(px(0.))
-                .text_color(color)
-                .child(icon(ic, 16., icon_color))
-                .child(div().flex_1().min_w_0().child(crate::ui::menu_label(label, g, gpui::white())))
-        };
-        let item = |id, ic, label| item_c(id, ic, label, Theme::text(), Theme::icon());
+        let item = |id, ic, label| MenuItem::new(id).icon(ic).label(label);
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if m.id.starts_with("collection-") {
             let rename = m.id.clone(); let remove = rename.clone();
             let pos = if m.pos.x < px(0.) { point(-m.pos.x, m.pos.y + px(22.)) } else { m.pos };
-            return vec![deferred(anchored().anchor(m.corner).position(pos).snap_to_window_with_margin(px(8.)).child(popover().id("private-folder-menu").occlude().min_w(px(180.))
+            return vec![deferred(anchored().anchor(m.corner).position(pos).snap_to_window_with_margin(px(8.)).child(Popover::new("private-folder-menu").menu().min_w(px(180.))
                 .on_mouse_down_out(cx.listener(|w, _, _, cx| { w.row_menu = None; cx.notify(); }))
                 .child(item("private-folder-rename", "square-pen", crate::settings::tr("重命名", "Rename")).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.rename_collection(rename.clone(), window, cx); })))
-                .child(div().mx(px(8.)).my(px(5.)).h(px(1.)).bg(Theme::line_border()))
+                .child(MenuSeparator::new())
                 .child(item("private-folder-remove", "folder", crate::settings::tr("移除分类并保留文档", "Remove folder, keep items")).on_click(cx.listener(move |w, _, _, cx| w.remove_collection(&remove, cx))))))
                 .with_priority(2).into_any_element()];
         }
@@ -986,7 +976,7 @@ impl Workspace {
         let document_export = entry.meta.kind != crate::store::DocKind::Table;
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let (pinned, starred) = self.shared_child_marks(&m.id,cx).map_or((pinned,starred), |(pin,star)| (pin,star>0));
-        let divider = || div().mx(px(8.)).my(px(5.)).h(px(1.)).bg(Theme::line_border());
+        let divider = MenuSeparator::new;
         if m.batch {
             // Right-click in 批量操作: the batch menu minus 添加快捷方式到, 转移所有权.
             let n = self.batch.as_ref().map_or(0, |b| b.len());
@@ -1025,13 +1015,9 @@ impl Workspace {
         // width (from the previous frame — a submenu only opens after one)
         // places the 下载 submenu beside it.
         let menu_w_record = self.row_menu_w.clone();
-        let menu = popover()
-            .id("row-menu")
-            .occlude()
+        let menu = Popover::new("row-menu").menu()
             .min_w(px(ROW_MENU_W))
             .child(canvas(move |b, _, _| menu_w_record.set(Some(f32::from(b.size.width))), |_, _, _, _| {}).absolute().inset_0())
-            .px(px(5.))
-            .py(px(crate::ui::MENU_PAD_Y))
             .on_mouse_down_out(cx.listener(Self::dismiss_row_menu))
             .when(child, |d| d.child(
                 item("rm-child", "plus", crate::settings::tr("新建子文档", "New child page"))
@@ -1131,11 +1117,11 @@ impl Workspace {
                         .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&target, None, personal_sidebar || !w.is_shared(), cx))))
                 }
                 #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-                { None::<Stateful<Div>> }
+                { None::<MenuItem> }
             })
             .child(divider())
             .child(
-                item_c("rm-del", "bin", crate::settings::text("删除"), Theme::danger(), Theme::danger())
+                item("rm-del", "bin", crate::settings::text("删除")).destructive(true)
                     .on_hover(cx.listener(Self::close_row_download))
                     .on_click(cx.listener(move |w, _, window, cx| {
                         let id = del.clone();
@@ -1181,10 +1167,8 @@ impl Workspace {
         }
     }
 
-    pub(crate) fn row_download_item(&self, row: Stateful<Div>, open: bool, cx: &Context<Self>) -> Stateful<Div> {
-        row.relative().child(self.home.track("row-download-anchor"))
-            .when(open, |d| d.bg(Theme::fill_hover()))
-            .child(icon("chevron-right", 10., Theme::icon()))
+    pub(crate) fn row_download_item(&self, row: MenuItem, open: bool, cx: &Context<Self>) -> MenuItem {
+        row.relative().child(self.home.track("row-download-anchor")).submenu(true).open(open)
             .on_hover(cx.listener(|w, hovered: &bool, _, cx| {
                 if let Some(menu) = w.row_menu.as_mut().filter(|menu| *hovered && !menu.sub) {
                     menu.sub = true;
@@ -1199,8 +1183,7 @@ impl Workspace {
         record.set(None);
         let bounds = self.home.anchor("row-download-anchor").filter(|_| open)?;
         let pdf = action.clone();
-        let body = popover().id("rm-download-menu").occlude().min_w(px(130.))
-            .px(px(5.)).py(px(crate::ui::MENU_PAD_Y))
+        let body = Popover::new("rm-download-menu").menu().min_w(px(130.))
             .child(canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
             .when(crate::printing::SUPPORTED, |d| d.child(crate::docmenu::sub_item("rm-pdf", "PDF")
                 .on_click(cx.listener(move |w, _, window, cx| pdf(w, RowDownload::Pdf, window, cx)))))
@@ -1208,7 +1191,7 @@ impl Workspace {
                 .on_click(cx.listener(move |w, _, window, cx| action(w, RowDownload::Markdown, window, cx))));
         let flip = bounds.right() + px(140.) > window.viewport_size().width;
         let (corner, x) = if flip { (Anchor::TopRight, bounds.left() - px(4.)) } else { (Anchor::TopLeft, bounds.right() + px(4.)) };
-        Some(deferred(anchored().anchor(corner).position(point(x, bounds.top() - px(crate::ui::MENU_PAD_Y)))
+        Some(deferred(anchored().anchor(corner).position(point(x, bounds.top() - px(crate::design::menu::PAD)))
             .snap_to_window_with_margin(px(8.)).child(body)).with_priority(3).into_any_element())
     }
 

@@ -1185,15 +1185,10 @@ impl Editor {
         let Some(BlockKind::Code { lang, wrap, .. }) = self.core.kind_of(block) else { return None };
         let (lang, wrap) = (lang.clone(), *wrap);
         let text = self.core.block(block)?.text.text.clone();
-        let row = |id: &'static str, glyph, label: String| {
-            let g = SharedString::from(id);
-            crate::ui::menu_row(id, g.clone()).child(icon(glyph, 16., crate::theme::Theme::icon()))
-                .child(div().flex_1().min_w_0().overflow_hidden().child(crate::ui::menu_label(label, g, gpui::white())))
-        };
-        let el = crate::ui::popover().id("code-tools-menu").occlude().w(px(200.)).py(px(crate::ui::MENU_PAD_Y))
-            .flex().flex_col().shadow(theme::shadow_s4_down())
+        let row = |id: &'static str, glyph, label: String| MenuItem::new(id).editor_icon(glyph).label(label);
+        let el = Popover::new("code-tools-menu").menu().w(px(200.))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(row("code-action-language", "braces", lang).child(crate::ui::icon("chevron-right", 10., crate::theme::Theme::icon())).on_mouse_down(MouseButton::Left, cx.listener(move |e, _, window, cx| {
+            .child(row("code-action-language", "braces", lang).submenu(true).on_mouse_down(MouseButton::Left, cx.listener(move |e, _, window, cx| {
                 cx.stop_propagation(); e.open_lang_menu(block, window, cx);
             })))
             .child(row("code-action-wrap", "wrap-text", crate::settings::text(if wrap { "取消换行" } else { "自动换行" }).into()).on_mouse_down(MouseButton::Left, cx.listener(move |e, _, window, cx| {

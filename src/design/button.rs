@@ -68,12 +68,13 @@ pub struct Button {
     label: Option<SharedString>,
     selected: bool,
     disabled: bool,
+    accent: Option<(Hsla, Hsla)>,
 }
 element!(Button, parent);
 
 impl Button {
     pub fn new(id: impl Into<ElementId>, variant: ButtonVariant) -> Self {
-        Button { base: div().id(id), variant, size: ButtonSize::Default, icon: None, editor: false, icon_end: None, label: None, selected: false, disabled: false }
+        Button { base: div().id(id), variant, size: ButtonSize::Default, icon: None, editor: false, icon_end: None, label: None, selected: false, disabled: false, accent: None }
     }
     pub fn primary(id: impl Into<ElementId>) -> Self { Self::new(id, ButtonVariant::Primary) }
     pub fn outline(id: impl Into<ElementId>) -> Self { Self::new(id, ButtonVariant::Outline) }
@@ -100,6 +101,8 @@ impl Button {
     /// Pressed or in use (a toolbar tool with a filter on, a menu's trigger while it is open:
     /// `aria-expanded` / `aria-pressed`): `muted` (one step up on a raised surface in the dark).
     pub fn selected(mut self, on: bool) -> Self { self.selected = on; self }
+    /// A theme accent for a primary button and its label, or the border and fill of a selected outline.
+    pub fn accent(mut self, fill: Hsla, ink: Hsla) -> Self { self.accent = Some((fill, ink)); self }
     /// Not available: the whole button at 50% (`disabled:opacity-50`), no pointer.
     pub fn disabled(mut self, on: bool) -> Self { self.disabled = on; self }
 }
@@ -111,8 +114,9 @@ impl RenderOnce for Button {
         let placed = self.base.style().position == Some(Position::Absolute) || self.base.style().inset.top.is_some();
         let square = self.label.is_none() && self.icon_end.is_none();
         // the glyph takes the text's colour (`[&_svg]` inherits `currentColor`)
+        let accent = self.accent;
         let fg = match v {
-            ButtonVariant::Primary => color::primary_foreground(),
+            ButtonVariant::Primary => accent.map_or_else(color::primary_foreground, |(_, ink)| ink),
             ButtonVariant::Destructive => color::destructive(),
             ButtonVariant::Link => color::primary(),
             _ => color::foreground(),
@@ -129,10 +133,23 @@ impl RenderOnce for Button {
                 .when(!square, |d| d.pl(px(if icon_l.is_some() { sz.px_icon() } else { sz.px() })).pr(px(if icon_r.is_some() { sz.px_icon() } else { sz.px() })))
                 .when(!disabled, |d| d.cursor_pointer()).when(disabled, |d| d.opacity(0.5));
             let d = match v {
-                ButtonVariant::Primary => d.bg(color::primary()).when(!disabled, |d| d.hover(|s| s.bg(color::primary_hover()))),
-                ButtonVariant::Outline => d.border_1().border_color(if dark { color::input() } else { color::border() })
-                    .bg(if selected { color::muted() } else if dark { color::field() } else { color::background() }).shadow(shadow::xs())
-                    .when(!disabled, |d| d.hover(|s| s.bg(if dark { color::field_hover() } else { color::muted() }))),
+                ButtonVariant::Primary => {
+                    let (fill, hover) = accent.map_or_else(|| (color::primary(), color::primary_hover()),
+                        |(fill, _)| (fill, super::alpha(fill, 0.88)));
+                    d.bg(fill).when(!disabled, |d| d.hover(move |s| s.bg(hover)))
+                }
+                ButtonVariant::Outline => {
+                    let selected_accent = accent.filter(|_| selected).map(|(fill, _)| fill);
+                    let border = selected_accent.unwrap_or_else(|| if dark { color::input() } else { color::border() });
+                    let fill = selected_accent.map_or_else(
+                        || if selected { color::muted() } else if dark { color::field() } else { color::background() },
+                        |accent| super::alpha(accent, 0.16));
+                    let hover = selected_accent.map_or_else(
+                        || if dark { color::field_hover() } else { color::muted() },
+                        |accent| super::alpha(accent, 0.22));
+                    d.border_1().border_color(border).bg(fill).shadow(shadow::xs())
+                        .when(!disabled, |d| d.hover(move |s| s.bg(hover)))
+                }
                 ButtonVariant::Secondary => d.bg(color::secondary()).when(!disabled, |d| d.hover(|s| s.bg(color::secondary_hover()))),
                 ButtonVariant::Ghost => d.when(selected, |d| d.bg(ghost_on))
                     .when(!disabled, |d| d.hover(move |s| s.bg(if selected { ghost_on } else { ghost_hover }))),

@@ -147,6 +147,7 @@ pub(crate) fn status_card(kind: ToastKind, msg: &SharedString, window: &Window, 
 /// Popover shell shared by the slash menu, block menu and toolbar dropdowns:
 /// the light panel (macOS 26 menu material, near-white), hairline,
 /// radius 12, soft drop.
+#[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
 pub fn popover() -> Div {
     div()
         .bg(crate::theme::raised(Theme::popover_bg()))
@@ -158,40 +159,19 @@ pub fn popover() -> Div {
         .text_color(Theme::text())
 }
 
-/// The secondary button: white with a hairline and a 1px drop, 30 tall, radius 9.
-#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-pub fn secondary_button(id: &'static str, label: &'static str) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex_none()
-        .h(px(30.))
-        .px(px(16.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(9.))
-        .cursor_pointer()
-        .bg(crate::theme::raised(Theme::bg_body()))
-        .border_1()
-        .border_color(Theme::button_border())
-        .shadow(theme::shadow_button())
-        .hover(|s| s.bg(theme::c(craft::N100)))
-        .active(|s| s.bg(theme::c(craft::N200)))
-        .text_size(px(13.))
-        .line_height(px(20.))
-        .text_color(Theme::text())
-        .child(crate::settings::label(label))
-}
-
-
+#[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
 pub const MENU_RADIUS: f32 = 12.;
 /// A menu row: 32 tall, 13pt label, 16pt glyph; hovering lays the quiet
 /// fill the editor's menus use, and text and glyph keep their colours.
+#[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
 pub const MENU_ROW_H: f32 = 32.;
+#[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
 pub const MENU_PAD_Y: f32 = 6.;
 /// How far a menu row sits in from the menu's sides.
+#[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
 pub const MENU_INSET: f32 = 5.;
 
+#[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
 pub fn menu_row(id: impl Into<ElementId>, group: SharedString) -> Stateful<Div> {
     div()
         .id(id)
@@ -210,17 +190,6 @@ pub fn menu_row(id: impl Into<ElementId>, group: SharedString) -> Stateful<Div> 
         .text_color(Theme::text())
         .hover(|s| s.bg(Theme::fill_hover()))
 }
-
-/// A [`menu_row`]'s label; it keeps its colour on hover (the row's fill
-/// shows it). `_group` and `_hover` are left from the accent highlight.
-pub fn menu_label(label: impl Into<SharedString>, _group: SharedString, _hover: Hsla) -> Div {
-    div().whitespace_nowrap().child(crate::settings::label(label.into()))
-}
-
-/// Glyph of a [`menu_row`]: secondary, on hover too.
-pub fn menu_glyph(name: &str, size: f32, _group: SharedString) -> Svg { icon(name, size, Theme::icon()) }
-
-
 
 /// Column headers of the page lists: tertiary text (measured #88898B on
 /// the name / last-viewed / created columns).
@@ -241,18 +210,6 @@ pub fn row_hover(s: StyleRefinement) -> StyleRefinement {
 
 
 
-
-/// The window dimmed under a modal dialog: a light black veil.
-#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-pub fn scrim() -> Hsla {
-    theme::ca(craft::N1000, 0.25)
-}
-
-/// The modal dialog: white, radius 16, deep soft drop.
-#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-pub fn dialog(id: &'static str) -> Stateful<Div> {
-    div().id(id).occlude().rounded(px(16.)).bg(crate::theme::raised(Theme::bg_body())).shadow(theme::shadow_dialog()).font_family(theme::ui_family()).text_color(Theme::text())
-}
 
 /// A busy mark for a button: three short bars rising and falling in turn,
 /// for `t` seconds since it started. The caller asks for frames while it shows.

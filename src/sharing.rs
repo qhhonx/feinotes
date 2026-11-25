@@ -210,6 +210,10 @@ pub(crate) fn closed_link_detail(has_original: bool) -> Option<&'static str> {
         "To create a new invitation, stop sharing, then share the original again."))
 }
 
+fn shared_trash_description() -> &'static str {
+    tr("已下载的内容会保留在你的回收站，可恢复为普通文档。", "Downloaded content stays in your Trash and can be restored as a personal document.")
+}
+
 fn caption(text: impl Into<SharedString>) -> Div {
     div().w_full().min_w_0().text_size(px(13.)).line_height(px(20.)).text_color(Theme::text_caption()).child(ui::ui_para(text.into()))
 }
@@ -219,26 +223,42 @@ fn sharing_error(message: &str) -> Stateful<Div> {
         .text_color(crate::design::color::destructive()).child(ui::ui_para(message.to_owned()))
 }
 
-fn action(id: impl Into<ElementId>, label: &'static str, enabled: bool) -> Stateful<Div> {
-    settings::button(id, label).when(!enabled, |d| d.opacity(0.45).cursor_default())
+fn action(id: impl Into<ElementId>, label: &'static str, enabled: bool) -> crate::design::Button {
+    crate::design::Button::outline(id).sized(crate::design::ButtonSize::Sm).label(label).disabled(!enabled)
 }
 
 /// Sharing control used by the Lark interface.
-fn feishu_share_button(id: &'static str, labels: bool) -> Stateful<Div> {
+fn feishu_share_button(window: &Window, id: &'static str, glyph: &'static str, label: Option<&'static str>, open: bool) -> Stateful<Div> {
     use crate::feishu_theme::ud;
     let ink = white();
     let size = px(crate::app::HEADER_ACTIONS_H);
     div().id(id).no_drag().flex_none().h(size).min_w(size).rounded(px(6.))
         .flex().items_center().justify_center().gap(px(5.))
-        .bg(rgb(ud::B600)).text_color(ink).text_size(px(14.))
-        .child(ui::icon("share", 16., ink))
-        .when(labels, |d| d.min_w(px(80.)).px(px(10.)).child(tr("共享", "Share")))
+        .bg(rgb(if open { ud::B700 } else { ud::B600 })).text_color(ink)
+        .text_size(px(14.)).font_weight(FontWeight::NORMAL).line_height(px(20.))
+        .child(ui::icon(glyph, 16., ink))
+        .when_some(label, |d, label| {
+            let style = window.text_style().highlight(HighlightStyle { font_weight: Some(FontWeight::NORMAL), ..Default::default() });
+            let label_width = [tr("共享", "Share"), tr("已共享", "Shared")].into_iter()
+                .map(|text| window.text_system().shape_line(text.into(), px(14.), &[style.to_run(text.len())], None).width)
+                .fold(px(0.), Pixels::max);
+            d.w(label_width + px(35.)).whitespace_nowrap().child(label)
+        })
         .cursor_pointer().hover(|s| s.bg(rgb(ud::B700))).active(|s| s.bg(rgb(ud::B800)))
 }
 
 fn invitation_accent() -> Hsla {
     if settings::interface_feishu() { rgb(crate::feishu_theme::ud::B600).into() }
     else { crate::themes::interface().token("primary_500") }
+}
+
+fn sharing_panel_title(title: &'static str) -> Div {
+    div().min_w_0().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child(ui::ui_para(title))
+}
+
+fn sharing_popover(id: &'static str) -> crate::design::Popover {
+    crate::design::Popover::new(id)
+        .bg(crate::theme::raised(Theme::popover_bg())).text_color(Theme::text())
 }
 
 fn anchor_control(button: impl IntoElement, bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>) -> Div {
@@ -501,7 +521,8 @@ impl Workspace {
             let id = self.current.clone()?;
             if self.store.local_path(&id).is_some() { return None; }
             let button = if settings::interface_feishu() {
-                feishu_share_button("doc-create-share", self.header_action_labels(window))
+                feishu_share_button(window, "doc-create-share", "share",
+                    self.header_action_labels(window).then(|| tr("共享", "Share")), false)
             } else {
                 ui::grouped_toolbar_control(div().id("doc-create-share").no_drag().size(px(crate::app::HEADER_ACTIONS_H))
                     .flex().items_center().justify_center().cursor_pointer(), 8., Theme::fill_hover, Some(Theme::fill_pressed))
@@ -548,16 +569,13 @@ impl Workspace {
         let feishu = settings::interface_feishu();
         let attention = settings::sync_status::needs_attention(self,cx);
         let open = self.sharing.sync_panel_open || self.sharing.panel_open && self.sharing.permissions_only;
-        let button = div().id("doc-share-invite").no_drag().flex_none()
-            .h(px(crate::app::HEADER_ACTIONS_H)).min_w(px(crate::app::HEADER_ACTIONS_H))
-            .flex().items_center().justify_center().gap(px(5.)).cursor_pointer();
         let button = if feishu {
-            use crate::feishu_theme::ud;
-            button.rounded(px(6.)).bg(rgb(if open { ud::B700 } else { ud::B600 })).text_color(white())
-                .hover(|s| s.bg(rgb(ud::B700))).active(|s| s.bg(rgb(ud::B800)))
-                .child(ui::icon("shared-document", 18., white()))
-                .when(self.header_action_labels(window), |d| d.px(px(9.)).child(tr("共享", "Share")))
+            feishu_share_button(window, "doc-share-invite", "shared-document",
+                self.header_action_labels(window).then(|| tr("已共享", "Shared")), open)
         } else {
+            let button = div().id("doc-share-invite").no_drag().flex_none()
+                .h(px(crate::app::HEADER_ACTIONS_H)).min_w(px(crate::app::HEADER_ACTIONS_H))
+                .flex().items_center().justify_center().gap(px(5.)).cursor_pointer();
             ui::grouped_toolbar_control(button, 8., Theme::fill_hover, Some(Theme::fill_pressed))
                 .when(open, |d| d.bg(ui::toolbar_color("toolbar.button.hover").unwrap_or_else(Theme::fill_hover)))
                 .child(ui::participants_icon(false))
@@ -611,7 +629,7 @@ impl Workspace {
         let mut body = div().flex().flex_col().p(px(14.)).gap(px(8.))
             .child(div().flex().items_center().gap(px(7.))
                 .when(!feishu, |d| d.child(ui::participants_icon(false)))
-                .child(div().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).child(heading))
+                .child(sharing_panel_title(heading))
                 .when(feishu && !permissions_only, |d| d.child(div().rounded(px(5.)).px(px(5.)).bg(Theme::fill_hover()).text_size(px(12.)).child(people.len().to_string())))
                 .child(div().flex_1())
                 .child(crate::design::Button::close("collab-close")
@@ -650,28 +668,29 @@ impl Workspace {
                 }));
             body = body.child(list);
         }
-        body = body.child(div().h(px(1.)).bg(Theme::line_divider()));
+        use crate::design::{MenuItem, MenuSeparator};
         let members = room.clone();
         let access_title = if owner { tr("成员与权限…", "Members and access…") } else { tr("查看共享权限…", "View sharing access…") };
-        body = body.child(action("collab-members", access_title, !self.sharing.busy)
-            .on_click(cx.listener(move |w, _, window, cx| {
-                if owner { w.open_member_management(members.clone(),window,cx); }
-                else { w.sharing_sheet(Sheet::Access(members.clone()),window,cx); }
-            })));
+        let busy = self.sharing.busy;
+        let mut actions = div().flex().flex_col()
+            .child(MenuSeparator::new())
+            .child(MenuItem::new("collab-members").icon("shared-document").label(access_title).disabled(busy)
+                .on_click(cx.listener(move |w, _, window, cx| {
+                    if owner { w.open_member_management(members.clone(),window,cx); }
+                    else { w.sharing_sheet(Sheet::Access(members.clone()),window,cx); }
+                })));
         if permissions_only {
-            let mut sync = action("collab-cloud-settings", tr("同步状态", "Sync status"), true);
-            if settings::sync_status::needs_attention(self,cx) {
-                sync = sync.child(div().ml(px(6.)).font_weight(FontWeight::SEMIBOLD).text_color(settings::sync_status::marker_colors().0)
-                    .child(tr("需处理", "Needs attention")));
-            }
-            body = body.child(sync.on_click(cx.listener(|w, _, window, cx| w.open_shared_sync(window,cx))));
+            let attention = settings::sync_status::needs_attention(self,cx);
+            actions = actions.child(MenuItem::new("collab-cloud-settings").icon("cloud").label(tr("同步状态", "Sync status"))
+                .when(attention, |row| row.description(tr("需处理", "Needs attention")))
+                .on_click(cx.listener(move |w, _, window, cx| w.open_shared_sync(window,cx))));
         }
-        let end_room = room.clone();
-        body = body.child(div().h(px(1.)).bg(Theme::line_divider()))
-            .child(action("collab-end", self.shared_end_label(&room,cx), self.sharing_account_ready(cx))
-                .on_click(cx.listener(move |w, _, window, cx| w.open_end_shared(end_room.clone(), window, cx))));
+        body = body.child(actions.child(MenuSeparator::new())
+            .child(MenuItem::new("collab-end").label(self.shared_end_label(&room,cx)).destructive(true)
+                .disabled(!self.sharing_account_ready(cx) || busy)
+                .on_click(cx.listener(move |w, _, window, cx| w.open_end_shared(room.clone(), window, cx)))));
         Some(deferred(anchored().anchor(Anchor::TopRight).position(point(anchor.right(), anchor.bottom() + px(4.)))
-            .snap_to_window_with_margin(px(8.)).child(ui::popover().id("doc-sharing-panel").occlude()
+            .snap_to_window_with_margin(px(8.)).child(sharing_popover("doc-sharing-panel")
                 .w((window.viewport_size().width - px(16.)).min(px(if feishu { 340. } else { 300. })))
                 .max_h((window.viewport_size().height - anchor.bottom() - px(12.)).max(px(100.)))
                 .overflow_y_scroll().child(body).on_mouse_down_out(cx.listener(move |w, event: &MouseDownEvent, _, cx| {
@@ -697,15 +716,20 @@ impl Workspace {
         let (warning, _) = settings::sync_status::marker_colors();
         let close = crate::design::Button::close("shared-sync-close")
             .on_click(cx.listener(|w, _, window, cx| w.close_sharing(window, cx)));
-        let mut body = div().p(px(14.)).flex().flex_col().gap(px(8.))
+        use crate::design::{Separator, color};
+        let muted = color::muted_foreground();
+        let supporting_text = |text: SharedString| div().text_color(muted).child(ui::ui_para(text));
+        let mut body = div().flex().flex_col().gap(px(8.))
             .child(div().flex().justify_between().items_center().gap(px(8.))
-                .child(div().font_weight(FontWeight::SEMIBOLD).child(tr("同步状态", "Sync status"))).child(close))
-            .child(caption(state.scope))
-            .child(div().font_weight(FontWeight::SEMIBOLD).when(state.attention, |d| d.text_color(warning)).child(state.title))
-            .when(!state.detail.is_empty(), |d| d.child(caption(state.detail)))
-            .children(state.rows.into_iter().map(|(title,value)| div().flex().justify_between().gap(px(8.))
-                .border_t_1().border_color(Theme::line_divider()).pt(px(5.)).text_size(px(12.))
-                .child(title).child(value)));
+                .child(sharing_panel_title(tr("同步状态", "Sync status")).flex_1()).child(close))
+            .child(supporting_text(state.scope.into()))
+            .child(div().font_weight(FontWeight::SEMIBOLD).when(state.attention, |d| d.text_color(warning)).child(ui::ui_para(state.title)))
+            .when(!state.detail.is_empty(), |d| d.child(supporting_text(state.detail.into())))
+            .children(state.rows.into_iter().map(|(title,value)| div().flex().flex_col().gap(px(8.))
+                .child(Separator::new())
+                .child(div().flex().justify_between().gap(px(8.))
+                    .child(div().flex_1().min_w_0().text_color(muted).child(ui::ui_para(title)))
+                    .child(div().min_w_0().child(ui::ui_para(value))))));
         if let Some(operation) = state.action {
             let label = match operation {
                 Action::Retry => tr("立即同步", "Sync now"),
@@ -722,7 +746,7 @@ impl Workspace {
                 }))));
         }
         Some(deferred(anchored().anchor(Anchor::TopRight).position(point(anchor.right(), anchor.bottom()+px(4.)))
-            .snap_to_window_with_margin(px(8.)).child(ui::popover().id("shared-sync-popover").occlude()
+            .snap_to_window_with_margin(px(8.)).child(sharing_popover("shared-sync-popover").padded()
                 .w((window.viewport_size().width-px(16.)).min(px(330.)))
                 .max_h((window.viewport_size().height-anchor.bottom()-px(12.)).max(px(100.)))
                 .overflow_y_scroll().child(body)
@@ -1037,21 +1061,24 @@ impl Workspace {
                 body = body.child(caption(crate::localized_format!("将 {} 项移入「{}」。这个文件夹的所有成员都能访问移入的文档及子文件夹。", "Move {} items into “{}”. Everyone with access to this folder can access the moved documents and subfolders.", ids.len(), room.title)));
             }
             Sheet::RenameCollection(_) => {
-                body = body.child(TextField::framed(&self.sharing.folder_name, px(360.), window, cx))
+                body = body.child(crate::design::Field::new("private-collection-name").w_full().focus_color(accent)
+                    .focused(self.sharing.folder_name.read(cx).is_focused(window)).child(self.sharing.folder_name.clone()))
                     .child(caption(tr("只有你能看到这个分类。", "Only you can see this folder.")));
             }
             Sheet::EndMany(rooms, personal) => {
-                if !personal.is_empty() { body = body.child(caption(crate::localized_format!("将 {} 篇个人文档移到回收站。", "Move {} personal documents to Trash.", personal.len()))); }
+                let mut details = Vec::new();
+                if !personal.is_empty() { details.push(crate::localized_format!("将 {} 篇个人文档移到回收站。", "Move {} personal documents to Trash.", personal.len())); }
                 let owned = rooms.iter().filter(|room| room.scope.owner.is_none()).count(); let received = rooms.len() - owned;
-                if owned > 0 { body = body.child(caption(crate::localized_format!("删除你创建的 {} 篇共享文档，所有参与者都将无法访问。", "Delete {} documents shared by you. Everyone will lose access.", owned))); }
-                if received > 0 { body = body.child(caption(crate::localized_format!("离开别人共享的 {} 篇文档，其他人不受影响。", "Leave {} documents shared with you. Other people keep access.", received))); }
-                body = body.child(caption(tr("已下载的内容会保留在你的回收站，可恢复为普通文档。", "Downloaded content stays in your Trash and can be restored as a personal document.")));
-                for room in rooms.iter().take(5) { body = body.child(caption(display_title(&room.title))); }
+                if owned > 0 { details.push(crate::localized_format!("删除你创建的 {} 篇共享文档，所有参与者都将无法访问。", "Delete {} documents shared by you. Everyone will lose access.", owned)); }
+                if received > 0 { details.push(crate::localized_format!("离开别人共享的 {} 篇文档，其他人不受影响。", "Leave {} documents shared with you. Other people keep access.", received)); }
+                details.push(shared_trash_description().to_owned());
+                details.extend(rooms.iter().take(5).map(|room| display_title(&room.title)));
+                return Some(self.render_shared_end_confirmation(title, tr("确认移除", "Remove documents"), details.join("\n"), window, cx));
             }
             Sheet::End(room) => {
-                body = body.child(div().text_size(px(16.)).child(ui::ui_para(display_title(&room.title))))
-                    .child(caption(self.shared_end_effect(room,cx)))
-                    .when(!self.stopping_original(room, cx) && !room.scope.folder, |d| d.child(caption(tr("已下载的内容会保留在你的回收站，可恢复为普通文档。", "Downloaded content stays in your Trash and can be restored as a personal document."))));
+                let mut details = vec![display_title(&room.title), self.shared_end_effect(room,cx).to_owned()];
+                if !self.stopping_original(room, cx) && !room.scope.folder { details.push(shared_trash_description().to_owned()); }
+                return Some(self.render_shared_end_confirmation(title, title, details.join("\n"), window, cx));
             }
             Sheet::CreateNew(folder, id) => {
                 body = body.child(caption(if *folder {
@@ -1061,7 +1088,8 @@ impl Workspace {
                 })).child(if id.is_some() {
                     caption(self.sharing.folder_name.read(cx).text.clone()).into_any_element()
                 } else {
-                    TextField::framed(&self.sharing.folder_name, px(360.), window, cx).w_full().max_w_full().into_any_element()
+                    crate::design::Field::new("new-shared-name").w_full().focus_color(accent)
+                        .focused(self.sharing.folder_name.read(cx).is_focused(window)).child(self.sharing.folder_name.clone()).into_any_element()
                 }).children(self.can_choose_sharing_audience(cx).then(|| self.sharing_audience_fields(cx)))
                     .child(if self.sharing.public_link { self.public_link_fields(*folder, cx) } else { self.invitation_fields(window, cx) });
             }
@@ -1092,8 +1120,8 @@ impl Workspace {
             }
             Sheet::Accept => {
                 body = body.child(caption(invitation_account_requirements()))
-                    .child(TextField::framed(&self.sharing.link, px(360.), window, cx).w_full().max_w_full()
-                        .when(self.sharing.link.read(cx).is_focused(window), |d| d.border_color(accent)))
+                    .child(crate::design::Field::new("sharing-link").w_full()
+                        .focus_color(accent).focused(self.sharing.link.read(cx).is_focused(window)).child(self.sharing.link.clone()))
                     .children(self.sharing.message.as_ref().filter(|_| error_by_field).map(|(_,message)| sharing_error(message)));
             }
             Sheet::Invite(room) => {
@@ -1116,7 +1144,7 @@ impl Workspace {
                 let mut participants = div().flex_none().flex().flex_col()
                     .child(div().flex().flex_wrap().items_center().justify_between().gap(px(6.))
                         .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(tr("参与者", "Participants")))
-                        .child(crate::design::Button::outline("members-refresh").sized(crate::design::ButtonSize::Xs)
+                        .child(crate::design::Button::outline("members-refresh").sized(crate::design::ButtonSize::Sm)
                             .label(tr("刷新成员", "Refresh members")).disabled(busy)
                             .on_click(cx.listener(|w, _, window, cx| w.manage_shared_note("members", String::new(), None, window, cx)))))
                     .child(participant_row(tr("你", "You"), tr("所有者", "Owner"), false, div()));
@@ -1142,23 +1170,20 @@ impl Workspace {
                             participants = participants.child(div().py(px(6.)).flex().flex_wrap().gap(px(8.))
                                 .child(action("member-permission", permission, allowed && !busy)
                                     .on_click(cx.listener(move |w, _, window, cx| w.manage_shared_note("permission", id.clone(), Some(next), window, cx))))
-                                .child(action("member-remove", revoke, allowed && !busy).text_color(crate::design::color::destructive())
+                                .child(crate::design::Button::destructive("member-remove").sized(crate::design::ButtonSize::Sm)
+                                    .label(revoke).disabled(!allowed || busy)
                                     .on_click(cx.listener(move |w, _, window, cx| {
                                         w.confirm_shared_removal(remove.clone(), window, cx);
                                     }))));
                         }
                     }
                     if invited {
-                        participants = participants.child(div().id("members-add").flex_none().w_full().mt(px(6.)).h(px(crate::design::menu::ROW_H))
-                            .px(px(10.)).rounded(px(crate::design::R)).flex().items_center().gap(px(8.))
-                            .text_size(px(13.)).child(ui::icon("plus", 14., Theme::icon()))
-                            .child(div().flex_1().min_w_0().child(tr("添加参与者", "Add participant")))
-                            .child(ui::icon("chevron-right", 14., Theme::icon()))
-                            .when(!allowed || busy, |d| d.opacity(0.5))
-                            .when(allowed && !busy, |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover()))
-                                .on_click(cx.listener(|w, _, window, cx| {
-                                    if let Some(room) = w.sheet_room().cloned() { w.open_invitation(room, window, cx); }
-                                }))));
+                        participants = participants.child(crate::design::MenuItem::new("members-add")
+                            .mt(px(6.)).icon("plus").label(tr("添加参与者", "Add participant")).submenu(true)
+                            .disabled(!allowed || busy)
+                            .on_click(cx.listener(|w, _, window, cx| {
+                                if let Some(room) = w.sheet_room().cloned() { w.open_invitation(room, window, cx); }
+                            })));
                     }
                     let retry = reply.public_draft();
                     let public = reply.audience.link_active();
@@ -1201,7 +1226,7 @@ impl Workspace {
                                 .child(div().flex().justify_end().gap(px(8.))
                                     .child(crate::design::Button::ghost("cancel-close-public-link").label(tr("取消", "Cancel")).disabled(busy)
                                         .on_click(cx.listener(|w, _, _, cx| { if !w.sharing.busy { w.sharing.close_link_confirm = false; cx.notify(); } })))
-                                    .child(crate::design::Button::destructive("close-public-link").sized(crate::design::ButtonSize::Tool)
+                                    .child(crate::design::Button::destructive("close-public-link").sized(crate::design::ButtonSize::Sm)
                                         .label(tr("确认关闭链接", "Confirm close link")).disabled(busy || !self.can_close_link(room,cx))
                                         .on_click(cx.listener(|w, _, window, cx| w.confirm_close_link(window, cx))))))));
                     let note = if reply.audience == Audience::LinkClosed { closed_link_detail(self.stopping_original(room,cx)) }
@@ -1221,41 +1246,41 @@ impl Workspace {
                 div().id("sharing-message").text_size(px(13.)).line_height(px(20.))
                     .text_color(if *error { crate::design::color::destructive() } else { Theme::text_caption() }).child(ui::ui_para(message.clone()))));
         let submit = match sheet { Sheet::MoveInto(..) => Some(tr("移入并共享", "Move and share")), Sheet::RenameCollection(_) => Some(tr("保存", "Save")), Sheet::Invite(_) if self.sharing.message.as_ref().is_some_and(|(error,_)| *error) => Some(tr("重试创建", "Retry invitation")),
-            Sheet::Create(_) | Sheet::CreateNew(..) | Sheet::Invite(_) => Some(create_invitation_label()), Sheet::Accept => Some(tr("接受并打开", "Accept and open")),
-            Sheet::EndMany(..) => Some(tr("确认移除", "Remove documents")), Sheet::End(room) => Some(self.shared_end_label(room,cx)), _ => None };
-        let input_ok = if matches!(sheet, Sheet::RenameCollection(_)) { !self.sharing.folder_name.read(cx).text.trim().is_empty() } else if matches!(sheet, Sheet::End(_) | Sheet::EndMany(..) | Sheet::MoveInto(..)) { true } else if matches!(sheet, Sheet::Accept) { !self.sharing.link.read(cx).text.trim().is_empty() }
+            Sheet::Create(_) | Sheet::CreateNew(..) | Sheet::Invite(_) => Some(create_invitation_label()), Sheet::Accept => Some(tr("接受并打开", "Accept and open")), _ => None };
+        let input_ok = if matches!(sheet, Sheet::RenameCollection(_)) { !self.sharing.folder_name.read(cx).text.trim().is_empty() } else if matches!(sheet, Sheet::MoveInto(..)) { true } else if matches!(sheet, Sheet::Accept) { !self.sharing.link.read(cx).text.trim().is_empty() }
             else if let Sheet::CreateNew(_, id) = sheet {
                 (id.is_some() || !self.sharing.folder_name.read(cx).text.trim().is_empty()) && (self.sharing.public_link || !self.sharing.email.read(cx).text.trim().is_empty())
             } else { matches!(sheet, Sheet::Create(_)) && self.sharing.public_link || !self.sharing.email.read(cx).text.trim().is_empty() };
-        let footer = div().flex_none().px(px(24.)).py(px(if members { 10. } else { 14. })).flex().justify_end().gap(px(8.)).border_t_1().border_color(Theme::line_divider())
+        let footer = div().flex_none().px(px(24.)).py(px(14.)).flex().justify_end().gap(px(8.)).border_t_1().border_color(Theme::line_divider())
             .children(if let Sheet::Members(room) = sheet {
                 let room = room.clone();
-                Some(crate::design::Button::destructive("members-delete-document").sized(crate::design::ButtonSize::Tool)
+                Some(crate::design::Button::destructive("members-delete-document").sized(crate::design::ButtonSize::Sm)
                     .label(self.shared_end_label(&room,cx)).disabled(busy || !self.sharing_account_ready(cx))
                     .on_click(cx.listener(move |w, _, _, cx| w.ask_end_shared(room.clone(), cx))))
             } else { None })
-            .children((!header_close).then(|| action("sharing-close", tr("取消", "Cancel"), !busy)
+            .children((!header_close).then(|| crate::design::Button::outline("sharing-close").sized(crate::design::ButtonSize::Sm)
+                .label(tr("取消", "Cancel")).disabled(busy)
                 .on_click(cx.listener(|w, _, window, cx| w.close_sharing(window, cx)))))
-            .children(submit.map(|label| (if invitation || matches!(sheet, Sheet::Accept) {
-                    div().id("sharing-submit").h(px(30.)).px(px(16.)).rounded(px(if feishu { 6. } else { 9. }))
-                        .flex().items_center().justify_center().cursor_pointer().bg(accent)
-                        .text_color(cloud_sync::presence::badge_ink(accent)).text_size(px(13.)).font_weight(FontWeight::SEMIBOLD)
-                        .hover(move |s| s.bg(accent.opacity(0.88))).active(move |s| s.bg(accent.opacity(0.76))).child(label)
-                } else { ui::primary_button("sharing-submit", label) })
-                .when(busy || !input_ok || !(if matches!(sheet, Sheet::RenameCollection(_)) { true } else if matches!(sheet, Sheet::End(_) | Sheet::EndMany(..)) { self.sharing_account_ready(cx) } else { self.sharing_allowed(cx) }), |d| d.opacity(0.45).cursor_default())
-                .on_click(cx.listener(|w, _, window, cx| w.submit_sharing(window, cx)))));
+            .children(submit.map(|label| {
+                let allowed = match sheet {
+                    Sheet::RenameCollection(_) => true,
+                    _ => self.sharing_allowed(cx),
+                };
+                crate::design::Button::primary("sharing-submit").accent(accent, cloud_sync::presence::badge_ink(accent)).sized(crate::design::ButtonSize::Sm).label(label).disabled(busy || !input_ok || !allowed)
+                    .on_click(cx.listener(|w, _, window, cx| w.submit_sharing(window, cx)))
+            }));
         let header = div().flex_none().px(px(24.)).py(px(if members || inviting { 14. } else if accepting { 20. } else { 18. })).flex().items_center().gap(px(9.))
             .children(inviting.then(|| crate::design::Button::ghost("invite-back").icon("chevron-left")
                 .tip(tr("返回成员与权限", "Back to members and access"),None).disabled(busy)
                 .on_click(cx.listener(|w, _, window, cx| w.return_to_member_management(window, cx)))))
             .when(invitation && !feishu && !inviting, |d| d.child(div().size(px(30.)).rounded(px(8.)).bg(accent.opacity(0.16))
                 .flex().items_center().justify_center().child(ui::icon("share", 18., Theme::text()))))
-            .child(div().flex_1().min_w_0().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).child(ui::ui_para(title)))
+            .child(sharing_panel_title(title).flex_1())
             .when(header_close, |d| d.child(crate::design::Button::close("sharing-close").disabled(busy)
                 .on_click(cx.listener(|w, _, window, cx| w.close_sharing(window, cx)))));
         if accepting && let Some(bounds) = self.sharing.accept_at.and_then(|key| self.home.anchor(key)) {
             let pos = point(bounds.left(), bounds.bottom() + px(4.));
-            let form = ui::popover().id("accept-invitation-popover").occlude().w(px(400.)).max_w(window.viewport_size().width - px(16.))
+            let form = sharing_popover("accept-invitation-popover").w(px(400.)).max_w(window.viewport_size().width - px(16.))
                 .max_h(window.viewport_size().height - px(32.)).flex().flex_col()
                 .on_mouse_down_out(cx.listener(|w, event: &MouseDownEvent, window, cx| {
                     if !w.accept_invitation_open() { return; }
@@ -1269,7 +1294,7 @@ impl Workspace {
         if let Some(bounds) = anchor {
             let available = (window.viewport_size().height - bounds.bottom() - px(12.)).max(px(100.));
             let height = if matches!(sheet, Sheet::Access(_)) { 232. } else { 450. };
-            let form = ui::popover().id("share-document-popover").occlude().flex().flex_col()
+            let form = sharing_popover("share-document-popover").flex().flex_col()
                 .w(px(480.)).max_w(window.viewport_size().width - px(16.)).h(available.min(px(height)))
                 .child(header).child(body).child(feedback).children(has_footer.then_some(footer));
             // Consume the dismissing click so toolbar actions cannot reopen the form.
@@ -1280,17 +1305,39 @@ impl Workspace {
                     .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| { cx.stop_propagation(); w.close_sharing(window, cx); })))
                 .child(popup)).with_priority(5).into_any_element());
         }
-        let height = match sheet { Sheet::MoveInto(..) => 250., Sheet::RenameCollection(_) => 235., Sheet::Create(_) | Sheet::CreateNew(..) => 510., Sheet::Accept => 290., Sheet::Access(_) => 345., Sheet::Members(_) => 580., Sheet::Invite(_) => 425., Sheet::End(_) => 290., Sheet::EndMany(..) => 380. };
+        let height = match sheet { Sheet::MoveInto(..) => 250., Sheet::RenameCollection(_) => 235., Sheet::Create(_) | Sheet::CreateNew(..) => 510., Sheet::Accept => 290., Sheet::Access(_) => 345., Sheet::Members(_) => 580., Sheet::Invite(_) => 425., Sheet::End(_) | Sheet::EndMany(..) => unreachable!("End confirmations use AlertDialog") };
         let max_height = window.viewport_size().height - px(40.);
-        let modal = ui::dialog("sharing-sheet").when(!members, |d| d.h(max_height.min(px(height))))
+        let modal = crate::design::Dialog::new("sharing-sheet")
+            .bg(crate::theme::raised(Theme::bg_body())).text_color(Theme::text()).p(px(0.)).gap(px(0.)).when(!members, |d| d.h(max_height.min(px(height))))
             .w((window.viewport_size().width - px(32.)).min(px(if invitation && !feishu { 440. } else { 520. })))
             .max_h(if members { max_height.min(px(height)) } else { max_height }).flex().flex_col()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .child(header).child(body).child(feedback).children(has_footer.then_some(footer));
-        Some(deferred(div().id("sharing-mask").absolute().inset_0().occlude().flex().items_center().justify_center().bg(ui::scrim())
+        Some(deferred(crate::design::scrim().id("sharing-mask").occlude()
             .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| { cx.stop_propagation(); w.close_sharing(window, cx); }))
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation()).child(modal)).with_priority(5).into_any_element())
+    }
+
+    fn render_shared_end_confirmation(&self, title: &'static str, action: &'static str, description: String, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        use crate::design::{Button, Dialog, color, scrim};
+        let buttons = div().flex().justify_end().gap(px(8.))
+            .child(Button::outline("sharing-close").label(tr("取消", "Cancel")).disabled(self.sharing.busy)
+                .on_click(cx.listener(|w, _, window, cx| w.close_sharing(window, cx))))
+            .child(Button::destructive("sharing-submit").label(action).disabled(self.sharing.busy || !self.sharing_account_ready(cx))
+                .on_click(cx.listener(|w, _, window, cx| w.submit_sharing(window, cx))));
+        let dialog = Dialog::alert("sharing-sheet")
+            .max_w(window.viewport_size().width - px(32.))
+            .max_h(window.viewport_size().height - px(40.)).overflow_y_scroll()
+            .title(title).description(description)
+            .children(self.sharing.busy_feedback.map(|message| div().text_color(color::muted_foreground()).child(ui::ui_para(message))))
+            .children(self.sharing.message.as_ref().map(|(error, message)|
+                div().text_color(if *error { color::destructive() } else { color::muted_foreground() }).child(ui::ui_para(message.clone()))))
+            .footer(buttons);
+        deferred(scrim().id("sharing-mask").occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .child(dialog)).with_priority(5).into_any_element()
     }
 
     fn sharing_target(folder: bool, title: impl Into<SharedString>) -> Div {
@@ -1306,9 +1353,10 @@ impl Workspace {
     fn sharing_audience_fields(&self, cx: &mut Context<Self>) -> Div {
         let accent = invitation_accent();
         div().flex().flex_wrap().gap(px(8.)).children([false, true].into_iter().map(|public| {
-            action(if public { "share-anyone" } else { "share-invited" },
-                if public { tr("任何持有链接的人", "Anyone with the link") } else { link_audience(Audience::Invited) }, !self.sharing.busy)
-                .when(self.sharing.public_link == public, |d| d.bg(accent.opacity(0.16)).border_color(accent))
+            crate::design::Button::outline(if public { "share-anyone" } else { "share-invited" })
+                .sized(crate::design::ButtonSize::Sm)
+                .label(if public { tr("任何持有链接的人", "Anyone with the link") } else { link_audience(Audience::Invited) })
+                .selected(self.sharing.public_link == public).accent(accent, Theme::text()).disabled(self.sharing.busy)
                 .on_click(cx.listener(move |w, _, window, cx| w.set_public_link(public, window, cx)))
         }))
     }
@@ -1325,12 +1373,13 @@ impl Workspace {
 
     fn sharing_permission_fields(&self, public: bool, cx: &mut Context<Self>) -> Div {
         let enabled = !self.sharing.busy && (!public || self.can_choose_sharing_audience(cx));
+        let accent = invitation_accent();
         div().flex_none().flex().flex_col().gap(px(8.))
             .child(Self::sharing_section_title(tr("权限", "Permission")))
             .child(div().flex().flex_wrap().gap(px(8.)).children([Access::ReadOnly, Access::ReadWrite].into_iter().map(|access| {
                 let id = match (public, access) { (true, Access::ReadOnly) => "public-reader", (true, _) => "public-writer", (false, Access::ReadOnly) => "invite-reader", _ => "invite-writer" };
-                action(id, role(Some(access)), enabled)
-                    .when(self.sharing.permission == access, |d| d.bg(invitation_accent().opacity(0.16)).border_color(invitation_accent()).text_color(Theme::text()))
+                crate::design::Button::outline(id).sized(crate::design::ButtonSize::Sm)
+                    .label(role(Some(access))).selected(self.sharing.permission == access).accent(accent, Theme::text()).disabled(!enabled)
                     .on_click(cx.listener(move |w, _, _, cx| {
                         if public { w.set_public_link_permission(access, cx); }
                         else if !w.sharing.busy { w.sharing.permission = access; cx.notify(); }
@@ -1341,8 +1390,8 @@ impl Workspace {
     fn invitation_fields(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         self.sharing_permission_fields(false, cx)
             .child(Self::sharing_section_title(tr("受邀 Apple 账户邮箱", "Invited Apple Account email")))
-            .child(TextField::framed(&self.sharing.email, px(360.), window, cx).w_full().max_w_full()
-                .when(self.sharing.email.read(cx).is_focused(window), |d| d.border_color(invitation_accent())))
+            .child(crate::design::Field::new("sharing-email").w_full()
+                .focus_color(invitation_accent()).focused(self.sharing.email.read(cx).is_focused(window)).child(self.sharing.email.clone()))
             .child(caption(private_invitation_delivery()))
     }
 

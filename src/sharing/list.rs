@@ -3,16 +3,15 @@ use super::*;
 use crate::app::RowMenu;
 
 #[cfg(target_os = "macos")]
-fn shared_menu_item(id: &'static str, glyph: &'static str, label: &'static str) -> Stateful<Div> {
-    ui::menu_row(id, SharedString::from(id)).child(ui::icon(glyph, 16., Theme::icon()))
-        .child(div().flex_1().min_w_0().child(ui::menu_label(label, SharedString::from(id), gpui::white())))
+use crate::design::{MenuItem, MenuSeparator, Popover};
+
+#[cfg(target_os = "macos")]
+fn shared_menu_item(id: &'static str, glyph: &'static str, label: &'static str) -> MenuItem {
+    MenuItem::new(id).icon(glyph).label(label)
 }
 
 #[cfg(target_os = "macos")]
-fn shared_menu_divider() -> Div { div().mx(px(8.)).my(px(5.)).h(px(1.)).bg(Theme::line_border()) }
-
-#[cfg(target_os = "macos")]
-fn present_shared_menu(menu: &RowMenu, body: Stateful<Div>) -> AnyElement {
+fn present_shared_menu(menu: &RowMenu, body: Popover) -> AnyElement {
     let pos = if menu.pos.x < px(0.) { point(-menu.pos.x, menu.pos.y + px(22.)) } else { menu.pos };
     deferred(anchored().anchor(menu.corner).position(pos).snap_to_window_with_margin(px(8.)).child(body)).with_priority(2).into_any_element()
 }
@@ -101,10 +100,10 @@ impl Workspace {
     }
 
     #[cfg(target_os = "macos")]
-    fn shared_menu_panel(&self, id: &'static str, window: &Window, cx: &Context<Self>) -> Stateful<Div> {
-        ui::popover().id(id).occlude().min_w(px(crate::sidebar::ROW_MENU_W))
+    fn shared_menu_panel(&self, id: &'static str, window: &Window, cx: &Context<Self>) -> Popover {
+        Popover::new(id).menu().min_w(px(crate::sidebar::ROW_MENU_W))
             .max_h(window.viewport_size().height - px(16.)).overflow_y_scroll()
-            .px(px(5.)).py(px(ui::MENU_PAD_Y)).on_mouse_down_out(cx.listener(Self::dismiss_row_menu))
+            .on_mouse_down_out(cx.listener(Self::dismiss_row_menu))
     }
 
     #[cfg(target_os = "macos")]
@@ -136,7 +135,7 @@ impl Workspace {
                 .on_click(cx.listener(move |w, _, _, cx| { w.toggle_shared_child_organization(&pin, true, cx); })))
             .child(row("shared-child-star", if starred { "star-off" } else { "star" }, star_label(starred))
                 .on_click(cx.listener(move |w, _, _, cx| { w.toggle_shared_child_organization(&star, false, cx); })))
-            .child(shared_menu_divider())
+            .child(MenuSeparator::new())
             .child(self.row_download_item(shared_menu_item("shared-child-download", "export", crate::settings::text("下载")), menu.sub, cx))
             .when(writable, |d| d.child(row("shared-child-rename", "square-pen", tr("重命名", "Rename"))
                 .on_click(cx.listener(move |w, _, window, cx| {
@@ -144,13 +143,13 @@ impl Workspace {
                     w.with_shared_sidebar_document(rename_room.clone(), rename.clone(), true, window, cx, move |w, id, window, cx|
                         w.start_rename_in_sidebar(id, Some(section), window, cx));
                 }))))
-            .child(shared_menu_divider())
+            .child(MenuSeparator::new())
             .child(row("shared-child-access", "shared-document", shared_access_title(true))
                 .on_click(cx.listener(move |w, _, window, cx| w.open_row_sharing_access(access.clone(), window, cx))))
             .when(self.object_link_available(cx), |d| d.child(row("shared-child-copy-object-link", "copy", tr("复制链接", "Copy Link"))
                 .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&link_target, Some(link_room.clone()), false, cx)))))
-            .when(writable, |d| d.child(shared_menu_divider())
-                .child(row("shared-child-delete", "bin", tr("删除文档", "Delete document")).text_color(Theme::danger())
+            .when(writable, |d| d.child(MenuSeparator::new())
+                .child(row("shared-child-delete", "bin", tr("删除文档", "Delete document")).destructive(true)
                     .on_click(cx.listener(move |w, _, _, cx| w.ask_delete_shared_descendant(&delete_room, &delete, false, cx)))));
         let mut out = vec![present_shared_menu(menu, body)];
         out.extend(self.row_download_submenu(menu.sub, window, cx, move |w, format, window, cx| {
@@ -175,21 +174,21 @@ impl Workspace {
                     .child(shared_menu_item("shared-folder-move", "folder-input", tr("移动到", "Move to"))
                         .on_click(cx.listener(move |w, _, window, cx|
                             w.edit_shared_folder(move_room.clone(), moving.clone(), SharedFolderEdit::Move, window, cx))))
-                    .child(shared_menu_divider())
+                    .child(MenuSeparator::new())
             })
             .child(shared_menu_item("shared-folder-access", "shared-document", shared_access_title(true))
                 .on_click(cx.listener(move |w, _, window, cx| w.open_row_sharing_access(access.clone(), window, cx))))
             .when(self.object_link_available(cx), |d| d.child(shared_menu_item("shared-folder-copy-object-link", "copy", tr("复制链接", "Copy Link"))
                 .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&link_target, Some(link_room.clone()), false, cx)))))
-            .when(writable, |d| d.child(shared_menu_divider())
-                .child(shared_menu_item("shared-folder-delete", "bin", tr("删除子文件夹", "Delete subfolder")).text_color(Theme::danger())
+            .when(writable, |d| d.child(MenuSeparator::new())
+                .child(shared_menu_item("shared-folder-delete", "bin", tr("删除子文件夹", "Delete subfolder")).destructive(true)
                     .when(cfg!(feature = "devtools"), |row| row.relative().child(self.home.track("qa-shared-folder-delete")))
                     .on_click(cx.listener(move |w, _, _, cx| w.ask_delete_shared_descendant(&room, &entry.id, true, cx)))));
         vec![present_shared_menu(menu, body)]
     }
 
     #[cfg(target_os = "macos")]
-    fn shared_folder_create_rows(&self, room: &Room, entry: &crate::sidebar::SidebarEntry, cx: &Context<Self>) -> [Stateful<Div>; 2] {
+    fn shared_folder_create_rows(&self, room: &Room, entry: &crate::sidebar::SidebarEntry, cx: &Context<Self>) -> [MenuItem; 2] {
         use crate::folders::{CreateTarget, SharedFolderCreation};
         let (document, document_room) = (entry.clone(), room.clone());
         let folder = CreateTarget::SharedFolder { room: room.clone(), parent: entry.id.clone(), section: entry.section };
@@ -221,7 +220,7 @@ impl Workspace {
             body = body.child(shared_menu_item("shared-batch-copy-menu", "copy", tr("创建副本", "Create copies"))
                 .on_click(cx.listener(|w, _, _, cx| w.batch_copy(cx))))
                 .child(shared_menu_item("shared-batch-remove-menu", "bin", tr("移除共享文档…", "Remove shared documents…"))
-                    .text_color(Theme::danger()).on_click(cx.listener(|w, _, window, cx| w.confirm_shared_batch_removal(window, cx))));
+                    .destructive(true).on_click(cx.listener(|w, _, window, cx| w.confirm_shared_batch_removal(window, cx))));
             return vec![present_shared_menu(&menu, body)];
         }
         let owner = room.scope.owner.is_none();
@@ -254,28 +253,28 @@ impl Workspace {
         }
         let rename = if folder && writable {
             body = body.when(menu.pos.x >= px(0.), |d| d.children(self.shared_folder_create_rows(&room, &target, cx)))
-                .child(rename).child(shared_menu_divider());
+                .child(rename).child(MenuSeparator::new());
             None
         } else { (!folder && writable).then_some(rename) };
         body = body.child(row("shared-row-pin", if entry.meta.pinned { "pin-off" } else { "pin" }, pin_label(entry.meta.pinned))
                 .on_click(cx.listener(move |w, _, _, cx| w.toggle_shared_organization(&pin, true, cx))))
             .child(row("shared-row-star", if entry.meta.starred > 0 { "star-off" } else { "star" }, star_label(entry.meta.starred > 0))
                 .on_click(cx.listener(move |w, _, _, cx| w.toggle_shared_organization(&star, false, cx))))
-            .child(shared_menu_divider())
+            .child(MenuSeparator::new())
             .when(!folder, |d| d.child(self.row_download_item(shared_menu_item("shared-row-download", "export", crate::settings::text("下载")), menu.sub, cx))
-                .children(rename).child(shared_menu_divider()))
+                .children(rename).child(MenuSeparator::new()))
             .child(row("shared-row-manage", "shared-document", if owner { tr("成员与权限…", "Members and access…") } else { tr("查看共享权限…", "View sharing access…") })
                 .on_click(cx.listener(move |w, _, window, cx| w.open_row_sharing_access(manage.clone(), window, cx))))
             .when(self.object_link_available(cx), |d| d.child(row("shared-row-copy-object-link", "copy", tr("复制链接", "Copy Link"))
                 .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&link_target, Some(link_room.clone()), false, cx)))))
             .when(owner, |d| d.child(row("shared-row-link", "copy", copy_invitation_label(false))
                 .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.copy_shared_invitation(invite.clone(), window, cx); }))))
-            .child(shared_menu_divider())
+            .child(MenuSeparator::new())
             .when(folder && self.stopping_original(&room, cx), |d| d.child(row("shared-root-delete", "bin", tr("删除文件夹", "Delete folder"))
-                .text_color(Theme::danger()).when(cfg!(feature = "devtools"), |row| row.relative().child(self.home.track("qa-shared-folder-delete")))
+                .destructive(true).when(cfg!(feature = "devtools"), |row| row.relative().child(self.home.track("qa-shared-folder-delete")))
                 .on_click(cx.listener(move |w, _, _, cx| w.ask_delete(&delete, cx)))))
             .child(row("shared-row-remove", "bin", self.shared_end_label(&room, cx))
-                .text_color(Theme::danger()).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.open_end_shared(ending.clone(), window, cx); })));
+                .destructive(true).on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.open_end_shared(ending.clone(), window, cx); })));
         let mut out = vec![present_shared_menu(&menu, body)];
         out.extend(self.row_download_submenu(!folder && menu.sub, window, cx, move |w, format, window, cx| {
             w.with_shared_sidebar_document(room.clone(), target.clone(), false, window, cx, move |w, id, window, cx| format.export(w, id, window, cx));

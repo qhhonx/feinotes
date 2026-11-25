@@ -2,7 +2,7 @@
 // Copyright 2026 Fei Notes contributors. See LICENSES.md.
 use gpui::prelude::*;
 use gpui::*;
-use crate::{app::{View, Workspace}, editor::view::Editor, settings::tr, store::PageWidth, theme::Theme, ui};
+use crate::{design::{self, Button, ButtonSize, Dialog}, app::{View, Workspace}, editor::view::Editor, settings::tr, store::PageWidth, theme::Theme, ui};
 use super::ConflictVersions;
 
 pub(crate) struct ConflictReview {
@@ -12,7 +12,7 @@ pub(crate) struct ConflictReview {
     preview: Entity<Editor>,
 }
 
-fn touch_target(button: Stateful<Div>) -> Stateful<Div> {
+fn touch_target(button: Button) -> Button {
     button.when(cfg!(target_os = "ios"), |b| b.h(px(44.)).min_w(px(44.)))
 }
 
@@ -28,7 +28,7 @@ impl Workspace {
             .justify_between().gap(px(8.)).bg(Theme::bg_body()).border_b_1().border_color(Theme::line_divider())
             .child(div().min_w_0().text_size(px(13.)).text_color(Theme::danger())
                 .child(ui::ui_para(tr("此文档需要处理", "This document needs attention"))))
-            .child(touch_target(ui::secondary_button("review-sync-conflict", tr("查看版本", "Review versions")))
+            .child(touch_target(Button::outline("review-sync-conflict").sized(ButtonSize::Sm).label(tr("查看版本", "Review versions")))
                 .on_click(cx.listener(|w, _, window, cx| w.review_conflict(window, cx))))
             .into_any_element())
     }
@@ -102,8 +102,8 @@ impl Workspace {
         let copyable = if review.received { remote.is_some_and(|v| v.copyable) } else { review.versions.local.copyable };
         let both = review.versions.local.copyable && remote.is_some_and(|v| v.copyable);
         let choice = |received: bool, id, label, cx: &mut Context<Self>| {
-            touch_target(ui::secondary_button(id, label))
-                .when(review.received == received, |b| b.bg(Theme::primary_fill_1()).text_color(Theme::primary()))
+            touch_target(Button::outline(id).sized(ButtonSize::Sm).label(label))
+                .selected(review.received == received).accent(Theme::primary(), Theme::text())
                 .on_click(cx.listener(move |w, _, _, cx| w.show_conflict_version(received, cx)))
         };
         let heading = div().p(px(14.)).flex_none()
@@ -122,15 +122,15 @@ impl Workspace {
                 "此版本的附件尚未齐全，暂时不能另存。",
                 "A copy requires all attachments for this version.")))));
         let viewport = window.viewport_size();
-        let dialog = ui::dialog("document-sync-review").w((viewport.width - px(24.)).min(px(680.)))
+        let dialog = Dialog::new("document-sync-review").p_0().gap_0().w((viewport.width - px(24.)).min(px(680.)))
             .h((viewport.height - px(24.)).min(px(620.))).flex().flex_col().overflow_hidden()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(heading)
             .child(div().flex_1().min_h_0().overflow_hidden().border_y_1().border_color(Theme::line_divider()).child(review.preview.clone()))
             .child(div().flex_none().p(px(12.)).flex().flex_wrap().justify_end().gap(px(6.))
-                .child(touch_target(ui::secondary_button("conflict-later", tr("稍后处理", "Later")))
+                .child(touch_target(Button::outline("conflict-later").sized(ButtonSize::Sm).label(tr("稍后处理", "Later")))
                     .on_click(cx.listener(|w, _, _, cx| { w.conflict_review = None; cx.notify(); })))
-                .child(touch_target(ui::secondary_button("retry-document-sync", tr("重试同步", "Retry sync")))
+                .child(touch_target(Button::outline("retry-document-sync").sized(ButtonSize::Sm).label(tr("重试同步", "Retry sync")))
                     .on_click(cx.listener(|w, _, _, cx| {
                         let Some(review) = &w.conflict_review else { return };
                         if super::retry_document(w.store.root(), &review.id, cx).is_ok() {
@@ -138,11 +138,12 @@ impl Workspace {
                             cx.notify();
                         }
                     })))
-                .when(copyable, |d| d.child(touch_target(ui::secondary_button("copy-conflict-version", tr("另存此版本", "Save this version")))
+                .when(copyable, |d| d.child(touch_target(Button::outline("copy-conflict-version").sized(ButtonSize::Sm).label(tr("另存此版本", "Save this version")))
                     .on_click(cx.listener(|w, _, window, cx| w.save_conflict_copies(false, window, cx)))))
-                .when(both, |d| d.child(touch_target(ui::primary_button("keep-conflict-versions", tr("将两份另存为副本", "Save both as copies")))
+                .when(both, |d| d.child(touch_target(Button::primary("keep-conflict-versions").sized(ButtonSize::Sm)
+                    .accent(Theme::primary(), super::presence::badge_ink(Theme::primary()))
+                    .label(tr("将两份另存为副本", "Save both as copies")))
                     .on_click(cx.listener(|w, _, window, cx| w.save_conflict_copies(true, window, cx))))));
-        Some(deferred(div().id("sync-conflict-mask").absolute().inset_0().occlude().bg(ui::scrim())
-            .flex().justify_center().items_center().child(dialog)).with_priority(22).into_any_element())
+        Some(deferred(design::scrim().id("sync-conflict-mask").occlude().child(dialog)).with_priority(22).into_any_element())
     }
 }

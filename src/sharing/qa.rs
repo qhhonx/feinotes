@@ -1410,7 +1410,7 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
             "shared-shortcut" => ws.more_bounds.borrow().get(&format!("add-shared-folder-false-{owner}")).copied(),
             "nested-shortcut" => ws.more_bounds.borrow().get(&format!("add-shared-folder-false-{nested}")).copied(),
             "personal-folder-choice" => ws.create_menu.as_ref().map(|(_, pos)| Bounds::new(
-                point(pos.x + px(12.), pos.y + px(ui::MENU_PAD_Y + ui::MENU_ROW_H * 2.)), size(px(130.), px(ui::MENU_ROW_H)))),
+                point(pos.x + px(12.), pos.y + px(crate::design::menu::PAD + crate::design::menu::ROW_H * 2.)), size(px(130.), px(crate::design::menu::ROW_H)))),
             _ => anyhow::bail!("Unknown sidebar creation control"),
         }.context("Sidebar creation control was not rendered")?;
         let at = bounds.center();
