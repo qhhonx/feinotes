@@ -684,8 +684,8 @@ pub(crate) fn render(v: &TableView, base: &Base, t: &Table, view: &View, window:
                         .on_mouse_down(MouseButton::Left, cx.listener(move |v, ev: &MouseDownEvent, window, cx| { cx.stop_propagation(); v.tick_row(rid, ev.modifiers.shift, window, cx); })))
 
                     // 展开: the record, in 记录详情 (as Supabase's row ⤢; 飞书 hangs a 查看 on the title cell, over its text)
-                    .child(div().absolute().left(px(EXPAND_X)).top_0().bottom_0().flex().items_center().invisible().group_hover("tb-row", |s| s.visible())
-                        .child({ use crate::ui::TipExt; div().id(("tb-open", rid as usize)).size(px(NUM_W)).rounded(px(crate::design::geo().tool_r)).flex().items_center().justify_center().cursor_pointer()
+                    .child(div().absolute().left(px(EXPAND_X)).right_0().top_0().bottom_0().flex().items_center().justify_center().invisible().group_hover("tb-row", |s| s.visible())
+                        .child({ use crate::ui::TipExt; div().id(("tb-open", rid as usize)).size(px(EXPAND_W)).rounded(px(crate::design::geo().tool_r)).flex().items_center().justify_center().cursor_pointer()
                             .hover(|s| s.bg(Theme::fill_hover_strong())).child(icon("expand", 13., Theme::icon())).tip(&crate::settings::label("查看详情"), None) }
                             // a toggle: this record's panel open, the same press shuts it
                             .on_mouse_down(MouseButton::Left, cx.listener(move |v, _, window, cx| { cx.stop_propagation(); v.commit_edit(true, window, cx); if v.expanded == Some(rid) { record::close(v, window, cx) } else { record::open(v, rid, window, cx) } }))));
@@ -1018,12 +1018,15 @@ fn ghost_col(cell: AnyElement, left: f32, bg: Hsla) -> AnyElement {
 }
 
 /// Where a row's checkbox sits in its controls (and the header's, above them).
-const CHECK_X: f32 = 14.;
+const CHECK_X: f32 = (GUTTER_W - 1. - NUM_W) / 2.; // mid-way inside the gutter's right line, as its number
 /// The slot its number (or checkbox) takes.
 const NUM_W: f32 = 20.;
-/// The row's handle, first, then the checkbox, then 展开 (each `NUM_W` across): `GUTTER_W` in all.
-const GRAB_X: f32 = 2.;
+/// The row's handle before the checkbox and 展开 after it, each centred in what is left on its
+/// side, so the checkbox sits where the number does, mid-gutter.
+const GRAB_X: f32 = 0.;
 const EXPAND_X: f32 = CHECK_X + NUM_W;
+/// 展开's square, a little smaller than a slot: what is left after the checkbox is less than one.
+const EXPAND_W: f32 = 16.;
 
 impl TableView {
     /// A row in or out of the ticked ones; ⇧, everything from the last ticked row to this one.

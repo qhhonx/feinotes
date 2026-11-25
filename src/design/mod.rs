@@ -157,7 +157,8 @@ pub mod chip {
     pub const LIME: Chip = Chip(0xd8f999, 0x3c6300, 0x192e03, 0.6, 0x7ccf00);
     pub const YELLOW: Chip = Chip(0xfff085, 0x894b00, 0x432004, 0.6, 0xf0b100);
     pub const ORANGE: Chip = Chip(0xffd6a7, 0x9f2d00, 0x441306, 0.6, 0xff6900);
-    pub const ROSE: Chip = Chip(0xffccd3, 0xa50036, 0x4d0218, 0.6, 0xff2056);
+    // rose-400 in the dark, not the 500 (#ff2056 read 4.4:1 on its fill), the same hue
+    pub const ROSE: Chip = Chip(0xffccd3, 0xa50036, 0x4d0218, 0.6, 0xff637e);
     pub const PINK: Chip = Chip(0xfccee8, 0xa3004c, 0x510424, 0.6, 0xfb64b6);
     pub const PURPLE: Chip = Chip(0xe9d4ff, 0x6e11b0, 0x3c0366, 0.6, 0xc27aff);
     pub const CYAN: Chip = Chip(0xa2f4fd, 0x005f78, 0x053345, 0.6, 0x00d3f2);
@@ -170,7 +171,8 @@ pub mod chip {
         if dark() { (alpha(hex(c.2), c.3), hex(c.4)) } else { (hex(c.0), hex(c.1)) }
     }
     /// The grey option: `secondary` under `muted-foreground`.
-    pub fn neutral() -> (Hsla, Hsla) { (super::color::secondary(), super::color::muted_foreground()) }
+    /// In the light its text a step darker than `muted-foreground` (#737373 read 4.35:1 on `secondary`).
+    pub fn neutral() -> (Hsla, Hsla) { (super::color::secondary(), if dark() { super::color::muted_foreground() } else { hex(0x6b6b6b) }) }
 }
 
 /// Corner radii past the `R` steps.
@@ -223,6 +225,8 @@ pub struct Geo {
     /// Between the lines of a filter / sort panel.
     pub panel_gap: f32,
     pub label_gap: f32,
+    /// Between a settings page's sections (a caption and its card): shadcn's settings forms, `gap-8`.
+    pub section_gap: f32,
     /// Dialogs: corners, padding, the gap between header, body and footer.
     pub dialog_r: f32,
     pub dialog_pad: f32,
@@ -283,7 +287,7 @@ pub const G: Geo = Geo {
     field_h: 36., field_r: R - 2., field_sm_h: 32., field_sm_r: R - 2., field_px: 10.,
     area_r: R - 2., area_pad: 10.,
     menu_r: R - 2., menu_pad: 4., menu_row_h: 32., menu_row_r: R - 4., menu_row_px: 8., menu_gap: 8., rule_inset: 12., sidebar_gap: 1.,
-    popover_pad: 16., popover_gap: 16., panel_gap: 8., label_gap: 8.,
+    popover_pad: 16., popover_gap: 16., panel_gap: 8., label_gap: 8., section_gap: 32.,
     dialog_r: R + 4., dialog_pad: 24., dialog_gap: 24.,
     badge_h: 20., badge_r: radius::PILL, badge_px: 8.,
     checkbox: 16., checkbox_r: 4., switch_w: 32., switch_h: 18.4, thumb: 16.,

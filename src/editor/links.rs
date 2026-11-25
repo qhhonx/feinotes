@@ -238,7 +238,8 @@ impl Editor {
         let (p, lh) = self.point_of(Pos::new(m.block, m.trigger))?;
         let q = self.mention_query();
         let results = self.mention_results();
-        let mut list = div().id("mention-list").max_h(px(366.)).overflow_y_scroll().track_scroll(&self.mention_scroll).py(px(crate::design::menu::PAD)).flex().flex_col().child(crate::design::scroll::bar("mention-list", &self.mention_scroll, crate::design::geo().menu_r));
+        let pad = crate::design::menu::PAD;
+        let mut list = crate::design::scroll::make_room(div().id("mention-list").max_h(px(366.)).overflow_y_scroll().track_scroll(&self.mention_scroll).py(px(pad)).flex().flex_col(), "mention-list", pad).child(crate::design::scroll::bar("mention-list", &self.mention_scroll, crate::design::geo().menu_r));
         if results.is_empty() {
             list = list.child(div().p(px(16.)).text_size(px(13.)).line_height(px(20.)).text_color(Theme::text_caption()).child(ui_text(crate::settings::text("没有匹配结果，换个关键词试试吧"))));
         }
@@ -320,7 +321,7 @@ impl Editor {
             );
         }
         let el = Popover::new("mention-box")
-            .w(px(280.))
+            .w(px(280.) + crate::design::scroll::room("mention-list", pad))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(list);
         let vh = f32::from(window.viewport_size().height);

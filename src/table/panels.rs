@@ -326,7 +326,7 @@ fn cond_controls(t: &Table, kind: Kind, i: usize, c: &Cond, panel: &Panel, field
 fn field_list(t: &Table, view: &View, panel: &Panel, room: f32, cx: &Context<TableView>) -> AnyElement {
     let query = panel.search.as_ref().map(|(e, _)| e.read(cx).text.trim().to_lowercase()).unwrap_or_default();
     let primary = t.fields.first().map(|f| f.id);
-    let mut list = div().id("tb-pl-list").max_h(px(420.)).overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-pl-list")).flex().flex_col()
+    let mut list = crate::design::scroll::make_room(div().id("tb-pl-list").max_h(px(420.)).overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-pl-list")).flex().flex_col(), "tb-pl-list", crate::design::menu::PAD)
         // let go anywhere over the list: where the gap is
         .on_drop(cx.listener(|v, d: &FieldDrag, _, cx| {
             let to = panel_mut(v).and_then(|p| p.drop_at.take()).filter(|(id, _)| *id == d.id).map(|(_, to)| to);

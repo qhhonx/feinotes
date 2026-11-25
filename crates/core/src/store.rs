@@ -88,6 +88,10 @@ pub struct Meta {
 impl Meta {
     /// 本机文件: outside the library's tree.
     pub fn local(&self) -> bool { self.path.is_some() }
+    /// A 本机文件 that is a page's attachment (`.assets/files/…` of a library), opened in a
+    /// window of its own: kept out of 本机文件 and 最近浏览, and never renamed after its
+    /// title, so the page's card keeps finding it.
+    pub fn attachment(&self) -> bool { self.path.as_deref().is_some_and(|p| Path::new(p).components().any(|c| c.as_os_str() == ASSETS)) }
     /// Titled by its file name, not by a title inside it: Markdown and
     /// everything that is not a document.
     pub fn named_by_file(&self) -> bool { self.markdown || !self.kind.is_doc() }
@@ -2408,6 +2412,8 @@ impl Store {
     /// drops its number once the name is free again (#358).
     fn follow_title(&mut self, id: &str, title: &str, renamed: bool) -> Result<()> {
         let Some(m) = self.index.get(id) else { return Ok(()) };
+        // An attachment's name is what its page's card points at: a new title changes only its words.
+        if m.attachment() { return Ok(()); }
         if let Some(old) = m.path.clone().map(PathBuf::from) {
             let name = title.replace(['/', '\\', ':'], "_");
             let name = name.trim().trim_start_matches('.');
@@ -2772,13 +2778,18 @@ impl Store {
         Ok(doc)
     }
 
-    /// Accept an external revision (another program, the `quiet` CLI) only
-    /// when the caller has a clean editor. Documents only: boards and 数据表
-    /// follow their files their own way.
+    /// Accept an external revision (another program, the `quiet` CLI, an
+    /// agent writing a 画板) only when the caller has a clean editor. Documents
+    /// and 画板; a 数据表 follows its file its own way. An error (a file
+    /// caught half written, a 画板 emptied before it is written again) keeps
+    /// the baseline: the caller keeps what it shows and tries again later.
     pub fn refresh_external(&self, id: &str) -> Result<Option<Document>> {
-        if self.kind(id) != DocKind::Doc { return Ok(None) }
+        let kind = self.kind(id);
+        if kind == DocKind::Table { return Ok(None) }
         let disk = self.read_doc_text(id)?;
         if self.loaded.borrow().get(id).is_none_or(|base| base == &disk) { return Ok(None) }
+        // An empty `.excalidraw` reads as an empty board: here it is a writer between truncating and writing.
+        anyhow::ensure!(kind != DocKind::Board || !disk.trim().is_empty(), "画板文件是空的，可能正在写入");
         let doc = self.parse_doc(id, &disk)?;
         self.loaded.borrow_mut().insert(id.into(), disk);
         Ok(Some(doc))
@@ -2798,6 +2809,8 @@ impl Store {
     /// for the editor to follow before it saves. Mentions only compare by
     /// title: their paths were rewritten too, the editor holds ids.
     pub fn follow_moved_links(&self, id: &str) -> Option<HashMap<String, String>> {
+        // A 画板 has no links, and its file's canvas settings aren't in what is compared below.
+        if self.kind(id) != DocKind::Doc { return None }
         let before = self.loaded.borrow().get(id)?.clone();
         let disk = self.read_doc_text(id).ok().filter(|d| *d != before)?;
         let (mut was, mut now) = (self.parse_doc(id, &before).ok()?, self.parse_doc(id, &disk).ok()?);
@@ -4029,6 +4042,41 @@ mod tests {
     }
 
     #[test]
+    fn a_board_written_outside_is_taken_in() {
+        let lib = Lib::new("board-outside");
+        let mut s = lib.open();
+        let b = crate::whiteboard::Board::from_file(include_str!("../tests/fixtures/board/all-elements.excalidraw")).unwrap();
+        let id = s.create_board_in("草图", &b, None).unwrap();
+        let file = lib.0.join("草图.excalidraw");
+        let d = s.load_for_edit(&id, false).unwrap();
+        // Its own save is not an outside change.
+        s.save(&id, &d).unwrap();
+        assert!(s.refresh_external(&id).unwrap().is_none());
+        // An agent adds a shape: the open editor takes the new board in.
+        let mut more = crate::whiteboard::board_of(&d).unwrap().clone();
+        let mut shape = more.elements[0].clone();
+        shape.id = "from-agent".into();
+        more.elements.push(shape);
+        let written = more.file_json();
+        // Caught half written, or emptied before being written again: an error, the baseline kept.
+        crate::vfs::write(&file, &written[..written.len() / 2]).unwrap();
+        assert!(s.refresh_external(&id).is_err());
+        crate::vfs::write(&file, "").unwrap();
+        assert!(s.refresh_external(&id).is_err());
+        crate::vfs::write(&file, &written).unwrap();
+        let got = s.refresh_external(&id).unwrap().expect("taken in");
+        assert!(crate::whiteboard::board_of(&got).unwrap().elements.iter().any(|e| e.id == "from-agent"));
+        assert!(s.refresh_external(&id).unwrap().is_none(), "taken in once");
+        // Edited here meanwhile and changed outside again: the save refuses to write over it, as a document's does.
+        crate::vfs::write(&file, b.file_json()).unwrap();
+        let mut mine = got.clone();
+        let crate::model::BlockKind::Board(bd) = &mut mine.blocks[0].kind else { panic!("not a board") };
+        std::sync::Arc::make_mut(bd).elements.clear();
+        assert!(s.save_editor(&id, &mine).is_err());
+        assert_eq!(crate::vfs::read_to_string(&file).unwrap(), b.file_json(), "the outside version is left as it was");
+    }
+
+    #[test]
     fn a_board_is_a_file_of_its_own() {
         let lib = Lib::new("board");
         let mut s = lib.open();
@@ -4349,6 +4397,50 @@ mod tests {
         s.open_local(&old).unwrap();
         assert_eq!(s.list().into_iter().find(|e| e.id == id).unwrap().meta.created, 1_600_000_000);
         crate::vfs::remove_dir_all(away).unwrap();
+    }
+
+    /// A Markdown attachment (`.assets/files/<uuid>/<name>`) opened in its own
+    /// window is a 本机文件, though it is inside the library: edited where it is,
+    /// one id however often it is opened, and never a page of the tree.
+    #[test]
+    fn an_attachment_opens_in_place() {
+        let lib = Lib::new("attachment-in-place");
+        let mut s = lib.open();
+        let page = s.create().unwrap().0;
+        let dir = Store::assets_in(&lib.0).join("files").join("0f0e");
+        crate::vfs::create_dir_all(&dir).unwrap();
+        let file = dir.join("meeting-notes.md");
+        crate::vfs::write(&file, "# Notes\n\nfirst\n").unwrap();
+        let id = s.open_local(&file).unwrap();
+        assert_eq!(s.open_local(&file).unwrap(), id);
+        assert_eq!(s.file_path(&id).unwrap().fs_canonicalize().unwrap(), file.fs_canonicalize().unwrap());
+        let e = s.list().into_iter().find(|e| e.id == id).unwrap();
+        assert!(e.meta.local() && e.meta.markdown && e.meta.parent.is_none());
+        assert_eq!(e.title, "meeting-notes");
+        let mut d = s.load_for_edit(&id, false).unwrap();
+        d.blocks.push(crate::model::Block::text("added"));
+        s.save(&id, &d).unwrap();
+        assert_eq!(crate::vfs::read_to_string(&file).unwrap(), "# Notes\n\nfirst\n\nadded\n");
+        // An attachment, kept out of 本机文件; a title typed in its window changes no name: the
+        // page's card still finds the file where it was.
+        assert!(e.meta.attachment());
+        s.follow_name(&id, "新的标题").unwrap();
+        assert!(file.fs_is_file() && !dir.join("新的标题.md").exists());
+        assert_eq!(s.file_path(&id).unwrap().fs_canonicalize().unwrap(), file.fs_canonicalize().unwrap());
+        // A Markdown file opened from elsewhere is no attachment, and follows its title as before.
+        let outside = lib.0.parent().unwrap().join(format!("{}-outside.md", base_name(&lib.0.to_string_lossy())));
+        crate::vfs::write(&outside, "x\n").unwrap();
+        let o = s.open_local(&outside).unwrap();
+        assert!(!s.index[&o].attachment());
+        crate::vfs::remove_file(&outside).ok();
+        // Reopened: still that one file, beside the page it is attached to.
+        drop(s);
+        let mut s = lib.open();
+        assert_eq!(s.open_local(&file).unwrap(), id);
+        let ids: Vec<String> = s.list().into_iter().map(|e| e.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&page) && ids.contains(&id));
+        crate::vfs::remove_dir_all(&lib.0).unwrap();
     }
 
     #[test]

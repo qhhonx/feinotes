@@ -665,12 +665,13 @@ impl Render for TableView {
         // around the block, and as tall as its rows. Full pane: the whole chrome.
         let root = if self.full {
             // a sheet of its own under the page's header: squircle corners and a 0.5pt hairline
-            // (as Home's cards), set in from the pane's edges
-            const GAP: f32 = 8.;
+            // (as Home's cards), set in from the pane's edges by the header's own margin round
+            // its buttons (8pt): below them on top, so the sheet starts at the header's foot
+            const GAP: f32 = (crate::app::HEADER_H - crate::app::HEADER_ACTIONS_H) / 2.;
             const RADIUS: f32 = crate::design::R + 4.;
             // Home's document cards' shadow (`theme::shadow_sheet`), not cast down but all round
             let around: Vec<BoxShadow> = crate::theme::shadow_sheet().into_iter().map(|mut s| { s.offset = point(px(0.), px(0.)); s }).collect();
-            root.p(px(GAP)).child(div().relative().flex_1().min_h_0()
+            root.px(px(GAP)).pb(px(GAP)).child(div().relative().flex_1().min_h_0()
                 .child(div().absolute().inset_0().rounded(px(RADIUS)).shadow(around))
                 .child(crate::ui::squircle_surface(RADIUS, Theme::bg_body()).absolute().inset_0())
                 .child(div().absolute().inset_0().rounded(px(RADIUS)).overflow_hidden().flex().flex_col().child(menus::bar(self, t, v, cx)).child(body))

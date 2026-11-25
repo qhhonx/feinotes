@@ -170,7 +170,7 @@ impl Workspace {
         }
         // 主页: one top-level folder shows its contents under 我的文档; several show as rows
         // of the tree there; none, a way to open one.
-        let tops = self.store.top_folders();
+        let tops = self.store.shown_tops();
         if tops.is_empty() {
             list = list.child(self.empty_home(cx));
         } else {
@@ -781,7 +781,9 @@ impl Workspace {
         let menu = Popover::new("row-menu")
             .menu()
             .min_w(px(ROW_MENU_W))
-            .child(canvas(move |b, _, _| menu_w_record.set(Some(f32::from(b.size.width))), |_, _, _, _| {}).absolute().inset_0())
+            // a line across the middle, not the whole box: the scrolling menu counts its children's extent as
+            // its content, and one as tall as the box, plus the padding, made a menu that fits scroll by 8
+            .child(canvas(move |b, _, _| menu_w_record.set(Some(f32::from(b.size.width))), |_, _, _, _| {}).absolute().left_0().right_0().top(relative(0.5)).h_0())
             .on_mouse_down_out(cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
                 if sub_bounds.get().is_none_or(|b| !b.contains(&ev.position)) {
                     w.row_menu = None;

@@ -82,6 +82,6 @@ Override `--token-<name>` in `:root` for block hover and selection colors, table
 
 ## Scope
 
-Themes style the document. The sidebar, menus and settings have their own appearance. Choose System, Light or Dark in Settings › Appearance to set the application appearance. CSS also leaves block structure, such as code toolbars and table row and column tools, under the editor's control.
+Themes style the document. The sidebar, menus and settings have their own appearance. Choose System, Light or Dark in Settings › Appearance to set the application appearance. A theme writes its light colours only: the dark look (⌃ ⌘ D switches) is worked out from them, mirroring their lightness and lifting coloured text, links and highlights until they read on the dark page. A `@media (prefers-color-scheme: dark)` block has no effect and is listed among the ignored declarations. CSS also leaves block structure, such as code toolbars and table row and column tools, under the editor's control.
 
 Choosing an installed font in Settings › Appearance › Document font draws the body text, the title and the headings in it, so this file's `font-family` for `.page`, `.title` and `h1`–`h9` has no effect while one is chosen; Theme default goes back. `pre` keeps its own font.

@@ -171,5 +171,5 @@ Quiet.md를 함께 만들어 주신 모든 분께 감사드립니다. 이슈와 
 
 다음은 MIT 라이선스에 포함되지 않으므로, 포크에서는 다른 것으로 바꿔야 합니다.
 
-- `assets/icons/`의 Nucleo 아이콘 71개와 `assets/editor-icons/`의 23개는 Nucleo 상용 라이선스를 따릅니다. 아이콘만 따로 추출하거나 재배포하지 마세요.
+- `assets/icons/`의 Nucleo 아이콘 69개와 `assets/editor-icons/`의 24개는 Nucleo 상용 라이선스를 따릅니다. 아이콘만 따로 추출하거나 재배포하지 마세요.
 - "Quiet.md"라는 이름과 앱 아이콘.

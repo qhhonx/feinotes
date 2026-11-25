@@ -237,7 +237,7 @@ impl Workspace {
     /// The main area with no top-level folder open (2.8), centred: what to do first.
     pub(crate) fn empty_main(&self, cx: &mut Context<Self>) -> Div {
         div().flex_1().flex().flex_col().items_center().justify_center().pb(px(64.))
-            .child(img("illus/empty-list.svg").size(px(120.)))
+            .child(img(crate::trash::illus_for("illus/empty-list.svg")).size(px(120.)))
             .child(div().mt(px(16.)).text_size(px(13.)).line_height(px(20.)).text_color(Theme::text_caption()).child(tr("还没有打开任何文件夹。笔记就是文件夹里的文件。", "No folder is open yet. Your notes are the files in a folder.")))
             .child(div().mt(px(20.)).flex().gap(px(8.))
                 .child(crate::design::Button::primary("empty-main-open").label(tr("打开文件夹…", "Open folder…")).on_click(cx.listener(|w, _, window, cx| w.open_folder_dialog(window, cx)))))

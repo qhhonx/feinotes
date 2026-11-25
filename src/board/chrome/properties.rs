@@ -344,7 +344,7 @@ fn font_picker(me: &BoardView, current: Option<u32>, window: &mut Window, cx: &m
                 .when(on, |d| d.bg(style::primary_light())).when(!on && hovered == Some(f), |d| d.bg(style::button_hover_bg()))
                 .child(icon(font_icon(f), style::ICON, if on { style::primary_darker() } else { style::text() }))
                 .child(div().flex_1().font_family(font_name(f)).child(font_name(f)))
-                .when(font_deprecated(f), |d| d.child(div().px(px(4.)).rounded(px(4.)).bg(style::hex(0xffe3e3)).text_color(style::hex(0xc92a2a)).text_size(px(11.)).child(tr("旧的", "old"))))
+                .when(font_deprecated(f), |d| d.child(div().px(px(4.)).rounded(px(4.)).bg(style::hex(if crate::theme::dark() { 0x4a2222 } else { 0xffe3e3 })).text_color(style::hex(if crate::theme::dark() { 0xff8787 } else { 0xc92a2a })).text_size(px(11.)).child(tr("旧的", "old"))))
                 .on_hover(cx.listener(move |me, h: &bool, _, cx| if *h {
                     FONT_LIST.with(|m| if let Some(l) = m.borrow_mut().get_mut(&cx.entity_id()) { l.hovered = Some(f); });
                     crate::board::run::font_preview(me, Some(f), cx);

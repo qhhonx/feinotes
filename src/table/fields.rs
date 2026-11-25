@@ -292,7 +292,7 @@ fn type_box(f: &FieldForm, cx: &Context<TableView>) -> Div {
         .on_click(cx.listener(|v, _, _, cx| with(v, cx, |f| f.types_open = !f.types_open)));
     let mut out = div().flex().flex_col().gap(px(4.)).child(head);
     if open {
-        let mut list = inset_list("tb-ff-types").max_h(px(300.)).overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-ff-types"));
+        let mut list = crate::design::scroll::make_room(inset_list("tb-ff-types").max_h(px(300.)).overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-ff-types")), "tb-ff-types", crate::design::menu::PAD);
         for g in [FieldGroup::General, FieldGroup::Business, FieldGroup::Advanced] {
             list = list.child(menu_title(label(g.label())));
             // a file is one table: 关联 and 查找引用 (which reach into another) are not offered, only kept where a file has them
@@ -308,7 +308,7 @@ fn type_box(f: &FieldForm, cx: &Context<TableView>) -> Div {
                     .when(ok, |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover())).on_click(cx.listener(move |v, _, window, cx| { if let Some(f) = form(v) { f.retype(ty, window, cx); } cx.notify(); }))));
             }
         }
-        out = out.child(list.child(crate::design::scroll::bar("tb-ff-types", &crate::design::scroll::handle("tb-ff-types"), 0.)));
+        out = out.child(list.child(crate::design::scroll::bar("tb-ff-types", &crate::design::scroll::handle("tb-ff-types"), crate::design::geo().menu_r)));
     }
     block("字段类型", out)
 }
@@ -316,7 +316,7 @@ fn type_box(f: &FieldForm, cx: &Context<TableView>) -> Div {
 /// 单选 / 多选's options, 人员's members: colour, name, remove; 添加 under them.
 fn options(f: &FieldForm, cx: &Context<TableView>) -> Div {
     let person = f.ty == FieldType::Person;
-    let mut list = div().id("tb-ff-opts").max_h(px(228.)).overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-ff-opts")).flex().flex_col().gap(px(6.));
+    let mut list = crate::design::scroll::make_room(div().id("tb-ff-opts").max_h(px(228.)).overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-ff-opts")).flex().flex_col().gap(px(6.)), "tb-ff-opts", 0.);
     for (i, (o, row)) in f.opts.options.iter().zip(&f.rows).enumerate() {
         let (bg, fg) = tag_colors(o.color);
         list = list.child(div().flex_none().flex().items_center().gap(px(6.))
@@ -363,7 +363,7 @@ fn formula_blocks(f: &FieldForm, t: &Table, problem: &Option<String>, cx: &Conte
     };
     let fns = formula::functions();
     let head = |s: String| div().flex_none().h(px(26.)).px(px(8.)).flex().items_center().text_size(px(12.)).text_color(Theme::text_caption()).child(s);
-    let mut list = inset_list("tb-ff-ref").max_h(px(180.)).overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-ff-ref"));
+    let mut list = crate::design::scroll::make_room(inset_list("tb-ff-ref").max_h(px(180.)).overflow_y_scroll().track_scroll(&crate::design::scroll::handle("tb-ff-ref")), "tb-ff-ref", crate::design::menu::PAD);
     list = list.child(head(label("字段引用")));
     for (i, fld) in t.fields.iter().enumerate().filter(|(_, fld)| f.orig.as_ref().is_none_or(|o| o.id != fld.id)) {
         let (name, add) = (fld.name.clone(), append);
@@ -386,7 +386,7 @@ fn formula_blocks(f: &FieldForm, t: &Table, problem: &Option<String>, cx: &Conte
     let hint = f.hint.and_then(|i| fns.get(i)).map(|d| div().flex_none().flex().flex_col().gap(px(2.)).text_size(px(12.))
         .child(div().font_family(crate::feishu_theme::MONO_FONT).child(d.sig))
         .child(div().text_color(Theme::text_caption()).child(label(d.desc))));
-    out.push(block("字段与函数", div().flex().flex_col().gap(px(6.)).child(list.child(crate::design::scroll::bar("tb-ff-ref", &crate::design::scroll::handle("tb-ff-ref"), 0.))).children(hint)));
+    out.push(block("字段与函数", div().flex().flex_col().gap(px(6.)).child(list.child(crate::design::scroll::bar("tb-ff-ref", &crate::design::scroll::handle("tb-ff-ref"), crate::design::geo().menu_r))).children(hint)));
     out.push(number_format("字段格式", &f.opts, cx));
     out
 }

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+<!-- The dark look of ../blank-doc.svg: its light greys mirrored to deep ones, the blue kept (used when the app is dark). -->
+  <path fill="#3a3b3e" d="M16 8h22l12 12v32a4 4 0 0 1-4 4H16a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4Z"/>
+  <path fill="#4a4c50" d="M38 8l12 12h-9a3 3 0 0 1-3-3Z"/>
+  <path fill="none" stroke="#3a85f7" stroke-width="3" stroke-linecap="round" d="M22 24v14"/>
+</svg>

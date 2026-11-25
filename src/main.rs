@@ -25,6 +25,7 @@ mod devtools {
     pub static RENDER_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     pub fn scripted() -> bool { crate::selftest::active() }
     pub fn start(_: &mut gpui::Window, _: &mut gpui::App) {}
+    pub fn opened(_: &mut gpui::Window, _: &mut gpui::App) {}
     pub fn take_pick() -> Option<Vec<std::path::PathBuf>> { None }
     pub fn file_drag() -> bool { false }
     pub fn rows_begin(_: &gpui::Window) {}

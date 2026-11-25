@@ -739,7 +739,7 @@ impl R<'_> {
                     .when(rtl, |d| d.ml(px(8.)))
                     .rounded(px(st.num("task.radius")))
                     .border_1()
-                    .when(!done, |d| d.border_color(Theme::todo_box()).bg(crate::theme::raised(Theme::bg_body())).hover(|s| s.border_color(Theme::primary())))
+                    .when(!done, |d| d.border_color(crate::theme::lift(Theme::todo_box(), 3.)).bg(crate::theme::raised(Theme::bg_body())).hover(|s| s.border_color(Theme::primary())))
                     .when(done, |d| d.border_color(fill).bg(fill))
                     .flex()
                     .items_center()

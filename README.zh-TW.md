@@ -171,5 +171,5 @@
 
 以下項目不包含在 MIT 授權範圍內，建立衍生分支（Fork）時請自行替換：
 
-- `assets/icons/` 目錄下的 71 個和 `assets/editor-icons/` 目錄下的 23 個 Nucleo 圖示受商業 Nucleo 授權保護，請勿單獨抽離或重新散佈。
+- `assets/icons/` 目錄下的 69 個和 `assets/editor-icons/` 目錄下的 24 個 Nucleo 圖示受商業 Nucleo 授權保護，請勿單獨抽離或重新散佈。
 - 「Quiet.md」名稱與應用程式圖示。

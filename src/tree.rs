@@ -316,7 +316,7 @@ impl Workspace {
                     .items_center()
                     .rounded(px(9.))
                     .bg(Theme::fill_hover_strong())
-                    .child(icon("library", 15., Theme::icon()))
+                    .child(icon("folder", 15., Theme::icon()))
                     .child(div().ml(px(8.)).text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).child(self.home_name())),
             );
 
@@ -344,7 +344,7 @@ impl Workspace {
             list = list.child(
                 row("move-root".into(), dlg.target == Some(None))
                     .pl(px(16.))
-                    .child(icon("library", 16., Theme::icon()))
+                    .child(icon("folder", 16., Theme::icon()))
                     .child(title(crate::settings::text("我的文档").into()))
                     .on_click(cx.listener(|w, _, _, cx| {
                         if let Some(d) = w.move_dlg.as_mut() {

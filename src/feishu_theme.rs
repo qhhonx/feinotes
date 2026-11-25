@@ -124,7 +124,7 @@ impl Theme {
     /// Dark mode: N400 mirrors to L 0.41 and vanishes on raised surfaces (GitHub #319); take the base theme's.
     pub fn text_disabled() -> Hsla { if crate::theme::dark() { crate::theme::Theme::text_disabled() } else { c(ud::N400) } }
     pub fn text_code() -> Hsla { c(ud::N800) }
-    pub fn link() -> Hsla { c(ud::B500) }
+    pub fn link() -> Hsla { crate::theme::lift(c(ud::B500), 4.5) }
     pub fn primary() -> Hsla { c(ud::B600) }
     pub fn primary_500() -> Hsla { c(ud::B500) }
     /// `--primary-fill-solid-01`.
@@ -184,7 +184,8 @@ fn hsla(c: crate::palette::Rgba) -> Hsla {
 }
 
 pub fn text_color(name: &str) -> Option<Hsla> {
-    crate::palette::text_color(name).map(hsla)
+    // coloured text reads on the dark page (`theme::lift`)
+    crate::palette::text_color(name).map(|c| crate::theme::lift(hsla(c), 4.5))
 }
 
 pub fn bg_color(name: &str) -> Option<Hsla> {
@@ -245,7 +246,7 @@ pub const TITLE: BlockMetrics = BlockMetrics { size: 34.0, line_height: 55.25, m
 
 pub use crate::theme::{craft, ca, mix, ta, shadow_button};
 
-impl Theme { pub fn link_hover() -> Hsla { c(ud::old::B600) } }
+impl Theme { pub fn link_hover() -> Hsla { crate::theme::lift(c(ud::old::B600), 4.5) } }
 
 impl Theme { pub fn table_line() -> Hsla { ca(craft::N1000, 0.09) } }
 

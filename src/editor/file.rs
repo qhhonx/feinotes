@@ -362,14 +362,23 @@ impl R<'_> {
                 .absolute()
                 .inset_0()
         });
-        // A click on the selected attachment (any click when reading) opens it.
+        // A click on the selected attachment (any click when reading) opens it;
+        // so does a double click on a file that opens in a window of its own
+        // (the first click selected it; asked twice, that window only comes forward).
         let open_on_click = {
+            #[cfg(target_family = "wasm")]
             let file = f.clone();
+            #[cfg(not(target_family = "wasm"))]
+            let p = path.clone();
+            let own = !cfg!(target_family = "wasm") && path.as_deref().is_some_and(crate::local_files::opens_here);
             cx.listener(move |e: &mut Editor, ev: &MouseDownEvent, window, cx| {
-                if ev.click_count == 1 && !ev.modifiers.shift && (e.read_only || e.active_file(e.focus.is_focused(window)) == Some(id)) {
+                if (ev.click_count == 1 || own && ev.click_count == 2) && !ev.modifiers.shift && (e.read_only || e.active_file(e.focus.is_focused(window)) == Some(id)) {
                     cx.stop_propagation();
                     window.prevent_default();
-                    e.open_attachment(&file, cx);
+                    #[cfg(target_family = "wasm")]
+                    e.download_file(&file, cx);
+                    #[cfg(not(target_family = "wasm"))]
+                    e.open_file(p.as_deref(), cx);
                 }
             })
         };
@@ -649,8 +658,24 @@ impl Editor {
         #[cfg(target_family = "wasm")]
         self.download_file(f, cx);
         #[cfg(not(target_family = "wasm"))]
-        match local_path(f).filter(|p| p.fs_is_file()) {
-            Some(p) => quick_look(&p),
+        self.preview_file(local_path(f).as_deref(), cx);
+    }
+
+    /// 打开: a file Quiet.md edits (`local_files::opens_here`) in a window of
+    /// its own, where it is; any other as `preview_file`.
+    #[cfg(not(target_family = "wasm"))]
+    fn open_file(&mut self, p: Option<&Path>, cx: &mut Context<Self>) {
+        match p.filter(|p| p.fs_is_file()) {
+            Some(p) if crate::local_files::opens_here(p) => cx.emit(super::view::EditorEvent::OpenFile(p.to_path_buf())),
+            _ => self.preview_file(p, cx),
+        }
+    }
+
+    /// 预览 (the eye, 全屏, a video's play): Quick Look, whatever the file is.
+    #[cfg(not(target_family = "wasm"))]
+    fn preview_file(&mut self, p: Option<&Path>, cx: &mut Context<Self>) {
+        match p.filter(|p| p.fs_is_file()) {
+            Some(p) => quick_look(p),
             None => self.toast(crate::settings::text("文件不存在"), cx),
         }
     }
@@ -673,6 +698,16 @@ impl Editor {
                 }
             });
         }).detach();
+    }
+
+    /// Attachments changed on disk (one was edited in its own window, the
+    /// window came forward): sizes and previews are read again.
+    pub(crate) fn files_changed(&mut self, cx: &mut Context<Self>) {
+        self.file.sizes.borrow_mut().clear();
+        // One still being made stays queued; a preview is kept by the file's size and time (`thumb_dir`).
+        self.file.thumbs.borrow_mut().retain(|_, t| *t == Thumb::Pending);
+        self.img.generation += 1;
+        cx.notify();
     }
 
     /// 下载: a copy where the save panel says (Downloads first).
