@@ -198,6 +198,7 @@ impl Workspace {
 
     fn native_cloud_sections(&self,cx:&App,sections:&mut Vec<Value>) {
         use super::personal_sync::{self, Action};
+        let mut plans_in_sync_actions = false;
         if crate::cloud_restore::local_only() {
             sections.push(section("",vec![
                 Row::new("cloud-off",tr("同步未开启","Sync is off")).kind("info").detail(self.enable_cloud_message()),
@@ -211,24 +212,30 @@ impl Workspace {
             sections.push(section(tr("同步状态","Sync status"),vec![state]));
             sections.push(section("",sync.rows.into_iter()
                 .map(|(id,label,value)|Row::new(id,label).kind("info").value(value)).collect()));
+            plans_in_sync_actions = sync.action == Action::Plans && cloud_subscription::sheet_available();
             let action = match sync.action {
                 Action::Sync | Action::AutoRetry => Some(Row::new("sync-retry",tr("立即同步","Sync Now")).enabled(sync.action == Action::Sync)),
                 Action::VerifyAccount => Some(Row::new("verify-cloud-account",tr("重新验证 iCloud","Verify iCloud Again"))),
                 Action::SignIn | Action::ChangedAccount => Some(Row::new("account-settings",tr("登录原 iCloud 账户","Sign in to your previous iCloud account"))
                     .kind("info").detail(tr("设置 › Apple 账户","Settings › Apple Account"))),
-                Action::Plans if crate::cloud_trial::available() || cloud_subscription::available() =>
-                    Some(Row::new("page:CloudAccess",tr("查看订阅方案","View Plans")).kind("page")),
+                Action::Plans if crate::cloud_trial::available() || cloud_subscription::sheet_available() =>
+                    Some(Row::new("page:CloudAccess",tr("查看方案","View Plans"))),
                 _ => None,
             };
             if let Some(action) = action { sections.push(section("",vec![action])); }
             let issues = self.native_sync_issue_rows(store.root(),cx);
             if !issues.is_empty() { sections.push(section("",issues)); }
-            if sync.action != Action::Plans && !crate::cloud_trial::testflight() && cloud_subscription::available() {
-                sections.push(section("",vec![Row::new("page:CloudAccess",tr("查看订阅方案","View Plans")).kind("page")]));
-            }
             sections.push(section("",vec![Row::new("cloud-disable",tr("关闭 iCloud 同步…","Turn Off iCloud Sync…"))
                 .detail(cloud_disable_detail())]));
         }
+        let mut access = vec![];
+        if !plans_in_sync_actions && !crate::cloud_trial::testflight() && cloud_subscription::sheet_available() {
+            let mut plans = Row::new("page:CloudAccess",tr("查看方案","View Plans"));
+            if let Some(detail) = self.subscription_summary() { plans = plans.detail(detail); }
+            access.push(plans);
+        }
+        if self.show_trial_entry() { access.push(self.native_trial_row()); }
+        if !access.is_empty() { sections.push(section(tr("云功能","Cloud features"),access)); }
     }
 
     fn native_sync_rows(&self, root: &std::path::Path, cx: &App) -> Vec<Row> {
@@ -264,23 +271,13 @@ impl Workspace {
     }
 
     fn native_access_sections(&self,sections:&mut Vec<Value>) {
+        if self.show_trial_entry() { sections.push(section(tr("云功能","Cloud features"),vec![self.native_trial_row()])); }
+    }
+
+    fn native_trial_row(&self) -> Row {
         let s = &self.subscription;
-        let mut rows = vec![];
-        if cloud_subscription::available() {
-            rows.push(Row::new("plans",tr("查看方案","View plans")).enabled(!s.busy).detail(s.message.clone().unwrap_or_else(||tr("本机文档库免费使用。订阅包含 iCloud 同步和协作。","The local library is free to use. A subscription includes iCloud sync and collaboration.").into())));
-            for offer in &s.offers {
-                let (id,title) = if offer.plan == Plan::Annual { ("purchase-annual",tr("年订阅","Annual")) } else { ("purchase-monthly",tr("月订阅","Monthly")) };
-                let current = s.active.and_then(ActiveSubscription::plan_now)==Some(offer.plan);
-                rows.push(Row::new(id,title).value(if current { tr("当前订阅","Current plan").into() } else { offer.price.clone() }).enabled(!s.busy && !current));
-            }
-            rows.push(Row::new("purchase-restore",tr("恢复购买","Restore purchases")).enabled(!s.busy));
-            rows.push(Row::new("purchase-manage",tr("管理订阅","Manage subscriptions")));
-        }
-        if crate::cloud_trial::available() {
-            let detail = s.trial_message.clone().unwrap_or_else(||s.trial.map(|t|{let (y,m,d,_,_) = crate::time::civil(t.expires_at/1000); format!("{} {y}-{m:02}-{d:02}",tr("试用截止于","Trial ends"))}).unwrap_or_else(||tr("同一 iCloud 账户的设备共用 7 天。","Devices on the same iCloud account share one seven-day trial.").into()));
-            rows.push(Row::new("trial",tr("iCloud 试用","iCloud trial")).detail(detail).enabled(!s.trial_busy && s.trial.is_none()));
-        }
-        if !rows.is_empty() { sections.push(section(tr("云功能","Cloud features"),rows)); }
+        let detail = s.trial_message.clone().unwrap_or_else(||s.trial.map(|t|{let (y,m,d,_,_) = crate::time::civil(t.expires_at/1000); format!("{} {y}-{m:02}-{d:02}",tr("试用截止于","Trial ends"))}).unwrap_or_else(||tr("同一 iCloud 账户的设备共用 7 天。","Devices on the same iCloud account share one seven-day trial.").into()));
+        Row::new("trial",tr("iCloud 试用","iCloud trial")).detail(detail).enabled(!s.trial_busy && s.trial.is_none())
     }
 
     fn native_invitation_section(&self,cx:&App,enabled:bool) -> Value {
@@ -570,11 +567,6 @@ impl Workspace {
                 }
                 cx.notify();
             },
-            "plans"=>{self.subscription.show_plans=true; self.subscription_action(SubscriptionAction::Load,window,cx);},
-            "purchase-annual"=>self.subscription_action(SubscriptionAction::Purchase(Plan::Annual),window,cx),
-            "purchase-monthly"=>self.subscription_action(SubscriptionAction::Purchase(Plan::Monthly),window,cx),
-            "purchase-restore"=>self.subscription_action(SubscriptionAction::Restore,window,cx),
-            "purchase-manage"=>cx.open_url("https://apps.apple.com/account/subscriptions"),
             "trial"=>{self.confirm=Some(crate::app::Confirm::StartCloudTrial); cx.notify();},
             "share-accept"=>if !crate::cloud_restore::local_only() && !self.sharing.busy {
                 self.sharing.link.update(cx,|f,cx|f.set_text(value,cx));

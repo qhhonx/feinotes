@@ -8,6 +8,8 @@ use std::sync::OnceLock;
 
 unsafe extern "C" {
     fn quiet_cloud_subscription_available() -> bool;
+    fn quiet_cloud_subscription_sheet_available() -> bool;
+    fn quiet_cloud_show_subscription_sheet(chinese: bool, dark: bool);
     fn quiet_cloud_watch_subscription(on_change: extern "C" fn());
     fn quiet_cloud_subscription(action: i32, context: usize, complete: extern "C" fn(usize, *const c_char));
 }
@@ -33,30 +35,18 @@ impl ActiveSubscription {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Offer {
-    pub plan: Plan,
-    pub price: String,
-    pub equivalent_monthly: Option<String>,
-    pub saving_percent: Option<u32>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Outcome { Loaded, Purchased, Pending, Cancelled, Restored }
-
-#[derive(Clone, Copy)]
-pub(crate) enum Action { Load, Purchase(Plan), Restore, Status }
-
-#[derive(Deserialize)]
 pub(crate) struct Reply {
-    pub offers: Option<Vec<Offer>>,
     pub active: Option<ActiveSubscription>,
-    pub outcome: Option<Outcome>,
     pub error: Option<String>,
 }
 
 pub(crate) fn available() -> bool { unsafe { quiet_cloud_subscription_available() } }
+pub(crate) fn sheet_available() -> bool { unsafe { quiet_cloud_subscription_sheet_available() } }
+
+pub(crate) fn show_sheet() {
+    let chinese = crate::settings::lang() == crate::settings::Lang::Zh;
+    unsafe { quiet_cloud_show_subscription_sheet(chinese, crate::theme::dark()) };
+}
 
 pub(crate) struct PurchaseChanged;
 impl Global for PurchaseChanged {}
@@ -91,13 +81,9 @@ extern "C" fn complete(context: usize, json: *const c_char) {
     let _ = sender.try_send(reply);
 }
 
-pub(crate) async fn request(action: Action) -> Result<Reply> {
-    let action = match action { Action::Load => 0, Action::Purchase(Plan::Annual) => 1, Action::Purchase(Plan::Monthly) => 2,
-        Action::Restore => 3, Action::Status => 4 };
+pub(crate) async fn status() -> Result<Reply> {
     let (sender, receiver) = async_channel::bounded(1);
     let context = Box::into_raw(Box::new(sender)) as usize;
-    #[cfg(all(target_os = "ios", debug_assertions))]
-    log::info!("StoreKit request action={action}");
-    unsafe { quiet_cloud_subscription(action, context, complete) };
+    unsafe { quiet_cloud_subscription(4, context, complete) };
     receiver.recv().await.context("The StoreKit request was interrupted")?
 }

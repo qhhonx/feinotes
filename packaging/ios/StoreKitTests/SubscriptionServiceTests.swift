@@ -92,4 +92,33 @@ final class SubscriptionServiceTests: XCTestCase {
         XCTAssertEqual(reply["outcome"] as? String, "pending")
         XCTAssertNil(reply["active"])
     }
+
+    func testCrossgradePreservesCurrentPlanUntilRenewal() async throws {
+        continueAfterFailure = false
+        let session = try session()
+        defer { session.disableDialogs = false; session.clearTransactions() }
+        let store = try XCTUnwrap(CloudSubscriptionStore(bundle: .main))
+        let products = try await store.products()
+        let annual = try XCTUnwrap(products[.annual]?.subscription)
+        let monthly = try await session.buyProduct(identifier: store.monthlyID)
+
+        do {
+            _ = try await store.completePurchase(.success(.verified(monthly)), requested: .annual, subscription: annual)
+            XCTFail("An unchanged monthly renewal must not confirm an annual plan change")
+        } catch {}
+
+        let crossgrade = try await session.buyProduct(identifier: store.annualID)
+        XCTAssertEqual(crossgrade.productID, store.monthlyID)
+        let outcome = try await store.completePurchase(.success(.verified(crossgrade)), requested: .annual, subscription: annual)
+        XCTAssertEqual(outcome, .scheduled)
+        let current = await store.activeSubscription()
+        XCTAssertEqual(current?.plan, .monthly)
+
+        try session.forceRenewalOfSubscription(productIdentifier: store.monthlyID)
+        for _ in 0..<50 {
+            if await store.activeSubscription()?.plan == .annual { return }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTFail("Annual should become active after StoreKit delivers the renewal")
+    }
 }

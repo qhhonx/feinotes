@@ -215,6 +215,7 @@ final class FeiObjectForm: UITableViewController, UITextFieldDelegate, UITextVie
             cell.selectionStyle = .none
             let toggle = (inputs[field.key] as? UISwitch) ?? UISwitch()
             toggle.isOn = field.value == "true"
+            toggle.onTintColor = view.tintColor
             toggle.isEnabled = field.enabled != false
             toggle.accessibilityIdentifier = "fei.object.\(field.key)"
             toggle.accessibilityLabel = field.title
@@ -320,6 +321,7 @@ final class FeiObjectForm: UITableViewController, UITextFieldDelegate, UITextVie
                 let controller = FeiObjectForm(request)
                 active = controller
                 let navigation = UINavigationController(rootViewController: controller)
+                navigation.view.tintColor = host.view.tintColor
                 navigation.sheetPresentationController?.detents = ["reminder","countdown","code","image","image-crop"].contains(request.kind) ? [.large()] : [.medium(),.large()]
                 navigation.sheetPresentationController?.prefersGrabberVisible = true
                 navigation.presentationController?.delegate = controller

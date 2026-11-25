@@ -71,8 +71,11 @@ struct CloudSubscriptionStore {
     }
 
     func offers() async throws -> [CloudOffer] {
-        let products = try await products()
-        return CloudPlan.allCases.compactMap { plan in
+        offers(in: try await products())
+    }
+
+    func offers(in products: [CloudPlan: Product]) -> [CloudOffer] {
+        CloudPlan.allCases.compactMap { plan in
             guard let product = products[plan] else { return nil }
             var offer = CloudOffer(plan: plan, price: product.displayPrice)
             if plan == .annual {
@@ -142,7 +145,9 @@ struct CloudSubscriptionStore {
 
     #if os(macOS) || os(iOS)
     @MainActor func purchase(_ plan: CloudPlan, in window: CloudPurchaseWindow?) async throws -> CloudPurchaseOutcome {
-        guard let product = try await products()[plan] else { throw CloudSubscriptionError.unavailable }
+        guard let product = try await products()[plan], let subscription = product.subscription else {
+            throw CloudSubscriptionError.unavailable
+        }
         let result: Product.PurchaseResult
         #if os(macOS)
         if #available(macOS 15.2, *) {
@@ -166,25 +171,69 @@ struct CloudSubscriptionStore {
             result = try await product.purchase(confirmIn: scene)
         }
         #endif
+        return try await completePurchase(result, requested: plan, subscription: subscription)
+    }
+
+    func completePurchase(_ result: Product.PurchaseResult, requested: CloudPlan,
+                          subscription: Product.SubscriptionInfo) async throws -> CloudPurchaseOutcome {
         switch result {
         case .success(.verified(let transaction)):
-            guard self.plan(for: transaction) == plan else { throw CloudSubscriptionError.unverified }
+            guard let current = plan(for: transaction) else { throw CloudSubscriptionError.unverified }
+            let outcome: CloudPurchaseOutcome
+            if current == requested {
+                outcome = .purchased
+            } else {
+                // A deferred plan change returns the current transaction. Verify the new plan against signed renewal info.
+                guard try await confirmScheduledPlan(requested, transaction: transaction, subscription: subscription) else {
+                    throw CloudSubscriptionError.unverified
+                }
+                outcome = .scheduled
+            }
             await transaction.finish()
             await CloudAccess.shared.invalidate()
-            return .purchased
+            return outcome
         case .success(.unverified): throw CloudSubscriptionError.unverified
         case .pending: return .pending
         case .userCancelled: return .cancelled
         @unknown default: throw CloudSubscriptionError.unavailable
         }
     }
+
+    func nextPlan(for active: CloudPlan, in products: [CloudPlan: Product]) async throws -> CloudPlan? {
+        guard let subscription = products[active]?.subscription,
+              case .verified(let transaction)? = await Transaction.latest(for: id(for: active)) else { return nil }
+        return try await nextPlan(for: transaction, subscription: subscription)
+    }
+
+    private func nextPlan(for transaction: Transaction, subscription: Product.SubscriptionInfo) async throws -> CloudPlan? {
+        guard let current = plan(for: transaction) else { return nil }
+        for status in try await subscription.status {
+            guard status.state == .subscribed, case .verified(let active) = status.transaction,
+                  active.originalID == transaction.originalID, plan(for: active) == current,
+                  let expiration = active.expirationDate, expiration > Date(),
+                  case .verified(let renewal) = status.renewalInfo, renewal.willAutoRenew,
+                  renewal.currentProductID == transaction.productID else { continue }
+            return CloudPlan.allCases.first { $0 != current && id(for: $0) == renewal.autoRenewPreference }
+        }
+        return nil
+    }
+
+    private func confirmScheduledPlan(_ requested: CloudPlan, transaction: Transaction,
+                                      subscription: Product.SubscriptionInfo) async throws -> Bool {
+        // StoreKit may deliver the purchase result before it updates the cached renewal information.
+        for delay in [0, 150, 350, 650, 1_000] {
+            if delay > 0 { try await Task.sleep(for: .milliseconds(delay)) }
+            if (try? await nextPlan(for: transaction, subscription: subscription)) == requested { return true }
+        }
+        return false
+    }
     #endif
 }
 
 #if os(macOS) || os(iOS)
-enum CloudPurchaseOutcome: String, Encodable { case loaded, purchased, pending, cancelled, restored }
+enum CloudPurchaseOutcome: String, Encodable { case loaded, purchased, scheduled, pending, cancelled, restored }
 
-private enum CloudSubscriptionError: LocalizedError {
+enum CloudSubscriptionError: LocalizedError {
     case unavailable, missingWindow, unverified, busy
 
     var errorDescription: String? {
@@ -210,11 +259,27 @@ public func quietCloudSubscriptionAvailable() -> Bool { CloudSubscriptionStore(b
 @_cdecl("quiet_cloud_watch_subscription")
 @MainActor
 public func quietCloudWatchSubscription(_ onChange: @escaping @Sendable @convention(c) () -> Void) {
-    CloudSubscriptionStore(bundle: .main)?.listenForUpdates { onChange() }
+    subscriptionChanged = onChange
+    CloudSubscriptionStore(bundle: .main)?.listenForUpdates { notifyCloudSubscriptionChange() }
 }
 
 @MainActor private var subscriptionActionInProgress = false
 @MainActor private var subscriptionUpdates: Task<Void, Never>?
+@MainActor private var subscriptionChanged: (@Sendable @convention(c) () -> Void)?
+
+@MainActor func notifyCloudSubscriptionChange() { subscriptionChanged?() }
+
+@MainActor func performCloudSubscriptionAction<T>(_ operation: @MainActor () async throws -> T) async throws -> T {
+    guard !subscriptionActionInProgress else { throw CloudSubscriptionError.busy }
+    subscriptionActionInProgress = true
+    defer { subscriptionActionInProgress = false }
+    return try await operation()
+}
+
+@MainActor func restoreCloudSubscription() async throws {
+    try await AppStore.sync()
+    await CloudAccess.shared.invalidate()
+}
 
 @_cdecl("quiet_cloud_subscription")
 public func quietCloudSubscription(_ action: Int32, _ context: UInt,
@@ -226,12 +291,6 @@ public func quietCloudSubscription(_ action: Int32, _ context: UInt,
         var reply = CloudSubscriptionReply()
         do {
             guard let store = CloudSubscriptionStore(bundle: .main) else { throw CloudSubscriptionError.unavailable }
-            let interactive = action == 1 || action == 2 || action == 3
-            if interactive {
-                guard !subscriptionActionInProgress else { throw CloudSubscriptionError.busy }
-                subscriptionActionInProgress = true
-            }
-            defer { if interactive { subscriptionActionInProgress = false } }
             #if os(macOS)
             let window = NSApp.keyWindow
             #elseif os(iOS)
@@ -247,11 +306,12 @@ public func quietCloudSubscription(_ action: Int32, _ context: UInt,
                     reply.offers = try await store.offers()
                     reply.outcome = .loaded
                 } catch { reply.error = error.localizedDescription }
-            case 1: reply.outcome = try await store.purchase(.annual, in: window)
-            case 2: reply.outcome = try await store.purchase(.monthly, in: window)
+            case 1, 2:
+                reply.outcome = try await performCloudSubscriptionAction {
+                    try await store.purchase(action == 1 ? .annual : .monthly, in: window)
+                }
             case 3:
-                try await AppStore.sync()
-                await CloudAccess.shared.invalidate()
+                try await performCloudSubscriptionAction { try await restoreCloudSubscription() }
                 reply.outcome = .restored
             case 4: break
             default: throw CloudSubscriptionError.unavailable

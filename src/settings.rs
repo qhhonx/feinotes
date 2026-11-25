@@ -26,16 +26,13 @@ mod personal_sync;
 #[cfg(target_os = "ios")]
 use crate::cloud_sync::shared::{self, Access};
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-use crate::cloud_subscription::{self, Action as SubscriptionAction, ActiveSubscription, Offer, Outcome as SubscriptionOutcome, Plan};
+use crate::cloud_subscription::{self, ActiveSubscription, Plan};
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
 #[derive(Default)]
 pub(crate) struct Subscription {
-    offers: Vec<Offer>,
     active: Option<ActiveSubscription>,
     busy: bool,
-    show_plans: bool,
-    message: Option<String>,
     refresh_pending: bool,
     trial: Option<crate::cloud_trial::Trial>,
     trial_busy: bool,
@@ -1838,8 +1835,7 @@ impl Workspace {
                 .child(self.cloud_rows(cx)).into_any_element(),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Page::CloudAccess => div().flex().flex_col().gap(px(8.)).child(self.cloud_back_row("‹ iCloud",cx))
-                .child(group(None, if cloud_subscription::available() { self.subscription_rows(cx) }
-                    else { vec![self.trial_row(cx).into_any_element()] })).into_any_element(),
+                .child(group(None, vec![self.trial_row(cx).into_any_element()])).into_any_element(),
             #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
             Page::Shared => div().into_any_element(),
             Page::About => self.about_page(cx),
@@ -2242,12 +2238,29 @@ impl Workspace {
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     fn open_cloud_access(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        #[cfg(target_os = "ios")]
-        { self.mobile_settings_parent = Some(Page::Cloud); }
-        self.open_settings(Page::CloudAccess,cx);
-        self.subscription.show_plans = true;
-        if cloud_subscription::available() { self.subscription_action(SubscriptionAction::Load,window,cx); }
-        if crate::cloud_trial::available() { self.trial_action(false,window,cx); }
+        if cloud_subscription::sheet_available() {
+            cloud_subscription::show_sheet();
+        } else if crate::cloud_trial::available() {
+            #[cfg(target_os = "ios")]
+            { self.mobile_settings_parent = Some(Page::Cloud); }
+            self.open_settings(Page::CloudAccess,cx);
+            self.trial_action(false,window,cx);
+        }
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn show_trial_entry(&self) -> bool {
+        !crate::cloud_trial::testflight() && crate::cloud_trial::available()
+            && self.subscription.active.and_then(ActiveSubscription::plan_now).is_none()
+    }
+
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
+    fn subscription_summary(&self) -> Option<&'static str> {
+        match self.subscription.active.and_then(ActiveSubscription::plan_now) {
+            Some(Plan::Annual) => Some(tr("年付方案正在生效。", "Your annual plan is active.")),
+            Some(Plan::Monthly) => Some(tr("月付方案正在生效。", "Your monthly plan is active.")),
+            None => None,
+        }
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -2311,6 +2324,10 @@ impl Workspace {
             if matches!(self.subscription.enable_result, Some(crate::cloud_restore::EnableCheck::SignedOut)) {
                 rows.push(row(tr("iCloud 账户","iCloud account"),None,account_settings_control()).into_any_element());
             }
+            if !crate::cloud_trial::testflight() && cloud_subscription::sheet_available() {
+                rows.push(self.subscription_entry(cx));
+            }
+            if self.show_trial_entry() { rows.push(self.trial_row(cx).into_any_element()); }
             return group(None, rows);
         }
         let Some(store) = self.personal_settings_store(cx) else { return group(None, vec![]); };
@@ -2323,7 +2340,7 @@ impl Workspace {
             Action::VerifyAccount => button("verify-cloud-account",tr("重新验证 iCloud","Verify iCloud Again"))
                 .on_click({ let root = root.to_path_buf(); move |_, _, cx| crate::cloud_sync::recheck_account(&root,cx) }).into_any_element(),
             Action::SignIn | Action::ChangedAccount => account_settings_control(),
-            Action::Plans if crate::cloud_trial::available() || cloud_subscription::available() =>
+            Action::Plans if crate::cloud_trial::available() || cloud_subscription::sheet_available() =>
                 button("cloud-subscription-load",tr("查看订阅方案","View Plans"))
                     .on_click(cx.listener(|w, _, window, cx| w.open_cloud_access(window,cx))).into_any_element(),
             _ => div().into_any_element(),
@@ -2333,10 +2350,10 @@ impl Workspace {
             .text_size(px(crate::mobile::ui_font())).line_height(px(crate::mobile::ui_font() + 7.))
             .text_color(Theme::text_caption()).child(value)).into_any_element()));
         rows.extend(self.sync_issues_rows(root,cx));
-        if sync.action != Action::Plans && !crate::cloud_trial::testflight() && cloud_subscription::available() {
-            rows.push(row(tr("订阅","Subscription"),None,button("cloud-subscription-load",tr("查看订阅方案","View Plans"))
-                .on_click(cx.listener(|w, _, window, cx| w.open_cloud_access(window,cx)))).into_any_element());
+        if sync.action != Action::Plans && !crate::cloud_trial::testflight() && cloud_subscription::sheet_available() {
+            rows.push(self.subscription_entry(cx));
         }
+        if self.show_trial_entry() { rows.push(self.trial_row(cx).into_any_element()); }
         let disable = if self.library_switching { setting_status(tr("正在准备文档库", "Preparing library")).into_any_element() }
         else { button("cloud-disable",tr("关闭…","Turn Off…"))
             .on_click(cx.listener(|w, _, _, cx| w.begin_cloud_disable(cx))).into_any_element() };
@@ -2355,58 +2372,10 @@ impl Workspace {
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-    fn subscription_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let state = &self.subscription;
-        let active = state.active.and_then(ActiveSubscription::plan_now);
-        let summary = state.message.as_deref().unwrap_or(match active {
-            Some(Plan::Annual) => tr("已订阅年付方案。", "Your annual subscription is active."),
-            Some(Plan::Monthly) => tr("已订阅月付方案。", "Your monthly subscription is active."),
-            None => tr("本机文档库免费使用。订阅包含 iCloud 同步和协作。",
-                "The local library is free to use. A subscription includes iCloud sync and collaboration."),
-        });
-        let load = if state.busy { setting_status(tr("正在查询 App Store", "Checking the App Store")).into_any_element() }
-            else { button("cloud-subscription-load", if state.show_plans { tr("收起方案", "Hide Plans") } else { tr("查看方案", "View Plans") })
-                .on_click(cx.listener(|w, _, window, cx| {
-                    w.subscription.show_plans = !w.subscription.show_plans;
-                    if w.subscription.show_plans { w.subscription_action(SubscriptionAction::Load, window, cx); }
-                    else { cx.notify(); }
-                })).into_any_element() };
-        let mut rows = vec![row(tr("订阅", "Subscription"), Some(summary.to_owned().into()), load).into_any_element()];
-        if active.is_none() { rows.push(self.trial_row(cx).into_any_element()); }
-        if !state.show_plans { return rows; }
-        for offer in &state.offers {
-            let (title, id, mut detail) = match offer.plan {
-                Plan::Annual => (tr("年订阅", "Annual"), "subscribe-annual", crate::localized_format!("每年支付 {}", "{} billed yearly", offer.price)),
-                Plan::Monthly => (tr("月订阅", "Monthly"), "subscribe-monthly", crate::localized_format!("每月支付 {}", "{} billed monthly", offer.price)),
-            };
-            if let Some(price) = &offer.equivalent_monthly {
-                detail.push_str(&crate::localized_format!(" · 折合每月 {}", " · Equivalent to {} per month", price));
-            }
-            if let Some(saving) = offer.saving_percent {
-                detail.push_str(&crate::localized_format!(" · 比连续月付省 {}%", " · Save {}% compared with monthly billing", saving));
-            }
-            let plan = offer.plan;
-            let control = if active == Some(plan) { setting_status(tr("当前订阅", "Current Plan")).into_any_element() }
-                else if state.busy { div().into_any_element() }
-                else { button(id, tr("订阅…", "Subscribe…")).on_click(cx.listener(move |w, _, window, cx| {
-                    w.subscription_action(SubscriptionAction::Purchase(plan), window, cx);
-                })).into_any_element() };
-            rows.push(row(title, Some(detail.into()), control).into_any_element());
-        }
-        rows.push(row(tr("已有订阅", "Already Subscribed?"), None, div().flex().flex_wrap().gap(px(8.))
-            .when(!state.busy, |d| d.child(button("cloud-subscription-restore", tr("恢复购买", "Restore Purchases"))
-                .on_click(cx.listener(|w, _, window, cx| w.subscription_action(SubscriptionAction::Restore, window, cx)))))
-            .child(button("cloud-subscription-manage", tr("管理订阅", "Manage Subscriptions"))
-                .on_click(|_, _, cx| cx.open_url("https://apps.apple.com/account/subscriptions")))).into_any_element());
-        let links = [(c"FeiPrivacyURL", "subscription-privacy", tr("隐私政策", "Privacy Policy")),
-            (c"FeiTermsURL", "subscription-terms", tr("使用条款", "Terms of Use"))];
-        rows.push(row(tr("订阅说明", "Subscription Details"),
-            desc(tr("订阅会自动续订，可在 App Store 管理或取消。", "Subscriptions renew automatically and can be managed or canceled in the App Store.")),
-            div().flex().flex_wrap().gap(px(8.)).children(links.into_iter().filter_map(|(key, id, label)| {
-                let url = release_url(key)?;
-                Some(link_button(id, label).on_click(move |_, _, cx| cx.open_url(&url)))
-            }))).into_any_element());
-        rows
+    fn subscription_entry(&self, cx: &mut Context<Self>) -> AnyElement {
+        row(tr("订阅", "Subscription"), self.subscription_summary().map(Into::into),
+            button("cloud-subscription-load", tr("查看方案", "View Plans"))
+                .on_click(cx.listener(|w, _, window, cx| w.open_cloud_access(window,cx)))).into_any_element()
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -2468,52 +2437,18 @@ impl Workspace {
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
     pub(crate) fn subscription_updated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.view != View::Settings || !matches!(self.settings_page,Page::Cloud | Page::CloudAccess) || self.personal_settings_store(cx).is_none() { return; }
-        if self.subscription.busy { self.subscription.refresh_pending = true; }
-        else { self.subscription_action(SubscriptionAction::Status, window, cx); }
-    }
-
-    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-    fn subscription_action(&mut self, action: SubscriptionAction, window: &mut Window, cx: &mut Context<Self>) {
-        if self.subscription.busy { return; }
+        if self.subscription.busy {
+            self.subscription.refresh_pending = true;
+            return;
+        }
         self.subscription.busy = true;
-        if !matches!(action, SubscriptionAction::Status) { self.subscription.message = None; }
-        cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let reply = cloud_subscription::request(action).await;
+            let reply = cloud_subscription::status().await;
             let _ = this.update_in(cx, |w, window, cx| {
                 let state = &mut w.subscription;
                 let before = state.active;
                 state.busy = false;
-                match reply {
-                    Ok(reply) if matches!(action, SubscriptionAction::Status) => {
-                        if reply.error.is_none() {
-                            if state.active.and_then(ActiveSubscription::plan_now) != reply.active.and_then(ActiveSubscription::plan_now) {
-                                state.message = None;
-                            }
-                            state.active = reply.active;
-                        }
-                    }
-                    Ok(reply) => {
-                        if matches!(reply.outcome, Some(SubscriptionOutcome::Purchased | SubscriptionOutcome::Restored)) {
-                            crate::cloud_sync::access_changed(cx);
-                        }
-                        if reply.error.is_none() || matches!(action, SubscriptionAction::Load) { state.active = reply.active; }
-                        if matches!(action, SubscriptionAction::Load) { state.offers = reply.offers.unwrap_or_default(); }
-                        state.message = reply.error.or_else(|| match reply.outcome {
-                            Some(SubscriptionOutcome::Loaded) if state.offers.is_empty() => Some(tr("App Store 暂未提供订阅方案。", "The App Store has no plans available right now.")),
-                            Some(SubscriptionOutcome::Purchased) => Some(tr("购买已确认。", "Purchase confirmed.")),
-                            Some(SubscriptionOutcome::Pending) => Some(tr("购买等待批准。批准后可刷新状态。", "Purchase pending approval. Refresh after approval.")),
-                            Some(SubscriptionOutcome::Restored) if state.active.and_then(ActiveSubscription::plan_now).is_some() => Some(tr("已恢复有效订阅。", "Active subscription restored.")),
-                            Some(SubscriptionOutcome::Restored) => Some(tr("当前 App Store 账户没有有效订阅。", "No active subscription for this App Store account.")),
-                            _ => None,
-                        }.map(str::to_owned));
-                    }
-                    Err(error) if !matches!(action, SubscriptionAction::Status) => {
-                        if matches!(action, SubscriptionAction::Load) { state.offers.clear(); }
-                        state.message = Some(error.to_string());
-                    }
-                    Err(_) => {}
-                }
+                if let Ok(reply) = reply && reply.error.is_none() { state.active = reply.active; }
                 if state.active != before && let Some(active) = state.active && let Some(remaining) = active.remaining() {
                     cx.spawn_in(window, async move |this, cx| {
                         cx.background_executor().timer(remaining).await;

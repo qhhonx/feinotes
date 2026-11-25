@@ -67,6 +67,7 @@ fn cloudkit_restore() {
     let sync = "packaging/macos/CloudSync.swift";
     let share = "packaging/macos/CloudShare.swift";
     let subscription = "packaging/macos/CloudSubscription.swift";
+    let subscription_sheet = "packaging/macos/CloudSubscriptionSheet.swift";
     let trial = "packaging/macos/CloudTrial.swift";
     let testflight_install = "packaging/macos/TestFlightInstall.swift";
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
@@ -79,6 +80,7 @@ fn cloudkit_restore() {
     println!("cargo:rerun-if-changed={sync}");
     println!("cargo:rerun-if-changed={share}");
     println!("cargo:rerun-if-changed={subscription}");
+    println!("cargo:rerun-if-changed={subscription_sheet}");
     println!("cargo:rerun-if-changed={trial}");
     println!("cargo:rerun-if-changed={testflight_install}");
     println!("cargo:rerun-if-env-changed=FEI_CLOUD_CONTAINER");
@@ -127,7 +129,7 @@ fn cloudkit_restore() {
         "swiftc", "-swift-version", "6", "-O", "-emit-library", "-module-name", "QuietCloudRestore",
         "-target", &format!("{arch}-apple-macos14.0"), "-module-cache-path", &out.join("swift-cache").to_string_lossy(),
         "-Xlinker", "-install_name", "-Xlinker", "@rpath/libQuietCloudRestore.dylib",
-        source, sync, share, subscription, trial, testflight_install,
+        source, sync, share, subscription, subscription_sheet, trial, testflight_install,
     ]).arg(config);
     if qa { command.arg("-DFEI_CLOUD_QA"); }
     if testflight { command.arg("-DFEI_TESTFLIGHT_BETA"); }

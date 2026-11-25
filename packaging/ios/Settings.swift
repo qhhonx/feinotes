@@ -1190,7 +1190,7 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         var content = value.isEmpty || hasValueAndDetail ? cell.defaultContentConfiguration() : UIListContentConfiguration.valueCell()
         content.text = row.title
         if row.id.hasPrefix("page:") {
-            let symbols = ["General":"gearshape","Appearance":"paintpalette","Library":"folder","Shortcuts":"keyboard","Cloud":"icloud","Trash":"trash","Shared":"person.2","About":"info.circle"]
+            let symbols = ["General":"gearshape","Appearance":"paintpalette","Library":"folder","Shortcuts":"keyboard","Cloud":"icloud","CloudAccess":"star.circle","Trash":"trash","Shared":"person.2","About":"info.circle"]
             content.image = UIImage(systemName: symbols[String(row.id.dropFirst(5))] ?? "gearshape")
             content.imageProperties.tintColor = palette?.accentColor ?? view.tintColor
         }
@@ -1222,6 +1222,7 @@ final class FeiSettingsController: UITableViewController, UISearchResultsUpdatin
         cell.selectionStyle = enabled && !informational ? .default : .none
         if row.kind == "toggle" {
             let toggle = UISwitch(); toggle.isOn = row.value == "true"; toggle.isEnabled = enabled
+            toggle.onTintColor = palette?.accentColor ?? view.tintColor
             toggle.accessibilityLabel = row.title; toggle.accessibilityIdentifier = "fei.setting.switch."+row.id
             let scope = model?.scope ?? ""
             toggle.addAction(UIAction { [weak self,weak toggle] _ in self?.command(row,value: toggle?.isOn == true ? "true" : "false",scope: scope) },for: .valueChanged)

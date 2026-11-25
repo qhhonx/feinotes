@@ -78,6 +78,7 @@ targets:
       - ../macos/CloudShare.swift
       - ../macos/CloudTrial.swift
       - ../macos/CloudSubscription.swift
+      - ../macos/CloudSubscriptionSheet.swift
     dependencies:
       - framework: target/$(RUST_TARGET)/$(RUST_PROFILE)/libfei_notes_ipad.a
         embed: false

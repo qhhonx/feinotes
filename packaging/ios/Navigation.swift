@@ -1110,6 +1110,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             caption.font = .preferredFont(forTextStyle: .body); caption.adjustsFontForContentSizeCategory = true
             let toggle = UISwitch()
             toggle.isOn = confirmation.choice_on
+            toggle.onTintColor = (state?.theme ?? .system).accentColor
             toggle.accessibilityLabel = choice; toggle.accessibilityIdentifier = "fei.confirm.choice"
             let row = UIStackView(arrangedSubviews: [caption,toggle]); row.alignment = .center; row.spacing = 10
             let stack = UIStackView(arrangedSubviews: [body,row]); stack.axis = .vertical; stack.spacing = 18

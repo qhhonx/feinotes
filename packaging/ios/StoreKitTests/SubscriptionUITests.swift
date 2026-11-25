@@ -26,23 +26,34 @@ final class SubscriptionUITests: XCTestCase {
         }
         XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout: 15))
         app.buttons["fei.settings"].tap()
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.41)).tap()
-        XCTAssertTrue(app.navigationBars["iCloud 同步"].waitForExistence(timeout: 5))
-        shot("storekit-01-shared-settings")
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.313)).tap()
-        app.swipeUp()
-        shot("storekit-02-loaded-plans")
+        let cloud = app.cells["fei.setting.page:Cloud"]
+        XCTAssertTrue(cloud.waitForExistence(timeout: 5))
+        cloud.tap()
+        let viewPlans = app.cells["fei.setting.page:CloudAccess"]
+        XCTAssertTrue(viewPlans.waitForExistence(timeout: 5))
+        shot("storekit-00-view-plans-entry")
+        viewPlans.tap()
+        let monthly = app.buttons["fei.subscription.plan.monthly"]
+        XCTAssertTrue(monthly.waitForExistence(timeout: 15))
+        monthly.tap()
+        let billing = app.staticTexts["fei.subscription.billing"]
+        XCTAssertTrue(billing.label.contains("每月") || billing.label.contains("per month"))
+        shot("storekit-01-subscription-sheet")
         XCTAssertTrue(session.allTransactions().isEmpty)
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.82, dy: 0.51)).tap()
-        let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["取消", "Cancel", "关闭", "Close"])).firstMatch
-        XCTAssertTrue(cancel.waitForExistence(timeout: 30), app.debugDescription)
-        shot("storekit-03-native-purchase-sheet")
+        app.buttons["fei.subscription.purchase"].tap()
+        let cancelLabel = NSPredicate(format: "label IN %@", ["取消", "Cancel", "关闭", "Close"])
+        let inApp = app.buttons.matching(cancelLabel).firstMatch
+        let system = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons.matching(cancelLabel).firstMatch
+        let cancel = inApp.waitForExistence(timeout: 3) ? inApp : system
+        XCTAssertTrue(cancel.waitForExistence(timeout: 12), app.debugDescription)
+        shot("storekit-02-native-purchase-sheet")
         cancel.tap()
-        let done = app.buttons["fei.done-settings"]
-        XCTAssertTrue(done.waitForExistence(timeout: 5))
-        XCTAssertTrue(done.isHittable)
+        let close = app.buttons["fei.subscription.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        XCTAssertTrue(close.isEnabled)
         XCTAssertTrue(session.allTransactions().isEmpty)
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.313)).tap()
-        shot("storekit-04-cancelled-no-transaction")
+        close.tap()
+        XCTAssertTrue(viewPlans.waitForExistence(timeout: 5))
+        XCTAssertTrue(viewPlans.isHittable)
     }
 }
