@@ -1,9 +1,9 @@
 Fei Notes 1.1.2 beta
 
-On iPhone and iPad, the invitation and access panels have a new layout. Manage participants and link access separately, and create public invitations for shared folders.
+Sharing invitations, participants, and link access now use native forms on iPhone and iPad, with consistent back and create actions. In iPad split view, create an invitation for the personal document selected in the sidebar.
 
-New invitations use the updated Fei Notes link format. Previously sent Fei Notes invitations still open.
+Shared folders support public invitations. New invitations use the updated Fei Notes link format; previously sent invitations still open.
 
-Please test creating and opening invitations, closing a public link, and opening the personal original after stopping sharing.
+Please test editing in both interface styles and continuing on another device; creating and opening invitations, changing participant access, and closing public links; and opening the personal original after stopping sharing. Also check shared-document images, menus, and toolbars in split and compact layouts.
 
 iCloud sync and real-time collaboration are included during TestFlight testing without a subscription.
