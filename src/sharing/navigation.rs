@@ -777,6 +777,7 @@ impl Workspace {
             home: std::mem::take(&mut self.home), modified: self.current.as_ref().and_then(|id| self.entries.iter().find(|entry| &entry.id == id).map(|entry| entry.meta.modified)),
         })) };
         let sidebar = self.sidebar_open; let width = self.sidebar_width; let folded = self.sharing.folded; let personal_folded = self.folded;
+        let sidebar_focused = self.sidebar_focused;
         let expanded = self.expanded.clone(); let shared_expanded = std::mem::take(&mut self.sharing.expanded);
         let folder_drag = std::mem::take(&mut self.folder_drag); let shared_drag = std::mem::take(&mut self.sharing.sidebar); let scroll = self.list_scroll.clone();
         let original = self.sharing.original.take();
@@ -801,7 +802,7 @@ impl Workspace {
             ws.sidebar_entry = entry;
             #[cfg(target_os = "macos")]
             if ws.view == View::Home { ws.sharing.sidebar_waiting = Some(waiting.clone()); }
-            ws.sidebar_open = sidebar; ws.sidebar_width = width; ws.folded = personal_folded;
+            ws.sidebar_open = sidebar; ws.sidebar_width = width; ws.sidebar_focused = sidebar_focused; ws.folded = personal_folded;
             ws.expanded = expanded; ws.sharing.expanded = shared_expanded; ws.folder_drag = folder_drag; ws.sharing.sidebar = shared_drag; ws.list_scroll = scroll;
             ws.folder_drag.personal_rows = None;
             #[cfg(target_os = "ios")]
@@ -889,6 +890,7 @@ impl Workspace {
         self.refresh_shared_entry(cx);
         let route = self.sharing.personal_route.take();
         let sidebar = self.sidebar_open; let width = self.sidebar_width; let folded = self.sharing.folded; let personal_folded = self.folded;
+        let sidebar_focused = self.sidebar_focused;
         let expanded = self.expanded.clone(); let shared_expanded = std::mem::take(&mut self.sharing.expanded);
         let folder_drag = std::mem::take(&mut self.folder_drag); let shared_drag = std::mem::take(&mut self.sharing.sidebar); let scroll = self.list_scroll.clone();
         #[cfg(target_os = "macos")]
@@ -899,7 +901,7 @@ impl Workspace {
             let mut ws = Workspace::build_window_with_recent(false, start, None, !returning_to_listing, window, cx);
             #[cfg(target_os = "macos")]
             { ws.native_sidebar = native_sidebar; }
-            ws.sidebar_open = sidebar; ws.sidebar_width = width; ws.folded = personal_folded; ws.sharing.folded = folded;
+            ws.sidebar_open = sidebar; ws.sidebar_width = width; ws.sidebar_focused = sidebar_focused; ws.folded = personal_folded; ws.sharing.folded = folded;
             ws.expanded = expanded; ws.sharing.expanded = shared_expanded; ws.folder_drag = folder_drag; ws.sharing.sidebar = shared_drag; ws.list_scroll = scroll;
             ws.folder_drag.personal_rows = None;
             if let Some(route) = route {

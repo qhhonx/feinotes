@@ -137,13 +137,15 @@ impl Element for MenuScope {
         let rows = window.with_element_state(id.unwrap(), |s: Option<Shared>, _| { let s = s.unwrap_or_default(); (s.clone(), s) });
         {
             let r = &mut *rows.borrow_mut();
-            let hover = r.now.iter().find(|x| x.1.is_hovered(window)).map(|x| x.0.clone());
+            // Touch hit tests can follow the scroll origin or a tap, without a hovering pointer.
+            let touch = window.last_input_was_touch();
+            let hover = if touch { None } else { r.now.iter().find(|x| x.1.is_hovered(window)).map(|x| x.0.clone()) };
             let sel = r.now.iter().find(|x| x.2).map(|x| x.0.clone());
             // the pointer took a row, left them all, or moved on one: it has the say
             if hover != r.last_hover || r.moved { r.pointer = true; }
             // the keyboard moved the selection: it has
             if sel != r.last_sel && sel.is_some() { r.pointer = false; }
-            let lit = if r.pointer { hover.clone() } else { sel.clone() };
+            let lit = if !touch && r.pointer { hover.clone() } else { sel.clone() };
             // the rows' text took the old pick: once more
             if lit != r.lit && !r.stale { r.stale = true; window.request_animation_frame(); }
             r.lit = lit;
@@ -165,9 +167,9 @@ fn lit_fill(id: ElementId, selected: bool, open: bool, off: bool, fill: Hsla, r:
     }, move |bounds, state, window, _| {
         let Some((rows, hit, id)) = state else { return };
         if !off && (open || rows.borrow().lit.as_ref() == Some(&id)) { window.paint_quad(gpui::fill(bounds, fill).corner_radii(px(r))); }
-        let was = hit.is_hovered(window);
+        let was = !window.last_input_was_touch() && hit.is_hovered(window);
         window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, _| {
-            if phase != DispatchPhase::Capture { return }
+            if phase != DispatchPhase::Capture || window.last_input_was_touch() { return }
             let now = hit.is_hovered(window);
             if now != was { window.refresh(); }
             else if now && !rows.borrow().pointer { rows.borrow_mut().moved = true; window.refresh(); }
@@ -239,11 +241,14 @@ impl RenderOnce for MenuItem {
         // inside a popover the menu decides which one row is lit; elsewhere the pointer and `selected`
         let scoped = DEPTH.with(|d| d.get()) > 0;
         let id = self.base.interactivity().element_id.clone();
-        let lit = !off && (open || scoped && id.as_ref().is_some_and(|id| LAYOUT.with(|s| s.borrow().as_ref().is_some_and(|r| r.borrow().lit.as_ref() == Some(id)))));
+        let lit = !off && (open || !scoped && sel || scoped && id.as_ref().is_some_and(|id| LAYOUT.with(|s| s.borrow().as_ref().is_some_and(|r| r.borrow().lit.as_ref() == Some(id)))));
+        let interface_fill = if !danger && self.leading.is_none() && self.extra.is_empty() { color::interface_accent() } else { None };
         // `focus:**:text-accent-foreground`: the label, its glyph, the shortcut, the caption
-        let fg = if danger { color::destructive() } else if lit { color::accent_foreground() } else { color::foreground() };
+        let fg = if danger { color::destructive() } else if lit && interface_fill.is_some() { color::control_foreground() }
+            else if lit { color::accent_foreground() } else { color::foreground() };
         let caption = if lit && !danger { fg } else { color::muted_foreground() };
-        let fill = if danger { color::destructive_soft() } else { color::accent() };
+        let hover_fill = if danger { color::destructive_soft() } else { color::accent() };
+        let fill = interface_fill.unwrap_or(hover_fill);
         let two_lines = self.description.is_some();
         let MenuItem { base, icon: ic, editor_icon, leading, label: lab, description, extra, shortcut, checked, submenu, inset, .. } = self;
         let probe = lab.clone().and_then(crate::devtools::row_probe);
@@ -253,7 +258,7 @@ impl RenderOnce for MenuItem {
                 .text_size(px(g.text)).line_height(px(super::text::SM_LINE)).text_color(fg)
                 .when(off, |d| d.opacity(0.5)).when(!off, |d| d.cursor_pointer())
                 .when_some(id.filter(|_| scoped), |d, id| d.child(lit_fill(id, sel, open, off, fill, g.menu_row_r)))
-                .when(!scoped && !off, |d| d.hover(move |s| s.bg(fill)).when(sel || open, |d| d.bg(fill)))
+                .when(!scoped && !off, |d| d.hover(move |s| s.bg(if lit { fill } else { hover_fill })).when(lit, |d| d.bg(fill)))
                 .when_some(ic, |d, n| d.child(if editor_icon { crate::editor_ui::icon(&n, 16., fg) } else { icon(&n, 16., fg) }))
                 .when_some(leading, |d, el| d.child(el))
                 .when(inset, |d| d.child(div().flex_none().w(px(16.))))

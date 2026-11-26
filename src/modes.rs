@@ -109,6 +109,15 @@ impl Workspace {
     }
 
     pub fn set_mode(&mut self, reading: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode_with_focus(reading, true, window, cx);
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn set_mode_from_navigation(&mut self, reading: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode_with_focus(reading, false, window, cx);
+    }
+
+    fn set_mode_with_focus(&mut self, reading: bool, focus_input: bool, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.is_shared() && (crate::cloud_sync::shared::editing_paused(&self.store, cx)
             || !crate::cloud_sync::shared::access(&self.store, cx).is_some_and(|access| access.can_write())) { return; }
@@ -119,7 +128,7 @@ impl Workspace {
             return;
         }
         // The snapshot reading mode keeps must be what is on disk.
-        if !self.save_before(cx, move |w, window, cx| w.set_mode(reading, window, cx)) {
+        if !self.save_before(cx, move |w, window, cx| w.set_mode_with_focus(reading, focus_input, window, cx)) {
             return;
         }
         if self.is_shared() {
@@ -136,9 +145,11 @@ impl Workspace {
         }
         if let Some(ed) = &self.editor {
             ed.update(cx, |e, cx| e.set_read_only(reading, cx));
-            crate::gpui_compat::focus(window, &ed.read(cx).focus_handle(cx), cx);
-            #[cfg(target_os = "ios")]
-            if !reading { gpui_mobile::show_keyboard(); }
+            if focus_input {
+                crate::gpui_compat::focus(window, &ed.read(cx).focus_handle(cx), cx);
+                #[cfg(target_os = "ios")]
+                if !reading { gpui_mobile::show_keyboard(); }
+            }
         }
         self.show_toast_kind(ToastKind::Info, if reading { crate::settings::text("已切换为阅读模式") } else { crate::settings::text("已切换为编辑模式") }, cx);
     }
@@ -152,20 +163,21 @@ impl Workspace {
     }
 
     pub(crate) fn document_mode_button(&self, window: &Window, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
-        if !crate::FEI_NOTES || !crate::settings::interface_feishu() || self.current.is_none() || self.preview.is_some() { return None; }
+        if !crate::FEI_NOTES || self.current.is_none() || self.preview.is_some() { return None; }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if self.is_shared() && (crate::cloud_sync::shared::editing_paused(&self.store, cx)
             || !crate::cloud_sync::shared::access(&self.store, cx).is_some_and(|access| access.can_write())) { return None; }
         let bounds = self.mode_btn_bounds.clone();
-        let (glyph, text) = if self.reading() { ("eye-open", crate::settings::tr("阅读", "Read")) }
+        let (glyph, text) = if self.reading() { ("book-open", crate::settings::tr("阅读", "Read")) }
             else { ("pen-line", crate::settings::tr("编辑", "Edit")) };
         let labels = self.header_action_labels(window);
         let size = px(crate::app::HEADER_ACTIONS_H);
         Some(crate::ui::grouped_toolbar_control(div().id("doc-mode").no_drag().relative().flex_none()
             .h(size).min_w(size).flex().items_center().justify_center().gap(px(5.)).cursor_pointer(),
             8., Theme::fill_hover, Some(Theme::fill_pressed))
+            .text_size(px(14.)).line_height(px(20.)).font_weight(gpui::FontWeight::NORMAL)
             .child(crate::ui::toolbar_icon(glyph, 16.))
-            .when(labels, |d| d.px(px(7.)).child(crate::ui::ui_text(text))
+            .when(labels, |d| d.px(px(7.)).child(text)
                 .child(crate::ui::icon("chevron-down", 12., Theme::icon())))
             .when(!labels && !self.mode_menu, |d| d.tip(text, None))
             .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
@@ -200,7 +212,7 @@ impl Workspace {
                 }
             }))
             .child(item("mode-edit", "pen-line", crate::settings::text("编辑"), crate::settings::text("可编辑文档"), !reading, false))
-            .child(item("mode-read", "eye-open", crate::settings::text("阅读"), crate::settings::tr("仅查看文档", "View this document"), reading, true));
+            .child(item("mode-read", "book-open", crate::settings::text("阅读"), crate::settings::tr("仅查看文档", "View this document"), reading, true));
         Some(deferred(anchored().position(point(at.left(), at.bottom() + px(4.))).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2).into_any_element())
     }
 

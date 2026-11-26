@@ -87,7 +87,8 @@ where
 
 /// Hovering a row opens (`Some`) or closes (`None`) its submenu.
 fn hover(s: Option<CtxSub>, cx: &Context<Editor>) -> impl Fn(&MouseMoveEvent, &mut Window, &mut App) + 'static {
-    cx.listener(move |e: &mut Editor, _: &MouseMoveEvent, _, cx| {
+    cx.listener(move |e: &mut Editor, _: &MouseMoveEvent, window, cx| {
+        if window.last_input_was_touch() { return; }
         if let Some(Menu::Ctx { sub, .. }) = &mut e.menu
             && *sub != s
         {

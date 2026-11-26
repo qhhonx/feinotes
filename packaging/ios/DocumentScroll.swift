@@ -156,11 +156,6 @@ final class FeiDocumentScrollView: UIScrollView, UIScrollViewDelegate {
     }
     #endif
 
-    func returnToTop() {
-        guard isScrollEnabled, contentOffset.y > 0.25 else { return }
-        returningToTop = !UIAccessibility.isReduceMotionEnabled
-        setContentOffset(.zero,animated:returningToTop)
-    }
 
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) { returningToTop = false }
 

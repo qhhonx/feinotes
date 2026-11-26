@@ -321,6 +321,7 @@ final class FeiObjectForm: UITableViewController, UITextFieldDelegate, UITextVie
                 let controller = FeiObjectForm(request)
                 active = controller
                 let navigation = UINavigationController(rootViewController: controller)
+                navigation.overrideUserInterfaceStyle = EditorHost.active?.navigationCoordinator?.interfaceAppearance ?? .unspecified
                 navigation.view.tintColor = host.view.tintColor
                 navigation.sheetPresentationController?.detents = ["reminder","countdown","code","image","image-crop"].contains(request.kind) ? [.large()] : [.medium(),.large()]
                 navigation.sheetPresentationController?.prefersGrabberVisible = true

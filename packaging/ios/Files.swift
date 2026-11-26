@@ -2,30 +2,73 @@ import UIKit
 import UniformTypeIdentifiers
 
 @MainActor
-final class FeiFileExporter: NSObject, UIDocumentPickerDelegate {
+final class FeiFileExporter: NSObject, UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate {
     static let shared = FeiFileExporter()
     private var source: URL?
+    private weak var activePicker: UIDocumentPickerViewController?
 
     func present(_ url: URL) {
-        guard source == nil, let controller = EditorHost.active?.navigationController?.topViewController else { return }
+        guard source == nil,let host = EditorHost.active,let controller = host.navigationController?.topViewController else {
+            discardExport(url)
+            return
+        }
         source = url
-        let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
-        picker.delegate = self
-        let open = { controller.present(picker, animated: true) }
-        if let presented = controller.presentedViewController { presented.dismiss(animated: true, completion: open) }
-        else { open() }
+        // The alert which offered the export formats dismisses itself. Let UIKit
+        // finish that transition before starting the Files presentation.
+        Task { @MainActor [weak self,weak controller,weak host] in
+            guard let self else { return }
+            for _ in 0..<30 {
+                guard let host,let controller,host.navigationController?.topViewController === controller,
+                      controller.viewIfLoaded?.window != nil else { self.finish(); return }
+                if controller.presentedViewController == nil,controller.transitionCoordinator == nil {
+                    self.openPicker(url,from: controller,appearance: host.navigationCoordinator?.interfaceAppearance ?? .unspecified)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            self.finish()
+        }
     }
 
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { finish() }
-    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { finish() }
+    private func openPicker(_ url: URL,from controller: UIViewController,appearance: UIUserInterfaceStyle) {
+        let picker = UIDocumentPickerViewController(forExporting: [url],asCopy: true)
+        picker.delegate = self
+        picker.overrideUserInterfaceStyle = appearance
+        if controller.traitCollection.horizontalSizeClass == .regular {
+            picker.modalPresentationStyle = .formSheet
+        } else {
+            picker.modalPresentationStyle = .pageSheet
+            picker.sheetPresentationController?.detents = [.large()]
+            picker.sheetPresentationController?.prefersGrabberVisible = true
+        }
+        activePicker = picker
+        controller.present(picker,animated: true)
+        picker.presentationController?.delegate = self
+        if picker.presentingViewController == nil { finish() }
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController,didPickDocumentsAt urls: [URL]) {
+        if controller === activePicker { finish() }
+    }
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        if controller === activePicker { finish() }
+    }
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        if presentationController.presentedViewController === activePicker { finish() }
+    }
+
     private func finish() {
-        guard let source else { return }
-        let root = FileManager.default.temporaryDirectory.appending(path: "FeiNotesExports", directoryHint: .isDirectory)
-        let folder = source.hasDirectoryPath ? source : source.deletingLastPathComponent()
+        if let source { discardExport(source) }
+        source = nil
+        activePicker = nil
+    }
+
+    private func discardExport(_ url: URL) {
+        let root = FileManager.default.temporaryDirectory.appending(path: "FeiNotesExports",directoryHint: .isDirectory)
+        let folder = url.hasDirectoryPath ? url : url.deletingLastPathComponent()
         if folder.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL {
             try? FileManager.default.removeItem(at: folder)
         }
-        self.source = nil
     }
 }
 

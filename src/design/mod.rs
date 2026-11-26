@@ -97,6 +97,19 @@ pub mod color {
     pub fn card() -> Hsla { popover() }
     pub fn primary() -> Hsla { pick(N900, N200) }
     pub fn primary_foreground() -> Hsla { pick(N50, N900) }
+    /// Fei Notes' interface preference is independent of the open document's colors.
+    pub fn interface_accent() -> Option<Hsla> {
+        crate::FEI_NOTES.then(|| if crate::settings::interface_feishu() {
+            hex(crate::feishu_theme::ud::B600)
+        } else {
+            crate::themes::interface().token("primary_500")
+        })
+    }
+    pub fn control_fill() -> Hsla { interface_accent().unwrap_or_else(primary) }
+    pub fn control_foreground() -> Hsla { if crate::FEI_NOTES { hex(N0) } else { primary_foreground() } }
+    pub fn accent_tint() -> Hsla {
+        interface_accent().map_or_else(secondary, |accent| alpha(accent, 0.20))
+    }
     pub fn secondary() -> Hsla { pick(N100, N800) }
     pub fn secondary_foreground() -> Hsla { pick(N900, N50) }
     /// What is selected.

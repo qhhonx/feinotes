@@ -2,6 +2,7 @@ import UIKit
 
 struct FeiMobileTheme: Decodable, Equatable, Sendable {
     let id: String
+    let interface_style: String?
     let accent: [CGFloat]
     let sharing_accent: [CGFloat]?
     let paper: [CGFloat]
@@ -16,7 +17,7 @@ struct FeiMobileTheme: Decodable, Equatable, Sendable {
     let sync_warning: [CGFloat]?
     let sync_warning_ink: [CGFloat]?
 
-    static let system = FeiMobileTheme(id: "",accent: [],sharing_accent: nil,paper: [],folder: [],chrome: nil,list: nil,workspace_list: nil,text: nil,row: nil,selected: nil,selected_text: nil,sync_warning: nil,sync_warning_ink: nil)
+    static let system = FeiMobileTheme(id: "",interface_style: nil,accent: [],sharing_accent: nil,paper: [],folder: [],chrome: nil,list: nil,workspace_list: nil,text: nil,row: nil,selected: nil,selected_text: nil,sync_warning: nil,sync_warning_ink: nil)
     @MainActor private func color(_ components: [CGFloat]?) -> UIColor? {
         guard let c = components,c.count == 4,c.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { return nil }
         return UIColor(red: c[0],green: c[1],blue: c[2],alpha: c[3])
@@ -24,6 +25,7 @@ struct FeiMobileTheme: Decodable, Equatable, Sendable {
     @MainActor var syncWarningColor: UIColor { color(sync_warning) ?? .systemOrange }
     @MainActor var syncWarningInk: UIColor { color(sync_warning_ink) ?? .white }
     @MainActor var accentColor: UIColor { color(accent) ?? .systemBlue }
+    @MainActor var toolbarColor: UIColor { .label }
     @MainActor var sharingAccentColor: UIColor { color(sharing_accent) ?? accentColor }
     @MainActor var paperColor: UIColor { color(paper) ?? .systemBackground }
     @MainActor var folderColor: UIColor { color(folder) ?? accentColor }

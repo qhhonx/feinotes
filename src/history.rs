@@ -269,6 +269,7 @@ impl Workspace {
 
     /// 保存当前版本: bypasses the interval; identical text still adds nothing.
     pub fn save_version_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reading() { return; }
         if !self.flush(cx) { return }
         let Some(h) = self.history.as_ref() else { return };
         let id = h.id.clone();
@@ -326,6 +327,7 @@ impl Workspace {
     fn is_table(&self, id: &str) -> bool { self.entries.iter().any(|e| e.id == id && e.meta.kind == crate::store::DocKind::Table) }
 
     pub fn restore_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reading() { return; }
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         if crate::cloud_sync::shared::editing_paused(&self.store, cx) || crate::cloud_sync::shared::access(&self.store, cx).is_some_and(|a| !a.can_write()) { return; }
         let Some((id, name)) = self.history.as_ref().and_then(|h| h.selected.clone().map(|n| (h.id.clone(), n))) else { return };
@@ -407,6 +409,7 @@ impl Workspace {
     }
 
     pub fn delete_selected_version(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reading() { return; }
         let Some((id, name)) = self.history.as_ref().and_then(|h| h.selected.clone().map(|n| (h.id.clone(), n))) else { return };
         if let Err(e) = self.store.delete_version(&id, &name) { return self.set_history_error(e.to_string(), cx) }
         self.refresh_history(window, cx);
@@ -414,6 +417,7 @@ impl Workspace {
 
     /// 命名版本: the row turns into an input; Enter or clicking away saves.
     pub fn start_version_rename(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reading() { return; }
         let Some(label) = self.history.as_ref().and_then(|h| h.versions.iter().find(|v| v.name == name)).map(|v| v.label.clone().unwrap_or_default()) else { return };
         let field = cx.new(|cx| {
             let mut f = TextField::new(crate::settings::tr("给这个版本起个名字", "Name this version"), cx);
@@ -444,6 +448,7 @@ impl Workspace {
     }
 
     pub(crate) fn set_history_label(&mut self, name: &str, text: &str, cx: &mut Context<Self>) {
+        if self.reading() { return; }
         let Some(h) = self.history.as_ref() else { return };
         if !h.versions.iter().any(|v|v.name == name) { return; }
         let id = h.id.clone();
@@ -465,9 +470,9 @@ impl Workspace {
         let h = self.history.as_ref()?;
         let p = self.preview.as_ref()?;
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-        let writable = !crate::cloud_sync::shared::editing_paused(&self.store, cx) && crate::cloud_sync::shared::access(&self.store, cx).is_none_or(|a| a.can_write());
+        let writable = !self.reading() && !crate::cloud_sync::shared::editing_paused(&self.store, cx) && crate::cloud_sync::shared::access(&self.store, cx).is_none_or(|a| a.can_write());
         #[cfg(not(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync")))]
-        let writable = true;
+        let writable = !self.reading();
         let v = h.versions.iter().find(|v| v.name == p.name);
         let when = v.map_or_default(|v| format_time(v.ms / 1000));
         let title = match v.and_then(|v| v.label.clone()) {
@@ -504,6 +509,7 @@ impl Workspace {
     /// 保存当前版本 and, for the version being previewed, 另存副本 and 删除.
     pub(crate) fn render_history(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let h = self.history.as_ref()?;
+        let writable = !self.reading();
         let selected = h.selected.clone();
         let renaming = self.version_rename.as_ref().map(|r| (r.name.clone(), r.field.clone()));
         let visible: Vec<Version> = h.versions.iter().filter(|v| !h.named_only || v.label.is_some()).cloned().collect();
@@ -545,7 +551,7 @@ impl Workspace {
                                 .overflow_hidden().whitespace_nowrap().text_ellipsis().child(delta.clone()))
                             .into_any_element(),
                     })
-                    .when(!editing, |d| d.child(
+                    .when(writable && !editing, |d| d.child(
                         Button::ghost(("history-rename", i)).sized(ButtonSize::Xs).icon("pen-line")
                             .invisible().group_hover(group.clone(), |s| s.visible())
                             .on_click(cx.listener(move |w: &mut Workspace, _, window, cx| w.start_version_rename(&name, window, cx))),
@@ -582,14 +588,14 @@ impl Workspace {
         let act = |id: &'static str, text: &'static str, hover_color: Hsla| div().id(id).flex_none().h(px(28.)).px(px(8.)).flex().items_center().rounded(px(6.)).text_size(px(13.)).cursor_pointer()
             .text_color(Theme::text_caption()).hover(|s| s.bg(Theme::fill_hover()).text_color(hover_color)).child(text);
         let footer = div().flex_none().border_t_1().border_color(Theme::line_divider()).p(px(12.)).flex().items_center().gap(px(4.))
-            .child(Button::outline("history-snapshot").sized(ButtonSize::Tool).label(crate::settings::tr("保存当前版本", "Save a version"))
-                .on_click(cx.listener(|w, _, window, cx| w.save_version_now(window, cx))))
+            .when(writable, |d| d.child(Button::outline("history-snapshot").sized(ButtonSize::Tool).label(crate::settings::tr("保存当前版本", "Save a version"))
+                .on_click(cx.listener(|w, _, window, cx| w.save_version_now(window, cx)))))
             .child(div().flex_1())
             // these act on the version being previewed: shown only while there is one
             .when(has_sel, |d| d
                 .child(act("history-copy", crate::settings::tr("另存副本", "Save as copy"), Theme::text()).on_click(cx.listener(|w, _, window, cx| w.version_as_copy(window, cx))))
-                .child(act("history-delete", crate::settings::tr("删除", "Delete"), Theme::danger())
-                    .on_click(cx.listener(|w, _, window, cx| w.delete_selected_version(window, cx)))));
+                .when(writable, |d| d.child(act("history-delete", crate::settings::tr("删除", "Delete"), Theme::danger())
+                    .on_click(cx.listener(|w, _, window, cx| w.delete_selected_version(window, cx))))));
         Some(
             Popover::new("history-drawer").absolute().top(px(HEADER_H + 8.)).right(px(8.)).bottom(px(8.)).w(px(DRAWER_W))
                 .flex().flex_col().overflow_hidden()

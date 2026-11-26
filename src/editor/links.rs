@@ -277,9 +277,10 @@ impl Editor {
             list = list.child(
                 MenuItem::new(("mention", k))
                     .h(px(48.))
-                    .selected(k == m.selected)
+                    .selected(k == m.selected && !window.last_input_was_touch())
                     .leading(avatar)
-                    .on_mouse_move(cx.listener(move |e, _: &MouseMoveEvent, _, cx| {
+                    .on_mouse_move(cx.listener(move |e, _: &MouseMoveEvent, window, cx| {
+                        if window.last_input_was_touch() { return; }
                         if let Some(m) = &mut e.mention
                             && m.selected != k
                         {

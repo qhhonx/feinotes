@@ -706,7 +706,7 @@ fn setting_status(label: &'static str) -> Div {
 /// The switch: the accent when on, black 16% when off, a white knob.
 pub(crate) fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
     div().id(id).flex_none().w(px(if cfg!(target_os = "ios") { 51. } else { 32. })).h(px(if cfg!(target_os = "ios") { 31. } else { 19. })).p(px(2.)).rounded_full().cursor_pointer().flex().items_center()
-        .when(on, |d| d.bg(Theme::primary()).justify_end())
+        .when(on, |d| d.bg(crate::design::color::interface_accent().unwrap_or_else(Theme::primary)).justify_end())
         .when(!on, |d| d.bg(theme::ca(craft::N1000, 0.16)).justify_start())
         .child(div().size(px(if cfg!(target_os = "ios") { 27. } else { 15. })).rounded_full().bg(gpui::white()).shadow(theme::shadow_button()))
 }

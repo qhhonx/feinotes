@@ -145,7 +145,7 @@ impl Drawer {
 /// The selection: drawn under its row, moving with it (folders opening, rows
 /// making room in a drag). A click moves it to the new row at once; with
 /// 动画 › 丰富 it glides there instead.
-struct Pill { id: String, pos: Spring, travel: bool }
+struct Pill { id: String, pos: Spring, travel: bool, fill: Hsla }
 
 pub(crate) struct Drag {
     id: String,
@@ -939,11 +939,18 @@ impl Workspace {
         let picked = pick.filter(|id| dragged.as_ref() != Some(id)).and_then(|id| index.get(id.as_str()).map(|&i| (id, drawn[i])));
         match (picked, &mut fd.pill) {
             (Some((id, p)), Some(pill)) => {
-                if pill.id != id && high { pill.travel = true; }
+                if pill.fill != selection || crate::FEI_NOTES && pill.id != id {
+                    // A focused folder and a document can use different fills.
+                    // Commit the new color at its destination, before drawing the row.
+                    pill.travel = false;
+                } else if pill.id != id && high {
+                    pill.travel = true;
+                }
+                pill.fill = selection;
                 pill.id = id; pill.pos.target = p;
                 if !pill.travel { pill.pos.p = p; pill.pos.v = [0.; 3]; }
             }
-            (Some((id, p)), None) => fd.pill = Some(Pill { id, pos: Spring::new(p), travel: false }),
+            (Some((id, p)), None) => fd.pill = Some(Pill { id, pos: Spring::new(p), travel: false, fill: selection }),
             (None, _) => fd.pill = None,
         }
         if let Some(pill) = &mut fd.pill && pill.travel { pill.travel = pill.pos.step(dt); moving |= pill.travel; }
@@ -1095,7 +1102,7 @@ impl Workspace {
 
     pub(crate) fn finish_sidebar_click(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.folder_drag.active.as_ref().is_some_and(|d| d.started) { self.end_folder_drag(false, window, cx); return; }
-        if let Some(d) = self.folder_drag.active.take() { self.sidebar_click(&d.id, window, cx); }
+        if let Some(d) = self.folder_drag.active.take() { self.sidebar_focused = true; self.sidebar_click(&d.id, window, cx); }
     }
 
     #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
@@ -1105,6 +1112,7 @@ impl Workspace {
         }
         // Navigation can replace the workspace and carry both sidebar states into it.
         let Some(d) = self.sharing.sidebar.active.take() else { return };
+        self.sidebar_focused = true;
         use crate::sidebar::{SidebarEntry, SidebarSection};
         let id = d.id;
         let shown = self.sidebar_row_selected(SidebarSection::Shared, &id);

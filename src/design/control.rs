@@ -29,8 +29,8 @@ impl RenderOnce for Checkbox {
         let mut d = self.base;
         let caller = std::mem::take(d.style());
         let d = d.size(px(g.checkbox)).flex_none().flex().items_center().justify_center().rounded(px(g.checkbox_r)).when(self.disabled, |d| d.opacity(0.5));
-        let mut d = if self.on { d.bg(color::primary()).child(icon("todo-check", 14., color::primary_foreground())) }
-            else if self.partial { d.bg(color::primary()).child(div().w(px(8.)).h(px(2.)).rounded(px(1.)).bg(color::primary_foreground())) }
+        let mut d = if self.on { d.bg(color::control_fill()).child(icon("todo-check", 14., color::control_foreground())) }
+            else if self.partial { d.bg(color::control_fill()).child(div().w(px(8.)).h(px(2.)).rounded(px(1.)).bg(color::control_foreground())) }
             else { d.border_1().border_color(color::input()).bg(color::field()).shadow(shadow::xs()) };
         d.style().refine(&caller);
         d
@@ -50,11 +50,11 @@ impl Switch {
 impl RenderOnce for Switch {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let (g, dark, on) = (geo(), crate::theme::dark(), self.on);
-        let thumb = if !dark { color::popover() } else if on { color::primary_foreground() } else { color::foreground() };
+        let thumb = if !dark { color::popover() } else if on { color::control_foreground() } else { color::foreground() };
         let mut d = self.base;
         let caller = std::mem::take(d.style());
         let mut d = d.flex_none().w(px(g.switch_w)).h(px(g.switch_h)).px(px(1.)).rounded_full().flex().items_center()
-            .bg(if on { color::primary() } else { color::switch_off() }).shadow(shadow::xs()).when(on, |d| d.justify_end()).when(self.disabled, |d| d.opacity(0.5))
+            .bg(if on { color::control_fill() } else { color::switch_off() }).shadow(shadow::xs()).when(on, |d| d.justify_end()).when(self.disabled, |d| d.opacity(0.5))
             .child(div().size(px(g.thumb)).rounded_full().bg(thumb));
         d.style().refine(&caller);
         d
@@ -130,8 +130,8 @@ impl RenderOnce for Radio {
         let mut d = self.base;
         let caller = std::mem::take(d.style());
         let mut d = d.size(px(g.checkbox)).flex_none().flex().items_center().justify_center().rounded_full().border_1()
-            .bg(if self.on { color::primary() } else { color::field() }).border_color(if self.on { color::primary() } else { color::input() }).when(self.disabled, |d| d.opacity(0.5))
-            .when(self.on, |d| d.child(div().size(px(8.)).rounded_full().bg(color::primary_foreground())));
+            .bg(if self.on { color::control_fill() } else { color::field() }).border_color(if self.on { color::control_fill() } else { color::input() }).when(self.disabled, |d| d.opacity(0.5))
+            .when(self.on, |d| d.child(div().size(px(8.)).rounded_full().bg(color::control_foreground())));
         d.style().refine(&caller);
         d
     }

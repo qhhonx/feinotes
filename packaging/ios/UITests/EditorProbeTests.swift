@@ -229,9 +229,7 @@ final class EditorProbeTests: XCTestCase {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.3,dy: 0.28)).press(forDuration: 0.8)
         XCTAssertTrue(app.menuItems["粘贴"].waitForExistence(timeout: 5))
         app.menuItems["粘贴"].tap()
-        app.buttons["fei.more"].tap()
-        app.sheets.buttons["文档选项"].tap()
-        app.sheets.buttons["阅读模式"].tap()
+        app.switchToReadingMode()
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.1,dy: 0.28)).press(forDuration: 0.8)
         XCTAssertTrue(app.menuItems["复制"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.menuItems["剪切"].exists)
@@ -342,12 +340,14 @@ final class EditorProbeTests: XCTestCase {
         more.tap()
         let statusEntry = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Sync status")).firstMatch
         XCTAssertTrue(statusEntry.waitForExistence(timeout: 5)); statusEntry.tap()
-        let status = app.staticTexts["fei.shared-sync.status"]
+        let status = app.cells["fei.shared-sync.status"]
         XCTAssertTrue(status.waitForExistence(timeout: 5))
-        XCTAssertEqual(status.label,"Upload stalled")
+        XCTAssertTrue(status.label.contains("Upload stalled") || status.staticTexts["Upload stalled"].exists)
         XCTAssertFalse(app.tables["fei.settings.list"].exists)
         shot("sync-detail")
-        let recovered = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Up to date"),object: status)
+        let recovered = XCTNSPredicateExpectation(predicate: NSPredicate { _,_ in
+            status.label.contains("Up to date") || status.staticTexts["Up to date"].exists
+        },object: status)
         XCTAssertEqual(XCTWaiter.wait(for: [recovered],timeout: 24),.completed)
         app.buttons["fei.shared-sync.done"].tap()
         XCTAssertEqual(more.frame,buttonFrame)
@@ -1401,7 +1401,7 @@ final class EditorProbeTests: XCTestCase {
             XCTAssertFalse(menu("Document sharing access").exists)
             shot("sharing-received-menu")
             tap(menu("Sync status"))
-            XCTAssertTrue(app.staticTexts["fei.shared-sync.status"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.cells["fei.shared-sync.status"].waitForExistence(timeout: 5))
             XCTAssertFalse(app.cells["fei.setting.history-limit"].exists)
             XCTAssertFalse(app.cells["fei.setting.library-switch"].exists)
             shot("sharing-received-sync")
@@ -1425,7 +1425,7 @@ final class EditorProbeTests: XCTestCase {
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != %@", "Folder sharing access", "fei.folder.share")).firstMatch.exists)
         shot("sharing-root-menu")
         tap(menu("Sync status"))
-        XCTAssertTrue(app.staticTexts["fei.shared-sync.status"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.cells["fei.shared-sync.status"].waitForExistence(timeout: 5))
         tap(app.buttons["fei.shared-sync.done"])
         tap(row("FEI_SHARED_CHILD_FOLDER"))
         if pad { XCTAssertEqual(folderMore.value as? String,"animated push") }
@@ -1436,7 +1436,7 @@ final class EditorProbeTests: XCTestCase {
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != %@", "Folder sharing access", "fei.folder.share")).firstMatch.exists)
         shot("sharing-child-menu")
         tap(menu("Sync status"))
-        XCTAssertTrue(app.staticTexts["fei.shared-sync.status"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.cells["fei.shared-sync.status"].waitForExistence(timeout: 5))
         tap(app.buttons["fei.shared-sync.done"])
         tap(row("FEI_SHARED_FOLDER_DOCUMENT"))
         XCTAssertTrue(app.navigationBars["FEI_SHARED_FOLDER_DOCUMENT"].waitForExistence(timeout: 5))
@@ -1573,4 +1573,21 @@ final class EditorProbeTests: XCTestCase {
         shot("theme-03-saved-shared-settings")
     }
 
+}
+
+extension XCUIApplication {
+    func switchToReadingMode() { chooseNoteMode(["阅读模式", "Reading mode"]) }
+    func switchToEditingMode() { chooseNoteMode(["编辑模式", "Editing mode"]) }
+
+    private func chooseNoteMode(_ titles: [String]) {
+        let mode = buttons["fei.note-mode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 5))
+        mode.tap()
+        let label = NSPredicate(format: "label IN %@",titles)
+        let menuChoice = menuItems.matching(label).firstMatch
+        if menuChoice.exists { menuChoice.tap(); return }
+        let choice = buttons.matching(label).firstMatch
+        XCTAssertTrue(choice.waitForExistence(timeout: 5))
+        choice.tap()
+    }
 }

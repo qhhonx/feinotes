@@ -19,7 +19,7 @@ impl Workspace {
     pub(crate) fn native_history(&self, cx:&App) -> Option<NativeHistory> {
         if self.view != crate::app::View::Doc { return None; }
         let h = self.history.as_ref()?;
-        let can_restore = !crate::cloud_sync::shared::editing_paused(&self.store,cx) && crate::cloud_sync::shared::access(&self.store,cx).is_none_or(|a|a.can_write());
+        let can_restore = !self.reading() && !crate::cloud_sync::shared::editing_paused(&self.store,cx) && crate::cloud_sync::shared::access(&self.store,cx).is_none_or(|a|a.can_write());
         Some(NativeHistory { token:h.token,scope:crate::ipad::editor_scope(self),note:h.id.clone(),selected:h.selected.clone(),previewing:self.preview.is_some(),named_only:h.named_only,marks:h.marks,can_restore,can_copy:!crate::in_shared_note(),
             versions:h.versions.iter().map(|v|NativeVersion { name:v.name.clone(),title:v.label.clone().unwrap_or_else(||format_time(v.ms/1000)),detail:format!("{} · {}",day_label(v.ms/1000),delta_text(&v.name,&h.delta)),named:v.label.is_some() }).collect(),
             notice:h.error.clone().or_else(||h.feedback.clone()),

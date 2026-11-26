@@ -426,12 +426,12 @@ th {
 }
 
 .sidebar-row.is-selected.is-focused {
-  background-color: light-dark(#ffe491, #a2842a);
+  background-color: light-dark(#d3d1cd, #545250);
 }
 
 .sidebar-folder.is-selected.is-focused {
-  background-color: light-dark(#fdb82a, #fdb82a);
-  color: light-dark(#ffffff, #ffffff);
+  background-color: var(--notes-accent);
+  color: #ffffff;
 }
 
 .toolbar {
@@ -499,7 +499,7 @@ th {
 .mobile-list { color: var(--notes-ink); }
 .mobile-row.is-selected {
   background-color: var(--notes-accent);
-  color: light-dark(#454545, #191919);
+  color: #ffffff;
 }
 
 /* Mobile values are product tuning; desktop Notes measurements above remain unchanged. */

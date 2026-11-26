@@ -261,7 +261,7 @@ impl Workspace {
         let (pin_id, star_id, mv_id, del_id, dup_id, print_id) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
         let rename = id.clone();
         // 新建子文档 (#357): under a document of the library.
-        let child = !board_file && self.takes_children(&id);
+        let child = !reading && !board_file && self.takes_children(&id);
         let child_id = id.clone();
         let menu = Popover::new("doc-menu")
             .menu()
@@ -278,25 +278,25 @@ impl Workspace {
             )
             .child(divider())
             .child(
-                menu_item("dm-find", "text-search", if editable { crate::settings::text("查找和替换") } else { crate::settings::tr("查找", "Find") }, false, false)
+                menu_item("dm-find", "text-search", if editable && !reading { crate::settings::text("查找和替换") } else { crate::settings::tr("查找", "Find") }, false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(|w, _, window, cx| w.find_in_doc(false, window, cx))),
             )
             .child(divider()))
-            .when(movable, |d| d.child(
+            .when(movable && !reading, |d| d.child(
                 menu_item("dm-move", "folder-input", crate::settings::text("移动到"), false, false)
                     .when(cfg!(feature = "devtools"), |d| d.relative().child(self.home.track("qa-document-move")))
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(move |w, _, window, cx| {
                         w.close_doc_menu(cx);
-                        w.open_move(vec![mv_id.clone()], window, cx);
+                        if !w.reading() { w.open_move(vec![mv_id.clone()], window, cx); }
                     })),
             ))
-            .when(shared && editable, |d| d.child(
+            .when(shared && editable && !reading, |d| d.child(
                 menu_item("dm-rename", "square-pen", crate::settings::tr("重命名", "Rename"), false, false)
                     .on_hover(hover_sub(None)).on_click(cx.listener(move |w, _, window, cx| {
                         w.close_doc_menu(cx);
-                        w.start_rename(&rename,window,cx);
+                        if !w.reading() { w.start_rename(&rename,window,cx); }
                     })),
             ))
             .child(
@@ -336,7 +336,7 @@ impl Workspace {
             .when(child, |d| d.child(
                 menu_item("dm-child", "plus", crate::settings::tr("新建子文档", "New child page"), false, false)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(move |w, _, window, cx| { w.close_doc_menu(cx); w.new_child(&child_id, window, cx); })),
+                    .on_click(cx.listener(move |w, _, window, cx| { w.close_doc_menu(cx); if !w.reading() { w.new_child(&child_id, window, cx); } })),
             ))
             .when(!shared, |d| d.child(
                 menu_item("dm-copy", "copy", crate::settings::text("创建副本"), false, false)
@@ -430,7 +430,7 @@ impl Workspace {
             })
             .child(divider())
             // (a board file has no reading mode or references)
-            .when(!board_file && editable, |d| d.child(
+            .when(!crate::FEI_NOTES && !board_file && editable, |d| d.child(
                 menu_item("dm-read", "eye-open", crate::settings::text("阅读模式"), false, false)
                     .child(Switch::new(reading))
                     .on_hover(hover_sub(None))
@@ -447,10 +447,10 @@ impl Workspace {
                         w.ask_refs(!refs_shown, cx);
                     })),
             ).child(divider()))
-            .when(!shared, |d| d.child(
+            .when(!shared && !reading, |d| d.child(
                 menu_item("dm-delete", "bin", crate::settings::text("删除"), false, false)
                     .on_hover(hover_sub(None))
-                    .on_click(cx.listener(move |w, _, _, cx| w.ask_delete(&del_id, cx))),
+                    .on_click(cx.listener(move |w, _, _, cx| { if !w.reading() { w.ask_delete(&del_id, cx); } })),
             ))
             // (a board has its own shortcut help, `?`)
             .when(!board, |d| d.child(divider())
@@ -476,7 +476,7 @@ impl Workspace {
         let sub_at = point(right - px(self.doc_menu_w.get().unwrap_or(MENU_W) + 4.), px(0.));
         let item_top = |k: usize, d: usize| f32::from(menu_top) + item_top(k, d);
         let extra_rows = usize::from(show_share) + usize::from(show_local_copy);
-        let hidden_actions = usize::from(shared) + usize::from(shared && !editable);
+        let hidden_actions = usize::from(!movable || reading) + usize::from(shared && (!editable || reading));
         let record = self.doc_sub_bounds.clone();
         record.set(None);
         let recorder = move || {

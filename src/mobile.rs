@@ -230,7 +230,6 @@ mod shell {
                 .bg(Theme::bg_body()).flex().items_center().justify_center().text_size(px(17.))
                 .child(if self.library_switching { tr("正在打开文档库…","Opening library…") } else { tr("正在处理…","Working…") })
                 .on_mouse_down(MouseButton::Left,|_,_,cx| cx.stop_propagation())).with_priority(30));
-            let toast = self.render_toast(window);
             #[cfg(feature = "cloudkit-sync")]
             let conflict_review = self.render_conflict_review(window, cx);
             let theme_menu = self.render_theme_menu(cx);
@@ -242,7 +241,7 @@ mod shell {
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                 .map(|d| self.workspace_actions(d,cx))
                 .child(canvas(|_, _, _| (), |_, _, _, _| crate::editor::touch::clear_scroll_hitboxes()).absolute().size_full())
-                .child(body).children(export).children(search).children(theme_menu).children(lang_menu).children(pref_menu).children(move_dialog).children(toast).children(busy)
+                .child(body).children(export).children(search).children(theme_menu).children(lang_menu).children(pref_menu).children(move_dialog).children(busy)
                 .map(|d| {
                     #[cfg(feature = "cloudkit-sync")]
                     let d = d.children(conflict_review);

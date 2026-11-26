@@ -5,11 +5,12 @@ final class FeiReorderController: UITableViewController, UIAdaptivePresentationC
     private var state: FeiNavigationState.Reorder
     private var rows: [FeiNavigationState.Reorder.Item]
     private let send: (String,String?,String?,UInt64) -> Void
+    private let accent: UIColor
     private var waiting = false
     private var finishing = false
 
-    init(_ state: FeiNavigationState.Reorder, send: @escaping (String,String?,String?,UInt64) -> Void) {
-        self.state = state; rows = state.items; self.send = send
+    init(_ state: FeiNavigationState.Reorder, accent: UIColor, send: @escaping (String,String?,String?,UInt64) -> Void) {
+        self.state = state; rows = state.items; self.send = send; self.accent = accent
         super.init(style: .insetGrouped)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -32,6 +33,8 @@ final class FeiReorderController: UITableViewController, UIAdaptivePresentationC
         if refresh && rows != next.items { rows = next.items; if isViewLoaded { tableView.reloadData() } }
         title = next.title; navigationItem.prompt = next.prompt
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: next.done,style: .done,target: self,action: #selector(done))
+        navigationItem.rightBarButtonItem?.tintColor = accent
+        navigationItem.rightBarButtonItem?.setTitleTextAttributes([.foregroundColor: UIColor.white],for: .normal)
         navigationItem.rightBarButtonItem?.accessibilityIdentifier = "fei.reorder.done"
         navigationItem.rightBarButtonItem?.isEnabled = !next.saving && !waiting
         navigationController?.isModalInPresentation = next.saving || waiting

@@ -46,7 +46,7 @@ final class FeiLocalHistoryController: UITableViewController {
         let named = UIAction(title: labels["history-named"] ?? "Named versions only",state: state.named_only ? .on : .off) { [weak self] _ in self?.coordinator?.sendHistory("named",history: state) }
         let filter = UIBarButtonItem(image: UIImage(systemName: "line.3.horizontal.decrease.circle"),menu: UIMenu(children: [named]))
         filter.accessibilityLabel = labels["history-filter"]; filter.accessibilityIdentifier = "fei.history.filter"; filter.isEnabled = !busy
-        return [filter,UIBarButtonItem(systemItem: .flexibleSpace),save]
+        return [filter,UIBarButtonItem(systemItem: .flexibleSpace)] + (state.can_restore ? [save] : [])
     }
     @objc private func saveCurrent() { if let state,!busy { coordinator?.sendHistory("save",history: state) } }
     override func tableView(_ tableView: UITableView,numberOfRowsInSection section:Int) -> Int { rows.count }
@@ -70,9 +70,14 @@ final class FeiLocalHistoryController: UITableViewController {
         let row = rows[indexPath.row]
         return UIContextMenuConfiguration(identifier: row.name as NSString,previewProvider: nil) { [weak self] _ in
             guard let self else { return nil }
-            var actions = [UIAction(title: self.labels["history-name"] ?? "Name version",image: UIImage(systemName: "pencil")) { [weak self] _ in self?.coordinator?.renameHistory(row,history: state) }]
+            var actions: [UIAction] = []
+            if state.can_restore {
+                actions.append(UIAction(title: self.labels["history-name"] ?? "Name version",image: UIImage(systemName: "pencil")) { [weak self] _ in self?.coordinator?.renameHistory(row,history: state) })
+            }
             if state.can_copy { actions.append(UIAction(title: self.labels["history-copy"] ?? "Save as a note",image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in self?.coordinator?.sendHistory("copy",name: row.name,history: state) }) }
-            actions.append(UIAction(title: self.labels["history-delete"] ?? "Delete version",image: UIImage(systemName: "trash"),attributes: .destructive) { [weak self] _ in self?.coordinator?.confirmHistory("delete",name: row.name,history: state) })
+            if state.can_restore {
+                actions.append(UIAction(title: self.labels["history-delete"] ?? "Delete version",image: UIImage(systemName: "trash"),attributes: .destructive) { [weak self] _ in self?.coordinator?.confirmHistory("delete",name: row.name,history: state) })
+            }
             return UIMenu(children: actions)
         }
     }

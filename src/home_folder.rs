@@ -217,7 +217,7 @@ fn back_plate(o: Point<Pixels>, p: &Pose, window: &mut Window) {
 
 /// The frosted front: a sheet whose top steps down from a raised left part,
 /// milky at the top and nearly opaque where the name sits, with a lit edge.
-fn glass(o: Point<Pixels>, p: &Pose, window: &mut Window) {
+fn glass(o: Point<Pixels>, p: &Pose, accent_edge: Option<(Hsla, f32)>, window: &mut Window) {
     let (w, h, r) = (p.w, p.h + p.lift, 18.);
     let (yl, yr, i) = (p.yl + p.lift, p.yr + p.lift, p.inset);
     let step = 0.44 * w;
@@ -248,18 +248,21 @@ fn glass(o: Point<Pixels>, p: &Pose, window: &mut Window) {
         window.paint_path(path.clone(), linear_gradient(180., linear_color_stop(face.opacity(0.78), 0.), linear_color_stop(face.opacity(0.97), 0.42)));
         window.paint_path(path, linear_gradient(180., linear_color_stop(ca(craft::N1000, 0.012), 0.), linear_color_stop(ca(craft::N1000, 0.035), 1.)));
     }
-    let mut hair = PathBuilder::stroke(px(1.));
+    let (ink, width) = accent_edge.unwrap_or_else(|| (ca(craft::N1000, 0.07), 1.));
+    let mut hair = PathBuilder::stroke(px(width));
     edge(&mut hair);
     hair.line_to(pt(w, h - r));
     hair.curve_to(pt(w - r, h), pt(w, h));
     hair.line_to(pt(r, h));
     hair.curve_to(pt(0., h - r), pt(0., h));
     hair.close();
-    if let Ok(path) = hair.build() { window.paint_path(path, ca(craft::N1000, 0.07)); }
+    if let Ok(path) = hair.build() { window.paint_path(path, ink); }
     // The lit top edge: brighter as the front leans into the light.
     let mut lit = PathBuilder::stroke(px(1.5));
     edge(&mut lit);
-    if let Ok(path) = lit.build() { window.paint_path(path, theme::rgbaf(255, 255, 255, if theme::dark() { 0.18 } else { 0.85 + 0.15 * p.open.clamp(0., 1.) })); }
+    if accent_edge.is_none() && let Ok(path) = lit.build() {
+        window.paint_path(path, theme::rgbaf(255, 255, 255, if theme::dark() { 0.18 } else { 0.85 + 0.15 * p.open.clamp(0., 1.) }));
+    }
 }
 
 impl Workspace {
@@ -380,8 +383,10 @@ impl Workspace {
                 .when(k.meta.folder.is_some(), |d| d.child(icon("folder", 12., Theme::icon())))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(display_title(&k.title))))
         });
-        let front_glass = { let pose = pose.clone(); canvas(|_, _, _| {}, move |b, _, window, _| glass(b.origin, &pose, window)).absolute().inset_0() };
         let menu_on = self.row_menu.as_ref().is_some_and(|r| r.id == id);
+        let accent_edge = crate::design::color::interface_accent().filter(|_| menu_on || hot)
+            .map(|color| if menu_on { (color, 2.5) } else { (color.opacity(0.45), 2.) });
+        let front_glass = { let pose = pose.clone(); canvas(|_, _, _| {}, move |b, _, window, _| glass(b.origin, &pose, accent_edge, window)).absolute().inset_0() };
         // The buttons come with hover only, not under a carried card.
         let reveal = if menu_on { 1. } else { (o - m).clamp(0., 1.) };
         let (open_id, menu_id, new_id) = (id.clone(), id.clone(), id.clone());
@@ -881,7 +886,7 @@ impl Workspace {
             })
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(10.)).line_height(px(14.))
                 .font_weight(FontWeight::SEMIBOLD).text_color(Theme::text()).child(ui_text(first.clone()))));
-        let front = { let pose = pose.clone(); canvas(|_, _, _| {}, move |b, _, window, _| glass(b.origin, &pose, window)).absolute().inset_0() };
+        let front = { let pose = pose.clone(); canvas(|_, _, _| {}, move |b, _, window, _| glass(b.origin, &pose, None, window)).absolute().inset_0() };
         let grow = 0.9 + 0.1 * show + 0.05 * lit;
         let art = div().relative().flex_none().w(px(w)).h(px(h)).ml(px(shake_x)).opacity(1. - 0.35 * quiet)
             .child(back).children(chip).child(front);

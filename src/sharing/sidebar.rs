@@ -105,7 +105,7 @@ impl Workspace {
             .pl(px(6.)).flex().items_center().gap(px(9.)).rounded(px(crate::sidebar::ROW_R)).cursor_pointer()
             .text_size(px(crate::theme::ui_font())).text_color(crate::sidebar::text_color()).hover(|s| s.bg(crate::sidebar::hover()))
             .when(self.sidebar_row_selected(SidebarSection::Pinned, &id), |d| d.bg(crate::sidebar::selection_fill()))
-            .child(crate::sidebar::entry_icon(entry, self.viewing_shared_folder(&id, cx), true, cx))
+            .child(crate::sidebar::entry_icon(entry, self.viewing_shared_folder(&id, cx), true, None, cx))
             .child(div().flex_1().min_w_0().flex().items_center()
                 .child(crate::ui::document_title(&title).child(crate::ui::ui_text(title)))
                 .when(self.document_has_shared_status(entry, cx), |d| {
@@ -331,6 +331,7 @@ impl Workspace {
         let selected = self.sidebar_row_selected(SidebarSection::Shared, &id);
         let batch = self.shared_batch();
         if entry.meta.folder.is_some() {
+            let foreground = self.sidebar_selected_folder_foreground(selected);
             let has_children = self.folder_drag.has_children(&id);
             let menu_id = if collection { id.clone() } else { format!("shared:{id}") };
             let menu_kind = if collection { "collection" } else if cfg!(target_os = "macos") { "shared-folder" } else { "shared" };
@@ -341,7 +342,7 @@ impl Workspace {
                 .map(|room| crate::folders::CreateTarget::SharedFolder { room, parent: id.clone(), section: SidebarSection::Shared });
             #[cfg(target_os = "macos")]
             let controls = (!batch && self.sidebar_rename(&id, SidebarSection::Shared).is_none())
-                .then(|| self.folder_row_actions(entry, menu_kind, create.clone(), cx));
+                .then(|| self.folder_row_actions(entry, menu_kind, create.clone(), selected, cx));
             #[cfg(target_os = "macos")]
             let title_reserve = if controls.is_some() && create.is_some() { 52. } else if controls.is_some() { 28. } else { 0. };
             #[cfg(target_os = "ios")]
@@ -351,11 +352,11 @@ impl Workspace {
                 .hover(|s| s.bg(crate::sidebar::hover()))
                 .when(batch, |d| d.child(crate::sidebar::batch_check_slot().mr(px(4.))))
                 .child(div().size(px(20.)).flex_none().relative()
-                    .child(crate::sidebar::entry_icon(entry, self.expanded.contains(&id), false, cx)
+                    .child(crate::sidebar::entry_icon(entry, self.expanded.contains(&id), false, foreground, cx)
                         .when(has_children, |d| d.group_hover("doc-row", |s| s.opacity(0.))))
                     .when(has_children, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center()
                         .opacity(0.).group_hover("doc-row", |s| s.opacity(1.))
-                        .child(ui::icon(if self.expanded.contains(&id) { "chevron-down" } else { "chevron-right" }, 12., Theme::icon())))
+                        .child(ui::icon(if self.expanded.contains(&id) { "chevron-down" } else { "chevron-right" }, 12., foreground.unwrap_or_else(Theme::icon))))
                         .on_mouse_down(MouseButton::Left, cx.listener(|w, ev: &MouseDownEvent, _, _| {
                             w.sharing.sidebar.icon_press = true; w.sharing.sidebar.icon_alt = ev.modifiers.alt;
                         }))))
@@ -382,7 +383,7 @@ impl Workspace {
         let unread = cx.try_global::<ActivityView>().is_some_and(|view| view.0.iter().any(|row| row.room.scope.note == id && row.unread));
         let dot = unread.then(crate::sidebar::shared_unread_dot);
         let more = (!member || cfg!(target_os = "macos")) && !batch && self.sidebar_rename(&id, SidebarSection::Shared).is_none();
-        let end = if more { Some(self.more_button_with_status(entry, "shared", dot, cx).into_any_element()) }
+        let end = if more { Some(self.more_button_with_status(entry, "shared", dot, None, cx).into_any_element()) }
             else { dot.map(|dot| crate::sidebar::row_action_slot().child(dot).into_any_element()) };
         div().id(SharedString::from(format!("shared-sidebar-{id}"))).h(px(crate::sidebar::ROW_H)).w_full().pl(px(6.)).pr(px(8.))
             .flex().items_center().gap(px(0.)).rounded(px(crate::sidebar::ROW_R)).cursor_pointer()
@@ -390,7 +391,7 @@ impl Workspace {
             .when(batch, |d| d.child(crate::sidebar::batch_check_slot().mr(px(4.)).when(!member, |slot|
                 slot.child(crate::sidebar::checkbox(if checked { crate::sidebar::Check::On } else { crate::sidebar::Check::Off }, blocked)))))
             .when(batch && !member && checked, |d| d.bg(crate::sidebar::selection_fill()))
-            .child(crate::sidebar::entry_icon(entry, false, false, cx))
+            .child(crate::sidebar::entry_icon(entry, false, false, None, cx))
             .child(self.sidebar_title(entry, SidebarSection::Shared, selected, false, cx))
             .children(end)
             .when((!member || cfg!(target_os = "macos")) && (!member || !batch), |d| d.on_mouse_down(MouseButton::Right, cx.listener({ let id = id.clone(); move |w, event: &MouseDownEvent, _, cx| {

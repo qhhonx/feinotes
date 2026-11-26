@@ -75,10 +75,7 @@ final class BoardUITests: XCTestCase {
     }
 
     private func enterReadingMode() {
-        formattingMenu()
-        let reading = app.buttons.matching(NSPredicate(format: "label IN %@", ["阅读模式", "Reading mode"])).firstMatch
-        XCTAssertTrue(reading.waitForExistence(timeout: 5))
-        reading.tap()
+        app.switchToReadingMode()
     }
 
     func testBoardTouchEditsSurviveReopen() throws {
@@ -149,8 +146,10 @@ final class BoardUITests: XCTestCase {
         enterReadingMode()
         try documentChip()
         XCTAssertFalse(done.exists)
-        XCTAssertFalse(contentSettings().exists)
-        button("fei.objects.done").tap()
+        button("fei.more").tap()
+        let formatting = app.buttons.matching(NSPredicate(format: "label IN %@", ["编辑和格式", "Editing and formatting"])).firstMatch
+        XCTAssertFalse(formatting.exists)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.25,dy: 0.8)).tap()
         let beforeScroll = surface.value as? String
         surface.swipeUp()
         wait("The document still scrolls across the board in reading mode") {

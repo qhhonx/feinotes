@@ -1281,7 +1281,7 @@ impl Workspace {
         }));
         #[cfg(target_os = "ios")]
         {
-            let context = |ed: &Editor| (ed.mobile_table_target().is_some(),ed.mobile_block_toolbar_target().map(|(_,selected)|selected),ed.find.is_some(),ed.board_open());
+            let context = |ed: &Editor| (ed.mobile_table_target().is_some(),ed.mobile_block_toolbar_target().map(|(_,selected)|selected),ed.find.is_some(),ed.board_open(),ed.slash.is_some());
             let mut editor_context = context(editor.read(cx));
             self.mobile_editor_context = Some(cx.observe(&editor,move |_,editor,cx| {
                 let current = context(editor.read(cx));
@@ -2920,7 +2920,7 @@ impl Render for Workspace {
             .capture_any_mouse_down(cx.listener(|w, ev: &MouseDownEvent, window, cx| {
                 if ev.button == MouseButton::Left && ev.position.y >= px(HEADER_H) {
                     let sidebar = w.sidebar_open && ev.position.x < px(w.sidebar_w(window));
-                    if w.sidebar_focused != sidebar { w.sidebar_focused = sidebar; cx.notify(); }
+                    if !sidebar && w.sidebar_focused { w.sidebar_focused = false; cx.notify(); }
                 }
             }))
             .capture_key_down(cx.listener(|w, ev: &KeyDownEvent, window, cx| {

@@ -55,13 +55,7 @@ final class TableBlockActionsUITests: XCTestCase {
             done.tap()
             wait("The keyboard is dismissed before changing document mode") { !self.keyboard.exists }
         }
-        app.buttons["fei.more"].tap()
-        let format = app.buttons.matching(NSPredicate(format: "label IN %@",["编辑和格式","Editing and formatting"])).firstMatch
-        XCTAssertTrue(format.waitForExistence(timeout: 5))
-        format.tap()
-        let reading = app.buttons.matching(NSPredicate(format: "label IN %@",["阅读模式","Reading mode"])).firstMatch
-        XCTAssertTrue(reading.waitForExistence(timeout: 5))
-        reading.tap()
+        app.switchToReadingMode()
         wait("Reading mode hides the write controls") { !self.keyboard.exists && (!self.blockButton.exists || !self.blockButton.isEnabled) }
     }
 

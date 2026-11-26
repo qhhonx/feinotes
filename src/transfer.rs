@@ -530,6 +530,13 @@ impl Workspace {
         if !self.save_before(cx,move |workspace,_,cx| workspace.mobile_export_pdf(&selected,cx)) { return; }
         let Some(doc) = self.doc_of(id,cx) else { return };
         let subs = self.sub_page_titles(id);
+        if doc.cover.is_none() && subs.is_empty()
+            && doc.blocks.iter().all(|block| matches!(block.kind, crate::model::BlockKind::Text)
+                && block.text.text.trim().is_empty() && block.children.is_empty())
+        {
+            self.show_toast_kind(ToastKind::Info,crate::settings::tr("这篇文档没有可导出的正文。","This document has no body content to export."),cx);
+            return;
+        }
         let name = file_name(&doc);
         let html = crate::html::to_html(&doc,&crate::html::Options { sub_pages: &subs, library_root: self.store.root() });
         let folder = match crate::ipad::export_folder() {

@@ -123,6 +123,7 @@ const BTN_W: f32 = 80.;
 
 impl Editor {
     pub fn open_find(&mut self, replace: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let replace = replace && !self.read_only;
         // Seed the query with a single-line selection, like the browser find bar.
         let (a, b) = self.core.ordered();
         if !self.core.in_block_mode() && a.block == b.block && a.offset < b.offset {
@@ -311,6 +312,7 @@ impl Editor {
     }
 
     pub(super) fn replace_one(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only { return; }
         let Some((id, r)) = self.find.as_ref().and_then(|f| f.matches.get(f.current?).cloned()) else { return };
         let with = self.replace_field.read(cx).text.clone();
         let with = self.replacements(id, std::slice::from_ref(&r), &with, cx).pop().unwrap_or(with);
@@ -331,6 +333,7 @@ impl Editor {
     }
 
     pub(super) fn replace_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only { return; }
         let Some(f) = &self.find else { return };
         if f.matches.is_empty() {
             return;

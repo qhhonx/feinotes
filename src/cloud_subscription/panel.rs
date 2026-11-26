@@ -200,7 +200,7 @@ impl Workspace {
                     .on_click(cx.listener(|w, _, window, cx| w.subscription_action(Action::Load, window, cx))));
             }
         } else {
-            let mut plans = Card::new("subscription-plans");
+            let mut plans = Card::new("subscription-plans").border_1().border_color(design::color::input()).overflow_hidden();
             for (index, offer) in panel.offers.iter().enumerate() {
                 let plan = offer.plan;
                 let selected = panel.selected == plan;
@@ -214,7 +214,8 @@ impl Workspace {
                 let row = div().id(("subscription-plan", index)).relative().flex().items_center().pl(px(14.))
                     .child(Radio::new(selected).disabled(panel.working))
                     .child(Item::new(plan.name()).flex_1().min_w_0().description(detail)
-                        .children(offer.saving_percent.map(|percent| Badge::new(crate::localized_format!("省 {}%", "Save {}%", percent))))
+                        .children(offer.saving_percent.map(|percent| Badge::colored(crate::localized_format!("省 {}%", "Save {}%", percent),
+                            (design::color::accent_tint(), design::color::foreground()))))
                         .child(div().text_color(muted).child(price)))
                     .when(!panel.working, |d| d.cursor_pointer().hover(|s| s.bg(design::color::accent())).on_click(cx.listener(move |w, _, _, cx| {
                         if let Some(panel) = &mut w.subscription.panel && !panel.working { panel.selected = plan; panel.message = None; cx.notify(); }
@@ -231,8 +232,7 @@ impl Workspace {
             body = body.child(div().text_color(muted).child(tr("本地预览 · 不会产生购买", "Local preview · No purchases")));
         }
 
-        let accent = if settings::interface_feishu() { rgb(crate::feishu_theme::ud::B600).into() }
-            else { crate::themes::interface().token("primary_500") };
+        let accent = design::color::control_fill();
         let buy = panel.selected;
         let restore = tr("恢复购买", "Restore purchases");
         let mut links = div().flex().flex_wrap().gap(px(8.));
@@ -262,7 +262,7 @@ impl Workspace {
                 }))))
             .child(div().flex_1())
             .when(!panel.offers.is_empty(), |d| d.child(Button::primary("subscription-buy").label(purchase_label.clone())
-                .accent(accent, crate::cloud_sync::presence::badge_ink(accent)).disabled(!panel.can_buy())
+                .accent(accent, gpui::white()).disabled(!panel.can_buy())
                 .children(crate::devtools::row_probe(purchase_label))
                 .on_click(cx.listener(move |w, _, window, cx| w.subscription_action(Action::Buy(buy), window, cx)))));
         let ws = cx.entity().downgrade();

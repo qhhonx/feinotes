@@ -170,7 +170,8 @@ fn color_title(t: &'static str) -> Div {
 /// 在下方添加 ›: hovering opens the insert panel next to the handle menu.
 fn add_below_row(open: bool, cx: &Context<Editor>) -> MenuItem {
     row("bm-add", "square-plus", "在下方添加", true, open)
-        .on_mouse_move(cx.listener(|e: &mut Editor, _: &MouseMoveEvent, _, cx| {
+        .on_mouse_move(cx.listener(|e: &mut Editor, _: &MouseMoveEvent, window, cx| {
+            if window.last_input_was_touch() { return; }
             if let Some(Menu::Block { sub, .. }) = &mut e.menu
                 && !matches!(sub, Some(BlockSub::Add(_)))
             {
@@ -506,14 +507,15 @@ impl Editor {
         let mut list = div()
             .id("slash-list")
             .w(px(SLASH_W))
-            .max_h(px(SLASH_MAX_H))
+            .max_h(px(max_h))
             .overflow_y_scroll()
             .track_scroll(&self.slash_scroll)
             .py(px(PAD))
             .flex()
             .flex_col();
         let hover_sel = |n: usize| {
-            cx.listener(move |e: &mut Editor, _: &MouseMoveEvent, _, cx| {
+            cx.listener(move |e: &mut Editor, _: &MouseMoveEvent, window, cx| {
+                if window.last_input_was_touch() { return; }
                 let cur = match (&mut e.slash, &mut e.menu) {
                     (Some(s), _) => &mut s.selected,
                     (None, Some(Menu::Add { selected, .. })) => selected,
@@ -598,7 +600,7 @@ impl Editor {
                     .leading(icon(it.icon, 16., crate::feishu_theme::c(it.color)))
                     .label(crate::settings::label(it.label))
                     .submenu(sub)
-                    .selected(n == selected)
+                    .selected(n == selected && !window.last_input_was_touch())
                     .open(sub && n == selected)
                     .on_mouse_move(hover_sel(n))
                     .when(!sub, |d| d.on_mouse_down(MouseButton::Left, run(kind)))
@@ -727,7 +729,8 @@ impl Editor {
                         .border_2()
                         .border_color(border)
                         .when(ri <= def.0 && cj <= def.1, |d| d.cursor(CursorStyle::OperationNotAllowed))
-                        .on_mouse_move(cx.listener(move |e, _: &MouseMoveEvent, _, cx| {
+                        .on_mouse_move(cx.listener(move |e, _: &MouseMoveEvent, window, cx| {
+                            if window.last_input_was_touch() { return; }
                             if e.size_pick != (ri, cj) {
                                 e.size_pick = (ri, cj);
                                 cx.notify();
@@ -774,7 +777,8 @@ impl Editor {
             })
         };
         let set_sub = |s: Option<BlockSub>| {
-            cx.listener(move |e: &mut Editor, _: &MouseMoveEvent, _, cx| {
+            cx.listener(move |e: &mut Editor, _: &MouseMoveEvent, window, cx| {
+                if window.last_input_was_touch() { return; }
                 if let Some(Menu::Block { sub, .. }) = &mut e.menu
                     && *sub != s
                 {
@@ -1841,7 +1845,8 @@ impl Editor {
             })
         };
         let set_sub = |s: Option<BlockSub>| {
-            cx.listener(move |e: &mut Editor, _: &MouseMoveEvent, _, cx| {
+            cx.listener(move |e: &mut Editor, _: &MouseMoveEvent, window, cx| {
+                if window.last_input_was_touch() { return; }
                 if let Some(Menu::Block { sub, .. }) = &mut e.menu
                     && *sub != s
                 {

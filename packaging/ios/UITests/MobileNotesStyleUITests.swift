@@ -47,6 +47,231 @@ final class MobileNotesStyleUITests: XCTestCase {
     private func back(_ app: XCUIApplication) { app.navigationBars.buttons.element(boundBy: 0).tap() }
     private func returnToList(_ app: XCUIApplication) { back(app); back(app); XCTAssertTrue(app.tables["fei.notes.list"].waitForExistence(timeout: 5)) }
 
+    private func launchLightNotes(fixture: URL? = nil,stayInSettings: Bool = false) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["FEI_NOTES_MODE"] = "local"
+        if let fixture { app.launchEnvironment["FEI_MOBILE_QA_FIXTURES"] = fixture.path }
+        XCUIDevice.shared.orientation = UIDevice.current.userInterfaceIdiom == .pad ? .landscapeLeft : .portrait
+        app.launch()
+        XCTAssertTrue(app.buttons["fei.settings"].waitForExistence(timeout: 15))
+        app.buttons["fei.settings"].tap()
+        tapRow("page:Appearance",app)
+        choose("interface-style","notes",app)
+        choose("appearance","light",app)
+        if stayInSettings {
+            let appearance = app.navigationBars.matching(NSPredicate(format: "identifier IN %@", ["外观","Appearance"])).firstMatch
+            XCTAssertTrue(appearance.waitForExistence(timeout: 5))
+            appearance.buttons.firstMatch.tap()
+        } else { returnToList(app) }
+        return app
+    }
+
+    private func noteMenu(_ app: XCUIApplication,_ names: [String],parent: [String] = []) {
+        func find(_ titles: [String]) -> XCUIElement {
+            app.descendants(matching: .any).matching(NSPredicate(format: "label IN %@",titles)).firstMatch
+        }
+        app.buttons["fei.more"].tap()
+        let item = find(names)
+        if !item.waitForExistence(timeout: 2),!parent.isEmpty {
+            let group = find(parent)
+            XCTAssertTrue(group.waitForExistence(timeout: 4),app.debugDescription)
+            group.tap()
+        }
+        XCTAssertTrue(item.waitForExistence(timeout: 5),app.debugDescription)
+        item.tap()
+    }
+
+    func testLightAppearanceNewFolderAndReadingMode() throws {
+        continueAfterFailure = false
+        let title = "Appearance QA " + String(UUID().uuidString.prefix(6))
+        let fixtures = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: fixtures,withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtures) }
+        try "<title>\(title)</title><h2>Appearance test</h2><p>Synthetic body</p>"
+            .write(to: fixtures.appendingPathComponent("appearance.xml"),atomically: true,encoding: .utf8)
+        let app = launchLightNotes(fixture: fixtures)
+        app.buttons["fei.library-actions"].tap()
+        let newFolder = app.buttons.matching(NSPredicate(format: "label IN %@", ["新建文件夹","New folder"])).firstMatch
+        XCTAssertTrue(newFolder.waitForExistence(timeout: 5))
+        newFolder.tap()
+        let field = app.textFields["fei.rename.title"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("Light appearance QA")
+        shot("light-appearance-create-folder")
+        let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["取消","Cancel"])).firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.tap()
+
+        let note = app.tables["fei.notes.list"].cells.containing(.staticText,identifier: title).firstMatch
+        XCTAssertTrue(note.waitForExistence(timeout: 8))
+        note.tap()
+        let mode = app.buttons["fei.note-mode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 8))
+        app.switchToReadingMode()
+        shot("light-appearance-reading-mode")
+        let reading = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label IN %@", ["阅读模式","Reading mode"]),object: mode)
+        XCTAssertEqual(XCTWaiter.wait(for: [reading],timeout: 8),.completed)
+        for id in ["mode","quick-checklist","quick-insert","list","insert","styles","table"] {
+            XCTAssertFalse(app.buttons["fei.edit."+id].isHittable,id)
+        }
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        let toast = app.descendants(matching: .any)["fei.share.toast"].firstMatch
+        if toast.exists { XCTAssertGreaterThanOrEqual(toast.frame.minY,mode.frame.maxY) }
+
+        noteMenu(app,["文档目录","Outline"])
+        XCTAssertTrue(app.tables["fei.outline.controls"].waitForExistence(timeout: 5))
+        shot("light-appearance-outline")
+        app.buttons["fei.outline.done"].tap()
+
+        noteMenu(app,["图片和附件","Images and attachments"],parent: ["文档信息","Document information"])
+        XCTAssertTrue(app.tables["fei.attachments.controls"].waitForExistence(timeout: 5))
+        shot("light-appearance-attachments")
+        app.buttons["fei.attachments.done"].tap()
+
+        app.buttons["fei.more"].tap()
+        XCTAssertFalse(app.descendants(matching: .any).matching(NSPredicate(format: "label IN %@",["编辑和格式","Editing and formatting","删除","Delete"])).firstMatch.isHittable)
+        let options = app.descendants(matching: .any).matching(NSPredicate(format: "label IN %@",["文档选项","Note options"])).firstMatch
+        if options.exists { options.tap() }
+        for titles in [["重命名","Rename"],["移动到","Move to"]] {
+            XCTAssertFalse(app.descendants(matching: .any).matching(NSPredicate(format: "label IN %@",titles)).firstMatch.isHittable)
+        }
+        shot("light-appearance-reading-menu")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.27,dy: 0.8)).tap()
+        app.switchToEditingMode()
+        let editing = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label IN %@", ["编辑模式","Editing mode"]),object: mode)
+        XCTAssertEqual(XCTWaiter.wait(for: [editing],timeout: 8),.completed)
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        shot("light-appearance-editing-before-keyboard")
+        noteMenu(app,["移动到","Move to"],parent: ["文档选项","Note options"])
+        let move = app.navigationBars.matching(NSPredicate(format: "identifier IN %@", ["移动到","Move to"])).firstMatch
+        XCTAssertTrue(move.waitForExistence(timeout: 5))
+        shot("light-appearance-move")
+        move.buttons.firstMatch.tap()
+    }
+
+    func testTitleOnlyPDFStaysInEditor() throws {
+        continueAfterFailure = false
+        let title = "Empty PDF QA " + String(UUID().uuidString.prefix(6))
+        let fixtures = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: fixtures,withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtures) }
+        try "<title>\(title)</title><p></p>"
+            .write(to: fixtures.appendingPathComponent("empty.xml"),atomically: true,encoding: .utf8)
+        let app = launchLightNotes(fixture: fixtures)
+        let note = app.tables["fei.notes.list"].cells.containing(.staticText,identifier: title).firstMatch
+        XCTAssertTrue(note.waitForExistence(timeout: 8))
+        note.tap()
+        XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 5))
+        noteMenu(app,["导出 PDF","Export PDF"],parent: ["导出与打印","Export and print"])
+        shot("light-appearance-empty-pdf")
+        XCTAssertTrue(app.buttons["fei.more"].isHittable)
+        XCTAssertFalse(app.buttons["DOCPicker.actionButton"].exists)
+    }
+
+    func testPreparedMarkdownAndPDFCanCancelAndReopen() throws {
+        continueAfterFailure = false
+        let title = "Native export QA " + String(UUID().uuidString.prefix(6))
+        let fixtures = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: fixtures,withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtures) }
+        try "<title>\(title)</title><p>This synthetic document has exportable content.</p>"
+            .write(to: fixtures.appendingPathComponent("export.xml"),atomically: true,encoding: .utf8)
+        let app = launchLightNotes(fixture: fixtures)
+        let note = app.tables["fei.notes.list"].cells.containing(.staticText,identifier: title).firstMatch
+        XCTAssertTrue(note.waitForExistence(timeout: 8))
+        note.tap()
+
+        let save = app.buttons["DOCPicker.actionButton"]
+        func cancelPicker(_ suffix: String) {
+            XCTAssertTrue(save.waitForExistence(timeout: 25),app.debugDescription)
+            shot("light-appearance-export-"+suffix)
+            let cancel = app.buttons.matching(NSPredicate(format: "label IN %@",["取消","Cancel"])).firstMatch
+            if cancel.waitForExistence(timeout: 2) { cancel.tap() }
+            else {
+                let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.087))
+                top.press(forDuration: 0.1,thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.85)))
+            }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: save)],timeout: 5),.completed)
+            XCTAssertTrue(app.buttons["fei.more"].isHittable)
+        }
+        for attempt in 1...2 {
+            noteMenu(app,["导出 Markdown","Export Markdown"],parent: ["导出与打印","Export and print"])
+            let text = app.descendants(matching: .any).matching(NSPredicate(format: "label IN %@",["仅文本","Text only"])).firstMatch
+            XCTAssertTrue(text.waitForExistence(timeout: 5),app.debugDescription)
+            text.tap()
+            cancelPicker("markdown-\(attempt)")
+        }
+        noteMenu(app,["导出 PDF","Export PDF"],parent: ["导出与打印","Export and print"])
+        cancelPicker("pdf")
+    }
+
+    func testStandaloneBoardCreationAndMarkdownExport() throws {
+        continueAfterFailure = false
+        let app = launchLightNotes()
+        let create = app.buttons["fei.new-board"]
+        XCTAssertTrue(create.waitForExistence(timeout: 8),app.debugDescription)
+        XCTAssertTrue(app.buttons["fei.new"].isHittable)
+        shot("standalone-board-shortcut")
+        create.tap()
+        let done = app.buttons["fei.board.done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 15),app.debugDescription)
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        shot("standalone-board-open")
+        done.tap()
+
+        let list = app.tables["fei.notes.list"].firstMatch
+        let title = NSPredicate(format: "label IN %@",["未命名画板","Untitled board","Untitled whiteboard"])
+        let row = list.cells.containing(title).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 8),app.debugDescription)
+        func action(_ labels: [String]) -> XCUIElement {
+            app.descendants(matching: .any).matching(NSPredicate(format: "label IN %@",labels)).firstMatch
+        }
+        for (index, labels) in [["仅文本","Text only"],["包含图片和附件","Include images and attachments"]].enumerated() {
+            row.press(forDuration: 1.1)
+            let export = action(["导出与打印","Export and print"])
+            XCTAssertTrue(export.waitForExistence(timeout: 8),app.debugDescription)
+            export.tap()
+            let markdown = action(["导出 Markdown","Export Markdown"])
+            XCTAssertTrue(markdown.waitForExistence(timeout: 8),app.debugDescription)
+            markdown.tap()
+            let choice = action(labels)
+            XCTAssertTrue(choice.waitForExistence(timeout: 8),app.debugDescription)
+            choice.tap()
+            let save = app.buttons["DOCPicker.actionButton"]
+            XCTAssertTrue(save.waitForExistence(timeout: 20),app.debugDescription)
+            shot("standalone-board-markdown-\(index)")
+            let cancel = app.buttons.matching(NSPredicate(format: "label IN %@",["取消","Cancel"])).firstMatch
+            if cancel.waitForExistence(timeout: 2) { cancel.tap() }
+            else {
+                let grip = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.087))
+                grip.press(forDuration: 0.1,thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.85)))
+            }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: save)],timeout: 5),.completed)
+            XCTAssertTrue(row.isHittable)
+        }
+    }
+
+    func testLocalSubscriptionPlanAppearance() throws {
+        continueAfterFailure = false
+        let app = launchLightNotes(stayInSettings: true)
+        tapRow("page:Cloud",app)
+        let plans = app.cells["fei.setting.page:CloudAccess"]
+        guard plans.waitForExistence(timeout: 3) else { throw XCTSkip("Requires the local subscription preview fixture") }
+        plans.tap()
+        let annual = app.buttons["fei.subscription.plan.annual"]
+        let monthly = app.buttons["fei.subscription.plan.monthly"]
+        XCTAssertTrue(annual.waitForExistence(timeout: 10))
+        XCTAssertTrue(monthly.isHittable)
+        shot("subscription-annual")
+        monthly.tap()
+        let billing = app.staticTexts["fei.subscription.billing"]
+        XCTAssertTrue(billing.label.contains("每月") || billing.label.contains("per month"))
+        shot("subscription-monthly")
+        app.buttons["fei.subscription.close"].tap()
+        XCTAssertTrue(app.cells["fei.setting.page:CloudAccess"].waitForExistence(timeout: 5))
+    }
+
     func testThemeNavigationSearchAndReadingShortcuts() {
         continueAfterFailure = false
         var app = XCUIApplication(); app.launchEnvironment["FEI_NOTES_MODE"] = "local"
@@ -91,10 +316,10 @@ final class MobileNotesStyleUITests: XCTestCase {
         title.typeText("Notes on design"); app.buttons["fei.rename.save"].tap()
         XCTAssertTrue(app.navigationBars["Notes on design"].waitForExistence(timeout: 5))
         shot("mobile-notes-04-editing-tools")
-        app.buttons["fei.more"].tap(); app.sheets.buttons["Note options"].tap(); app.sheets.buttons["Reading mode"].tap()
-        let compose = app.navigationBars.buttons["fei.new"]
+        app.switchToReadingMode()
+        let compose = app.buttons["fei.new.editor"]
         XCTAssertTrue(compose.waitForExistence(timeout: 5))
-        XCTAssertTrue(toolbar.buttons["fei.edit.quick-checklist"].isHittable)
+        XCTAssertFalse(toolbar.buttons["fei.edit.quick-checklist"].isHittable)
         shot("mobile-notes-05-reading-compose")
         compose.tap()
         XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 5))

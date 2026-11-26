@@ -1309,6 +1309,9 @@ impl Workspace {
             let page = self.thumb_page_with(e, &thumb, 18., shared);
             let radius = 32.;
             let menu_on = self.row_menu.as_ref().is_some_and(|m| m.id == e.id);
+            let accent = crate::design::color::interface_accent();
+            let ring_selected = menu_on || accent.is_some() && self.batch.as_ref().is_some_and(|batch| batch.contains(&e.id));
+            let ring = accent.map_or_else(Theme::ring_sheet, |color| color.opacity(if ring_selected { 1. } else { 0.45 }));
             let check = self.home_check(e);
             let arm = e.id.clone();
             #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]
@@ -1346,10 +1349,9 @@ impl Workspace {
                     ))
                     .child(crate::ui::squircle_surface(radius, Theme::bg_body()).size_full().overflow_hidden().child(page.relative()))
                     .child(crate::ui::squircle_outline(radius, 0.5, Theme::line_sheet()))
-                    // Hovered, or its menu open: a soft grey ring around the card.
                     .child(div().absolute().left(px(-RING)).right(px(-RING)).top(px(-RING)).bottom(px(-RING))
-                        .when(!menu_on, |d| d.opacity(0.).group_hover("home-card", |s| s.opacity(1.)))
-                        .child(crate::ui::squircle_outline(radius + RING, RING, Theme::ring_sheet())))
+                        .when(!ring_selected, |d| d.opacity(0.).group_hover("home-card", |s| s.opacity(1.)))
+                        .child(crate::ui::squircle_outline(radius + RING, RING, ring)))
                     .when_some(check, |d, c| d.child(div().absolute().top(px(12.)).left(px(12.)).child(c)))
                     .when(self.batch.is_none(), |d| d.child(
                         div().absolute().top(px(8.)).right(px(8.))

@@ -110,6 +110,7 @@ final class FeiEditorControls: UITableViewController, UIAdaptivePresentationCont
                 let controller = FeiEditorControls(request,restoreInput: restore)
                 active = controller
                 let navigation = UINavigationController(rootViewController: controller)
+                navigation.overrideUserInterfaceStyle = EditorHost.active?.navigationCoordinator?.interfaceAppearance ?? .unspecified
                 navigation.navigationBar.accessibilityIdentifier = "fei.\(request.namespace ?? "table").navigation"
                 if let section = request.initial { navigation.setViewControllers([controller,FeiEditorControls(request,section: section,restoreInput: restore)],animated: false) }
                 navigation.sheetPresentationController?.detents = [.large()]

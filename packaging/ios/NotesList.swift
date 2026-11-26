@@ -36,15 +36,18 @@ final class FeiToastView: UIVisualEffectView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func attach(to host: UIView,bottomInset: CGFloat? = nil) {
-        if superview === host {
+    private var anchorInsets: (bottom: CGFloat?,top: CGFloat)?
+
+    func attach(to host: UIView,bottomInset: CGFloat? = nil,topInset: CGFloat = 8) {
+        if superview === host,anchorInsets?.bottom == bottomInset,anchorInsets?.top == topInset {
             host.bringSubviewToFront(self)
             return
         }
+        anchorInsets = (bottomInset,topInset)
         removeFromSuperview()
         host.addSubview(self)
         let vertical = bottomInset.map { bottomAnchor.constraint(equalTo: host.keyboardLayoutGuide.topAnchor,constant: -$0) }
-            ?? topAnchor.constraint(equalTo: host.safeAreaLayoutGuide.topAnchor,constant: 8)
+            ?? topAnchor.constraint(equalTo: host.safeAreaLayoutGuide.topAnchor,constant: topInset)
         NSLayoutConstraint.activate([
             vertical,
             centerXAnchor.constraint(equalTo: host.safeAreaLayoutGuide.centerXAnchor),
@@ -152,13 +155,21 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     private var isSearching: Bool { usesLocalSearch ? compactSearching : searchController.isActive }
     private let searchGlass = UIVisualEffectView()
     private let composeGlass = UIVisualEffectView()
+    private let boardGlass = UIVisualEffectView()
     private let compactSearchRow = UIStackView()
     private let composeButton = UIButton(type: .system)
+    private let boardButton = UIButton(type: .system)
     private var compactSearchHeight: NSLayoutConstraint?
+    private var listBottom: NSLayoutConstraint?
+    private var listKeyboardBottom: NSLayoutConstraint?
     private var usesLocalSearch = false
     private lazy var compose: UIBarButtonItem = {
         let item = UIBarButtonItem(systemItem: .compose,primaryAction: nil)
         item.accessibilityIdentifier = "fei.new"; return item
+    }()
+    private lazy var boardCompose: UIBarButtonItem = {
+        let item = UIBarButtonItem(image: FeiNavigationCoordinator.composeBoardImage,primaryAction: nil)
+        item.accessibilityIdentifier = "fei.new-board"; return item
     }()
     private lazy var closeSearch: UIBarButtonItem = {
         let item = UIBarButtonItem(barButtonSystemItem: .close,target: self,action: #selector(endSearch))
@@ -308,7 +319,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
                 var content = baseContent
                 let highlight = state.isSelected && !self.isSelecting
                 content.textProperties.color = highlight ? self.palette.selectedTextColor : self.palette.textColor
-                content.secondaryTextProperties.color = highlight ? self.palette.selectedTextColor.withAlphaComponent(0.75) : .secondaryLabel
+                content.secondaryTextProperties.color = highlight ? self.palette.selectedTextColor : .secondaryLabel
                 content.imageProperties.tintColor = highlight ? self.palette.selectedTextColor : row.folder ? self.palette.folderColor : self.palette.textColor
                 var background = UIBackgroundConfiguration.listGroupedCell()
                 background.backgroundColor = highlight ? self.palette.selectedColor : self.palette.rowColor
@@ -319,11 +330,14 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
                 cell.accessibilityValue = [isTrash ? self.labels[row.folder ? "trash-folder-kind" : "trash-document-kind"] : nil,
                     row.shared_folder ? self.labels["already-shared-folder"] : row.shared_badge ? self.labels["already-shared"] : nil,
                     row.unread_update ? self.labels["unread-update"] : nil].compactMap { $0 }.joined(separator: ", ")
-                let image: UIImage?
+                var image: UIImage?
                 let tint: UIColor
                 let size: CGSize
                 if self.isSelecting && self.listing?.selection?.ids.contains(id) == true {
                     image = UIImage(systemName: state.isSelected ? "checkmark.circle.fill" : "circle",withConfiguration: UIImage.SymbolConfiguration(pointSize: 20))
+                    if state.isSelected {
+                        image = image?.applyingSymbolConfiguration(.init(paletteColors: [.white,self.palette.accentColor]))?.withRenderingMode(.alwaysOriginal)
+                    }
                     tint = state.isSelected ? self.palette.accentColor : .tertiaryLabel
                     size = CGSize(width: 24,height: 24)
                 } else if row.shared_badge && !self.isSelecting && !self.isReordering {
@@ -385,17 +399,27 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         NSLayoutConstraint.activate([empty.leadingAnchor.constraint(equalTo: emptyBackground.leadingAnchor,constant: 20),empty.trailingAnchor.constraint(equalTo: emptyBackground.trailingAnchor,constant: -20),empty.centerYAnchor.constraint(equalTo: emptyBackground.centerYAnchor)])
         tableView.backgroundView = emptyBackground
         view.addSubview(tableView)
-        // Rest at the view edge under the system toolbar, then follow a docked keyboard.
-        view.keyboardLayoutGuide.usesBottomSafeArea = false
-        view.keyboardLayoutGuide.followsUndockedKeyboard = false
-        NSLayoutConstraint.activate([tableView.topAnchor.constraint(equalTo: view.topAnchor),tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),tableView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor)])
+        // Behind the floating controls the list fills its entire viewport. The keyboard guide
+        // can still sit at the safe-area edge when hidden, so use it only for a docked keyboard.
+        let guide = view.keyboardLayoutGuide
+        guide.usesBottomSafeArea = false
+        guide.followsUndockedKeyboard = false
+        let bottom = tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        listBottom = bottom
+        listKeyboardBottom = tableView.bottomAnchor.constraint(equalTo: guide.topAnchor)
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            bottom
+        ])
         notice.message.numberOfLines = 2
         if #available(iOS 26.0, *) { installCompactSearchRow() }
         notice.attach(to: view)
     }
     @available(iOS 26.0, *)
     private func installCompactSearchRow() {
-        for glass in [searchGlass, composeGlass] {
+        for glass in [searchGlass, composeGlass, boardGlass] {
             let effect = UIGlassEffect()
             effect.isInteractive = true
             glass.effect = effect
@@ -407,20 +431,31 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         compactSearch.translatesAutoresizingMaskIntoConstraints = false
         let searchContent = searchGlass.contentView
         searchContent.addSubview(compactSearch)
-        composeButton.setImage(UIImage(systemName: "square.and.pencil",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .regular)), for: .normal)
-        composeButton.accessibilityIdentifier = "fei.new"
-        composeButton.addAction(UIAction { [weak self] _ in self?.coordinator?.composeNote() }, for: .touchUpInside)
-        composeButton.translatesAutoresizingMaskIntoConstraints = false
-        composeGlass.contentView.addSubview(composeButton)
+        let symbol = UIImage.SymbolConfiguration(pointSize: 22,weight: .regular)
+        for (button,glass,board) in [(composeButton,composeGlass,false),(boardButton,boardGlass,true)] {
+            let image = board ? FeiNavigationCoordinator.composeBoardImage : UIImage(systemName: "square.and.pencil")
+            button.setImage(image?.applyingSymbolConfiguration(symbol),for: .normal)
+            button.accessibilityIdentifier = board ? "fei.new-board" : "fei.new"
+            button.addAction(UIAction { [weak self] _ in self?.coordinator?.composeNote(board: board) },for: .touchUpInside)
+            button.translatesAutoresizingMaskIntoConstraints = false
+            let content = glass.contentView
+            content.addSubview(button)
+            let width = glass.widthAnchor.constraint(equalTo: compactSearchRow.heightAnchor)
+            width.priority = UILayoutPriority(999)
+            NSLayoutConstraint.activate([
+                width,
+                button.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+                button.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+                button.topAnchor.constraint(equalTo: content.topAnchor),
+                button.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            ])
+        }
         compactSearchRow.spacing = 10
         compactSearchRow.translatesAutoresizingMaskIntoConstraints = false
         compactSearchRow.isHidden = true
         view.addSubview(compactSearchRow)
         let height = compactSearchRow.heightAnchor.constraint(equalToConstant: 48)
         compactSearchHeight = height
-        let composeWidth = composeGlass.widthAnchor.constraint(equalTo: compactSearchRow.heightAnchor)
-        composeWidth.priority = UILayoutPriority(999)
         let safe = view.safeAreaLayoutGuide
         let docked = compactSearchRow.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8)
         docked.priority = .defaultHigh
@@ -431,15 +466,10 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             compactSearchRow.bottomAnchor.constraint(lessThanOrEqualTo: safe.bottomAnchor, constant: -8),
             compactSearchRow.bottomAnchor.constraint(lessThanOrEqualTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
             docked,
-            composeWidth,
             compactSearch.leadingAnchor.constraint(equalTo: searchContent.leadingAnchor, constant: 5),
             compactSearch.trailingAnchor.constraint(equalTo: searchContent.trailingAnchor, constant: -5),
             compactSearch.topAnchor.constraint(equalTo: searchContent.topAnchor),
             compactSearch.bottomAnchor.constraint(equalTo: searchContent.bottomAnchor),
-            composeButton.leadingAnchor.constraint(equalTo: composeGlass.contentView.leadingAnchor),
-            composeButton.trailingAnchor.constraint(equalTo: composeGlass.contentView.trailingAnchor),
-            composeButton.topAnchor.constraint(equalTo: composeGlass.contentView.topAnchor),
-            composeButton.bottomAnchor.constraint(equalTo: composeGlass.contentView.bottomAnchor),
             height,
         ])
     }
@@ -462,8 +492,12 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         search.accessibilityLabel = labels["search"]
         compactSearchRow.isHidden = !visible
         if composeGlass.isHidden == showCompose { composeGlass.isHidden = !showCompose }
+        let showBoard = showCompose && coordinator?.showsBoardComposeShortcut == true
+        if boardGlass.isHidden == showBoard { boardGlass.isHidden = !showBoard }
         composeButton.isEnabled = !isBusy
+        boardButton.isEnabled = !isBusy
         composeButton.accessibilityLabel = labels["new"]
+        boardButton.accessibilityLabel = labels["new-board"]
         let height = max(48, ceil(interfaceFont(.body).lineHeight) + 16)
         compactSearchHeight?.constant = height
         let inset = visible ? height + 16 : 0
@@ -480,10 +514,12 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         let background = browsesWorkspace ? theme.workspaceListColor : theme.listColor
         view.tintColor = theme.accentColor; view.backgroundColor = background
         tableView.backgroundColor = background
-        searchController.searchBar.tintColor = theme.accentColor
-        compactSearch.tintColor = theme.accentColor
-        compose.tintColor = theme.accentColor
-        composeButton.tintColor = theme.accentColor
+        searchController.searchBar.tintColor = theme.toolbarColor
+        compactSearch.tintColor = theme.toolbarColor
+        compose.tintColor = theme.toolbarColor
+        composeButton.tintColor = theme.toolbarColor
+        boardButton.tintColor = theme.toolbarColor
+        boardCompose.tintColor = theme.toolbarColor
         applyPinnedHeader()
         if changed {
             UIView.performWithoutAnimation {
@@ -655,12 +691,16 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             controller.navigationItem.rightBarButtonItems?.removeAll(where: { $0 === closeSearch })
         }
         updateCloudResumeProbe()
+        let showBoard = showCompose && coordinator?.showsBoardComposeShortcut == true
         if compactToolbar && showCompose { coordinator?.configureListCompose(compose) }
-        controller.navigationItem.rightBarButtonItems?.filter { $0.accessibilityIdentifier == "fei.new" }.forEach { $0.isHidden = searchController.isActive }
-        let key = "\(compactToolbar)-\(showCompose)"
+        if compactToolbar && showBoard { coordinator?.configureListCompose(boardCompose,board: true) }
+        controller.navigationItem.rightBarButtonItems?.filter {
+            ["fei.new","fei.new-board"].contains($0.accessibilityIdentifier ?? "")
+        }.forEach { $0.isHidden = searchController.isActive }
+        let key = "\(compactToolbar)-\(showCompose)-\(showBoard)"
         if key != searchLayout {
             searchLayout = key
-            controller.toolbarItems = compactToolbar && showCompose ? [.flexibleSpace(),compose] : nil
+            controller.toolbarItems = compactToolbar && showCompose ? [.flexibleSpace(),compose] + (showBoard ? [boardCompose] : []) : nil
         }
         if !preparing,controller.navigationController?.transitionCoordinator == nil,
            controller.navigationController?.isToolbarHidden != !compactToolbar {
@@ -704,6 +744,12 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     }
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        let keyboard = view.keyboardLayoutGuide.layoutFrame
+        let docked = keyboard.width > 0 && keyboard.height > view.safeAreaInsets.bottom + 1
+        if let listBottom, let listKeyboardBottom, listKeyboardBottom.isActive != docked {
+            (docked ? listBottom : listKeyboardBottom).isActive = false
+            (docked ? listKeyboardBottom : listBottom).isActive = true
+        }
         let size = headerStack.systemLayoutSizeFitting(CGSize(width: max(0,tableView.bounds.width-40),height: UIView.layoutFittingCompressedSize.height),withHorizontalFittingPriority: .required,verticalFittingPriority: .fittingSizeLevel)
         let height = ceil(size.height)+26
         if header.frame.size != CGSize(width: tableView.bounds.width,height: height) {
@@ -1042,6 +1088,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         view.endEditing(true)
         reorderButtons = parent.navigationItem.rightBarButtonItems
         let done=UIBarButtonItem(title: labels["done"],style: .done,target: self,action: #selector(endReordering))
+        done.tintColor = palette.accentColor
+        done.setTitleTextAttributes([.foregroundColor: UIColor.white],for: .normal)
         done.accessibilityIdentifier = "fei.notes.reorder.done"
         parent.navigationItem.rightBarButtonItems = [done]
         isReordering = true

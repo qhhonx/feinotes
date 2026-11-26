@@ -580,7 +580,10 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate, UI
         submit.configuration?.showsActivityIndicator = submit.accessibilityValue != nil
         let submitColor: UIColor = primary?.danger == true ? .systemRed : theme.sharingAccentColor
         submit.configuration?.baseBackgroundColor = submitColor
-        submit.configuration?.baseForegroundColor = sharingButtonInk(on: submitColor,traits: traitCollection)
+        submit.configuration?.baseForegroundColor = primary?.danger == true
+            ? sharingButtonInk(on: submitColor,traits: traitCollection) : .white
+        createItem.tintColor = submitColor
+        createItem.setTitleTextAttributes([.foregroundColor: UIColor.white],for: .normal)
         if result != nil { submit.accessibilityIdentifier = "fei.share.show-members" }
         else { submit.accessibilityIdentifier = "fei.share.create" }
         alternate.configuration?.title = secondary?.title

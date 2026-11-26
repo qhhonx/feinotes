@@ -763,7 +763,7 @@ final class PersonalSyncUITests: XCTestCase {
         let sync = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Sync status")).firstMatch
         XCTAssertTrue(sync.waitForExistence(timeout: 5))
         sync.tap()
-        let action = app.buttons["fei.shared-sync.action"]
+        let action = app.descendants(matching: .any)["fei.shared-sync.action"].firstMatch
         XCTAssertTrue(action.waitForExistence(timeout: 5))
         XCTAssertEqual(action.label,"Open iCloud Settings")
         capture("shared-sync-before-icloud")

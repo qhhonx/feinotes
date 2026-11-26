@@ -724,7 +724,7 @@ impl Workspace {
                 else { crate::settings::tr("飞记将自动重启并打开本机文档库。iCloud 文档和待上传的改动会保留。",
                     "Fei Notes will restart and open your local library. Your iCloud documents and pending changes are kept.").into() },
                 crate::settings::tr("切换到本机", "Switch to Local"),
-                false,
+                true,
             ),
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             Confirm::RestoreLibraryBackup(prepared) => backup_confirmation(prepared),

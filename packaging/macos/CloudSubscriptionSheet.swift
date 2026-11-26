@@ -290,7 +290,7 @@ private struct CloudSubscriptionSheet: View {
                     .multilineTextAlignment(.trailing)
                 Image(systemName: "checkmark")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color(uiColor: model.themeAccent))
                     .opacity(isSelected ? 1 : 0)
                     .accessibilityHidden(true)
             }
@@ -299,18 +299,6 @@ private struct CloudSubscriptionSheet: View {
         .disabled(model.working)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("fei.subscription.plan.\(offer.plan.rawValue)")
-    }
-
-    private var purchaseForeground: Color {
-        let style = UITraitCollection(userInterfaceStyle: model.dark ? .dark : .light)
-        let accent = model.themeAccent.resolvedColor(with: style)
-        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0
-        guard accent.getRed(&red, green: &green, blue: &blue, alpha: nil) else { return .white }
-        func linear(_ value: CGFloat) -> CGFloat {
-            value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
-        }
-        let luminance = 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
-        return luminance > 0.179 ? .black : .white
     }
 
     private func settingsRow(_ title: String, opensAnotherPage: Bool = false) -> some View {
@@ -332,7 +320,7 @@ private struct CloudSubscriptionSheet: View {
             Task { await model.purchase() }
         } label: {
             purchaseLabelView
-                .foregroundStyle(model.canPurchase ? purchaseForeground : .secondary)
+                .foregroundStyle(model.canPurchase ? Color.white : .secondary)
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.borderedProminent)

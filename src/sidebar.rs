@@ -49,12 +49,12 @@ pub(crate) const SECTION_TOP: f32 = 6.;
 /// 批量操作 caps at 50 pages.
 pub(crate) const BATCH_LIMIT: usize = 50;
 
-pub(crate) fn surface() -> Option<Hsla> { crate::themes::interface().color("sidebar.bg") }
-pub(crate) fn text_color() -> Hsla { crate::themes::interface().color("sidebar.text").unwrap_or_else(Theme::sidebar_text) }
-pub(crate) fn section_color() -> Hsla { crate::themes::interface().color("sidebar.section").unwrap_or_else(Theme::sidebar_section) }
-pub(crate) fn folder_color() -> Hsla { crate::themes::interface().color("sidebar.folder").unwrap_or_else(Theme::icon) }
-pub(crate) fn hover() -> Hsla { crate::themes::interface().color("sidebar.hover").unwrap_or_else(Theme::sidebar_hover) }
-pub(crate) fn selection_fill() -> Hsla { crate::themes::interface().color("sidebar.selected").unwrap_or_else(Theme::sidebar_selected) }
+pub(crate) fn surface() -> Option<Hsla> { crate::themes::interface_chrome().color("sidebar.bg") }
+pub(crate) fn text_color() -> Hsla { crate::themes::interface_chrome().color("sidebar.text").unwrap_or_else(Theme::sidebar_text) }
+pub(crate) fn section_color() -> Hsla { crate::themes::interface_chrome().color("sidebar.section").unwrap_or_else(Theme::sidebar_section) }
+pub(crate) fn folder_color() -> Hsla { crate::design::color::interface_accent().unwrap_or_else(|| crate::themes::interface().color("sidebar.folder").unwrap_or_else(Theme::icon)) }
+pub(crate) fn hover() -> Hsla { crate::themes::interface_chrome().color("sidebar.hover").unwrap_or_else(Theme::sidebar_hover) }
+pub(crate) fn selection_fill() -> Hsla { crate::themes::interface_chrome().color("sidebar.selected").unwrap_or_else(Theme::sidebar_selected) }
 
 pub(crate) fn shared_document_badge() -> Stateful<Div> {
     div().id("shared-document-status").flex_none().flex().items_center()
@@ -80,10 +80,10 @@ pub(crate) fn folder_glyph(entry: &Entry, open: bool, _mark_shared: bool, _cx: &
 }
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-pub(crate) fn entry_icon(entry: &Entry, open: bool, mark_shared: bool, cx: &App) -> Div {
+pub(crate) fn entry_icon(entry: &Entry, open: bool, mark_shared: bool, folder_foreground: Option<Hsla>, cx: &App) -> Div {
     let folder = folder_glyph(entry, open, mark_shared, cx);
     div().size(px(20.)).flex_none().flex().items_center().justify_center().relative().map(|d| match &entry.icon {
-        _ if let Some(glyph) = folder => d.child(icon(glyph, ROW_ICON, folder_color())),
+        _ if let Some(glyph) = folder => d.child(icon(glyph, ROW_ICON, folder_foreground.unwrap_or_else(folder_color))),
         _ if entry.meta.markdown => d.child(icon("doc-md", ROW_ICON, Theme::icon())),
         Some(emoji) => d.text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).child(emoji.clone()),
         None => d.child(icon("doc", ROW_ICON, Theme::icon())),
@@ -134,16 +134,24 @@ pub(crate) fn batch_check_slot() -> Div {
 
 impl Workspace {
     pub(crate) fn sidebar_selection(&self, folder: bool) -> Hsla {
-        let key = if folder { "sidebar.folder.focused" } else { "sidebar.focused" };
         if self.sidebar_focused && self.sidebar_window_active {
-            crate::themes::interface().color(key).unwrap_or_else(selection_fill)
+            if let Some(accent) = crate::design::color::interface_accent() {
+                return if folder { accent } else { accent.opacity(0.14) };
+            }
+            let key = if folder { "sidebar.folder.focused" } else { "sidebar.focused" };
+            crate::themes::interface_chrome().color(key).unwrap_or_else(selection_fill)
         } else { selection_fill() }
     }
 
-    fn sidebar_selection_text(&self, folder: bool) -> Hsla {
+    pub(crate) fn sidebar_selection_text(&self, folder: bool) -> Hsla {
         if folder && self.sidebar_focused && self.sidebar_window_active {
-            crate::themes::interface().color("sidebar.folder.focused.text").unwrap_or_else(Theme::text)
+            if crate::FEI_NOTES { return gpui::white(); }
+            crate::themes::interface_chrome().color("sidebar.folder.focused.text").unwrap_or_else(Theme::text)
         } else { Theme::text() }
+    }
+
+    pub(crate) fn sidebar_selected_folder_foreground(&self, selected: bool) -> Option<Hsla> {
+        (selected && self.sidebar_focused && self.sidebar_window_active).then(|| self.sidebar_selection_text(true))
     }
 
     /// Sidebar width for the current window: the dragged width, kept between
@@ -614,11 +622,11 @@ impl Workspace {
                     }
                 }),
             )
-            .when(key == "pinned", |d| { let id = e.id.clone(); d.on_click(cx.listener(move |w, _, window, cx| { w.open_personal_sidebar_item(&id, SidebarSection::Pinned, window, cx); })) })
+            .when(key == "pinned", |d| { let id = e.id.clone(); d.on_click(cx.listener(move |w, _, window, cx| { w.sidebar_focused = true; w.open_personal_sidebar_item(&id, SidebarSection::Pinned, window, cx); })) })
             // A 本机文件 row opens on click, and can be carried up into the tree to import it.
             .when(key == "local", |d| {
                 let (open, drag) = (e.id.clone(), crate::sidebar_drop::LocalRowDrag { id: e.id.clone(), title: crate::settings::display_title(&e.title), folder: e.meta.folder.is_some() });
-                d.on_click(cx.listener(move |w, _, window, cx| { w.open_personal_sidebar_item(&open, SidebarSection::Local, window, cx); }))
+                d.on_click(cx.listener(move |w, _, window, cx| { w.sidebar_focused = true; w.open_personal_sidebar_item(&open, SidebarSection::Local, window, cx); }))
                     .on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()))
             })
             .on_mouse_down(
@@ -650,7 +658,7 @@ impl Workspace {
     }
 
     pub(crate) fn more_button(&self, e: &Entry, key: &str, cx: &mut Context<Self>) -> Stateful<Div> {
-        self.more_button_with_status(e, key, None, cx)
+        self.more_button_with_status(e, key, None, None, cx)
     }
 
     fn personal_sidebar_menu_id(&self, entry: &Entry, key: &str) -> Option<String> {
@@ -673,7 +681,7 @@ impl Workspace {
         { let _ = (entry, cx); false }
     }
 
-    pub(crate) fn more_button_with_status(&self, e: &Entry, key: &str, status: Option<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(crate) fn more_button_with_status(&self, e: &Entry, key: &str, status: Option<Div>, foreground: Option<Hsla>, cx: &mut Context<Self>) -> Stateful<Div> {
         let personal_menu = self.personal_sidebar_menu_id(e, key);
         let id = if key.starts_with("shared") { format!("shared:{}", e.id) } else { personal_menu.clone().unwrap_or_else(|| e.id.clone()) };
         let stable_menu = cfg!(target_os = "macos") && e.meta.folder.is_some();
@@ -684,7 +692,7 @@ impl Workspace {
         let lookup = self.more_bounds.clone();
         let open = self.row_menu.as_ref().is_some_and(|m| m.id == id && m.pos.x < px(0.));
         let status = status.filter(|_| !open);
-        let glyph = icon("ellipsis", 15., Theme::icon());
+        let glyph = icon("ellipsis", 15., foreground.unwrap_or_else(Theme::icon));
         let action = if status.is_some() {
             div().flex().items_center().opacity(0.).group_hover("doc-row", |s| s.opacity(1.)).child(glyph).into_any_element()
         } else { glyph.into_any_element() };
@@ -723,7 +731,7 @@ impl Workspace {
 
     /// Creation inside a folder: the folder button makes one directly; the plus
     /// opens the same 新建 menu as 我的文档's, hung from the button.
-    pub(crate) fn add_button(&self, e: &Entry, key: &str, folder: bool, target: crate::folders::CreateTarget, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(crate) fn add_button(&self, e: &Entry, key: &str, folder: bool, target: crate::folders::CreateTarget, foreground: Option<Hsla>, cx: &mut Context<Self>) -> Stateful<Div> {
         let slot = format!("add-{key}-{folder}-{}", e.id);
         let (record, lookup) = (self.more_bounds.clone(), self.more_bounds.clone());
         let anchor = |b: Bounds<Pixels>| point(b.left(), b.bottom() + px(4.));
@@ -740,7 +748,7 @@ impl Workspace {
             } else { d.opacity(self.folder_drag.reveal(&e.id)) })
             .when(open, |d| d.bg(selection_fill()))
             .hover(|s| s.bg(selection_fill()))
-            .child(icon(if folder { "folder-plus" } else { "plus" }, 16., Theme::icon()))
+            .child(icon(if folder { "folder-plus" } else { "plus" }, 16., foreground.unwrap_or_else(Theme::icon)))
             .child({ let slot = slot.clone(); canvas(move |b, _, _| { record.borrow_mut().insert(slot.clone(), b); }, |_, _, _, _| {}).absolute().inset_0() })
             .tip(crate::settings::tr(if folder { "新建文件夹" } else { "新建" }, if folder { "New folder" } else { "New" }), None)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -753,10 +761,11 @@ impl Workspace {
             }))
     }
 
-    pub(crate) fn folder_row_actions(&self, entry: &Entry, key: &str, target: Option<crate::folders::CreateTarget>, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn folder_row_actions(&self, entry: &Entry, key: &str, target: Option<crate::folders::CreateTarget>, selected: bool, cx: &mut Context<Self>) -> Div {
+        let foreground = self.sidebar_selected_folder_foreground(selected);
         div().absolute().top_0().bottom_0().right_0().flex().items_center()
-            .child(self.more_button(entry, key, cx))
-            .when_some(target, |d, target| d.child(self.add_button(entry, key, false, target, cx).ml(px(2.)).mr(px(4.))))
+            .child(self.more_button_with_status(entry, key, None, foreground, cx))
+            .when_some(target, |d, target| d.child(self.add_button(entry, key, false, target, foreground, cx).ml(px(2.)).mr(px(4.))))
     }
 
     pub(crate) fn sidebar_rename(&self, id: &str, section: SidebarSection) -> Option<&crate::app::Rename> {
@@ -808,7 +817,7 @@ impl Workspace {
                 .text_size(px(theme::ui_font()))
                 .line_height(px(DOC_ROW_H))
                 .text_color(if selected { self.sidebar_selection_text(e.meta.folder.is_some()) } else if drop_target { Theme::text() } else { text_color() })
-                .when(selected, |d| d.when_some(crate::themes::interface().num_override("sidebar.selected.weight"), |d, w| d.font_weight(FontWeight(w))))
+                .when(selected, |d| d.when_some(crate::themes::interface_chrome().num_override("sidebar.selected.weight"), |d, w| d.font_weight(FontWeight(w))))
                 .child(crate::ui::document_title(&title).child(ui_text(title)))
                 .when(matches!(section, SidebarSection::Personal | SidebarSection::Pinned) && self.document_has_shared_status(e, cx), |d| {
                     d.child(shared_document_badge().ml(px(6.)))
@@ -878,10 +887,10 @@ impl Workspace {
                     _ if folder => {
                         let s = if key == "doc" { self.folder_drag.pop(&e.id) } else { 1. };
                         d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(1. - chevron)
-                            .child(icon(if drop_target { "folder-input" } else { folder_glyph(e, open, true, cx).unwrap_or("folder") }, ROW_ICON, if selected && self.sidebar_focused && self.sidebar_window_active { crate::themes::interface().color("sidebar.folder.focused.text").unwrap_or_else(folder_color) } else { folder_color() })
+                            .child(icon(if drop_target { "folder-input" } else { folder_glyph(e, open, true, cx).unwrap_or("folder") }, ROW_ICON, self.sidebar_selected_folder_foreground(selected).unwrap_or_else(folder_color))
                                 .with_transformation(Transformation::scale(size(s, s)))))
                         .when(chevron > 0.005, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(chevron)
-                            .child(icon("disclosure", ROW_ICON, if selected { self.sidebar_selection_text(true) } else { Theme::icon() })
+                            .child(icon("disclosure", ROW_ICON, self.sidebar_selected_folder_foreground(selected).unwrap_or_else(Theme::icon))
                                 .with_transformation(Transformation::rotate(radians(if open { std::f32::consts::FRAC_PI_2 } else { 0. }))))))
                     }
                     // A document with children: its own icon, turning into the chevron on hover like a folder's.
@@ -902,7 +911,7 @@ impl Workspace {
             })
             .child(title)
             // Both sidebar sections share the folder's ellipsis and single creation menu.
-            .when(float && folder, |d| d.child(self.folder_row_actions(e, key, target.filter(|target| self.can_create_folder(target, cx)), cx)))
+            .when(float && folder, |d| d.child(self.folder_row_actions(e, key, target.filter(|target| self.can_create_folder(target, cx)), selected, cx)))
             .when(float && !folder, |d| d.child(div().absolute().top_0().bottom_0().right_0().flex().items_center()
                 .child(self.more_button(e, key, cx))))
             .when(!renaming && key != "doc" && batch.is_none(), |d| d.child(self.more_button(e, key, cx)))

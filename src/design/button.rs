@@ -114,9 +114,12 @@ impl RenderOnce for Button {
         let placed = self.base.style().position == Some(Position::Absolute) || self.base.style().inset.top.is_some();
         let square = self.label.is_none() && self.icon_end.is_none();
         // the glyph takes the text's colour (`[&_svg]` inherits `currentColor`)
-        let accent = self.accent;
+        let interface_fill = color::interface_accent();
+        let accent_selection = v == ButtonVariant::Outline && self.selected && self.accent.is_some() && interface_fill.is_some();
+        let accent = self.accent.or_else(|| interface_fill.map(|fill| (fill, color::control_foreground())));
         let fg = match v {
             ButtonVariant::Primary => accent.map_or_else(color::primary_foreground, |(_, ink)| ink),
+            ButtonVariant::Outline if accent_selection => color::control_foreground(),
             ButtonVariant::Destructive => color::destructive(),
             ButtonVariant::Link => color::primary(),
             _ => color::foreground(),
@@ -139,16 +142,21 @@ impl RenderOnce for Button {
                     d.bg(fill).when(!disabled, |d| d.hover(move |s| s.bg(hover)))
                 }
                 ButtonVariant::Outline => {
-                    let selected_accent = accent.filter(|_| selected).map(|(fill, _)| fill);
-                    let border = selected_accent.unwrap_or_else(|| if dark { color::input() } else { color::border() });
-                    let fill = selected_accent.map_or_else(
-                        || if selected { color::muted() } else if dark { color::field() } else { color::background() },
-                        |accent| super::alpha(accent, 0.16));
-                    let hover = selected_accent.map_or_else(
-                        || if dark { color::field_hover() } else { color::muted() },
-                        |accent| super::alpha(accent, 0.22));
-                    d.border_1().border_color(border).bg(fill).shadow(shadow::xs())
-                        .when(!disabled, |d| d.hover(move |s| s.bg(hover)))
+                    if let Some(fill) = interface_fill.filter(|_| accent_selection) {
+                        d.bg(fill).border_1().border_color(gpui::transparent_black())
+                            .when(!disabled, |d| d.hover(move |s| s.bg(super::alpha(fill, 0.88))))
+                    } else {
+                        let selected_accent = self.accent.filter(|_| selected).map(|(fill, _)| fill);
+                        let border = selected_accent.unwrap_or_else(|| if dark { color::input() } else { color::border() });
+                        let fill = selected_accent.map_or_else(
+                            || if selected { color::muted() } else if dark { color::field() } else { color::background() },
+                            |accent| super::alpha(accent, 0.16));
+                        let hover = selected_accent.map_or_else(
+                            || if dark { color::field_hover() } else { color::muted() },
+                            |accent| super::alpha(accent, 0.22));
+                        d.border_1().border_color(border).bg(fill).shadow(shadow::xs())
+                            .when(!disabled, |d| d.hover(move |s| s.bg(hover)))
+                    }
                 }
                 ButtonVariant::Secondary => d.bg(color::secondary()).when(!disabled, |d| d.hover(|s| s.bg(color::secondary_hover()))),
                 ButtonVariant::Ghost => d.when(selected, |d| d.bg(ghost_on))

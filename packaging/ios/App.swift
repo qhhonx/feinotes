@@ -387,7 +387,18 @@ final class EditorHost: FeiRouteController {
     }
 
     func updateEditorToolbar(_ state: FeiNavigationState) {
+        let slashOpened = state.slash_open
+            && (toolbarState?.editor_scope != state.editor_scope || toolbarState?.slash_open != true)
         toolbarState = state
+        if slashOpened {
+            let scope = state.editor_scope
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.toolbarState?.editor_scope == scope,
+                      self.toolbarState?.slash_open == true,
+                      self.editorOwnsFirstResponder, self.editorHasSoftwareKeyboard else { return }
+                gpui_ios_hide_keyboard(gpui_ios_get_window())
+            }
+        }
         editorToolbarContainer.isUserInteractionEnabled = !state.conflict_review
         refreshEditorLayout()
         #if FEI_MOBILE_QA
@@ -481,19 +492,19 @@ final class EditorHost: FeiRouteController {
         return focused(editorView)
     }
 
-    var editorHasKeyboardFocus: Bool {
-        guard editorOwnsFirstResponder,let window = editorView?.window else { return false }
+    private var editorHasSoftwareKeyboard: Bool {
+        guard let window = editorView?.window else { return false }
         let keyboard = window.convert(keyboardEndFrame,from: window.screen.coordinateSpace)
         let softKeyboard = !keyboardEndFrame.isNull && window.bounds.intersects(keyboard) && keyboard.height > 1
         let parent = editorToolbarContainer.superview
         let docked = parent.map { $0.keyboardLayoutGuide.layoutFrame.minY < $0.safeAreaLayoutGuide.layoutFrame.maxY-1 } ?? false
-        return softKeyboard || docked || GCKeyboard.coalesced != nil
+        return softKeyboard || docked
     }
 
-    func returnDocumentToTop(scope: String) {
-        guard toolbarState?.editor_scope == scope,editorView?.isHidden == false else { return }
-        editorView?.returnDocumentToTop()
+    var editorHasKeyboardFocus: Bool {
+        editorOwnsFirstResponder && (editorHasSoftwareKeyboard || GCKeyboard.coalesced != nil)
     }
+
 
     func setFindImmersive(_ active: Bool) {
         guard findImmersive != active else { return }
@@ -774,7 +785,6 @@ private final class EditorFrameView: UIView {
     var isScrolling: Bool { documentScroll.scrollInProgress }
     var metalLayer: FeiEditorMetalLayer? { controller.view.layer as? FeiEditorMetalLayer }
 
-    func returnDocumentToTop() { documentScroll.returnToTop() }
 
     #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
     var diagnosticScrollOffsets: (native: Double, forwarded: Double, gpui: Double)? {

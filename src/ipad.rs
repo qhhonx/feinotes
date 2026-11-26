@@ -266,6 +266,9 @@ pub(crate) fn editor_scope(workspace:&crate::app::Workspace) -> String { format!
 fn listing_scope(workspace:&crate::app::Workspace) -> String { format!("{:?}|{:?}|{:?}",workspace.store.root(),workspace.view,(&workspace.folder_current,workspace.home.tab,&workspace.sharing.collection)) }
 
 #[derive(serde::Serialize)]
+struct NativeNotice { kind: &'static str, message: String }
+
+#[derive(serde::Serialize)]
 struct NavigationState {
     #[cfg(feature = "mobile-qa")]
     qa:Option<serde_json::Value>,
@@ -276,11 +279,13 @@ struct NavigationState {
     local_history:Option<crate::history::mobile::NativeHistory>,
     sharing_title:Option<&'static str>,
     sharing_toast:Option<crate::sharing::mobile::SharingToast>,
+    editor_notice:Option<NativeNotice>,
     folder_access:bool,
     document_needs_attention: bool,
     conflict_review: bool,
     shared_opening:Option<crate::sharing::mobile::NativeSharedOpening>,
     slash_available:bool,
+    slash_open:bool,
     editor_scope:String, reading:bool, write_allowed:bool, find_active:bool, board_open:bool,
     listing:Option<NativeListing>,
     information:Option<crate::docinfo::NativeInformation>,
@@ -330,23 +335,21 @@ fn confirmation_matches(workspace: &crate::app::Workspace, serial: Option<u64>, 
 #[derive(serde::Serialize)]
 struct NavigationEnvelope<'a> { revision: u64, #[serde(flatten)] state: &'a NavigationState }
 
-unsafe extern "C" { pub(crate) fn fei_ios_is_phone() -> bool; }
+unsafe extern "C" {
+    pub(crate) fn fei_ios_is_phone() -> bool;
+}
 
 unsafe extern "C" { fn fei_ios_navigation_changed(json: *const c_char); }
 
 pub(crate) fn mobile_accent() -> gpui::Hsla {
-    let style = crate::themes::interface();
-    style.color("mobile.accent").unwrap_or_else(|| style.token("primary_500"))
+    crate::design::color::interface_accent().unwrap_or_else(|| crate::themes::interface().token("primary_500"))
 }
 
-pub(crate) fn mobile_sharing_accent() -> gpui::Hsla {
-    if settings::interface_feishu() { gpui::rgb(crate::feishu_theme::ud::B600).into() }
-    else { mobile_accent() }
-}
+pub(crate) fn mobile_sharing_accent() -> gpui::Hsla { mobile_accent() }
 
 fn native_theme() -> serde_json::Value {
     let document = crate::themes::active();
-    let style = crate::themes::interface();
+    let style = crate::themes::interface_chrome();
     let rgba = |color:gpui::Hsla| { let c = color.to_rgb(); [c.r,c.g,c.b,c.a] };
     let optional = |key:&str| style.color(key).map(rgba);
     let (warning, warning_ink) = settings::sync_status::marker_colors();
@@ -354,14 +357,15 @@ fn native_theme() -> serde_json::Value {
     serde_json::json!({
         "sync_warning": rgba(warning), "sync_warning_ink": rgba(warning_ink),
         "id":crate::settings::prefs().theme_id(),
+        "interface_style":crate::settings::prefs().interface_style().id(),
         "accent":rgba(accent),
         "sharing_accent":rgba(mobile_sharing_accent()),
         "paper":rgba(document.color("page.bg").unwrap_or_else(||document.token("bg_body"))),
         "workspace_list":rgba(style.token("bg_overlay")),
-        "folder":rgba(style.color("sidebar.folder").unwrap_or_else(||style.token("primary_500"))),
+        "folder":rgba(accent),
         "chrome":optional("mobile.chrome.bg"),"list":optional("mobile.list.bg"),
         "text":optional("mobile.list.text"),"row":optional("mobile.row.bg"),
-        "selected":optional("mobile.row.selected"),"selected_text":optional("mobile.row.selected.text")
+        "selected":rgba(accent),"selected_text":rgba(gpui::white())
     })
 }
 
@@ -462,7 +466,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         ("objects",tr("内容设置","Content settings")),("find",tr("文档内查找","Find in document")),("export",tr("导出 Markdown","Export Markdown")),
         ("pdf",tr("导出 PDF","Export PDF")),("print",tr("打印","Print")),
         ("delete",tr("删除文档","Delete document")),("delete-child-folder",tr("删除子文件夹","Delete subfolder")),("delete-folder",tr("删除文件夹","Delete folder")),("delete-shared-folder",tr("删除共享文件夹","Delete shared folder")),("import",tr("导入文档","Import documents")),
-        ("new-document",tr("新建文档","New document")),("new-markdown",tr("新建 Markdown","New Markdown")),("batch",tr("选择文档","Select documents")),("sort",tr("排序规则","Sort by")),("manual",tr("手动排序","Manual order")),
+        ("new-document",tr("新建文档","New document")),("new-board",tr("新建画板","New board")),("new-markdown",tr("新建 Markdown","New Markdown")),("batch",tr("选择文档","Select documents")),("sort",tr("排序规则","Sort by")),("manual",tr("手动排序","Manual order")),
         ("visited",tr("最近访问时间","Recently opened")),("modified",tr("最近修改时间","Recently modified")),
         ("created",tr("创建时间（最新优先）","Recently created")),("title",tr("标题（升序）","Title ascending")),
         ("save",tr("保存","Save")),("format",tr("编辑和格式","Editing and formatting")),
@@ -485,7 +489,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         ("code",tr("代码块","Code block")),("quote",tr("引用","Quote")),
         ("divider",tr("分隔线","Divider")),("table",tr("表格","Table")),
         ("table-controls",tr("表格操作","Table controls")),
-        ("outline",tr("文档目录","Outline")),("document-top",tr("返回顶部","Back to Top")),
+        ("outline",tr("文档目录","Outline")),
         ("insert",tr("插入内容","Insert content")),
         ("attachments",tr("图片和附件","Images and attachments")),
         ("remove-personal-folder",tr("移除分类并保留文档","Remove folder, keep items")),("accept-invitation",tr("接受邀请","Accept invitation")),("delete-shared",tr("删除共享文档","Delete shared document")),("leave-shared",tr("离开共享","Leave share")),
@@ -615,9 +619,12 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         shared_sync: matches!(workspace.view, View::Doc | View::Folder).then(||settings::sync_status::shared(workspace,cx)).flatten(),
         document_needs_attention,
         sharing_toast: workspace.sharing.mobile_toast.clone(),
+        editor_notice: matches!(kind, "note" | "history-preview").then(|| workspace.mobile_list_notice())
+            .flatten().map(|(kind, message)| NativeNotice { kind, message: message.into() }),
         conflict_review: document_needs_attention && workspace.conflict_review.is_some(),
         #[cfg(feature = "mobile-qa")]
         qa:workspace.editor.as_ref().map(|ed| { let ed=ed.read(cx);serde_json::json!({"draft":workspace.draft.is_some(),"generation":ed.core.generation,"title":ed.core.doc.title.text,"body":ed.core.doc.plain_text(),"selection":ed.core.sel,"scroll":ed.mobile_scroll_probe(),"board":ed.mobile_board_probe()}) }),
+        slash_open:workspace.editor.as_ref().is_some_and(|ed|ed.read(cx).slash.is_some()),
         browser:crate::ipad_browser::project(workspace,cx),settings:workspace.native_settings(cx),local_history,sharing_title,folder_access:shared_folder,shared_opening,slash_available:workspace.editor.as_ref().is_some_and(|ed|ed.read(cx).mobile_slash_available()),editor_scope:editor_scope(workspace),reading:workspace.reading(),write_allowed:crate::cloud_sync::shared::can_edit_in(workspace.store.root(),cx),find_active:workspace.editor.as_ref().is_some_and(|ed|ed.read(cx).find.is_some()),listing, information:workspace.native_document_information(),can_reorder:workspace.mobile_can_reorder(cx),reorder:workspace.mobile_reorder_request(cx),cloud_history:crate::cloud_sync::history_available(workspace.store.root(),cx),routes,kind:kind.into(),title,labels,items,
         has_code: workspace.editor.as_ref().is_some_and(|ed| ed.read(cx).has_code_blocks()),
         board_open: kind == "note" && workspace.editor.as_ref().is_some_and(|ed| ed.read(cx).board_open()),
@@ -734,6 +741,9 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                             return;
                         }
 
+
+                        if command.scope.is_none() && workspace.view == crate::app::View::Doc && id == workspace.current
+                            && workspace.reading() && matches!(command.action.as_str(),"move" | "rename" | "delete") { return; }
 
                         if workspace.is_shared() && matches!(command.action.as_str(),"pin" | "star")
                             && workspace.mobile_personal_browser(cx) && workspace.home.tab != crate::home::HomeTab::Shared
@@ -886,8 +896,10 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                             }
                         }
                         "insert-menu" => {
-                            workspace.set_mode(false,window,cx);
-                            if let Some(editor)=&workspace.editor { editor.update(cx,|ed,cx|ed.present_insert_controls(cx)); }
+                            if let Some(editor) = workspace.editor.as_ref().filter(|ed| !ed.read(cx).read_only
+                                && crate::cloud_sync::shared::can_edit_in(&ed.read(cx).library_root,cx)) {
+                                editor.update(cx,|ed,cx|ed.present_insert_controls(cx));
+                            }
                         }
                         "insert-action" => {
                             if let (Some(serial),Some(name),Some(editor)) = (command.selection_serial,command.value.as_deref(),workspace.editor.as_ref()) {
@@ -1071,8 +1083,9 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                                 if serial <= p.creation_ack { false } else { p.creation_ack = serial; true }
                             });
                             if !accepted { return; }
+                            let board = command.value.as_deref() == Some("board");
                             if command.action == "browse-compose" {
-                                crate::ipad_browser::command(workspace,"browse-compose",None,id.as_deref(),command.scope.as_deref(),window,cx);
+                                crate::ipad_browser::command(workspace,"browse-compose",command.value.as_deref(),id.as_deref(),command.scope.as_deref(),window,cx);
                                 cx.notify();return;
                             }
                             if command.action == "editor-compose" {
@@ -1080,7 +1093,7 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                                     && command.scope.as_deref()==Some(editor_scope(workspace).as_str()) && !workspace.library_switching && workspace.confirm.is_none() {
                                     let parent = workspace.creation_parent();
                                     if !workspace.is_shared() || workspace.can_create_in_shared_folder(parent.as_deref(),cx) {
-                                        workspace.create_doc(false,parent,window,cx);
+                                        workspace.mobile_compose(board,parent,window,cx);
                                     }
                                 }
                                 cx.notify();
@@ -1093,7 +1106,7 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                             };
                             if valid_scope && !workspace.library_switching && workspace.confirm.is_none() {
                                 let parent = if workspace.is_shared() || workspace.home.tab==crate::home::HomeTab::Recent { workspace.creation_parent() } else { None };
-                                workspace.create_doc(false,parent,window,cx);
+                                workspace.mobile_compose(board,parent,window,cx);
                             }
                             cx.notify();
                         }
@@ -1198,13 +1211,18 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                         }
                         "backup" => mobile_backup(workspace,cx),
                         "restore-backup" => workspace.mobile_choose_backup(window,cx),
-                        "reading" | "editing" => { if let Some(id) = &id { if workspace.try_open(id,window,cx) { workspace.set_mode(command.action == "reading",window,cx); } } }
+                        "reading" | "editing" if workspace.view == crate::app::View::Doc && id.is_some() && id == workspace.current
+                            && command.scope.as_deref() == Some(editor_scope(workspace).as_str()) => {
+                            workspace.set_mode_from_navigation(command.action == "reading",window,cx);
+                        }
                         "toolbar-command" => {
                             if workspace.library_switching || workspace.view != crate::app::View::Doc || id != workspace.current || command.scope.as_deref() != Some(editor_scope(workspace).as_str()) { return; }
                             if let Some(editor) = workspace.editor.as_ref().filter(|ed| ed.read(cx).board_open()) {
                                 if command.value.as_deref() == Some("board-close") { editor.update(cx, |ed, cx| ed.close_mobile_board(window,cx)); }
                                 return;
                             }
+                            if command.value.as_deref() != Some("done")
+                                && workspace.editor.as_ref().is_none_or(|ed| ed.read(cx).read_only) { return; }
                             match command.value.as_deref() {
                                 Some("done") => {
                                     if let Some(editor) = &workspace.editor { editor.update(cx,|ed,cx|{ ed.cancel_background_composition(cx); ed.core.clear_block_sel(); ed.hover = None; ed.dismiss_mobile_format(cx); }); }
@@ -1213,7 +1231,6 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                                 }
                                 Some("edit") => workspace.set_mode(false,window,cx),
                                 Some("quick-checklist" | "quick-insert") if crate::cloud_sync::shared::can_edit_in(workspace.store.root(),cx) => {
-                                    workspace.set_mode(false,window,cx);
                                     if command.value.as_deref() == Some("quick-checklist") {
                                         dispatch_editor(workspace,"todo",window,cx);
                                         if workspace.editor.as_ref().is_some_and(|ed|!ed.read(cx).read_only) { gpui_mobile::show_keyboard(); }

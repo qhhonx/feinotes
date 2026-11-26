@@ -417,6 +417,12 @@ pub(crate) fn interface() -> &'static Style {
     } else { unsafe { &*p } }
 }
 
+/// Common interface surfaces and geometry. The selected style supplies the accent separately.
+pub(crate) fn interface_chrome() -> &'static Style {
+    if !crate::FEI_NOTES { return active(); }
+    &FEISHU_INTERFACE
+}
+
 pub(crate) fn select_interface(choice: crate::settings::InterfaceStyle) {
     use crate::settings::InterfaceStyle;
     let style = themes().iter().find(|t| t.id == choice.id()).map(|t| t.style)

@@ -26,6 +26,8 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
         let message: String
     }
     let sharing_toast: SharingToast?
+    struct Notice: Decodable, Equatable, Sendable { let kind: String; let message: String }
+    let editor_notice: Notice?
     let folder_access: Bool
     let document_needs_attention: Bool
     let conflict_review: Bool
@@ -41,6 +43,7 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
     }
     let shared_sync: SharedSync?
     let slash_available: Bool
+    let slash_open: Bool
     let listing: Listing?
     let editor_scope:String
     let reading:Bool
@@ -126,7 +129,7 @@ class FeiRouteController: UIViewController {
     var frozenContent: UIView?
     var notesList: FeiNotesListController?
     var settingsList: FeiSettingsController?
-    struct BarIdentity: Equatable { let kind:String; let shared:Bool; let editing:Bool; let typing:Bool; let blockSelected:Bool; let expanded:Bool; let topTools:Bool; let composing:Bool; let board:Bool; let collaborators:[String]; let appearance:String; let theme:FeiMobileTheme?; let labels:[String:String] }
+    struct BarIdentity: Equatable { let kind:String; let shared:Bool; let editing:Bool; let reading:Bool; let writeAllowed:Bool; let typing:Bool; let blockSelected:Bool; let expanded:Bool; let topTools:Bool; let composing:Bool; let board:Bool; let collaborators:[String]; let appearance:String; let theme:FeiMobileTheme?; let labels:[String:String] }
     var barIdentity: BarIdentity?
     var overlapsChrome = false
     var chromeTheme: FeiMobileTheme?
@@ -497,72 +500,77 @@ private final class FeiShareOverviewController: UIViewController {
 }
 
 @MainActor
-private final class FeiSharedSyncController: UIViewController {
-    private let content = UIStackView()
-    private let scroll = UIScrollView()
+private final class FeiSharedSyncController: UITableViewController {
     private var snapshot: FeiNavigationState.SharedSync?
-    private var warningColor: UIColor?
+    private var labels: [String:String] = [:]
+    private var warningColor = UIColor.systemOrange
     private var action: ((String)->Void)?
+
+    init() { super.init(style: .insetGrouped) }
+    required init?(coder: NSCoder) { fatalError() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemBackground
-        content.axis = .vertical
-        content.spacing = 12
-        content.translatesAutoresizingMaskIntoConstraints = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(scroll); scroll.addSubview(content)
-        NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor), scroll.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
-            content.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor,constant: 18),
-            content.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor,constant: -18),
-            content.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor,constant: 12),
-            content.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor,constant: -18),
-            content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor,constant: -36)
-        ])
+        tableView.accessibilityIdentifier = "fei.shared-sync"
+        tableView.backgroundColor = .systemGroupedBackground
     }
 
-    func update(_ status: FeiNavigationState.SharedSync,labels: [String:String],warning: UIColor, action: @escaping (String)->Void) {
-        loadViewIfNeeded()
+    func update(_ status: FeiNavigationState.SharedSync,labels: [String:String],warning: UIColor,action: @escaping (String)->Void) {
         self.action = action
-        guard status != snapshot || warning != warningColor else { return }
+        guard status != snapshot || labels != self.labels || warning != warningColor else { return }
         snapshot = status
+        self.labels = labels
         warningColor = warning
-        content.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        func label(_ text: String,style: UIFont.TextStyle,color: UIColor) -> UILabel {
-            let label = UILabel()
-            label.text = text; label.font = .preferredFont(forTextStyle: style)
-            label.adjustsFontForContentSizeCategory = true; label.numberOfLines = 0; label.textColor = color
-            return label
-        }
-        view.accessibilityIdentifier = "fei.shared-sync"
         title = labels["shared-sync-status"]
-        content.addArrangedSubview(label(status.scope,style: .subheadline,color: .secondaryLabel))
-        let headline = label(status.title,style: .headline,color: status.attention ? warning : .label)
-        headline.accessibilityIdentifier = "fei.shared-sync.status"
-        content.addArrangedSubview(headline)
-        if !status.detail.isEmpty { content.addArrangedSubview(label(status.detail,style: .subheadline,color: .secondaryLabel)) }
-        for row in status.rows where row.count == 2 {
-            let line = UIStackView()
-            line.distribution = .fill; line.spacing = 8; line.alignment = .firstBaseline
-            let key = label(row[0],style: .subheadline,color: .secondaryLabel)
-            let value = label(row[1],style: .subheadline,color: .label)
-            value.textAlignment = .right
-            value.setContentHuggingPriority(.defaultHigh,for: .horizontal)
-            line.addArrangedSubview(key); line.addArrangedSubview(value)
-            content.addArrangedSubview(line)
+        tableView.reloadData()
+    }
+
+    override func numberOfSections(in tableView: UITableView) -> Int {
+        guard let snapshot else { return 0 }
+        return snapshot.action == nil ? 1 : 2
+    }
+
+    override func tableView(_ tableView: UITableView,numberOfRowsInSection section: Int) -> Int {
+        section == 0 ? 1 + (snapshot?.rows.filter { $0.count == 2 }.count ?? 0) : 1
+    }
+
+    override func tableView(_ tableView: UITableView,titleForHeaderInSection section: Int) -> String? {
+        section == 0 ? snapshot?.scope : nil
+    }
+
+    override func tableView(_ tableView: UITableView,cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell()
+        guard let snapshot else { return cell }
+        if indexPath.section == 1 {
+            var content = cell.defaultContentConfiguration()
+            content.text = labels[snapshot.action == "retry" ? "sync-retry" : "sync-settings"]
+            content.textProperties.color = view.tintColor
+            cell.contentConfiguration = content
+            cell.accessibilityIdentifier = "fei.shared-sync.action"
+            cell.accessibilityTraits = .button
+        } else if indexPath.row == 0 {
+            var content = cell.defaultContentConfiguration()
+            content.text = snapshot.title
+            content.textProperties.font = .preferredFont(forTextStyle: .headline)
+            content.textProperties.color = snapshot.attention ? warningColor : .label
+            content.secondaryText = snapshot.detail.isEmpty ? nil : snapshot.detail
+            cell.contentConfiguration = content
+            cell.selectionStyle = .none
+            cell.accessibilityIdentifier = "fei.shared-sync.status"
+        } else {
+            let row = snapshot.rows.filter { $0.count == 2 }[indexPath.row - 1]
+            var content = UIListContentConfiguration.valueCell()
+            content.text = row[0]
+            content.secondaryText = row[1]
+            cell.contentConfiguration = content
+            cell.selectionStyle = .none
         }
-        if let operation = status.action {
-            let key = operation == "retry" ? "sync-retry" : "sync-settings"
-            let button = UIButton(type: .system)
-            button.addAction(UIAction { [weak self] _ in self?.action?(operation) },for: .touchUpInside)
-            button.setTitle(labels[key],for: .normal)
-            button.accessibilityIdentifier = "fei.shared-sync.action"
-            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-            content.addArrangedSubview(button)
-        }
-        preferredContentSize = CGSize(width: 340,height: 270)
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView,didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath,animated: true)
+        if indexPath.section == 1,let operation = snapshot?.action { action?(operation) }
     }
 }
 
@@ -592,6 +600,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     private static let sharingFormSize = CGSize(width: 520,height: 500)
     private let sharingToast = FeiToastView(id: "fei.share.toast")
     private var announcedSharingToast: UUID?
+    private var announcedEditorNotice: FeiNavigationState.Notice?
     private var pendingDrainScheduled = false
     private var pending: FeiNavigationState?
     private var applying = false
@@ -629,33 +638,40 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         if isVirtualListing { return false }
         return hasPadWorkspace ? state.browser?.can_create == true : state.can_create
     }
-    func configureListCompose(_ item: UIBarButtonItem) {
-        let title = label("new")
-        item.isEnabled = allowsCompose
+    static var composeBoardImage: UIImage? {
+        UIImage(systemName: "rectangle.and.pencil.and.ellipsis") ?? UIImage(systemName: "scribble.variable")
+    }
+    var showsBoardComposeShortcut: Bool {
+        guard let state,showsComposeShortcut else { return false }
+        return hasPadWorkspace ? state.browser?.personal == true : !state.shared_session
+    }
+    func configureListCompose(_ item: UIBarButtonItem, board: Bool = false) {
+        let title = label(board ? "new-board" : "new")
+        item.isEnabled = allowsCompose && (!board || showsBoardComposeShortcut)
         guard item.accessibilityLabel != title || item.primaryAction == nil else { return }
         item.accessibilityLabel = title
         item.menu = nil
-        item.primaryAction = UIAction(title: title,image: UIImage(systemName: "square.and.pencil")) { [weak self] _ in self?.composeNote() }
+        item.primaryAction = UIAction(title: title,image: board ? Self.composeBoardImage : UIImage(systemName: "square.and.pencil")) { [weak self] _ in self?.composeNote(board: board) }
     }
     var allowsCompose: Bool {
         guard let state,!state.busy,state.confirmation == nil,pendingCreation == nil else { return false }
         return showsComposeShortcut
     }
-    func composeNote() {
-        guard allowsCompose,!applying,host?.navigationController?.transitionCoordinator == nil,let state else { return }
-        requestComposition(hasPadWorkspace ? "browse-compose" : "compose",state: state,
+    func composeNote(board: Bool = false) {
+        guard allowsCompose,(!board || showsBoardComposeShortcut),!applying,host?.navigationController?.transitionCoordinator == nil,let state else { return }
+        requestComposition(hasPadWorkspace ? "browse-compose" : "compose",board: board,state: state,
             scope: hasPadWorkspace ? state.browser?.listing.scope : state.listing?.scope)
     }
-    func composeFromEditor() {
-        guard let state,state.kind == "note",state.current != nil,state.can_create,!state.busy,!state.conflict_review,
+    func composeFromEditor(board: Bool = false) {
+        guard let state,state.kind == "note",state.current != nil,state.can_create,(!board || !state.shared_session),!state.busy,!state.conflict_review,
               state.confirmation == nil,pendingCreation == nil,!applying,host?.navigationController?.transitionCoordinator == nil else { return }
-        requestComposition("editor-compose",state: state,scope: state.editor_scope)
+        requestComposition("editor-compose",board: board,state: state,scope: state.editor_scope)
     }
-    private func requestComposition(_ action: String,state: FeiNavigationState,scope: String?) {
+    private func requestComposition(_ action: String,board: Bool,state: FeiNavigationState,scope: String?) {
         guard let scope else { return }
         createSerial = max(createSerial,state.revision)+1
         pendingCreation = createSerial
-        send(action,id: state.current,serial: createSerial,scope: scope)
+        send(action,value: board ? "board" : nil,id: state.current,serial: createSerial,scope: scope)
     }
     private weak var sharedSync: FeiSharedSyncController?
     private var sharedSyncScope: String?
@@ -676,9 +692,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     #if FEI_MOBILE_QA
     private var replacedSharedAncestorForQA = false
     #endif
-    private enum SheetAnchor {
-        case row(String,browser: Bool)
-    }
 
     init(host: EditorHost) {
         self.host = host
@@ -725,13 +738,16 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         state = next
         if next.restore_shared_sync && oldState?.restore_shared_sync != true { sharedSyncRestoreScope = next.editor_scope }
         else if !next.restore_shared_sync || sharedSyncRestoreScope != next.editor_scope { sharedSyncRestoreScope = nil }
-        let appearance: UIUserInterfaceStyle = next.appearance == "dark" ? .dark : next.appearance == "light" ? .light : .unspecified
+        let appearance = interfaceAppearance
+        if let window = navigation.viewIfLoaded?.window,window.overrideUserInterfaceStyle != appearance {
+            window.overrideUserInterfaceStyle = appearance
+        }
         if navigation.overrideUserInterfaceStyle != appearance { navigation.overrideUserInterfaceStyle = appearance }
         let palette = next.theme ?? .system
         if oldState?.theme != next.theme {
             navigation.view.tintColor = palette.accentColor
             navigation.view.window?.tintColor = palette.accentColor
-            navigation.navigationBar.tintColor = palette.accentColor
+            navigation.navigationBar.tintColor = palette.toolbarColor
             let barAppearance = UINavigationBarAppearance()
             barAppearance.configureWithDefaultBackground()
             if let color = palette.chromeColor { barAppearance.backgroundColor = color }
@@ -849,19 +865,32 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     }
 
     private func syncSharingToast() {
-        guard let state, let toast = state.sharing_toast else {
+        let toast = state?.sharing_toast
+        let notice = state?.editor_notice
+        guard let state,let kind = toast?.kind ?? notice?.kind,let message = toast?.message ?? notice?.message else {
             sharingToast.update(nil,kind: nil,accent: .tintColor)
             sharingToast.removeFromSuperview()
             announcedSharingToast = nil
+            announcedEditorNotice = nil
             return
         }
         let presenter = documentSheet?.topViewController ?? host?.navigationController?.topViewController
-        guard let container = presenter?.viewIfLoaded, container.window != nil else { return }
-        sharingToast.attach(to: container,bottomInset: documentSheet == nil ? nil : 68)
-        sharingToast.update(toast.message,kind: toast.kind,accent: (state.theme ?? .system).sharingAccentColor)
-        if announcedSharingToast != toast.id {
+        guard let container = presenter?.viewIfLoaded,container.window != nil else { return }
+        let bar = presenter?.navigationController?.navigationBar
+        let chrome = bar.flatMap { bar in
+            bar.isHidden || bar.window == nil ? nil : bar.convert(bar.bounds,to: container).maxY
+        } ?? container.safeAreaInsets.top
+        let topInset = max(0,chrome - container.safeAreaInsets.top) + 8
+        sharingToast.attach(to: container,bottomInset: documentSheet == nil ? nil : 68,topInset: topInset)
+        sharingToast.update(message,kind: kind,accent: (state.theme ?? .system).accentColor)
+        if let toast {
+            if announcedSharingToast != toast.id { UIAccessibility.post(notification: .announcement,argument: message) }
             announcedSharingToast = toast.id
-            UIAccessibility.post(notification: .announcement,argument: toast.message)
+            announcedEditorNotice = nil
+        } else {
+            if announcedEditorNotice != notice { UIAccessibility.post(notification: .announcement,argument: message) }
+            announcedEditorNotice = notice
+            announcedSharingToast = nil
         }
     }
 
@@ -924,7 +953,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             documentSheetKey = desired
         }
         guard let content = sheet.viewControllers.first else { return }
-        sheet.overrideUserInterfaceStyle = presenter.navigationController?.overrideUserInterfaceStyle ?? .unspecified
+        sheet.overrideUserInterfaceStyle = interfaceAppearance
         sheet.view.tintColor = theme.accentColor
         sheet.isModalInPresentation = state.busy
         let done = UIBarButtonItem(title: state.labels["done"],style: .done,target: self,action: #selector(closeDocumentSheet))
@@ -1040,11 +1069,12 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         guard let request else { reorderController?.dismissForReplacement(); reorderController = nil; return }
         if let reorderController { reorderController.update(request); return }
         guard let controller = host?.navigationController?.topViewController else { return }
-        let reorder = FeiReorderController(request) { [weak self] action,id,before,serial in self?.send(action,value: before,id: id,serial: serial) }
+        let reorder = FeiReorderController(request,accent: (state?.theme ?? .system).accentColor) { [weak self] action,id,before,serial in self?.send(action,value: before,id: id,serial: serial) }
         let present = { [weak self] in
             guard let self,self.reorderGeneration == generation,self.state?.reorder?.serial == request.serial else { return }
             self.reorderController = reorder
             let navigation = UINavigationController(rootViewController: reorder)
+            navigation.overrideUserInterfaceStyle = self.interfaceAppearance
             navigation.sheetPresentationController?.detents = [.large()]
             navigation.sheetPresentationController?.prefersGrabberVisible = true
             navigation.presentationController?.delegate = reorder
@@ -1108,7 +1138,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             ])
             let navigation = UINavigationController(rootViewController: form)
             navigation.view.accessibilityIdentifier = "fei.cloud-enable-confirm"
-            navigation.overrideUserInterfaceStyle = controller.navigationController?.overrideUserInterfaceStyle ?? .unspecified
+            navigation.overrideUserInterfaceStyle = interfaceAppearance
             navigation.isModalInPresentation = true
             let regular = controller.traitCollection.horizontalSizeClass == .regular
             navigation.modalPresentationStyle = regular ? .formSheet : .pageSheet
@@ -1221,7 +1251,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         // Keep bar items stable when only note state changes.
         let typing = host?.editorHasKeyboardFocus == true
         let shared = state.kind == "note" ? state.document_shared : state.shared_session
-        let identity = FeiRouteController.BarIdentity(kind: state.kind,shared: shared,editing: state.kind == "note" && state.can_edit,typing: state.kind == "note" && typing,blockSelected: state.block_selected,expanded: expanded,topTools: host?.navigationEditorTools.isEmpty == false,composing: state.can_create,board: state.board_open,collaborators: state.editing_collaborators,appearance: state.appearance,theme: state.theme,labels: state.labels)
+        let identity = FeiRouteController.BarIdentity(kind: state.kind,shared: shared,editing: state.kind == "note" && state.can_edit,reading: state.reading,writeAllowed: state.write_allowed,typing: state.kind == "note" && typing,blockSelected: state.block_selected,expanded: expanded,topTools: host?.navigationEditorTools.isEmpty == false,composing: state.can_create,board: state.board_open,collaborators: state.editing_collaborators,appearance: state.appearance,theme: state.theme,labels: state.labels)
         if let overview = shareOverview {
             if shareOverviewScope == state.editor_scope && state.kind == "note" && !state.board_open {
                 overview.updateNames(state.editing_collaborators)
@@ -1255,6 +1285,8 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         controller.navigationItem.rightBarButtonItems = nil
         if state.board_open {
             let done = UIBarButtonItem(title: state.labels["done"],style: .done,target: self,action: #selector(closeBoard))
+            done.tintColor = (state.theme ?? .system).accentColor
+            done.setTitleTextAttributes([.foregroundColor: UIColor.white],for: .normal)
             done.accessibilityIdentifier = "fei.board.done"
             controller.navigationItem.rightBarButtonItem = done
         } else if state.kind == "note" {
@@ -1262,7 +1294,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             more.accessibilityLabel = state.labels["note-more"]
             more.accessibilityIdentifier = "fei.more"
             updateSharedSyncButton(more,state: state,folder: false)
-            let activity = state.theme?.id == "notes" ? 0 : state.editing_collaborators.count
+            let activity = state.editing_collaborators.count
             let share = UIBarButtonItem(image: shareImage(shared: shared,count: activity),style: .plain,target: self,action: #selector(shareNote))
             share.accessibilityLabel = state.labels[shared ? "already-shared" : "share-object"]
             share.accessibilityIdentifier = "fei.share"
@@ -1272,8 +1304,26 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             }
             shareOverview?.popoverPresentationController?.sourceItem = share
             var items = [more,share]+(host?.navigationEditorTools.reversed() ?? [].reversed())
+            if state.write_allowed,let id = state.current {
+                let editIcon = UIImage(systemName: "pencil.line") ?? UIImage(systemName: "pencil")
+                let readIcon = UIImage(systemName: "book")
+                let mode = UIBarButtonItem(image: state.reading ? readIcon : editIcon,primaryAction: nil,
+                    menu: UIMenu(children: [
+                        UIAction(title: label("editing"),image: editIcon,state: state.reading ? .off : .on) { [weak self] _ in self?.send("editing",id: id,scope: state.editor_scope) },
+                        UIAction(title: label("reading"),image: readIcon,state: state.reading ? .on : .off) { [weak self] _ in self?.send("reading",id: id,scope: state.editor_scope) }
+                    ]))
+                mode.accessibilityLabel = label(state.reading ? "reading" : "editing")
+                mode.accessibilityIdentifier = "fei.note-mode"
+                if #available(iOS 26.0,*) { mode.sharesBackground = false }
+                items.insert(mode,at: 2)
+            }
             if state.can_edit && typing {
-                let done = UIBarButtonItem(image: UIImage(systemName: "checkmark"),style: .done,target: self,action: #selector(endTyping))
+                let theme = state.theme ?? .system
+                let check = UIImage(systemName: "checkmark")
+                let image = check?.withTintColor(.white,renderingMode: .alwaysOriginal)
+                let done = UIBarButtonItem(image: image,style: .done,target: self,action: #selector(endTyping))
+                done.tintColor = theme.accentColor
+                if #available(iOS 26.0,*) { done.sharesBackground = false }
                 done.accessibilityLabel = state.labels["end-typing"]
                 done.accessibilityIdentifier = "fei.edit.done"; items.insert(done,at: 0)
             }
@@ -1382,7 +1432,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         if action == "toolbar-command",["done","styles","insert","quick-insert","slash","block-actions","undo","redo"].contains(value ?? ""),let state,state.kind == "note",state.current == id,state.editor_scope == scope,state.can_edit,state.write_allowed,!state.busy {
             host?.settleEditorComposition()
         }
-        if state?.kind == "note",["share-note","shared-folder-access","settings","shared-library-settings","browse-open","browse-scope","back","history-open"].contains(action) {
+        if state?.kind == "note",["share-note","shared-folder-access","settings","shared-library-settings","browse-open","browse-scope","back","history-open","reading"].contains(action) {
             host?.settleEditorComposition()
             host?.navigationController?.topViewController?.view.endEditing(true)
         }
@@ -1393,7 +1443,9 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 sender.thawContent()
             }
         }
-        if ["compose","browse-compose","new","new-document","new-markdown"].contains(action) { focusAfterTransition = true }
+        if ["compose","browse-compose","editor-compose","new","new-document","new-markdown"].contains(action) {
+            focusAfterTransition = value != "board"
+        }
         var command: [String: Any] = ["action": action]
         if let scope { command["scope"] = scope }
         if let serial { command["selection_serial"] = serial }
@@ -1402,8 +1454,13 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         guard let bytes = try? JSONSerialization.data(withJSONObject: command),
               let json = String(data: bytes, encoding: .utf8) else { return }
         let perform = { json.withCString { fei_ios_command($0) } }
-        if let presented = host?.navigationController?.topViewController?.presentedViewController,
-           presented is UIAlertController || ["import","restore-backup","pdf","print","format","table-menu","format-menu","outline-menu","insert-menu","attachments-menu","objects-menu"].contains(action) {
+        let exportingFile = ["export","pdf"].contains(action) || value?.hasPrefix("export:") == true || value == "pdf"
+        if exportingFile {
+            host?.settleEditorComposition()
+            host?.navigationController?.topViewController?.view.endEditing(true)
+        }
+        if !exportingFile,let presented = host?.navigationController?.topViewController?.presentedViewController,
+           presented is UIAlertController || ["import","restore-backup","print","format","table-menu","format-menu","outline-menu","insert-menu","attachments-menu","objects-menu"].contains(action) {
             presented.dismiss(animated: true, completion: perform)
         } else { perform() }
     }
@@ -1594,32 +1651,16 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
 
     func localized(_ zh: String, _ en: String) -> String { state?.labels["cancel"] == "Cancel" ? en : zh }
 
-    private func sheet(_ title: String? = nil, actions: [(String, UIAlertAction.Style, () -> Void)],anchor: SheetAnchor? = nil) {
-        let rowAnchor: (String,Bool)?
-        if case .row(let id,let browser) = anchor { rowAnchor = (id,browser) } else { rowAnchor = nil }
-        guard let controller = rowAnchor?.1 == true ? host?.padWorkspace?.visibleBrowserController : host?.navigationController?.topViewController else { return }
-        host?.settleEditorComposition()
-        fei_ipad_flush()
-        controller.view.endEditing(true)
-        let sheet = UIAlertController(title: title, message: nil, preferredStyle: .actionSheet)
-        for (key, style, action) in actions {
-            sheet.addAction(UIAlertAction(title: label(key), style: style) { _ in action() })
-        }
-        sheet.addAction(UIAlertAction(title: label("cancel"), style: .cancel))
-        if let popover = sheet.popoverPresentationController {
-            if let (id,_) = rowAnchor {
-                guard let rect = (controller as? FeiRouteController)?.notesList?.anchor(for: id) else { return }
-                popover.sourceView = controller.view; popover.sourceRect = rect
-            } else {
-                guard let item = actionButton(in: controller) else { return }
-                popover.sourceItem = item
-            }
-        }
-        present(sheet,from: controller)
-    }
-
     private func actionButton(in controller: UIViewController?) -> UIBarButtonItem? {
         controller?.navigationItem.rightBarButtonItems?.first { ["fei.more","fei.library-actions"].contains($0.accessibilityIdentifier ?? "") }
+    }
+
+    var interfaceAppearance: UIUserInterfaceStyle {
+        switch state?.appearance {
+        case "dark": return .dark
+        case "light": return .light
+        default: return .unspecified
+        }
     }
 
     private func present(_ view: UIViewController,from source: UIViewController? = nil) {
@@ -1629,6 +1670,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         let show = { [weak self,weak controller] in
             guard let self,let controller,self.presentationGeneration == generation,
                 self.host?.navigationController?.topViewController === controller || self.host?.padWorkspace?.visibleBrowserController === controller || self.documentSheet?.topViewController === controller else { return }
+            view.overrideUserInterfaceStyle = self.interfaceAppearance
             controller.present(view,animated: true)
         }
         if let presented = controller.presentedViewController { presented.dismiss(animated: true,completion: show) } else { show() }
@@ -1747,13 +1789,17 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         let navigation = [
             menuAction("find","magnifyingglass") { [weak self] in self?.send("find") },
             menuAction("outline","list.bullet") { [weak self] in self?.send("outline-menu") },
-            menuAction("document-top","arrow.up.to.line") { [weak self,scope = state.editor_scope] in
-                self?.host?.returnDocumentToTop(scope:scope)
-            },
         ]
         let search = menuSection(navigation)
-        var editing: [UIMenuElement] = [menuAction("format-text","textformat.size",enabled: state.write_allowed) { [weak self] in self?.send("toolbar-command",value: "styles",id: id,scope: state.editor_scope) },menuAction("insert","plus",enabled: state.write_allowed) { [weak self] in self?.send("insert-menu") },menuAction("objects","slider.horizontal.3",enabled: state.write_allowed || state.has_code) { [weak self] in self?.send("objects-menu") }]
-        if state.table_active { editing.append(menuAction("table-controls","tablecells",enabled: state.can_edit) { [weak self] in self?.send("table-menu") }) }
+        var editing: [UIMenuElement] = []
+        if state.can_edit {
+            editing += [menuAction("format-text","textformat.size") { [weak self] in self?.send("toolbar-command",value: "styles",id: id,scope: state.editor_scope) },
+                        menuAction("insert","plus") { [weak self] in self?.send("insert-menu") }]
+        }
+        if state.can_edit || state.has_code {
+            editing.append(menuAction("objects","slider.horizontal.3") { [weak self] in self?.send("objects-menu") })
+        }
+        if state.table_active && state.can_edit { editing.append(menuAction("table-controls","tablecells") { [weak self] in self?.send("table-menu") }) }
         let standaloneShare = state.shared_session && !state.folder_access
         let item = state.items.first(where: { $0.id == id })
         var organization: [UIMenuElement] = []
@@ -1762,7 +1808,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 self?.send(standaloneShare ? "shared-copy" : "duplicate",id: id,scope: standaloneShare ? state.editor_scope : nil)
             })
         }
-        if !standaloneShare && state.write_allowed {
+        if !standaloneShare && state.can_edit {
             organization.append(menuAction("move","folder") { [weak self] in self?.showMove(id) })
         }
         if let item {
@@ -1772,16 +1818,21 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 menuAction(item.starred ? "unstar" : "star","star") { [weak self] in self?.send(standaloneShare ? "shared-star" : "star",id: id,scope: scope) }
             ]
         }
-        if state.write_allowed {
+        if state.can_edit {
             organization.append(menuAction("rename","pencil") { [weak self] in self?.rename(id: id,title: self?.state?.title ?? "") })
         }
-        editing.append(menuAction(state.reading ? "editing" : "reading","book",enabled: state.write_allowed) { [weak self] in self?.send(state.reading ? "editing" : "reading",id: id) })
         let info = UIMenu(title: label("doc-info"),image: UIImage(systemName: "info.circle"),children: [menuAction("doc-info","info.circle") { [weak self] in self?.send("doc-info",id: id) },menuAction("history","clock.arrow.circlepath") { [weak self] in self?.send("history-open",id: id,scope: state.editor_scope) },menuAction("attachments","paperclip") { [weak self] in self?.send("attachments-menu") }])
-        var export: [UIMenuElement] = [menuAction("export","square.and.arrow.up") { [weak self] in self?.showExport(id) },menuAction("pdf","doc.richtext") { [weak self] in self?.send("pdf",id: id) },menuAction("print","printer") { [weak self] in self?.send("print",id: id) }]
+        var export: [UIMenuElement] = [markdownExportMenu { [weak self] mode in
+            guard let self,self.state?.current == id,self.state?.editor_scope == state.editor_scope,self.state?.busy == false else { return }
+            self.send("export",value: mode,id: id,scope: state.editor_scope)
+        },menuAction("pdf","doc.richtext") { [weak self] in self?.send("pdf",id: id) },menuAction("print","printer") { [weak self] in self?.send("print",id: id) }]
         if state.labels["copy-object-link"] != nil {
             export.insert(menuAction("copy-object-link","link") { [weak self] in self?.send("copy-object-link",id: id,scope: state.editor_scope) },at: 0)
         }
-        var groups: [UIMenuElement] = [search,UIMenu(title: label("format"),image: FeiEditorToolbar.menuFormatIcon(compatibleWith: host?.traitCollection),children: editing)]
+        var groups: [UIMenuElement] = [search]
+        if !editing.isEmpty {
+            groups.append(UIMenu(title: label("format"),image: FeiEditorToolbar.menuFormatIcon(compatibleWith: host?.traitCollection),children: editing))
+        }
         groups.append(UIMenu(title: label("options"),image: UIImage(systemName: "folder"),children: organization))
         if state.shared_session {
             if let collaboration = collaborationSection(nil,state: state) { groups.append(collaboration) }
@@ -1795,7 +1846,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             if let end = item?.share_end {
                 groups.append(menuSection([menuAction(end,"trash",destructive: true) { [weak self] in self?.send("shared-end",id: id,scope: state.editor_scope) }]))
             }
-        } else if state.write_allowed {
+        } else if state.can_edit {
             groups.append(menuSection([menuAction("delete","trash",destructive: true) { [weak self] in self?.send("delete",id: id) }]))
         }
         return UIMenu(children: groups)
@@ -1855,10 +1906,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         }
         let done = UIBarButtonItem(title: state.labels["done"],image: nil,
             primaryAction: UIAction { [weak navigation] _ in navigation?.dismiss(animated: true) })
-        done.style = .done
+        done.style = .plain
+        done.tintColor = .label
         done.accessibilityIdentifier = "fei.shared-sync.done"
         card.navigationItem.rightBarButtonItem = done
-        navigation.overrideUserInterfaceStyle = presenter.navigationController?.overrideUserInterfaceStyle ?? .unspecified
+        navigation.overrideUserInterfaceStyle = interfaceAppearance
         navigation.view.tintColor = (state.theme ?? .system).accentColor
         sharedSync = card
         sharedSyncScope = scope
@@ -1950,7 +2002,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             organization += [action(item.pinned ? "unpin" : "pin","pin","pin"),action(item.starred ? "unstar" : "star","star","star")]
             groups.append(group(organization))
             let export = UIMenu(title: label("export-copy"),image: UIImage(systemName: "square.and.arrow.up"),children: [
-                action("export","doc.text",perform: { [weak self] in self?.showExport(id,anchor: .row(id,browser: fromBrowser),itemScope: scope) }),
+                markdownExportMenu { [weak self] mode in
+                    guard let self,self.state?.busy == false,
+                          (fromBrowser ? self.state?.browser?.listing.scope : self.state?.listing?.scope) == scope else { return }
+                    self.send("item-menu",value: "export:" + mode,id: id,scope: scope)
+                },
                 action("pdf","doc.richtext"),action("print","printer"),
             ])
             groups.append(group(writable ? [export,rename] : [export]))
@@ -2058,18 +2114,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         present(UINavigationController(rootViewController: picker))
     }
 
-    private func showExport(_ id: String,anchor: SheetAnchor? = nil,personalScope: String? = nil,itemScope: String? = nil) {
-        let scope = state?.editor_scope
-        func export(_ mode: String) {
-            if let itemScope { self.send("item-menu",value: "export:" + mode,id: id,scope: itemScope); return }
-            guard self.state?.editor_scope == scope else { return }
-            if let personalScope { self.send("personal-row-action",value: "export:" + mode,id: id,scope: personalScope) }
-            else { self.send("export",value: mode,id: id) }
-        }
-        sheet(label("export"),actions: [
-            ("text-only",.default,{ export("text") }),
-            ("all-content",.default,{ export("all") }),
-        ],anchor: anchor)
+    private func markdownExportMenu(perform: @escaping (String) -> Void) -> UIMenu {
+        UIMenu(title: label("export"),image: UIImage(systemName: "doc.text"),children: [
+            UIAction(title: label("text-only")) { _ in perform("text") },
+            UIAction(title: label("all-content")) { _ in perform("all") },
+        ])
     }
 
     private func rename(id: String?, title: String,browserScope: String? = nil,itemScope: String? = nil) {

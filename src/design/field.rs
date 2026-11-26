@@ -80,7 +80,7 @@ fn edge(d: Stateful<Div>, focused: bool, bad: bool, focus_color: Option<Hsla>) -
         let d = d.border_color(if dark { super::alpha(color::destructive(), 0.5) } else { color::destructive() });
         d.shadow(vec![shadow::ring(halo, 3.)])
     } else if focused {
-        let color = focus_color.unwrap_or_else(color::ring);
+        let color = focus_color.or_else(color::interface_accent).unwrap_or_else(color::ring);
         d.border_color(color).shadow(vec![shadow::ring(super::alpha(color, 0.5), 3.)])
     } else { d.border_color(color::input()).shadow(shadow::xs()) }
 }

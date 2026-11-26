@@ -29,6 +29,10 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         let item = UIBarButtonItem(systemItem: .compose,primaryAction: nil)
         item.accessibilityIdentifier = "fei.new"; return item
     }()
+    private lazy var boardComposeItem: UIBarButtonItem = {
+        let item = UIBarButtonItem(image: FeiNavigationCoordinator.composeBoardImage,primaryAction: nil)
+        item.accessibilityIdentifier = "fei.new-board"; return item
+    }()
     private lazy var settingsItem: UIBarButtonItem = {
         let item = UIBarButtonItem(image: UIImage(systemName: "gearshape"),primaryAction: UIAction { [weak self] _ in guard let self else { return }
             if self.state?.kind == "settings" {
@@ -141,7 +145,7 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         browserNavigation.view.backgroundColor = theme.workspaceListColor
         for navigation in [browserNavigation,editorNavigation] {
             navigation.view.tintColor = theme.accentColor
-            navigation.navigationBar.tintColor = theme.accentColor
+            navigation.navigationBar.tintColor = theme.toolbarColor
             let bar = UINavigationBarAppearance(); bar.configureWithDefaultBackground()
             if let color = theme.chromeColor { bar.backgroundColor = color }
             navigation.navigationBar.standardAppearance = bar
@@ -224,9 +228,14 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
             } else { actions.append(share) }
         }
         if !isCollapsed && close.isEmpty && coordinator.showsComposeShortcut {
-            composeItem.tintColor = (next.theme ?? .system).accentColor
+            composeItem.tintColor = (next.theme ?? .system).toolbarColor
             coordinator.configureListCompose(composeItem)
             actions.append(composeItem)
+            if coordinator.showsBoardComposeShortcut {
+                boardComposeItem.tintColor = (next.theme ?? .system).toolbarColor
+                coordinator.configureListCompose(boardComposeItem,board: true)
+                actions.append(boardComposeItem)
+            }
         }
         let trailing = close+actions+(usesOverlay && !isCollapsed ? [dismiss ?? sidebarDismissButton()] : [])
         if browser.notesList?.isSelecting != true && browser.notesList?.tableView.isEditing != true && browser.navigationItem.rightBarButtonItems?.map(ObjectIdentifier.init) != trailing.map(ObjectIdentifier.init) { browser.navigationItem.rightBarButtonItems = trailing }
