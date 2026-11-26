@@ -4,6 +4,34 @@ final class EditorToolbarUITests: XCTestCase {
     private func shot(_ name:String) {
         let a = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); a.name = name; a.lifetime = .keepAlways; add(a)
     }
+    func testIdleCoreActionsStayDirectWithBoardShortcut() {
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments += ["-AppleLanguages","(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "local"
+        app.launch()
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["fei.new"].waitForExistence(timeout: 15)); app.buttons["fei.new"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        app.typeText("Synthetic toolbar regression document")
+        app.buttons["fei.edit.keyboard"].tap()
+        let bar = app.toolbars["fei.editor.toolbar"]
+        let hidden = XCTNSPredicateExpectation(predicate: NSPredicate { _,_ in !app.keyboards.firstMatch.exists },object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [hidden],timeout: 6),.completed)
+        for id in ["fei.new.editor","fei.new-board.editor","fei.edit.quick-checklist","fei.edit.quick-insert","fei.edit.undo","fei.edit.mode"] {
+            XCTAssertTrue(bar.buttons[id].isHittable,"A primary action must not be hidden in More: "+id+"\n"+bar.debugDescription)
+        }
+        shot("idle-toolbar-all-six-actions")
+        bar.buttons["fei.edit.mode"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        app.buttons["fei.edit.keyboard"].tap()
+        app.switchToReadingMode(); app.switchToEditingMode()
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        XCTAssertTrue(bar.buttons["fei.edit.undo"].isHittable)
+        XCTAssertTrue(bar.buttons["fei.edit.mode"].isHittable)
+        shot("idle-toolbar-after-reading-return")
+    }
     func testNativeToolbarKeyboardMenusAndReadingMode() {
         continueAfterFailure = false
         let app = XCUIApplication()

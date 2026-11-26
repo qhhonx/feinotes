@@ -212,10 +212,14 @@ final class FeiEditorToolbar: UIToolbar {
                     let checklist = button("checklist","todo","quick-checklist",#selector(quickChecklist))
                     let insert = button("paperclip","insert","quick-insert",#selector(quickInsert))
                     var list: [UIBarButtonItem] = []
-                    if !compose.isEmpty { list += compose + [spacer()] }
+                    if !compose.isEmpty {
+                        list += compose
+                        // Keep six actions directly reachable on compact iPhones.
+                        if !showBoardCompose { list.append(spacer()) }
+                    }
                     list += [checklist,insert]
                     if blockTools { list.append(block) }
-                    list.append(spacer())
+                    if !showBoardCompose { list.append(spacer()) }
                     commandButtons = [checklist,insert]
                     if phone && next.can_edit {
                         let undo = undoItem()
