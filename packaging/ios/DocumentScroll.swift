@@ -16,6 +16,8 @@ final class FeiDocumentScrollView: UIScrollView, UIScrollViewDelegate {
         self.canvas = canvas
         super.init(frame: .zero)
         contentInsetAdjustmentBehavior = .never
+        automaticallyAdjustsScrollIndicatorInsets = false
+        panGestureRecognizer.allowedScrollTypesMask = .all
         showsHorizontalScrollIndicator = false
         alwaysBounceVertical = true
         isDirectionalLockEnabled = true

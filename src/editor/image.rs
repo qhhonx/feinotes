@@ -729,7 +729,7 @@ fn geometry(width: Option<f32>, height: Option<f32>, crop: Option<[f32; 4]>, nat
 }
 
 #[cfg(target_os = "ios")]
-pub(super) fn estimated_phone_height(width: Option<f32>, height: Option<f32>, crop: Option<[f32; 4]>, container: f32) -> f32 {
+pub(super) fn estimated_height(width: Option<f32>, height: Option<f32>, crop: Option<[f32; 4]>, container: f32) -> f32 {
     geometry(width, height, crop, None, container).h
 }
 

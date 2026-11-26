@@ -1744,12 +1744,13 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     }
     private func noteActionsMenu() -> UIMenu {
         guard let state,let id = state.current else { return UIMenu() }
-        var navigation: [UIMenuElement] = [menuAction("find","magnifyingglass") { [weak self] in self?.send("find") },menuAction("outline","list.bullet") { [weak self] in self?.send("outline-menu") }]
-        if UIDevice.current.userInterfaceIdiom == .phone {
-            navigation.append(menuAction("document-top","arrow.up.to.line") { [weak self,scope = state.editor_scope] in
+        let navigation = [
+            menuAction("find","magnifyingglass") { [weak self] in self?.send("find") },
+            menuAction("outline","list.bullet") { [weak self] in self?.send("outline-menu") },
+            menuAction("document-top","arrow.up.to.line") { [weak self,scope = state.editor_scope] in
                 self?.host?.returnDocumentToTop(scope:scope)
-            })
-        }
+            },
+        ]
         let search = menuSection(navigation)
         var editing: [UIMenuElement] = [menuAction("format-text","textformat.size",enabled: state.write_allowed) { [weak self] in self?.send("toolbar-command",value: "styles",id: id,scope: state.editor_scope) },menuAction("insert","plus",enabled: state.write_allowed) { [weak self] in self?.send("insert-menu") },menuAction("objects","slider.horizontal.3",enabled: state.write_allowed || state.has_code) { [weak self] in self?.send("objects-menu") }]
         if state.table_active { editing.append(menuAction("table-controls","tablecells",enabled: state.can_edit) { [weak self] in self?.send("table-menu") }) }

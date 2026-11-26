@@ -510,7 +510,7 @@ final class EditorHost: FeiRouteController {
 
     private func startDisplayLink() {
         guard let editorView, displayLink == nil else { return }
-        if #available(iOS 18.0, *), UIDevice.current.userInterfaceIdiom == .phone {
+        if #available(iOS 18.0, *) {
             #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
             if ProcessInfo.processInfo.environment["FEI_SCROLL_USE_DISPLAY_LINK"] != "1" {
                 attachScrollUpdateLink(to: editorView)
@@ -736,7 +736,7 @@ func feiIOSEditorBottomInset() -> Float { Float(EditorHost.active?.editorChromeI
 private let editorFrameLog = OSLog(subsystem: "app.feinotes",category: "EditorPerformance")
 
 private final class EditorFrameView: UIView {
-    private var documentScroll: FeiDocumentScrollView?
+    private let documentScroll: FeiDocumentScrollView
     let gpuiWindow: UnsafeMutableRawPointer
     let controller: UIViewController
     private weak var guardedNavigation: UINavigationController?
@@ -761,29 +761,24 @@ private final class EditorFrameView: UIView {
     init(window: UnsafeMutableRawPointer, controller: UIViewController) {
         self.gpuiWindow = window
         self.controller = controller
+        self.documentScroll = FeiDocumentScrollView(canvas: controller.view)
         super.init(frame: .zero)
         clipsToBounds = true
         accessibilityIdentifier = "fei.editor.surface"
-        if UIDevice.current.userInterfaceIdiom == .phone {
-            metalLayer?.usesLegacyPhoneScroll = true
-            let scroll = FeiDocumentScrollView(canvas: controller.view)
-            documentScroll = scroll
-            addSubview(scroll)
-        } else {
-            addSubview(controller.view)
-        }
+        metalLayer?.usesLegacyPhoneScroll = UIDevice.current.userInterfaceIdiom == .phone
+        addSubview(documentScroll)
     }
 
-    func setScrollRoute(_ route: String?) { documentScroll?.setRoute(route) }
+    func setScrollRoute(_ route: String?) { documentScroll.setRoute(route) }
 
-    var isScrolling: Bool { documentScroll?.scrollInProgress == true }
+    var isScrolling: Bool { documentScroll.scrollInProgress }
     var metalLayer: FeiEditorMetalLayer? { controller.view.layer as? FeiEditorMetalLayer }
 
-    func returnDocumentToTop() { documentScroll?.returnToTop() }
+    func returnDocumentToTop() { documentScroll.returnToTop() }
 
     #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
     var diagnosticScrollOffsets: (native: Double, forwarded: Double, gpui: Double)? {
-        documentScroll?.diagnosticScrollOffsets
+        documentScroll.diagnosticScrollOffsets
     }
     private(set) var lastDrawableAcquisition = 0.0
     #endif
@@ -795,12 +790,8 @@ private final class EditorFrameView: UIView {
         guard bounds.width > 0, bounds.height > 0 else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        if let documentScroll {
-            documentScroll.frame = bounds
-            documentScroll.layoutCanvas()
-        } else {
-            controller.view.frame = bounds
-        }
+        documentScroll.frame = bounds
+        documentScroll.layoutCanvas()
         gpui_ios_layout_view(gpuiWindow)
         drawFrame()
         CATransaction.commit()
@@ -821,6 +812,10 @@ private final class EditorFrameView: UIView {
         // Layout can also request a frame. While UIKit is moving, use the
         // display link for both the scroll sample and the render submission.
         guard displayInterval != nil || !isScrolling else { return false }
+        let insets = EditorHost.active?.editorChromeInsets ?? .zero
+        if documentScroll.verticalScrollIndicatorInsets != insets {
+            documentScroll.verticalScrollIndicatorInsets = insets
+        }
         let metalLayer = metalLayer
         #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
         lastDrawableAcquisition = 0
@@ -832,7 +827,7 @@ private final class EditorFrameView: UIView {
                 os_signpost(.event,log: editorFrameLog,name: "Metal Drawable Deferred")
                 return true
             }
-            documentScroll?.applyScrollForFrame()
+            documentScroll.applyScrollForFrame()
         }
         if editorFrameLog.signpostsEnabled {
             let signpost = OSSignpostID(log: editorFrameLog)
@@ -845,7 +840,7 @@ private final class EditorFrameView: UIView {
         #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
         lastDrawableAcquisition = metalLayer?.lastAcquireMilliseconds ?? 0
         #endif
-        documentScroll?.synchronizeLayout()
+        documentScroll.synchronizeLayout()
         #if FEI_MOBILE_QA
         if let horizontalScrollProbe, !isHidden {
             var values = [Float](repeating: 0,count: 5)

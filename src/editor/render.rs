@@ -1359,16 +1359,10 @@ impl Editor {
             // (the list would otherwise snap to its first line).
             let top = self.list.logical_scroll_top();
             #[cfg(target_os = "ios")]
-            let estimate_heights = unsafe { crate::ipad::fei_ios_is_phone() };
+            self.list.splice_with_estimated_heights(range.clone(), items[pre..pre + count].iter()
+                .map(|item| self.estimated_row_height(item, f32::from(viewport_width), cover_h, chrome_top, chrome_bottom)));
             #[cfg(not(target_os = "ios"))]
-            let estimate_heights = false;
-            if estimate_heights {
-                #[cfg(target_os = "ios")]
-                self.list.splice_with_estimated_heights(range.clone(), items[pre..pre + count].iter()
-                    .map(|item| self.estimated_phone_row_height(item, f32::from(viewport_width), cover_h, chrome_top, chrome_bottom)));
-            } else {
-                self.list.splice(range.clone(), count);
-            }
+            self.list.splice(range.clone(), count);
             if range.contains(&top.item_ix) {
                 self.list.scroll_to(match count {
                     0 => ListOffset { item_ix: pre, offset_in_item: px(0.) },
@@ -1389,7 +1383,7 @@ impl Editor {
     }
 
     #[cfg(target_os = "ios")]
-    fn estimated_phone_row_height(&self, item: &Item, viewport_width: f32, cover_h: f32, chrome_top: f32, chrome_bottom: f32) -> Pixels {
+    fn estimated_row_height(&self, item: &Item, viewport_width: f32, cover_h: f32, chrome_top: f32, chrome_bottom: f32) -> Pixels {
         let Item::Block { path, gap } = item else {
             return px(match item {
                 Item::Header => theme::title().line_height + 48. + chrome_top
@@ -1420,7 +1414,7 @@ impl Editor {
             BlockKind::Code { wrap, .. } => text_height(theme::code_size(), theme::code_line(), *wrap) + 32.,
             BlockKind::Table(table) => table.rows.len() as f32 * (theme::table_line() + 12.),
             BlockKind::Image { width, height, caption, crop, .. } => {
-                super::image::estimated_phone_height(*width, *height, *crop, column)
+                super::image::estimated_height(*width, *height, *crop, column)
                     + caption.as_ref().filter(|text| !text.is_empty()).map_or(0., |_| 26.)
             }
             _ => text_height(theme::body_size(), theme::body_line(), true),
