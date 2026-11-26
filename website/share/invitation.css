@@ -65,7 +65,14 @@ body {
   margin-block: 24px 20px;
 }
 
-.invite-button {
+/* Keep the primary action centred when the optional Web entry is hidden. */
+.invite-actions:has(#open-web[hidden]) {
+  grid-template-columns: minmax(0, 1fr);
+  inline-size: min(100%, 14rem);
+  margin-inline: auto;
+}
+
+.invite-button:not([hidden]) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;

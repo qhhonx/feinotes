@@ -11,7 +11,8 @@ const status = document.getElementById('invite-status');
 try {
   const link = invitation(location.href);
   document.getElementById('open-app').href = link.app;
-  document.getElementById('open-web').href = link.browser;
+  const openWeb = document.getElementById('open-web');
+  if (!openWeb.hidden) openWeb.href = link.browser;
   document.getElementById('invite-open').hidden = false;
   document.getElementById('invite-options').hidden = false;
   const openingText = english ? 'Opening Fei Notes…' : '正在打开飞记…';
