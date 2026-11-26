@@ -638,40 +638,33 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         if isVirtualListing { return false }
         return hasPadWorkspace ? state.browser?.can_create == true : state.can_create
     }
-    static var composeBoardImage: UIImage? {
-        UIImage(systemName: "rectangle.and.pencil.and.ellipsis") ?? UIImage(systemName: "scribble.variable")
-    }
-    var showsBoardComposeShortcut: Bool {
-        guard let state,showsComposeShortcut else { return false }
-        return hasPadWorkspace ? state.browser?.personal == true : !state.shared_session
-    }
-    func configureListCompose(_ item: UIBarButtonItem, board: Bool = false) {
-        let title = label(board ? "new-board" : "new")
-        item.isEnabled = allowsCompose && (!board || showsBoardComposeShortcut)
+    func configureListCompose(_ item: UIBarButtonItem) {
+        let title = label("new")
+        item.isEnabled = allowsCompose
         guard item.accessibilityLabel != title || item.primaryAction == nil else { return }
         item.accessibilityLabel = title
         item.menu = nil
-        item.primaryAction = UIAction(title: title,image: board ? Self.composeBoardImage : UIImage(systemName: "square.and.pencil")) { [weak self] _ in self?.composeNote(board: board) }
+        item.primaryAction = UIAction(title: title,image: UIImage(systemName: "square.and.pencil")) { [weak self] _ in self?.composeNote() }
     }
     var allowsCompose: Bool {
         guard let state,!state.busy,state.confirmation == nil,pendingCreation == nil else { return false }
         return showsComposeShortcut
     }
-    func composeNote(board: Bool = false) {
-        guard allowsCompose,(!board || showsBoardComposeShortcut),!applying,host?.navigationController?.transitionCoordinator == nil,let state else { return }
-        requestComposition(hasPadWorkspace ? "browse-compose" : "compose",board: board,state: state,
+    func composeNote() {
+        guard allowsCompose,!applying,host?.navigationController?.transitionCoordinator == nil,let state else { return }
+        requestComposition(hasPadWorkspace ? "browse-compose" : "compose",state: state,
             scope: hasPadWorkspace ? state.browser?.listing.scope : state.listing?.scope)
     }
-    func composeFromEditor(board: Bool = false) {
-        guard let state,state.kind == "note",state.current != nil,state.can_create,(!board || !state.shared_session),!state.busy,!state.conflict_review,
+    func composeFromEditor() {
+        guard let state,state.kind == "note",state.current != nil,state.can_create,!state.busy,!state.conflict_review,
               state.confirmation == nil,pendingCreation == nil,!applying,host?.navigationController?.transitionCoordinator == nil else { return }
-        requestComposition("editor-compose",board: board,state: state,scope: state.editor_scope)
+        requestComposition("editor-compose",state: state,scope: state.editor_scope)
     }
-    private func requestComposition(_ action: String,board: Bool,state: FeiNavigationState,scope: String?) {
+    private func requestComposition(_ action: String,state: FeiNavigationState,scope: String?) {
         guard let scope else { return }
         createSerial = max(createSerial,state.revision)+1
         pendingCreation = createSerial
-        send(action,value: board ? "board" : nil,id: state.current,serial: createSerial,scope: scope)
+        send(action,id: state.current,serial: createSerial,scope: scope)
     }
     private weak var sharedSync: FeiSharedSyncController?
     private var sharedSyncScope: String?
@@ -1444,7 +1437,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             }
         }
         if ["compose","browse-compose","editor-compose","new","new-document","new-markdown"].contains(action) {
-            focusAfterTransition = value != "board"
+            focusAfterTransition = true
         }
         var command: [String: Any] = ["action": action]
         if let scope { command["scope"] = scope }

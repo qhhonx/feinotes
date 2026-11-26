@@ -96,12 +96,6 @@ impl Workspace {
         cx.notify();
     }
 
-    #[cfg(target_os = "ios")]
-    pub(crate) fn mobile_compose(&mut self, board: bool, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        if board { self.create_board(parent, window, cx); }
-        else { self.create_doc(false, parent, window, cx); }
-    }
-
     /// 新建 › 画板: a standalone `.excalidraw` file in `parent`, opened at once.
     pub(crate) fn create_board(&mut self, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_shared() { return; }

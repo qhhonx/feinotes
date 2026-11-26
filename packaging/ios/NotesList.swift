@@ -155,10 +155,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     private var isSearching: Bool { usesLocalSearch ? compactSearching : searchController.isActive }
     private let searchGlass = UIVisualEffectView()
     private let composeGlass = UIVisualEffectView()
-    private let boardGlass = UIVisualEffectView()
     private let compactSearchRow = UIStackView()
     private let composeButton = UIButton(type: .system)
-    private let boardButton = UIButton(type: .system)
     private var compactSearchHeight: NSLayoutConstraint?
     private var listBottom: NSLayoutConstraint?
     private var listKeyboardBottom: NSLayoutConstraint?
@@ -166,10 +164,6 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     private lazy var compose: UIBarButtonItem = {
         let item = UIBarButtonItem(systemItem: .compose,primaryAction: nil)
         item.accessibilityIdentifier = "fei.new"; return item
-    }()
-    private lazy var boardCompose: UIBarButtonItem = {
-        let item = UIBarButtonItem(image: FeiNavigationCoordinator.composeBoardImage,primaryAction: nil)
-        item.accessibilityIdentifier = "fei.new-board"; return item
     }()
     private lazy var closeSearch: UIBarButtonItem = {
         let item = UIBarButtonItem(barButtonSystemItem: .close,target: self,action: #selector(endSearch))
@@ -419,7 +413,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
     }
     @available(iOS 26.0, *)
     private func installCompactSearchRow() {
-        for glass in [searchGlass, composeGlass, boardGlass] {
+        for glass in [searchGlass, composeGlass] {
             let effect = UIGlassEffect()
             effect.isInteractive = true
             glass.effect = effect
@@ -431,31 +425,20 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         compactSearch.translatesAutoresizingMaskIntoConstraints = false
         let searchContent = searchGlass.contentView
         searchContent.addSubview(compactSearch)
-        let symbol = UIImage.SymbolConfiguration(pointSize: 22,weight: .regular)
-        for (button,glass,board) in [(composeButton,composeGlass,false),(boardButton,boardGlass,true)] {
-            let image = board ? FeiNavigationCoordinator.composeBoardImage : UIImage(systemName: "square.and.pencil")
-            button.setImage(image?.applyingSymbolConfiguration(symbol),for: .normal)
-            button.accessibilityIdentifier = board ? "fei.new-board" : "fei.new"
-            button.addAction(UIAction { [weak self] _ in self?.coordinator?.composeNote(board: board) },for: .touchUpInside)
-            button.translatesAutoresizingMaskIntoConstraints = false
-            let content = glass.contentView
-            content.addSubview(button)
-            let width = glass.widthAnchor.constraint(equalTo: compactSearchRow.heightAnchor)
-            width.priority = UILayoutPriority(999)
-            NSLayoutConstraint.activate([
-                width,
-                button.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-                button.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-                button.topAnchor.constraint(equalTo: content.topAnchor),
-                button.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            ])
-        }
+        composeButton.setImage(UIImage(systemName: "square.and.pencil",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .regular)), for: .normal)
+        composeButton.accessibilityIdentifier = "fei.new"
+        composeButton.addAction(UIAction { [weak self] _ in self?.coordinator?.composeNote() }, for: .touchUpInside)
+        composeButton.translatesAutoresizingMaskIntoConstraints = false
+        composeGlass.contentView.addSubview(composeButton)
         compactSearchRow.spacing = 10
         compactSearchRow.translatesAutoresizingMaskIntoConstraints = false
         compactSearchRow.isHidden = true
         view.addSubview(compactSearchRow)
         let height = compactSearchRow.heightAnchor.constraint(equalToConstant: 48)
         compactSearchHeight = height
+        let composeWidth = composeGlass.widthAnchor.constraint(equalTo: compactSearchRow.heightAnchor)
+        composeWidth.priority = UILayoutPriority(999)
         let safe = view.safeAreaLayoutGuide
         let docked = compactSearchRow.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8)
         docked.priority = .defaultHigh
@@ -466,10 +449,15 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             compactSearchRow.bottomAnchor.constraint(lessThanOrEqualTo: safe.bottomAnchor, constant: -8),
             compactSearchRow.bottomAnchor.constraint(lessThanOrEqualTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
             docked,
+            composeWidth,
             compactSearch.leadingAnchor.constraint(equalTo: searchContent.leadingAnchor, constant: 5),
             compactSearch.trailingAnchor.constraint(equalTo: searchContent.trailingAnchor, constant: -5),
             compactSearch.topAnchor.constraint(equalTo: searchContent.topAnchor),
             compactSearch.bottomAnchor.constraint(equalTo: searchContent.bottomAnchor),
+            composeButton.leadingAnchor.constraint(equalTo: composeGlass.contentView.leadingAnchor),
+            composeButton.trailingAnchor.constraint(equalTo: composeGlass.contentView.trailingAnchor),
+            composeButton.topAnchor.constraint(equalTo: composeGlass.contentView.topAnchor),
+            composeButton.bottomAnchor.constraint(equalTo: composeGlass.contentView.bottomAnchor),
             height,
         ])
     }
@@ -492,12 +480,8 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         search.accessibilityLabel = labels["search"]
         compactSearchRow.isHidden = !visible
         if composeGlass.isHidden == showCompose { composeGlass.isHidden = !showCompose }
-        let showBoard = showCompose && coordinator?.showsBoardComposeShortcut == true
-        if boardGlass.isHidden == showBoard { boardGlass.isHidden = !showBoard }
         composeButton.isEnabled = !isBusy
-        boardButton.isEnabled = !isBusy
         composeButton.accessibilityLabel = labels["new"]
-        boardButton.accessibilityLabel = labels["new-board"]
         let height = max(48, ceil(interfaceFont(.body).lineHeight) + 16)
         compactSearchHeight?.constant = height
         let inset = visible ? height + 16 : 0
@@ -518,8 +502,6 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         compactSearch.tintColor = theme.toolbarColor
         compose.tintColor = theme.toolbarColor
         composeButton.tintColor = theme.toolbarColor
-        boardButton.tintColor = theme.toolbarColor
-        boardCompose.tintColor = theme.toolbarColor
         applyPinnedHeader()
         if changed {
             UIView.performWithoutAnimation {
@@ -691,16 +673,14 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             controller.navigationItem.rightBarButtonItems?.removeAll(where: { $0 === closeSearch })
         }
         updateCloudResumeProbe()
-        let showBoard = showCompose && coordinator?.showsBoardComposeShortcut == true
         if compactToolbar && showCompose { coordinator?.configureListCompose(compose) }
-        if compactToolbar && showBoard { coordinator?.configureListCompose(boardCompose,board: true) }
         controller.navigationItem.rightBarButtonItems?.filter {
-            ["fei.new","fei.new-board"].contains($0.accessibilityIdentifier ?? "")
+            $0.accessibilityIdentifier == "fei.new"
         }.forEach { $0.isHidden = searchController.isActive }
-        let key = "\(compactToolbar)-\(showCompose)-\(showBoard)"
+        let key = "\(compactToolbar)-\(showCompose)"
         if key != searchLayout {
             searchLayout = key
-            controller.toolbarItems = compactToolbar && showCompose ? [.flexibleSpace(),compose] + (showBoard ? [boardCompose] : []) : nil
+            controller.toolbarItems = compactToolbar && showCompose ? [.flexibleSpace(),compose] : nil
         }
         if !preparing,controller.navigationController?.transitionCoordinator == nil,
            controller.navigationController?.isToolbarHidden != !compactToolbar {

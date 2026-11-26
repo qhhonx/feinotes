@@ -4,7 +4,7 @@ final class EditorToolbarUITests: XCTestCase {
     private func shot(_ name:String) {
         let a = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); a.name = name; a.lifetime = .keepAlways; add(a)
     }
-    func testIdleCoreActionsStayDirectWithBoardShortcut() {
+    func testIdleCoreActionsStayDirectWithoutBoardShortcut() {
         guard UIDevice.current.userInterfaceIdiom == .phone else { return }
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -20,11 +20,12 @@ final class EditorToolbarUITests: XCTestCase {
         let bar = app.toolbars["fei.editor.toolbar"]
         let hidden = XCTNSPredicateExpectation(predicate: NSPredicate { _,_ in !app.keyboards.firstMatch.exists },object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [hidden],timeout: 6),.completed)
-        XCTAssertTrue(bar.buttons["fei.new-board.editor"].waitForExistence(timeout:6))
-        for id in ["fei.new.editor","fei.new-board.editor","fei.edit.quick-checklist","fei.edit.quick-insert","fei.edit.undo","fei.edit.mode"] {
+        XCTAssertTrue(bar.buttons["fei.new.editor"].waitForExistence(timeout:6))
+        XCTAssertFalse(bar.buttons["fei.new-board.editor"].exists)
+        for id in ["fei.new.editor","fei.edit.quick-checklist","fei.edit.quick-insert","fei.edit.undo","fei.edit.mode"] {
             XCTAssertTrue(bar.buttons[id].isHittable,"A primary action must not be hidden in More: "+id+"\n"+bar.debugDescription)
         }
-        shot("idle-toolbar-all-six-actions")
+        shot("idle-toolbar-document-and-editing-actions")
         bar.buttons["fei.edit.mode"].tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         app.buttons["fei.edit.keyboard"].tap()

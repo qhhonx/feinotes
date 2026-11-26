@@ -94,8 +94,17 @@ fn open_editor(cx: &mut App) -> anyhow::Result<()> {
             if source.is_file() { std::fs::copy(source,assets.join(format!("qa45-{name}")))?; }
         }
         for entry in std::fs::read_dir(path)?.flatten() {
-            if entry.path().extension().and_then(|v| v.to_str()) != Some("xml") { continue; }
-            let mut xml = std::fs::read_to_string(entry.path())?;
+            let path = entry.path();
+            if path.extension().and_then(|v| v.to_str()) == Some("excalidraw") {
+                let Some(title) = path.file_stem().and_then(|v| v.to_str()) else { continue };
+                if !store.list().iter().any(|e| e.title == title) {
+                    let board = crate::whiteboard::Board::from_file(&std::fs::read_to_string(&path)?)?;
+                    store.create_board_in(title,&board,None)?;
+                }
+                continue;
+            }
+            if path.extension().and_then(|v| v.to_str()) != Some("xml") { continue; }
+            let mut xml = std::fs::read_to_string(path)?;
             for name in ["image.png","two-pages.pdf","audio-15s.wav","video-15s.mp4","file.txt"] {
                 xml = xml.replace(&format!("@{name}@"),&crate::store::asset_source_in(store.root(),&assets.join(format!("qa45-{name}"))));
             }
@@ -466,7 +475,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         ("objects",tr("内容设置","Content settings")),("find",tr("文档内查找","Find in document")),("export",tr("导出 Markdown","Export Markdown")),
         ("pdf",tr("导出 PDF","Export PDF")),("print",tr("打印","Print")),
         ("delete",tr("删除文档","Delete document")),("delete-child-folder",tr("删除子文件夹","Delete subfolder")),("delete-folder",tr("删除文件夹","Delete folder")),("delete-shared-folder",tr("删除共享文件夹","Delete shared folder")),("import",tr("导入文档","Import documents")),
-        ("new-document",tr("新建文档","New document")),("new-board",tr("新建画板","New board")),("new-markdown",tr("新建 Markdown","New Markdown")),("batch",tr("选择文档","Select documents")),("sort",tr("排序规则","Sort by")),("manual",tr("手动排序","Manual order")),
+        ("new-document",tr("新建文档","New document")),("new-markdown",tr("新建 Markdown","New Markdown")),("batch",tr("选择文档","Select documents")),("sort",tr("排序规则","Sort by")),("manual",tr("手动排序","Manual order")),
         ("visited",tr("最近访问时间","Recently opened")),("modified",tr("最近修改时间","Recently modified")),
         ("created",tr("创建时间（最新优先）","Recently created")),("title",tr("标题（升序）","Title ascending")),
         ("save",tr("保存","Save")),("format",tr("编辑和格式","Editing and formatting")),
@@ -1083,9 +1092,8 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                                 if serial <= p.creation_ack { false } else { p.creation_ack = serial; true }
                             });
                             if !accepted { return; }
-                            let board = command.value.as_deref() == Some("board");
                             if command.action == "browse-compose" {
-                                crate::ipad_browser::command(workspace,"browse-compose",command.value.as_deref(),id.as_deref(),command.scope.as_deref(),window,cx);
+                                crate::ipad_browser::command(workspace,"browse-compose",None,id.as_deref(),command.scope.as_deref(),window,cx);
                                 cx.notify();return;
                             }
                             if command.action == "editor-compose" {
@@ -1093,7 +1101,7 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                                     && command.scope.as_deref()==Some(editor_scope(workspace).as_str()) && !workspace.library_switching && workspace.confirm.is_none() {
                                     let parent = workspace.creation_parent();
                                     if !workspace.is_shared() || workspace.can_create_in_shared_folder(parent.as_deref(),cx) {
-                                        workspace.mobile_compose(board,parent,window,cx);
+                                        workspace.create_doc(false,parent,window,cx);
                                     }
                                 }
                                 cx.notify();
@@ -1106,7 +1114,7 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                             };
                             if valid_scope && !workspace.library_switching && workspace.confirm.is_none() {
                                 let parent = if workspace.is_shared() || workspace.home.tab==crate::home::HomeTab::Recent { workspace.creation_parent() } else { None };
-                                workspace.mobile_compose(board,parent,window,cx);
+                                workspace.create_doc(false,parent,window,cx);
                             }
                             cx.notify();
                         }

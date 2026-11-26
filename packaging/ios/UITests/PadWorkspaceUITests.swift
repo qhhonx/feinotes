@@ -50,7 +50,10 @@ final class PadWorkspaceUITests: XCTestCase {
         tabs.buttons["My documents"].tap()
         let marker="PADHOME_"+String(Int(Date().timeIntervalSince1970))
         createFolder(marker); XCTAssertFalse(tabs.exists)
-        createFolder(marker+" child"); shot("ipad-home-nested-folder")
+        createFolder(marker+" child")
+        XCTAssertTrue(app.buttons["fei.new"].firstMatch.isHittable)
+        XCTAssertFalse(app.buttons["fei.new-board"].exists)
+        shot("ipad-home-nested-folder")
         app.buttons["fei.new"].tap(); XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 8)); assertTwoColumns()
         if app.buttons["fei.edit.done"].exists { app.buttons["fei.edit.done"].tap() }
         list.swipeDown()

@@ -206,23 +206,30 @@ final class MobileNotesStyleUITests: XCTestCase {
         cancelPicker("pdf")
     }
 
-    func testStandaloneBoardCreationAndMarkdownExport() throws {
+    func testExistingBoardAndMarkdownExportWithoutShortcut() throws {
         continueAfterFailure = false
-        let app = launchLightNotes()
-        let create = app.buttons["fei.new-board"]
-        XCTAssertTrue(create.waitForExistence(timeout: 8),app.debugDescription)
-        XCTAssertTrue(app.buttons["fei.new"].isHittable)
-        shot("standalone-board-shortcut")
-        create.tap()
+        let title = "Standalone board QA " + String(UUID().uuidString.prefix(6))
+        let fixtures = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: fixtures,withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtures) }
+        try #"{"type":"excalidraw","version":2,"elements":[],"appState":{},"files":{}}"#
+            .write(to: fixtures.appendingPathComponent(title+".excalidraw"),atomically: true,encoding: .utf8)
+        let app = launchLightNotes(fixture: fixtures)
+        let compose = app.buttons["fei.new"].firstMatch
+        XCTAssertTrue(compose.waitForExistence(timeout: 8),app.debugDescription)
+        XCTAssertTrue(compose.isHittable)
+        XCTAssertFalse(app.buttons["fei.new-board"].exists)
+        shot("home-document-compose-without-board")
+
+        let list = app.tables["fei.notes.list"].firstMatch
+        let row = list.cells.containing(.staticText,identifier: title).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 8),app.debugDescription)
+        row.tap()
         let done = app.buttons["fei.board.done"]
         XCTAssertTrue(done.waitForExistence(timeout: 15),app.debugDescription)
         XCTAssertFalse(app.keyboards.firstMatch.exists)
         shot("standalone-board-open")
         done.tap()
-
-        let list = app.tables["fei.notes.list"].firstMatch
-        let title = NSPredicate(format: "label IN %@",["未命名画板","Untitled board","Untitled whiteboard"])
-        let row = list.cells.containing(title).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 8),app.debugDescription)
         func action(_ labels: [String]) -> XCUIElement {
             app.descendants(matching: .any).matching(NSPredicate(format: "label IN %@",labels)).firstMatch

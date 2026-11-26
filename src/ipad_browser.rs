@@ -99,12 +99,11 @@ pub(crate) fn command(w:&mut Workspace,action:&str,value:Option<&str>,id:Option<
             w.personal_action(window,cx,|w,window,cx|w.open_import(window,cx)),
         "browse-compose" if w.mobile_personal_browser(cx) => {
             let parent = (w.home.tab==crate::home::HomeTab::Recent).then(||w.folder_current.clone()).flatten();
-            let board = value == Some("board");
-            w.personal_action(window,cx,move|w,window,cx|w.mobile_compose(board,parent,window,cx));
+            w.personal_action(window,cx,move|w,window,cx|w.create_doc(false,parent,window,cx));
         }
         "browse-compose" => {
             let parent = if w.is_shared() || w.home.tab==crate::home::HomeTab::Recent { w.folder_current.clone() } else { None };
-            w.mobile_compose(value == Some("board"),parent,window,cx);
+            w.create_doc(false,parent,window,cx);
         }
         _=>{}
     }

@@ -39,7 +39,6 @@ final class FeiEditorToolbar: UIToolbar {
     private var commandButtons: [UIBarButtonItem] = []
     private var typing = false
     private var showsBlockActions = false
-    private var showingBoardCompose = false
     private(set) var navigationItems: [UIBarButtonItem] = []
     private let phoneEditingGlass = UIVisualEffectView()
     private let phoneEditingScroll = EditingScrollView()
@@ -143,12 +142,10 @@ final class FeiEditorToolbar: UIToolbar {
         let blockTools = next.can_edit && (!phone || nextMode == "editing" || next.block_selected)
         let labelsChanged = labels != next.labels
         let showCompose = phone && next.kind == "note" && next.current != nil && next.can_create && !typing
-        let showBoardCompose = showCompose && !next.shared_session
         if mode != nextMode || labelsChanged || hasComponentRow != stacked || editingAllowed != next.can_edit || showsBlockActions != blockTools ||
-            self.topTools != topTools || showingCompose != showCompose || showingBoardCompose != showBoardCompose {
+            self.topTools != topTools || showingCompose != showCompose {
             self.topTools = topTools
             showingCompose = showCompose
-            showingBoardCompose = showBoardCompose
             let rowChanged = hasComponentRow != stacked
             hasComponentRow = stacked
             editingAllowed = next.can_edit
@@ -174,9 +171,7 @@ final class FeiEditorToolbar: UIToolbar {
                 navigationItems += [button("textformat.size","format-text","styles",#selector(stylesCommand)),button("paperclip","insert","insert",#selector(insertCommand))]
                 if blockTools { navigationItems.append(button("square.stack","block-actions","block-actions",#selector(blockActions))) }
             }
-            var compose: [UIBarButtonItem] = []
-            if showCompose { compose.append(makeComposeItem(board: false)) }
-            if showBoardCompose { compose.append(makeComposeItem(board: true)) }
+            let compose = showCompose ? makeComposeItem() : nil
             if nextMode == "preview" {
                 let marks = button("highlighter","history-marks","history-marks",#selector(historyMarks))
                 let restore = button("arrow.counterclockwise","history-restore","history-restore",#selector(historyRestore))
@@ -206,20 +201,16 @@ final class FeiEditorToolbar: UIToolbar {
                 setItems(nil,animated: false)
             } else {
                 if nextMode == "read-only" {
-                    items = compose.isEmpty ? nil : compose + [spacer()]
-                    commandButtons = compose
+                    items = compose.map { [$0,spacer()] }
+                    if let compose { commandButtons = [compose] }
                 } else if nextMode == "idle" {
                     let checklist = button("checklist","todo","quick-checklist",#selector(quickChecklist))
                     let insert = button("paperclip","insert","quick-insert",#selector(quickInsert))
                     var list: [UIBarButtonItem] = []
-                    if !compose.isEmpty {
-                        list += compose
-                        // Keep six actions directly reachable on compact iPhones.
-                        if !showBoardCompose { list.append(spacer()) }
-                    }
+                    if let compose { list += [compose,spacer()] }
                     list += [checklist,insert]
                     if blockTools { list.append(block) }
-                    if !showBoardCompose { list.append(spacer()) }
+                    list.append(spacer())
                     commandButtons = [checklist,insert]
                     if phone && next.can_edit {
                         let undo = undoItem()
@@ -229,7 +220,7 @@ final class FeiEditorToolbar: UIToolbar {
                         let keyboard = button("keyboard","keyboard","mode",#selector(keyboardCommand))
                         list.append(keyboard); commandButtons.append(keyboard)
                     }
-                    commandButtons += compose
+                    if let compose { commandButtons.append(compose) }
                     items = list
                 } else {
                     let status = UILabel()
@@ -242,13 +233,12 @@ final class FeiEditorToolbar: UIToolbar {
                     status.text = labels["not-editable"]
                     status.accessibilityIdentifier = "fei.editor.read-only"
                     let message = [spacer(),UIBarButtonItem(customView: status),spacer()]
-                    if compose.isEmpty { items = message }
-                    else {
+                    if let compose {
                         let balance = UIBarButtonItem(barButtonSystemItem: .fixedSpace,target: nil,action: nil)
-                        balance.width = compose.reduce(0) { $0 + $1.width }
-                        items = compose + message + [balance]
-                        commandButtons = compose
-                    }
+                        balance.width = compose.width
+                        items = [compose] + message + [balance]
+                        commandButtons = [compose]
+                    } else { items = message }
                 }
             }
             if rowChanged { onComponentRowChanged?() }
@@ -264,15 +254,14 @@ final class FeiEditorToolbar: UIToolbar {
         if nextMode == "preview" { commandButtons.first?.tintColor = next.local_history?.marks == true ? palette.accentColor : .secondaryLabel }
         if phone { updatePhoneEditingStrip(visible: nextMode == "editing") }
     }
-    private func makeComposeItem(board: Bool) -> UIBarButtonItem {
-        let action = UIAction(title: labels[board ? "new-board" : "new"] ?? "") { [weak self] _ in
-            self?.coordinator?.composeFromEditor(board: board)
+    private func makeComposeItem() -> UIBarButtonItem {
+        let action = UIAction(title: labels["new"] ?? "") { [weak self] _ in
+            self?.coordinator?.composeFromEditor()
         }
-        let item = board ? UIBarButtonItem(image: FeiNavigationCoordinator.composeBoardImage,primaryAction: action)
-            : UIBarButtonItem(systemItem: .compose,primaryAction: action)
+        let item = UIBarButtonItem(systemItem: .compose,primaryAction: action)
         item.width = 44
         item.accessibilityLabel = action.title
-        item.accessibilityIdentifier = board ? "fei.new-board.editor" : "fei.new.editor"
+        item.accessibilityIdentifier = "fei.new.editor"
         return item
     }
 
