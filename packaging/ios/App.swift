@@ -387,18 +387,7 @@ final class EditorHost: FeiRouteController {
     }
 
     func updateEditorToolbar(_ state: FeiNavigationState) {
-        let slashOpened = state.slash_open
-            && (toolbarState?.editor_scope != state.editor_scope || toolbarState?.slash_open != true)
         toolbarState = state
-        if slashOpened {
-            let scope = state.editor_scope
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.toolbarState?.editor_scope == scope,
-                      self.toolbarState?.slash_open == true,
-                      self.editorOwnsFirstResponder, self.editorHasSoftwareKeyboard else { return }
-                gpui_ios_hide_keyboard(gpui_ios_get_window())
-            }
-        }
         editorToolbarContainer.isUserInteractionEnabled = !state.conflict_review
         refreshEditorLayout()
         #if FEI_MOBILE_QA
