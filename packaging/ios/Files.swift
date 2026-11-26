@@ -42,9 +42,12 @@ final class FeiFileExporter: NSObject, UIDocumentPickerDelegate, UIAdaptivePrese
             picker.sheetPresentationController?.prefersGrabberVisible = true
         }
         activePicker = picker
-        controller.present(picker,animated: true)
+        // UIKit establishes the presenting relationship during the transition.
+        controller.present(picker,animated: true) { [weak self,weak picker] in
+            guard let self,let picker,self.activePicker === picker else { return }
+            if picker.presentingViewController == nil { self.finish() }
+        }
         picker.presentationController?.delegate = self
-        if picker.presentingViewController == nil { finish() }
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController,didPickDocumentsAt urls: [URL]) {
