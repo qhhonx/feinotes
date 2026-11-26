@@ -461,3 +461,17 @@ diff --git a/src/elements/list.rs b/src/elements/list.rs
                      focus_handle: item.focus_handle(),
                  }),
                  (),
+
+diff --git a/src/window.rs b/src/window.rs
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -880,4 +880,9 @@
+             .iter()
+             .take(hit_test.hover_hitbox_count)
+             .any(|id| self.id == *id)
++    }
++
++    /// Checks whether this hitbox can receive scroll events at a given position.
++    pub fn should_handle_scroll_at(&self, position: Point<Pixels>, window: &Window) -> bool {
++        window.rendered_frame.hit_test(position).ids.contains(&self.id)
+     }

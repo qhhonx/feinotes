@@ -665,6 +665,19 @@ pub extern "C" fn fei_ios_publish_navigation_after_pop() -> u64 {
 #[derive(serde::Deserialize)]
 struct NativeCommand { scope:Option<String>, action: String, value: Option<String>, id: Option<String>, selection_serial: Option<u64> }
 
+/// Query the rendered document hitbox at a UIKit scroll gesture's starting point.
+#[unsafe(no_mangle)]
+pub extern "C" fn fei_ios_document_scroll_at(x: f32, y: f32) -> bool {
+    APPLICATION.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|app| app.update(|cx| {
+            cx.windows().into_iter().any(|handle| {
+                handle.update(cx, |_, window, _| crate::editor::touch::document_scroll_at(point(px(x), px(y)), window))
+                    .unwrap_or(false)
+            })
+        }))
+    })
+}
+
 /// Apply one UIKit scroll update before the next GPUI frame.
 #[unsafe(no_mangle)]
 pub extern "C" fn fei_ios_scroll_editor(delta: f32, top: bool) {

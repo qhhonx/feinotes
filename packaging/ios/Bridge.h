@@ -37,3 +37,4 @@ void fei_ios_enable_native_scroll(bool enabled);
 void fei_ios_scroll_editor(float delta, bool top);
 bool fei_ios_native_scroll_metrics(float out[2]);
 bool fei_ios_native_scroll_reserved(void);
+bool fei_ios_document_scroll_at(float x, float y);
