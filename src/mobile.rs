@@ -241,7 +241,7 @@ mod shell {
                 .size_full().flex().flex_col().bg(Theme::bg_body()).text_color(Theme::text()).font_family(theme::SYSTEM_FONT)
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                 .map(|d| self.workspace_actions(d,cx))
-                .child(canvas(|_, _, _| (), |_, _, _, _| crate::editor::touch::clear_horizontal_viewports()).absolute().size_full())
+                .child(canvas(|_, _, _| (), |_, _, _, _| crate::editor::touch::clear_scroll_hitboxes()).absolute().size_full())
                 .child(body).children(export).children(search).children(theme_menu).children(lang_menu).children(pref_menu).children(move_dialog).children(toast).children(busy)
                 .map(|d| {
                     #[cfg(feature = "cloudkit-sync")]

@@ -1,4 +1,5 @@
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 
 /// Owns touch motion for the document. GPUI supplies a virtualized, viewport-sized
 /// canvas and publishes revised bounds as more blocks have been measured.
@@ -30,6 +31,9 @@ final class FeiDocumentScrollView: UIScrollView, UIScrollViewDelegate {
         // Only the document scroller should receive the status-bar gesture.
         Self.disableScrollToTop(in: canvas)
         addSubview(canvas)
+        let editorGesture = FeiEditorScrollGuard(canvas: canvas)
+        addGestureRecognizer(editorGesture)
+        panGestureRecognizer.require(toFail: editorGesture)
     }
 
     private static func disableScrollToTop(in view: UIView) {
@@ -176,6 +180,10 @@ final class FeiDocumentScrollView: UIScrollView, UIScrollViewDelegate {
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === panGestureRecognizer else { return super.gestureRecognizerShouldBegin(gestureRecognizer) }
         guard !fei_ios_native_scroll_reserved() else { return false }
+        if panGestureRecognizer.numberOfTouches == 0 {
+            let location = panGestureRecognizer.location(in: canvas)
+            guard fei_ios_document_scroll_at(Float(location.x), Float(location.y)) else { return false }
+        }
         let velocity = panGestureRecognizer.velocity(in: self)
         if velocity == .zero {
             // Let UIKit begin a pan before the finger has picked an axis.
@@ -190,4 +198,32 @@ final class FeiDocumentScrollView: UIScrollView, UIScrollViewDelegate {
     override func touchesShouldCancel(in view: UIView) -> Bool {
         !fei_ios_native_scroll_reserved() && super.touchesShouldCancel(in: view)
     }
+}
+
+/// Recognizes immediately at touch-down when a GPUI popup covers the document.
+/// The popup receives the complete touch sequence as the UIKit pan fails.
+private final class FeiEditorScrollGuard: UIGestureRecognizer, UIGestureRecognizerDelegate {
+    private weak var canvas: UIView?
+
+    init(canvas: UIView) {
+        self.canvas = canvas
+        super.init(target: nil, action: nil)
+        delegate = self
+        cancelsTouchesInView = false
+        delaysTouchesBegan = false
+        delaysTouchesEnded = false
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard let canvas, let touched = touch.view,
+              touched === canvas || touched.isDescendant(of: canvas) else { return false }
+        let point = touch.location(in: canvas)
+        return !fei_ios_document_scroll_at(Float(point.x), Float(point.y))
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) { state = .recognized }
+
+    override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+
+    override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
 }

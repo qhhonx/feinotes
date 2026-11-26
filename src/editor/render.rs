@@ -1936,6 +1936,11 @@ impl Editor {
                     .on_drop(cx.listener(Self::drop_files))
                     .child(list(self.list.clone(), cx.processor(Self::render_item)).size_full()),
             )
+            .map(|el| {
+                #[cfg(target_os = "ios")]
+                let el = el.when(super::touch::native_scroll_enabled(), |el| el.child(super::touch::native_scroll_surface()));
+                el
+            })
             .when(!self.platform_vertical_scrollbar(), |el| el.child(self.page_scrollbar()))
             .children(file_line)
             .children(catalogue)

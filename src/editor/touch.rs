@@ -21,12 +21,16 @@ thread_local! {
     static HORIZONTAL_VIEWPORTS: RefCell<Vec<HorizontalViewport>> = const { RefCell::new(Vec::new()) };
 }
 
-pub(crate) fn clear_horizontal_viewports() { HORIZONTAL_VIEWPORTS.with_borrow_mut(Vec::clear); }
+pub(crate) fn clear_scroll_hitboxes() {
+    HORIZONTAL_VIEWPORTS.with_borrow_mut(Vec::clear);
+    DOCUMENT_SCROLL_HITBOX.set(None);
+}
 
 thread_local! {
     static NATIVE_SCROLL: Cell<bool> = const { Cell::new(false) };
     static SCROLL_METRICS: Cell<Option<[f32; 2]>> = const { Cell::new(None) };
     static ACTIVE_DRAG: Cell<bool> = const { Cell::new(false) };
+    static DOCUMENT_SCROLL_HITBOX: RefCell<Option<Hitbox>> = const { RefCell::new(None) };
 }
 
 #[unsafe(no_mangle)]
@@ -40,6 +44,7 @@ pub(super) fn native_scroll_enabled() -> bool { NATIVE_SCROLL.get() }
 pub(super) fn clear_native_scroll_layout() {
     SCROLL_METRICS.set(None);
     ACTIVE_DRAG.set(false);
+    DOCUMENT_SCROLL_HITBOX.set(None);
 }
 
 #[unsafe(no_mangle)]
@@ -52,6 +57,31 @@ unsafe extern "C" fn fei_ios_native_scroll_metrics(out: *mut [f32; 2]) -> bool {
 
 #[unsafe(no_mangle)]
 extern "C" fn fei_ios_native_scroll_reserved() -> bool { ACTIVE_DRAG.get() }
+
+pub(crate) fn document_scroll_at(position: Point<Pixels>, window: &Window) -> bool {
+    NATIVE_SCROLL.get() && DOCUMENT_SCROLL_HITBOX.with_borrow(|hitbox| {
+        hitbox.as_ref().is_some_and(|hitbox| hitbox.should_handle_scroll_at(position, window))
+    })
+}
+
+/// Above the document rows and below floating editor controls. Both recognizers
+/// use this hitbox, so an occluding popup keeps its own vertical scroll.
+pub(super) fn native_scroll_surface() -> impl IntoElement {
+    canvas(
+        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        |_, hitbox, window, _| {
+            let id = hitbox.id;
+            DOCUMENT_SCROLL_HITBOX.set(Some(hitbox));
+            window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
+                if phase.capture() && NATIVE_SCROLL.get() && event.source == ScrollSource::Touch
+                    && event.delta.pixel_delta(px(20.)).y != px(0.) && id.should_handle_scroll(window)
+                {
+                    cx.stop_propagation();
+                }
+            });
+        },
+    ).absolute().size_full()
+}
 
 impl Editor {
     pub(crate) fn apply_native_scroll(&mut self, delta: f32, top: bool, cx: &mut Context<Self>) {
@@ -291,12 +321,6 @@ pub(super) fn paint(entity: &Entity<Editor>, bounds: Bounds<Pixels>, window: &mu
         let maximum = ed.list.max_offset_for_scrollbar().y;
         SCROLL_METRICS.set((viewport.size.height > px(0.)).then_some([offset.into(), maximum.into()]));
         ACTIVE_DRAG.set(ed.touch.drag.is_some() || ed.touch.block_drag || ed.dragging);
-        window.on_mouse_event(move |event: &ScrollEvent, phase, _, cx| {
-            if phase.capture() && NATIVE_SCROLL.get() && event.source == ScrollSource::Touch
-                && viewport.contains(&event.position) && event.delta.pixel_delta(px(20.)).y != px(0.) {
-                cx.stop_propagation();
-            }
-        });
     }
     if window.last_input_was_touch() && entity.read(cx).focus.is_focused(window) {
         let viewport = entity.read(cx).list.viewport_bounds();
