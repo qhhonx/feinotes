@@ -3,12 +3,22 @@
   "url": "https://testflight.apple.com/join/NdcXugMy",
   "version": "1.1.1",
   "build": "1035",
+  "pending": {
+    "state": "review",
+    "version": "1.1.2",
+    "build": "1037"
+  },
   "platforms": {
     "MAC_OS": {
       "state": "available",
       "url": "https://testflight.apple.com/join/NdcXugMy",
       "version": "1.1.1",
-      "build": "1035"
+      "build": "1035",
+      "pending": {
+        "state": "review",
+        "version": "1.1.2",
+        "build": "1037"
+      }
     },
     "IOS": {
       "state": "available",
@@ -22,5 +32,5 @@
       }
     }
   },
-  "updatedAt": "2026-11-26T00:42:45.118113+00:00"
+  "updatedAt": "2026-11-26T02:14:03.561659+00:00"
 }
