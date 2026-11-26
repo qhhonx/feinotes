@@ -728,6 +728,11 @@ fn geometry(width: Option<f32>, height: Option<f32>, crop: Option<[f32; 4]>, nat
     Geo { w: dw, h: dh, fw: dw / frw, fh: dh / frh, crop: c }
 }
 
+#[cfg(target_os = "ios")]
+pub(super) fn estimated_phone_height(width: Option<f32>, height: Option<f32>, crop: Option<[f32; 4]>, container: f32) -> f32 {
+    geometry(width, height, crop, None, container).h
+}
+
 /// The whole image while cropping: same zoom, capped to the column.
 fn crop_display(g: &Geo, container: f32) -> (f32, f32) {
     let s = (container.max(MIN) / g.fw).min(1.);

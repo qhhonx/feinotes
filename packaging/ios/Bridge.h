@@ -31,3 +31,9 @@ void fei_ios_pick_library(const char *title, FeiLibraryCompletion completion, co
 // Coordinates are in the GPUI editor view's logical points.
 bool fei_ios_horizontal_scroll_at(float x, float y);
 bool fei_ios_qa_horizontal_scroll(uint8_t kind, float out[5]);
+
+// UIKit owns interactive vertical scroll on the iPhone document surface.
+void fei_ios_enable_native_scroll(bool enabled);
+void fei_ios_scroll_editor(float delta, bool top);
+bool fei_ios_native_scroll_metrics(float out[2]);
+bool fei_ios_native_scroll_reserved(void);

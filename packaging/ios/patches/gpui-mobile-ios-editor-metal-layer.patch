@@ -1,0 +1,9 @@
+--- a/src/ios/window.rs
++++ b/src/ios/window.rs
+@@ -182,4 +182,5 @@
+         // Override layerClass to return CAMetalLayer
+         extern "C" fn layer_class(_self: *const AnyClass, _sel: Sel) -> *const AnyClass {
+-            class!(CAMetalLayer) as *const AnyClass
++            // The app can provide a layer that tracks outstanding drawables.
++            AnyClass::get(c"FeiEditorMetalLayer").unwrap_or(class!(CAMetalLayer)) as *const AnyClass
+         }

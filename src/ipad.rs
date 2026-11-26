@@ -485,7 +485,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         ("code",tr("代码块","Code block")),("quote",tr("引用","Quote")),
         ("divider",tr("分隔线","Divider")),("table",tr("表格","Table")),
         ("table-controls",tr("表格操作","Table controls")),
-        ("outline",tr("文档目录","Outline")),
+        ("outline",tr("文档目录","Outline")),("document-top",tr("返回顶部","Back to Top")),
         ("insert",tr("插入内容","Insert content")),
         ("attachments",tr("图片和附件","Images and attachments")),
         ("remove-personal-folder",tr("移除分类并保留文档","Remove folder, keep items")),("accept-invitation",tr("接受邀请","Accept invitation")),("delete-shared",tr("删除共享文档","Delete shared document")),("leave-shared",tr("离开共享","Leave share")),
@@ -664,6 +664,29 @@ pub extern "C" fn fei_ios_publish_navigation_after_pop() -> u64 {
 
 #[derive(serde::Deserialize)]
 struct NativeCommand { scope:Option<String>, action: String, value: Option<String>, id: Option<String>, selection_serial: Option<u64> }
+
+/// Apply one UIKit scroll update before the next GPUI frame.
+#[unsafe(no_mangle)]
+pub extern "C" fn fei_ios_scroll_editor(delta: f32, top: bool) {
+    if !delta.is_finite() { return; }
+    APPLICATION.with(|slot| {
+        if let Some(app) = slot.borrow().as_ref() {
+            app.update(|cx| {
+                for handle in cx.windows().into_iter().filter_map(|window| window.downcast::<crate::app::Workspace>()) {
+                    let _ = handle.update(cx, |workspace, window, cx| {
+                        if delta == 0. && !top {
+                            window.refresh();
+                            return;
+                        }
+                        if let Some(editor) = &workspace.editor {
+                            editor.update(cx, |ed, cx| ed.apply_native_scroll(delta, top, cx));
+                        }
+                    });
+                }
+            });
+        }
+    });
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {

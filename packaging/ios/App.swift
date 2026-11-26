@@ -2,6 +2,8 @@ import UIKit
 import UIKit.UIGestureRecognizerSubclass
 import CloudKit
 import GameController
+import Metal
+import os
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -68,6 +70,69 @@ final class EditorScene: UIResponder, UIWindowSceneDelegate {
 }
 
 final class EditorHost: FeiRouteController {
+    private struct DisplayFrame {
+        let timestamp: CFTimeInterval
+        let target: CFTimeInterval
+        let scrolling: Bool
+        let maximumRate: Float
+        let minimumRate: Float
+        let preferredRate: Float
+        let scrollOffset: Double?
+    }
+
+    private struct ScrollCadence {
+        private(set) var limit: Float?
+        private var fastFrames = 0
+        private var overruns = 0
+        private var headroomSince: CFTimeInterval?
+        private var retriedMaximum = false
+
+        mutating func record(_ frame: DisplayFrame, elapsed: CFTimeInterval,
+                             missedDeadline: Bool, drawableDeferred: Bool) {
+            // A deferred drawable supplies no timing sample for GPUI work.
+            guard frame.scrolling, frame.maximumRate > 80, !drawableDeferred else { return }
+            let interval = frame.target - frame.timestamp
+            let requested = frame.preferredRate
+            if requested > 60, interval > 0, interval < 0.015 {
+                fastFrames += 1
+                if missedDeadline || elapsed > interval * 1.15 { overruns += 1 }
+                if fastFrames == 12 {
+                    let overloaded = overruns >= 4
+                    fastFrames = 0
+                    overruns = 0
+                    if overloaded {
+                        // If the system was already delivering 80 Hz, step down to 60 Hz.
+                        limit = requested > 80 && interval < 0.011 ? 80 : 60
+                        headroomSince = nil
+                        return
+                    }
+                }
+            } else {
+                fastFrames = 0
+                overruns = 0
+            }
+
+            // Recover one step after sustained headroom. Retry the fastest rate once
+            // per scroll sequence to avoid switching back and forth under load.
+            let nextRate: Float = requested < 80 ? 80 : frame.maximumRate
+            guard requested < frame.maximumRate,
+                  (requested < 80 || !retriedMaximum),
+                  !missedDeadline, elapsed < 0.75 / Double(nextRate) else {
+                headroomSince = nil
+                return
+            }
+            let since = headroomSince ?? frame.timestamp
+            headroomSince = since
+            if frame.timestamp - since >= 1.0 {
+                if nextRate == frame.maximumRate { retriedMaximum = true }
+                limit = nextRate < frame.maximumRate ? nextRate : nil
+                headroomSince = nil
+                fastFrames = 0
+                overruns = 0
+            }
+        }
+    }
+
     static weak var active: EditorHost?
     private static var pendingInvitation: URL?
     static func receiveInvitation(_ url: URL) {
@@ -109,6 +174,16 @@ final class EditorHost: FeiRouteController {
     private static let testChannelKey = "FeiNotesCloudChannel"
     private var editorView: EditorFrameView?
     private var displayLink: CADisplayLink?
+    private var scrollUpdateLink: AnyObject?
+    private var pendingScrollFrame: DisplayFrame?
+    private var scrollUpdateMissed = false
+    private var lastScrollActivity: CFTimeInterval = 0
+    private var scrollCadence = ScrollCadence()
+    #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
+    private var scrollFrames: [[Double]] = []
+    private var recentScrollFrames: [[Double]] = []
+    private let scrollLogQueue = DispatchQueue(label: "app.feinotes.scroll-log", qos: .utility)
+    #endif
     private let browserTapGuard = UIView()
     private var browserTapAction: (() -> Void)?
 
@@ -116,6 +191,9 @@ final class EditorHost: FeiRouteController {
         findCoordinator?.dismiss(notify: false)
         displayLink?.invalidate()
         displayLink = nil
+        if #available(iOS 18.0, *) { (scrollUpdateLink as? UIUpdateLink)?.isEnabled = false }
+        scrollUpdateLink = nil
+        pendingScrollFrame = nil
         editorView?.removeFromSuperview()
         editorView = nil
         fei_ipad_shutdown()
@@ -190,7 +268,6 @@ final class EditorHost: FeiRouteController {
         editorView = frameView
         findCoordinator = FeiFindCoordinator(view: frameView)
         frameView.translatesAutoresizingMaskIntoConstraints = false
-        frameView.addSubview(controller.view)
         attachEditor(to: self)
         view.setNeedsLayout()
         startDisplayLink()
@@ -203,6 +280,8 @@ final class EditorHost: FeiRouteController {
         frameView.bindHorizontalScrollGuard(to: parent.navigationController)
         prepareEditorTransition(to: parent)
         frameView.isHidden = parent.hasNativeContent || !(parent.routeKey.hasPrefix("note:") || parent.routeKey.hasPrefix("history-preview"))
+        frameView.setScrollRoute(frameView.isHidden ? nil : parent.routeKey)
+        frameView.backgroundColor = parent.view.backgroundColor
         if frameView.superview === parent.view { return }
         NSLayoutConstraint.deactivate(frameConstraints)
         let controller = frameView.controller
@@ -332,6 +411,7 @@ final class EditorHost: FeiRouteController {
         }
         #endif
         editorToolbarVisible = (state.kind == "note" || state.kind == "history-preview") && !state.find_active && !state.board_open && (editorView?.controller.parent as? FeiRouteController)?.hasNativeContent != true
+        editorView?.backgroundColor = editorView?.superview?.backgroundColor
         editorToolbar.update(state,coordinator: navigationCoordinator,typing: editorHasKeyboardFocus,topTools: toolbarAtTop)
         layoutEditorToolbar()
         editorToolbarContainer.superview?.setNeedsLayout()
@@ -410,6 +490,11 @@ final class EditorHost: FeiRouteController {
         return softKeyboard || docked || GCKeyboard.coalesced != nil
     }
 
+    func returnDocumentToTop(scope: String) {
+        guard toolbarState?.editor_scope == scope,editorView?.isHidden == false else { return }
+        editorView?.returnDocumentToTop()
+    }
+
     func setFindImmersive(_ active: Bool) {
         guard findImmersive != active else { return }
         findImmersive = active
@@ -424,10 +509,31 @@ final class EditorHost: FeiRouteController {
     }
 
     private func startDisplayLink() {
-        guard editorView != nil, displayLink == nil else { return }
-        let link = CADisplayLink(target: self, selector: #selector(drawFrame))
+        guard let editorView, displayLink == nil else { return }
+        if #available(iOS 18.0, *), UIDevice.current.userInterfaceIdiom == .phone {
+            #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
+            if ProcessInfo.processInfo.environment["FEI_SCROLL_USE_DISPLAY_LINK"] != "1" {
+                attachScrollUpdateLink(to: editorView)
+            }
+            #else
+            attachScrollUpdateLink(to: editorView)
+            #endif
+        }
+        let link = CADisplayLink(target: self, selector: #selector(displayFrame(_:)))
         link.add(to: .main, forMode: .common)
         displayLink = link
+    }
+
+    @available(iOS 18.0, *)
+    private func attachScrollUpdateLink(to editorView: EditorFrameView) {
+        let link = UIUpdateLink(view: editorView)
+        link.addAction(to: .afterCADisplayLinkDispatch) { [weak self] _, info in
+            guard let self, let frame = pendingScrollFrame else { return }
+            pendingScrollFrame = nil
+            renderDisplayFrame(frame, deadline: info.completionDeadlineTime)
+        }
+        link.isEnabled = true
+        scrollUpdateLink = link
     }
 
     func refreshSystemAppearance() {
@@ -437,16 +543,177 @@ final class EditorHost: FeiRouteController {
         navigationCoordinator?.send("system-appearance")
     }
 
-    @objc private func drawFrame() {
-        guard UIApplication.shared.applicationState == .active else { return }
-        refreshSystemAppearance()
-        refreshEditorToolbarKeyboard()
+    @objc private func displayFrame(_ link: CADisplayLink) {
+        let maximum = Float(editorView?.window?.screen.maximumFramesPerSecond ?? view.window?.screen.maximumFramesPerSecond ?? 60)
+        let scrolling = editorView?.isScrolling == true
+        let recentScroll = link.timestamp - lastScrollActivity < 0.25
+        if !recentScroll {
+            scrollUpdateMissed = false
+            scrollCadence = ScrollCadence()
+        }
+        if scrolling { lastScrollActivity = link.timestamp }
+        let activeScroll = scrolling || recentScroll
+        let limitedRate = scrollCadence.limit.map { min($0, maximum) }
+        let preferred = activeScroll ? (limitedRate ?? maximum) : min(60, maximum)
+        let upperRate = limitedRate ?? maximum
+        // A broad range allows the system to spend part of an active scroll
+        // at 40 Hz, even while the document keeps up. Request a tighter range
+        // while moving, including a steady 80 or 60 Hz request in fallback.
+        let lowerRate = activeScroll ? min(80, preferred) : min(30, upperRate)
+        let range = link.preferredFrameRateRange
+        let requestedRange = CAFrameRateRange(minimum: lowerRate, maximum: upperRate, preferred: preferred)
+        if range != requestedRange {
+            link.preferredFrameRateRange = requestedRange
+        }
+        #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
+        let offset = editorView?.diagnosticScrollOffsets?.native
+        #else
+        let offset: Double? = nil
+        #endif
+        let frame = DisplayFrame(timestamp: link.timestamp, target: link.targetTimestamp, scrolling: scrolling,
+                                 maximumRate: maximum, minimumRate: lowerRate, preferredRate: preferred, scrollOffset: offset)
+        if pendingScrollFrame != nil {
+            pendingScrollFrame = nil
+            scrollUpdateMissed = true
+        }
+        if scrolling, !scrollUpdateMissed, scrollUpdateLink != nil, editorView?.window != nil {
+            // UIKit can advance a scroll in other display-link handlers.
+            // Take the editor's one sample after those handlers have run.
+            pendingScrollFrame = frame
+        } else {
+            renderDisplayFrame(frame)
+        }
+    }
+
+    private func renderDisplayFrame(_ frame: DisplayFrame, deadline: CFTimeInterval? = nil) {
+        let before = CACurrentMediaTime()
+        let deferred = drawFrame(displayInterval: frame.target - frame.timestamp)
+        let finished = CACurrentMediaTime()
+        let elapsed = finished - before
+        scrollCadence.record(frame, elapsed: elapsed,
+                             missedDeadline: deadline.map { finished > $0 } ?? false,
+                             drawableDeferred: deferred)
+        #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
+        if let offset = editorView?.diagnosticScrollOffsets {
+            scrollFrames.append([frame.timestamp,frame.target,elapsed*1000,offset.native,offset.forwarded,offset.gpui,
+                                 Double(frame.minimumRate),Double(frame.preferredRate),frame.scrollOffset ?? offset.native,
+                                 finished,deadline ?? 0,deferred ? 1 : 0,editorView?.lastDrawableAcquisition ?? 0])
+            if scrollFrames.count >= 1200 { saveScrollFrames() }
+        } else if !scrollFrames.isEmpty {
+            saveScrollFrames()
+        }
+        #endif
+    }
+
+    #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
+    private func saveScrollFrames() {
+        let segment = scrollFrames
+        scrollFrames.removeAll(keepingCapacity: true)
+        guard let first = segment.first, segment.contains(where: { $0[3] != first[3] }) else { return }
+        if let previous = recentScrollFrames.last, first[0] - previous[0] > 30 {
+            recentScrollFrames.removeAll(keepingCapacity: true)
+        }
+        recentScrollFrames.append(contentsOf: segment)
+        if recentScrollFrames.count > 2400 {
+            recentScrollFrames.removeFirst(recentScrollFrames.count - 2400)
+        }
+        let samples = recentScrollFrames
+        scrollLogQueue.async {
+            guard let directory = FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask).first,
+                  let data = try? JSONSerialization.data(withJSONObject:samples) else { return }
+            try? data.write(to:directory.appendingPathComponent("FeiScrollFrames.json"),options:.atomic)
+        }
+    }
+    #endif
+
+    @discardableResult
+    private func drawFrame(displayInterval: CFTimeInterval? = nil) -> Bool {
+        guard UIApplication.shared.applicationState == .active else { return false }
+        // Layout and keyboard notifications still drive chrome updates while
+        // the document pans. Keep the display callback for rendering itself.
+        if editorView?.isScrolling != true {
+            refreshSystemAppearance()
+            refreshEditorToolbarKeyboard()
+        }
         let insets = editorChromeInsets
         if lastEditorInsets != insets {
             lastEditorInsets = insets
             navigationCoordinator?.send("editor-chrome-layout")
         }
-        editorView?.drawFrame()
+        return editorView?.drawFrame(displayInterval: displayInterval) ?? false
+    }
+}
+
+private final class DrawableBackpressure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextID: UInt64 = 0
+    private var pending: [UInt64: CFTimeInterval] = [:]
+    private var reserveUntil: CFTimeInterval = 0
+
+    func hasRoom(drawableCount: Int, displayInterval: CFTimeInterval, now: CFTimeInterval) -> Bool {
+        lock.withLock {
+            // Two outstanding presentations are normal at 60 Hz. At faster
+            // cadences or after a measured wait, leave a slot for the display.
+            let reserve = displayInterval < 0.015 || now < reserveUntil
+            let limit = max(1, drawableCount - (reserve ? 1 : 0))
+            guard pending.count >= limit else { return true }
+            // Surface reconfiguration or a failed frame can discard a drawable
+            // before it is presented. Permit a retry after a brief stall.
+            pending = pending.filter { now - $0.value < 0.10 }
+            return pending.count < limit
+        }
+    }
+
+    func didAcquire(at time: CFTimeInterval, waited: CFTimeInterval) -> UInt64 {
+        lock.withLock {
+            if waited > 0.002 { reserveUntil = time + 0.25 }
+            nextID &+= 1
+            pending[nextID] = time
+            return nextID
+        }
+    }
+
+    func didPresent(_ id: UInt64) {
+        _ = lock.withLock { pending.removeValue(forKey: id) }
+    }
+}
+
+@objc(FeiEditorMetalLayer)
+final class FeiEditorMetalLayer: CAMetalLayer {
+    private let backpressure = DrawableBackpressure()
+    var usesLegacyPhoneScroll = false
+    #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
+    var lastAcquireMilliseconds = 0.0
+    #endif
+
+    func canDrawWithoutQueueing(displayInterval: CFTimeInterval) -> Bool {
+        backpressure.hasRoom(drawableCount: maximumDrawableCount, displayInterval: displayInterval,
+                             now: CACurrentMediaTime())
+    }
+
+    override func nextDrawable() -> (any CAMetalDrawable)? {
+        if usesLegacyPhoneScroll { return super.nextDrawable() }
+        let signpost = editorFrameLog.signpostsEnabled ? OSSignpostID(log: editorFrameLog) : nil
+        if let signpost {
+            os_signpost(.begin,log: editorFrameLog,name: "Metal Acquire Drawable",signpostID: signpost)
+        }
+        let start = CACurrentMediaTime()
+        let drawable = super.nextDrawable()
+        let now = CACurrentMediaTime()
+        if let signpost {
+            os_signpost(.end,log: editorFrameLog,name: "Metal Acquire Drawable",signpostID: signpost)
+        }
+        #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
+        lastAcquireMilliseconds = (now - start) * 1000
+        #endif
+        #if !targetEnvironment(simulator)
+        if let drawable {
+            let state = backpressure
+            let id = state.didAcquire(at: now, waited: now - start)
+            drawable.addPresentedHandler { _ in state.didPresent(id) }
+        }
+        #endif
+        return drawable
     }
 }
 
@@ -466,7 +733,10 @@ func feiIOSEditorTopInset() -> Float { Float(EditorHost.active?.editorChromeInse
 @_cdecl("fei_ios_editor_bottom_inset")
 func feiIOSEditorBottomInset() -> Float { Float(EditorHost.active?.editorChromeInsets.bottom ?? 0) }
 
+private let editorFrameLog = OSLog(subsystem: "app.feinotes",category: "EditorPerformance")
+
 private final class EditorFrameView: UIView {
+    private var documentScroll: FeiDocumentScrollView?
     let gpuiWindow: UnsafeMutableRawPointer
     let controller: UIViewController
     private weak var guardedNavigation: UINavigationController?
@@ -494,7 +764,29 @@ private final class EditorFrameView: UIView {
         super.init(frame: .zero)
         clipsToBounds = true
         accessibilityIdentifier = "fei.editor.surface"
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            metalLayer?.usesLegacyPhoneScroll = true
+            let scroll = FeiDocumentScrollView(canvas: controller.view)
+            documentScroll = scroll
+            addSubview(scroll)
+        } else {
+            addSubview(controller.view)
+        }
     }
+
+    func setScrollRoute(_ route: String?) { documentScroll?.setRoute(route) }
+
+    var isScrolling: Bool { documentScroll?.scrollInProgress == true }
+    var metalLayer: FeiEditorMetalLayer? { controller.view.layer as? FeiEditorMetalLayer }
+
+    func returnDocumentToTop() { documentScroll?.returnToTop() }
+
+    #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
+    var diagnosticScrollOffsets: (native: Double, forwarded: Double, gpui: Double)? {
+        documentScroll?.diagnosticScrollOffsets
+    }
+    private(set) var lastDrawableAcquisition = 0.0
+    #endif
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
 
@@ -503,7 +795,12 @@ private final class EditorFrameView: UIView {
         guard bounds.width > 0, bounds.height > 0 else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        controller.view.frame = bounds
+        if let documentScroll {
+            documentScroll.frame = bounds
+            documentScroll.layoutCanvas()
+        } else {
+            controller.view.frame = bounds
+        }
         gpui_ios_layout_view(gpuiWindow)
         drawFrame()
         CATransaction.commit()
@@ -519,8 +816,36 @@ private final class EditorFrameView: UIView {
     }()
     #endif
 
-    func drawFrame() {
-        _ = gpui_ios_request_frame(gpuiWindow)
+    @discardableResult
+    func drawFrame(displayInterval: CFTimeInterval? = nil) -> Bool {
+        // Layout can also request a frame. While UIKit is moving, use the
+        // display link for both the scroll sample and the render submission.
+        guard displayInterval != nil || !isScrolling else { return false }
+        let metalLayer = metalLayer
+        #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
+        lastDrawableAcquisition = 0
+        metalLayer?.lastAcquireMilliseconds = 0
+        #endif
+        if let displayInterval {
+            if let metalLayer, !metalLayer.usesLegacyPhoneScroll,
+               !metalLayer.canDrawWithoutQueueing(displayInterval: displayInterval) {
+                os_signpost(.event,log: editorFrameLog,name: "Metal Drawable Deferred")
+                return true
+            }
+            documentScroll?.applyScrollForFrame()
+        }
+        if editorFrameLog.signpostsEnabled {
+            let signpost = OSSignpostID(log: editorFrameLog)
+            os_signpost(.begin,log: editorFrameLog,name: "GPUI Frame",signpostID: signpost)
+            _ = gpui_ios_request_frame(gpuiWindow)
+            os_signpost(.end,log: editorFrameLog,name: "GPUI Frame",signpostID: signpost)
+        } else {
+            _ = gpui_ios_request_frame(gpuiWindow)
+        }
+        #if FEI_LOCAL_PREVIEW || FEI_MOBILE_QA
+        lastDrawableAcquisition = metalLayer?.lastAcquireMilliseconds ?? 0
+        #endif
+        documentScroll?.synchronizeLayout()
         #if FEI_MOBILE_QA
         if let horizontalScrollProbe, !isHidden {
             var values = [Float](repeating: 0,count: 5)
@@ -531,6 +856,7 @@ private final class EditorFrameView: UIView {
             if accessibilityValue != value { accessibilityValue = value }
         }
         #endif
+        return false
     }
 }
 

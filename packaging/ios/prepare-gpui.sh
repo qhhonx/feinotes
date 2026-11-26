@@ -17,7 +17,8 @@ gpui-mobile-ios-picker-dismissal.patch
 gpui-mobile-ios-font-variants.patch
 gpui-mobile-ios-emoji-bounds.patch
 gpui-mobile-ios-board-outlines.patch
-gpui-mobile-ios-text-context.patch'
+gpui-mobile-ios-text-context.patch
+gpui-mobile-ios-editor-metal-layer.patch'
 
 tree_digest() (
     cd "$1"

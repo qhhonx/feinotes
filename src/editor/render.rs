@@ -1288,12 +1288,15 @@ impl Editor {
     /// Rebuilds the list items from the document and tells the list which of
     /// them changed (only those are re-measured; off-screen ones keep their
     /// heights).
-    fn sync_items(&mut self, focused: bool, cover_h: f32) {
+    fn sync_items(&mut self, focused: bool, cover_h: f32, viewport_width: Pixels) {
         let mut items = vec![Item::Header];
         let mut h = FxHasher::default();
         // Every row re-measures when the text column changes width.
         let seed = (self.layout.ml.to_bits(), self.layout.mr.to_bits(), self.column_max().map(f32::to_bits), self.img.generation, crate::themes::generation(), &self.sub_pages, self.links.generation, crate::mermaid::generation());
         seed.hash(&mut h);
+        if cfg!(target_os = "ios") {
+            f32::from(viewport_width).to_bits().hash(&mut h);
+        }
         let seed = h.finish();
         self.core.doc.title.text.len().hash(&mut h);
         self.core.doc.icon.is_some().hash(&mut h);
@@ -1355,7 +1358,17 @@ impl Editor {
             // Keep the page still while the item under the top edge changes
             // (the list would otherwise snap to its first line).
             let top = self.list.logical_scroll_top();
-            self.list.splice(range.clone(), count);
+            #[cfg(target_os = "ios")]
+            let estimate_heights = unsafe { crate::ipad::fei_ios_is_phone() };
+            #[cfg(not(target_os = "ios"))]
+            let estimate_heights = false;
+            if estimate_heights {
+                #[cfg(target_os = "ios")]
+                self.list.splice_with_estimated_heights(range.clone(), items[pre..pre + count].iter()
+                    .map(|item| self.estimated_phone_row_height(item, f32::from(viewport_width), cover_h, chrome_top, chrome_bottom)));
+            } else {
+                self.list.splice(range.clone(), count);
+            }
             if range.contains(&top.item_ix) {
                 self.list.scroll_to(match count {
                     0 => ListOffset { item_ix: pre, offset_in_item: px(0.) },
@@ -1373,6 +1386,46 @@ impl Editor {
         }
         self.items = items;
         self.item_keys = keys;
+    }
+
+    #[cfg(target_os = "ios")]
+    fn estimated_phone_row_height(&self, item: &Item, viewport_width: f32, cover_h: f32, chrome_top: f32, chrome_bottom: f32) -> Pixels {
+        let Item::Block { path, gap } = item else {
+            return px(match item {
+                Item::Header => theme::title().line_height + 48. + chrome_top
+                    + self.core.doc.cover.as_ref().map_or(0., |_| cover_h),
+                _ => 200. + chrome_bottom,
+            });
+        };
+        let Some((&index, parents)) = path.split_last() else { return px(theme::body_line()); };
+        let mut blocks = self.core.doc.blocks.as_slice();
+        for &index in parents {
+            blocks = &blocks[index].children;
+        }
+        let block = &blocks[index];
+        let column = (viewport_width - self.layout.ml - self.layout.mr - 25. * parents.len() as f32).max(64.);
+        let text_height = |font_size: f32, line_height: f32, wraps: bool| {
+            let lines = block.text.text.split('\n').map(|line| {
+                if !wraps { return 1.; }
+                let units = line.chars().map(|c| if c.is_ascii() { 0.52 } else { 1. }).sum::<f32>();
+                (units * font_size / column).ceil().max(1.)
+            }).sum::<f32>();
+            lines * line_height
+        };
+        let height = match &block.kind {
+            BlockKind::Heading { level, .. } => {
+                let metrics = theme::heading_metrics(*level);
+                text_height(metrics.size, metrics.line_height, true)
+            }
+            BlockKind::Code { wrap, .. } => text_height(theme::code_size(), theme::code_line(), *wrap) + 32.,
+            BlockKind::Table(table) => table.rows.len() as f32 * (theme::table_line() + 12.),
+            BlockKind::Image { width, height, caption, crop, .. } => {
+                super::image::estimated_phone_height(*width, *height, *crop, column)
+                    + caption.as_ref().filter(|text| !text.is_empty()).map_or(0., |_| 26.)
+            }
+            _ => text_height(theme::body_size(), theme::body_line(), true),
+        };
+        px((height + gap).max(1.))
     }
 
     /// The list item showing `id` (the deepest row on its path).
@@ -1646,7 +1699,7 @@ impl Editor {
             window.request_animation_frame();
         }
         let focused = self.focus.is_focused(window);
-        self.sync_items(focused, super::cover::cover_height(window));
+        self.sync_items(focused, super::cover::cover_height(window), window.viewport_size().width);
         let generation = self.core.generation;
         let (units, eqnos) = match self.frame.generation == Some(generation) {
             true => (self.frame.units.clone(), self.frame.eqnos.clone()),
@@ -1889,7 +1942,7 @@ impl Editor {
                     .on_drop(cx.listener(Self::drop_files))
                     .child(list(self.list.clone(), cx.processor(Self::render_item)).size_full()),
             )
-            .child(self.page_scrollbar())
+            .when(!self.platform_vertical_scrollbar(), |el| el.child(self.page_scrollbar()))
             .children(file_line)
             .children(catalogue)
             .children(overlays)
@@ -1919,6 +1972,8 @@ impl Render for Editor {
         // A board open over the whole window covers the note: only the board
         // renders (the note would otherwise be laid out again on every frame
         // the board draws, and its keys and pointer handlers sit under it).
+        #[cfg(target_os = "ios")]
+        if self.board_open() || self.table_open() { super::touch::clear_native_scroll_layout(); }
         if self.board_open() { return div().size_full().children(self.board_el()).into_any_element(); }
         if self.table_open() { return div().size_full().children(self.table_el()).into_any_element(); }
         let el = self.render_editor(window, cx).into_any_element();

@@ -22,6 +22,7 @@ targets:
       properties:
         CFBundleShortVersionString: "0.1.9"
         CFBundleVersion: "49"
+        CADisableMinimumFrameDurationOnPhone: true
         CKSharingSupported: true
         CFBundleURLTypes:
           - CFBundleURLName: app.feinotes.invitation
@@ -46,6 +47,7 @@ targets:
         buildPhase: resources
       - Assets.xcassets
       - App.swift
+      - DocumentScroll.swift
       - PadWorkspace.swift
       - Navigation.swift
       - NotesList.swift
@@ -99,6 +101,7 @@ targets:
         CURRENT_PROJECT_VERSION: "49"
         PRODUCT_BUNDLE_IDENTIFIER: app.feinotes.ipad.editorprobe
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CADisableMinimumFrameDurationOnPhone: YES
         INFOPLIST_KEY_CFBundleDisplayName: 飞记
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         TARGETED_DEVICE_FAMILY: "1,2"

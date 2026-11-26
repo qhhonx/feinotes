@@ -89,7 +89,15 @@ fn reaim(g: &Grab, offset: Pixels, content: Pixels, view: Pixels, now: Instant) 
 }
 
 impl Editor {
+    pub(super) fn platform_vertical_scrollbar(&self) -> bool {
+        #[cfg(target_os = "ios")]
+        { super::touch::native_scroll_enabled() }
+        #[cfg(not(target_os = "ios"))]
+        { false }
+    }
+
     pub(super) fn page_scrollbar(&self) -> impl IntoElement {
+        let (top_inset, bottom_inset) = super::render::editor_chrome_insets();
         let list = self.list.clone();
         let sb = self.scrollbar.clone();
         let sb2 = sb.clone();
@@ -214,9 +222,9 @@ impl Editor {
             },
         )
         .absolute()
-        .top_0()
+        .top(px(top_inset))
         .right_0()
-        .bottom_0()
+        .bottom(px(bottom_inset))
         .w(px(HIT_W))
     }
 }

@@ -2,7 +2,7 @@
 use super::{core::{Pos, Selection}, view::Editor};
 use crate::editor_theme::Theme;
 use gpui::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 /// A rendered horizontal scroller in GPUI editor coordinates.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -22,6 +22,51 @@ thread_local! {
 }
 
 pub(crate) fn clear_horizontal_viewports() { HORIZONTAL_VIEWPORTS.with_borrow_mut(Vec::clear); }
+
+thread_local! {
+    static NATIVE_SCROLL: Cell<bool> = const { Cell::new(false) };
+    static SCROLL_METRICS: Cell<Option<[f32; 2]>> = const { Cell::new(None) };
+    static ACTIVE_DRAG: Cell<bool> = const { Cell::new(false) };
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fei_ios_enable_native_scroll(enabled: bool) {
+    NATIVE_SCROLL.set(enabled);
+    clear_native_scroll_layout();
+}
+
+pub(super) fn native_scroll_enabled() -> bool { NATIVE_SCROLL.get() }
+
+pub(super) fn clear_native_scroll_layout() {
+    SCROLL_METRICS.set(None);
+    ACTIVE_DRAG.set(false);
+}
+
+#[unsafe(no_mangle)]
+unsafe extern "C" fn fei_ios_native_scroll_metrics(out: *mut [f32; 2]) -> bool {
+    let Some(out) = (unsafe { out.as_mut() }) else { return false; };
+    let Some(metrics) = SCROLL_METRICS.get() else { return false; };
+    *out = metrics;
+    true
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fei_ios_native_scroll_reserved() -> bool { ACTIVE_DRAG.get() }
+
+impl Editor {
+    pub(crate) fn apply_native_scroll(&mut self, delta: f32, top: bool, cx: &mut Context<Self>) {
+        if !NATIVE_SCROLL.get() || self.board_open() || self.table_open() { return; }
+        self.reveal = None;
+        self.autoscroll = false;
+        if top {
+            self.list.scroll_to(ListOffset { item_ix: 0, offset_in_item: px(0.) });
+        } else {
+            self.list.scroll_by(px(delta));
+        }
+        cx.notify();
+    }
+}
+
 
 pub(super) fn record_horizontal_viewport(_kind: HorizontalScroll, bounds: Bounds<Pixels>, scroll: &ScrollHandle, window: &Window) {
     if scroll.max_offset().x <= px(0.5) { return; }
@@ -239,6 +284,20 @@ impl Editor {
 }
 
 pub(super) fn paint(entity: &Entity<Editor>, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+    if NATIVE_SCROLL.get() {
+        let ed = entity.read(cx);
+        let viewport = ed.list.viewport_bounds();
+        let offset = -ed.list.scroll_px_offset_for_scrollbar().y;
+        let maximum = ed.list.max_offset_for_scrollbar().y;
+        SCROLL_METRICS.set((viewport.size.height > px(0.)).then_some([offset.into(), maximum.into()]));
+        ACTIVE_DRAG.set(ed.touch.drag.is_some() || ed.touch.block_drag || ed.dragging);
+        window.on_mouse_event(move |event: &ScrollEvent, phase, _, cx| {
+            if phase.capture() && NATIVE_SCROLL.get() && event.source == ScrollSource::Touch
+                && viewport.contains(&event.position) && event.delta.pixel_delta(px(20.)).y != px(0.) {
+                cx.stop_propagation();
+            }
+        });
+    }
     if window.last_input_was_touch() && entity.read(cx).focus.is_focused(window) {
         let viewport = entity.read(cx).list.viewport_bounds();
         for (first,p,h) in entity.read(cx).touch_handles() {
