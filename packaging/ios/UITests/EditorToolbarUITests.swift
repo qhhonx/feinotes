@@ -14,11 +14,13 @@ final class EditorToolbarUITests: XCTestCase {
         defer { app.terminate() }
         XCTAssertTrue(app.buttons["fei.new"].waitForExistence(timeout: 15)); app.buttons["fei.new"].tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        app.typeText("Synthetic toolbar regression document")
+        let key=app.keyboards.keys.matching(NSPredicate(format:"label IN %@",["v","V"])).firstMatch
+        XCTAssertTrue(key.isHittable); key.tap()
         app.buttons["fei.edit.keyboard"].tap()
         let bar = app.toolbars["fei.editor.toolbar"]
         let hidden = XCTNSPredicateExpectation(predicate: NSPredicate { _,_ in !app.keyboards.firstMatch.exists },object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [hidden],timeout: 6),.completed)
+        XCTAssertTrue(bar.buttons["fei.new-board.editor"].waitForExistence(timeout:6))
         for id in ["fei.new.editor","fei.new-board.editor","fei.edit.quick-checklist","fei.edit.quick-insert","fei.edit.undo","fei.edit.mode"] {
             XCTAssertTrue(bar.buttons[id].isHittable,"A primary action must not be hidden in More: "+id+"\n"+bar.debugDescription)
         }
