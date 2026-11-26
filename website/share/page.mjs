@@ -11,7 +11,8 @@ const status = document.getElementById('invite-status');
 try {
   const link = invitation(location.href);
   document.getElementById('open-app').href = link.app;
-  document.getElementById('open-web').href = link.browser;
+  const openWeb = document.getElementById('open-web');
+  if (!openWeb.hidden) openWeb.href = link.browser;
   document.getElementById('invite-open').hidden = false;
   document.getElementById('invite-options').hidden = false;
   const openingText = english ? 'Opening Fei Notes…' : '正在打开飞记…';
@@ -21,7 +22,7 @@ try {
     clearTimeout(openingTimer);
     openingTimer = setTimeout(() => {
       if (status.textContent === openingText)
-        status.textContent = english ? 'Open in the app to join for the first time.' : '首次加入共享，请用飞记 App 打开。';
+        status.textContent = english ? "If Fei Notes doesn’t open, select the button below." : "若飞记没有自动打开，请点下方按钮。";
     }, 1800);
   };
   opening();
