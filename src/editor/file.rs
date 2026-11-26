@@ -507,8 +507,16 @@ impl R<'_> {
                         let (tw, th) = ed.img.dims(t).unwrap_or((16., 9.));
                         let full = iw * th / tw.max(1.);
                         let h = full.clamp(if video { 160. } else { 120. }, 600.);
-                        let pic = picture(t, iw.max(full)).object_fit(if video { ObjectFit::Contain } else { ObjectFit::Fill }).id(("file-thumb", id.0));
-                        let pic = if video { pic.size_full() } else { pic.absolute().top_0().left_0().w(px(iw)).h(px(full)) };
+                        let pic = if video {
+                            // Give the image its fitted dimensions before GPUI lays it out.
+                            let scale = (iw / tw.max(1.)).min(h / th.max(1.));
+                            let (pw, ph) = (tw * scale, th * scale);
+                            picture(t, pw.max(ph)).object_fit(ObjectFit::Contain)
+                                .absolute().left(px((iw - pw) / 2.)).top(px((h - ph) / 2.)).w(px(pw)).h(px(ph))
+                        } else {
+                            picture(t, iw.max(full)).object_fit(ObjectFit::Fill)
+                                .absolute().top_0().left_0().w(px(iw)).h(px(full))
+                        }.id(("file-thumb", id.0));
                         div()
                             .relative()
                             .w(px(iw))
