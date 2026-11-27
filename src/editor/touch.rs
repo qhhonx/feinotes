@@ -80,7 +80,7 @@ pub(super) fn native_scroll_surface() -> impl IntoElement {
                 }
             });
         },
-    ).absolute().size_full()
+    ).absolute().inset_0()
 }
 
 impl Editor {

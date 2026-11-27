@@ -1,0 +1,3 @@
+Fixed an issue on iPhone and iPad that prevented the document from bouncing at the top or bottom and hid the scroll indicator while scrolling.
+
+If scrolling still feels off, please use Send Beta Feedback in TestFlight and include your device, OS version, and the steps that led to the issue.
