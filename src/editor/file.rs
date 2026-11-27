@@ -710,7 +710,7 @@ impl Editor {
             });
             cx.spawn(async move |this,cx| {
                 match task.await {
-                    Ok(path)=>crate::ipad::present_export(&path),
+                    Ok(path)=>crate::ipad::present_export(&path,false),
                     Err(_)=>{ let _ = this.update(cx,|e,cx|e.toast(crate::settings::text("文件读取失败"),cx)); }
                 }
             }).detach();

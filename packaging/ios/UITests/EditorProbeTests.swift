@@ -82,9 +82,11 @@ final class EditorProbeTests: XCTestCase {
         app.cells.staticTexts[folderText].tap()
         XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 5))
         app.buttons["fei.more"].tap()
-        app.sheets.buttons["导出 Markdown"].tap()
-        XCTAssertTrue(app.sheets.buttons["仅文本"].waitForExistence(timeout: 5))
-        app.sheets.buttons["仅文本"].tap()
+        app.buttons["导出文档"].tap()
+        app.buttons["导出为 Markdown"].tap()
+        XCTAssertTrue(app.buttons["仅文本"].waitForExistence(timeout: 5))
+        app.buttons["仅文本"].tap()
+        app.openDocumentExportInFiles()
         XCTAssertTrue(app.buttons["DOCPicker.actionButton"].waitForExistence(timeout: 10))
         shot("04-native-export")
         app.buttons["DOCPicker.actionButton"].tap()
@@ -673,11 +675,11 @@ final class EditorProbeTests: XCTestCase {
         XCTAssertTrue(more.waitForExistence(timeout: 10))
         shot("feedback-emoji-and-photo")
         more.tap()
-        let export = app.buttons["Export and print"]
+        let export = app.buttons["Export document"]
         XCTAssertTrue(export.waitForExistence(timeout: 5))
         export.tap()
-        XCTAssertTrue(app.buttons["Export Markdown"].exists)
-        shot("feedback-export-and-print")
+        XCTAssertTrue(app.buttons["Export as Markdown"].exists)
+        shot("feedback-document-export")
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.1,dy: 0.6)).tap()
         more.tap()
         let editing = app.buttons["Editing and formatting"]
@@ -717,7 +719,7 @@ final class EditorProbeTests: XCTestCase {
         XCTAssertGreaterThan(list.cells.count, 1)
 
         note.press(forDuration: 0.8)
-        let share = app.buttons["Share"]
+        let share = app.buttons["Share document"]
         let manage = app.buttons["Members and access"]
         if share.waitForExistence(timeout: 3) {
             share.tap()
@@ -925,7 +927,7 @@ final class EditorProbeTests: XCTestCase {
             XCTAssertTrue(sharedEditor.exists)
         }
         personal.press(forDuration: 0.8)
-        let share = app.buttons["Share"]
+        let share = app.buttons["Share document"]
         XCTAssertTrue(share.waitForExistence(timeout: 5)); share.tap()
         let invitationBar = app.navigationBars["Share document"]
         XCTAssertTrue(invitationBar.waitForExistence(timeout: 8))
@@ -1568,7 +1570,7 @@ final class EditorProbeTests: XCTestCase {
         shot("session-03-local-edit")
     }
 
-    func testSharedDocumentPDFExportAndPrintCancellation() {
+    func testSharedDocumentPDFExportAndReturn() {
         continueAfterFailure = false
         let exportName = "FEI-PDF-ACCEPT6-\(Int(Date().timeIntervalSince1970))"
         let app = XCUIApplication()
@@ -1598,7 +1600,13 @@ final class EditorProbeTests: XCTestCase {
         if open.waitForExistence(timeout: 3) { open.tap() }
         XCTAssertTrue(app.navigationBars["FEI-PDF-ACCEPT6"].waitForExistence(timeout: 10), app.debugDescription)
         app.buttons["fei.more"].tap()
-        app.sheets.buttons["导出 PDF"].tap()
+        let export = app.buttons.matching(NSPredicate(format: "label IN %@", ["导出文档","Export document"])).firstMatch
+        XCTAssertTrue(export.waitForExistence(timeout: 5),app.debugDescription)
+        export.tap()
+        let pdf = app.buttons.matching(NSPredicate(format: "label IN %@", ["导出为 PDF","Export as PDF"])).firstMatch
+        XCTAssertTrue(pdf.waitForExistence(timeout: 5),app.debugDescription)
+        pdf.tap()
+        app.openDocumentExportInFiles()
         XCTAssertTrue(app.buttons["DOCPicker.actionButton"].waitForExistence(timeout: 30), app.debugDescription)
         let name = app.textFields.firstMatch
         XCTAssertTrue(name.waitForExistence(timeout: 3))
@@ -1607,17 +1615,11 @@ final class EditorProbeTests: XCTestCase {
         name.typeText(exportName)
         shot("pdf-01-native-file-export")
         app.buttons["DOCPicker.actionButton"].tap()
-        XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 10))
-        app.buttons["fei.more"].tap()
-        app.sheets.buttons["打印"].tap()
-        let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["取消", "Cancel"])).firstMatch
-        XCTAssertTrue(cancel.waitForExistence(timeout: 30), app.debugDescription)
-        shot("pdf-02-native-print-preview")
-        cancel.tap()
-        XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 10))
+        let returned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"),object: app.buttons["fei.more"])
+        XCTAssertEqual(XCTWaiter.wait(for: [returned],timeout: 12),.completed,app.debugDescription)
         XCTAssertEqual(app.state, .runningForeground)
         print("PDF_EXPORT_NAME=\(exportName)")
-        shot("pdf-03-print-cancelled-editor-retained")
+        shot("pdf-02-editor-retained")
     }
 
     func testThemeCSSUsesNativeEditorAndSharedFile() {

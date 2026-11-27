@@ -257,7 +257,7 @@ struct NavigationRoute { key: String, title: String }
 
 #[derive(serde::Serialize)]
 struct NavigationItem {
-    id: String, title: String, parent: Option<String>, folder: bool, pinned: bool, starred: bool, trashed: bool, shared: bool, owned: bool,
+    id: String, title: String, parent: Option<String>, folder: bool, board: bool, pinned: bool, starred: bool, trashed: bool, shared: bool, owned: bool,
     offline_recovery: bool, personal: bool, inherited_share: bool, share_end: Option<&'static str>,
     menu_root: Option<String>, menu_writable: bool, menu_shareable: bool, menu_copyable: bool,
 }
@@ -459,7 +459,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         ("sidebar-open",tr("已展开","Expanded")),("sidebar-closed",tr("已收起","Collapsed")),
         ("history",tr("版本历史","Version history")),("history-save",tr("保存当前版本","Save current version")),("history-named",tr("仅看命名版本","Named versions only")),("history-marks",tr("显示改动","Show changes")),("history-return",tr("返回版本列表","Back to version list")),("history-restore",tr("恢复此版本","Restore this version")),("history-copy",tr("另存为新文档","Save as a new document")),("history-name",tr("命名版本","Name version")),("history-delete",tr("删除此版本","Delete version")),("history-filter",tr("筛选版本","Filter versions")),("history-restore-confirm",tr("恢复此版本并替换当前正文？","Restore this version and replace the current document?")),("history-delete-confirm",tr("删除这个本机历史版本？","Delete this local version?")),
         ("doc-info",tr("文档信息","Document information")),("reorder",tr("调整顺序","Reorder")),("cloud-versions",tr("iCloud 历史版本","iCloud Version History")),("sharing",tr("共享文档","Shared documents")),("share-note",if shared_folder { folder_access } else if workspace.is_shared() { document_access } else { tr("共享","Share") }),
-        ("share-object",tr("共享","Share")),("new-and-share",tr("新建并共享","Create and share")),("new-shared-document",crate::sharing::new_shared_title(NewSharedItem::Document)),("new-shared-board",crate::sharing::new_shared_title(NewSharedItem::Board)),("new-shared-folder",crate::sharing::new_shared_title(NewSharedItem::Folder)),("folders-first",tr("文件夹优先","Folders first")),("new-in-my-documents",tr("新建到我的文档","New in My Documents")),("export-copy",tr("导出与打印","Export and print")),("stop-sharing",tr("停止共享","Stop sharing")),("shared-folder-access",folder_access),("shared-document-access",document_access),("shared-sync-status",tr("同步状态","Sync status")),("editing-collaborators",tr("正在编辑","Editing")),
+        ("share-object",tr("共享","Share")),("share-document",tr("共享文档","Share document")),("share-board",tr("共享画板","Share board")),("new-and-share",tr("新建并共享","Create and share")),("new-shared-document",crate::sharing::new_shared_title(NewSharedItem::Document)),("new-shared-board",crate::sharing::new_shared_title(NewSharedItem::Board)),("new-shared-folder",crate::sharing::new_shared_title(NewSharedItem::Folder)),("folders-first",tr("文件夹优先","Folders first")),("new-in-my-documents",tr("新建到我的文档","New in My Documents")),("export-document",crate::docmenu::export_title(false)),("export-board",crate::docmenu::export_title(true)),("stop-sharing",tr("停止共享","Stop sharing")),("shared-folder-access",folder_access),("shared-document-access",document_access),("shared-sync-status",tr("同步状态","Sync status")),("editing-collaborators",tr("正在编辑","Editing")),
         ("sync-needs-attention",tr("同步需要处理","Sync needs attention")),
         ("sync-retry",tr("立即同步","Sync now")),("sync-settings",tr("前往 iCloud 设置","Open iCloud Settings")),
         ("already-shared",tr("已共享","Shared")),("online-collaborators",tr("在线协作者","Online collaborators")),
@@ -471,10 +471,10 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         ("unread-update",tr("有未读更新","Unread updates")),
         ("slash",tr("斜杠菜单","Slash menu")),("edit-note",tr("编辑文档","Edit document")),("keyboard",tr("显示键盘","Show keyboard")),("hide-keyboard",tr("收起键盘","Hide keyboard")),("not-editable",tr("此共享文档当前不可编辑","This shared document is not editable")),("opening",tr("正在打开文档库…","Opening library…")),("search",tr("搜索文档","Search documents")),("all-notes",tr("我的文档","My documents")),("favorites",tr("全部收藏","All Favorites")),("back",tr("返回","Back")),("done",tr("完成","Done")),("settings",tr("设置","Settings")),("close-settings",tr("关闭设置","Close settings")),
         ("note-count",tr("%d 篇文档","%d documents")),("item-count",tr("%d 个项目","%d items")),("result-count",tr("%d 个结果","%d results")),
-        ("new",tr("新建文档","New document")),("new-folder",tr("新建文件夹","New folder")),("new-in-folder",tr("新建","New")),("share-folder",tr("共享文件夹…","Share folder…")),("already-shared-folder",tr("已共享文件夹","Shared folder")),
+        ("new",tr("新建文档","New document")),("new-folder",tr("新建文件夹","New folder")),("new-in-folder",tr("新建","New")),("share-folder",tr("共享文件夹","Share folder")),("already-shared-folder",tr("已共享文件夹","Shared folder")),
         ("more",tr("更多","More")),("note-more",tr("文档更多操作","Document actions")),("folder-more",tr("文件夹更多操作","Folder actions")),("end-typing",tr("结束输入","End typing")),("cancel",tr("取消","Cancel")),("rename",tr("重命名","Rename")),
-        ("objects",tr("内容设置","Content settings")),("find",tr("文档内查找","Find in document")),("export",tr("导出 Markdown","Export Markdown")),
-        ("pdf",tr("导出 PDF","Export PDF")),("print",tr("打印","Print")),
+        ("objects",tr("内容设置","Content settings")),("find",tr("文档内查找","Find in document")),("export",crate::docmenu::export_format_label(true)),
+        ("pdf",crate::docmenu::export_format_label(false)),
         ("delete",tr("删除文档","Delete document")),("delete-child-folder",tr("删除子文件夹","Delete subfolder")),("delete-folder",tr("删除文件夹","Delete folder")),("delete-shared-folder",tr("删除共享文件夹","Delete shared folder")),("import",tr("导入文档","Import documents")),
         ("new-document",tr("新建文档","New document")),("new-board",tr("新建画板","New board")),("new-markdown",tr("新建 Markdown","New Markdown")),("batch",tr("选择文档","Select documents")),("sort",tr("排序规则","Sort by")),("manual",tr("手动排序","Manual order")),
         ("visited",tr("最近访问时间","Recently opened")),("modified",tr("最近修改时间","Recently modified")),
@@ -560,7 +560,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
             && entry.meta.kind != crate::store::DocKind::Table && !restricted_folders.contains(&entry.id);
         NavigationItem {
             id: entry.id.clone(), title: display_title(&entry.title), parent: entry.meta.parent.clone(),
-            folder: entry.meta.folder.is_some(), pinned: marks.map_or(entry.meta.pinned, |(pin,_)| pin), starred: marks.map_or(entry.meta.starred, |(_,star)| star) > 0, trashed: false,
+            folder: entry.meta.folder.is_some(), board: entry.meta.kind == crate::store::DocKind::Board, pinned: marks.map_or(entry.meta.pinned, |(pin,_)| pin), starred: marks.map_or(entry.meta.starred, |(_,star)| star) > 0, trashed: false,
             shared:room.is_some() && (workspace.home.tab==crate::home::HomeTab::Shared || !personal_ids.contains(&entry.id)), owned, offline_recovery: false, personal: personal_ids.contains(&entry.id), inherited_share, share_end,
             menu_root: menu_room.map(|room|room.scope.note.clone()), menu_writable,
             menu_shareable: (ordinary || pending_original) && !crate::cloud_restore::local_only(), menu_copyable: ordinary,
@@ -575,10 +575,10 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
     if workspace.view == View::Trash {
         items.extend(workspace.trash.iter().map(|entry| NavigationItem {
             id: entry.id.clone(), title: display_title(&entry.title), parent: entry.parent.clone(),
-            folder: entry.folder, pinned: false, starred: false, trashed: true, shared:false, owned:false, offline_recovery: false, personal: true, inherited_share: false, share_end: None, menu_root: None, menu_writable: false, menu_shareable: false, menu_copyable: false,
+            folder: entry.folder, board: false, pinned: false, starred: false, trashed: true, shared:false, owned:false, offline_recovery: false, personal: true, inherited_share: false, share_end: None, menu_root: None, menu_writable: false, menu_shareable: false, menu_copyable: false,
         }));
         items.extend(recoveries.iter().map(|(id, title)| NavigationItem {
-            id: id.clone(), title: display_title(title), parent: None, folder: false, pinned: false, starred: false,
+            id: id.clone(), title: display_title(title), parent: None, folder: false, board: false, pinned: false, starred: false,
             trashed: false, shared: false, owned: false, offline_recovery: true, personal: true, inherited_share: false, share_end: None, menu_root: None, menu_writable: false, menu_shareable: false, menu_copyable: false,
         }));
     }
@@ -1320,7 +1320,7 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
 
 
 unsafe extern "C" {
-    fn fei_ios_present_export(path: *const c_char);
+    fn fei_ios_present_export(path: *const c_char, sharing: bool);
     fn fei_ios_edit_theme(json: *const c_char);
 }
 
@@ -1330,9 +1330,9 @@ pub(crate) fn export_folder() -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-pub(crate) fn present_export(path: &std::path::Path) {
+pub(crate) fn present_export(path: &std::path::Path, sharing: bool) {
     if let Ok(path) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) {
-        unsafe { fei_ios_present_export(path.as_ptr()); }
+        unsafe { fei_ios_present_export(path.as_ptr(),sharing); }
     }
 }
 
@@ -1385,7 +1385,7 @@ pub(crate) fn mobile_backup(workspace: &mut crate::app::Workspace, cx: &mut Cont
                 export_folder().and_then(|folder| crate::cloud_sync::backup::create(&root,&folder))
             }).await;
             let _ = this.update(cx, |workspace,cx| match result {
-                Ok((path,_)) => present_export(&path),
+                Ok((path,_)) => present_export(&path,false),
                 Err(error) => workspace.show_toast_kind(crate::ui::ToastKind::Error,&error.to_string(),cx),
             });
         }).detach();

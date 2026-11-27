@@ -78,6 +78,10 @@ final class MobileNotesStyleUITests: XCTestCase {
             group.tap()
         }
         XCTAssertTrue(item.waitForExistence(timeout: 5),app.debugDescription)
+        if parent == ["导出文档","Export document"] {
+            XCTAssertFalse(find(["打印","Print"]).isHittable,app.debugDescription)
+            shot("document-export-menu")
+        }
         item.tap()
     }
 
@@ -150,17 +154,35 @@ final class MobileNotesStyleUITests: XCTestCase {
         move.buttons.firstMatch.tap()
     }
 
-    private func dismissExportPicker(_ app: XCUIApplication) {
-        let close = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label IN %@", "DOCPicker.cancelButton", ["取消","Cancel","关闭","Close"])).firstMatch
-        if close.waitForExistence(timeout: 3),close.isHittable {
-            close.tap()
+    private func exportCancelButton(_ app: XCUIApplication) -> XCUIElement {
+        app.buttons.matching(NSPredicate(format: "identifier == %@ OR label IN %@", "DOCPicker.cancelButton", ["取消","Cancel","关闭","Close"])).firstMatch
+    }
+
+    private func openFilesFromShareSheet(_ app: XCUIApplication) {
+        app.openDocumentExportInFiles()
+    }
+
+    private func cancelExportToFiles(_ app: XCUIApplication) {
+        let cancel = exportCancelButton(app)
+        if cancel.exists && cancel.isHittable {
+            cancel.tap()
         } else {
-            let grabber = app.buttons.matching(NSPredicate(format: "label IN %@",["表单控制柄","Form Grabber","Sheet Grabber","Grabber"])).firstMatch
-            XCTAssertTrue(grabber.waitForExistence(timeout: 5),app.debugDescription)
-            let start = grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.5))
-            let target = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.82))
-            start.press(forDuration: 0.05,thenDragTo: target)
+            let grabber = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50,dy: 0.066))
+            let bottom = app.coordinate(withNormalizedOffset: CGVector(dx: 0.50,dy: 0.76))
+            grabber.press(forDuration: 0.10,thenDragTo: bottom)
         }
+    }
+
+    private func finishExportShare(_ app: XCUIApplication,returningTo target: XCUIElement) {
+        let save = app.buttons["DOCPicker.actionButton"]
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: save)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed],timeout: 12),.completed,app.debugDescription)
+        if app.documentExportSaveAction.isHittable || app.documentExportMoreActions.isHittable {
+            let y = UIDevice.current.userInterfaceIdiom == .phone ? 0.20 : 0.52
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.10,dy: y)).tap()
+        }
+        let returned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"),object: target)
+        XCTAssertEqual(XCTWaiter.wait(for: [returned],timeout: 12),.completed,app.debugDescription)
     }
 
     func testTitleOnlyPDFStaysInEditor() throws {
@@ -176,10 +198,11 @@ final class MobileNotesStyleUITests: XCTestCase {
         XCTAssertTrue(note.waitForExistence(timeout: 8))
         note.tap()
         XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 5))
-        noteMenu(app,["导出 PDF","Export PDF"],parent: ["导出与打印","Export and print"])
+        noteMenu(app,["导出为 PDF","Export as PDF"],parent: ["导出文档","Export document"])
         shot("light-appearance-empty-pdf")
         XCTAssertTrue(app.buttons["fei.more"].isHittable)
         XCTAssertFalse(app.buttons["DOCPicker.actionButton"].exists)
+        XCTAssertFalse(app.documentExportSaveAction.exists)
     }
 
     func testPreparedMarkdownAndPDFCanCancelAndReopen() throws {
@@ -205,6 +228,7 @@ final class MobileNotesStyleUITests: XCTestCase {
 
         let save = app.buttons["DOCPicker.actionButton"]
         func verifyPicker(_ suffix: String,shouldSave: Bool = false) {
+            openFilesFromShareSheet(app)
             XCTAssertTrue(save.waitForExistence(timeout: 25),app.debugDescription)
             shot("light-appearance-export-"+suffix)
             if shouldSave {
@@ -212,19 +236,18 @@ final class MobileNotesStyleUITests: XCTestCase {
                 save.tap()
                 print("FEI_EXPORT_SAVED_TITLE=\(title)")
             } else {
-                dismissExportPicker(app)
+                cancelExportToFiles(app)
             }
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: save)],timeout: 10),.completed,app.debugDescription)
-            XCTAssertTrue(app.buttons["fei.more"].isHittable)
+            finishExportShare(app,returningTo: app.buttons["fei.more"])
         }
         for (index, labels) in [["仅文本","Text only"],["包含图片和附件","Include images and attachments"]].enumerated() {
-            noteMenu(app,["导出 Markdown","Export Markdown"],parent: ["导出与打印","Export and print"])
+            noteMenu(app,["导出为 Markdown","Export as Markdown"],parent: ["导出文档","Export document"])
             let text = app.descendants(matching: .any).matching(NSPredicate(format: "label IN %@",labels)).firstMatch
             XCTAssertTrue(text.waitForExistence(timeout: 5),app.debugDescription)
             text.tap()
             verifyPicker("markdown-\(index)")
         }
-        noteMenu(app,["导出 PDF","Export PDF"],parent: ["导出与打印","Export and print"])
+        noteMenu(app,["导出为 PDF","Export as PDF"],parent: ["导出文档","Export document"])
         verifyPicker("pdf",shouldSave: true)
     }
 
@@ -272,7 +295,7 @@ final class MobileNotesStyleUITests: XCTestCase {
         let app = launchLightNotes()
         let list = app.tables["fei.notes.list"].firstMatch
         let more = app.buttons["fei.library-actions"].firstMatch
-        let boardNavigation = app.standaloneBoardNavigation
+        let boardBack = app.standaloneBoardNavigation
         func action(_ zh: String,_ en: String) -> XCUIElement {
             app.buttons.matching(NSPredicate(format: "label IN %@",[zh,en])).firstMatch
         }
@@ -289,7 +312,7 @@ final class MobileNotesStyleUITests: XCTestCase {
         }
         func createBoard() {
             newBoard.tap()
-            XCTAssertTrue(boardNavigation.waitForExistence(timeout: 15),app.debugDescription)
+            XCTAssertTrue(boardBack.waitForExistence(timeout: 15),app.debugDescription)
             XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 8),app.debugDescription)
             XCTAssertFalse(app.buttons["fei.board.done"].exists)
             XCTAssertFalse(app.keyboards.firstMatch.exists)
@@ -351,12 +374,21 @@ final class MobileNotesStyleUITests: XCTestCase {
         let row = list.cells.containing(.staticText,identifier: title).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 8),app.debugDescription)
         row.tap()
-        let boardNavigation = app.standaloneBoardNavigation
-        XCTAssertTrue(boardNavigation.waitForExistence(timeout: 15),app.debugDescription)
+        let boardBack = app.standaloneBoardNavigation
+        XCTAssertTrue(boardBack.waitForExistence(timeout: 15),app.debugDescription)
         XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 8),app.debugDescription)
         XCTAssertFalse(app.buttons["fei.board.done"].exists)
         XCTAssertFalse(app.keyboards.firstMatch.exists)
         shot("standalone-board-open")
+        app.buttons["fei.more"].tap()
+        let boardExport = app.buttons.matching(NSPredicate(format: "label IN %@",["导出画板","Export board"])).firstMatch
+        XCTAssertTrue(boardExport.waitForExistence(timeout: 5),app.debugDescription)
+        boardExport.tap()
+        let boardMarkdown = app.buttons.matching(NSPredicate(format: "label IN %@",["导出为 Markdown","Export as Markdown"])).firstMatch
+        XCTAssertTrue(boardMarkdown.waitForExistence(timeout: 5),app.debugDescription)
+        shot("standalone-board-export-menu")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.05,dy: 0.85)).tap()
+        XCTAssertTrue(boardBack.isHittable,app.debugDescription)
         app.showBrowserFromStandaloneBoard()
         XCTAssertTrue(row.waitForExistence(timeout: 8),app.debugDescription)
         func action(_ labels: [String]) -> XCUIElement {
@@ -364,21 +396,21 @@ final class MobileNotesStyleUITests: XCTestCase {
         }
         for (index, labels) in [["仅文本","Text only"],["包含图片和附件","Include images and attachments"]].enumerated() {
             row.press(forDuration: 1.1)
-            let export = action(["导出与打印","Export and print"])
+            let export = action(["导出画板","Export board"])
             XCTAssertTrue(export.waitForExistence(timeout: 8),app.debugDescription)
             export.tap()
-            let markdown = action(["导出 Markdown","Export Markdown"])
+            let markdown = action(["导出为 Markdown","Export as Markdown"])
             XCTAssertTrue(markdown.waitForExistence(timeout: 8),app.debugDescription)
             markdown.tap()
             let choice = action(labels)
             XCTAssertTrue(choice.waitForExistence(timeout: 8),app.debugDescription)
             choice.tap()
+            openFilesFromShareSheet(app)
             let save = app.buttons["DOCPicker.actionButton"]
             XCTAssertTrue(save.waitForExistence(timeout: 20),app.debugDescription)
             shot("standalone-board-markdown-\(index)")
-            dismissExportPicker(app)
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: save)],timeout: 10),.completed,app.debugDescription)
-            XCTAssertTrue(row.isHittable)
+            cancelExportToFiles(app)
+            finishExportShare(app,returningTo: row)
         }
     }
 
@@ -566,4 +598,27 @@ final class MobileNotesStyleUITests: XCTestCase {
         app.buttons["fei.table.done"].tap()
     }
 
+}
+
+
+extension XCUIApplication {
+    var documentExportSaveAction: XCUIElement {
+        let labels = ["Save to Files","保存到“文件”","存储到“文件”","保存到文件","存储到文件"]
+        return descendants(matching: .any).matching(NSPredicate(format: "label IN %@",labels)).firstMatch
+    }
+
+    var documentExportMoreActions: XCUIElement {
+        let labels = ["Show More","View More","More Actions","查看更多","更多操作"]
+        return cells.matching(NSPredicate(format: "label IN %@",labels)).firstMatch
+    }
+
+    func openDocumentExportInFiles() {
+        let save = documentExportSaveAction
+        if !save.waitForExistence(timeout: 6) {
+            let more = documentExportMoreActions
+            if more.waitForExistence(timeout: 8) { more.tap() }
+        }
+        XCTAssertTrue(save.waitForExistence(timeout: 12),debugDescription)
+        save.tap()
+    }
 }

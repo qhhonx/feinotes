@@ -983,6 +983,7 @@ impl Workspace {
         let (pinned, starred) = (entry.meta.pinned, entry.meta.starred > 0);
         // A standalone data table exports CSV from its table view, not as a document.
         let document_export = entry.meta.kind != crate::store::DocKind::Table;
+        let board = entry.meta.kind == crate::store::DocKind::Board;
         #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
         let (pinned, starred) = self.shared_child_marks(&m.id,cx).map_or((pinned,starred), |(pin,star)| (pin,star>0));
         let divider = MenuSeparator::new;
@@ -1093,7 +1094,8 @@ impl Workspace {
                     })),
             )
             .child(divider())
-            .when(document_export, |d| d.child(self.row_download_item(item("rm-download", "export", crate::settings::text("下载")), m.sub, cx)))
+            .when(document_export, |d| d.child(self.row_download_item(item("rm-download", "export",
+                if crate::FEI_NOTES { crate::docmenu::export_title(board) } else { crate::settings::text("下载") }), m.sub, cx)))
             .child(
                 item("rm-rename", "square-pen", crate::settings::text("重命名"))
                     .on_hover(cx.listener(Self::close_row_download))
@@ -1107,7 +1109,7 @@ impl Workspace {
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
                 {
                     let target = m.id.clone();
-                    d.when(share_row, |d| d.child(item("rm-share", "share", crate::settings::tr("共享", "Share"))
+                    d.when(share_row, |d| d.child(item("rm-share", "share", if board { crate::settings::tr("共享画板", "Share board") } else { crate::settings::tr("共享文档", "Share document") })
                         .on_hover(cx.listener(Self::close_row_download)).on_click(cx.listener(move |w, _, window, cx| {
                             w.row_menu = None;
                             let id = target.clone();
@@ -1194,9 +1196,9 @@ impl Workspace {
         let pdf = action.clone();
         let body = Popover::new("rm-download-menu").menu().min_w(px(130.))
             .child(canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
-            .when(crate::printing::SUPPORTED, |d| d.child(crate::docmenu::sub_item("rm-pdf", "PDF")
+            .when(crate::printing::SUPPORTED, |d| d.child(crate::docmenu::sub_item("rm-pdf", if crate::FEI_NOTES { crate::docmenu::export_format_label(false) } else { "PDF" })
                 .on_click(cx.listener(move |w, _, window, cx| pdf(w, RowDownload::Pdf, window, cx)))))
-            .child(crate::docmenu::sub_item("rm-md", "Markdown")
+            .child(crate::docmenu::sub_item("rm-md", if crate::FEI_NOTES { crate::docmenu::export_format_label(true) } else { "Markdown" })
                 .on_click(cx.listener(move |w, _, window, cx| action(w, RowDownload::Markdown, window, cx))));
         let flip = bounds.right() + px(140.) > window.viewport_size().width;
         let (corner, x) = if flip { (Anchor::TopRight, bounds.left() - px(4.)) } else { (Anchor::TopLeft, bounds.right() + px(4.)) };

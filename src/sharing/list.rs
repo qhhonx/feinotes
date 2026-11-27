@@ -109,6 +109,9 @@ impl Workspace {
     #[cfg(target_os = "macos")]
     pub(crate) fn shared_child_row_menu(&self, menu: &RowMenu, room: Room, entry: crate::sidebar::SidebarEntry, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let writable = self.shared_sidebar_folder_writable(&room, cx);
+        let kind = self.entries.iter().find(|row| row.id == entry.id).map(|row| row.meta.kind)
+            .or_else(|| self.shared_sidebar_entries(cx).into_iter().find(|row| row.id == entry.id).map(|row| row.meta.kind));
+        let export_title = crate::docmenu::export_title(kind == Some(crate::store::DocKind::Board));
         let row = |id, glyph, label| shared_menu_item(id, glyph, label).on_hover(cx.listener(Self::close_row_download));
         let marks = preferences::active(cx);
         let pinned = marks.get("pin", &entry.id) != 0;
@@ -136,7 +139,7 @@ impl Workspace {
             .child(row("shared-child-star", if starred { "star-off" } else { "star" }, star_label(starred))
                 .on_click(cx.listener(move |w, _, _, cx| { w.toggle_shared_child_organization(&star, false, cx); })))
             .child(MenuSeparator::new())
-            .child(self.row_download_item(shared_menu_item("shared-child-download", "export", crate::settings::text("下载")), menu.sub, cx))
+            .child(self.row_download_item(shared_menu_item("shared-child-download", "export", export_title), menu.sub, cx))
             .when(writable, |d| d.child(row("shared-child-rename", "square-pen", tr("重命名", "Rename"))
                 .on_click(cx.listener(move |w, _, window, cx| {
                     let section = rename.section;
@@ -261,7 +264,8 @@ impl Workspace {
             .child(row("shared-row-star", if entry.meta.starred > 0 { "star-off" } else { "star" }, star_label(entry.meta.starred > 0))
                 .on_click(cx.listener(move |w, _, _, cx| w.toggle_shared_organization(&star, false, cx))))
             .child(MenuSeparator::new())
-            .when(!folder, |d| d.child(self.row_download_item(shared_menu_item("shared-row-download", "export", crate::settings::text("下载")), menu.sub, cx))
+            .when(!folder, |d| d.child(self.row_download_item(shared_menu_item("shared-row-download", "export",
+                crate::docmenu::export_title(entry.meta.kind == crate::store::DocKind::Board)), menu.sub, cx))
                 .children(rename).child(MenuSeparator::new()))
             .child(row("shared-row-manage", "shared-document", if owner { tr("成员与权限…", "Members and access…") } else { tr("查看共享权限…", "View sharing access…") })
                 .on_click(cx.listener(move |w, _, window, cx| w.open_row_sharing_access(manage.clone(), window, cx))))
@@ -342,9 +346,9 @@ impl Workspace {
                     .on_click(cx.listener(move |w, _, _, cx| w.copy_object_link(&link_target, Some(link_room.clone()), false, cx)))))
                 .when(owner, |d| d.child(item("shared-row-link", "copy", copy_invitation_label(false))
                     .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.copy_shared_invitation(link.clone(), window, cx); }))))
-                .when(!room.scope.folder, |d| d.child(item("shared-row-markdown", "export", tr("下载为 Markdown…", "Download Markdown…"))
+                .when(!room.scope.folder, |d| d.child(item("shared-row-markdown", "export", crate::docmenu::export_format_label(true))
                     .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.with_shared_document(md.clone(), window, cx, |w, id, _, cx| w.open_export_md(id, cx)); }))))
-                .when(!room.scope.folder, |d| d.child(item("shared-row-pdf", "export", tr("下载为 PDF…", "Download PDF…"))
+                .when(!room.scope.folder, |d| d.child(item("shared-row-pdf", "export", crate::docmenu::export_format_label(false))
                     .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None; w.with_shared_document(pdf.clone(), window, cx, |w, id, window, cx| w.export_pdf(id, window, cx)); }))))
                 .child(div().mx(px(8.)).my(px(5.)).h(px(1.)).bg(Theme::line_border()))
                 .child(item("shared-row-remove", "bin", self.shared_end_label(&room, cx))

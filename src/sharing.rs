@@ -1015,7 +1015,9 @@ impl Workspace {
         let busy = self.sharing.busy;
         let invitation = matches!(sheet, Sheet::Create(_) | Sheet::CreateNew(..) | Sheet::Invite(_));
         let accent = invitation_accent();
-        let title = match sheet { Sheet::MoveInto(..) => tr("移入共享文件夹", "Move into shared folder"), Sheet::RenameCollection(_) => tr("重命名个人文件夹", "Rename personal folder"), Sheet::Create(id) if self.entries.iter().any(|e| &e.id == id && e.meta.folder.is_some()) => tr("共享文件夹", "Share folder"), Sheet::Create(_) => tr("共享文档", "Share document"), Sheet::Accept => tr("接受邀请", "Accept invitation"),
+        let title = match sheet { Sheet::MoveInto(..) => tr("移入共享文件夹", "Move into shared folder"), Sheet::RenameCollection(_) => tr("重命名个人文件夹", "Rename personal folder"), Sheet::Create(id) if self.entries.iter().any(|e| &e.id == id && e.meta.folder.is_some()) => tr("共享文件夹", "Share folder"),
+            Sheet::Create(id) if self.entries.iter().any(|e| &e.id == id && e.meta.kind == crate::store::DocKind::Board) => tr("共享画板", "Share board"),
+            Sheet::Create(_) => tr("共享文档", "Share document"), Sheet::Accept => tr("接受邀请", "Accept invitation"),
             Sheet::CreateNew(kind, _) => new_shared_title(*kind),
             Sheet::Access(room) => shared_access_title(room.scope.folder),
             Sheet::Members(_) => tr("成员与权限", "Members and access"),

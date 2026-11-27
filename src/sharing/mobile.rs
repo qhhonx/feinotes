@@ -165,8 +165,14 @@ impl Workspace {
             return Some(tr("邀请已创建","Invitation created"));
         }
         Some(match self.sharing.sheet.as_ref() {
-            Some(super::Sheet::Create(id)) if self.personal_navigation_entries(cx).iter().any(|e| &e.id == id && e.meta.folder.is_some()) => tr("共享文件夹","Share folder"),
-            Some(super::Sheet::Create(_)) => tr("共享文档","Share document"),
+            Some(super::Sheet::Create(id)) => {
+                let entries = self.personal_navigation_entries(cx);
+                match entries.iter().find(|entry| &entry.id == id) {
+                    Some(entry) if entry.meta.folder.is_some() => tr("共享文件夹","Share folder"),
+                    Some(entry) if entry.meta.kind == crate::store::DocKind::Board => tr("共享画板","Share board"),
+                    _ => tr("共享文档","Share document"),
+                }
+            }
             Some(super::Sheet::Invite(_)) => tr("邀请参与者","Invite participant"),
             Some(super::Sheet::CreateNew(kind, _)) => super::new_shared_title(*kind),
             Some(super::Sheet::Accept) => tr("接受邀请","Accept invitation"),

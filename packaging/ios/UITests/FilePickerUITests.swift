@@ -83,13 +83,30 @@ final class FilePickerUITests: XCTestCase {
         let name = app.textFields["fei.rename.title"]
         XCTAssertTrue(name.waitForExistence(timeout: 5)); name.typeText(title); app.buttons["fei.rename.save"].tap()
         XCTAssertTrue(app.navigationBars[title].waitForExistence(timeout: 5)); shot("picker37-05-selected-image")
-        func export() { app.buttons["fei.more"].tap(); app.sheets.buttons["导出 Markdown"].tap(); app.sheets.buttons["仅文本"].tap() }
-        export(); XCTAssertTrue(picker.waitForExistence(timeout: 5)); shot("picker37-06-export-sheet")
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.075)).press(forDuration: 0.1,thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.65)))
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: picker)],timeout: 5),.completed)
-        export(); XCTAssertTrue(picker.waitForExistence(timeout: 5),app.debugDescription)
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.075)).press(forDuration: 0.1,thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.65)))
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: picker)],timeout: 5),.completed)
+        func export() {
+            app.buttons["fei.more"].tap()
+            app.buttons["导出文档"].tap()
+            app.buttons["导出为 Markdown"].tap()
+            app.buttons["仅文本"].tap()
+            app.openDocumentExportInFiles()
+        }
+        for attempt in 0..<2 {
+            export()
+            let save = app.buttons["DOCPicker.actionButton"]
+            XCTAssertTrue(save.waitForExistence(timeout: 10),app.debugDescription)
+            if attempt == 0 { shot("picker37-06-export-sheet") }
+            let cancel = app.buttons["DOCPicker.cancelButton"]
+            if cancel.exists && cancel.isHittable { cancel.tap() }
+            else {
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.075)).press(forDuration: 0.1,thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.65)))
+            }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: save)],timeout: 10),.completed)
+            if app.documentExportSaveAction.isHittable || app.documentExportMoreActions.isHittable {
+                let y = UIDevice.current.userInterfaceIdiom == .phone ? 0.20 : 0.52
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.10,dy: y)).tap()
+            }
+            XCTAssertTrue(app.buttons["fei.more"].isHittable,app.debugDescription)
+        }
         print("PICKER37_COMPLETED="+title)
     }
 }

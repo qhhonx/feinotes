@@ -458,16 +458,23 @@ impl Workspace {
             let result = cx.background_executor().spawn(async move {
                 let _session = session;
                 let folder = crate::ipad::export_folder()?;
-                let path = folder.join(format!("{}.md", file_name(&doc)));
-                let result = write_markdown_export(&root, &doc, &subs, &path, all).and_then(|missing| {
-                    anyhow::ensure!(missing == 0, "{}", crate::localized_format!("有 {missing} 个附件未能导出", "{missing} attachments could not be exported"));
-                    Ok(if all { folder.clone() } else { path })
-                });
+                let title = file_name(&doc);
+                let folder_name = title.trim_start_matches('.');
+                let folder_name = if folder_name.is_empty() { "Markdown" } else { folder_name };
+                let target = if all { folder.join(folder_name) } else { folder.clone() };
+                let path = target.join(format!("{title}.md"));
+                let result = std::fs::create_dir_all(&target)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|()| write_markdown_export(&root, &doc, &subs, &path, all))
+                    .and_then(|missing| {
+                        anyhow::ensure!(missing == 0, "{}", crate::localized_format!("有 {missing} 个附件未能导出", "{missing} attachments could not be exported"));
+                        Ok(if all { target } else { path })
+                    });
                 if result.is_err() { let _ = std::fs::remove_dir_all(&folder); }
                 result
             }).await;
             let _ = this.update(cx, |workspace,cx| match result {
-                Ok(path) => crate::ipad::present_export(&path),
+                Ok(path) => crate::ipad::present_export(&path,true),
                 Err(error) => workspace.show_toast_kind(ToastKind::Error,&error.to_string(),cx),
             });
         }).detach();
@@ -549,7 +556,7 @@ impl Workspace {
             let result = printing::run(html,name,Job::Pdf(path.clone()),0,cx).await;
             let ok = matches!(result,Ok(true)) && path.is_file();
             let updated = this.update(cx,|workspace,cx| {
-                if ok { workspace.toast = None; cx.notify(); crate::ipad::present_export(&path); }
+                if ok { workspace.toast = None; cx.notify(); crate::ipad::present_export(&path,true); }
                 else { workspace.show_toast_kind(ToastKind::Error,result.as_ref().err().map(String::as_str)
                     .unwrap_or_else(|| crate::settings::text("导出失败，请重试")),cx); }
             });

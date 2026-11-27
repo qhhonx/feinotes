@@ -494,7 +494,7 @@ impl Workspace {
             })))
             .children({
                 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
-                { let target = m.id.clone(); (personal && self.personal_row_can_share(&target, cx)).then(|| row("share-folder", "share", tr("共享", "Share"))
+                { let target = m.id.clone(); (personal && self.personal_row_can_share(&target, cx)).then(|| row("share-folder", "share", tr("共享文件夹", "Share folder"))
                     .on_click(cx.listener(move |w, _, window, cx| { w.row_menu = None;
                         let target = target.clone();
                         w.personal_action(window, cx, move |w, window, cx| w.create_shared_note(&target, window, cx)); }))) }

@@ -62,6 +62,7 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
         let title: String
         let parent: String?
         let folder: Bool
+        let board: Bool
         let pinned: Bool
         let starred: Bool
         let trashed: Bool
@@ -1786,7 +1787,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             menus.append(menuSection([menuAction("accept-invitation","envelope.open") { [weak self] in self?.send("accept-invitation") }]))
         } else if let id = browser ? state.browser?.folder : state.routes.last?.key.replacingOccurrences(of: "folder:",with: ""),
                   let item = state.items.first(where: { $0.id == id && $0.folder }) {
-            let share = menuAction("share-object","person.badge.plus") { [weak self] in self?.send("share-folder",id: id,scope: listing?.scope) }
+            let share = menuAction("share-folder","person.badge.plus") { [weak self] in self?.send("share-folder",id: id,scope: listing?.scope) }
             menus.append(menuSection([menuAction("rename","pencil") { [weak self] in self?.rename(id: id,title: item.title,browserScope: browser ? listing?.scope : nil) }]))
             menus.append(menuSection([share]))
         }
@@ -1845,26 +1846,29 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         var detailActions = [menuAction("doc-info","info.circle") { [weak self] in self?.send("doc-info",id: id) },menuAction("history","clock.arrow.circlepath") { [weak self] in self?.send("history-open",id: id,scope: state.editor_scope) }]
         if !state.board_open { detailActions.append(menuAction("attachments","paperclip") { [weak self] in self?.send("attachments-menu") }) }
         let info = UIMenu(title: label("doc-info"),image: UIImage(systemName: "info.circle"),children: detailActions)
-        var export: [UIMenuElement] = [markdownExportMenu { [weak self] mode in
+        let export: [UIMenuElement] = [markdownExportMenu { [weak self] mode in
             guard let self,self.state?.current == id,self.state?.editor_scope == state.editor_scope,self.state?.busy == false else { return }
             self.send("export",value: mode,id: id,scope: state.editor_scope)
-        },menuAction("pdf","doc.richtext") { [weak self] in self?.send("pdf",id: id) },menuAction("print","printer") { [weak self] in self?.send("print",id: id) }]
-        if state.labels["copy-object-link"] != nil {
-            export.insert(menuAction("copy-object-link","link") { [weak self] in self?.send("copy-object-link",id: id,scope: state.editor_scope) },at: 0)
-        }
+        },menuAction("pdf","doc.richtext") { [weak self] in self?.send("pdf",id: id) }]
         var groups: [UIMenuElement] = state.board_open ? [] : [search]
         if !editing.isEmpty {
             groups.append(UIMenu(title: label("format"),image: FeiEditorToolbar.menuFormatIcon(compatibleWith: host?.traitCollection),children: editing))
         }
         groups.append(UIMenu(title: label("options"),image: UIImage(systemName: "folder"),children: organization))
-        if state.shared_session {
-            if let collaboration = collaborationSection(nil,state: state) { groups.append(collaboration) }
-        } else {
-            groups.append(menuSection([menuAction("share-object","person.badge.plus") { [weak self] in
+        var collaboration: [UIMenuElement] = []
+        if !state.shared_session {
+            collaboration.append(menuAction(state.standalone_board_open ? "share-board" : "share-document","person.badge.plus") { [weak self] in
                 self?.send("share-note",id: id,scope: state.editor_scope)
-            }]))
+            })
         }
-        groups += [info,UIMenu(title: label("export-copy"),image: UIImage(systemName: "square.and.arrow.up"),children: export)]
+        if state.labels["copy-object-link"] != nil {
+            collaboration.append(menuAction("copy-object-link","link") { [weak self] in
+                self?.send("copy-object-link",id: id,scope: state.editor_scope)
+            })
+        }
+        if state.shared_session,state.shared_sync != nil { collaboration.append(sharedSyncAction(state)) }
+        if !collaboration.isEmpty { groups.append(menuSection(collaboration)) }
+        groups += [info,UIMenu(title: label(state.standalone_board_open ? "export-board" : "export-document"),image: UIImage(systemName: "square.and.arrow.up"),children: export)]
         if standaloneShare {
             if let end = item?.share_end {
                 groups.append(menuSection([menuAction(end,"trash",destructive: true) { [weak self] in self?.send("shared-end",id: id,scope: state.editor_scope) }]))
@@ -2001,7 +2005,10 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         let accessKey = item.folder || inherited ? "shared-folder-access" : item.owned ? "members-and-access" : "view-share-access"
         var sharing: [UIMenuElement] = []
         if shared { sharing.append(action(accessKey,"person.2","access")) }
-        else if item.menu_shareable { sharing.append(action("share-object","person.badge.plus","share")) }
+        else if item.menu_shareable {
+            let title = item.folder ? "share-folder" : item.board ? "share-board" : "share-document"
+            sharing.append(action(title,"person.badge.plus","share"))
+        }
         if state?.labels["copy-object-link"] != nil { sharing.append(action("copy-object-link","link","link")) }
         var groups: [UIMenuElement] = []
         if item.folder {
@@ -2025,13 +2032,13 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             }
             organization += [action(item.pinned ? "unpin" : "pin","pin","pin"),action(item.starred ? "unstar" : "star","star","star")]
             groups.append(group(organization))
-            let export = UIMenu(title: label("export-copy"),image: UIImage(systemName: "square.and.arrow.up"),children: [
+            let export = UIMenu(title: label(item.board ? "export-board" : "export-document"),image: UIImage(systemName: "square.and.arrow.up"),children: [
                 markdownExportMenu { [weak self] mode in
                     guard let self,self.state?.busy == false,
                           (fromBrowser ? self.state?.browser?.listing.scope : self.state?.listing?.scope) == scope else { return }
                     self.send("item-menu",value: "export:" + mode,id: id,scope: scope)
                 },
-                action("pdf","doc.richtext"),action("print","printer"),
+                action("pdf","doc.richtext"),
             ])
             groups.append(group(writable ? [export,rename] : [export]))
         }

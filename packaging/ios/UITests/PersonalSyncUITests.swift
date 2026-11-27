@@ -28,7 +28,7 @@ final class PersonalSyncUITests: XCTestCase {
         func dismiss() {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.50,dy: 0.075)).tap()
         }
-        let allLabels: Set<String> = ["Copy to My Documents","Duplicate","Move to","Pin","Unpin","Favorite","Remove favorite","Copy Link","Export and print",
+        let allLabels: Set<String> = ["Copy to My Documents","Duplicate","Move to","Pin","Unpin","Favorite","Remove favorite","Copy Link","Export",
             "Rename","Members and access","View sharing access","Organize in personal folder","Stop sharing","Leave share",
             "New document","New folder","Folder sharing access","Delete document","Delete folder","Delete shared document","Delete shared folder","Delete subfolder"]
         func menu(_ title: String, expected: [String], name: String) -> [String] {
@@ -54,7 +54,7 @@ final class PersonalSyncUITests: XCTestCase {
         let folderMenu = ["New document","New folder","Rename","Folder sharing access","Delete folder","Stop sharing"]
         let rootInMy = menu("Owner",expected: folderMenu,name: "my-shared-folder")
         let childFolderMenu = ["New document","New folder","Rename","Move to","Folder sharing access","Delete subfolder"]
-        let childDocMenu = ["Duplicate","Move to","Pin","Favorite","Export and print","Rename","Folder sharing access","Delete document"]
+        let childDocMenu = ["Duplicate","Move to","Pin","Favorite","Export","Rename","Folder sharing access","Delete document"]
         func childMenus(_ origin: String) -> [[String]] {
             moveRow("Owner",in: app).tap()
             let source = moveRow("Owner source",in: app)
@@ -71,7 +71,7 @@ final class PersonalSyncUITests: XCTestCase {
         XCTAssertTrue(directory.waitForExistence(timeout: 8))
         directory.tap()
         let doc = "QA standalone collaboration"
-        let docMenu = ["Copy to My Documents","Pin","Favorite","Export and print","Rename","Members and access","Stop sharing"]
+        let docMenu = ["Copy to My Documents","Pin","Favorite","Export","Rename","Members and access","Stop sharing"]
         let inMy = menu(doc,expected: docMenu,name: "my-shared-document")
         exitMoveFolder(app,pad: pad,title: "QA collaboration folder")
         shared.tap()
@@ -81,14 +81,14 @@ final class PersonalSyncUITests: XCTestCase {
         let reader = moveRow("Reader",in: app)
         XCTAssertTrue(reader.waitForExistence(timeout: 8))
         _ = menu("Reader",expected: ["Folder sharing access","Leave share"],name: "overview-read-only-folder")
-        _ = menu("Shared reader fixture",expected: ["Copy to My Documents","Pin","Favorite","Export and print","View sharing access","Leave share"],
+        _ = menu("Shared reader fixture",expected: ["Copy to My Documents","Pin","Favorite","Export","View sharing access","Leave share"],
             name: "overview-read-only")
         for (role, write) in [("Editor",true),("Reader",false)] {
             moveRow(role,in: app).tap()
             let source = moveRow(role + " source",in: app)
             XCTAssertTrue(source.waitForExistence(timeout: 8))
             source.tap()
-            _ = menu(role + " document",expected: write ? childDocMenu : ["Pin","Favorite","Export and print","Folder sharing access"],
+            _ = menu(role + " document",expected: write ? childDocMenu : ["Pin","Favorite","Export","Folder sharing access"],
                 name: "overview-" + role.lowercased() + "-child")
             exitMoveFolder(app,pad: pad,title: role + " source")
             exitMoveFolder(app,pad: pad,title: role)

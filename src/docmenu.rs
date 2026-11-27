@@ -32,9 +32,19 @@ fn menu_item(id: &'static str, ic: &'static str, label: impl Into<SharedString>,
     MenuItem::new(id).icon(ic).label(crate::settings::label(label.into())).submenu(sub).open(open)
 }
 
-/// 下载为's text-only items.
+/// An export submenu's text-only item.
 pub(crate) fn sub_item(id: &'static str, label: &'static str) -> MenuItem {
     MenuItem::new(id).label(crate::settings::label(label))
+}
+
+pub(crate) fn export_title(board: bool) -> &'static str {
+    if board { crate::settings::tr("导出画板", "Export board") }
+    else { crate::settings::tr("导出文档", "Export document") }
+}
+
+pub(crate) fn export_format_label(markdown: bool) -> &'static str {
+    if markdown { crate::settings::tr("导出为 Markdown", "Export as Markdown") }
+    else { crate::settings::tr("导出为 PDF", "Export as PDF") }
 }
 
 fn divider() -> MenuSeparator { MenuSeparator::new() }
@@ -358,7 +368,7 @@ impl Workspace {
                 {
                     let note = id.clone();
                     show_share.then(|| {
-                        menu_item("dm-create-share", "share", crate::settings::tr("共享", "Share"), false, false)
+                        menu_item("dm-create-share", "share", if board_file { crate::settings::tr("共享画板", "Share board") } else { crate::settings::tr("共享文档", "Share document") }, false, false)
                             .on_hover(hover_sub(None))
                             .on_click(cx.listener(move |w, _, window, cx| {
                                 w.close_doc_menu(cx);
@@ -382,7 +392,9 @@ impl Workspace {
                 { None::<MenuItem> }
             })
             .child(
-                menu_item("dm-download", "export", crate::settings::text("下载为"), true, sub == Some(DocSub::Download))
+                menu_item("dm-download", "export",
+                    if crate::FEI_NOTES { export_title(board_file) } else { crate::settings::text("下载为") },
+                    true, sub == Some(DocSub::Download))
                     .on_hover(hover_sub(Some(DocSub::Download))),
             )
             .when(!board_file, |d| d.child(
@@ -397,7 +409,7 @@ impl Workspace {
                     })),
             ))
             .child(divider())
-            .when(crate::printing::SUPPORTED, |d| d.child(
+            .when(!(cfg!(target_os = "macos") && crate::FEI_NOTES) && crate::printing::SUPPORTED, |d| d.child(
                 menu_item("dm-print", "printer", crate::settings::text("打印"), false, false)
                     .on_hover(hover_sub(None))
                     .on_click(cx.listener(move |w, _, window, cx| w.print_doc(&print_id, window, cx))),
@@ -487,7 +499,7 @@ impl Workspace {
         let hidden = if board { (2, 2) } else { (0, 0) };
         let sub_el = match sub {
             Some(DocSub::Width) => Some((item_top(0, 0) - PAD, self.width_panel(width, cx).child(recorder()).into_any_element())),
-            // Level the submenu's first item with 下载为.
+            // Align the first export format with its parent row.
             Some(DocSub::Download) => Some((
                 item_top(6 + extra_rows + usize::from(child) - hidden.0 - hidden_actions, 3 - hidden.1) - PAD,
                 {
@@ -496,8 +508,8 @@ impl Workspace {
                         .menu()
                         .min_w(px(130.))
                         .child(recorder())
-                        .when(crate::printing::SUPPORTED, |d| d.child(sub_item("dm-pdf", "PDF").on_click(cx.listener(move |w, _, window, cx| w.export_pdf(&pdf, window, cx)))))
-                        .child(sub_item("dm-md", "Markdown").on_click(cx.listener(move |w, _, _, cx| w.open_export_md(&id, cx))))
+                        .when(crate::printing::SUPPORTED, |d| d.child(sub_item("dm-pdf", if crate::FEI_NOTES { export_format_label(false) } else { "PDF" }).on_click(cx.listener(move |w, _, window, cx| w.export_pdf(&pdf, window, cx)))))
+                        .child(sub_item("dm-md", if crate::FEI_NOTES { export_format_label(true) } else { "Markdown" }).on_click(cx.listener(move |w, _, _, cx| w.open_export_md(&id, cx))))
                         .into_any_element()
                 },
             )),

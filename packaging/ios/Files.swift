@@ -4,19 +4,21 @@ import UniformTypeIdentifiers
 @MainActor
 final class FeiFileExporter: NSObject, UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate {
     static let shared = FeiFileExporter()
-    private var source: URL?
+    private var stagingFolder: URL?
     private weak var activePicker: UIDocumentPickerViewController?
+    private weak var activeActivity: UIActivityViewController?
 
-    func present(_ url: URL) {
-        guard source == nil,let host = EditorHost.active,let navigation = host.navigationController,
+    func present(_ url: URL,sharing: Bool) {
+        // Shared Markdown folders are nested inside their per-export staging folder.
+        let folder = url.hasDirectoryPath && !sharing ? url : url.deletingLastPathComponent()
+        guard stagingFolder == nil,let host = EditorHost.active,let navigation = host.navigationController,
               let controller = navigation.topViewController,let window = controller.viewIfLoaded?.window,
               let presenter = window.rootViewController else {
-            discardExport(url)
+            discardExportFolder(folder)
             return
         }
-        source = url
-        // Export can start from a toolbar menu, context menu, or alert. Let
-        // that surface settle, then present Files from the stable window root.
+        stagingFolder = folder
+        // Wait for the initiating menu to settle before presenting a system sheet.
         Task { @MainActor [weak self,weak controller,weak host,weak navigation,weak presenter,weak window] in
             guard let self else { return }
             try? await Task.sleep(for: .milliseconds(300))
@@ -26,7 +28,8 @@ final class FeiFileExporter: NSObject, UIDocumentPickerDelegate, UIAdaptivePrese
                       controller.viewIfLoaded?.window === window,window.rootViewController === presenter else { self.finish(); return }
                 if presenter.presentedViewController == nil,controller.presentedViewController == nil,
                    navigation.transitionCoordinator == nil,presenter.transitionCoordinator == nil {
-                    self.openPicker(url,from: presenter,appearance: host.navigationCoordinator?.interfaceAppearance ?? .unspecified)
+                    if sharing { self.openShareSheet(url,from: presenter) }
+                    else { self.openPicker(url,from: presenter,appearance: host.navigationCoordinator?.interfaceAppearance ?? .unspecified) }
                     return
                 }
                 try? await Task.sleep(for: .milliseconds(50))
@@ -49,6 +52,25 @@ final class FeiFileExporter: NSObject, UIDocumentPickerDelegate, UIAdaptivePrese
         picker.presentationController?.delegate = self
     }
 
+    private func openShareSheet(_ url: URL,from presenter: UIViewController) {
+        let activity = UIActivityViewController(activityItems: [url],applicationActivities: nil)
+        if let popover = activity.popoverPresentationController,let view = presenter.viewIfLoaded {
+            popover.sourceView = view
+            popover.sourceRect = CGRect(x: view.bounds.midX,y: view.bounds.midY,width: 1,height: 1)
+            popover.permittedArrowDirections = []
+        }
+        activeActivity = activity
+        activity.completionWithItemsHandler = { [weak self,weak activity] _,_,_,_ in
+            guard let self,let activity,self.activeActivity === activity else { return }
+            self.finish()
+        }
+        presenter.present(activity,animated: true) { [weak self,weak activity] in
+            guard let self,let activity,self.activeActivity === activity else { return }
+            if activity.presentingViewController == nil { self.finish() }
+        }
+        activity.presentationController?.delegate = self
+    }
+
     func documentPicker(_ controller: UIDocumentPickerViewController,didPickDocumentsAt urls: [URL]) {
         if controller === activePicker { finish() }
     }
@@ -56,18 +78,19 @@ final class FeiFileExporter: NSObject, UIDocumentPickerDelegate, UIAdaptivePrese
         if controller === activePicker { finish() }
     }
     func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
-        if presentationController.presentedViewController === activePicker { finish() }
+        if presentationController.presentedViewController === activePicker
+            || presentationController.presentedViewController === activeActivity { finish() }
     }
 
     private func finish() {
-        if let source { discardExport(source) }
-        source = nil
+        if let stagingFolder { discardExportFolder(stagingFolder) }
+        stagingFolder = nil
         activePicker = nil
+        activeActivity = nil
     }
 
-    private func discardExport(_ url: URL) {
+    private func discardExportFolder(_ folder: URL) {
         let root = FileManager.default.temporaryDirectory.appending(path: "FeiNotesExports",directoryHint: .isDirectory)
-        let folder = url.hasDirectoryPath ? url : url.deletingLastPathComponent()
         if folder.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL {
             try? FileManager.default.removeItem(at: folder)
         }
@@ -75,12 +98,12 @@ final class FeiFileExporter: NSObject, UIDocumentPickerDelegate, UIAdaptivePrese
 }
 
 @_cdecl("fei_ios_present_export")
-func feiIOSPresentExport(_ path: UnsafePointer<CChar>) {
+func feiIOSPresentExport(_ path: UnsafePointer<CChar>,_ sharing: Bool) {
     let path = String(cString: path)
     var directory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: path, isDirectory: &directory) else { return }
     let url = URL(fileURLWithPath: path, isDirectory: directory.boolValue)
-    Task { @MainActor in FeiFileExporter.shared.present(url) }
+    Task { @MainActor in FeiFileExporter.shared.present(url,sharing: sharing) }
 }
 
 @MainActor
