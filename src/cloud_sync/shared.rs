@@ -989,7 +989,7 @@ fn sample(personal: &Path) -> Result<Document> {
     fs::write(personal.join("assets/files/private-fixture.txt"), b"unrelated attachment fixture")?;
     Ok(Document { title: RichText::plain("共享合成笔记"),
         blocks: vec![Block::text("共享正文"), Block::new(BlockKind::File(FileBlock {
-            src_kind: "path".into(), src: asset.into(), name: "shared-fixture.txt".into(), view: FileView::Card,
+            src_kind: "path".into(), src: asset.into(), name: "shared-fixture.txt".into(), view: FileView::Card, preview: Default::default(),
         }), RichText::default())], ..Default::default() })
 }
 

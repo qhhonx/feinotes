@@ -60,7 +60,7 @@ pub fn run(command: &str) -> Result<()> {
                 fs::write(&path, attachment_bytes())?;
                 let mut added = Document { title: RichText::plain("离线附件笔记"), ..Default::default() };
                 added.blocks.push(Block::new(BlockKind::File(FileBlock {
-                    src_kind: "path".into(), src: ASSET.into(), name: "offline-attachment.bin".into(), view: FileView::Card,
+                    src_kind: "path".into(), src: ASSET.into(), name: "offline-attachment.bin".into(), view: FileView::Card, preview: Default::default(),
                 }), RichText::default()));
                 let added = store.create_from(&added)?;
                 store.set_parent(&added, Some(&folder))?;
@@ -158,7 +158,7 @@ pub fn run(command: &str) -> Result<()> {
             fs::write(path, attachment_bytes())?;
             let note = store.create_from(&Document { title: RichText::plain("备份测试笔记"),
                 blocks: vec![Block::text("离线正文，还没上传"), Block::new(BlockKind::File(FileBlock {
-                    src_kind: "path".into(), src: ASSET.into(), name: "offline-attachment.bin".into(), view: FileView::Card,
+                    src_kind: "path".into(), src: ASSET.into(), name: "offline-attachment.bin".into(), view: FileView::Card, preview: Default::default(),
                 }), RichText::default())], ..Default::default() })?;
             store.set_parent(&note, Some(&folder))?;
             let archived = store.create_from(&Document { title: RichText::plain("备份回收站"),
@@ -198,7 +198,7 @@ pub fn run(command: &str) -> Result<()> {
                 if index == 0 {
                     for (source, name) in [(ASSET, "small.bin"), (LARGE_ASSET, "large.bin")] {
                         doc.blocks.push(Block::new(BlockKind::File(FileBlock {
-                            src_kind: "path".into(), src: source.into(), name: name.into(), view: FileView::Card,
+                            src_kind: "path".into(), src: source.into(), name: name.into(), view: FileView::Card, preview: Default::default(),
                         }), RichText::default()));
                     }
                 }
@@ -416,7 +416,7 @@ pub fn prepare_legacy() -> Result<()> {
     fs::write(&path, attachment_bytes())?;
     doc.blocks.push(Block::new(BlockKind::File(FileBlock {
         src_kind: "path".into(), src: format!("/old-machine/Quiet.md/{ASSET}"),
-        name: "offline-attachment.bin".into(), view: FileView::Card,
+        name: "offline-attachment.bin".into(), view: FileView::Card, preview: Default::default(),
     }), RichText::default()));
     let id = old.create_from(&doc)?;
     old.set_parent(&id, Some(&folder))?;

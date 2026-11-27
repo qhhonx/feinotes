@@ -48,7 +48,7 @@ impl Editor {
         #[cfg(target_os = "ios")]
         self.reset_touch_selection();
         self.read_only = on;
-        if on { self.discard_open_board(); }
+        if on { self.discard_open_board(); self.cancel_file_resize(); }
         self.ro_doc = on.then(|| self.core.doc.clone());
         self.core.break_coalescing();
         self.menu = None;

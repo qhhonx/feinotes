@@ -1308,6 +1308,21 @@ impl Core {
         }
     }
 
+    /// Update the attachment preview layout as one undo step.
+    pub fn set_file_preview_layout(&mut self, id: BlockId, mut layout: crate::model::FilePreviewLayout) -> bool {
+        layout.width = layout.width.filter(|&value| value > 0);
+        layout.height = layout.height.filter(|&value| value > 0);
+        if !matches!(self.kind_of(id), Some(BlockKind::File(f)) if f.view == crate::model::FileView::Preview && f.preview != layout) {
+            return false;
+        }
+        self.checkpoint(EditKind::Other);
+        self.break_coalescing();
+        if let Some(BlockKind::File(f)) = self.block_mut(id).map(|b| &mut b.kind) {
+            f.preview = layout;
+        }
+        true
+    }
+
     /// 画板: block `id`'s scene replaced (the full-window board closed with
     /// changes), as one undo step. False when nothing changed.
     /// `join`: the open board saving as it's edited — every change after
@@ -3827,6 +3842,37 @@ mod tests {
 
     fn id(c: &Core, n: usize) -> BlockId {
         c.units()[n].id
+    }
+
+    #[test]
+    fn video_preview_layout_round_trips_and_undoes() {
+        use crate::model::{FilePreviewLayout, FileView};
+        let source = r#"<title>Video</title><figure view-type="Preview"><source path="/assets/tutorial.mp4" name="tutorial.mp4" preview-width="280"/></figure>"#;
+        let mut c = doc(source);
+        let block = c.doc.blocks[0].id;
+        let legacy = FilePreviewLayout { width: Some(280), ..Default::default() };
+        assert!(matches!(c.kind_of(block), Some(BlockKind::File(f)) if f.preview == legacy));
+        assert!(!c.set_file_preview_layout(block, legacy));
+        let layout = FilePreviewLayout { height: Some(295), align: Some(Align::Left), ..legacy };
+        assert!(c.set_file_preview_layout(block, layout));
+        let saved = xml(&c);
+        assert!(saved.contains(r#"preview-width="280" preview-height="295" preview-align="left""#));
+        assert_eq!(xml(&doc(&saved)), saved);
+        assert!(c.undo());
+        assert!(!xml(&c).contains("preview-height"));
+        assert!(c.redo());
+        c.set_file_view(block, FileView::Card);
+        assert!(!c.set_file_preview_layout(block, FilePreviewLayout::default()));
+        c.set_file_view(block, FileView::Preview);
+        c.file_to_inline(block);
+        let mut reopened = doc(&xml(&c));
+        let inline = reopened.doc.blocks[0].id;
+        assert_eq!(reopened.inline_to_file(Pos::new(inline, 0), FileView::Preview), Some(inline));
+        assert!(matches!(reopened.kind_of(inline), Some(BlockKind::File(f)) if f.preview == layout));
+        let reset = FilePreviewLayout { align: layout.align, ..Default::default() };
+        assert!(reopened.set_file_preview_layout(inline, reset));
+        assert!(!xml(&reopened).contains("preview-width"));
+        assert!(xml(&reopened).contains(r#"preview-align="left""#));
     }
 
     /// 右键: a click inside the selection keeps it, one outside replaces it.

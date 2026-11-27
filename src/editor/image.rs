@@ -95,7 +95,12 @@ enum Src {
     Blocked,
 }
 
-struct Resize {
+enum Resize {
+    Image(ImageResize),
+    File(super::file::PreviewResize),
+}
+
+struct ImageResize {
     id: BlockId,
     from_x: Pixels,
     start_w: f32,
@@ -103,6 +108,7 @@ struct Resize {
     dir: f32,
     /// A centred image grows on both sides.
     mul: f32,
+    min: f32,
     max: f32,
     aspect: f32,
     changed: bool,
@@ -739,6 +745,51 @@ fn crop_display(g: &Geo, container: f32) -> (f32, f32) {
     (g.fw * s, g.fh * s)
 }
 
+pub(super) fn resize_outline(radius: f32, active: bool, hover: Hsla) -> Div {
+    let d = div().absolute().inset_0().rounded(px(radius));
+    if active { d.border_2().border_color(Theme::primary()) } else { d.border_1().border_color(hover) }
+}
+
+/// The grip's direction on each axis: left/top = -1, right/bottom = 1.
+pub(super) fn resize_handles(
+    id: BlockId, active: bool, horizontal_only: bool, cx: &mut Context<Editor>,
+    start: impl Fn(&mut Editor, (i8, i8), CursorStyle, Point<Pixels>, &mut Window, &mut Context<Editor>) + Copy + 'static,
+) -> Vec<Stateful<Div>> {
+    let corners = [("tl", -1, -1), ("tr", 1, -1), ("bl", -1, 1), ("br", 1, 1)];
+    corners.into_iter().map(|(key, x, y)| {
+        let cursor = if horizontal_only { CursorStyle::ResizeLeftRight }
+            else if x == y { CursorStyle::ResizeUpLeftDownRight }
+            else { CursorStyle::ResizeUpRightDownLeft };
+        div()
+            .id(SharedString::from(format!("img-handle-{key}-{}", id.0)))
+            .absolute()
+            .size(px(20.))
+            .map(|d| if x < 0 { d.left(px(-9.)) } else { d.right(px(-9.)) })
+            .map(|d| if y < 0 { d.top(px(-9.)) } else { d.bottom(px(-9.)) })
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor(cursor)
+            .child(
+                div()
+                    .size(px(10.))
+                    .rounded_full()
+                    .bg(gpui::white())
+                    .border_1()
+                    .border_color(if active { Theme::primary() } else { theme::ca(craft::N1000, 0.24) })
+                    .shadow(vec![BoxShadow { inset: false, color: Theme::shadow(), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.) }]),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |e, ev: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    window.prevent_default();
+                    start(e, (x, y), cursor, ev.position, window, cx);
+                }),
+            )
+    }).collect()
+}
+
 pub(super) fn spinning(id: &'static str, size: f32, color: Hsla, period: f32) -> AnyElement {
     svg()
         .path("editor-icons/spinner.svg")
@@ -889,48 +940,9 @@ impl R<'_> {
         };
         // `.img:after`: drawn inside the image — a 2pt accent ring when
         // selected, the quiet hairline under the pointer.
-        let outline = (ok && !cropping && (active || hovered)).then(|| {
-            let d = div().absolute().inset_0().rounded(px(radius));
-            if active { d.border_2().border_color(Theme::primary()) } else { d.border_1().border_color(ring) }
-        });
-        // Resize handles: white dots with a soft drop, the accent rim once selected.
+        let outline = (ok && !cropping && (active || hovered)).then(|| resize_outline(radius, active, ring));
         let handles = (!cfg!(target_os = "ios") && ok && !self.ghost && !cropping && !ed.read_only && (active || hovered)).then(|| {
-            [(true, true), (false, true), (true, false), (false, false)].map(|(left, top)| {
-                let corner = match (left, top) {
-                    (true, true) => "img-handle-tl",
-                    (false, true) => "img-handle-tr",
-                    (true, false) => "img-handle-bl",
-                    (false, false) => "img-handle-br",
-                };
-                let cursor = if left == top { CursorStyle::ResizeUpLeftDownRight } else { CursorStyle::ResizeUpRightDownLeft };
-                div()
-                    .id(SharedString::from(format!("{corner}-{}",id.0)))
-                    .absolute()
-                    .size(px(20.))
-                    .map(|d| if left { d.left(px(-9.)) } else { d.right(px(-9.)) })
-                    .map(|d| if top { d.top(px(-9.)) } else { d.bottom(px(-9.)) })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor(cursor)
-                    .child(
-                        div()
-                            .size(px(10.))
-                            .rounded_full()
-                            .bg(gpui::white())
-                            .border_1()
-                            .border_color(if active { Theme::primary() } else { theme::ca(craft::N1000, 0.24) })
-                            .shadow(vec![BoxShadow { inset: false, color: Theme::shadow(), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.) }]),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |e, ev: &MouseDownEvent, window, cx| {
-                            cx.stop_propagation();
-                            window.prevent_default();
-                            e.start_resize(id, left, cursor, ev.position.x, window, cx);
-                        }),
-                    )
-            })
+            resize_handles(id, active, false, cx, move |e, (x, _), cursor, p, window, cx| e.start_resize(id, x < 0, cursor, p.x, window, cx))
         });
         let overlay = cropping.then(|| ui.crop.as_ref().map(|c| self.crop_overlay(c, bw, bh, cx))).flatten();
         let boxes = ui.boxes.clone();
@@ -1142,6 +1154,11 @@ impl Editor {
         if let Some(c) = &self.img.crop {
             out.push((c.id, 0x9e37_79b9_u64.wrapping_mul(c.id.0 | 1) ^ 0xc0ff_ee));
         }
+        if let Some(Resize::File(r)) = &self.img.resize
+            && let Some(layout) = r.draft
+        {
+            out.push((r.id, u64::from(layout.width.unwrap_or(0)) << 32 | u64::from(layout.height.unwrap_or(0))));
+        }
         out
     }
 
@@ -1182,61 +1199,88 @@ impl Editor {
     fn start_resize(&mut self, id: BlockId, left: bool, cursor: CursorStyle, x: Pixels, window: &mut Window, cx: &mut Context<Self>) {
         let Some((g, container)) = self.image_geo(id) else { return };
         let center = self.core.block(id).is_some_and(|b| b.align == Align::Center);
+        self.begin_resize(id, Resize::Image(ImageResize {
+            id, from_x: x, start_w: g.w, dir: if left { -1. } else { 1. },
+            mul: if center { 2. } else { 1. }, min: MIN, max: container.max(MIN),
+            aspect: g.h / g.w, changed: false, cursor,
+        }), window, cx);
+    }
+
+    pub(super) fn start_file_resize(&mut self, resize: super::file::PreviewResize, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.read_only { self.begin_resize(resize.id, Resize::File(resize), window, cx); }
+    }
+
+    fn begin_resize(&mut self, id: BlockId, resize: Resize, window: &mut Window, cx: &mut Context<Self>) {
         crate::gpui_compat::focus(window, &self.focus, cx);
         self.menu = None;
         self.slash = None;
         self.core.clear_block_sel();
         self.core.cell_sel = None;
         self.core.sel = Selection::caret(Pos::new(id, 0));
-        self.img.resize = Some(Resize {
-            id,
-            from_x: x,
-            start_w: g.w,
-            dir: if left { -1. } else { 1. },
-            mul: if center { 2. } else { 1. },
-            max: container.max(MIN),
-            aspect: g.h / g.w,
-            changed: false,
-            cursor,
-        });
+        self.img.resize = Some(resize);
         cx.notify();
     }
 
-    pub(super) fn resizing_image(&self) -> bool {
-        self.img.resize.is_some()
+    pub(super) fn resizing_image(&self) -> bool { self.img.resize.is_some() }
+
+    pub(super) fn file_resize_layout(&self, id: BlockId) -> Option<crate::model::FilePreviewLayout> {
+        match &self.img.resize {
+            Some(Resize::File(r)) if r.id == id && r.generation == self.core.generation && !self.read_only => r.draft,
+            _ => None,
+        }
     }
 
-    /// `width = start + round(dx)·dir·(2 if centred)`, 32 … column.
-    pub(super) fn resize_to(&mut self, x: Pixels, cx: &mut Context<Self>) {
-        let Some(r) = &self.img.resize else { return };
-        let dx = f32::from(x - r.from_x).round();
-        let w = clampf(r.start_w + dx * r.dir * r.mul, MIN, r.max);
-        let (id, h) = (r.id, w * r.aspect);
+    pub(super) fn cancel_file_resize(&mut self) {
+        if matches!(self.img.resize, Some(Resize::File(_))) { self.img.resize = None; }
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(super) fn resize_file_axis(&mut self, axis: &str, value: f32, cx: &mut Context<Self>) {
+        if let Some(Resize::File(r)) = &mut self.img.resize {
+            let (w, h) = if axis == "width" { (value, r.frame.height) } else { (r.frame.width, value) };
+            if r.update(w, h) { cx.notify(); }
+        }
+    }
+
+    pub(super) fn resize_to(&mut self, p: Point<Pixels>, lock_aspect: bool, cx: &mut Context<Self>) {
+        match &mut self.img.resize {
+            Some(Resize::Image(r)) => {
+                let dx = f32::from(p.x - r.from_x).round();
+                let width = r.start_w + dx * r.dir * r.mul;
+                self.resize_image_width(width, cx);
+            }
+            Some(Resize::File(r)) => if r.drag(p, lock_aspect) { cx.notify(); },
+            None => {}
+        }
+    }
+
+    fn resize_image_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        let Some(Resize::Image(r)) = &mut self.img.resize else { return };
+        let w = clampf(width, r.min, r.max);
+        let id = r.id;
         let same = matches!(self.core.kind_of(id), Some(BlockKind::Image { width: Some(cw), .. }) if (*cw - w).abs() < 0.01);
-        if same || (!r.changed && (w - r.start_w).abs() < 0.01) {
-            return;
-        }
-        if !r.changed {
-            self.core.checkpoint(EditKind::Other);
-        }
-        if let Some(r) = &mut self.img.resize {
-            r.changed = true;
-        }
+        if same || (!r.changed && (w - r.start_w).abs() < 0.01) { return; }
+        if !r.changed { self.core.checkpoint(EditKind::Other); r.changed = true; }
         if let Some(BlockKind::Image { width, height, .. }) = self.core.block_mut(id).map(|b| &mut b.kind) {
             *width = Some(w);
-            *height = Some(h);
+            *height = Some(w * r.aspect);
         }
         cx.notify();
     }
 
-    pub(super) fn end_resize(&mut self, cx: &mut Context<Self>) {
-        if let Some(r) = self.img.resize.take() {
-            if r.changed {
+    pub(super) fn end_resize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(resize) = self.img.resize.take() else { return };
+        match resize {
+            Resize::Image(r) if r.changed => {
                 self.core.dirty = false;
                 cx.emit(EditorEvent::Changed);
             }
-            cx.notify();
+            Resize::File(r) if r.generation == self.core.generation => {
+                if let Some(layout) = r.draft { self.set_file_preview_layout(r.id, layout, window, cx); }
+            }
+            _ => {}
         }
+        cx.notify();
     }
 
     // ---- crop
@@ -1411,7 +1455,8 @@ impl Editor {
     /// keeps the cursor and the events with the drag.
     pub(super) fn image_drag_layer(&self) -> Option<AnyElement> {
         let cursor = match (&self.img.resize, &self.img.crop) {
-            (Some(r), _) => r.cursor,
+            (Some(Resize::Image(r)), _) => r.cursor,
+            (Some(Resize::File(r)), _) => r.cursor,
             (_, Some(CropEdit { drag: Some(d), .. })) => d.cursor,
             _ => return None,
         };
@@ -2605,8 +2650,7 @@ impl Editor {
             preview["rect"] = json!(c.rect);
             return Some(json!({"kind":"image-crop","title":tr("裁剪图片","Crop image"),"live":false,"fields":[preview]}));
         }
-        let mut alignment = field("alignment",tr("对齐","Alignment"),"choice",match self.core.block(block)?.align { Align::Left=>"left",Align::Center=>"center",Align::Right=>"right" });
-        alignment["options"] = json!([{"value":"left","title":tr("左对齐","Align left")},{"value":"center","title":tr("居中对齐","Align center")},{"value":"right","title":tr("右对齐","Align right")}]);
+        let alignment = super::object_mobile::alignment_field(self.core.block(block)?.align);
         let mut size = field("width",tr("宽度","Width"),"slider",&geo.w.to_string());
         size["minimum"] = json!(MIN);
         size["maximum"] = json!(container.max(MIN));
@@ -2629,7 +2673,7 @@ impl Editor {
 
     pub(super) fn mobile_image_event(&mut self, block: BlockId, action: &str, edit: Option<(&str,&str)>, window: &mut Window, cx: &mut Context<Self>) {
         use super::view::Menu;
-        if action != "object-edit" || !matches!(edit,Some(("width",_))) { self.end_resize(cx); }
+        if action != "object-edit" || !matches!(edit,Some(("width",_))) { self.end_resize(window,cx); }
         match action {
             "object-submit" | "object-close"=>{
                 if action == "object-submit" { self.save_crop(false,window,cx); } else { self.cancel_crop(cx); }
@@ -2639,10 +2683,13 @@ impl Editor {
             }
             "object-edit"=>match edit {
                 Some(("caption",value))=>self.set_caption_text(block,value,cx),
-                Some(("alignment",value))=>if let Some(align) = match value { "left"=>Some(Align::Left),"center"=>Some(Align::Center),"right"=>Some(Align::Right),_=>None } { self.core.set_align(&[block],align); self.changed(window,cx); },
+                Some(("alignment",value))=>if let Some(align) = super::object_mobile::alignment_value(value) { self.core.set_align(&[block],align); self.changed(window,cx); },
                 Some(("width",value))=>if let Some(width) = value.parse::<f32>().ok().filter(|v|v.is_finite()) {
                     if self.img.resize.is_none() { self.start_resize(block,false,CursorStyle::ResizeLeftRight,px(0.),window,cx); }
-                    if let Some(r) = &self.img.resize { let x = (width-r.start_w)/r.mul; self.resize_to(px(x),cx); }
+                    if let Some(Resize::Image(r)) = &self.img.resize {
+                        let width = r.start_w + ((width - r.start_w) / r.mul).round() * r.mul;
+                        self.resize_image_width(width, cx);
+                    }
                     self.menu = Some(Menu::NativeImage { block });
                 },
                 _=>{},

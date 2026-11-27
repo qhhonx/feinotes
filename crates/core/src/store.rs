@@ -6319,7 +6319,7 @@ mod tests {
         let moved = crate::vfs::temp_dir().join("elsewhere/Quiet.md/assets/p.png").to_string_lossy().into_owned();
         let d = Document { title: RichText::plain("图"), blocks: vec![
             image(abs("assets/p.png")),
-            Block::new(BlockKind::File(FileBlock { src_kind: "path".into(), src: abs("assets/files/1234/报告.pdf"), name: "报告.pdf".into(), view: FileView::Card }), RichText::default()),
+            Block::new(BlockKind::File(FileBlock { src_kind: "path".into(), src: abs("assets/files/1234/报告.pdf"), name: "报告.pdf".into(), view: FileView::Card, preview: Default::default() }), RichText::default()),
             image(moved.clone()),
             image(abs("assets/gone.png")),
             // Only through `.assets/x/` once moved: the fallback must not follow it.

@@ -1122,7 +1122,7 @@ mod tests {
         std::fs::create_dir_all(source.join("assets/files"))?;
         std::fs::write(source.join("assets/files/sample.txt"), b"independent copy")?;
         let doc = Document { title: RichText::plain("shared source"), blocks: vec![Block::new(BlockKind::File(FileBlock {
-            src_kind: "path".into(), src: "assets/files/sample.txt".into(), name: "sample.txt".into(), view: FileView::Card,
+            src_kind: "path".into(), src: "assets/files/sample.txt".into(), name: "sample.txt".into(), view: FileView::Card, preview: Default::default(),
         }), RichText::default())], ..Default::default() };
         let mut input = Store::open_sqlite_at(source.clone())?; let id = input.create_from(&doc)?;
         let copy = Store::copy_note_to_personal(&target.0, &source, &id, "personal copy")?;
@@ -1147,7 +1147,7 @@ mod tests {
         std::fs::create_dir_all(source.0.join("assets/files"))?;
         std::fs::write(source.0.join("assets/files/sample.txt"), b"recover this attachment")?;
         let doc = Document { title: RichText::plain("shared recovery"), blocks: vec![Block::new(BlockKind::File(FileBlock {
-            src_kind: "path".into(), src: "assets/files/sample.txt".into(), name: "sample.txt".into(), view: FileView::Card,
+            src_kind: "path".into(), src: "assets/files/sample.txt".into(), name: "sample.txt".into(), view: FileView::Card, preview: Default::default(),
         }), RichText::default())], ..Default::default() };
         let mut input = Store::open_sqlite_at(source.0.clone())?; let id = input.create_from(&doc)?;
         let copy = Store::archive_note_to_trash(&target.0, &source.0, &id)?;

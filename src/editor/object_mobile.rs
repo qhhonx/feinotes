@@ -24,6 +24,9 @@ impl Editor {
             if let BlockKind::Code { caption,lang,.. } = &block.kind { objects.push((format!("code:{}:0",block.id.0),format!("{}：{} ({lang})",tr("代码块","Code block"),caption.as_deref().unwrap_or(crate::settings::text(super::caption::CODE_CAPTION))))); }
             if !editable { return; }
             if let BlockKind::Image { caption,.. } = &block.kind { objects.push((format!("image:{}:0",block.id.0),format!("{}：{}",tr("图片","Image"),caption.as_deref().unwrap_or("")))); }
+            if let BlockKind::File(file) = &block.kind && self.file_preview_frame(block.id).is_some() {
+                objects.push((format!("file-preview:{}:0",block.id.0),format!("{}：{}",tr("附件预览尺寸","Attachment preview size"),file.name)));
+            }
             if matches!(block.kind,BlockKind::Countdown(_)) { objects.push((format!("countdown:{}:0",block.id.0),tr("倒计时","Countdown").into())); }
             if matches!(block.kind,BlockKind::Board(_)) {
                 board_number += 1;
@@ -69,6 +72,7 @@ impl Editor {
         match kind {
             "code"=>self.open_native_code(block,false,cx),
             "image"=>self.open_native_image(block,window,cx),
+            "file-preview"=>self.open_native_file_preview(block,window,cx),
             "equation"=>self.open_equation_editor(Pos::new(block,offset),window,cx),
             "button"=>self.open_button_panel(Pos::new(block,offset),window,cx),
             "reminder"=>self.open_reminder(Pos::new(block,offset),cx),
@@ -96,6 +100,7 @@ impl Editor {
     fn publish_native_object(&mut self, serial: u64, cx: &App) {
         let request = match self.menu {
             Some(Menu::NativeImage { block })=>self.native_image_request(block),
+            Some(Menu::NativeFilePreview { block })=>self.native_file_preview_request(block),
             Some(Menu::NativeCode { block,language })=>self.native_code_request(block,language,cx),
             Some(Menu::Equation { block,offset })=>self.core.equation_source(Pos::new(block,offset)).map(|source|json!({"kind":"equation","title":tr("公式","Equation"),"live":true,"fields":[field("source","LaTeX","multiline",&source)]})),
             Some(Menu::Button { .. })=>self.native_button_request(cx),
@@ -126,7 +131,8 @@ impl Editor {
             _=>false,
         };
         if !stamp.matches(self,serial,"object-form") || (!reading_action && (self.read_only || !crate::cloud_sync::shared::can_edit_in(&self.library_root,cx))) {
-            if matches!(self.menu,Some(Menu::NativeImage { .. })) { self.cancel_crop(cx); self.end_resize(cx); }
+            if matches!(self.menu,Some(Menu::NativeImage { .. })) { self.cancel_crop(cx); self.end_resize(window,cx); }
+            if matches!(self.menu,Some(Menu::NativeFilePreview { .. })) { self.cancel_file_resize(); }
             self.menu = None;
             self.cd.dialog = None;
             self.invalidate_table_controls();
@@ -135,6 +141,7 @@ impl Editor {
         }
         match self.menu {
             Some(Menu::NativeImage { block })=>self.mobile_image_event(block,action,edit.as_ref().map(|e|(e.key.as_str(),e.value.as_str())),window,cx),
+            Some(Menu::NativeFilePreview { block })=>self.mobile_file_preview_event(block,action,edit.as_ref().map(|e|(e.key.as_str(),e.value.as_str())),window,cx),
             Some(Menu::NativeCode { block,.. })=>self.mobile_code_event(block,action,edit.as_ref().map(|e|(e.key.as_str(),e.value.as_str())),window,cx),
             Some(Menu::Equation { .. })=>match action {
                 "object-edit"=>if let Some(edit) = edit.filter(|e|e.key == "source") { self.eq_field.update(cx,|field,cx|field.set_text(&edit.value,cx)); self.update_equation_source(&edit.value,window,cx); },
@@ -154,4 +161,23 @@ unsafe extern "C" {
     fn fei_ios_present_format_controls(json: *const std::ffi::c_char);
     fn fei_ios_present_object_form(json: *const std::ffi::c_char);
     fn fei_ios_dismiss_object_form();
+}
+
+
+pub(super) fn alignment_field(align: crate::model::Align) -> Value {
+    use crate::model::Align;
+    use crate::settings::tr;
+        let mut alignment = field("alignment",tr("对齐","Alignment"),"choice",match align { Align::Left=>"left",Align::Center=>"center",Align::Right=>"right" });
+        alignment["options"] = json!([{"value":"left","title":tr("左对齐","Align left")},{"value":"center","title":tr("居中对齐","Align center")},{"value":"right","title":tr("右对齐","Align right")}]);
+    alignment
+}
+
+pub(super) fn alignment_value(value: &str) -> Option<crate::model::Align> {
+    use crate::model::Align;
+    match value {
+        "left" => Some(Align::Left),
+        "center" => Some(Align::Center),
+        "right" => Some(Align::Right),
+        _ => None,
+    }
 }

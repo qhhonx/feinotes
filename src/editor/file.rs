@@ -14,7 +14,7 @@ use crate::editor_theme::{self as theme, Theme, craft};
 use crate::editor_ui::{ROW_RADIUS, TipExt, icon};
 use crate::design::toolbar::{TOOLBAR_H, toolbar_layout, w as tw};
 use crate::design::{Button, ButtonGroupSeparator, ButtonSize, Toggle, Toolbar};
-use super::image::picture;
+use super::image::{picture, resize_handles, resize_outline};
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -28,6 +28,12 @@ const PREVIEW_MAX_W: f32 = 818.;
 /// New attachments open as 预览视图 under these sizes (documents, video).
 const DOC_PREVIEW_MAX: u64 = 10 << 20;
 const VIDEO_PREVIEW_MAX: u64 = 100 << 20;
+const PREVIEW_MIN_W: f32 = 96.;
+const AUDIO_MIN_W: f32 = 180.;
+const AUDIO_PREVIEW_HEIGHT: f32 = 70.;
+const VIDEO_PLAY_SIZE: f32 = 56.;
+const PREVIEW_FOOTER_HEIGHT: f32 = 42.;
+const PREVIEW_MAX_HEIGHT: f32 = 600.;
 /// Cards in the page stay crisp: radius 5 with a 1pt hairline.
 const RADIUS: f32 = 5.;
 
@@ -77,6 +83,130 @@ fn preview_of(name: &str) -> Option<Kind> {
         Kind::Audio if !matches!(ext.as_str(), "mp3" | "m4a" | "wav" | "aac" | "flac" | "aiff" | "aif" | "caf") => None,
         Kind::Video if !matches!(ext.as_str(), "mp4" | "mov" | "m4v") => None,
         k => Some(k),
+    }
+}
+
+fn preview_kind(file: &FileBlock) -> Option<Kind> {
+    (file.view == FileView::Preview).then(|| preview_of(&file.name)).flatten()
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PreviewFrame {
+    pub(super) width: f32,
+    pub(super) height: f32,
+    min_width: f32,
+    max_width: f32,
+    height_per_width: f32,
+    min_height: f32,
+    default_height: f32,
+    audio: bool,
+}
+
+impl PreviewFrame {
+    fn visual(container: f32, kind: Kind, (tw, th): (f32, f32), layout: FilePreviewLayout) -> Self {
+        let max_width = ((if kind == Kind::Video { container } else { container.min(PREVIEW_MAX_W) }) - 2.).max(0.);
+        let min_width = max_width.min(PREVIEW_MIN_W);
+        let ratio = th / tw.max(1.);
+        let default_height = (max_width * ratio).clamp(if kind == Kind::Video { 160. } else { 120. }, PREVIEW_MAX_HEIGHT);
+        // The default has a minimum height for very wide previews. Scale that
+        // allowance down with the width as well, so the default remains reachable.
+        let height_per_width = ratio.max(default_height / max_width.max(1.));
+        let min_height = (min_width * ratio).max(VIDEO_PLAY_SIZE).min(default_height);
+        let mut frame = Self { width: max_width, height: default_height,
+            min_width, max_width, height_per_width, min_height, default_height, audio: false };
+        frame.width = frame.clamp_width(layout.width.map_or(max_width, |w| w as f32));
+        frame.height = frame.clamp_height(frame.width, layout.height.map_or(frame.max_height(frame.width), |h| h as f32));
+        frame
+    }
+
+    fn audio(container: f32, layout: FilePreviewLayout) -> Self {
+        let min_width = container.min(AUDIO_MIN_W);
+        Self {
+            width: layout.width.map_or(container, |w| (w as f32).clamp(min_width, container)),
+            height: AUDIO_PREVIEW_HEIGHT, min_width, max_width: container, height_per_width: 0.,
+            min_height: AUDIO_PREVIEW_HEIGHT, default_height: AUDIO_PREVIEW_HEIGHT, audio: true,
+        }
+    }
+
+    fn outer_width(self) -> f32 { self.width + if self.audio { 0. } else { 2. } }
+
+    fn clamp_width(self, w: f32) -> f32 { w.clamp(self.min_width, self.max_width) }
+
+    fn max_height(self, w: f32) -> f32 { (w * self.height_per_width).clamp(self.min_height, self.default_height) }
+
+    fn clamp_height(self, w: f32, h: f32) -> f32 { h.clamp(self.min_height, self.max_height(w)) }
+
+    fn fitted(self, (tw, th): (f32, f32)) -> (f32, f32) {
+        let scale = (self.width / tw.max(1.)).min(self.height / th.max(1.));
+        (tw * scale, th * scale)
+    }
+}
+
+fn preview_align(layout: FilePreviewLayout, block_align: Align) -> Align {
+    layout.align.unwrap_or(if layout.width.is_some() { Align::Center } else { block_align })
+}
+
+pub(super) struct PreviewResize {
+    pub(super) id: BlockId,
+    pub(super) generation: u64,
+    pub(super) cursor: CursorStyle,
+    pub(super) frame: PreviewFrame,
+    pub(super) draft: Option<FilePreviewLayout>,
+    from: Point<Pixels>,
+    axes: (i8, i8),
+    original: FilePreviewLayout,
+    align: Align,
+}
+
+impl PreviewResize {
+    pub(super) fn drag(&mut self, p: Point<Pixels>, lock_aspect: bool) -> bool {
+        let (x, y) = self.axes;
+        let multiplier = if self.align == Align::Center { 2. } else { 1. };
+        let dw = f32::from(p.x - self.from.x) * f32::from(x) * multiplier;
+        let dh = f32::from(p.y - self.from.y) * f32::from(y);
+        let (w, h) = (self.frame.width, self.frame.height);
+        if !lock_aspect || self.frame.audio { return self.update(w + dw, h + dh); }
+
+        // Scale the outside of the card, including the fixed filename bar.
+        let fixed_height = PREVIEW_FOOTER_HEIGHT + 2.;
+        let outer_w = self.frame.outer_width();
+        let outer_h = h + fixed_height;
+        let dx = dw / outer_w;
+        let dy = dh / outer_h;
+        let change = if dx.abs() >= dy.abs() { dx } else { dy };
+        let min = ((self.frame.min_width + 2.) / outer_w).max((self.frame.min_height + fixed_height) / outer_h).min(1.);
+        let max = ((self.frame.max_width + 2.) / outer_w).min((self.frame.default_height + fixed_height) / outer_h).max(1.);
+        let dimensions = |scale: f32| (outer_w * scale - 2., outer_h * scale - fixed_height);
+        let mut scale = (1. + change).clamp(min, max);
+        let (target_w, target_h) = dimensions(scale);
+        if target_h > self.frame.max_height(target_w) {
+            // Find the furthest allowed size along the locked aspect ratio.
+            let mut allowed = 1.;
+            for _ in 0..16 {
+                let middle = (allowed + scale) / 2.;
+                let (w, h) = dimensions(middle);
+                if h <= self.frame.max_height(w) { allowed = middle; } else { scale = middle; }
+            }
+            scale = allowed;
+        }
+        let (w, h) = dimensions(scale);
+        self.update(w, h)
+    }
+
+    pub(super) fn update(&mut self, w: f32, h: f32) -> bool {
+        let frame = self.frame;
+        let width = frame.clamp_width(w.round());
+        let height = frame.clamp_height(width, h.round());
+        let width_changed = width.round() != frame.width.round();
+        let height_changed = height.round() != frame.height.round();
+        let next = (width_changed || height_changed).then(|| FilePreviewLayout {
+            width: if width_changed { Some(width.round() as u32) } else { self.original.width },
+            height: (!frame.audio).then(|| height.round() as u32),
+            align: self.original.align.or(Some(self.align)),
+        });
+        if self.draft == next { return false; }
+        self.draft = next;
+        true
     }
 }
 
@@ -172,6 +302,7 @@ pub(super) struct FileUi {
     thumbs: RefCell<HashMap<PathBuf, Thumb>>,
     queue: RefCell<Vec<PathBuf>>,
     sizes: RefCell<HashMap<PathBuf, Option<u64>>>,
+    preview_columns: RefCell<HashMap<BlockId, f32>>,
     /// Box of every card / preview drawn this frame (window coordinates).
     pub(super) boxes: Rc<RefCell<HashMap<BlockId, Bounds<Pixels>>>>,
     /// Audio players by file, made when the player first shows.
@@ -189,6 +320,7 @@ impl FileUi {
             thumbs: RefCell::default(),
             queue: RefCell::default(),
             sizes: RefCell::default(),
+            preview_columns: RefCell::default(),
             boxes: Rc::default(),
             players: RefCell::default(),
             bars: Rc::default(),
@@ -321,7 +453,7 @@ fn file_block_from_path(root: &Path, p: &Path) -> Option<Block> {
         Some(Kind::Pdf | Kind::Word | Kind::Excel | Kind::Ppt) if size < DOC_PREVIEW_MAX => FileView::Preview,
         _ => FileView::Card,
     };
-    let f = FileBlock { src_kind: "path".into(), src: crate::store::asset_source_in(root, &dest), name, view };
+    let f = FileBlock { src_kind: "path".into(), src: crate::store::asset_source_in(root, &dest), name, view, preview: Default::default() };
     Some(Block::new(BlockKind::File(f), RichText::default()))
 }
 
@@ -367,7 +499,9 @@ impl R<'_> {
         let path = local_path(&self.ed.library_root, f);
         let size = path.as_ref().and_then(|p| ed.file.size(p));
         let kind = kind_of(&f.name);
-        let preview = (f.view == FileView::Preview && size.is_some()).then(|| preview_of(&f.name)).flatten();
+        let preview = size.and_then(|_| preview_kind(f));
+        let layout = ed.file_resize_layout(id).unwrap_or(f.preview);
+        let align = if preview.is_some() { preview_align(layout, b.align) } else { b.align };
         let st = theme::style();
         let attachment_bg = st.color("attachment.bg");
         let radius = st.num_override("attachment.radius").unwrap_or(RADIUS);
@@ -401,8 +535,26 @@ impl R<'_> {
                 }
             })
         };
+        if preview.is_some() && !self.ghost { ed.file.preview_columns.borrow_mut().insert(id, container); }
+        let wrap = |card: Stateful<Div>, frame: PreviewFrame, cx: &mut Context<Editor>| {
+            if self.ghost || !(active || hovered) { return card.into_any_element(); }
+            let generation = ed.core.generation;
+            let original = f.preview;
+            let dots = (!cfg!(target_os = "ios") && !ed.read_only
+                && (frame.max_width > frame.min_width || frame.max_height(frame.width) > frame.min_height)).then(|| {
+                resize_handles(id, selected, frame.audio, cx, move |e, axes, cursor, from, window, cx| {
+                    e.start_file_resize(PreviewResize { id, generation, cursor, frame, draft: None, from, axes, original, align }, window, cx);
+                })
+            });
+            div().relative().flex_none().w(px(frame.outer_width()))
+                .child(card)
+                .child(resize_outline(radius, selected, border))
+                .children(dots.into_iter().flatten())
+                .into_any_element()
+        };
         let body: AnyElement = match (preview, &path) {
             (Some(Kind::Audio), Some(p)) => {
+                let frame = PreviewFrame::audio(container, layout);
                 let pl = ed.file.player(p);
                 let (t, d) = pl.as_ref().map_or((0., 0.), |pl| (pl.time(), pl.duration()));
                 let playing = pl.as_ref().is_some_and(|pl| pl.playing());
@@ -471,8 +623,8 @@ impl R<'_> {
                             e.seek_audio(id, ev.position.x, cx);
                         }),
                     );
-                div()
-                    .w_full()
+                let card = div().id(("file-audio-preview", id.0)).relative()
+                    .w(px(frame.outer_width()))
                     .flex()
                     .flex_col()
                     .child(title)
@@ -480,47 +632,45 @@ impl R<'_> {
                         div()
                             .id(("file-audio", id.0))
                             .relative()
-                            .px(px(18.))
+                            .px(px(if frame.width < AUDIO_MIN_W { 6. } else { 18. }))
                             .py(px(6.))
                             .flex()
                             .items_center()
-                            .gap(px(14.))
-                            // The player bar: a quiet fill in the card rim.
+                            .gap(px(if frame.width < AUDIO_MIN_W { 5. } else { 14. }))
+                            // Keep the player's hairline neutral; the selection
+                            // ring surrounds both the title and the player.
                             .rounded(px(radius))
                             .bg(attachment_bg.unwrap_or_else(Theme::bg_overlay))
                             .border_1()
-                            .border_color(border)
+                            .border_color(st.color("attachment.border").unwrap_or_else(Theme::button_border))
                             .child(play)
                             .child(progress)
-                            .child(volume)
-                            .children(recorder),
+                            .child(volume),
                     )
-                    .into_any_element()
+                    .children(recorder);
+                wrap(card, frame, cx)
             }
             (Some(k), Some(p)) => {
                 let video = k == Kind::Video;
-                let w = if video { container } else { container.min(PREVIEW_MAX_W) };
-                let iw = (w - 2.).max(0.);
                 let thumb = ed.file.thumb(p, k);
-                let content: AnyElement = match &thumb {
-                    Thumb::Ready(t) => {
-                        let (tw, th) = ed.img.dims(t).unwrap_or((16., 9.));
-                        let full = iw * th / tw.max(1.);
-                        let h = full.clamp(if video { 160. } else { 120. }, 600.);
-                        let pic = if video {
-                            // Give the image its fitted dimensions before GPUI lays it out.
-                            let scale = (iw / tw.max(1.)).min(h / th.max(1.));
-                            let (pw, ph) = (tw * scale, th * scale);
-                            picture(t, pw.max(ph)).object_fit(ObjectFit::Contain)
-                                .absolute().left(px((iw - pw) / 2.)).top(px((h - ph) / 2.)).w(px(pw)).h(px(ph))
-                        } else {
-                            picture(t, iw.max(full)).object_fit(ObjectFit::Fill)
-                                .absolute().top_0().left_0().w(px(iw)).h(px(full))
-                        }.id(("file-thumb", id.0));
+                let dims = match &thumb {
+                    Thumb::Ready(t) => ed.img.dims(t),
+                    _ => None,
+                };
+                let frame = dims.map(|dims| PreviewFrame::visual(container, k, dims, layout));
+                let w = frame.map_or(if video { container } else { container.min(PREVIEW_MAX_W) }, PreviewFrame::outer_width);
+                let iw = (w - 2.).max(0.);
+                let content: AnyElement = match (&thumb, dims.zip(frame)) {
+                    (Thumb::Ready(t), Some((dims, frame))) => {
+                        let (pw, ph) = frame.fitted(dims);
+                        let (left, top) = ((iw - pw) / 2., (frame.height - ph) / 2.);
+                        let pic = picture(t, pw.max(ph)).object_fit(ObjectFit::Contain)
+                            .absolute().left(px(left)).top(px(top)).w(px(pw)).h(px(ph));
+                        let pic = pic.id(("file-thumb", id.0));
                         div()
                             .relative()
                             .w(px(iw))
-                            .h(px(h))
+                            .h(px(frame.height))
                             .overflow_hidden()
                             .bg(if video { gpui::black() } else { Theme::bg_body() })
                             .child(pic)
@@ -530,7 +680,7 @@ impl R<'_> {
                                     div().absolute().inset_0().flex().items_center().justify_center().child(
                                         div()
                                             .id(("file-play-video", id.0))
-                                            .size(px(56.))
+                                            .size(px(VIDEO_PLAY_SIZE))
                                             .rounded_full()
                                             .flex()
                                             .items_center()
@@ -546,7 +696,7 @@ impl R<'_> {
                             })
                             .into_any_element()
                     }
-                    t => div()
+                    (t, _) => div()
                         .w(px(iw))
                         .h(px(220.))
                         .flex()
@@ -561,7 +711,7 @@ impl R<'_> {
                         .into_any_element(),
                 };
                 let footer = div()
-                    .h(px(42.))
+                    .h(px(PREVIEW_FOOTER_HEIGHT))
                     .px(px(12.))
                     .flex()
                     .items_center()
@@ -570,8 +720,7 @@ impl R<'_> {
                     .border_color(Theme::line_divider())
                     .child(type_icon(kind, 20.))
                     .child(div().ml(px(8.)).min_w_0().text_size(px(13.)).text_color(Theme::text()).text_ellipsis().whitespace_nowrap().overflow_hidden().child(f.name.clone()));
-                // A crisp card: hairline, radius 5, the button drop.
-                div()
+                let card = div()
                     .id(("file-preview", id.0))
                     .relative()
                     .w(px(w))
@@ -583,8 +732,11 @@ impl R<'_> {
                     .when(menu_on, |d| d.child(ring().rounded(px(radius + 2.))))
                     .child(div().rounded(px((radius - 1.).max(0.))).overflow_hidden().child(content).child(footer))
                     .children(recorder)
-                    .on_mouse_down(MouseButton::Left, open_on_click)
-                    .into_any_element()
+                    .on_mouse_down(MouseButton::Left, open_on_click);
+                match frame {
+                    Some(frame) => wrap(card, frame, cx),
+                    None => card.into_any_element(),
+                }
             }
             _ => {
                 let pending = size.is_none() && ed.shared_file_pending(f, cx);
@@ -655,7 +807,7 @@ impl R<'_> {
             .w_full()
             .flex()
             .font_family(theme::DOC_UI_FONT)
-            .map(|d| match b.align {
+            .map(|d| match align {
                 Align::Left => d.justify_start(),
                 Align::Center => d.justify_center(),
                 Align::Right => d.justify_end(),
@@ -666,6 +818,18 @@ impl R<'_> {
 }
 
 impl Editor {
+    pub(super) fn set_file_preview_layout(&mut self, id: BlockId, layout: FilePreviewLayout, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only || self.file_preview_frame(id).is_none() { return; }
+        #[cfg(target_os = "ios")]
+        if !crate::cloud_sync::shared::can_edit_in(&self.library_root, cx) { return; }
+        if self.core.set_file_preview_layout(id, layout) { self.changed_preserving_viewport(window, cx); }
+    }
+
+    fn reset_file_frame(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(BlockKind::File(f)) = self.core.kind_of(id) else { return };
+        self.set_file_preview_layout(id, FilePreviewLayout { align: f.preview.align, ..Default::default() }, window, cx);
+    }
+
     /// The attachment showing as selected (toolbar, accent rim).
     pub(super) fn active_file(&self, focused: bool) -> Option<BlockId> {
         let h = self.core.sel.head.block;
@@ -828,7 +992,7 @@ impl Editor {
     /// 全屏 · 下载 | 文本视图 · 卡片视图 · 预览视图 above the selected attachment.
     pub(super) fn file_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let id = self.active_file(self.focus.is_focused(window))?;
-        if self.read_only || self.menu.is_some() || self.slash.is_some() || self.dragging || self.block_drag.is_some() {
+        if self.resizing_image() || self.read_only || self.menu.is_some() || self.slash.is_some() || self.dragging || self.block_drag.is_some() {
             return None;
         }
         let rect = self.probed(Probe::File(id))?;
@@ -907,6 +1071,35 @@ impl Editor {
                     ),
             );
             widths.push(tw::TOGGLE);
+        }
+        if self.file_preview_frame(id).is_some() {
+            let layout = f.preview;
+            let current = preview_align(layout, self.core.block(id)?.align);
+            bar = bar.child(sep());
+            widths.push(tw::SEPARATOR);
+            for (key, icon, tip, align) in [
+                ("ftb-left", "align-left", crate::settings::text("左对齐"), Align::Left),
+                ("ftb-center", "align-center", crate::settings::text("居中对齐"), Align::Center),
+                ("ftb-right", "align-right", crate::settings::text("右对齐"), Align::Right),
+            ] {
+                bar = bar.child(Toggle::new(key).editor_icon(icon).pressed(current == align).tip_above(tip, None)
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |e, _, window, cx| {
+                        cx.stop_propagation();
+                        window.prevent_default();
+                        if align != current {
+                            e.set_file_preview_layout(id, FilePreviewLayout { align: Some(align), ..layout }, window, cx);
+                        }
+                    })));
+                widths.push(tw::TOGGLE);
+            }
+            if layout.width.is_some() || layout.height.is_some() {
+                bar = bar.child(sep()).child(
+                    tool_btn("ftb-reset-size").editor_icon("image-reset")
+                        .tip_above(crate::settings::tr("恢复默认尺寸", "Restore default size"), None)
+                        .on_mouse_down(MouseButton::Left, act(Editor::reset_file_frame)),
+                );
+                widths.extend([tw::SEPARATOR, tw::BUTTON]);
+            }
         }
         let (_, w) = toolbar_layout(&widths);
         let x = (f32::from(rect.center().x) - w / 2.).clamp(f32::from(viewport.left()) + 8., (f32::from(viewport.right()) - w - 8.).max(f32::from(viewport.left()) + 8.));
@@ -1050,7 +1243,101 @@ impl Editor {
     }
 }
 
-/// `AVAudioPlayer` for the inline audio player.
+impl Editor {
+    pub(super) fn file_preview_frame(&self, id: BlockId) -> Option<PreviewFrame> {
+        let BlockKind::File(f) = self.core.kind_of(id)? else { return None };
+        let kind = preview_kind(f)?;
+        let path = local_path(&self.library_root, f)?;
+        self.file.size(&path)?;
+        let container = self.file.preview_columns.borrow().get(&id).copied().unwrap_or_else(|| self.content_width()).max(0.);
+        if container <= 2. { return None; }
+        let layout = self.file_resize_layout(id).unwrap_or(f.preview);
+        if kind == Kind::Audio { return Some(PreviewFrame::audio(container, layout)); }
+        let Thumb::Ready(thumb) = self.file.thumb(&path, kind) else { return None };
+        Some(PreviewFrame::visual(container, kind, self.img.dims(&thumb)?, layout))
+    }
+}
+
+#[cfg(target_os = "ios")]
+impl Editor {
+    pub(super) fn open_native_file_preview(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only || !crate::cloud_sync::shared::can_edit_in(&self.library_root, cx) || self.file_preview_frame(id).is_none() { return; }
+        self.core.clear_block_sel();
+        self.core.cell_sel = None;
+        self.core.sel = Selection::caret(Pos::new(id, 0));
+        crate::gpui_compat::focus(window, &self.focus, cx);
+        self.menu = Some(Menu::NativeFilePreview { block: id });
+        self.present_native_object(cx);
+    }
+
+    pub(super) fn native_file_preview_request(&self, id: BlockId) -> Option<serde_json::Value> {
+        use super::object_mobile::field;
+        use crate::settings::tr;
+        use serde_json::json;
+        let frame = self.file_preview_frame(id)?;
+        let block = self.core.block(id)?;
+        let BlockKind::File(f) = &block.kind else { return None };
+        let alignment = super::object_mobile::alignment_field(preview_align(f.preview, block.align));
+        let slider = |key, title, value: f32, min: f32, max: f32| {
+            let mut slider = field(key, title, "slider", &value.to_string());
+            slider["minimum"] = json!(min);
+            slider["maximum"] = json!(max);
+            slider
+        };
+        let mut fields = vec![alignment, slider("width", tr("宽度", "Width"), frame.width, frame.min_width, frame.max_width)];
+        if !frame.audio {
+            fields.push(slider("height", tr("高度", "Height"), frame.height, frame.min_height, frame.max_height(frame.width)));
+        }
+        if f.preview.width.is_some() || f.preview.height.is_some() {
+            fields.push(field("reset", tr("恢复默认尺寸", "Restore default size"), "action", ""));
+        }
+        Some(json!({"kind":"file-preview","title":tr("附件预览尺寸", "Attachment preview size"),"live":true,"fields":fields}))
+    }
+
+    pub(super) fn mobile_file_preview_event(&mut self, id: BlockId, action: &str, edit: Option<(&str, &str)>, window: &mut Window, cx: &mut Context<Self>) {
+        match (action, edit) {
+            ("object-edit", Some((axis @ ("width" | "height"), value))) => {
+                let Some(value) = value.parse::<f32>().ok().filter(|v| v.is_finite()) else { return };
+                if !self.resizing_image() {
+                    let Some(frame) = self.file_preview_frame(id) else { return };
+                    let Some(block) = self.core.block(id) else { return };
+                    let BlockKind::File(f) = &block.kind else { return };
+                    let original = f.preview;
+                    let align = preview_align(original, block.align);
+                    self.start_file_resize(PreviewResize {
+                        id, frame, original, align, generation: self.core.generation, draft: None,
+                        from: point(px(0.), px(0.)), axes: (0, 0), cursor: CursorStyle::Arrow,
+                    }, window, cx);
+                    self.menu = Some(Menu::NativeFilePreview { block: id });
+                }
+                self.resize_file_axis(axis, value, cx);
+            }
+            ("object-edit", Some(("alignment", value))) => {
+                self.end_resize(window, cx);
+                let Some(block) = self.core.block(id) else { return };
+                let BlockKind::File(f) = &block.kind else { return };
+                if let Some(align) = super::object_mobile::alignment_value(value)
+                    && align != preview_align(f.preview, block.align)
+                {
+                    self.set_file_preview_layout(id, FilePreviewLayout { align: Some(align), ..f.preview }, window, cx);
+                }
+            }
+            ("object-action", Some(("resize-end", _))) => self.end_resize(window, cx),
+            ("object-action", Some(("reset", _))) => {
+                self.cancel_file_resize();
+                self.reset_file_frame(id, window, cx);
+            }
+            ("object-submit" | "object-close", _) => {
+                self.end_resize(window, cx);
+                self.menu = None;
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+}
+
+
 #[cfg(target_os = "macos")]
 mod player {
     use objc::runtime::{BOOL, Object, YES};
@@ -1164,7 +1451,46 @@ mod player {
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, clock, format_size, kind_of, previewable};
+    use super::{PreviewFrame, PreviewResize, Kind, clock, format_size, kind_of, previewable};
+    use crate::model::{Align, BlockId, FilePreviewLayout};
+    use gpui::{CursorStyle, point, px};
+
+    #[test]
+    fn preview_resize_bounds_follow_the_width_and_preserve_the_source_aspect() {
+        let dims = (1600., 900.);
+        let layout = FilePreviewLayout::default();
+        let default = PreviewFrame::visual(642., Kind::Video, dims, layout);
+        assert_eq!((default.width, default.height), (640., 360.));
+        assert_eq!(default.min_width, 96.);
+        let narrow = PreviewFrame::visual(642., Kind::Video, dims, FilePreviewLayout { width: Some(320), height: Some(500), ..layout });
+        assert_eq!((narrow.width, narrow.height), (320., 180.));
+        assert_eq!(narrow.max_height(240.), 135.);
+        let short = PreviewFrame::visual(642., Kind::Video, dims, FilePreviewLayout { width: Some(240), height: Some(90), ..layout });
+        assert_eq!(short.fitted(dims), (160., 90.));
+        let portrait = PreviewFrame::visual(642., Kind::Video, (900., 1600.), layout);
+        assert_eq!(portrait.max_height(500.), 600.);
+        let wide_pdf = PreviewFrame::visual(1400., Kind::Pdf, (600., 900.), layout);
+        assert_eq!(wide_pdf.outer_width(), 818.);
+        let audio = PreviewFrame::audio(500., FilePreviewLayout { width: Some(80), height: Some(40), ..layout });
+        assert_eq!((audio.width, audio.height, audio.max_height(180.)), (180., 70., 70.));
+    }
+
+    #[test]
+    fn preview_corner_drags_can_resize_each_axis_or_lock_the_outer_aspect() {
+        let original = FilePreviewLayout { width: Some(420), height: Some(220), align: Some(Align::Left) };
+        let frame = PreviewFrame::visual(642., Kind::Video, (1600., 900.), original);
+        let mut resize = PreviewResize { id: BlockId(2), generation: 0, cursor: CursorStyle::Arrow,
+            frame, draft: None, from: point(px(0.), px(0.)), axes: (1, 1), original, align: Align::Left };
+        assert!(resize.drag(point(px(-30.), px(-25.)), false));
+        let draft = resize.draft.unwrap();
+        assert_eq!((draft.width, draft.height), (Some(390), Some(195)));
+        assert!(resize.drag(point(px(0.), px(-25.)), false));
+        assert_eq!(resize.draft.unwrap().width, original.width);
+        assert!(resize.drag(point(px(-50.), px(0.)), true));
+        let draft = resize.draft.unwrap();
+        let outer_aspect = (draft.width.unwrap() as f32 + 2.) / (draft.height.unwrap() as f32 + 44.);
+        assert!((outer_aspect - 422. / 264.).abs() < 0.01);
+    }
 
     #[test]
     fn sizes_and_kinds() {

@@ -1007,7 +1007,7 @@ mod tests {
         let root = crate::vfs::temp_dir().join(format!("quiet-export-{}", uuid::Uuid::new_v4()));
         crate::vfs::create_dir_all(root.join("assets")).unwrap();
         crate::vfs::write(root.join("assets/report (1).pdf"), b"pdf").unwrap();
-        let file = FileBlock { src_kind: "path".into(), src: "assets/report (1).pdf".into(), name: "Report [1]".into(), view: FileView::Card };
+        let file = FileBlock { src_kind: "path".into(), src: "assets/report (1).pdf".into(), name: "Report [1]".into(), view: FileView::Card, preview: Default::default() };
         let mut text = RichText::plain("before ");
         text.push("\u{fffc}", Marks { inline: Some(crate::docxml::to_inline(InlineKind::File(file))), ..Default::default() });
         text.push(" after", Marks::default());

@@ -533,12 +533,32 @@ fn file_of(e: &Element, view: FileView) -> FileBlock {
         // A local path names itself.
         if src_kind == "path" { src.rsplit('/').next().unwrap_or_default().to_string() } else { String::new() }
     });
-    FileBlock { src_kind, src, name, view }
+    let dimension = |key| e.attr(key).and_then(|value| value.parse::<u32>().ok()).filter(|&size| size > 0);
+    let preview = FilePreviewLayout {
+        width: dimension("preview-width"),
+        height: dimension("preview-height"),
+        align: match e.attr("preview-align") {
+            Some("left") => Some(Align::Left),
+            Some("center") => Some(Align::Center),
+            Some("right") => Some(Align::Right),
+            _ => None,
+        },
+    };
+    FileBlock { src_kind, src, name, view, preview }
 }
 
 fn source_xml(f: &FileBlock) -> String {
     let kind = if f.src_kind == "token" { "token" } else { "path" };
-    format!("<source {kind}=\"{}\" name=\"{}\"/>", esc_attr(&f.src), esc_attr(&f.name))
+    let mut out = format!("<source {kind}=\"{}\" name=\"{}\"", esc_attr(&f.src), esc_attr(&f.name));
+    for (key, value) in [("preview-width", f.preview.width), ("preview-height", f.preview.height)] {
+        if let Some(value) = value { out.push_str(&format!(" {key}=\"{value}\"")); }
+    }
+    if let Some(align) = f.preview.align {
+        let align = match align { Align::Left => "left", Align::Center => "center", Align::Right => "right" };
+        out.push_str(&format!(" preview-align=\"{align}\""));
+    }
+    out.push_str("/>");
+    out
 }
 
 /// An inline object of `kind`, with its canonical element.

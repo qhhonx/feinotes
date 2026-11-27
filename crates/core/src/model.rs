@@ -395,7 +395,7 @@ fn typing_marks(m: &Marks) -> Marks {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Align {
     #[default]
     Left,
@@ -908,6 +908,15 @@ pub struct FileBlock {
     pub src: String,
     pub name: String,
     pub view: FileView,
+    pub preview: FilePreviewLayout,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FilePreviewLayout {
+    /// Optional inner dimensions of the video preview, in logical points.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub align: Option<Align>,
 }
 
 /// 卡片视图 / 预览视图 (文本视图 is an inline `<source>` in a paragraph).

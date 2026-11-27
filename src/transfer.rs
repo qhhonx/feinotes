@@ -961,7 +961,7 @@ impl Workspace {
         fdl_core::vfs::write(root.join("assets/report.pdf"), b"attachment-content").unwrap();
         let outside = root.parent().unwrap().join("outside-private.txt");
         fdl_core::vfs::write(&outside, b"PRIVATE-MUST-NOT-EXPORT").unwrap();
-        let file = FileBlock { src_kind: "path".into(), src: "assets/report.pdf".into(), name: "Report".into(), view: FileView::Card };
+        let file = FileBlock { src_kind: "path".into(), src: "assets/report.pdf".into(), name: "Report".into(), view: FileView::Card, preview: Default::default() };
         let mut text = RichText::plain("Attachment: ");
         text.push("\u{fffc}", Marks { inline: Some(crate::docxml::to_inline(InlineKind::File(file))), ..Default::default() });
         let mut doc = Document { title: RichText::plain("Export safety"), blocks: vec![Block::new(BlockKind::Text, text)], ..Default::default() };

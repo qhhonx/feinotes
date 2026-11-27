@@ -110,7 +110,7 @@ fn hash_block(b: &Block, orders: &rustc_hash::FxHashMap<BlockId, String>, h: &mu
             (src, width.map(f32::to_bits), height.map(f32::to_bits), caption.as_ref().map(String::len), crop.map(|c| c.map(f32::to_bits))).hash(h)
         }
         BlockKind::Column { ratio } => ratio.to_bits().hash(h),
-        BlockKind::File(f) => (&f.src, &f.name, f.view).hash(h),
+        BlockKind::File(f) => (&f.src, &f.name, f.view, f.preview).hash(h),
         BlockKind::Board(bd) => bd.height.to_bits().hash(h),
         BlockKind::DataTable(t) => (&t.src, t.height.to_bits()).hash(h),
         BlockKind::Table(t) => {
@@ -1851,23 +1851,23 @@ impl Editor {
                     // The handle or crop box keeps following the pointer
                     // outside the page.
                     let e = entity.clone();
-                    window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                    window.on_mouse_event(move |ev: &MouseMoveEvent, phase, window, cx| {
                         if phase == DispatchPhase::Bubble {
                             e.update(cx, |ed, cx| match ev.pressed_button {
-                                Some(MouseButton::Left) if ed.resizing_image() => ed.resize_to(ev.position.x, cx),
+                                Some(MouseButton::Left) if ed.resizing_image() => ed.resize_to(ev.position, ev.modifiers.shift, cx),
                                 Some(MouseButton::Left) => ed.crop_drag_to(ev.position, ev.modifiers.shift, cx),
                                 _ => {
-                                    ed.end_resize(cx);
+                                    ed.end_resize(window, cx);
                                     ed.end_crop_drag(cx);
                                 }
                             });
                         }
                     });
                     let e = entity.clone();
-                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                    window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
                         if phase == DispatchPhase::Bubble {
                             e.update(cx, |ed, cx| {
-                                ed.end_resize(cx);
+                                ed.end_resize(window, cx);
                                 ed.end_crop_drag(cx);
                             });
                         }
@@ -1909,7 +1909,7 @@ impl Editor {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|ed, ev: &MouseUpEvent, window, cx| {
-                    ed.end_resize(cx);
+                    ed.end_resize(window, cx);
                     ed.end_crop_drag(cx);
                     ed.end_col_drag(window, cx);
                     ed.end_table_drag(window, cx);

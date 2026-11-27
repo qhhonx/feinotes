@@ -124,6 +124,8 @@ pub enum Menu {
     NativeCode { block: BlockId, language: bool },
     #[cfg(target_os = "ios")]
     NativeImage { block: BlockId },
+    #[cfg(target_os = "ios")]
+    NativeFilePreview { block: BlockId },
     CodeTools { block: BlockId },
     CalloutColor { block: BlockId, section: usize },
     /// Emoji picker; `selected` is the highlighted search result.
@@ -2881,8 +2883,8 @@ impl Editor {
     pub fn on_hover_move(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.resizing_image() {
             return match ev.pressed_button {
-                Some(MouseButton::Left) => self.resize_to(ev.position.x, cx),
-                _ => self.end_resize(cx),
+                Some(MouseButton::Left) => self.resize_to(ev.position, ev.modifiers.shift, cx),
+                _ => self.end_resize(window, cx),
             };
         }
         if self.crop_dragging() {

@@ -500,6 +500,36 @@ mod tests {
     }
 
     #[test]
+    fn attachment_preview_layout_survives_replica_merge_and_reopen() -> Result<()> {
+        use crate::model::{Align, FilePreviewLayout};
+        let initial = fixture(r#"<title>Attachment layout</title><p>Original text</p><figure view-type="Preview"><source path="assets/files/portrait.mp4" name="portrait.mp4"/></figure>"#)?;
+        let snapshot = seed(&initial)?;
+        let left = open(&snapshot)?;
+        let right = open(&snapshot)?;
+        let mut core = crate::editor::core::Core::new(render(&left)?);
+        let layout = FilePreviewLayout { width: Some(280), height: Some(295), align: Some(Align::Right) };
+        let id = core.doc.blocks[1].id;
+        assert!(core.set_file_preview_layout(id, layout));
+        let update = edit(&left, 12, &core.doc)?.context("Missing attachment layout update")?;
+        let mut remote = render(&right)?;
+        remote.blocks[0].text = RichText::plain("Independent remote edit");
+        let text_update = edit(&right, 19, &remote)?.context("Missing remote text update")?;
+        left.import(&text_update)?;
+        right.import(&update)?;
+        let merged = render(&left)?;
+        assert_eq!(merged, render(&right)?);
+        assert_eq!(merged.blocks[0].text.text, "Independent remote edit");
+        assert!(matches!(&merged.blocks[1].kind, BlockKind::File(file) if file.preview == layout));
+        let reopened = render(&open(&left.export(ExportMode::Snapshot)?)?)?;
+        assert_eq!(reopened, merged);
+        let xml = docxml::serialize(&reopened);
+        assert!(xml.contains(r#"preview-width="280" preview-height="295" preview-align="right""#));
+        assert!(crate::markdown::export(&reopened, &crate::markdown::Options { in_place: true, ..Default::default() }).text.contains("assets/files/portrait.mp4"));
+        assert_eq!(local_assets(&reopened), HashSet::from(["assets/files/portrait.mp4".into()]));
+        Ok(())
+    }
+
+    #[test]
     fn independent_seed_replicas_merge_single_character_changes() -> Result<()> {
         let xml = "<title>测试</title><p>海盐<strong>蓝鲸</strong>天空</p>";
         let left = open(&seed(&fixture(xml)?)?)?;

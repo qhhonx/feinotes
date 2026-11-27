@@ -791,7 +791,7 @@ impl Conv<'_> {
     fn media(&mut self, n: &Value, out: &mut Vec<Block>) {
         let src = html_src(st(n, "Data")).unwrap_or_default();
         if let Some(from) = self.asset(&src) && let Some(to) = self.assets.copy(&from) {
-            let f = FileBlock { src_kind: "path".into(), src: to.to_string_lossy().to_string(), name: asset_name(&from), view: FileView::Preview };
+            let f = FileBlock { src_kind: "path".into(), src: to.to_string_lossy().to_string(), name: asset_name(&from), view: FileView::Preview, preview: Default::default() };
             out.push(Block::new(BlockKind::File(f), RichText::default()));
             return;
         }
@@ -971,7 +971,7 @@ impl Conv<'_> {
     fn link(&mut self, href: &str, text: &str, m: &Marks, out: &mut Vec<Piece>) {
         if !href.contains("://") && let Some(from) = self.asset(href) && let Some(to) = self.assets.copy(&from) {
             let name = if text.trim().is_empty() { asset_name(&from) } else { text.trim().to_string() };
-            let f = FileBlock { src_kind: "path".into(), src: to.to_string_lossy().to_string(), name, view: FileView::Card };
+            let f = FileBlock { src_kind: "path".into(), src: to.to_string_lossy().to_string(), name, view: FileView::Card, preview: Default::default() };
             return push(out, crate::editor::core::EQUATION, &Marks { inline: Some(crate::docxml::to_inline(InlineKind::File(f))), ..m.clone() });
         }
         if href.starts_with("assets/") { self.report.missing_assets.push(href.to_string()); }
