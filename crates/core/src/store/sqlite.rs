@@ -339,14 +339,19 @@ impl Store {
         write_atomic(&root.join(".cloud-restore-ready"), marker)
     }
 
-    pub fn show_shared_note(db: &Connection, id: &str, front: &str, registered: u64) -> Result<bool> {
-        if db.query_row("SELECT EXISTS(SELECT 1 FROM library_entries WHERE id = ?1)", [id], |row| row.get::<_, bool>(0))? {
-            return Ok(false);
+    pub fn show_shared_note(db: &Connection, id: &str, front: &str, registered: u64, kind: DocKind) -> Result<bool> {
+        if let Some(raw) = db.query_row("SELECT meta FROM library_entries WHERE id = ?1", [id], |row| row.get::<_, String>(0)).optional()? {
+            if kind != DocKind::Board { return Ok(false); }
+            let mut meta: Meta = serde_json::from_str(&raw)?;
+            if meta.kind != DocKind::Doc || meta.folder.is_some() { return Ok(false); }
+            meta.kind = kind;
+            write_meta(db, id, &meta)?;
+            return Ok(true);
         }
         if !db.query_row("SELECT EXISTS(SELECT 1 FROM library_documents WHERE id = ?1 AND trashed = 0)", [id], |row| row.get::<_, bool>(0))? {
             return Ok(false);
         }
-        write_meta(db, id, &Meta { created: registered, modified: registered, markdown: !front.is_empty(), ..Default::default() })?;
+        write_meta(db, id, &Meta { created: registered, modified: registered, markdown: !front.is_empty(), kind, ..Default::default() })?;
         Ok(true)
     }
 

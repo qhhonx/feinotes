@@ -98,7 +98,14 @@ impl Workspace {
 
     /// 新建 › 画板: a standalone `.excalidraw` file in `parent`, opened at once.
     pub(crate) fn create_board(&mut self, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_shared() { return; }
+        #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+        if !self.is_shared() && let Some(id) = parent.as_ref()
+            && let Some(room) = crate::cloud_sync::shared::original::owner_room(&self.entries, id) {
+            let id = id.clone();
+            self.with_shared_document(room, window, cx, move |w, _, window, cx| w.create_board(Some(id.clone()), window, cx));
+            return;
+        }
+        if self.is_shared() && (!cfg!(target_os = "ios") || !self.can_create_in_shared_folder(parent.as_deref(), cx)) { return; }
         self.create_menu = None;
         let p = parent.clone();
         if !self.save_before(cx, move |w, window, cx| w.create_board(p.clone(), window, cx)) { return; }
@@ -111,6 +118,8 @@ impl Workspace {
                 self.entries = self.store.list();
                 self.sort();
                 if let Some(p) = &parent { self.expanded.insert(p.clone()); }
+                #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+                if self.is_shared() { self.sharing.expanded.extend(parent.iter().cloned()); }
                 self.search.update(cx, |s, cx| s.set_text("", cx));
                 self.open(&id, window, cx);
             }
@@ -326,15 +335,16 @@ impl Workspace {
             #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "cloudkit-sync"))]
             CreateTarget::SharedSidebar | CreateTarget::ShareNew => menu.children([false, true].into_iter().map(|folder| {
                 let sidebar = target == CreateTarget::SharedSidebar;
+                let kind = crate::cloud_sync::shared::NewSharedItem::for_folder(folder);
                 row(if folder { "new-shared-folder" } else { "new-shared-document" }, if folder { "folder" } else { "doc" },
-                    crate::sharing::new_shared_title(folder))
+                    crate::sharing::new_shared_title(kind))
                     .on_click(cx.listener(move |w, _, window, cx| {
                         if sidebar {
                             #[cfg(target_os = "macos")]
-                            w.open_new_shared_item(folder, window, cx);
+                            w.open_new_shared_item(kind, window, cx);
                             #[cfg(target_os = "ios")]
-                            w.personal_action(window, cx, move |w, window, cx| w.open_new_shared_item(folder, window, cx));
-                        } else { w.new_and_share(folder, window, cx); }
+                            w.personal_action(window, cx, move |w, window, cx| w.open_new_shared_item(kind, window, cx));
+                        } else { w.new_and_share(kind, window, cx); }
                     }))
             })),
             #[cfg(all(target_os = "macos", feature = "cloudkit-sync"))]

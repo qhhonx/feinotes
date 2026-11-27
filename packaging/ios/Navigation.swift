@@ -52,6 +52,7 @@ struct FeiNavigationState: Decodable, Equatable, Sendable {
     let block_selected:Bool
     let find_active:Bool
     let board_open:Bool
+    let standalone_board_open:Bool
     struct Route: Decodable, Equatable, Sendable {
         let key: String
         let title: String
@@ -652,7 +653,6 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
     }
     func composeNote(board: Bool = false) {
         guard allowsCompose,!applying,host?.navigationController?.transitionCoordinator == nil,let state else { return }
-        if board && !(hasPadWorkspace ? state.browser?.personal == true : !state.shared_session) { return }
         requestComposition(hasPadWorkspace ? "browse-compose" : "compose",state: state,
             scope: hasPadWorkspace ? state.browser?.listing.scope : state.listing?.scope,board: board)
     }
@@ -1215,11 +1215,17 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             }
             if state.kind == "note",state.current == nil { controller.navigationItem.rightBarButtonItems?.filter { ["fei.more","fei.share"].contains($0.accessibilityIdentifier ?? "") }.forEach { $0.isEnabled = false } }
             if state.kind == "trash" { controller.navigationItem.rightBarButtonItem?.isEnabled = !state.busy && state.items.contains(where: { $0.trashed }) }
-            let hidesBack = state.busy || state.board_open || state.kind == "history-preview"
+            let embeddedBoard = state.board_open && !state.standalone_board_open
+            let hidesBack = state.busy || embeddedBoard || state.kind == "history-preview"
             if controller.navigationItem.hidesBackButton != hidesBack { controller.navigationItem.hidesBackButton = hidesBack }
             host?.navigationController?.interactivePopGestureRecognizer?.isEnabled = !hidesBack && state.listing?.selection == nil
-            if state.board_open { controller.navigationItem.leftBarButtonItems = nil }
-            else { host?.padWorkspace?.configureDetailButtons(controller,state: state,coordinator: self) }
+            if embeddedBoard { controller.navigationItem.leftBarButtonItems = nil }
+            else if let workspace = host?.padWorkspace { workspace.configureDetailButtons(controller,state: state,coordinator: self) }
+            else if state.standalone_board_open,controller.navigationController?.viewControllers.first === controller {
+                controller.navigationItem.leftBarButtonItems = [boardBackButton()]
+            } else if controller.navigationItem.leftBarButtonItem === standaloneBoardBackItem {
+                controller.navigationItem.leftBarButtonItems = nil
+            }
         }
         let overlapsChrome = state.editorOverlapsChrome
         if route.overlapsChrome != overlapsChrome || route.chromeTheme != theme {
@@ -1247,7 +1253,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         let shared = state.kind == "note" ? state.document_shared : state.shared_session
         let identity = FeiRouteController.BarIdentity(kind: state.kind,shared: shared,editing: state.kind == "note" && state.can_edit,reading: state.reading,writeAllowed: state.write_allowed,typing: state.kind == "note" && typing,blockSelected: state.block_selected,expanded: expanded,topTools: host?.navigationEditorTools.isEmpty == false,composing: state.can_create,board: state.board_open,collaborators: state.editing_collaborators,appearance: state.appearance,theme: state.theme,labels: state.labels)
         if let overview = shareOverview {
-            if shareOverviewScope == state.editor_scope && state.kind == "note" && !state.board_open {
+            if shareOverviewScope == state.editor_scope && state.kind == "note" && (!state.board_open || state.standalone_board_open) {
                 overview.updateNames(state.editing_collaborators)
             } else {
                 overview.dismiss(animated: false)
@@ -1277,7 +1283,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         buttonsExpanded = expanded
         buttonsLabels = state.labels
         controller.navigationItem.rightBarButtonItems = nil
-        if state.board_open {
+        if state.board_open && !state.standalone_board_open {
             let done = UIBarButtonItem(title: state.labels["done"],style: .done,target: self,action: #selector(closeBoard))
             done.tintColor = (state.theme ?? .system).accentColor
             done.setTitleTextAttributes([.foregroundColor: UIColor.white],for: .normal)
@@ -1297,8 +1303,9 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 share.accessibilityValue = "\(state.editing_collaborators.count) \(label("online-collaborators"))"
             }
             shareOverview?.popoverPresentationController?.sourceItem = share
-            var items = [more,share]+(host?.navigationEditorTools.reversed() ?? [].reversed())
-            if state.write_allowed,let id = state.current {
+            var items = [more,share]
+            if !state.board_open { items += host?.navigationEditorTools.reversed() ?? [].reversed() }
+            if !state.board_open,state.write_allowed,let id = state.current {
                 let editIcon = UIImage(systemName: "pencil.line") ?? UIImage(systemName: "pencil")
                 let readIcon = UIImage(systemName: "book")
                 let mode = UIBarButtonItem(image: state.reading ? readIcon : editIcon,primaryAction: nil,
@@ -1311,7 +1318,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 if #available(iOS 26.0,*) { mode.sharesBackground = false }
                 items.insert(mode,at: 2)
             }
-            if state.can_edit && typing {
+            if !state.board_open && state.can_edit && typing {
                 let theme = state.theme ?? .system
                 let check = UIImage(systemName: "checkmark")
                 let image = check?.withTintColor(.white,renderingMode: .alwaysOriginal)
@@ -1321,7 +1328,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 done.accessibilityLabel = state.labels["end-typing"]
                 done.accessibilityIdentifier = "fei.edit.done"; items.insert(done,at: 0)
             }
-            if state.can_edit && UIDevice.current.userInterfaceIdiom != .phone {
+            if !state.board_open && state.can_edit && UIDevice.current.userInterfaceIdiom != .phone {
                 let undo = UIBarButtonItem(image: UIImage(systemName: "arrow.uturn.backward"),style: .plain,target: self,action: #selector(undoNote))
                 undo.accessibilityIdentifier = "fei.edit.undo"; undo.accessibilityLabel = state.labels["undo"]
                 if #available(iOS 26.0,*) { undo.sharesBackground = false }
@@ -1480,6 +1487,16 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         alert.addAction(UIAlertAction(title: label("cancel"),style: .cancel))
         let action = UIAlertAction(title: label(op == "restore" ? "history-restore" : "history-delete"),style: .destructive) { [weak self] _ in self?.sendHistory(op,name: version,history: h) }
         action.accessibilityIdentifier = "fei.history.confirm"; alert.addAction(action); present(alert,from: documentSheet?.topViewController)
+    }
+
+    private lazy var standaloneBoardBackItem = UIBarButtonItem(
+        image: UIImage(systemName: "chevron.backward"),style: .plain,target: self,action: #selector(closeBoard))
+
+    func boardBackButton() -> UIBarButtonItem {
+        standaloneBoardBackItem.accessibilityIdentifier = "fei.board.back"
+        standaloneBoardBackItem.accessibilityLabel = localized("返回","Back")
+        standaloneBoardBackItem.isEnabled = state?.busy == false
+        return standaloneBoardBackItem
     }
 
     @objc private func closeBoard() {
@@ -1699,6 +1716,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             if browser ? state.browser?.can_create == true : state.can_create {
                 let create = [
                     menuAction("new","square.and.pencil") { [weak self] in self?.composeNote() },
+                    menuAction("new-board","scribble.variable") { [weak self] in self?.composeNote(board: true) },
                     menuAction("new-folder","folder.badge.plus") { [weak self] in
                         if browser { self?.createSidebarFolder() } else { self?.newFolder() }
                     }
@@ -1743,6 +1761,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         if let listing,listing.shared_create {
             menus.append(menuSection([UIMenu(title: label("new-and-share"),image: UIImage(systemName: "person.badge.plus"),children: [
                 menuAction("new-shared-document","square.and.pencil") { [weak self] in self?.send("new-shared-document",scope: listing.scope) },
+                menuAction("new-shared-board","scribble.variable") { [weak self] in self?.send("new-shared-board",scope: listing.scope) },
                 menuAction("new-shared-folder","folder.badge.plus") { [weak self] in self?.send("new-shared-folder",scope: listing.scope) }
             ])]))
         } else if !isVirtualListing {
@@ -1789,14 +1808,14 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         ]
         let search = menuSection(navigation)
         var editing: [UIMenuElement] = []
-        if state.can_edit {
+        if !state.board_open && state.can_edit {
             editing += [menuAction("format-text","textformat.size") { [weak self] in self?.send("toolbar-command",value: "styles",id: id,scope: state.editor_scope) },
                         menuAction("insert","plus") { [weak self] in self?.send("insert-menu") }]
         }
-        if state.can_edit || state.has_code {
+        if !state.board_open && (state.can_edit || state.has_code) {
             editing.append(menuAction("objects","slider.horizontal.3") { [weak self] in self?.send("objects-menu") })
         }
-        if state.table_active && state.can_edit { editing.append(menuAction("table-controls","tablecells") { [weak self] in self?.send("table-menu") }) }
+        if !state.board_open && state.table_active && state.can_edit { editing.append(menuAction("table-controls","tablecells") { [weak self] in self?.send("table-menu") }) }
         let standaloneShare = state.shared_session && !state.folder_access
         let item = state.items.first(where: { $0.id == id })
         var organization: [UIMenuElement] = []
@@ -1818,7 +1837,9 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         if state.can_edit {
             organization.append(menuAction("rename","pencil") { [weak self] in self?.rename(id: id,title: self?.state?.title ?? "") })
         }
-        let info = UIMenu(title: label("doc-info"),image: UIImage(systemName: "info.circle"),children: [menuAction("doc-info","info.circle") { [weak self] in self?.send("doc-info",id: id) },menuAction("history","clock.arrow.circlepath") { [weak self] in self?.send("history-open",id: id,scope: state.editor_scope) },menuAction("attachments","paperclip") { [weak self] in self?.send("attachments-menu") }])
+        var detailActions = [menuAction("doc-info","info.circle") { [weak self] in self?.send("doc-info",id: id) },menuAction("history","clock.arrow.circlepath") { [weak self] in self?.send("history-open",id: id,scope: state.editor_scope) }]
+        if !state.board_open { detailActions.append(menuAction("attachments","paperclip") { [weak self] in self?.send("attachments-menu") }) }
+        let info = UIMenu(title: label("doc-info"),image: UIImage(systemName: "info.circle"),children: detailActions)
         var export: [UIMenuElement] = [markdownExportMenu { [weak self] mode in
             guard let self,self.state?.current == id,self.state?.editor_scope == state.editor_scope,self.state?.busy == false else { return }
             self.send("export",value: mode,id: id,scope: state.editor_scope)
@@ -1826,7 +1847,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         if state.labels["copy-object-link"] != nil {
             export.insert(menuAction("copy-object-link","link") { [weak self] in self?.send("copy-object-link",id: id,scope: state.editor_scope) },at: 0)
         }
-        var groups: [UIMenuElement] = [search]
+        var groups: [UIMenuElement] = state.board_open ? [] : [search]
         if !editing.isEmpty {
             groups.append(UIMenu(title: label("format"),image: FeiEditorToolbar.menuFormatIcon(compatibleWith: host?.traitCollection),children: editing))
         }
@@ -1980,9 +2001,9 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         var groups: [UIMenuElement] = []
         if item.folder {
             if writable {
-                var folderActions: [UIMenuElement] = [action("new","square.and.pencil","new-document")]
-                if !shared { folderActions.append(action("new-board","scribble.variable")) }
-                folderActions += [
+                var folderActions: [UIMenuElement] = [
+                    action("new","square.and.pencil","new-document"),
+                    action("new-board","scribble.variable"),
                     action("new-folder","folder.badge.plus",perform: { [weak self] in self?.presentNewFolder(action: "item-menu",parentID: id,scope: scope) }),
                     rename,
                 ]

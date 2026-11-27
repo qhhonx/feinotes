@@ -10,7 +10,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use rusqlite::types::{Value, ValueRef};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::{collections::{HashMap, HashSet}, fs::{File, OpenOptions}, io::{Read, Write}, path::{Path, PathBuf}, time::Duration};
-use crate::{editor::core::{Core, Pos, keep_outside_history}, model::Document, shared_store::SharedStore, store::{Meta, Store, SQLITE_FILE}};
+use crate::{editor::core::{Core, Pos, keep_outside_history}, model::Document, shared_store::SharedStore, store::{DocKind, Meta, Store, SQLITE_FILE}};
 use super::{AttachmentIssue, Changes, Edit, Exchange, NoteChange, SyncIssue, activity, assets, catalogue, content};
 use super::history::History;
 use super::retention;
@@ -160,6 +160,7 @@ fn put_state(db: &Connection, key: &str, data: &[u8]) -> Result<()> {
 const CATALOGUE_PAUSED: &str = "catalogue_replay_paused";
 const CATALOGUE_REPLAY_UPGRADE: &str = "catalogue_replay_attempted_loro_1_18";
 const DOCUMENT_REPLAY_UPGRADE: &str = "table_alias_projection_v2";
+const SHARED_BOARD: &str = "shared_standalone_board";
 
 #[derive(Debug)]
 enum ReplayFailure { Rejected, Panicked }
@@ -493,11 +494,17 @@ fn finish_capture(db: &Connection, root: &Path, id: &str, doc: &Document,
 }
 
 fn capture_note(db: &Connection, root: &Path, peer: u64, id: &str, doc: &Document,
-    seen: i64, markdown: &str) -> Result<bool> {
+    (seen, markdown): (i64, &str), standalone_share: bool) -> Result<bool> {
     let old = note(db, id)?.unwrap_or_else(|| Note { assets: HashSet::new(), snapshot: vec![], seen: 0, held: false });
     let loro = open_note(db, id, &old.snapshot)?;
     let before = loro.oplog_vv();
     content::edit(&loro, peer, doc)?;
+    if standalone_share && old.snapshot.is_empty() && db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM library_entries WHERE id = ?1 AND json_extract(meta, '$.kind') = 'board')",
+        [id], |row| row.get::<_, bool>(0),
+    )? {
+        content::put(&loro.get_map("note"), SHARED_BOARD, "1")?;
+    }
     Ok(finish_capture(db, root, id, doc, (seen, markdown), Capture { old, loro: &loro, before })?.0)
 }
 
@@ -509,7 +516,7 @@ enum DocumentApply {
     Deleted,
 }
 
-fn apply_document(db: &Connection, root: &Path, id: &str, shared: bool, positions: &[Pos]) -> Result<DocumentApply> {
+fn apply_document(db: &Connection, root: &Path, id: &str, room: Option<&shared::Scope>, positions: &[Pos]) -> Result<DocumentApply> {
     let old = note(db, id)?;
     if old.as_ref().is_some_and(|note| note.held) { return Ok(DocumentApply::Held); }
     let (_, updates) = incoming(db, id)?;
@@ -528,7 +535,7 @@ fn apply_document(db: &Connection, root: &Path, id: &str, shared: bool, position
         })?;
         let merged_front = front(&loro);
         let mut paths = content::local_assets(&doc);
-        if shared {
+        if room.is_some() {
             for path in &paths { assets::path(root, path)?; }
         }
         let local_only = loro.get_map("local-only-attachments");
@@ -563,11 +570,17 @@ fn apply_document(db: &Connection, root: &Path, id: &str, shared: bool, position
         let seen = Store::write_sync_body(db, id, trashed.unwrap_or(false), &doc, &merged_front)
             .context("Save merged cloud document")?;
         checkpoint_note(db, id, &Note { assets: paths, snapshot: loro.export(ExportMode::Snapshot)?, seen, held: false })?;
+        if room.is_some_and(|room| !room.folder && room.note == id)
+            && content::value(&loro.get_map("note"), SHARED_BOARD).as_deref() == Some("1")
+            && crate::whiteboard::board_of(&doc).is_some()
+        {
+            put_state(db, SHARED_BOARD, b"1")?;
+        }
         let positions = anchors.iter().filter_map(|(pos, anchor)|
             content::resolve(&loro, pos.block, anchor).map(|resolved| (*pos, resolved))).collect();
         Some(NoteChange { id: id.into(), document: doc, positions })
     } else { None };
-    if shared { activity::mark_projected(db, id)?; }
+    if room.is_some() { activity::mark_projected(db, id)?; }
     db.execute("DELETE FROM inbox WHERE note = ?1", [id])?;
     Ok(DocumentApply::Applied(changed))
 }
@@ -699,14 +712,14 @@ impl Journal {
         Ok(true)
     }
 
-    pub fn seed_shared(&mut self, doc: &Document, front: &str) -> Result<()> {
+    pub fn seed_shared(&mut self, doc: &Document, front: &str, kind: DocKind) -> Result<()> {
         let room = self.room.as_ref().context("Not a shared document")?;
         ensure!(self.access == Some(Access::Owner), "Only the owner can seed a shared document");
         let tx = self.db.transaction()?;
         ensure!(note(&tx, &room.note)?.is_none(), "Shared document is already initialized");
         let seen = Store::write_sync_body(&tx, &room.note, false, doc, front)?;
-        Store::show_shared_note(&tx, &room.note, front, shared::registered_at(&self.root))?;
-        ensure!(!capture_note(&tx, &self.root, self.peer, &room.note, doc, seen, front)?,
+        Store::show_shared_note(&tx, &room.note, front, shared::registered_at(&self.root), kind)?;
+        ensure!(!capture_note(&tx, &self.root, self.peer, &room.note, doc, (seen, front), !room.folder)?,
             "The shared document or one of its attachments is unavailable or too large");
         tx.commit()?;
         Ok(())
@@ -723,7 +736,7 @@ impl Journal {
         if note(&self.db, id)?.is_none() {
             let tx = self.db.transaction()?;
             let (body, seen, front) = Store::read_sync_body(&tx, id, false)?;
-            capture_note(&tx, &self.root, self.peer, id, &body, seen, &front)?;
+            capture_note(&tx, &self.root, self.peer, id, &body, (seen, &front), self.room.as_ref().is_some_and(|room| !room.folder))?;
             tx.commit()?;
         }
         let Some(old) = note(&self.db, id)?.filter(|note| !note.held) else { return Ok(None) };
@@ -755,6 +768,7 @@ impl Journal {
         }
         let root = self.root.clone();
         let peer = self.peer;
+        let standalone_share = self.room.as_ref().is_some_and(|room| !room.folder);
         let active = self.history(id)?;
         let result = store.save_sqlite_with(id, doc, |tx, _| {
             let (seen, front) = revision(tx, id)?;
@@ -763,7 +777,7 @@ impl Journal {
                 history.save(core, peer)?;
                 finish_capture(tx, &root, id, doc, (seen, &front), Capture { old, loro: &history.doc, before })
             } else {
-                Ok((capture_note(tx, &root, peer, id, doc, seen, &front)?, true))
+                Ok((capture_note(tx, &root, peer, id, doc, (seen, &front), standalone_share)?, true))
             }
         });
         if !matches!(&result, Ok((_, (_, false)))) { self.history.remove(id); }
@@ -1361,7 +1375,7 @@ impl Journal {
                         });
                         ensure!(retains_tables, content::ConflictingBlockShapes);
                     }
-                    capture_note(&candidate, &self.root, self.peer, &id, &doc, seen, &front)
+                    capture_note(&candidate, &self.root, self.peer, &id, &doc, (seen, &front), self.room.as_ref().is_some_and(|room| !room.folder))
                         .context("Capture local document for sync")?;
                 }
                 if catalogue.as_ref().is_some_and(|(doc, _)| catalogue::permanently_deleted(doc, &id)) {
@@ -1374,7 +1388,7 @@ impl Journal {
                     }
                     return Ok(DocumentApply::Deleted);
                 }
-                apply_document(&candidate, &self.root, &id, self.room.is_some(),
+                apply_document(&candidate, &self.root, &id, self.room.as_ref(),
                     open_positions.get(&id).map_or(&[], Vec::as_slice))
             })();
             match result {
@@ -1405,7 +1419,18 @@ impl Journal {
             let front: Option<String> = tx.query_row("SELECT front FROM library_documents WHERE id = ?1",
                 [&room.note], |row| row.get(0)).optional()?;
             let front = front.unwrap_or_default();
-            Store::show_shared_note(&tx, &room.note, &front, shared::registered_at(&self.root))?
+            let kind = match get_state(&tx, SHARED_BOARD)?.as_deref() {
+                Some(b"1") => DocKind::Board,
+                Some(_) => DocKind::Doc,
+                // A cache from an older app may have imported the marker without projecting it.
+                None => if let Some(saved) = note(&tx, &room.note)?.filter(|saved| !saved.snapshot.is_empty() && !saved.held) {
+                    let loro = open_note(&tx, &room.note, &saved.snapshot)?;
+                    let board = content::value(&loro.get_map("note"), SHARED_BOARD).as_deref() == Some("1");
+                    put_state(&tx, SHARED_BOARD, if board { b"1" } else { b"0" })?;
+                    if board { DocKind::Board } else { DocKind::Doc }
+                } else { DocKind::Doc },
+            };
+            Store::show_shared_note(&tx, &room.note, &front, shared::registered_at(&self.root), kind)?
         } else if let Some((catalogue_doc, before)) = catalogue {
             let before_projection = catalogue_doc.oplog_vv();
             let catalogue_changed = before_projection != before;

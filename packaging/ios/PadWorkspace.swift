@@ -258,7 +258,11 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         if ["notes","folder"].contains(state.kind) { controller.navigationItem.rightBarButtonItems = [] }
         updateSidebarButton(state)
         controller.navigationItem.leftItemsSupplementBackButton = !settingsRoot && (controller.navigationController?.viewControllers.count ?? 0) > 1
-        if controller.navigationItem.leftBarButtonItem !== focusItem { controller.navigationItem.leftBarButtonItems = [focusItem] }
+        let items = state.standalone_board_open && !controller.navigationItem.leftItemsSupplementBackButton
+            ? [coordinator.boardBackButton(),focusItem] : [focusItem]
+        if controller.navigationItem.leftBarButtonItems?.map(ObjectIdentifier.init) != items.map(ObjectIdentifier.init) {
+            controller.navigationItem.leftBarButtonItems = items
+        }
 
     }
 

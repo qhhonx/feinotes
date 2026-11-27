@@ -23,6 +23,19 @@ const LINK_PENDING: &str = "public-link-pending";
 
 pub(super) const MARKER: &str = "shared-note.json";
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NewSharedItem {
+    Document,
+    #[cfg_attr(not(any(target_os = "ios", test)), allow(dead_code))]
+    Board,
+    Folder,
+}
+
+impl NewSharedItem {
+    pub(crate) fn for_folder(folder: bool) -> Self { if folder { Self::Folder } else { Self::Document } }
+    pub(crate) fn is_folder(self) -> bool { self == Self::Folder }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Scope {
     pub note: String,
@@ -118,7 +131,7 @@ fn stage(personal: &Path, room: &Room, seed: Option<(&Document, &str)>) -> Resul
     stage_with(personal, room, |staged| {
         if let Some((doc, front)) = seed {
             copy_assets(personal, staged, doc)?;
-            Journal::open(staged, None)?.seed_shared(doc, front)?;
+            Journal::open(staged, None)?.seed_shared(doc, front, crate::store::DocKind::Doc)?;
         }
         Ok(())
     })

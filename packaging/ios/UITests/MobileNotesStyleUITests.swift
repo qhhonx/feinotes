@@ -150,6 +150,19 @@ final class MobileNotesStyleUITests: XCTestCase {
         move.buttons.firstMatch.tap()
     }
 
+    private func dismissExportPicker(_ app: XCUIApplication) {
+        let close = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label IN %@", "DOCPicker.cancelButton", ["取消","Cancel","关闭","Close"])).firstMatch
+        if close.waitForExistence(timeout: 3),close.isHittable {
+            close.tap()
+        } else {
+            let grabber = app.buttons.matching(NSPredicate(format: "label IN %@",["表单控制柄","Form Grabber","Sheet Grabber","Grabber"])).firstMatch
+            XCTAssertTrue(grabber.waitForExistence(timeout: 5),app.debugDescription)
+            let start = grabber.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.5))
+            let target = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.82))
+            start.press(forDuration: 0.05,thenDragTo: target)
+        }
+    }
+
     func testTitleOnlyPDFStaysInEditor() throws {
         continueAfterFailure = false
         let title = "Empty PDF QA " + String(UUID().uuidString.prefix(6))
@@ -173,9 +186,17 @@ final class MobileNotesStyleUITests: XCTestCase {
         continueAfterFailure = false
         let title = "Native export QA " + String(UUID().uuidString.prefix(6))
         let fixtures = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: fixtures,withIntermediateDirectories: true)
+        let samples = fixtures.appendingPathComponent("samples")
+        try FileManager.default.createDirectory(at: samples,withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: fixtures) }
-        try "<title>\(title)</title><p>This synthetic document has exportable content.</p>"
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 120,height: 64)).pngData { context in
+            UIColor.systemBlue.setFill()
+            context.fill(CGRect(x: 0,y: 0,width: 120,height: 64))
+        }
+        try image.write(to: samples.appendingPathComponent("image.png"))
+        try "Synthetic export attachment".write(to: samples.appendingPathComponent("file.txt"),atomically: true,encoding: .utf8)
+        let paragraphs = (1...60).map { "<p>Export QA paragraph \($0) with body text.</p>" }.joined()
+        try ("<title>\(title)</title><img path=\"@image.png@\" width=\"120\"/><source path=\"@file.txt@\" name=\"file.txt\"/>" + paragraphs)
             .write(to: fixtures.appendingPathComponent("export.xml"),atomically: true,encoding: .utf8)
         let app = launchLightNotes(fixture: fixtures)
         let note = app.tables["fei.notes.list"].cells.containing(.staticText,identifier: title).firstMatch
@@ -183,27 +204,28 @@ final class MobileNotesStyleUITests: XCTestCase {
         note.tap()
 
         let save = app.buttons["DOCPicker.actionButton"]
-        func cancelPicker(_ suffix: String) {
+        func verifyPicker(_ suffix: String,shouldSave: Bool = false) {
             XCTAssertTrue(save.waitForExistence(timeout: 25),app.debugDescription)
             shot("light-appearance-export-"+suffix)
-            let cancel = app.buttons.matching(NSPredicate(format: "label IN %@",["取消","Cancel"])).firstMatch
-            if cancel.waitForExistence(timeout: 2) { cancel.tap() }
-            else {
-                let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.087))
-                top.press(forDuration: 0.1,thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.85)))
+            if shouldSave {
+                XCTAssertTrue(save.isEnabled,app.debugDescription)
+                save.tap()
+                print("FEI_EXPORT_SAVED_TITLE=\(title)")
+            } else {
+                dismissExportPicker(app)
             }
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: save)],timeout: 5),.completed)
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: save)],timeout: 10),.completed,app.debugDescription)
             XCTAssertTrue(app.buttons["fei.more"].isHittable)
         }
-        for attempt in 1...2 {
+        for (index, labels) in [["仅文本","Text only"],["包含图片和附件","Include images and attachments"]].enumerated() {
             noteMenu(app,["导出 Markdown","Export Markdown"],parent: ["导出与打印","Export and print"])
-            let text = app.descendants(matching: .any).matching(NSPredicate(format: "label IN %@",["仅文本","Text only"])).firstMatch
+            let text = app.descendants(matching: .any).matching(NSPredicate(format: "label IN %@",labels)).firstMatch
             XCTAssertTrue(text.waitForExistence(timeout: 5),app.debugDescription)
             text.tap()
-            cancelPicker("markdown-\(attempt)")
+            verifyPicker("markdown-\(index)")
         }
         noteMenu(app,["导出 PDF","Export PDF"],parent: ["导出与打印","Export and print"])
-        cancelPicker("pdf")
+        verifyPicker("pdf",shouldSave: true)
     }
 
     func testCreateBoardFromListAndFolderMenus() {
@@ -211,7 +233,7 @@ final class MobileNotesStyleUITests: XCTestCase {
         let app = launchLightNotes()
         let list = app.tables["fei.notes.list"].firstMatch
         let more = app.buttons["fei.library-actions"].firstMatch
-        let done = app.buttons["fei.board.done"]
+        let boardBack = app.standaloneBoardBack
         func action(_ zh: String,_ en: String) -> XCUIElement {
             app.buttons.matching(NSPredicate(format: "label IN %@",[zh,en])).firstMatch
         }
@@ -228,9 +250,11 @@ final class MobileNotesStyleUITests: XCTestCase {
         }
         func createBoard() {
             newBoard.tap()
-            XCTAssertTrue(done.waitForExistence(timeout: 15),app.debugDescription)
+            XCTAssertTrue(boardBack.waitForExistence(timeout: 15),app.debugDescription)
+            XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 8),app.debugDescription)
+            XCTAssertFalse(app.buttons["fei.board.done"].exists)
             XCTAssertFalse(app.keyboards.firstMatch.exists)
-            done.tap()
+            boardBack.tap()
             XCTAssertTrue(more.waitForExistence(timeout: 8),app.debugDescription)
         }
         XCTAssertTrue(app.buttons["fei.new"].firstMatch.isHittable)
@@ -288,11 +312,13 @@ final class MobileNotesStyleUITests: XCTestCase {
         let row = list.cells.containing(.staticText,identifier: title).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 8),app.debugDescription)
         row.tap()
-        let done = app.buttons["fei.board.done"]
-        XCTAssertTrue(done.waitForExistence(timeout: 15),app.debugDescription)
+        let boardBack = app.standaloneBoardBack
+        XCTAssertTrue(boardBack.waitForExistence(timeout: 15),app.debugDescription)
+        XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 8),app.debugDescription)
+        XCTAssertFalse(app.buttons["fei.board.done"].exists)
         XCTAssertFalse(app.keyboards.firstMatch.exists)
         shot("standalone-board-open")
-        done.tap()
+        boardBack.tap()
         XCTAssertTrue(row.waitForExistence(timeout: 8),app.debugDescription)
         func action(_ labels: [String]) -> XCUIElement {
             app.descendants(matching: .any).matching(NSPredicate(format: "label IN %@",labels)).firstMatch
@@ -311,13 +337,8 @@ final class MobileNotesStyleUITests: XCTestCase {
             let save = app.buttons["DOCPicker.actionButton"]
             XCTAssertTrue(save.waitForExistence(timeout: 20),app.debugDescription)
             shot("standalone-board-markdown-\(index)")
-            let cancel = app.buttons.matching(NSPredicate(format: "label IN %@",["取消","Cancel"])).firstMatch
-            if cancel.waitForExistence(timeout: 2) { cancel.tap() }
-            else {
-                let grip = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.087))
-                grip.press(forDuration: 0.1,thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.85)))
-            }
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: save)],timeout: 5),.completed)
+            dismissExportPicker(app)
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),object: save)],timeout: 10),.completed,app.debugDescription)
             XCTAssertTrue(row.isHittable)
         }
     }

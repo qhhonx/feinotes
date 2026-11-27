@@ -316,17 +316,18 @@ impl Workspace {
             sections.push(section("",vec![Row::new("cloud-required",cloud_required).kind("info")]));
             return;
         }
-        use crate::cloud_sync::shared::Audience;
+        use crate::cloud_sync::shared::{Audience, NewSharedItem};
         use crate::sharing::{PublicLinkFailure, Sheet, close_link_warning, enable_public_link_label, invite_specific_account_label,
             invited_link_scope, link_audience, sharing_folder_scope};
         let composing = match s.sheet.as_ref() {
-            Some(Sheet::Create(id)) => Some(self.personal_navigation_entries(cx).iter().any(|entry| &entry.id == id && entry.meta.folder.is_some())),
-            Some(Sheet::CreateNew(folder, _)) => Some(*folder),
-            Some(Sheet::Invite(room)) => Some(room.scope.folder),
+            Some(Sheet::Create(id)) => Some(NewSharedItem::for_folder(self.personal_navigation_entries(cx).iter().any(|entry| &entry.id == id && entry.meta.folder.is_some()))),
+            Some(Sheet::CreateNew(kind, _)) => Some(*kind),
+            Some(Sheet::Invite(room)) => Some(NewSharedItem::for_folder(room.scope.folder)),
             _ => None,
         };
-        if let Some(folder) = composing {
-            sections.push(section("",vec![Row::new("share-create-form","").kind("info").value(if folder { "folder" } else { "document" })]));
+        if let Some(kind) = composing {
+            let kind = match kind { NewSharedItem::Document => "document", NewSharedItem::Board => "board", NewSharedItem::Folder => "folder" };
+            sections.push(section("",vec![Row::new("share-create-form","").kind("info").value(kind)]));
         }
         if let Some(Sheet::Access(room) | Sheet::Members(room) | Sheet::End(room)) = s.sheet.as_ref() {
             sections.push(section("",vec![Row::new("share-access-panel","").kind("info").value(if room.scope.folder { "folder" } else { "document" })]));
@@ -379,17 +380,17 @@ impl Workspace {
             Some(Sheet::MoveInto(ids,_,room)) => sections.push(section(tr("移入共享文件夹","Move into shared folder"),vec![
                 Row::new("share-effect",crate::localized_format!("将 {} 项移入「{}」。所有成员都能访问移入的文档及子文件夹。","Move {} items into “{}”. All members can access the moved documents and subfolders.",ids.len(),room.title)).kind("info"),
                 Row::new("share-submit",tr("移入","Move")).enabled(!s.busy),Row::new("share-cancel",tr("取消","Cancel")).enabled(!s.busy)])),
-            Some(Sheet::CreateNew(folder, id)) => {
+            Some(Sheet::CreateNew(kind, id)) => {
                 let enabled = !s.busy && self.sharing_allowed(cx);
                 let name = s.folder_name.read(cx).text.clone();
                 sections.push(section("",vec![Row::new("share-new-name", tr("名称", "Name"))
                     .kind(if id.is_some() { "info" } else { "input" }).value(name.clone()).enabled(!s.busy)]));
-                if *folder {
+                if kind.is_folder() {
                     sections.push(section("",vec![Row::new("share-effect",sharing_folder_scope()).kind("info")]));
                 }
                 let can_choose_audience = self.can_choose_sharing_audience(cx);
                 if can_choose_audience || s.public_link { sections.push(self.native_share_audience_section(can_choose_audience)); }
-                if s.public_link { sections.push(self.native_public_link_section(enabled && !name.trim().is_empty(),can_choose_audience,*folder)); }
+                if s.public_link { sections.push(self.native_public_link_section(enabled && !name.trim().is_empty(),can_choose_audience,kind.is_folder())); }
                 else { sections.push(self.native_invitation_section(cx,enabled && !name.trim().is_empty())); }
             }
             Some(Sheet::Create(id)) => {

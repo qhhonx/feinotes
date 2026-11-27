@@ -377,7 +377,7 @@ mod tests {
         let root = cache(&fixture.0, &room)?;
         let mut owner = Journal::open(&root, None)?;
         let doc = crate::docxml::parse("<title>Standalone</title><p>Seed</p>")?;
-        owner.seed_shared(&doc, "")?;
+        owner.seed_shared(&doc, "", crate::store::DocKind::Doc)?;
         let seed = owner.request()?.edits;
         owner.receive(page(Access::Owner, seed.clone(), seed.iter().map(|e| e.id.clone()).collect()))?;
         let mut invite = room.clone();

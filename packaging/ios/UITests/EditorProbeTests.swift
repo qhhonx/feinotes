@@ -1339,6 +1339,84 @@ final class EditorProbeTests: XCTestCase {
         XCTAssertTrue(app.cells["fei.setting.share-link-permission"].staticTexts["Can view"].exists)
     }
 
+    func testSharedBoardCreationMenus() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
+        XCUIDevice.shared.orientation = pad ? .landscapeLeft : .portrait
+        app.launchArguments += ["-AppleLanguages","(en)"]
+        app.launchEnvironment["FEI_NOTES_MODE"] = "cloud"
+        app.launchEnvironment["FEI_NOTES_CLOUD_CHANNEL"] = "44ecb219-6dec-4b51-ae62-bcd575b86813"
+        app.launchEnvironment["FEI_QA_SYNC_BADGE"] = "1"
+        app.launchEnvironment["FEI_QA_PERSONAL_SYNC_STATE"] = "ready"
+        app.launchEnvironment["FEI_QA_OFFLINE_INVITATION"] = "1"
+        app.launch()
+        let list = app.tables["fei.notes.list"].firstMatch
+        let more = app.buttons["fei.library-actions"].firstMatch
+        let tabs = app.segmentedControls["fei.notes.tabs"]
+        let boardBack = app.standaloneBoardBack
+        func tap(_ item: XCUIElement) {
+            XCTAssertTrue(item.waitForExistence(timeout: 12),app.debugDescription)
+            item.tap()
+        }
+        func rowCoordinate(_ item: XCUIElement) -> XCUICoordinate {
+            XCTAssertTrue(item.waitForExistence(timeout: 10),app.debugDescription)
+            let frame = item.frame
+            XCTAssertFalse(frame.isEmpty)
+            return app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                dx: frame.midX - app.frame.minX,dy: frame.midY - app.frame.minY
+            ))
+        }
+        func tapRow(_ title: String) {
+            let item = list.staticTexts[title]
+            if pad { rowCoordinate(item).tap() } else { tap(item) }
+        }
+        func closeBoard() {
+            XCTAssertTrue(boardBack.waitForExistence(timeout: 12),app.debugDescription)
+            XCTAssertFalse(app.buttons["fei.board.done"].exists)
+            XCTAssertFalse(app.keyboards.firstMatch.exists)
+            boardBack.tap()
+        }
+        tap(tabs.buttons["Shared documents"])
+        tap(more)
+        tap(app.buttons["Create and share"])
+        XCTAssertTrue(app.buttons["New shared document"].exists)
+        XCTAssertTrue(app.buttons["New shared folder"].exists)
+        shot("shared-board-overview-menu")
+        tap(app.buttons["New shared board"])
+        XCTAssertTrue(app.navigationBars["New shared board"].waitForExistence(timeout: 8),app.debugDescription)
+        let name = app.textFields["fei.setting.share-new-name"]
+        XCTAssertTrue(name.exists)
+        shot("shared-board-invitation-form")
+        tap(app.buttons["fei.setting.option.share-audience.link"])
+        let title = "Shared board QA " + String(UUID().uuidString.prefix(6))
+        tap(name)
+        name.typeText(title)
+        tap(app.buttons["fei.share.create"])
+        XCTAssertTrue(app.buttons["fei.share.show-members"].waitForExistence(timeout: 12),app.debugDescription)
+        tap(app.buttons["fei.share.done"])
+        tapRow(title)
+        closeBoard()
+
+        let root = list.staticTexts["FEI_SHARED_FOLDER"]
+        XCTAssertTrue(root.waitForExistence(timeout: 10),app.debugDescription)
+        if pad { rowCoordinate(root).press(forDuration: 1) } else { root.press(forDuration: 1) }
+        XCTAssertTrue(app.buttons["New board"].waitForExistence(timeout: 6))
+        shot("shared-board-folder-row-menu")
+        tap(app.buttons["New board"])
+        closeBoard()
+        if root.exists { tapRow("FEI_SHARED_FOLDER") }
+        XCTAssertTrue(list.staticTexts["Untitled board"].waitForExistence(timeout: 10),app.debugDescription)
+        tapRow("FEI_SHARED_CHILD_FOLDER")
+        tap(more)
+        tap(app.buttons["New"])
+        XCTAssertTrue(app.buttons["New board"].waitForExistence(timeout: 6),app.debugDescription)
+        shot("shared-board-folder-menu")
+        tap(app.buttons["New board"])
+        closeBoard()
+        XCTAssertTrue(list.staticTexts["Untitled board"].waitForExistence(timeout: 10),app.debugDescription)
+    }
+
     func testSharedFolderMenuRoundTrip() { checkSharedMenu(folder: true) }
     func testSharedFolderMenuCompactRoundTrip() {
         guard UIDevice.current.userInterfaceIdiom == .pad else { return }
@@ -1576,6 +1654,11 @@ final class EditorProbeTests: XCTestCase {
 }
 
 extension XCUIApplication {
+    var standaloneBoardBack: XCUIElement {
+        if UIDevice.current.userInterfaceIdiom == .pad { return buttons["fei.board.back"].firstMatch }
+        return navigationBars.buttons.matching(NSPredicate(format: "identifier IN %@",["BackButton","fei.board.back"])).firstMatch
+    }
+
     func switchToReadingMode() { chooseNoteMode(["阅读模式", "Reading mode"]) }
     func switchToEditingMode() { chooseNoteMode(["编辑模式", "Editing mode"]) }
 

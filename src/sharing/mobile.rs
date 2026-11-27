@@ -168,7 +168,7 @@ impl Workspace {
             Some(super::Sheet::Create(id)) if self.personal_navigation_entries(cx).iter().any(|e| &e.id == id && e.meta.folder.is_some()) => tr("共享文件夹","Share folder"),
             Some(super::Sheet::Create(_)) => tr("共享文档","Share document"),
             Some(super::Sheet::Invite(_)) => tr("邀请参与者","Invite participant"),
-            Some(super::Sheet::CreateNew(folder, _)) => super::new_shared_title(*folder),
+            Some(super::Sheet::CreateNew(kind, _)) => super::new_shared_title(*kind),
             Some(super::Sheet::Accept) => tr("接受邀请","Accept invitation"),
             Some(super::Sheet::End(room)) => self.shared_end_label(room,cx),
             Some(super::Sheet::EndMany(..)) => tr("移除共享文档","Remove shared documents"),
@@ -300,7 +300,7 @@ impl Workspace {
                 cx.notify();
             }
             "delete" if !root => self.ask_delete_shared_descendant(&room, id, folder, cx),
-            "export" | "pdf" | "print" | "rename" | "duplicate" | "move" | "new-document" | "new-folder" => {
+            "export" | "pdf" | "print" | "rename" | "duplicate" | "move" | "new-document" | "new-board" | "new-folder" => {
                 let write = !matches!(verb,"export" | "pdf" | "print");
                 if write && !self.mobile_menu_room_writable(&room, cx) { return; }
                 let scope = room.scope.clone();
@@ -334,7 +334,7 @@ impl Workspace {
                 }
             }
             "new-document" if folder => self.create_doc(false, Some(id.into()), window, cx),
-            "new-board" if folder && scope.is_none() => self.create_board(Some(id.into()), window,cx),
+            "new-board" if folder => self.create_board(Some(id.into()), window, cx),
             "new-folder" if folder && !value.is_empty() => self.new_folder(
                 crate::folders::CreateTarget::Library(Some(id.into())), Some(value.into()), window, cx),
             "duplicate" if scope.is_none_or(|scope| scope.folder && !folder && scope.note != id) => self.duplicate_doc(id, window, cx),

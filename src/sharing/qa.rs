@@ -435,7 +435,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
             Ok(())
         })??,
         "check-sidebar-create-shared-document" => primary.update(cx, |w, window, cx| -> Result<()> {
-            ensure!(matches!(w.sharing.sheet, Some(Sheet::CreateNew(false, None))), "Sidebar did not start a shared document");
+            ensure!(matches!(w.sharing.sheet, Some(Sheet::CreateNew(NewSharedItem::Document, None))), "Sidebar did not start a shared document");
             ensure!(w.home.tab == crate::home::HomeTab::Recent, "Sidebar creation unexpectedly changed the Home tab");
             w.close_sharing(window, cx);
             eprintln!("SIDEBAR_SHARED_CREATION_OK"); Ok(())
@@ -803,7 +803,7 @@ pub(crate) fn step(name: &str, cx: &mut App) -> Result<()> {
         })??,
         "public-link-new-editor" => primary.update(cx, |ws, window, cx| -> Result<()> {
             ws.close_sharing(window, cx);
-            ws.open_new_shared_item(false, window, cx);
+            ws.open_new_shared_item(NewSharedItem::Document, window, cx);
             ws.sharing.folder_name.update(cx, |field, cx| field.set_text("Public editing fixture", cx));
             ws.set_public_link(true, window, cx);
             ensure!(ws.sharing.permission == Access::ReadOnly, "A new public link must default to read-only");
@@ -1731,7 +1731,7 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
                 ws.show_view(View::Shared, cx);
                 ws.folded[1] = true;
                 ws.sharing.folded = false;
-                ws.open_new_shared_item(folder, window, cx);
+                ws.open_new_shared_item(NewSharedItem::for_folder(folder), window, cx);
                 let title = if folder { "验收共享目录" } else { "验收共享文档" };
                 ws.sharing.folder_name.update(cx, |field, cx| field.set_text(title, cx));
                 ws.sharing.email.update(cx, |field, cx| field.set_text("participant@example.test", cx));
@@ -1746,8 +1746,8 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
             "folder-sidebar-origin-form-keeps-editor" => {
                 ws.open(&document, window, cx);
                 let before = ws.editor.as_ref().context("Shared editor is missing")?.entity_id();
-                ws.open_new_shared_item(false, window, cx);
-                ensure!(matches!(ws.sharing.sheet, Some(Sheet::CreateNew(false, None))) && ws.sharing_allowed(cx)
+                ws.open_new_shared_item(NewSharedItem::Document, window, cx);
+                ensure!(matches!(ws.sharing.sheet, Some(Sheet::CreateNew(NewSharedItem::Document, None))) && ws.sharing_allowed(cx)
                     && ws.editor.as_ref().is_some_and(|editor| editor.entity_id() == before),
                     "Opening the shared creation form navigated away");
                 ws.close_sharing(window, cx);
@@ -1756,7 +1756,7 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
             #[cfg(target_os = "macos")]
             "folder-sidebar-origin-invite-pending" => {
                 let Some(Sheet::CreateNew(folder, Some(_))) = &ws.sharing.sheet else { anyhow::bail!("Creating a share left the original form"); };
-                let expected = if *folder { tr("正在新建共享文件夹…", "Creating shared folder…") }
+                let expected = if folder.is_folder() { tr("正在新建共享文件夹…", "Creating shared folder…") }
                     else { tr("正在新建共享文档…", "Creating shared document…") };
                 ensure!(ws.sharing.busy && ws.sharing.busy_feedback == Some(expected), "Expected feedback for this creation action");
                 ensure!(ws.store.list().len().to_string() == std::fs::read_to_string(root.join("qa-new-original-count"))?,
@@ -1893,8 +1893,9 @@ fn folder_sidebar_step(name: &str, root: &std::path::Path, primary: WindowHandle
             "folder-sidebar-new-form" | "folder-sidebar-new-folder-form" => {
                 let folder = name.contains("folder-form");
                 let count = ws.store.list().len();
-                ws.new_and_share(folder,window,cx);
-                ensure!(matches!(ws.sharing.sheet,Some(Sheet::CreateNew(kind,None)) if kind == folder), "Shared overview form did not open");
+                let kind = NewSharedItem::for_folder(folder);
+                ws.new_and_share(kind,window,cx);
+                ensure!(matches!(ws.sharing.sheet,Some(Sheet::CreateNew(current,None)) if current == kind), "Shared overview form did not open");
                 ensure!(ws.store.list().len() == count, "Showing the form prematurely created a personal item");
                 let title = if folder { "新共享文件夹" } else { "新共享文档" };
                 ws.sharing.folder_name.update(cx, |field,cx| field.set_text(title,cx));

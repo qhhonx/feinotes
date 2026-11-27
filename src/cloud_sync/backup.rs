@@ -528,7 +528,7 @@ mod tests {
             title: shared_doc.title.text.clone() };
         fs::write(shared_path.join(shared::MARKER), serde_json::to_vec(&descriptor)?)?;
         let mut shared = Journal::open(&shared_path, None)?;
-        shared.seed_shared(&shared_doc, "")?;
+        shared.seed_shared(&shared_doc, "", crate::store::DocKind::Doc)?;
         let shared_store = Store::open_sqlite_at(shared_path.clone())?;
         shared_store.save_version_now(&shared_id)?;
         shared_store.set_version_label(&shared_id, &shared_store.versions(&shared_id)[0].name, Some("协作初稿"))?;

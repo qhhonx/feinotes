@@ -1,7 +1,7 @@
 //! Shared-note navigation, creation and contextual access management.
 //! Cloud libraries and invitation permissions remain owned by cloud_sync::shared.
 
-use crate::{app::{View, Workspace}, cloud_sync::{self, shared::{self, Access, Audience, Reply, Room}},
+use crate::{app::{View, Workspace}, cloud_sync::{self, shared::{self, Access, Audience, NewSharedItem, Reply, Room}},
     input::{TextField, TextFieldEvent}, settings::{self, tr, display_title}, theme::Theme, ui::{self, TipExt, TitleBarExt}};
 use gpui::{prelude::FluentBuilder, *};
 #[cfg(target_os = "ios")]
@@ -27,14 +27,17 @@ mod actions;
 pub(crate) mod links;
 
 #[derive(Clone)]
-pub(crate) enum Sheet { MoveInto(Vec<String>, String, Room), RenameCollection(String), Create(String), CreateNew(bool, Option<String>), Accept, Access(Room), Members(Room), Invite(Room), End(Room), EndMany(Vec<Room>, Vec<String>) }
+pub(crate) enum Sheet { MoveInto(Vec<String>, String, Room), RenameCollection(String), Create(String), CreateNew(NewSharedItem, Option<String>), Accept, Access(Room), Members(Room), Invite(Room), End(Room), EndMany(Vec<Room>, Vec<String>) }
 
 #[cfg(target_os = "ios")]
 pub(crate) struct OpeningShared { pub target: String, pub title: String }
 
-pub(crate) fn new_shared_title(folder: bool) -> &'static str {
-    if folder { tr("新建共享文件夹", "New shared folder") }
-    else { tr("新建共享文档", "New shared document") }
+pub(crate) fn new_shared_title(kind: NewSharedItem) -> &'static str {
+    match kind {
+        NewSharedItem::Document => tr("新建共享文档", "New shared document"),
+        NewSharedItem::Board => tr("新建共享画板", "New shared board"),
+        NewSharedItem::Folder => tr("新建共享文件夹", "New shared folder"),
+    }
 }
 
 pub(crate) fn shared_access_title(folder: bool) -> &'static str {
@@ -732,34 +735,34 @@ impl Workspace {
                 })))).with_priority(5).into_any_element())
     }
 
-    pub(crate) fn new_and_share(&mut self, folder: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn new_and_share(&mut self, kind: NewSharedItem, window: &mut Window, cx: &mut Context<Self>) {
         if self.sharing.busy || !self.home.shared() || self.sharing.collection.is_some() || crate::cloud_restore::local_only() { return; }
         #[cfg(target_os = "ios")]
         if self.is_shared() && self.mobile_personal_browser(cx) {
-            self.personal_action(window, cx, move |w, window, cx| w.new_and_share(folder, window, cx));
+            self.personal_action(window, cx, move |w, window, cx| w.new_and_share(kind, window, cx));
             return;
         }
-        self.open_new_shared_item(folder, window, cx);
+        self.open_new_shared_item(kind, window, cx);
     }
 
-    pub(crate) fn open_new_shared_item(&mut self, folder: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_new_shared_item(&mut self, kind: NewSharedItem, window: &mut Window, cx: &mut Context<Self>) {
         if self.sharing.busy || crate::cloud_restore::local_only() || !self.flush(cx) { return; }
         #[cfg(target_os = "ios")]
         if self.is_shared() { return; }
         self.create_menu = None;
         self.row_menu = None;
         self.sharing.folder_name.update(cx, |field, cx| field.set_text("", cx));
-        self.sharing_sheet(Sheet::CreateNew(folder, None), window, cx);
+        self.sharing_sheet(Sheet::CreateNew(kind, None), window, cx);
     }
 
-    fn submit_new_shared_item(&mut self, folder: bool, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    fn submit_new_shared_item(&mut self, kind: NewSharedItem, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let email = self.sharing.email.read(cx).text.trim().to_owned();
         let title = self.sharing.folder_name.read(cx).text.trim().to_owned();
         let permission = self.sharing.permission;
         let public = self.sharing.public_link.then_some(permission);
         if (public.is_none() && email.is_empty()) || title.is_empty() || !self.flush(cx) { return; }
         let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        self.sharing.sheet = Some(Sheet::CreateNew(folder, Some(id.clone())));
+        self.sharing.sheet = Some(Sheet::CreateNew(kind, Some(id.clone())));
         let personal = crate::store::Store::root_dir();
         let revision = cloud_sync::account_revision();
         let origin = (self.view, self.settings_page);
@@ -767,7 +770,7 @@ impl Workspace {
         enum Invitation { Named(Reply), Public(shared::LinkPublication) }
         cx.spawn_in(window, async move |this, cx| {
             let result = cx.background_executor().spawn(async move {
-                let room = shared::original::prepare_new(&personal, id, title, folder, public)?;
+                let room = shared::original::prepare_new(&personal, id, title, kind, public)?;
                 cloud_sync::check_account_revision(revision)?;
                 anyhow::ensure!(shared::pending_public_access(&personal, &room) == public,
                     "{}", tr("共享范围已改变，请重新打开共享面板。", "The access scope changed. Reopen the sharing panel."));
@@ -1013,7 +1016,7 @@ impl Workspace {
         let invitation = matches!(sheet, Sheet::Create(_) | Sheet::CreateNew(..) | Sheet::Invite(_));
         let accent = invitation_accent();
         let title = match sheet { Sheet::MoveInto(..) => tr("移入共享文件夹", "Move into shared folder"), Sheet::RenameCollection(_) => tr("重命名个人文件夹", "Rename personal folder"), Sheet::Create(id) if self.entries.iter().any(|e| &e.id == id && e.meta.folder.is_some()) => tr("共享文件夹", "Share folder"), Sheet::Create(_) => tr("共享文档", "Share document"), Sheet::Accept => tr("接受邀请", "Accept invitation"),
-            Sheet::CreateNew(folder, _) => new_shared_title(*folder),
+            Sheet::CreateNew(kind, _) => new_shared_title(*kind),
             Sheet::Access(room) => shared_access_title(room.scope.folder),
             Sheet::Members(_) => tr("成员与权限", "Members and access"),
             Sheet::Invite(_) => tr("邀请参与者", "Invite participant"),
@@ -1056,18 +1059,18 @@ impl Workspace {
                 if !self.stopping_original(room, cx) && !room.scope.folder { details.push(shared_trash_description().to_owned()); }
                 return Some(self.render_shared_end_confirmation(title, title, details.join("\n"), window, cx));
             }
-            Sheet::CreateNew(folder, id) => {
-                body = body.child(caption(if *folder {
-                    tr("受邀成员可以访问文件夹及以后添加的内容。", "Invited members can access this folder and anything added later.")
-                } else {
-                    tr("受邀成员可以访问这篇新文档。", "Invited members can access this new document.")
+            Sheet::CreateNew(kind, id) => {
+                body = body.child(caption(match kind {
+                    NewSharedItem::Folder => tr("受邀成员可以访问文件夹及以后添加的内容。", "Invited members can access this folder and anything added later."),
+                    NewSharedItem::Board => tr("受邀成员可以访问这张新画板。", "Invited members can access this new board."),
+                    NewSharedItem::Document => tr("受邀成员可以访问这篇新文档。", "Invited members can access this new document."),
                 })).child(if id.is_some() {
                     caption(self.sharing.folder_name.read(cx).text.clone()).into_any_element()
                 } else {
                     crate::design::Field::new("new-shared-name").w_full().focus_color(accent)
                         .focused(self.sharing.folder_name.read(cx).is_focused(window)).child(self.sharing.folder_name.clone()).into_any_element()
                 }).children(self.can_choose_sharing_audience(cx).then(|| self.sharing_audience_fields(cx)))
-                    .child(if self.sharing.public_link { self.public_link_fields(*folder, cx) } else { self.invitation_fields(window, cx) });
+                    .child(if self.sharing.public_link { self.public_link_fields(kind.is_folder(), cx) } else { self.invitation_fields(window, cx) });
             }
             Sheet::Create(id) => {
                 let entry = self.entries.iter().find(|entry| &entry.id == id);
@@ -1432,7 +1435,7 @@ impl Workspace {
         if !self.sharing_allowed(cx) { return; }
         match self.sharing.sheet.clone() {
             Some(Sheet::Create(id)) => self.publish_shared_copy(&id, window, cx),
-            Some(Sheet::CreateNew(folder, id)) => self.submit_new_shared_item(folder, id, window, cx),
+            Some(Sheet::CreateNew(kind, id)) => self.submit_new_shared_item(kind, id, window, cx),
             Some(Sheet::Accept) => self.accept_shared_note(window, cx),
             Some(Sheet::Invite(_)) => {
                 let email = self.sharing.email.read(cx).text.trim().to_string();
@@ -1445,8 +1448,9 @@ impl Workspace {
     fn begin_sharing_request(&mut self, cx: &mut Context<Self>) -> u64 {
         self.sharing.public_link_failure = None;
         let message = match self.sharing.sheet.as_ref() {
-            Some(Sheet::CreateNew(true, _)) => tr("正在新建共享文件夹…", "Creating shared folder…"),
-            Some(Sheet::CreateNew(false, _)) => tr("正在新建共享文档…", "Creating shared document…"),
+            Some(Sheet::CreateNew(NewSharedItem::Folder, _)) => tr("正在新建共享文件夹…", "Creating shared folder…"),
+            Some(Sheet::CreateNew(NewSharedItem::Board, _)) => tr("正在新建共享画板…", "Creating shared board…"),
+            Some(Sheet::CreateNew(NewSharedItem::Document, _)) => tr("正在新建共享文档…", "Creating shared document…"),
             Some(Sheet::Create(id)) => {
                 if self.personal_navigation_entries(cx).iter().any(|e| &e.id == id && e.meta.folder.is_some()) {
                     tr("正在共享文件夹…", "Sharing folder…")

@@ -1,5 +1,6 @@
 //! Fei Notes application host using Longbridge's UIKit platform.
 use crate::{assets::Assets, editor, settings, shared_store::SharedStore, themes};
+use crate::cloud_sync::shared::NewSharedItem;
 use gpui::*;
 use gpui_mobile::ios::ffi;
 use std::{cell::RefCell, ffi::{CStr, c_char}, path::PathBuf, rc::Rc};
@@ -295,7 +296,7 @@ struct NavigationState {
     shared_opening:Option<crate::sharing::mobile::NativeSharedOpening>,
     slash_available:bool,
     slash_open:bool,
-    editor_scope:String, reading:bool, write_allowed:bool, find_active:bool, board_open:bool,
+    editor_scope:String, reading:bool, write_allowed:bool, find_active:bool, board_open:bool, standalone_board_open:bool,
     listing:Option<NativeListing>,
     information:Option<crate::docinfo::NativeInformation>,
     can_reorder:bool,
@@ -458,7 +459,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         ("sidebar-open",tr("已展开","Expanded")),("sidebar-closed",tr("已收起","Collapsed")),
         ("history",tr("版本历史","Version history")),("history-save",tr("保存当前版本","Save current version")),("history-named",tr("仅看命名版本","Named versions only")),("history-marks",tr("显示改动","Show changes")),("history-return",tr("返回版本列表","Back to version list")),("history-restore",tr("恢复此版本","Restore this version")),("history-copy",tr("另存为新文档","Save as a new document")),("history-name",tr("命名版本","Name version")),("history-delete",tr("删除此版本","Delete version")),("history-filter",tr("筛选版本","Filter versions")),("history-restore-confirm",tr("恢复此版本并替换当前正文？","Restore this version and replace the current document?")),("history-delete-confirm",tr("删除这个本机历史版本？","Delete this local version?")),
         ("doc-info",tr("文档信息","Document information")),("reorder",tr("调整顺序","Reorder")),("cloud-versions",tr("iCloud 历史版本","iCloud Version History")),("sharing",tr("共享文档","Shared documents")),("share-note",if shared_folder { folder_access } else if workspace.is_shared() { document_access } else { tr("共享","Share") }),
-        ("share-object",tr("共享","Share")),("new-and-share",tr("新建并共享","Create and share")),("new-shared-document",crate::sharing::new_shared_title(false)),("new-shared-folder",crate::sharing::new_shared_title(true)),("folders-first",tr("文件夹优先","Folders first")),("new-in-my-documents",tr("新建到我的文档","New in My Documents")),("export-copy",tr("导出与打印","Export and print")),("stop-sharing",tr("停止共享","Stop sharing")),("shared-folder-access",folder_access),("shared-document-access",document_access),("shared-sync-status",tr("同步状态","Sync status")),("editing-collaborators",tr("正在编辑","Editing")),
+        ("share-object",tr("共享","Share")),("new-and-share",tr("新建并共享","Create and share")),("new-shared-document",crate::sharing::new_shared_title(NewSharedItem::Document)),("new-shared-board",crate::sharing::new_shared_title(NewSharedItem::Board)),("new-shared-folder",crate::sharing::new_shared_title(NewSharedItem::Folder)),("folders-first",tr("文件夹优先","Folders first")),("new-in-my-documents",tr("新建到我的文档","New in My Documents")),("export-copy",tr("导出与打印","Export and print")),("stop-sharing",tr("停止共享","Stop sharing")),("shared-folder-access",folder_access),("shared-document-access",document_access),("shared-sync-status",tr("同步状态","Sync status")),("editing-collaborators",tr("正在编辑","Editing")),
         ("sync-needs-attention",tr("同步需要处理","Sync needs attention")),
         ("sync-retry",tr("立即同步","Sync now")),("sync-settings",tr("前往 iCloud 设置","Open iCloud Settings")),
         ("already-shared",tr("已共享","Shared")),("online-collaborators",tr("在线协作者","Online collaborators")),
@@ -637,6 +638,10 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         browser:crate::ipad_browser::project(workspace,cx),settings:workspace.native_settings(cx),local_history,sharing_title,folder_access:shared_folder,shared_opening,slash_available:workspace.editor.as_ref().is_some_and(|ed|ed.read(cx).mobile_slash_available()),editor_scope:editor_scope(workspace),reading:workspace.reading(),write_allowed:crate::cloud_sync::shared::can_edit_in(workspace.store.root(),cx),find_active:workspace.editor.as_ref().is_some_and(|ed|ed.read(cx).find.is_some()),listing, information:workspace.native_document_information(),can_reorder:workspace.mobile_can_reorder(cx),reorder:workspace.mobile_reorder_request(cx),cloud_history:crate::cloud_sync::history_available(workspace.store.root(),cx),routes,kind:kind.into(),title,labels,items,
         has_code: workspace.editor.as_ref().is_some_and(|ed| ed.read(cx).has_code_blocks()),
         board_open: kind == "note" && workspace.editor.as_ref().is_some_and(|ed| ed.read(cx).board_open()),
+        standalone_board_open: kind == "note" && workspace.editor.as_ref().is_some_and(|ed| {
+            let editor = ed.read(cx);
+            editor.board_open() && !editor.board_block_open()
+        }),
         table_active: workspace.editor.as_ref().is_some_and(|ed| ed.read(cx).mobile_table_target().is_some()),
         block_actions: block_target.is_some(), block_selected: block_target.is_some_and(|(_,selected)|selected),
         current: workspace.current.clone(), busy: workspace.library_switching || workspace.store.file_task_busy() || workspace.file_history.busy || workspace.sharing_busy(), cloud_active: has_cloud(), cloud_start_pending: crate::ipad_session::resuming(), shared_session: workspace.is_shared(), can_create: !workspace.is_shared() || workspace.can_create_in_shared_folder(workspace.creation_parent().as_deref(),cx),
@@ -960,9 +965,14 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                             }
                         }
                         "receive-invitation" => { if let Some(link) = command.value.clone() { workspace.receive_invitation(link,window,cx); } }
-                        "new-shared-document" | "new-shared-folder" if !workspace.library_switching && workspace.query(cx).is_empty()
+                        "new-shared-document" | "new-shared-board" | "new-shared-folder" if !workspace.library_switching && workspace.query(cx).is_empty()
                             && (command.scope.as_deref() == Some(listing_scope(workspace).as_str()) || command.scope.as_deref() == Some(crate::ipad_browser::scope(workspace,cx).as_str())) => {
-                            workspace.new_and_share(command.action == "new-shared-folder", window, cx);
+                            let kind = match command.action.as_str() {
+                                "new-shared-board" => NewSharedItem::Board,
+                                "new-shared-folder" => NewSharedItem::Folder,
+                                _ => NewSharedItem::Document,
+                            };
+                            workspace.new_and_share(kind, window, cx);
                         }
                         "accept-invitation" => workspace.open_accept_invitation(window,cx),
                         "copy-object-link" => {
@@ -1115,7 +1125,7 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                             if valid_scope && !workspace.library_switching && workspace.confirm.is_none() {
                                 let parent = if workspace.is_shared() || workspace.home.tab==crate::home::HomeTab::Recent { workspace.creation_parent() } else { None };
                                 if command.value.as_deref() == Some("board") {
-                                    if workspace.home.tab == crate::home::HomeTab::Recent { workspace.create_board(parent,window,cx); }
+                                    if workspace.is_shared() || workspace.home.tab == crate::home::HomeTab::Recent { workspace.create_board(parent,window,cx); }
                                 } else { workspace.create_doc(false,parent,window,cx); }
                             }
                             cx.notify();

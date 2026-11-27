@@ -98,8 +98,10 @@ pub(crate) fn command(w:&mut Workspace,action:&str,value:Option<&str>,id:Option<
         "browse-import" if !w.is_shared() || w.mobile_personal_browser(cx) =>
             w.personal_action(window,cx,|w,window,cx|w.open_import(window,cx)),
         "browse-compose" if value == Some("board") => {
-            if w.home.tab == crate::home::HomeTab::Recent && (!w.is_shared() || w.mobile_personal_browser(cx)) {
-                let parent = w.folder_current.clone();
+            let parent = w.folder_current.clone();
+            if w.is_shared() && !w.mobile_personal_browser(cx) {
+                w.create_board(parent,window,cx);
+            } else if w.home.tab == crate::home::HomeTab::Recent {
                 w.personal_action(window,cx,move|w,window,cx|w.create_board(parent,window,cx));
             }
         }

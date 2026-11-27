@@ -2,7 +2,7 @@
 // Copyright 2026 Fei Notes contributors. See LICENSES.md.
 //! Keep the personal catalogue position while the shared library owns editing.
 use super::*;
-use crate::store::{Meta, SQLITE_FILE, Trashed};
+use crate::store::{DocKind, Meta, SQLITE_FILE, Trashed};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::MetadataExt;
@@ -71,20 +71,31 @@ fn copy_entry(source: (&Connection, &Path), dest: (&Connection, &Path), id: &str
 const NEW_PENDING: &str = "new-shared-pending";
 const NEW_INVITED: &str = "new-shared-invited";
 
-pub(crate) fn prepare_new(personal: &Path, id: String, title: String, folder: bool, public: Option<Access>) -> Result<Room> {
+pub(crate) fn prepare_new(personal: &Path, id: String, title: String, kind: NewSharedItem, public: Option<Access>) -> Result<Room> {
     Command::new(&account(personal)?, "checkAccess", None)?.send()?;
-    let room = Room { scope: Scope { note: id, owner: None, folder }, title };
+    stage_new(personal, id, title, kind, public)
+}
+
+fn stage_new(personal: &Path, id: String, title: String, kind: NewSharedItem, public: Option<Access>) -> Result<Room> {
+    let room = Room { scope: Scope { note: id, owner: None, folder: kind.is_folder() }, title };
     stage_with(personal, &room, |staged| {
         let mut journal = Journal::open(staged, None)?;
-        if folder {
-            let db = connect(staged)?;
-            let time = crate::time::now();
-            let meta = Meta { folder: Some(room.title.clone()), created: time, modified: time, ..Default::default() };
-            store_meta(&db, &room.scope.note, &meta)?;
-            journal.merge(&Default::default())?;
-        } else {
-            let doc = Document { title: crate::model::RichText::plain(&room.title), ..Default::default() };
-            journal.seed_shared(&doc, "")?;
+        match kind {
+            NewSharedItem::Folder => {
+                let db = connect(staged)?;
+                let time = crate::time::now();
+                let meta = Meta { folder: Some(room.title.clone()), created: time, modified: time, ..Default::default() };
+                store_meta(&db, &room.scope.note, &meta)?;
+                journal.merge(&Default::default())?;
+            }
+            NewSharedItem::Document => {
+                let doc = Document { title: crate::model::RichText::plain(&room.title), ..Default::default() };
+                journal.seed_shared(&doc, "", DocKind::Doc)?;
+            }
+            NewSharedItem::Board => {
+                let doc = crate::whiteboard::file_doc(crate::whiteboard::Board::default(), &room.title);
+                journal.seed_shared(&doc, "", DocKind::Board)?;
+            }
         }
         fs::write(staged.join(NEW_PENDING), b"1")?;
         stage_public_access(staged, public)?;
@@ -541,6 +552,100 @@ pub(crate) fn move_into(personal: &Path, room: &Room, selection: &[String], dest
 mod tests {
     use super::*;
     use crate::cloud_sync::{Bytes, Changes};
+
+    #[test]
+    fn new_shared_board_preserves_type_for_owner_and_recipient() -> Result<()> {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        let fixture = Fixture(std::env::temp_dir().join(format!("fei-shared-board-{}", uuid::Uuid::new_v4())));
+        let owner = fixture.0.join("owner");
+        let guest = fixture.0.join("guest");
+        for (root, account) in [(&owner, "a"), (&guest, "b")] {
+            Store::initialize_local_sqlite(root)?;
+            fs::write(root.join(".cloud-restore-ready"), format!("{}\n", account.repeat(64)))?;
+        }
+        let title = "New shared board";
+        let room = stage_new(&owner, uuid::Uuid::new_v4().to_string(), title.into(), NewSharedItem::Board, None)?;
+        let id = &room.scope.note;
+        let owner_cache = room_root(&owner, id)?;
+        assert!(pending_new(&owner_cache));
+        assert!(Store::open_sqlite_at(owner.clone())?.list().is_empty());
+        finish_new(&owner, &owner_cache, &room)?;
+        assert_eq!(Store::open_sqlite_at(owner.clone())?.kind(id), DocKind::Board);
+
+        // A regular note holding a board must keep its own kind.
+        let embedded = Room { scope: Scope { note: uuid::Uuid::new_v4().to_string(), ..room.scope.clone() }, title: "Document with board".into() };
+        let embedded_body = crate::whiteboard::file_doc(crate::whiteboard::Board::default(), &embedded.title);
+        let embedded_cache = stage(&owner, &embedded, Some((&embedded_body, "")))?;
+        for (source, cache, expected) in [(&room, owner_cache, DocKind::Board), (&embedded, embedded_cache, DocKind::Doc)] {
+            let invited = Room { scope: Scope { owner: Some("synthetic-owner".into()), ..source.scope.clone() }, title: source.title.clone() };
+            let guest_cache = stage(&guest, &invited, None)?;
+            let edits = Journal::open(&cache, None)?.request()?.edits;
+            let mut journal = Journal::open(&guest_cache, None)?;
+            journal.receive(Changes { retention: None, uploaded: vec![], edits, token: Some(Bytes(vec![1])), more: false, legacy: false,
+                room_access: Some(Access::ReadOnly), #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false })?;
+            journal.merge(&Default::default())?;
+            assert_eq!(journal.access(), Some(Access::ReadOnly));
+            let replica = Store::open_sqlite_at(guest_cache.clone())?;
+            assert_eq!(replica.kind(&source.scope.note), expected);
+            assert!(crate::whiteboard::board_of(&replica.load(&source.scope.note)?).is_some());
+            if expected == DocKind::Board {
+                // Older clients retain the synced marker but materialize the item as a document.
+                drop(journal);
+                let db = connect(&guest_cache)?;
+                db.execute("DELETE FROM state WHERE key = 'shared_standalone_board'", [])?;
+                db.execute("UPDATE library_entries SET meta=json_remove(meta, '$.kind') WHERE id=?1", [&source.scope.note])?;
+                drop(db);
+                let mut reopened = Journal::open(&guest_cache, None)?;
+                reopened.merge(&Default::default())?;
+                assert_eq!(Store::open_sqlite_at(guest_cache)?.kind(&source.scope.note), DocKind::Board);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shared_folder_board_preserves_type_and_inherited_access() -> Result<()> {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+        let fixture = Fixture(std::env::temp_dir().join(format!("fei-folder-board-{}", uuid::Uuid::new_v4())));
+        let owner = fixture.0.join("owner");
+        let guest = fixture.0.join("guest");
+        for (root, account) in [(&owner, "a"), (&guest, "b")] {
+            Store::initialize_local_sqlite(root)?;
+            fs::write(root.join(".cloud-restore-ready"), format!("{}\n", account.repeat(64)))?;
+        }
+        let room = stage_new(&owner, uuid::Uuid::new_v4().to_string(), "Shared folder".into(), NewSharedItem::Folder, None)?;
+        let parent = &room.scope.note;
+        let cache = room_root(&owner, parent)?;
+        let mut owner_store = Store::open_sqlite_at(cache.clone())?;
+        let board = crate::whiteboard::Board::default();
+        let id = owner_store.create_board_in("Owner board", &board, Some(parent))?;
+        let mut owner_journal = Journal::open(&cache, None)?;
+        owner_journal.merge(&Default::default())?;
+        let invited = Room { scope: Scope { owner: Some("synthetic-owner".into()), ..room.scope.clone() }, title: room.title };
+        let guest_cache = stage(&guest, &invited, None)?;
+        let mut guest_journal = Journal::open(&guest_cache, None)?;
+        let page = |access, edits| Changes { retention: None, uploaded: vec![], edits, token: Some(Bytes(vec![1])), more: false, legacy: false,
+            room_access: Some(access), #[cfg(feature = "devtools")] cursor_replayed: false, upload_quota_exceeded: false };
+        guest_journal.receive(page(Access::ReadOnly, owner_journal.request()?.edits))?;
+        guest_journal.merge(&Default::default())?;
+        let mut guest_store = Store::open_sqlite_at(guest_cache.clone())?;
+        let row = guest_store.list().into_iter().find(|entry| entry.id == id).context("Missing synced board")?;
+        assert_eq!(row.meta.kind, DocKind::Board);
+        assert_eq!(row.meta.parent.as_ref(), Some(parent));
+        assert!(guest_store.create_board_in("Read-only creation", &board, Some(parent)).is_err());
+
+        guest_journal.receive(page(Access::ReadWrite, vec![]))?;
+        let added = guest_store.create_board_in("Collaborator board", &board, Some(parent))?;
+        guest_journal.merge(&Default::default())?;
+        owner_journal.receive(page(Access::Owner, guest_journal.request()?.edits))?;
+        owner_journal.merge(&Default::default())?;
+        let row = Store::open_sqlite_at(cache)?.list().into_iter().find(|entry| entry.id == added).context("Missing collaborator board")?;
+        assert_eq!(row.meta.kind, DocKind::Board);
+        assert_eq!(row.meta.parent.as_ref(), Some(parent));
+        Ok(())
+    }
 
     #[test]
     fn ended_standalone_link_recovers_only_after_a_confirmed_zone_deletion() -> Result<()> {

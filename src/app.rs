@@ -1590,6 +1590,11 @@ impl Workspace {
     /// 退出 on a standalone 画板: save it, close it, and show the folder it
     /// is in (主页 at the top).
     fn leave_board(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(all(target_os = "ios", feature = "cloudkit-sync"))]
+        if self.current_room(cx).is_some_and(|room| !room.scope.folder) {
+            self.mobile_back(window, cx);
+            return;
+        }
         if !self.flush(cx) { return; }
         let Some(id) = self.current.take() else { return };
         self.editor = None;

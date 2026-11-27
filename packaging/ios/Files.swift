@@ -8,20 +8,25 @@ final class FeiFileExporter: NSObject, UIDocumentPickerDelegate, UIAdaptivePrese
     private weak var activePicker: UIDocumentPickerViewController?
 
     func present(_ url: URL) {
-        guard source == nil,let host = EditorHost.active,let controller = host.navigationController?.topViewController else {
+        guard source == nil,let host = EditorHost.active,let navigation = host.navigationController,
+              let controller = navigation.topViewController,let window = controller.viewIfLoaded?.window,
+              let presenter = window.rootViewController else {
             discardExport(url)
             return
         }
         source = url
-        // The alert which offered the export formats dismisses itself. Let UIKit
-        // finish that transition before starting the Files presentation.
-        Task { @MainActor [weak self,weak controller,weak host] in
+        // Export can start from a toolbar menu, context menu, or alert. Let
+        // that surface settle, then present Files from the stable window root.
+        Task { @MainActor [weak self,weak controller,weak host,weak navigation,weak presenter,weak window] in
             guard let self else { return }
+            try? await Task.sleep(for: .milliseconds(300))
             for _ in 0..<30 {
-                guard let host,let controller,host.navigationController?.topViewController === controller,
-                      controller.viewIfLoaded?.window != nil else { self.finish(); return }
-                if controller.presentedViewController == nil,controller.transitionCoordinator == nil {
-                    self.openPicker(url,from: controller,appearance: host.navigationCoordinator?.interfaceAppearance ?? .unspecified)
+                guard let host,let navigation,let controller,let presenter,let window,
+                      host.navigationController === navigation,navigation.topViewController === controller,
+                      controller.viewIfLoaded?.window === window,window.rootViewController === presenter else { self.finish(); return }
+                if presenter.presentedViewController == nil,controller.presentedViewController == nil,
+                   navigation.transitionCoordinator == nil,presenter.transitionCoordinator == nil {
+                    self.openPicker(url,from: presenter,appearance: host.navigationCoordinator?.interfaceAppearance ?? .unspecified)
                     return
                 }
                 try? await Task.sleep(for: .milliseconds(50))
@@ -30,20 +35,14 @@ final class FeiFileExporter: NSObject, UIDocumentPickerDelegate, UIAdaptivePrese
         }
     }
 
-    private func openPicker(_ url: URL,from controller: UIViewController,appearance: UIUserInterfaceStyle) {
+    private func openPicker(_ url: URL,from presenter: UIViewController,appearance: UIUserInterfaceStyle) {
         let picker = UIDocumentPickerViewController(forExporting: [url],asCopy: true)
         picker.delegate = self
         picker.overrideUserInterfaceStyle = appearance
-        if controller.traitCollection.horizontalSizeClass == .regular {
-            picker.modalPresentationStyle = .formSheet
-        } else {
-            picker.modalPresentationStyle = .pageSheet
-            picker.sheetPresentationController?.detents = [.large()]
-            picker.sheetPresentationController?.prefersGrabberVisible = true
-        }
+        picker.modalPresentationStyle = presenter.traitCollection.horizontalSizeClass == .regular ? .formSheet : .pageSheet
+        picker.sheetPresentationController?.prefersGrabberVisible = true
         activePicker = picker
-        // UIKit establishes the presenting relationship during the transition.
-        controller.present(picker,animated: true) { [weak self,weak picker] in
+        presenter.present(picker,animated: true) { [weak self,weak picker] in
             guard let self,let picker,self.activePicker === picker else { return }
             if picker.presentingViewController == nil { self.finish() }
         }

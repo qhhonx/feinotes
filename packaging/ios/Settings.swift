@@ -503,7 +503,13 @@ final class FeiSharingPanelController: UIViewController, UITextFieldDelegate, UI
         self.busy = busy
         let kind = result?.value ?? accessMode?.value ?? row("share-create-form")?.value
         var object = UIListContentConfiguration.subtitleCell()
-        object.image = UIImage(systemName: kind == "folder" ? "folder" : "doc.text")
+        let targetSymbol: String
+        switch kind {
+        case "folder": targetSymbol = "folder"
+        case "board": targetSymbol = "scribble.variable"
+        default: targetSymbol = "doc.text"
+        }
+        object.image = UIImage(systemName: targetSymbol)
         object.text = target?.title ?? (draftName?.kind == "info" ? draftName?.value : nil) ?? title
         object.secondaryText = (kind == "folder" ? target?.detail : nil) ?? row("share-effect")?.title
         object.textProperties.font = .preferredFont(forTextStyle: .headline,compatibleWith: traitCollection)
