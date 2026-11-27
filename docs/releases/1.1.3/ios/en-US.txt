@@ -1,0 +1,24 @@
+Thank you for trying Fei Notes and for every piece of feedback.
+
+If something goes wrong or you have a suggestion, you can reach us here:
+• TestFlight: take a screenshot while using Fei Notes, open its preview, then choose Done → Share Beta Feedback. You can also open TestFlight → Fei Notes → Send Beta Feedback and attach a screenshot.
+• Telegram feedback group: https://t.me/+eKIYrdIFufxmYzJl
+• Website support: https://feinotes.app/en/support/ (support@feinotes.app)
+• You can also reply to the social media post or discussion where you found Fei Notes.
+Please include your device, OS and app version, and what you did before the issue occurred.
+
+Changes based on your feedback:
+• Dictation: revised text should replace the original text in place, with the input context preserved after closing and reopening the keyboard. Please check for duplicated or missing text.
+• Document scrolling: iPhone and iPad now share native vertical scrolling and momentum, with changes to long-document stability and the iPad scroll indicator. Check slow drags, fast swipes, and where the content settles.
+• Attachment previews: resize attachments that display preview content in a document, and align them left, centre, or right. Audio previews support width adjustment. Portrait videos continue to show the full frame at its original aspect ratio without cropping.
+• PDF and Markdown export could open a white screen that could not be closed. Documents and standalone boards now export through the system share sheet, including Save to Files. Please check saving a file, cancelling, closing the sheet, and returning to the document.
+• Long iPhone home lists now extend to the bottom edge, with the last row reachable beneath the search and New controls.
+• Typing / keeps the keyboard open so you can filter, scroll, and select a command. Undo and keyboard controls remain directly available on narrow screens.
+• On iPad, check the accent-coloured navigation on older systems, the visible Done checkmark while editing, and stable selection highlights when switching documents in split view.
+
+Other fixes, features, and improvements:
+• Creating boards from personal menus and writable shared folders. Personal menus use New document → New board → New folder. Read-only members cannot create items.
+• Document-style navigation for standalone boards, and Done returning from an embedded board to its document.
+• Reading/editing transitions and sharing and editing controls in both interface styles.
+
+Menus now say Export document or Export board. Copy Link sits with sharing actions. The separate in-app Print entry has been removed; PDF printing is available through the system share sheet where supported.
