@@ -475,7 +475,7 @@ fn publish_navigation_state(workspace: &crate::app::Workspace, cx: &App, force: 
         ("objects",tr("内容设置","Content settings")),("find",tr("文档内查找","Find in document")),("export",tr("导出 Markdown","Export Markdown")),
         ("pdf",tr("导出 PDF","Export PDF")),("print",tr("打印","Print")),
         ("delete",tr("删除文档","Delete document")),("delete-child-folder",tr("删除子文件夹","Delete subfolder")),("delete-folder",tr("删除文件夹","Delete folder")),("delete-shared-folder",tr("删除共享文件夹","Delete shared folder")),("import",tr("导入文档","Import documents")),
-        ("new-document",tr("新建文档","New document")),("new-markdown",tr("新建 Markdown","New Markdown")),("batch",tr("选择文档","Select documents")),("sort",tr("排序规则","Sort by")),("manual",tr("手动排序","Manual order")),
+        ("new-document",tr("新建文档","New document")),("new-board",tr("新建画板","New board")),("new-markdown",tr("新建 Markdown","New Markdown")),("batch",tr("选择文档","Select documents")),("sort",tr("排序规则","Sort by")),("manual",tr("手动排序","Manual order")),
         ("visited",tr("最近访问时间","Recently opened")),("modified",tr("最近修改时间","Recently modified")),
         ("created",tr("创建时间（最新优先）","Recently created")),("title",tr("标题（升序）","Title ascending")),
         ("save",tr("保存","Save")),("format",tr("编辑和格式","Editing and formatting")),
@@ -1093,7 +1093,7 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                             });
                             if !accepted { return; }
                             if command.action == "browse-compose" {
-                                crate::ipad_browser::command(workspace,"browse-compose",None,id.as_deref(),command.scope.as_deref(),window,cx);
+                                crate::ipad_browser::command(workspace,"browse-compose",command.value.as_deref(),id.as_deref(),command.scope.as_deref(),window,cx);
                                 cx.notify();return;
                             }
                             if command.action == "editor-compose" {
@@ -1114,7 +1114,9 @@ pub unsafe extern "C" fn fei_ios_command(json: *const c_char) {
                             };
                             if valid_scope && !workspace.library_switching && workspace.confirm.is_none() {
                                 let parent = if workspace.is_shared() || workspace.home.tab==crate::home::HomeTab::Recent { workspace.creation_parent() } else { None };
-                                workspace.create_doc(false,parent,window,cx);
+                                if command.value.as_deref() == Some("board") {
+                                    if workspace.home.tab == crate::home::HomeTab::Recent { workspace.create_board(parent,window,cx); }
+                                } else { workspace.create_doc(false,parent,window,cx); }
                             }
                             cx.notify();
                         }

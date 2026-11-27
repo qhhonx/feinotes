@@ -334,6 +334,7 @@ impl Workspace {
                 }
             }
             "new-document" if folder => self.create_doc(false, Some(id.into()), window, cx),
+            "new-board" if folder && scope.is_none() => self.create_board(Some(id.into()), window,cx),
             "new-folder" if folder && !value.is_empty() => self.new_folder(
                 crate::folders::CreateTarget::Library(Some(id.into())), Some(value.into()), window, cx),
             "duplicate" if scope.is_none_or(|scope| scope.folder && !folder && scope.note != id) => self.duplicate_doc(id, window, cx),

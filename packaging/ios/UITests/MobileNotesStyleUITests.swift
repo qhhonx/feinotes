@@ -206,6 +206,69 @@ final class MobileNotesStyleUITests: XCTestCase {
         cancelPicker("pdf")
     }
 
+    func testCreateBoardFromListAndFolderMenus() {
+        continueAfterFailure = false
+        let app = launchLightNotes()
+        let list = app.tables["fei.notes.list"].firstMatch
+        let more = app.buttons["fei.library-actions"].firstMatch
+        let done = app.buttons["fei.board.done"]
+        func action(_ zh: String,_ en: String) -> XCUIElement {
+            app.buttons.matching(NSPredicate(format: "label IN %@",[zh,en])).firstMatch
+        }
+        let newDocument = action("新建文档","New document")
+        let newBoard = action("新建画板","New board")
+        let newFolder = action("新建文件夹","New folder")
+        func verifyMenu(_ screenshot: String) {
+            XCTAssertTrue(newBoard.waitForExistence(timeout: 6),app.debugDescription)
+            XCTAssertTrue(newDocument.isHittable)
+            XCTAssertTrue(newFolder.isHittable)
+            XCTAssertLessThan(newDocument.frame.midY,newBoard.frame.midY)
+            XCTAssertLessThan(newBoard.frame.midY,newFolder.frame.midY)
+            shot(screenshot)
+        }
+        func createBoard() {
+            newBoard.tap()
+            XCTAssertTrue(done.waitForExistence(timeout: 15),app.debugDescription)
+            XCTAssertFalse(app.keyboards.firstMatch.exists)
+            done.tap()
+            XCTAssertTrue(more.waitForExistence(timeout: 8),app.debugDescription)
+        }
+        XCTAssertTrue(app.buttons["fei.new"].firstMatch.isHittable)
+        XCTAssertFalse(app.buttons["fei.new-board"].exists)
+        more.tap()
+        verifyMenu("board-menu-home")
+        createBoard()
+        let boardTitles = NSPredicate(format: "label BEGINSWITH %@ OR label BEGINSWITH %@", "未命名画板", "Untitled board")
+        let boardRows = list.cells.containing(boardTitles)
+        XCTAssertTrue(boardRows.firstMatch.waitForExistence(timeout: 8),app.debugDescription)
+
+        more.tap()
+        newFolder.tap()
+        let field = app.textFields["fei.rename.title"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let folder = "Board menu QA " + String(UUID().uuidString.prefix(6))
+        field.tap()
+        field.typeText(folder)
+        app.buttons["fei.rename.save"].tap()
+        XCTAssertTrue(app.navigationBars[folder].waitForExistence(timeout: 8),app.debugDescription)
+        XCTAssertFalse(boardRows.firstMatch.exists)
+        more.tap()
+        verifyMenu("board-menu-folder")
+        createBoard()
+        XCTAssertTrue(boardRows.firstMatch.waitForExistence(timeout: 8),app.debugDescription)
+        XCTAssertEqual(boardRows.count,1)
+
+        app.navigationBars[folder].buttons.firstMatch.tap()
+        let folderRow = list.cells.containing(.staticText,identifier: folder).firstMatch
+        XCTAssertTrue(folderRow.waitForExistence(timeout: 8),app.debugDescription)
+        folderRow.press(forDuration: 1.1)
+        verifyMenu("board-menu-folder-row")
+        createBoard()
+        if folderRow.isHittable { folderRow.tap() }
+        XCTAssertTrue(app.navigationBars[folder].waitForExistence(timeout: 8),app.debugDescription)
+        XCTAssertEqual(boardRows.count,2)
+    }
+
     func testExistingBoardAndMarkdownExportWithoutShortcut() throws {
         continueAfterFailure = false
         let title = "Standalone board QA " + String(UUID().uuidString.prefix(6))

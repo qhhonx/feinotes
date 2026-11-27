@@ -650,21 +650,22 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         guard let state,!state.busy,state.confirmation == nil,pendingCreation == nil else { return false }
         return showsComposeShortcut
     }
-    func composeNote() {
+    func composeNote(board: Bool = false) {
         guard allowsCompose,!applying,host?.navigationController?.transitionCoordinator == nil,let state else { return }
+        if board && !(hasPadWorkspace ? state.browser?.personal == true : !state.shared_session) { return }
         requestComposition(hasPadWorkspace ? "browse-compose" : "compose",state: state,
-            scope: hasPadWorkspace ? state.browser?.listing.scope : state.listing?.scope)
+            scope: hasPadWorkspace ? state.browser?.listing.scope : state.listing?.scope,board: board)
     }
     func composeFromEditor() {
         guard let state,state.kind == "note",state.current != nil,state.can_create,!state.busy,!state.conflict_review,
               state.confirmation == nil,pendingCreation == nil,!applying,host?.navigationController?.transitionCoordinator == nil else { return }
         requestComposition("editor-compose",state: state,scope: state.editor_scope)
     }
-    private func requestComposition(_ action: String,state: FeiNavigationState,scope: String?) {
+    private func requestComposition(_ action: String,state: FeiNavigationState,scope: String?,board: Bool = false) {
         guard let scope else { return }
         createSerial = max(createSerial,state.revision)+1
         pendingCreation = createSerial
-        send(action,id: state.current,serial: createSerial,scope: scope)
+        send(action,value: board ? "board" : nil,id: state.current,serial: createSerial,scope: scope)
     }
     private weak var sharedSync: FeiSharedSyncController?
     private var sharedSyncScope: String?
@@ -1437,7 +1438,7 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             }
         }
         if ["compose","browse-compose","editor-compose","new","new-document","new-markdown"].contains(action) {
-            focusAfterTransition = true
+            focusAfterTransition = value != "board"
         }
         var command: [String: Any] = ["action": action]
         if let scope { command["scope"] = scope }
@@ -1745,12 +1746,15 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
                 menuAction("new-shared-folder","folder.badge.plus") { [weak self] in self?.send("new-shared-folder",scope: listing.scope) }
             ])]))
         } else if !isVirtualListing {
-            let create = [
+            var create = [
                 menuAction("new","square.and.pencil") { [weak self] in self?.composeNote() },
-                menuAction("new-folder","folder.badge.plus") { [weak self] in
-                    if browser { self?.createSidebarFolder() } else { self?.newFolder() }
-                }
             ]
+            if browser ? state.browser?.can_create == true : state.can_create {
+                create.append(menuAction("new-board","scribble.variable") { [weak self] in self?.composeNote(board: true) })
+            }
+            create.append(menuAction("new-folder","folder.badge.plus") { [weak self] in
+                if browser { self?.createSidebarFolder() } else { self?.newFolder() }
+            })
             menus.append(menuSection(create))
         }
         if !organize.isEmpty { menus.append(menuSection(organize)) }
@@ -1976,8 +1980,9 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
         var groups: [UIMenuElement] = []
         if item.folder {
             if writable {
-                var folderActions: [UIMenuElement] = [
-                    action("new","square.and.pencil","new-document"),
+                var folderActions: [UIMenuElement] = [action("new","square.and.pencil","new-document")]
+                if !shared { folderActions.append(action("new-board","scribble.variable")) }
+                folderActions += [
                     action("new-folder","folder.badge.plus",perform: { [weak self] in self?.presentNewFolder(action: "item-menu",parentID: id,scope: scope) }),
                     rename,
                 ]
