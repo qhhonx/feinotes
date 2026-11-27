@@ -25,7 +25,10 @@ struct FeiMobileTheme: Decodable, Equatable, Sendable {
     @MainActor var syncWarningColor: UIColor { color(sync_warning) ?? .systemOrange }
     @MainActor var syncWarningInk: UIColor { color(sync_warning_ink) ?? .white }
     @MainActor var accentColor: UIColor { color(accent) ?? .systemBlue }
-    @MainActor var toolbarColor: UIColor { .label }
+    @MainActor var toolbarColor: UIColor {
+        if #available(iOS 26.0,*) { return .label }
+        return UIDevice.current.userInterfaceIdiom == .pad ? accentColor : .label
+    }
     @MainActor var sharingAccentColor: UIColor { color(sharing_accent) ?? accentColor }
     @MainActor var paperColor: UIColor { color(paper) ?? .systemBackground }
     @MainActor var folderColor: UIColor { color(folder) ?? accentColor }

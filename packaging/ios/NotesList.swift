@@ -311,7 +311,7 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
                     return
                 }
                 var content = baseContent
-                let highlight = state.isSelected && !self.isSelecting
+                let highlight = !self.isSelecting && (self.browsesWorkspace ? self.selectedNote == id : state.isSelected)
                 content.textProperties.color = highlight ? self.palette.selectedTextColor : self.palette.textColor
                 content.secondaryTextProperties.color = highlight ? self.palette.selectedTextColor : .secondaryLabel
                 content.imageProperties.tintColor = highlight ? self.palette.selectedTextColor : row.folder ? self.palette.folderColor : self.palette.textColor
@@ -509,7 +509,9 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             }
         }
     }
-    func update(_ next: FeiNavigationState.Listing,labels: [String:String],busy: Bool,canCompose: Bool,theme: FeiMobileTheme) {
+    func update(_ next: FeiNavigationState.Listing,labels: [String:String],busy: Bool,canCompose: Bool,theme: FeiMobileTheme,selectedNote: String?) {
+        let previousNote = self.selectedNote
+        self.selectedNote = selectedNote
         applyTheme(theme)
         let labelsChanged = self.labels != labels
         self.labels = labels; isBusy=busy; self.canCompose=canCompose
@@ -574,6 +576,11 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             }
         }
         restoreSelection()
+        if previousNote != selectedNote {
+            for id in [previousNote,selectedNote].compactMap({ $0 }) {
+                if let path = source.indexPath(for: id) { tableView.cellForRow(at: path)?.setNeedsUpdateConfiguration() }
+            }
+        }
         let message = next.notice
         notice.update(message,kind: next.notice_kind,accent: palette.accentColor)
         if message != nil && message != previous?.notice { UIAccessibility.post(notification: .announcement,argument: message) }
@@ -594,7 +601,6 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
         view.setNeedsLayout()
     }
 
-    func selectNote(_ id: String?) { selectedNote = id; restoreSelection() }
     private func restoreSelection() {
         guard isViewLoaded else { return }
         if let selection=listing?.selection {
@@ -603,8 +609,10 @@ final class FeiNotesListController: UIViewController, UITableViewDelegate, UISea
             return
         }
         guard browsesWorkspace else { return }
-        for path in tableView.indexPathsForSelectedRows ?? [] { tableView.deselectRow(at: path,animated: false) }
-        if let selectedNote,let path = source.indexPath(for: selectedNote) { tableView.selectRow(at: path,animated: false,scrollPosition: .none) }
+        let selectedPath = selectedNote.flatMap { source.indexPath(for: $0) }
+        if tableView.indexPathForSelectedRow == selectedPath { return }
+        if let selectedPath { tableView.selectRow(at: selectedPath,animated: false,scrollPosition: .none) }
+        else if let path = tableView.indexPathForSelectedRow { tableView.deselectRow(at: path,animated: false) }
     }
     func deactivate() {
         finishRowDrag()

@@ -191,7 +191,7 @@ class FeiRouteController: UIViewController {
         openingBack.setTitle(opening.back, for: .normal)
     }
 
-    func updateListing(_ listing: FeiNavigationState.Listing?,labels: [String:String],busy: Bool,coordinator: FeiNavigationCoordinator) {
+    func updateListing(_ listing: FeiNavigationState.Listing?,labels: [String:String],busy: Bool,coordinator: FeiNavigationCoordinator,selectedNote: String? = nil) {
         guard let listing else {
             if let notesList,!notesList.view.isHidden {
                 notesList.deactivate()
@@ -213,7 +213,7 @@ class FeiRouteController: UIViewController {
         guard let notesList else { return }
         if notesList.view.isHidden { setContentScrollView(notesList.tableView,for: .all) }
         notesList.view.isHidden = false
-        notesList.update(listing,labels: labels,busy: busy,canCompose: coordinator.showsComposeShortcut,theme: coordinator.theme)
+        notesList.update(listing,labels: labels,busy: busy,canCompose: coordinator.showsComposeShortcut,theme: coordinator.theme,selectedNote: selectedNote)
     }
 
     func updateSettings(_ settings:FeiSettingsState?,busy:Bool,coordinator:FeiNavigationCoordinator) {
@@ -1216,11 +1216,11 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             if state.kind == "note",state.current == nil { controller.navigationItem.rightBarButtonItems?.filter { ["fei.more","fei.share"].contains($0.accessibilityIdentifier ?? "") }.forEach { $0.isEnabled = false } }
             if state.kind == "trash" { controller.navigationItem.rightBarButtonItem?.isEnabled = !state.busy && state.items.contains(where: { $0.trashed }) }
             let embeddedBoard = state.board_open && !state.standalone_board_open
-            let hidesBack = state.busy || embeddedBoard || state.kind == "history-preview"
+            let hidesBack = state.busy || embeddedBoard || hasPadWorkspace && state.standalone_board_open || state.kind == "history-preview"
             if controller.navigationItem.hidesBackButton != hidesBack { controller.navigationItem.hidesBackButton = hidesBack }
             host?.navigationController?.interactivePopGestureRecognizer?.isEnabled = !hidesBack && state.listing?.selection == nil
             if embeddedBoard { controller.navigationItem.leftBarButtonItems = nil }
-            else if let workspace = host?.padWorkspace { workspace.configureDetailButtons(controller,state: state,coordinator: self) }
+            else if let workspace = host?.padWorkspace { workspace.configureDetailButtons(controller,state: state) }
             else if state.standalone_board_open,controller.navigationController?.viewControllers.first === controller {
                 controller.navigationItem.leftBarButtonItems = [boardBackButton()]
             } else if controller.navigationItem.leftBarButtonItem === standaloneBoardBackItem {
@@ -1321,10 +1321,15 @@ final class FeiNavigationCoordinator: NSObject, UINavigationControllerDelegate, 
             if !state.board_open && state.can_edit && typing {
                 let theme = state.theme ?? .system
                 let check = UIImage(systemName: "checkmark")
-                let image = check?.withTintColor(.white,renderingMode: .alwaysOriginal)
-                let done = UIBarButtonItem(image: image,style: .done,target: self,action: #selector(endTyping))
+                let done: UIBarButtonItem
+                if #available(iOS 26.0,*) {
+                    let image = check?.withTintColor(.white,renderingMode: .alwaysOriginal)
+                    done = UIBarButtonItem(image: image,style: .prominent,target: self,action: #selector(endTyping))
+                    done.sharesBackground = false
+                } else {
+                    done = UIBarButtonItem(image: check,style: .done,target: self,action: #selector(endTyping))
+                }
                 done.tintColor = theme.accentColor
-                if #available(iOS 26.0,*) { done.sharesBackground = false }
                 done.accessibilityLabel = state.labels["end-typing"]
                 done.accessibilityIdentifier = "fei.edit.done"; items.insert(done,at: 0)
             }

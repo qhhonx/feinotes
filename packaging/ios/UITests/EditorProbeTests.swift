@@ -1354,7 +1354,7 @@ final class EditorProbeTests: XCTestCase {
         let list = app.tables["fei.notes.list"].firstMatch
         let more = app.buttons["fei.library-actions"].firstMatch
         let tabs = app.segmentedControls["fei.notes.tabs"]
-        let boardBack = app.standaloneBoardBack
+        let boardNavigation = app.standaloneBoardNavigation
         func tap(_ item: XCUIElement) {
             XCTAssertTrue(item.waitForExistence(timeout: 12),app.debugDescription)
             item.tap()
@@ -1372,10 +1372,10 @@ final class EditorProbeTests: XCTestCase {
             if pad { rowCoordinate(item).tap() } else { tap(item) }
         }
         func closeBoard() {
-            XCTAssertTrue(boardBack.waitForExistence(timeout: 12),app.debugDescription)
+            XCTAssertTrue(boardNavigation.waitForExistence(timeout: 12),app.debugDescription)
             XCTAssertFalse(app.buttons["fei.board.done"].exists)
             XCTAssertFalse(app.keyboards.firstMatch.exists)
-            boardBack.tap()
+            app.showBrowserFromStandaloneBoard()
         }
         tap(tabs.buttons["Shared documents"])
         tap(more)
@@ -1654,9 +1654,18 @@ final class EditorProbeTests: XCTestCase {
 }
 
 extension XCUIApplication {
-    var standaloneBoardBack: XCUIElement {
-        if UIDevice.current.userInterfaceIdiom == .pad { return buttons["fei.board.back"].firstMatch }
+    var standaloneBoardNavigation: XCUIElement {
+        if UIDevice.current.userInterfaceIdiom == .pad { return buttons["fei.ipad.focus"].firstMatch }
         return navigationBars.buttons.matching(NSPredicate(format: "identifier IN %@",["BackButton","fei.board.back"])).firstMatch
+    }
+
+    func showBrowserFromStandaloneBoard() {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            XCTAssertFalse(buttons["fei.board.back"].exists)
+            if !tables["fei.notes.list"].firstMatch.isHittable { standaloneBoardNavigation.tap() }
+        } else {
+            standaloneBoardNavigation.tap()
+        }
     }
 
     func switchToReadingMode() { chooseNoteMode(["阅读模式", "Reading mode"]) }

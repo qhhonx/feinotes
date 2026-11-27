@@ -228,12 +228,51 @@ final class MobileNotesStyleUITests: XCTestCase {
         verifyPicker("pdf",shouldSave: true)
     }
 
+    func testIPadCommittedRowsAndEditingDone() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad)
+        continueAfterFailure = false
+        let key = String(UUID().uuidString.prefix(6))
+        let fixtures = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: fixtures,withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: fixtures) }
+        for suffix in ["A","B"] {
+            try "<title>\(key) \(suffix)</title><p>Editable synthetic body \(suffix)</p>"
+                .write(to: fixtures.appendingPathComponent("\(suffix).xml"),atomically: true,encoding: .utf8)
+        }
+
+        let app = launchLightNotes(fixture: fixtures)
+        let list = app.tables["fei.notes.list"].firstMatch
+        func row(_ suffix: String) -> XCUIElement { list.cells.containing(.staticText,identifier: key + " " + suffix).firstMatch }
+        let a = row("A"), b = row("B")
+        func open(_ target: XCUIElement,_ previous: XCUIElement,_ suffix: String) {
+            XCTAssertTrue(target.waitForExistence(timeout: 8),app.debugDescription)
+            let frame = target.frame
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX,dy: frame.midY)).tap()
+            let committed = XCTNSPredicateExpectation(predicate: NSPredicate { _,_ in
+                target.isSelected && !previous.isSelected && app.navigationBars[key + " " + suffix].exists
+            },object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [committed],timeout: 8),.completed,app.debugDescription)
+        }
+        open(a,b,"A")
+        shot("ipad-selection-a")
+        open(b,a,"B")
+        shot("ipad-selection-b")
+        open(a,b,"A")
+        let body = app.coordinate(withNormalizedOffset: CGVector(dx: 0.59,dy: 0.19))
+        body.tap()
+        let done = app.buttons["fei.edit.done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 8),app.debugDescription)
+        shot("ipad-editing-done")
+        done.tap()
+        XCTAssertTrue(a.isSelected)
+    }
+
     func testCreateBoardFromListAndFolderMenus() {
         continueAfterFailure = false
         let app = launchLightNotes()
         let list = app.tables["fei.notes.list"].firstMatch
         let more = app.buttons["fei.library-actions"].firstMatch
-        let boardBack = app.standaloneBoardBack
+        let boardNavigation = app.standaloneBoardNavigation
         func action(_ zh: String,_ en: String) -> XCUIElement {
             app.buttons.matching(NSPredicate(format: "label IN %@",[zh,en])).firstMatch
         }
@@ -250,11 +289,11 @@ final class MobileNotesStyleUITests: XCTestCase {
         }
         func createBoard() {
             newBoard.tap()
-            XCTAssertTrue(boardBack.waitForExistence(timeout: 15),app.debugDescription)
+            XCTAssertTrue(boardNavigation.waitForExistence(timeout: 15),app.debugDescription)
             XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 8),app.debugDescription)
             XCTAssertFalse(app.buttons["fei.board.done"].exists)
             XCTAssertFalse(app.keyboards.firstMatch.exists)
-            boardBack.tap()
+            app.showBrowserFromStandaloneBoard()
             XCTAssertTrue(more.waitForExistence(timeout: 8),app.debugDescription)
         }
         XCTAssertTrue(app.buttons["fei.new"].firstMatch.isHittable)
@@ -312,13 +351,13 @@ final class MobileNotesStyleUITests: XCTestCase {
         let row = list.cells.containing(.staticText,identifier: title).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 8),app.debugDescription)
         row.tap()
-        let boardBack = app.standaloneBoardBack
-        XCTAssertTrue(boardBack.waitForExistence(timeout: 15),app.debugDescription)
+        let boardNavigation = app.standaloneBoardNavigation
+        XCTAssertTrue(boardNavigation.waitForExistence(timeout: 15),app.debugDescription)
         XCTAssertTrue(app.buttons["fei.more"].waitForExistence(timeout: 8),app.debugDescription)
         XCTAssertFalse(app.buttons["fei.board.done"].exists)
         XCTAssertFalse(app.keyboards.firstMatch.exists)
         shot("standalone-board-open")
-        boardBack.tap()
+        app.showBrowserFromStandaloneBoard()
         XCTAssertTrue(row.waitForExistence(timeout: 8),app.debugDescription)
         func action(_ labels: [String]) -> XCUIElement {
             app.descendants(matching: .any).matching(NSPredicate(format: "label IN %@",labels)).firstMatch

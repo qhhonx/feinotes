@@ -161,11 +161,12 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
             page.configureNavigationTitleMode()
             return page
         }
+        let selectedNote = ["note","history","history-preview"].contains(next.kind) ? next.current : nil
         let title = next.browser?.title ?? next.labels["sharing"]
         controllers.last?.title = title
         controllers.last?.navigationItem.title = title
         if let destination = controllers.last, browserNavigation.viewControllers.map(ObjectIdentifier.init) != controllers.map(ObjectIdentifier.init) {
-            destination.updateListing(next.browser?.listing,labels: next.labels,busy: next.busy,coordinator: coordinator)
+            destination.updateListing(next.browser?.listing,labels: next.labels,busy: next.busy,coordinator: coordinator,selectedNote: selectedNote)
             let from = browserNavigation.viewControllers
             let animated = previous != nil && primaryVisible && !UIAccessibility.isReduceMotionEnabled
                 && browserNavigation.transitionCoordinator == nil
@@ -185,10 +186,8 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
             }
             browserNavigation.interactivePopGestureRecognizer?.isEnabled = false
         }
-        browser.updateListing(next.browser?.listing,labels: next.labels,busy: next.busy,coordinator: coordinator)
+        browser.updateListing(next.browser?.listing,labels: next.labels,busy: next.busy,coordinator: coordinator,selectedNote: selectedNote)
         if let list = browser.notesList {
-            list.browsesWorkspace = true
-            list.selectNote(["note","history","history-preview"].contains(next.kind) ? next.current : nil)
             list.configureSearch(in: browser,expanded: !isCollapsed)
         }
         settingsItem.accessibilityLabel = next.labels[next.kind == "settings" ? "close-settings" : "settings"]; settingsItem.isEnabled = !next.busy
@@ -248,7 +247,7 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         editor.refreshEditorLayout()
     }
 
-    func configureDetailButtons(_ controller: UIViewController,state: FeiNavigationState,coordinator: FeiNavigationCoordinator) {
+    func configureDetailButtons(_ controller: UIViewController,state: FeiNavigationState) {
         let ordinaryDetail = ["note","notes","folder"].contains(state.kind)
         let settingsRoot = state.kind == "settings" && state.settings?.page == "root"
         guard ordinaryDetail || settingsRoot else {
@@ -257,11 +256,10 @@ final class FeiPadWorkspaceController: UISplitViewController, UISplitViewControl
         }
         if ["notes","folder"].contains(state.kind) { controller.navigationItem.rightBarButtonItems = [] }
         updateSidebarButton(state)
-        controller.navigationItem.leftItemsSupplementBackButton = !settingsRoot && (controller.navigationController?.viewControllers.count ?? 0) > 1
-        let items = state.standalone_board_open && !controller.navigationItem.leftItemsSupplementBackButton
-            ? [coordinator.boardBackButton(),focusItem] : [focusItem]
-        if controller.navigationItem.leftBarButtonItems?.map(ObjectIdentifier.init) != items.map(ObjectIdentifier.init) {
-            controller.navigationItem.leftBarButtonItems = items
+        controller.navigationItem.leftItemsSupplementBackButton = !settingsRoot && !state.standalone_board_open
+            && (controller.navigationController?.viewControllers.count ?? 0) > 1
+        if controller.navigationItem.leftBarButtonItems?.count != 1 || controller.navigationItem.leftBarButtonItem !== focusItem {
+            controller.navigationItem.leftBarButtonItems = [focusItem]
         }
 
     }
